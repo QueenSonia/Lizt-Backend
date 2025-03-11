@@ -26,3 +26,18 @@ export interface IPagination {
   totalPages: number;
   hasNextPage: boolean;
 }
+
+export interface IReqUser {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string;
+  city: string;
+  role: string;
+  panda_id?: string;
+}
+
+export enum ADMIN_ROLES {
+  ADMIN = 'admin',
+}

@@ -5,6 +5,7 @@ import typeorm from '../ormconfig';
 import dotenv from 'dotenv';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AuthModule } from './auth/auth.module';
 
 dotenv.config();
 
@@ -24,6 +25,7 @@ dotenv.config();
         return typeOrmConfig;
       },
     }),
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],

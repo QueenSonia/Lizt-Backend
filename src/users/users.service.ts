@@ -3,6 +3,7 @@ import {
   HttpStatus,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import {
   CreateUserDto,
@@ -129,8 +130,20 @@ export class UsersService {
       throw new NotFoundException(`User with email: ${data.email} not found`);
     }
 
-    if (!user.password) {
-      await this.usersRepository.update({ email }, { password });
+    if (user.password) {
+      const isPasswordValid = await UtilService.validatePassword(
+        password,
+        user.password,
+      );
+      if (!isPasswordValid) {
+        throw new UnauthorizedException('Invalid password');
+      }
+    } else {
+      const hashedPassword = await UtilService.hashPassword(password);
+      await this.usersRepository.update(
+        { email },
+        { password: hashedPassword },
+      );
     }
 
     const tokenData = {

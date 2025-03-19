@@ -1,5 +1,6 @@
-import { Column, Entity, Unique } from 'typeorm';
+import { Column, Entity, OneToMany, Unique } from 'typeorm';
 import { BaseEntity, RolesEnum } from '../../base.entity';
+import { Property } from 'src/properties/entities/property.entity';
 
 @Unique(['email'])
 @Unique(['phone_number'])
@@ -27,4 +28,7 @@ export class Users extends BaseEntity {
     default: RolesEnum.TENANT,
   })
   role: string;
+
+  @OneToMany(() => Property, (p) => p.Tenant)
+  properties: Property[];
 }

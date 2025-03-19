@@ -31,4 +31,11 @@ export class UpdateUserResponseDto {
     description: 'Phone number of the user',
   })
   phone_number: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'admin',
+    description: 'Role of the user',
+  })
+  role: string;
 }

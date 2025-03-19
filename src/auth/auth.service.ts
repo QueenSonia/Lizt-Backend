@@ -14,7 +14,7 @@ export class AuthService {
     const payload = { ...user, sub: user.id };
     const account_token = await this.jwtService.signAsync(payload, {
       secret: this.configService.get<string>('JWT_SECRET'),
-      issuer: 'APPLE-RENTALS',
+      issuer: 'PANDA-HOMES',
       expiresIn: this.configService.get<string>('JWT_EXPIRY'),
     });
     return account_token;

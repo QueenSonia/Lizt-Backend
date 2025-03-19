@@ -32,12 +32,15 @@ export interface IReqUser {
   first_name: string;
   last_name: string;
   email: string;
-  phone: string;
-  city: string;
+  phone_number: string;
   role: string;
-  panda_id?: string;
 }
 
 export enum ADMIN_ROLES {
   ADMIN = 'admin',
+}
+
+export enum RolesEnum {
+  ADMIN = 'admin',
+  TENANT = 'tenant',
 }

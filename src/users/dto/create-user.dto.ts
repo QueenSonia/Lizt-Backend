@@ -7,14 +7,17 @@ import {
   Matches,
   MinLength,
 } from 'class-validator';
+import { RolesEnum } from 'src/base.entity';
 
 export class CreateUserDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })
+  @Transform((val) => val.value.toLowerCase())
   @IsNotEmpty()
   @IsString()
   first_name: string;
 
   @ApiProperty({ example: 'Doe', description: 'Last name of the user' })
+  @Transform((val) => val.value.toLowerCase())
   @IsNotEmpty()
   @IsString()
   last_name: string;
@@ -36,6 +39,14 @@ export class CreateUserDto {
   @IsString()
   @MinLength(10)
   phone_number: string;
+
+  @ApiProperty({
+    example: 'admin',
+    description: 'Role of the user',
+    required: false,
+  })
+  @Transform((val) => val.value.toLowerCase())
+  role: RolesEnum;
 }
 
 export class LoginDto {

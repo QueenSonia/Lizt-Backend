@@ -59,20 +59,20 @@ export class UsersService {
 
     const newUser: IUser = {
       ...data,
-      first_name: data.first_name.toLowerCase(),
-      last_name: data.last_name.toLowerCase(),
-      role: RolesEnum.TENANT,
+      role: data.role ? RolesEnum[data.role.toUpperCase()] : RolesEnum.TENANT,
     };
     const createdUser = await this.usersRepository.save(newUser);
 
-    const emailContent = clientSignUpEmailTemplate(
-      this.configService.get<string>('LOGIN_URL')!,
-    );
-    await UtilService.sendEmail(
-      email,
-      EmailSubject.WELCOME_EMAIL,
-      emailContent,
-    );
+    if (createdUser.role === RolesEnum.TENANT) {
+      const emailContent = clientSignUpEmailTemplate(
+        this.configService.get<string>('LOGIN_URL')!,
+      );
+      await UtilService.sendEmail(
+        email,
+        EmailSubject.WELCOME_EMAIL,
+        emailContent,
+      );
+    }
     return createdUser;
   }
 

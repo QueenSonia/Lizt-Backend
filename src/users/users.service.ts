@@ -32,7 +32,7 @@ export class UsersService {
   constructor(
     @InjectRepository(Users)
     private readonly usersRepository: Repository<Users>,
-    private configService: ConfigService,
+    private readonly configService: ConfigService,
     private readonly authService: AuthService,
   ) {}
 
@@ -59,7 +59,7 @@ export class UsersService {
 
     const newUser: IUser = {
       ...data,
-      role: data.role ? RolesEnum[data.role.toUpperCase()] : RolesEnum.TENANT,
+      role: data?.role ? RolesEnum[data?.role.toUpperCase()] : RolesEnum.TENANT,
     };
     const createdUser = await this.usersRepository.save(newUser);
 
@@ -77,9 +77,13 @@ export class UsersService {
   }
 
   async getAllUsers(queryParams: UserFilter) {
-    const page = queryParams?.page ? Number(queryParams?.page) : 1;
-    const size = queryParams?.size ? Number(queryParams.size) : 10;
-    const skip = queryParams?.page ? (Number(queryParams.page) - 1) * size : 0;
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : Number(this.configService.get<string>('DEFAULT_PAGE_NO'));
+    const size = queryParams?.size
+      ? Number(queryParams.size)
+      : Number(this.configService.get<string>('DEFAULT_PER_PAGE'));
+    const skip = (page - 1) * size;
     const query = await buildUserFilter(queryParams);
     const [users, count] = await this.usersRepository.findAndCount({
       where: query,
@@ -130,10 +134,10 @@ export class UsersService {
       throw new NotFoundException(`User with email: ${data.email} not found`);
     }
 
-    if (user.password) {
+    if (user?.password) {
       const isPasswordValid = await UtilService.validatePassword(
         password,
-        user.password,
+        user?.password,
       );
       if (!isPasswordValid) {
         throw new UnauthorizedException('Invalid password');
@@ -142,7 +146,7 @@ export class UsersService {
       const hashedPassword = await UtilService.hashPassword(password);
       await this.usersRepository.update(
         { email },
-        { password: hashedPassword },
+        { password: hashedPassword, is_verified: true },
       );
     }
 

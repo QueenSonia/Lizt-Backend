@@ -1,6 +1,7 @@
 export enum EmailSubject {
   WELCOME_EMAIL = 'Welcome to Panda Homes!',
   COMPLETE_PROFILE = 'Kindly Complete Your Profile',
+  SEND_RENT_REMINDER = 'Rent Payment Reminder',
 }
 
 export const clientSignUpEmailTemplate = (link: string) => `
@@ -20,3 +21,55 @@ export const clientSignUpEmailTemplate = (link: string) => `
     </p>
   </div>
 `;
+
+export const rentReminderEmailTemplate = (
+  tenantName: string,
+  amount: number,
+  dueDate: string,
+) => `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background-color: #f8f9fa; padding: 20px; text-align: center;">
+        <h1 style="color: #333;">Rent Payment Reminder</h1>
+      </div>
+      
+      <div style="padding: 20px;">
+        <p style="color: #666;">Dear ${tenantName},</p>
+        
+        <p style="color: #666; line-height: 1.6;">
+          This is a friendly reminder that your rent payment of ₦${amount} is due on ${dueDate}.
+        </p>
+        
+        <p style="color: #666; line-height: 1.6;">
+          To ensure timely payment and avoid any late fees, please process your payment using the approved payment methods.
+        </p>
+        
+        <div style="text-align: center; margin: 30px 0;">
+          <div style="background-color: #007bff;
+                      color: white;
+                      padding: 12px 24px;
+                      border-radius: 4px;
+                      display: inline-block;
+                      font-weight: bold;">
+            Pay Rent Now
+          </div>
+        </div>
+        
+        <p style="color: #666; line-height: 1.6;">
+          If you have already made the payment, please disregard this reminder.
+        </p>
+
+        <p style="color: #666; line-height: 1.6;">
+          Thank you for your prompt attention to this matter.
+        </p>
+        
+        <p style="color: #666; margin-top: 30px;">
+          Best regards,<br>
+          Your Property Management Team
+        </p>
+      </div>
+      
+      <div style="background-color: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666;">
+        <p>This is an automated message, please do not reply directly to this email.</p>
+      </div>
+    </div>
+  `;

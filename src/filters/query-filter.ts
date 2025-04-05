@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { PropertyFilter } from 'src/properties/dto/create-property.dto';
+import { RentFilter } from 'src/rents/dto/create-rent.dto';
 import { UserFilter } from 'src/users/dto/create-user.dto';
 import { Between, ILike } from 'typeorm';
 
@@ -39,6 +40,28 @@ export const buildPropertyFilter = async (queryParams: PropertyFilter) => {
     query['location'] = queryParams.location.toLowerCase();
   if (queryParams?.property_status)
     query['property_status'] = queryParams.property_status.toLowerCase();
+
+  if (queryParams?.start_date && queryParams?.end_date) {
+    const regex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!regex.test(queryParams?.start_date)) {
+      throw new HttpException(
+        `use date format yy-mm-dd`,
+        HttpStatus.NOT_ACCEPTABLE,
+      );
+    }
+    query['created_at'] = Between(
+      new Date(queryParams.start_date),
+      new Date(queryParams.end_date),
+    );
+  }
+  return query;
+};
+
+export const buildRentFilter = async (queryParams: RentFilter) => {
+  const query = {};
+  if (queryParams?.property_id) query['property_id'] = queryParams.property_id;
+  if (queryParams?.tenant_id) query['tenant_id'] = queryParams.tenant_id;
+  if (queryParams?.status) query['status'] = queryParams.status.toLowerCase();
 
   if (queryParams?.start_date && queryParams?.end_date) {
     const regex = /^\d{4}-\d{2}-\d{2}$/;

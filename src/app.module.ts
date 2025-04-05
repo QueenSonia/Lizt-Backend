@@ -8,6 +8,7 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { PropertiesModule } from './properties/properties.module';
+import { RentsModule } from './rents/rents.module';
 
 dotenv.config();
 
@@ -30,6 +31,7 @@ dotenv.config();
     AuthModule,
     UsersModule,
     PropertiesModule,
+    RentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

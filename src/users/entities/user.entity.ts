@@ -29,6 +29,12 @@ export class Users extends BaseEntity {
   })
   role: string;
 
-  @OneToMany(() => Property, (p) => p.Tenant)
+  @Column({ nullable: false, type: 'boolean', default: false })
+  is_verified: boolean;
+
+  @OneToMany(() => Property, (p) => p.tenant)
   properties: Property[];
+
+  @OneToMany(() => Property, (p) => p.owner)
+  owner_properties: Property[];
 }

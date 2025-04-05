@@ -29,10 +29,23 @@ export class CreatePropertyDto {
   @IsString()
   tenant_id: string;
 
-  @ApiProperty({ example: 1, description: 'No of bathrooms in the property' })
+  @ApiProperty({
+    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
+    description: 'UUID of the tenant',
+  })
+  @IsString()
+  owner_id: string;
+
+  @ApiProperty({
+    example: 'Duplex',
+    description: 'Type of the property',
+  })
+  @IsString()
+  property_type: string;
+
+  @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
   @IsNotEmpty()
-  @IsNumber()
-  no_of_bathrooms: number;
+  property_images: string[];
 
   @ApiProperty({ example: 3, description: 'No of bedrooms in the property' })
   @IsNotEmpty()
@@ -44,8 +57,8 @@ export class CreatePropertyDto {
     description: 'Rental price of the property',
   })
   @IsNotEmpty()
-  @IsString()
-  rental_price: string;
+  @IsNumber()
+  rental_price: number;
 
   @ApiProperty({
     example: 'monthly',
@@ -65,44 +78,30 @@ export class CreatePropertyDto {
     description: 'Security payment',
   })
   @IsNotEmpty()
-  @IsString()
-  security_deposit: string;
+  @IsNumber()
+  security_deposit: number;
 
   @ApiProperty({
     example: '50,000',
     description: 'Service charge',
   })
   @IsNotEmpty()
-  @IsString()
-  service_charge: string;
+  @IsNumber()
+  service_charge: number;
 
   @ApiProperty({
     example: 'Available now',
-    description: 'Comment about the property',
+    description: 'Additional notes about the property',
   })
   @IsString()
   comment: string;
 
   @ApiProperty({
     example: 'Available now',
-    description: 'Comment about the property',
+    description: 'Date tenant moved in',
   })
   @IsString()
   move_in_date: Date;
-
-  @ApiProperty({
-    example: 'Active',
-    description: 'Status of the tenant',
-  })
-  @IsString()
-  occupant_status: string;
-
-  @ApiProperty({
-    example: '2025',
-    description: 'Year the property was built',
-  })
-  @IsString()
-  build_year: string;
 }
 
 export interface PropertyFilter {

@@ -27,13 +27,14 @@ import {
   ApiNotFoundResponse,
   ApiQuery,
   ApiConsumes,
+  ApiTags,
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
 
+@ApiTags('Rents')
 @Controller('rents')
-@ApiSecurity('access_token')
 export class RentsController {
   constructor(
     private readonly rentsService: RentsService,

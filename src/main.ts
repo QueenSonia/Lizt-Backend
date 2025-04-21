@@ -45,7 +45,7 @@ async function bootstrap(): Promise<NestExpressApplication> {
 
   app.useGlobalFilters(new HttpExceptionFilter(reflector));
 
-  const config = new DocumentBuilder()
+  const swaggerConfig = new DocumentBuilder()
     .setTitle('Panda Homes')
     .setDescription('This service enables users access Panda Homes')
     .setVersion('1.0')
@@ -56,7 +56,7 @@ async function bootstrap(): Promise<NestExpressApplication> {
     })
     .build();
 
-  const document = SwaggerModule.createDocument(app, config);
+  const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('documentationView', app, document);
 
   await app.listen(PORT, () => {

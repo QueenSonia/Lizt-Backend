@@ -8,6 +8,10 @@ import {
   Query,
   ParseUUIDPipe,
   Put,
+  UseInterceptors,
+  UploadedFiles,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { PropertiesService } from './properties.service';
 import { CreatePropertyDto, PropertyFilter } from './dto/create-property.dto';
@@ -20,21 +24,45 @@ import {
   ApiSecurity,
   ApiOkResponse,
   ApiNotFoundResponse,
+  ApiConsumes,
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
+import { FilesInterceptor } from '@nestjs/platform-express';
+import { FileUploadService } from 'src/utils/cloudinary';
 
 @Controller('properties')
 export class PropertiesController {
-  constructor(private readonly propertiesService: PropertiesService) {}
+  constructor(
+    private readonly propertiesService: PropertiesService,
+    private readonly fileUploadService: FileUploadService,
+  ) {}
 
   @ApiOperation({ summary: 'Create Property' })
+  @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreatePropertyDto })
   @ApiCreatedResponse({ type: CreatePropertyDto })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  async createProperty(@Body() body: CreatePropertyDto) {
+  @UseInterceptors(FilesInterceptor('property_images', 20))
+  async createProperty(
+    @Body() body: CreatePropertyDto,
+    @UploadedFiles() files: Array<Express.Multer.File>,
+  ) {
     try {
+      if (!files || files.length === 0) {
+        throw new HttpException(
+          'Property images are required',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const uploadedUrls = await Promise.all(
+        files.map((file) => this.fileUploadService.uploadFile(file)),
+      );
+
+      body.property_images = uploadedUrls.map((upload) => upload.secure_url);
+
       return this.propertiesService.createProperty(body);
     } catch (error) {
       throw error;

@@ -25,16 +25,16 @@ export class Property extends BaseEntity {
   @Column({ nullable: false, type: 'uuid' })
   owner_id: string;
 
-  @Column({ nullable: true, type: 'varchar' })
+  @Column({ nullable: false, type: 'varchar' })
   property_type: string;
 
-  @Column({ nullable: true, type: 'varchar', array: true })
+  @Column({ nullable: false, type: 'varchar', array: true })
   property_images: string[];
 
   @Column({ nullable: false, type: 'int' })
   no_of_bedrooms: number;
 
-  @Column({ type: 'numeric', precision: 11, scale: 2, nullable: false })
+  @Column({ type: 'int', nullable: false })
   rental_price: number;
 
   @Column({ nullable: false, type: 'varchar' })
@@ -43,14 +43,14 @@ export class Property extends BaseEntity {
   @Column({ nullable: false, type: 'int' })
   lease_duration: number;
 
-  @Column({ type: 'numeric', precision: 11, scale: 2, nullable: false })
+  @Column({ type: 'int', nullable: false })
   security_deposit: number;
 
-  @Column({ type: 'numeric', precision: 11, scale: 2, nullable: false })
+  @Column({ type: 'int', nullable: false })
   service_charge: number;
 
   @Column({ nullable: true, type: 'text' })
-  comment: string;
+  comment?: string | null;
 
   @Column({ nullable: true, type: 'date' })
   move_in_date?: Date | string | null;

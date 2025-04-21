@@ -32,10 +32,10 @@ export class UpdatePropertyResponseDto {
   no_of_bedrooms: number;
 
   @ApiProperty({
-    example: '500,000',
+    example: 500000,
     description: 'Rental price of the property',
   })
-  rental_price: string;
+  rental_price: number;
 
   @ApiProperty({
     example: 'monthly',
@@ -47,26 +47,28 @@ export class UpdatePropertyResponseDto {
   lease_duration: number;
 
   @ApiProperty({
-    example: '20,000',
+    example: 20000,
     description: 'Security payment',
   })
-  security_deposit: string;
+  security_deposit: number;
 
   @ApiProperty({
-    example: '50,000',
+    example: 50000,
     description: 'Service charge',
   })
-  service_charge: string;
+  service_charge: number;
 
   @ApiProperty({
     example: 'Available now',
     description: 'Comment about the property',
+    required: false,
   })
-  comment: string;
+  comment?: string | null;
 
   @ApiProperty({
-    example: 'Available now',
+    example: '2024-03-21',
     description: 'Comment about the property',
+    required: false,
   })
-  move_in_date: Date;
+  move_in_date?: Date | string | null;
 }

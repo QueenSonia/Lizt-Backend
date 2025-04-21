@@ -83,6 +83,7 @@ export class PropertiesController {
   @ApiQuery({ name: 'property_status', required: false, type: String })
   @ApiQuery({ name: 'location', required: false, type: String })
   @ApiQuery({ name: 'tenant_id', required: false, type: String })
+  @ApiQuery({ name: 'owner_id', required: false, type: String })
   @ApiQuery({ name: 'start_date', required: false, type: String })
   @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiOkResponse({

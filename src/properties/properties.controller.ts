@@ -28,14 +28,15 @@ import {
   ApiNotFoundResponse,
   ApiConsumes,
   ApiQuery,
+  ApiTags,
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
-import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
-
+import { ADMIN_ROLES } from 'src/base.entity';
+@ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
   constructor(

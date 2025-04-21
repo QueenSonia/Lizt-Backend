@@ -78,6 +78,8 @@ export class UsersController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
   getAllUsers(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllUsers(query);
@@ -167,6 +169,18 @@ export class UsersController {
   deleteUserById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.usersService.deleteUserById(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Tenant and Property The Occupy' })
+  @ApiOkResponse({ type: CreateUserDto })
+  @ApiNotFoundResponse({ description: 'Tenant not found' })
+  @Get('tenant-property/:tenant_id')
+  getTenantAndPropertyInfo(@Param('tenant_id', new ParseUUIDPipe()) tenant_id: string) {
+    try {
+      return this.usersService.getTenantAndPropertyInfo(tenant_id);
     } catch (error) {
       throw error;
     }

@@ -36,6 +36,9 @@ export class CreateRentDto {
   @IsDate()
   expiry_date: Date;
 
+  @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
+  rent_receipts: string[];
+
   @ApiProperty({
     example: 'Pending',
     description: 'Rent status',
@@ -48,6 +51,7 @@ export class RentFilter {
   page?: number;
   size?: number;
   tenant_id?: string;
+  owner_id?: string;
   property_id?: string;
   status?: string;
   start_date?: string;

@@ -18,6 +18,12 @@ export class Rent extends BaseEntity {
   @Column({ nullable: false, type: 'timestamp' })
   expiry_date: Date;
 
+  @Column({ nullable: true, type: 'varchar', array: true })
+  rent_receipts: string[];
+
+  @Column({ nullable: true, type: 'timestamp' })
+  eviction_date: Date;
+
   @Column({
     nullable: false,
     type: 'enum',
@@ -30,7 +36,7 @@ export class Rent extends BaseEntity {
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() => Users)
+  @ManyToOne(() => Users, (u) => u.rents)
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
   tenant: Users;
 }

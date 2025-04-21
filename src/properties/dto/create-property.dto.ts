@@ -27,13 +27,6 @@ export class CreatePropertyDto {
     description: 'UUID of the tenant',
   })
   @IsString()
-  tenant_id: string;
-
-  @ApiProperty({
-    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
-    description: 'UUID of the tenant',
-  })
-  @IsString()
   owner_id: string;
 
   @ApiProperty({
@@ -101,14 +94,19 @@ export class CreatePropertyDto {
     description: 'Date tenant moved in',
   })
   @IsString()
-  move_in_date: Date;
+  move_in_date?: Date | string | null;
+}
+
+export enum TenantStatusEnum {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
 }
 
 export interface PropertyFilter {
   name?: string;
   location?: string;
   property_status?: string;
-  tenant_id?: string;
+  owner_id?: string;
   start_date?: string;
   end_date?: string;
   size?: number;

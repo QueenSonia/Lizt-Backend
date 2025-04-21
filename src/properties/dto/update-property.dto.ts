@@ -17,10 +17,16 @@ export class UpdatePropertyResponseDto {
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',
     description: 'UUID of the tenant',
   })
-  tenant_id: string;
+  owner_id: string;
 
-  @ApiProperty({ example: 1, description: 'No of bathrooms in the property' })
-  no_of_bathrooms: number;
+  @ApiProperty({
+    example: 'Duplex',
+    description: 'Type of the property',
+  })
+  property_type: string;
+
+  @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
+  property_images: string[];
 
   @ApiProperty({ example: 3, description: 'No of bedrooms in the property' })
   no_of_bedrooms: number;
@@ -63,16 +69,4 @@ export class UpdatePropertyResponseDto {
     description: 'Comment about the property',
   })
   move_in_date: Date;
-
-  @ApiProperty({
-    example: 'Active',
-    description: 'Status of the tenant',
-  })
-  occupant_status: string;
-
-  @ApiProperty({
-    example: '2025',
-    description: 'Year the property was built',
-  })
-  build_year: string;
 }

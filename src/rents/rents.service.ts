@@ -54,7 +54,10 @@ export class RentsService {
   }
 
   async getRentByTenantId(tenant_id: string) {
-    const rent = await this.rentRepository.findOne({ where: { tenant_id } });
+    const rent = await this.rentRepository.findOne({
+      where: { tenant_id },
+      relations: ['tenant'],
+    });
     if (!rent?.id) {
       throw new HttpException(
         `Tenant has never paid rent`,
@@ -64,7 +67,7 @@ export class RentsService {
     return rent;
   }
 
-  async getDueRents(queryParams: RentFilter) {
+  async getDueRentsWithinSevenDays(queryParams: RentFilter) {
     const page = queryParams?.page ? Number(queryParams?.page) : 1;
     const size = queryParams?.size ? Number(queryParams.size) : 10;
     const skip = (page - 1) * size;
@@ -74,8 +77,40 @@ export class RentsService {
 
     const [rents, count] = await this.rentRepository.findAndCount({
       where: {
-        expiry_date: LessThanOrEqual(dueDate),
         ...query,
+        expiry_date: LessThanOrEqual(dueDate),
+      },
+      relations: ['tenant', 'property'],
+      skip,
+      take: size,
+      order: { expiry_date: 'ASC' },
+    });
+
+    const totalPages = Math.ceil(count / size);
+    return {
+      rents,
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
+  }
+
+  async getOverdueRents(queryParams: RentFilter) {
+    const page = queryParams?.page ? Number(queryParams?.page) : 1;
+    const size = queryParams?.size ? Number(queryParams.size) : 10;
+    const skip = (page - 1) * size;
+
+    const query = await buildRentFilter(queryParams);
+    const currentDate = new Date();
+
+    const [rents, count] = await this.rentRepository.findAndCount({
+      where: {
+        ...query,
+        expiry_date: LessThanOrEqual(currentDate),
       },
       relations: ['tenant', 'property'],
       skip,
@@ -124,6 +159,7 @@ export class RentsService {
   async getRentById(id: string): Promise<CreateRentDto> {
     const rent = await this.rentRepository.findOne({
       where: { id },
+      relations: ['tenant', 'property'],
     });
     if (!rent?.id) {
       throw new HttpException(`Rent not found`, HttpStatus.NOT_FOUND);

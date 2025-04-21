@@ -29,7 +29,7 @@ import {
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
 
-@ApiTags('Service-requests')
+@ApiTags('Service-Requests')
 @Controller('service-requests')
 export class ServiceRequestsController {
   constructor(

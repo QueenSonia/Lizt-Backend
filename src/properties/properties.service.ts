@@ -143,6 +143,7 @@ export class PropertiesService {
     const queryRunner = connectionSource.createQueryRunner();
 
     try {
+      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -188,6 +189,7 @@ export class PropertiesService {
       );
     } finally {
       await queryRunner.release();
+      await connectionSource.destroy();
     }
   }
 
@@ -206,6 +208,7 @@ export class PropertiesService {
     const queryRunner = connectionSource.createQueryRunner();
 
     try {
+      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -258,6 +261,7 @@ export class PropertiesService {
       );
     } finally {
       await queryRunner.release();
+      await connectionSource.destroy();
     }
   }
 }

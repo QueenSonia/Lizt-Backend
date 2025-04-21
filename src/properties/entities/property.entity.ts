@@ -3,6 +3,8 @@ import { BaseEntity } from '../../base.entity';
 import { PropertyStatusEnum } from '../dto/create-property.dto';
 import { Users } from 'src/users/entities/user.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
+import { PropertyTenant } from './property-tenants.entity';
+import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -19,9 +21,6 @@ export class Property extends BaseEntity {
     default: PropertyStatusEnum.VACANT,
   })
   property_status: PropertyStatusEnum;
-
-  @Column({ nullable: true, type: 'uuid' })
-  tenant_id: string;
 
   @Column({ nullable: false, type: 'uuid' })
   owner_id: string;
@@ -54,16 +53,18 @@ export class Property extends BaseEntity {
   comment: string;
 
   @Column({ nullable: true, type: 'date' })
-  move_in_date: Date;
+  move_in_date?: Date | string | null;
 
-  @ManyToOne(() => Users, (t) => t.properties)
-  @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Users;
+  @OneToMany(() => PropertyTenant, (t) => t.property)
+  property_tenants: PropertyTenant[];
 
-  @ManyToOne(() => Users, (o) => o.owner_properties)
+  @ManyToOne(() => Users, (owner) => owner.properties)
   @JoinColumn({ name: 'owner_id', referencedColumnName: 'id' })
   owner: Users;
 
   @OneToMany(() => Rent, (r) => r.property)
   rents: Rent[];
+
+  @OneToMany(() => ServiceRequest, (sr) => sr.property)
+  service_requests: ServiceRequest[];
 }

@@ -186,4 +186,23 @@ export class UsersService {
       message: 'Logout successful',
     });
   }
+
+  async getTenantAndPropertyInfo(tenant_id: string) {
+    const tenant = await this.usersRepository.findOne({
+      where: {
+        id: tenant_id,
+        role: RolesEnum.TENANT,
+      },
+      relations: ['property_tenants', 'property_tenants.property'],
+    });
+
+    if (!tenant?.id) {
+      throw new HttpException(
+        `Tenant with id: ${tenant_id} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    return tenant;
+  }
 }

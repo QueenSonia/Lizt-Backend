@@ -1,6 +1,9 @@
 import { Column, Entity, OneToMany, Unique } from 'typeorm';
 import { BaseEntity, RolesEnum } from '../../base.entity';
 import { Property } from 'src/properties/entities/property.entity';
+import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { Rent } from 'src/rents/entities/rent.entity';
+import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 
 @Unique(['email'])
 @Unique(['phone_number'])
@@ -32,9 +35,15 @@ export class Users extends BaseEntity {
   @Column({ nullable: false, type: 'boolean', default: false })
   is_verified: boolean;
 
-  @OneToMany(() => Property, (p) => p.tenant)
+  @OneToMany(() => Property, (p) => p.owner)
   properties: Property[];
 
-  @OneToMany(() => Property, (p) => p.owner)
-  owner_properties: Property[];
+  @OneToMany(() => Rent, (r) => r.tenant)
+  rents: Rent[];
+
+  @OneToMany(() => ServiceRequest, (sr) => sr.tenant)
+  service_requests: ServiceRequest[];
+
+  @OneToMany(() => PropertyTenant, (pt) => pt.tenant)
+  property_tenants: PropertyTenant[];
 }

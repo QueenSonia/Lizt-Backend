@@ -12,6 +12,8 @@ import {
   UploadedFiles,
   HttpException,
   HttpStatus,
+  UseGuards,
+  Req,
 } from '@nestjs/common';
 import { PropertiesService } from './properties.service';
 import { CreatePropertyDto, PropertyFilter } from './dto/create-property.dto';
@@ -25,10 +27,14 @@ import {
   ApiOkResponse,
   ApiNotFoundResponse,
   ApiConsumes,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
+import { RoleGuard } from 'src/auth/role.guard';
+import { Roles } from 'src/auth/role.decorator';
+import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 
 @Controller('properties')
 export class PropertiesController {
@@ -70,6 +76,14 @@ export class PropertiesController {
   }
 
   @ApiOperation({ summary: 'Get All Properties' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiQuery({ name: 'name', required: false, type: String })
+  @ApiQuery({ name: 'property_status', required: false, type: String })
+  @ApiQuery({ name: 'location', required: false, type: String })
+  @ApiQuery({ name: 'tenant_id', required: false, type: String })
+  @ApiQuery({ name: 'start_date', required: false, type: String })
+  @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiOkResponse({
     type: PaginationResponseDto,
     description: 'Paginated list of properties',
@@ -77,8 +91,9 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
-  getAllProperties(@Query() query: PropertyFilter) {
+  getAllProperties(@Query() query: PropertyFilter, @Req() req: any) {
     try {
+      query.owner_id = req?.user?.id;
       return this.propertiesService.getAllProperties(query);
     } catch (error) {
       throw error;
@@ -97,6 +112,23 @@ export class PropertiesController {
   getPropertyById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.propertiesService.getPropertyById(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Rents Of A Property' })
+  @ApiOkResponse({
+    type: CreatePropertyDto,
+    description: 'Property and rents successfully fetched',
+  })
+  @ApiNotFoundResponse({ description: 'Property not found' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('rent/:id')
+  getRentsOfAProperty(@Param('id', new ParseUUIDPipe()) id: string) {
+    try {
+      return this.propertiesService.getRentsOfAProperty(id);
     } catch (error) {
       throw error;
     }
@@ -127,6 +159,77 @@ export class PropertiesController {
   deletePropertyById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.propertiesService.deletePropertyById(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Admin Dashboard Stats' })
+  @ApiOkResponse({
+    schema: {
+      properties: {
+        total_properties: { type: 'number' },
+        total_tenants: { type: 'number' },
+        due_tenants: { type: 'number' },
+        unresolved_requests: { type: 'number' },
+      },
+    },
+  })
+  @ApiQuery({ name: 'user_id', required: true, type: String })
+  @Get('admin/dashboard')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  async getAdminDashboardStats(
+    @Query('user_id', new ParseUUIDPipe()) user_id: string,
+  ) {
+    try {
+      return await this.propertiesService.getAdminDashboardStats(user_id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Move Tenant Into Property' })
+  @ApiOkResponse({ description: 'Tenant moved in successfully' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  @Post('move-in/:property_id')
+  moveTenantIn(
+    @Param('property_id', new ParseUUIDPipe()) property_id: string,
+    @Body('tenant_id', new ParseUUIDPipe()) tenant_id: string,
+    @Body('move_in_date') moveInDate: string,
+  ) {
+    try {
+      return this.propertiesService.moveTenantIn(
+        property_id,
+        tenant_id,
+        moveInDate,
+      );
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Move Tenant Out of Property' })
+  @ApiOkResponse({ description: 'Tenant moved out successfully' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  @Post('move-out/:property_id')
+  moveTenantOut(
+    @Param('property_id', new ParseUUIDPipe()) property_id: string,
+    @Body('tenant_id', new ParseUUIDPipe()) tenant_id: string,
+    @Body('move_out_date') moveOutDate: string,
+  ) {
+    try {
+      return this.propertiesService.moveTenantOut(
+        property_id,
+        tenant_id,
+        moveOutDate,
+      );
     } catch (error) {
       throw error;
     }

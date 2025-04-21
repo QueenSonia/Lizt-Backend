@@ -34,6 +34,14 @@ class UtilityService {
   getUUID() {
     return uuidv4();
   }
+
+  generateServiceRequestId(previousId?: string): string {
+    if (!previousId) {
+      return '#SR001';
+    }
+    const number = parseInt(previousId.replace('#SR', '')) + 1;
+    return `#SR${number.toString().padStart(3, '0')}`;
+  }
 }
 
 export const UtilService = new UtilityService();

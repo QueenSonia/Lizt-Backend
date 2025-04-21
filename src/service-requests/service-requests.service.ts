@@ -10,6 +10,7 @@ import { In, Repository } from 'typeorm';
 import { buildServiceRequestFilter } from 'src/filters/query-filter';
 import { UtilService } from 'src/utils/utility-service';
 import { ConfigService } from '@nestjs/config';
+import { config } from 'src/config';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -38,10 +39,10 @@ export class ServiceRequestsService {
   async getAllServiceRequests(queryParams: ServiceRequestFilter) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
-      : Number(this.configService.get<string>('DEFAULT_PAGE_NO'));
+      : config.DEFAULT_PAGE_NO;
     const size = queryParams?.size
       ? Number(queryParams.size)
-      : Number(this.configService.get<string>('DEFAULT_PER_PAGE'));
+      : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
     const query = await buildServiceRequestFilter(queryParams);
@@ -92,10 +93,10 @@ export class ServiceRequestsService {
   async getPendingAndUrgentRequests(queryParams: ServiceRequestFilter) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
-      : Number(this.configService.get<string>('DEFAULT_PAGE_NO'));
+      : config.DEFAULT_PAGE_NO;
     const size = queryParams?.size
       ? Number(queryParams.size)
-      : Number(this.configService.get<string>('DEFAULT_PER_PAGE'));
+      : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
     const query = await buildServiceRequestFilter(queryParams);

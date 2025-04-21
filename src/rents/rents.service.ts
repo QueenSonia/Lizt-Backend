@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { buildRentFilter } from 'src/filters/query-filter';
 import { rentReminderEmailTemplate } from 'src/utils/email-template';
 import { UtilService } from 'src/utils/utility-service';
+import { config } from 'src/config';
 
 @Injectable()
 export class RentsService {
@@ -27,10 +28,10 @@ export class RentsService {
   async getAllRents(queryParams: RentFilter) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
-      : Number(this.configService.get<string>('DEFAULT_PAGE_NO'));
+      : config.DEFAULT_PAGE_NO;
     const size = queryParams?.size
       ? Number(queryParams.size)
-      : Number(this.configService.get<string>('DEFAULT_PER_PAGE'));
+      : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
     const query = await buildRentFilter(queryParams);
     const [rents, count] = await this.rentRepository.findAndCount({
@@ -68,8 +69,12 @@ export class RentsService {
   }
 
   async getDueRentsWithinSevenDays(queryParams: RentFilter) {
-    const page = queryParams?.page ? Number(queryParams?.page) : 1;
-    const size = queryParams?.size ? Number(queryParams.size) : 10;
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size
+      ? Number(queryParams.size)
+      : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
     const query = await buildRentFilter(queryParams);
@@ -100,8 +105,12 @@ export class RentsService {
   }
 
   async getOverdueRents(queryParams: RentFilter) {
-    const page = queryParams?.page ? Number(queryParams?.page) : 1;
-    const size = queryParams?.size ? Number(queryParams.size) : 10;
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size
+      ? Number(queryParams.size)
+      : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
     const query = await buildRentFilter(queryParams);

@@ -25,6 +25,9 @@ export class UpdateRentResponseDto {
   @ApiProperty()
   expiry_date: Date;
 
+  @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
+  rent_receipts: string[];
+
   @ApiProperty({
     example: 'Pending',
     description: 'Rent status',

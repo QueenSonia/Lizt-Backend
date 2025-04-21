@@ -8,6 +8,11 @@ import {
   Query,
   ParseUUIDPipe,
   Put,
+  Req,
+  UseInterceptors,
+  UploadedFiles,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { RentsService } from './rents.service';
 import { CreateRentDto, RentFilter } from './dto/create-rent.dto';
@@ -20,22 +25,46 @@ import {
   ApiSecurity,
   ApiOkResponse,
   ApiNotFoundResponse,
+  ApiQuery,
+  ApiConsumes,
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
+import { FilesInterceptor } from '@nestjs/platform-express';
+import { FileUploadService } from 'src/utils/cloudinary';
 
 @Controller('rents')
 @ApiSecurity('access_token')
 export class RentsController {
-  constructor(private readonly rentsService: RentsService) {}
+  constructor(
+    private readonly rentsService: RentsService,
+    private readonly fileUploadService: FileUploadService,
+  ) {}
 
   @ApiOperation({ summary: 'Pay Rent' })
+  @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreateRentDto })
   @ApiCreatedResponse({ type: CreateRentDto })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  payRent(@Body() body: CreateRentDto) {
+  @UseInterceptors(FilesInterceptor('rent_receipts', 20))
+  async payRent(
+    @Body() body: CreateRentDto,
+    @UploadedFiles() files: Array<Express.Multer.File>,
+  ) {
     try {
+      if (!files || files.length === 0) {
+        throw new HttpException(
+          'Rent receipts are required',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const uploadedUrls = await Promise.all(
+        files.map((file) => this.fileUploadService.uploadFile(file, 'rents')),
+      );
+
+      body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
+
       return this.rentsService.payRent(body);
     } catch (error) {
       throw error;
@@ -43,6 +72,13 @@ export class RentsController {
   }
 
   @ApiOperation({ summary: 'Get All Rents' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiQuery({ name: 'tenant_id', required: false, type: String })
+  @ApiQuery({ name: 'property_id', required: false, type: String })
+  @ApiQuery({ name: 'status', required: false, type: String })
+  @ApiQuery({ name: 'start_date', required: false, type: String })
+  @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiOkResponse({
     type: PaginationResponseDto,
     description: 'Paginated list of rents',
@@ -77,7 +113,7 @@ export class RentsController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Due Rents' })
+  @ApiOperation({ summary: 'Get Due Rents Within 7 Days' })
   @ApiOkResponse({
     type: PaginationResponseDto,
     description: 'Paginated list of rents',
@@ -85,9 +121,35 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('due')
-  getDueRents(@Query() query: RentFilter) {
+  getDueRentsWithinSevenDays(@Query() query: RentFilter, @Req() req: any) {
     try {
-      return this.rentsService.getDueRents(query);
+      query.owner_id = req?.user?.id;
+      return this.rentsService.getDueRentsWithinSevenDays(query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Overdue Rents' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiQuery({ name: 'tenant_id', required: false, type: String })
+  @ApiQuery({ name: 'owner_id', required: false, type: String })
+  @ApiQuery({ name: 'property_id', required: false, type: String })
+  @ApiQuery({ name: 'status', required: false, type: String })
+  @ApiQuery({ name: 'start_date', required: false, type: String })
+  @ApiQuery({ name: 'end_date', required: false, type: String })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Paginated list of overdue rents',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('overdue')
+  getOverdueRents(@Query() query: RentFilter, @Req() req: any) {
+    try {
+      query.owner_id = req?.user?.id;
+      return this.rentsService.getOverdueRents(query);
     } catch (error) {
       throw error;
     }

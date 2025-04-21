@@ -3,6 +3,7 @@ import { PropertyFilter } from 'src/properties/dto/create-property.dto';
 import { RentFilter } from 'src/rents/dto/create-rent.dto';
 import { UserFilter } from 'src/users/dto/create-user.dto';
 import { Between, ILike } from 'typeorm';
+import { ServiceRequestFilter } from 'src/service-requests/dto/create-service-request.dto';
 
 export const buildUserFilter = async (queryParams: UserFilter) => {
   const query = {};
@@ -35,7 +36,7 @@ export const buildUserFilter = async (queryParams: UserFilter) => {
 export const buildPropertyFilter = async (queryParams: PropertyFilter) => {
   const query = {};
   if (queryParams?.name) query['name'] = ILike(queryParams.name);
-  if (queryParams?.tenant_id) query['tenant_id'] = queryParams.tenant_id;
+  if (queryParams?.owner_id) query['owner_id'] = queryParams.owner_id;
   if (queryParams?.location)
     query['location'] = queryParams.location.toLowerCase();
   if (queryParams?.property_status)
@@ -61,6 +62,35 @@ export const buildRentFilter = async (queryParams: RentFilter) => {
   const query = {};
   if (queryParams?.property_id) query['property_id'] = queryParams.property_id;
   if (queryParams?.tenant_id) query['tenant_id'] = queryParams.tenant_id;
+  if (queryParams?.owner_id)
+    query['property'] = { owner_id: queryParams.owner_id };
+  if (queryParams?.status) query['status'] = queryParams.status.toLowerCase();
+
+  if (queryParams?.start_date && queryParams?.end_date) {
+    const regex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!regex.test(queryParams?.start_date)) {
+      throw new HttpException(
+        `use date format yy-mm-dd`,
+        HttpStatus.NOT_ACCEPTABLE,
+      );
+    }
+    query['created_at'] = Between(
+      new Date(queryParams.start_date),
+      new Date(queryParams.end_date),
+    );
+  }
+  return query;
+};
+
+export const buildServiceRequestFilter = async (
+  queryParams: ServiceRequestFilter,
+) => {
+  const query = {};
+  if (queryParams?.tenant_id) query['tenant_id'] = queryParams.tenant_id;
+  if (queryParams?.property_id) query['property_id'] = queryParams.property_id;
+  if (queryParams.owner_id) {
+    query['property'] = { owner_id: queryParams.owner_id };
+  }
   if (queryParams?.status) query['status'] = queryParams.status.toLowerCase();
 
   if (queryParams?.start_date && queryParams?.end_date) {

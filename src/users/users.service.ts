@@ -61,6 +61,7 @@ export class UsersService {
     const queryRunner = connectionSource.createQueryRunner();
 
     try {
+      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -70,7 +71,8 @@ export class UsersService {
           ? RolesEnum[data?.role.toUpperCase()]
           : RolesEnum.TENANT,
       };
-      const createdUser = await this.usersRepository.save(newUser);
+
+      const createdUser = await queryRunner.manager.save(Users, newUser);
 
       if (createdUser.role === RolesEnum.TENANT) {
         const emailContent = clientSignUpEmailTemplate(
@@ -92,6 +94,7 @@ export class UsersService {
       );
     } finally {
       await queryRunner.release();
+      await connectionSource.destroy();
     }
   }
 

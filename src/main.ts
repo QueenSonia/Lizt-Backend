@@ -18,7 +18,13 @@ async function bootstrap(): Promise<NestExpressApplication> {
   const app = await NestFactory.create<NestExpressApplication>(
     AppModule,
     new ExpressAdapter(),
-    { cors: true },
+    { cors: {
+      origin: (origin, callback) => {
+        // Allow any origin (use '*' for non-credentialed requests)
+        callback(null, true); // Allow all origins
+      },
+      credentials: true, // Allow cookies and credentials in the request
+    }, },
   );
   const configService = app.get(ConfigService);
 

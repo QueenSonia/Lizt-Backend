@@ -36,8 +36,6 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { ADMIN_ROLES } from 'src/base.entity';
-import { AuthGuard } from 'src/auth/auth.guard';
-import { CurrentUser, UserPayload } from 'src/auth/auth.decorator';
 @ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
@@ -181,13 +179,13 @@ export class PropertiesController {
   })
   @ApiQuery({ name: 'user_id', required: true, type: String })
   @Get('admin/dashboard')
-  @UseGuards(AuthGuard, RoleGuard)
+  @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
   async getAdminDashboardStats(
-    @CurrentUser() user: UserPayload,
+    @Query('user_id', new ParseUUIDPipe()) user_id: string,
   ) {
     try {
-      return await this.propertiesService.getAdminDashboardStats(user.sub);
+      return await this.propertiesService.getAdminDashboardStats(user_id);
     } catch (error) {
       throw error;
     }
@@ -197,7 +195,7 @@ export class PropertiesController {
   @ApiOkResponse({ description: 'Tenant moved in successfully' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
-  @UseGuards(AuthGuard, RoleGuard)
+  @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
   @Post('move-in/:property_id')
   moveTenantIn(
@@ -220,7 +218,7 @@ export class PropertiesController {
   @ApiOkResponse({ description: 'Tenant moved out successfully' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
-  @UseGuards(AuthGuard, RoleGuard)
+  @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
   @Post('move-out/:property_id')
   moveTenantOut(

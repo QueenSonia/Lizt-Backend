@@ -232,9 +232,9 @@ export class PropertiesService {
       });
 
       if (latestRent) {
-        await queryRunner.manager.update(Rent, latestRent.id, {
-          eviction_date: DateService.getEndOfTheDay(moveOutDate),
-        });
+        // await queryRunner.manager.update(Rent, latestRent.id, {
+        //   eviction_date: DateService.getEndOfTheDay(moveOutDate),
+        // });
       }
 
       await queryRunner.manager.delete(PropertyTenant, {

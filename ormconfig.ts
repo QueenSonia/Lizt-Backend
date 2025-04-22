@@ -12,7 +12,7 @@ const {
   PROD_DB_SSL,
 } = process.env;
 
-const config = {
+export const config = {
   type: 'postgres',
   host: PROD_DB_HOST!,
   port: Number(PROD_PORT),
@@ -24,7 +24,7 @@ const config = {
   logging: true,
   migrations: ['dist/src/migrations/*{.ts,.js}'],
   ssl: PROD_DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-};
+} as DataSourceOptions;
 
 export default registerAs('typeorm', () => config);
-export const connectionSource = new DataSource(config as DataSourceOptions);
+export const connectionSource = new DataSource(config);

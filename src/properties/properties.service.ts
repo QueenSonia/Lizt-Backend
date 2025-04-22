@@ -15,6 +15,7 @@ import { DateService } from 'src/utils/date.helper';
 import { connectionSource } from 'ormconfig';
 import { PropertyTenant } from './entities/property-tenants.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
+import { config } from 'src/config';
 
 @Injectable()
 export class PropertiesService {
@@ -24,13 +25,20 @@ export class PropertiesService {
   ) {}
 
   async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
+    data.comment = data?.comment || null;
+    data.move_in_date = data?.move_in_date || null;
     return this.propertyRepository.save(data);
   }
 
   async getAllProperties(queryParams: PropertyFilter) {
-    const page = queryParams?.page ? Number(queryParams?.page) : 1;
-    const size = queryParams?.size ? Number(queryParams.size) : 10;
-    const skip = queryParams?.page ? (Number(queryParams.page) - 1) * size : 0;
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size
+      ? Number(queryParams.size)
+      : config.DEFAULT_PER_PAGE;
+    const skip = (page - 1) * size;
+
     const query = await buildPropertyFilter(queryParams);
     const [properties, count] = await this.propertyRepository.findAndCount({
       where: query,
@@ -81,6 +89,7 @@ export class PropertiesService {
   }
 
   async updatePropertyById(id: string, data: UpdatePropertyDto) {
+    console.log('data', data);
     return this.propertyRepository.update(id, data);
   }
 
@@ -134,6 +143,7 @@ export class PropertiesService {
     const queryRunner = connectionSource.createQueryRunner();
 
     try {
+      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -179,6 +189,7 @@ export class PropertiesService {
       );
     } finally {
       await queryRunner.release();
+      await connectionSource.destroy();
     }
   }
 
@@ -197,6 +208,7 @@ export class PropertiesService {
     const queryRunner = connectionSource.createQueryRunner();
 
     try {
+      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -249,6 +261,7 @@ export class PropertiesService {
       );
     } finally {
       await queryRunner.release();
+      await connectionSource.destroy();
     }
   }
 }

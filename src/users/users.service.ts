@@ -26,6 +26,8 @@ import {
 import { buildUserFilter } from 'src/filters/query-filter';
 import { Response } from 'express';
 import moment from 'moment';
+import { config } from 'src/config';
+import { connectionSource } from 'ormconfig';
 
 @Injectable()
 export class UsersService {
@@ -56,34 +58,55 @@ export class UsersService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
+    const queryRunner = connectionSource.createQueryRunner();
 
-    const newUser: IUser = {
-      ...data,
-      role: data?.role ? RolesEnum[data?.role.toUpperCase()] : RolesEnum.TENANT,
-    };
-    const createdUser = await this.usersRepository.save(newUser);
+    try {
+      await connectionSource.initialize();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
 
-    if (createdUser.role === RolesEnum.TENANT) {
-      const emailContent = clientSignUpEmailTemplate(
-        this.configService.get<string>('LOGIN_URL')!,
+      const newUser: IUser = {
+        ...data,
+        role: data?.role
+          ? RolesEnum[data?.role.toUpperCase()]
+          : RolesEnum.TENANT,
+      };
+
+      const createdUser = await queryRunner.manager.save(Users, newUser);
+
+      if (createdUser.role === RolesEnum.TENANT) {
+        const emailContent = clientSignUpEmailTemplate(
+          this.configService.get<string>('LOGIN_URL')!,
+        );
+        await UtilService.sendEmail(
+          email,
+          EmailSubject.WELCOME_EMAIL,
+          emailContent,
+        );
+      }
+      await queryRunner.commitTransaction();
+      return createdUser;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw new HttpException(
+        error?.message || 'an error occurred while creating user',
+        HttpStatus.UNPROCESSABLE_ENTITY,
       );
-      await UtilService.sendEmail(
-        email,
-        EmailSubject.WELCOME_EMAIL,
-        emailContent,
-      );
+    } finally {
+      await queryRunner.release();
+      await connectionSource.destroy();
     }
-    return createdUser;
   }
 
   async getAllUsers(queryParams: UserFilter) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
-      : Number(this.configService.get<string>('DEFAULT_PAGE_NO'));
+      : config.DEFAULT_PAGE_NO;
     const size = queryParams?.size
       ? Number(queryParams.size)
-      : Number(this.configService.get<string>('DEFAULT_PER_PAGE'));
+      : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
+
     const query = await buildUserFilter(queryParams);
     const [users, count] = await this.usersRepository.findAndCount({
       where: query,

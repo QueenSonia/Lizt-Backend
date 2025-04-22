@@ -39,11 +39,19 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
-
-@ApiTags('Users')
+import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
+// @ApiTags('Users')
+// @ApiCookieAuth('access_token')
+// @UseGuards(JwtAuthGuard, RoleGuard)
+// @Roles(ADMIN_ROLES.ADMIN)
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
+
+  @Get('test')
+getTest() {
+  return { message: 'This should work without auth' };
+}
 
   @ApiOperation({ summary: 'Create User' })
   @ApiBody({ type: CreateUserDto })
@@ -51,8 +59,6 @@ export class UsersController {
   @ApiResponse({ status: 422, description: 'User with email already exist' })
   @ApiSecurity('access_token')
   @Post()
-  @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
   async createUser(@Body() body: CreateUserDto) {
     try {
       return this.usersService.createUser(body);
@@ -77,9 +83,8 @@ export class UsersController {
   })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
+  @SkipAuth()
   @Get()
-  @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
   getAllUsers(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllUsers(query);
@@ -164,8 +169,6 @@ export class UsersController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Delete(':id')
-  @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
   deleteUserById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.usersService.deleteUserById(id);

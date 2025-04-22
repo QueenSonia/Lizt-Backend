@@ -1,6 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsNotEmpty, IsString, IsNumber, IsEnum } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsString,
+  IsNumber,
+  IsEnum,
+  IsOptional,
+} from 'class-validator';
 
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
@@ -112,6 +118,7 @@ export class CreatePropertyDto {
     required: false,
   })
   @IsString()
+  @IsOptional()
   move_in_date?: Date | string | null;
 }
 

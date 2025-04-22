@@ -51,6 +51,8 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
   @UseInterceptors(FilesInterceptor('property_images', 20))
   async createProperty(
     @Body() body: CreatePropertyDto,
@@ -177,14 +179,12 @@ export class PropertiesController {
       },
     },
   })
-  @ApiQuery({ name: 'user_id', required: true, type: String })
   @Get('admin/dashboard')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-  async getAdminDashboardStats(
-    @Query('user_id', new ParseUUIDPipe()) user_id: string,
-  ) {
+  async getAdminDashboardStats(@Req() req: any) {
     try {
+      const user_id = req?.user?.id;
       return await this.propertiesService.getAdminDashboardStats(user_id);
     } catch (error) {
       throw error;

@@ -10,6 +10,7 @@ import { UsersModule } from './users/users.module';
 import { PropertiesModule } from './properties/properties.module';
 import { RentsModule } from './rents/rents.module';
 import { ServiceRequestsModule } from './service-requests/service-requests.module';
+import { PropertyHistoryModule } from './property-history/property-history.module';
 
 dotenv.config();
 
@@ -35,6 +36,7 @@ dotenv.config();
     PropertiesModule,
     RentsModule,
     ServiceRequestsModule,
+    PropertyHistoryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

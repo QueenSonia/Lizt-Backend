@@ -35,6 +35,7 @@ export class CreateServiceRequestDto {
     description: 'UUID of the tenant',
   })
   @IsString()
+  @IsNotEmpty()
   tenant_id: string;
 
   @ApiProperty({
@@ -42,6 +43,7 @@ export class CreateServiceRequestDto {
     description: 'UUID of the property',
   })
   @IsString()
+  @IsNotEmpty()
   property_id: string;
 }
 

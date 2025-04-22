@@ -5,6 +5,7 @@ import { Users } from 'src/users/entities/user.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { PropertyTenant } from './property-tenants.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -67,4 +68,7 @@ export class Property extends BaseEntity {
 
   @OneToMany(() => ServiceRequest, (sr) => sr.property)
   service_requests: ServiceRequest[];
+
+  @OneToMany(() => PropertyHistory, (ph) => ph.property)
+  property_histories: PropertyHistory[];
 }

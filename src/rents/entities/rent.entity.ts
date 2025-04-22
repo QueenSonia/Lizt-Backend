@@ -12,7 +12,7 @@ export class Rent extends BaseEntity {
   @Column({ nullable: false, type: 'uuid' })
   tenant_id: string;
 
-  @Column({ type: 'numeric', precision: 11, scale: 2, nullable: false })
+  @Column({ type: 'int', nullable: false })
   amount_paid: number;
 
   @Column({ nullable: false, type: 'timestamp' })
@@ -20,9 +20,6 @@ export class Rent extends BaseEntity {
 
   @Column({ nullable: true, type: 'varchar', array: true })
   rent_receipts: string[];
-
-  @Column({ nullable: true, type: 'timestamp' })
-  eviction_date: Date;
 
   @Column({
     nullable: false,

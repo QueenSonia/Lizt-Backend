@@ -13,6 +13,7 @@ import {
   UploadedFiles,
   HttpException,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import { RentsService } from './rents.service';
 import { CreateRentDto, RentFilter } from './dto/create-rent.dto';
@@ -32,6 +33,9 @@ import {
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
+import { RoleGuard } from 'src/auth/role.guard';
+import { Roles } from 'src/auth/role.decorator';
+import { ADMIN_ROLES } from 'src/base.entity';
 
 @ApiTags('Rents')
 @Controller('rents')
@@ -122,6 +126,8 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('due')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
   getDueRentsWithinSevenDays(@Query() query: RentFilter, @Req() req: any) {
     try {
       query.owner_id = req?.user?.id;
@@ -147,6 +153,8 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('overdue')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
   getOverdueRents(@Query() query: RentFilter, @Req() req: any) {
     try {
       query.owner_id = req?.user?.id;
@@ -164,6 +172,8 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('reminder/:id')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
   sendReminder(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.rentsService.sendRentReminder(id);

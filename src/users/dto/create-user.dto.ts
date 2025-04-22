@@ -3,11 +3,11 @@ import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsNotEmpty,
+  IsOptional,
   IsString,
   Matches,
   MinLength,
 } from 'class-validator';
-import { RolesEnum } from 'src/base.entity';
 
 export class CreateUserDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })
@@ -45,8 +45,10 @@ export class CreateUserDto {
     description: 'Role of the user',
     required: false,
   })
+  @IsString()
+  @IsOptional()
   @Transform((val) => val.value.toLowerCase())
-  role: RolesEnum;
+  role?: string;
 }
 
 export class LoginDto {

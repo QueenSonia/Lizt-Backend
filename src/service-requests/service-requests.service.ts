@@ -9,20 +9,37 @@ import { ServiceRequest } from './entities/service-request.entity';
 import { In, Repository } from 'typeorm';
 import { buildServiceRequestFilter } from 'src/filters/query-filter';
 import { UtilService } from 'src/utils/utility-service';
-import { ConfigService } from '@nestjs/config';
 import { config } from 'src/config';
+import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 
 @Injectable()
 export class ServiceRequestsService {
   constructor(
     @InjectRepository(ServiceRequest)
     private readonly serviceRequestRepository: Repository<ServiceRequest>,
-    private readonly configService: ConfigService,
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepository: Repository<PropertyTenant>,
   ) {}
 
   async createServiceRequest(
     data: CreateServiceRequestDto,
   ): Promise<CreateServiceRequestDto> {
+    const tenantExistInProperty = await this.propertyTenantRepository.findOne({
+      where: {
+        tenant_id: data.tenant_id,
+        property_id: data.property_id,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!tenantExistInProperty?.id) {
+      throw new HttpException(
+        'You are not currently renting this property',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+
     const lastRequest = await this.serviceRequestRepository.findOne({
       order: { created_at: 'DESC' },
     });

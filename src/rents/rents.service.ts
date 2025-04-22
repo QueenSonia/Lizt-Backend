@@ -5,7 +5,6 @@ import { CreateRentDto, RentFilter } from './dto/create-rent.dto';
 import { UpdateRentDto } from './dto/update-rent.dto';
 import { Rent } from './entities/rent.entity';
 import { DateService } from 'src/utils/date.helper';
-import { ConfigService } from '@nestjs/config';
 import { buildRentFilter } from 'src/filters/query-filter';
 import { rentReminderEmailTemplate } from 'src/utils/email-template';
 import { UtilService } from 'src/utils/utility-service';
@@ -16,7 +15,6 @@ export class RentsService {
   constructor(
     @InjectRepository(Rent)
     private readonly rentRepository: Repository<Rent>,
-    private readonly configService: ConfigService,
   ) {}
 
   async payRent(data: CreateRentDto): Promise<Rent> {

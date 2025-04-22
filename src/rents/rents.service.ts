@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { LessThanOrEqual, Repository } from 'typeorm';
+import { Between, LessThanOrEqual, Repository } from 'typeorm';
 import { CreateRentDto, RentFilter } from './dto/create-rent.dto';
 import { UpdateRentDto } from './dto/update-rent.dto';
 import { Rent } from './entities/rent.entity';
@@ -76,12 +76,15 @@ export class RentsService {
     const skip = (page - 1) * size;
 
     const query = await buildRentFilter(queryParams);
-    const dueDate = DateService.addDays(new Date(), 7);
+    const startDate = DateService.getStartOfTheDay(new Date());
+    const endDate = DateService.getEndOfTheDay(
+      DateService.addDays(new Date(), 7),
+    );
 
     const [rents, count] = await this.rentRepository.findAndCount({
       where: {
         ...query,
-        expiry_date: LessThanOrEqual(dueDate),
+        expiry_date: Between(startDate, endDate),
       },
       relations: ['tenant', 'property'],
       skip,

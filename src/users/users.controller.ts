@@ -174,7 +174,7 @@ export class UsersController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Tenant and Property The Occupy' })
+  @ApiOperation({ summary: 'Get Tenant and Property They Occupy' })
   @ApiOkResponse({ type: CreateUserDto })
   @ApiNotFoundResponse({ description: 'Tenant not found' })
   @Get('tenant-property/:tenant_id')

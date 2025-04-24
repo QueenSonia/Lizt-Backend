@@ -33,8 +33,8 @@ export class CreatePropertyDto {
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',
     description: 'UUID of the owner of the property',
   })
-  @IsString()
-  owner_id: string;
+  // @IsString()
+  // owner_id: string;
 
   @ApiProperty({
     example: 'Duplex',

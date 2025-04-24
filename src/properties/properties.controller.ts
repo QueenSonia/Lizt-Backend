@@ -17,7 +17,10 @@ import {
 } from '@nestjs/common';
 import { PropertiesService } from './properties.service';
 import { CreatePropertyDto, PropertyFilter } from './dto/create-property.dto';
-import { UpdatePropertyDto } from './dto/update-property.dto';
+import {
+  UpdatePropertyDto,
+  UpdatePropertyResponseDto,
+} from './dto/update-property.dto';
 import {
   ApiOperation,
   ApiBody,
@@ -36,6 +39,7 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { ADMIN_ROLES } from 'src/base.entity';
+import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 @ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
@@ -139,16 +143,27 @@ export class PropertiesController {
   }
 
   @ApiOperation({ summary: 'Update Property' })
+  @ApiConsumes('multipart/form-data')
   @ApiBody({ type: UpdatePropertyDto })
   @ApiOkResponse({ description: 'Property successfully updated' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
-  updatePropertyById(
+  @UseInterceptors(FilesInterceptor('property_images', 20))
+  async updatePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdatePropertyDto,
+    @Body() body: UpdatePropertyResponseDto,
+    @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
+      if (files?.length) {
+        const uploadedUrls = await Promise.all(
+          files.map((file) =>
+            this.fileUploadService.uploadFile(file, 'properties'),
+          ),
+        );
+        body.property_images = uploadedUrls.map((upload) => upload.secure_url);
+      }
       return this.propertiesService.updatePropertyById(id, body);
     } catch (error) {
       throw error;
@@ -197,18 +212,10 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-  @Post('move-in/:property_id')
-  moveTenantIn(
-    @Param('property_id', new ParseUUIDPipe()) property_id: string,
-    @Body('tenant_id', new ParseUUIDPipe()) tenant_id: string,
-    @Body('move_in_date') moveInDate: string,
-  ) {
+  @Post('move-in')
+  moveTenantIn(@Body() moveInData: MoveTenantInDto) {
     try {
-      return this.propertiesService.moveTenantIn(
-        property_id,
-        tenant_id,
-        moveInDate,
-      );
+      return this.propertiesService.moveTenantIn(moveInData);
     } catch (error) {
       throw error;
     }
@@ -220,18 +227,10 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-  @Post('move-out/:property_id')
-  moveTenantOut(
-    @Param('property_id', new ParseUUIDPipe()) property_id: string,
-    @Body('tenant_id', new ParseUUIDPipe()) tenant_id: string,
-    @Body('move_out_date') moveOutDate: string,
-  ) {
+  @Post('move-out')
+  moveTenantOut(@Body() moveOutData: MoveTenantOutDto) {
     try {
-      return this.propertiesService.moveTenantOut(
-        property_id,
-        tenant_id,
-        moveOutDate,
-      );
+      return this.propertiesService.moveTenantOut(moveOutData);
     } catch (error) {
       throw error;
     }

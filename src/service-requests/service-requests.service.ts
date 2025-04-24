@@ -107,7 +107,8 @@ export class ServiceRequestsService {
     return this.serviceRequestRepository.delete(id);
   }
 
-  async getPendingAndUrgentRequests(queryParams: ServiceRequestFilter) {
+  async getPendingAndUrgentRequests(queryParams: ServiceRequestFilter, owner_id:string) {
+    console.log(queryParams, owner_id)
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -121,6 +122,7 @@ export class ServiceRequestsService {
       await this.serviceRequestRepository.findAndCount({
         where: {
           ...query,
+          property: { owner_id },
           status: In(['pending', 'urgent']),
         },
         relations: ['tenant', 'property'],

@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, IsEnum } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsNotEmpty, IsString, IsEnum, IsOptional, IsUUID, IsDateString, IsNumberString, IsNumber } from 'class-validator';
 
 export enum ServiceRequestStatusEnum {
   PENDING = 'pending',
@@ -47,13 +48,36 @@ export class CreateServiceRequestDto {
   property_id: string;
 }
 
-export interface ServiceRequestFilter {
+export class ServiceRequestFilter {
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsUUID()
   tenant_id?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsUUID()
   property_id?: string;
-  owner_id?: string;
+
+  @IsOptional()
+  @IsString()
   status?: string;
+
+  @IsOptional()
+  @IsDateString()
   start_date?: string;
+
+  @IsOptional()
+  @IsDateString()
   end_date?: string;
-  size?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
   page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  size?: number;
 }

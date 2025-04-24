@@ -40,6 +40,10 @@ async function bootstrap(): Promise<NestExpressApplication> {
     new ValidationPipe({
       whitelist: true,
       transform: true,
+      forbidNonWhitelisted: true,
+      transformOptions: {
+        enableImplicitConversion: true,
+      },
       errorHttpStatusCode: HttpStatus.UNPROCESSABLE_ENTITY,
       exceptionFactory: (errors) => new UnprocessableEntityException(errors),
     }),

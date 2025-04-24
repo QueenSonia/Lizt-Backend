@@ -73,6 +73,27 @@ export class ServiceRequestsController {
     }
   }
 
+  @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Paginated list of service requests',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('pending-urgent')
+  getPendingAndUrgentRequests(
+    @Query() query: ServiceRequestFilter,
+    @Req() req: any,
+  ) {
+    try {
+      return this.serviceRequestsService.getPendingAndUrgentRequests(query, req?.user.id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get One Service Request' })
   @ApiOkResponse({
     type: CreateServiceRequestDto,
@@ -120,25 +141,5 @@ export class ServiceRequestsController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'size', required: false, type: Number })
-  @ApiOkResponse({
-    type: PaginationResponseDto,
-    description: 'Paginated list of service requests',
-  })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('pending-urgent')
-  getPendingAndUrgentRequests(
-    @Query() query: ServiceRequestFilter,
-    @Req() req: any,
-  ) {
-    try {
-      query.owner_id = req?.user?.id;
-      return this.serviceRequestsService.getPendingAndUrgentRequests(query);
-    } catch (error) {
-      throw error;
-    }
-  }
+
 }

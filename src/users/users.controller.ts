@@ -114,7 +114,7 @@ export class UsersController {
   @Put(':id')
   updateUserById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdateUserResponseDto,
+    @Body() body: UpdateUserDto,
   ) {
     try {
       return this.usersService.updateUserById(id, body);

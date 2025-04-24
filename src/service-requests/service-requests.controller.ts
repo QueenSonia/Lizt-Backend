@@ -11,6 +11,7 @@ import {
   Req,
   UseInterceptors,
   UploadedFiles,
+  UseGuards,
 } from '@nestjs/common';
 import { ServiceRequestsService } from './service-requests.service';
 import {
@@ -36,6 +37,9 @@ import {
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import { RoleGuard } from 'src/auth/role.guard';
+import { ADMIN_ROLES } from 'src/base.entity';
+import { Roles } from 'src/auth/role.decorator';
 
 @ApiTags('Service-Requests')
 @Controller('service-requests')
@@ -163,11 +167,14 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('pending-urgent')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
   getPendingAndUrgentRequests(
     @Query() query: ServiceRequestFilter,
     @Req() req: any,
   ) {
     try {
+      console.log(req.user);
       query.owner_id = req?.user?.id;
       return this.serviceRequestsService.getPendingAndUrgentRequests(query);
     } catch (error) {

@@ -15,6 +15,18 @@ export class ServiceRequest extends BaseEntity {
   @Column({ nullable: false, type: 'varchar' })
   property_name: string;
 
+  @Column({ nullable: false, type: 'varchar' })
+  issue_category: string;
+
+  @Column({ nullable: false, type: 'timestamp' })
+  effective_date: Date;
+
+  @Column({ nullable: false, type: 'text' })
+  description: string;
+
+  @Column({ nullable: true, type: 'varchar', array: true })
+  issue_images?: string[] | null;
+
   @Column({
     nullable: false,
     type: 'enum',

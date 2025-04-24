@@ -76,6 +76,30 @@ export class ServiceRequestsController {
     }
   }
 
+  @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Paginated list of service requests',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  @Get('pending-urgent')
+  getPendingAndUrgentRequests(
+    @Query() query: ServiceRequestFilter,
+    @Req() req: any,
+  ) {
+    try {
+      query.owner_id = req?.user?.id;
+      return this.serviceRequestsService.getPendingAndUrgentRequests(query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get All Service Requests' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
@@ -152,31 +176,6 @@ export class ServiceRequestsController {
   deleteServiceRequestById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.serviceRequestsService.deleteServiceRequestById(id);
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'size', required: false, type: Number })
-  @ApiOkResponse({
-    type: PaginationResponseDto,
-    description: 'Paginated list of service requests',
-  })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('pending-urgent')
-  @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
-  getPendingAndUrgentRequests(
-    @Query() query: ServiceRequestFilter,
-    @Req() req: any,
-  ) {
-    try {
-      console.log(req.user);
-      query.owner_id = req?.user?.id;
-      return this.serviceRequestsService.getPendingAndUrgentRequests(query);
     } catch (error) {
       throw error;
     }

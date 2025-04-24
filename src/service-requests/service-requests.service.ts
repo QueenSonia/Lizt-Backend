@@ -41,6 +41,10 @@ export class ServiceRequestsService {
     }
 
     const lastRequest = await this.serviceRequestRepository.findOne({
+      where: {
+        tenant_id: data.tenant_id,
+        property_id: data.property_id,
+      },
       order: { created_at: 'DESC' },
     });
 

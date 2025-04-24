@@ -24,6 +24,39 @@ export class CreateServiceRequestDto {
   property_name: string;
 
   @ApiProperty({
+    example: 'Broken Pipe',
+    description: 'Category of the issue',
+  })
+  @IsNotEmpty()
+  @IsString()
+  issue_category: string;
+
+  @ApiProperty({
+    example: '2024-03-21',
+    description: 'Date when the issue was noticed',
+  })
+  @IsNotEmpty()
+  @IsString()
+  effective_date: Date | string;
+
+  @ApiProperty({
+    example:
+      'The pipe in the kitchen is leaking and needs immediate attention.',
+    description: 'Description of the issue',
+  })
+  @IsNotEmpty()
+  @IsString()
+  description: string;
+
+  @ApiProperty({
+    type: 'array',
+    items: { type: 'string', format: 'binary' },
+    required: false,
+    description: 'Images of the issue (optional)',
+  })
+  issue_images?: string[] | null;
+
+  @ApiProperty({
     example: 'pending',
     description: 'Status of the service request',
   })

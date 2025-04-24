@@ -10,18 +10,21 @@ export class UpdatePropertyHistoryResponseDto {
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',
     description: 'UUID of the property',
+    required: false,
   })
   property_id: string;
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',
     description: 'UUID of the tenant',
+    required: false,
   })
   tenant_id: string;
 
   @ApiProperty({
     example: '2024-01-01',
     description: 'Date tenant moved in',
+    required: false,
   })
   move_in_date: Date | string;
 
@@ -58,6 +61,7 @@ export class UpdatePropertyHistoryResponseDto {
     example: 50000,
     description: 'Monthly rent amount',
     type: 'integer',
+    required: false,
   })
   monthly_rent: number;
 }

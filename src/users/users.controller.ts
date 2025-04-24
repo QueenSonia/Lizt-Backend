@@ -107,14 +107,14 @@ export class UsersController {
 
 
   @ApiOperation({ summary: 'Update User' })
-  @ApiBody({ type: UpdateUserResponseDto })
+  @ApiBody({ type: UpdateUserDto })
   @ApiOkResponse({ description: 'User successfully updated' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
   updateUserById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdateUserDto,
+    @Body() body: UpdateUserResponseDto,
   ) {
     try {
       return this.usersService.updateUserById(id, body);

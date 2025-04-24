@@ -8,7 +8,7 @@ import {
 import { UpdatePropertyDto } from './dto/update-property.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Property } from './entities/property.entity';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 import { DateService } from 'src/utils/date.helper';
@@ -16,6 +16,8 @@ import { connectionSource } from 'ormconfig';
 import { PropertyTenant } from './entities/property-tenants.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { config } from 'src/config';
+import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
+import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 
 @Injectable()
 export class PropertiesService {
@@ -128,12 +130,10 @@ export class PropertiesService {
     };
   }
 
-  async moveTenantIn(
-    property_id: string,
-    tenant_id: string,
-    moveInDate: string,
-  ) {
-    if (!DateService.isValidFormat_YYYY_MM_DD(moveInDate)) {
+  async moveTenantIn(moveInData: MoveTenantInDto) {
+    const { property_id, tenant_id, move_in_date } = moveInData;
+
+    if (!DateService.isValidFormat_YYYY_MM_DD(move_in_date)) {
       throw new HttpException(
         'Invalid date format. Use YYYY-MM-DD',
         HttpStatus.BAD_REQUEST,
@@ -175,8 +175,19 @@ export class PropertiesService {
       });
 
       await queryRunner.manager.update(Property, property_id, {
-        move_in_date: DateService.getStartOfTheDay(moveInDate),
+        move_in_date: DateService.getStartOfTheDay(move_in_date),
         property_status: PropertyStatusEnum.NOT_VACANT,
+      });
+
+      await queryRunner.manager.save(PropertyHistory, {
+        property_id,
+        tenant_id,
+        move_in_date: DateService.getStartOfTheDay(move_in_date),
+        monthly_rent: property?.rental_price,
+        owner_comment: null,
+        tenant_comment: null,
+        move_out_date: null,
+        move_out_reason: null,
       });
 
       await queryRunner.commitTransaction();
@@ -193,12 +204,9 @@ export class PropertiesService {
     }
   }
 
-  async moveTenantOut(
-    property_id: string,
-    tenant_id: string,
-    moveOutDate: string,
-  ) {
-    if (!DateService.isValidFormat_YYYY_MM_DD(moveOutDate)) {
+  async moveTenantOut(moveOutData: MoveTenantOutDto) {
+    const { property_id, tenant_id, move_out_date } = moveOutData;
+    if (!DateService.isValidFormat_YYYY_MM_DD(move_out_date)) {
       throw new HttpException(
         'Invalid date format. Use YYYY-MM-DD',
         HttpStatus.BAD_REQUEST,
@@ -219,6 +227,7 @@ export class PropertiesService {
           status: TenantStatusEnum.ACTIVE,
         },
       });
+
       if (!propertyTenant?.id) {
         throw new HttpException(
           'Tenant is not currently assigned to this property',
@@ -226,33 +235,45 @@ export class PropertiesService {
         );
       }
 
-      const latestRent = await queryRunner.manager.findOne(Rent, {
-        where: { property_id, tenant_id },
-        order: { created_at: 'DESC' },
-      });
-
-      if (latestRent) {
-        // await queryRunner.manager.update(Rent, latestRent.id, {
-        //   eviction_date: DateService.getEndOfTheDay(moveOutDate),
-        // });
-      }
-
       await queryRunner.manager.delete(PropertyTenant, {
         property_id,
         tenant_id,
       });
 
-      const moveTenantOut = await queryRunner.manager.update(
-        Property,
-        property_id,
+      await queryRunner.manager.update(Property, property_id, {
+        move_in_date: null,
+        property_status: PropertyStatusEnum.VACANT,
+      });
+
+      const propertyHistory = await queryRunner.manager.findOne(
+        PropertyHistory,
         {
-          move_in_date: null,
-          property_status: PropertyStatusEnum.VACANT,
+          where: {
+            property_id,
+            tenant_id,
+            move_out_date: IsNull(),
+          },
+          order: { created_at: 'DESC' },
         },
       );
 
+      if (!propertyHistory) {
+        throw new HttpException(
+          'Property history record not found',
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      const updatedHistory = await queryRunner.manager.save(PropertyHistory, {
+        ...propertyHistory,
+        move_out_date: DateService.getStartOfTheDay(move_out_date),
+        move_out_reason: moveOutData?.move_out_reason || null,
+        owner_comment: moveOutData?.owner_comment || null,
+        tenant_comment: moveOutData?.tenant_comment || null,
+      });
+
       await queryRunner.commitTransaction();
-      return moveTenantOut;
+      return updatedHistory;
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw new HttpException(

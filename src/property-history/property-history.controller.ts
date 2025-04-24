@@ -25,7 +25,10 @@ import {
   CreatePropertyHistoryDto,
   PropertyHistoryFilter,
 } from './dto/create-property-history.dto';
-import { UpdatePropertyHistoryDto } from './dto/update-property-history.dto';
+import {
+  UpdatePropertyHistoryDto,
+  UpdatePropertyHistoryResponseDto,
+} from './dto/update-property-history.dto';
 import { PaginationResponseDto } from './dto/paginate.dto';
 
 @ApiTags('Property-History')
@@ -96,7 +99,7 @@ export class PropertyHistoryController {
   @Put(':id')
   updatePropertyHistoryById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdatePropertyHistoryDto,
+    @Body() body: UpdatePropertyHistoryResponseDto,
   ) {
     try {
       return this.propertyHistoryService.updatePropertyHistoryById(id, body);

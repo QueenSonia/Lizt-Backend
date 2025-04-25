@@ -17,6 +17,7 @@ export const buildUserFilter = async (queryParams: UserFilter) => {
   if (queryParams?.role) query['role'] = queryParams.role.toLowerCase();
   if (queryParams?.phone_number)
     query['phone_number'] = queryParams.phone_number;
+  if (queryParams?.creator_id) query['creator_id'] = queryParams.creator_id;
 
   if (queryParams?.start_date && queryParams?.end_date) {
     const regex = /^\d{4}-\d{2}-\d{2}$/;

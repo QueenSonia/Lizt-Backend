@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import {
   Controller,
   Post,
@@ -11,14 +10,11 @@ import {
   Put,
   Res,
   Delete,
+  Req,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
-import {
-  CreateUserDto,
-  LoginDto,
-  UserFilter,
-} from './dto/create-user.dto';
-import { UpdateUserDto, UpdateUserResponseDto } from './dto/update-user.dto';
+import { CreateUserDto, LoginDto, UserFilter } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { ADMIN_ROLES } from 'src/base.entity';
@@ -53,24 +49,52 @@ export class UsersController {
   @Post()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-  async createUser(@Body() body: CreateUserDto) {
+  async createUser(@Body() body: CreateUserDto, @Req() req: any) {
     try {
-      return this.usersService.createUser(body);
+      const user_id = req?.user?.id;
+      return this.usersService.createUser(body, user_id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Tenants Created By An Admin' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiQuery({ name: 'first_name', required: false, type: String })
+  @ApiQuery({ name: 'last_name', required: false, type: String })
+  @ApiQuery({ name: 'email', required: false, type: String })
+  @ApiQuery({ name: 'phone_number', required: false, type: String })
+  @ApiQuery({ name: 'start_date', required: false, type: String })
+  @ApiQuery({ name: 'end_date', required: false, type: String })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Paginated list of users',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('tenant-list')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
+    try {
+      query.creator_id = req?.user?.id;
+      return this.usersService.getTenantsOfAnAdmin(query);
     } catch (error) {
       throw error;
     }
   }
 
   @ApiOperation({ summary: 'Get All Users' })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number for pagination' })
-  @ApiQuery({ name: 'size', required: false, type: Number, description: 'Number of items per page' })
-  @ApiQuery({ name: 'first_name', required: false, type: String, description: 'First name of users' })
-  @ApiQuery({ name: 'last_name', required: false, type: String, description: 'Last name of users' })
-  @ApiQuery({ name: 'role', required: false, type: String, description: 'Role of a user' })
-  @ApiQuery({ name: 'email', required: false, type: String, description: 'Email of a user' })
-  @ApiQuery({ name: 'phone_number', required: false, type: String, description: 'Phone number of a user' })
-  @ApiQuery({ name: 'start_date', required: false, type: String, description: 'Filter users created starting from this date' })
-  @ApiQuery({ name: 'end_date', required: false, type: String, description: 'Filter users created ending at this date' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiQuery({ name: 'first_name', required: false, type: String })
+  @ApiQuery({ name: 'last_name', required: false, type: String })
+  @ApiQuery({ name: 'role', required: false, type: String })
+  @ApiQuery({ name: 'email', required: false, type: String })
+  @ApiQuery({ name: 'phone_number', required: false, type: String })
+  @ApiQuery({ name: 'start_date', required: false, type: String })
+  @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiOkResponse({
     type: PaginationResponseDto,
     description: 'Paginated list of users',
@@ -105,7 +129,6 @@ export class UsersController {
     }
   }
 
-
   @ApiOperation({ summary: 'Update User' })
   @ApiBody({ type: UpdateUserDto })
   @ApiOkResponse({ description: 'User successfully updated' })
@@ -122,7 +145,6 @@ export class UsersController {
       throw error;
     }
   }
-
 
   @ApiOperation({ summary: 'User Login' })
   @ApiBody({ type: LoginDto })
@@ -178,7 +200,9 @@ export class UsersController {
   @ApiOkResponse({ type: CreateUserDto })
   @ApiNotFoundResponse({ description: 'Tenant not found' })
   @Get('tenant-property/:tenant_id')
-  getTenantAndPropertyInfo(@Param('tenant_id', new ParseUUIDPipe()) tenant_id: string) {
+  getTenantAndPropertyInfo(
+    @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,
+  ) {
     try {
       return this.usersService.getTenantAndPropertyInfo(tenant_id);
     } catch (error) {

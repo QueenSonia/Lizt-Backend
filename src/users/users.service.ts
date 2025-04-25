@@ -188,7 +188,7 @@ export class UsersService {
       httpOnly: true,
       secure: this.configService.get<string>('NODE_ENV') === 'production', // Set to true in production for HTTPS
       expires: moment().add(1, 'hour').toDate(),
-      sameSite: 'strict',
+      sameSite: 'none',
     });
 
     return res.status(HttpStatus.OK).json({

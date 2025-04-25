@@ -149,7 +149,6 @@ export class UsersController {
   @ApiOperation({ summary: 'User Login' })
   @ApiBody({ type: LoginDto })
   @ApiResponse({ status: 200, type: CreateUserDto })
-  
   @ApiNotFoundResponse({ description: 'User not found' })
   @ApiUnauthorizedResponse({ description: 'Invalid password' })
   @ApiCookieAuth('access_token')

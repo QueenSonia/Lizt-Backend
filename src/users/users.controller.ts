@@ -186,4 +186,12 @@ export class UsersController {
       throw error;
     }
   }
+
+  @SkipAuth()
+  @Post('reset-password')
+async resetPassword(@Body() body: { token: string; newPassword: string }) {
+  const { token, newPassword } = body;
+  await this.usersService.resetPassword(token, newPassword);
+  return { message: 'Password reset successful' };
+}
 }

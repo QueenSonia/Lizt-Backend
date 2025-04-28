@@ -148,6 +148,23 @@ export class PropertiesController {
     }
   }
 
+  @ApiOperation({ summary: 'Get Service Request Of A Property' })
+  @ApiOkResponse({
+    type: CreatePropertyDto,
+    description: 'Property and Service request successfully fetched',
+  })
+  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('service-request/:id')
+  getServiceRequestOfAProperty(@Param('id', new ParseUUIDPipe()) id: string) {
+    try {
+      return this.propertiesService.getServiceRequestOfAProperty(id)
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Update Property' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ type: UpdatePropertyDto })

@@ -15,10 +15,16 @@ export class Rent extends BaseEntity {
   @Column({ type: 'int', nullable: false })
   amount_paid: number;
 
-  @Column({ nullable: false, type: 'timestamp' })
+  @Column({ nullable: true, type: 'timestamp' })
   expiry_date: Date;
 
-  @Column({ nullable: false, type: 'varchar', array: true })
+  @Column({ nullable: false, type: 'timestamp' })
+  lease_start_date: Date;
+
+  @Column({ nullable: false, type: 'timestamp' })
+  lease_end_date: Date;
+
+  @Column({ nullable: true, type: 'varchar', array: true })
   rent_receipts: string[];
 
   @Column({

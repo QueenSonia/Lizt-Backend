@@ -79,7 +79,22 @@ export class PropertiesService {
   async getRentsOfAProperty(id: string): Promise<CreatePropertyDto> {
     const propertyAndRent = await this.propertyRepository.findOne({
       where: { id },
-      relations: ['rents'],
+      relations: ['rents', 'rents.tenant'],
+    });
+    if (!propertyAndRent?.id) {
+      throw new HttpException(
+        `Property with id: ${id} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return propertyAndRent;
+  }
+
+
+  async getServiceRequestOfAProperty(id: string): Promise<CreatePropertyDto> {
+    const propertyAndRent = await this.propertyRepository.findOne({
+      where: { id },
+      relations: ['service_requests', 'service_requests.tenant'],
     });
     if (!propertyAndRent?.id) {
       throw new HttpException(

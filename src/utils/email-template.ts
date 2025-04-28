@@ -10,7 +10,7 @@ export const clientSignUpEmailTemplate = (link: string) => `
     <p style="font-size: 18px; color: #8b4513; margin: 10px 0;">
       We're excited to have you on board! To get started, please complete your profile.
     </p>
-    <a href="${link}" style="display: inline-block; padding: 12px 20px; margin: 20px 0; font-size: 18px; color: #fff; background-color: #ff4500; text-decoration: none; border-radius: 5px;">
+    <a href="${link}" style="display: inline-block; padding: 12px 20px; margin: 20px 0; font-size: 18px; color: #fff; background-color: #ff4500; text-decoration: none; border-radius: 5px;" target="_blank">
       Complete Your Profile
     </a>
     <p style="font-size: 18px; color: #2e8b57; margin: 10px 0;">

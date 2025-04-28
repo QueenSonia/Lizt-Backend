@@ -48,9 +48,7 @@ export class UsersService {
 
   ) {}
 
-
-  
-  async createUser(data: CreateUserDto): Promise<IUser> {
+  async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
     const { email, phone_number } = data;
   
     const emailExist = await this.usersRepository.exists({ where: { email } });
@@ -78,11 +76,17 @@ export class UsersService {
     await queryRunner.startTransaction();
   
     try {
+      await connectionSource.initialize();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+      const userRole = data?.role
+        ? RolesEnum[data?.role.toUpperCase()]
+        : RolesEnum.TENANT;
+
       const newUser: IUser = {
         ...data,
-        role: data?.role
-          ? RolesEnum[data?.role.toUpperCase()]
-          : RolesEnum.TENANT,
+        role: userRole,
+        creator_id: userRole === RolesEnum.TENANT ? user_id : null,
       };
   
       const createdUser = await queryRunner.manager.save(Users, newUser);
@@ -323,5 +327,35 @@ export class UsersService {
     await this.usersRepository.save(user);
 
     await this.passwordResetRepository.delete({ id: resetEntry.id });
+  }
+
+  async getTenantsOfAnAdmin(queryParams: UserFilter) {
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size
+      ? Number(queryParams.size)
+      : config.DEFAULT_PER_PAGE;
+    const skip = (page - 1) * size;
+
+    const query = await buildUserFilter(queryParams);
+    const [users, count] = await this.usersRepository.findAndCount({
+      where: query,
+      skip,
+      take: size,
+      order: { created_at: 'DESC' },
+    });
+
+    const totalPages = Math.ceil(count / size);
+    return {
+      users,
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
   }
 }

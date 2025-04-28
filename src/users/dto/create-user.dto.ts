@@ -110,16 +110,18 @@ export interface IUser {
   last_name: string;
   email: string;
   phone_number: string;
-  password?: string;
   role: string;
+  password?: string;
+  creator_id?: string | null;
 }
 
 export interface UserFilter {
-  first_name: string;
-  last_name: string;
-  email: string;
-  phone_number: string;
-  role: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  creator_id?: string;
+  phone_number?: string;
+  role?: string;
   start_date?: string;
   end_date?: string;
   size?: number;

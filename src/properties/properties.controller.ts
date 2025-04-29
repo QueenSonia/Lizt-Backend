@@ -57,25 +57,25 @@ export class PropertiesController {
   @Post()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-  @UseInterceptors(FilesInterceptor('property_images', 20))
+  // @UseInterceptors(FilesInterceptor('property_images', 20))
   async createProperty(
     @Body() body: CreatePropertyDto,
     @UploadedFiles() files: Array<Express.Multer.File>,
     @Req() req: any
   ) {
     try {
-      if (!files || files.length === 0) {
-        throw new HttpException(
-          'Property images are required',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
+      // if (!files || files.length === 0) {
+      //   throw new HttpException(
+      //     'Property images are required',
+      //     HttpStatus.BAD_REQUEST,
+      //   );
+      // }
 
-      const uploadedUrls = await Promise.all(
-        files.map((file) => this.fileUploadService.uploadFile(file)),
-      );
+      // const uploadedUrls = await Promise.all(
+      //   files.map((file) => this.fileUploadService.uploadFile(file)),
+      // );
       let owner_id= req?.user?.id;
-      body.property_images = uploadedUrls.map((upload) => upload.secure_url);
+      // body.property_images = uploadedUrls.map((upload) => upload.secure_url);
 
       let payload = {
         owner_id,

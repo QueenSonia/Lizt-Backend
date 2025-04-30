@@ -11,8 +11,6 @@ import {
   Req,
   UseInterceptors,
   UploadedFiles,
-  HttpException,
-  HttpStatus,
   UseGuards,
 } from '@nestjs/common';
 import { RentsService } from './rents.service';
@@ -36,6 +34,7 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { ADMIN_ROLES } from 'src/base.entity';
+import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
 
 @ApiTags('Rents')
 @Controller('rents')
@@ -52,23 +51,23 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  @UseInterceptors(FilesInterceptor('rent_receipts', 20))
+  // @UseInterceptors(FilesInterceptor('rent_receipts', 20))
   async payRent(
     @Body() body: CreateRentDto,
-    @UploadedFiles() files: Array<Express.Multer.File>,
+    // @UploadedFiles() files: Array<Express.Multer.File>,
   ) {
     try {
-      if (!files || files.length === 0) {
-        throw new HttpException(
-          'Rent receipts are required',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      const uploadedUrls = await Promise.all(
-        files.map((file) => this.fileUploadService.uploadFile(file, 'rents')),
-      );
+      // if (!files || files.length === 0) {
+      //   throw new HttpException(
+      //     'Rent receipts are required',
+      //     HttpStatus.BAD_REQUEST,
+      //   );
+      // }
+      // const uploadedUrls = await Promise.all(
+      //   files.map((file) => this.fileUploadService.uploadFile(file, 'rents')),
+      // );
 
-      body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
+      // body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
 
       return this.rentsService.payRent(body);
     } catch (error) {
@@ -233,6 +232,23 @@ export class RentsController {
   deletePropertyById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.rentsService.deleteRentById(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Create or update rent increase for a property' })
+  @ApiOkResponse()
+  @ApiNotFoundResponse({ description: 'You do not own this Property' })
+  @Post('increase')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  async saveOrUpdateRentIncrease(
+    @Body() body: CreateRentIncreaseDto,
+    @Req() req: any,
+  ) {
+    try {
+      return this.rentsService.saveOrUpdateRentIncrease(body, req?.user?.id);
     } catch (error) {
       throw error;
     }

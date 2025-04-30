@@ -1,12 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsNotEmpty,
-  IsString,
-  IsNumber,
-  IsEnum,
-  IsOptional,
-} from 'class-validator';
+import { IsNotEmpty, IsString, IsNumber, IsEnum } from 'class-validator';
 
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
@@ -28,13 +22,6 @@ export class CreatePropertyDto {
   @IsNotEmpty()
   @IsEnum(PropertyStatusEnum)
   property_status: PropertyStatusEnum;
-
-  @ApiProperty({
-    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
-    description: 'UUID of the owner of the property',
-  })
-  // @IsString()
-  // owner_id: string;
 
   @ApiProperty({
     example: 'Duplex',
@@ -75,16 +62,6 @@ export class CreatePropertyDto {
   payment_frequency: string;
 
   @ApiProperty({
-    example: 1,
-    description: 'How long a tenent is staying',
-    type: 'integer',
-  })
-  @IsNotEmpty()
-  @IsNumber()
-  @Type(() => Number)
-  lease_duration: number;
-
-  @ApiProperty({
     example: 20000,
     description: 'Security payment',
     type: 'integer',
@@ -111,15 +88,6 @@ export class CreatePropertyDto {
   })
   @IsString()
   comment?: string | null;
-
-  @ApiProperty({
-    example: '2024-03-21',
-    description: 'Date tenant moved in',
-    required: false,
-  })
-  @IsString()
-  @IsOptional()
-  move_in_date?: Date | string | null;
 }
 
 export enum TenantStatusEnum {

@@ -69,13 +69,6 @@ export class UpdatePropertyResponseDto {
   payment_frequency: string;
 
   @ApiProperty({
-    example: 1,
-    description: 'How long a tenent is staying',
-    required: false,
-  })
-  lease_duration: number;
-
-  @ApiProperty({
     example: 20000,
     description: 'Security payment',
     required: false,
@@ -95,11 +88,4 @@ export class UpdatePropertyResponseDto {
     required: false,
   })
   comment?: string | null;
-
-  @ApiProperty({
-    example: '2024-03-21',
-    description: 'Comment about the property',
-    required: false,
-  })
-  move_in_date?: Date | string | null;
 }

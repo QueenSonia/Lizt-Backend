@@ -38,4 +38,25 @@ export class UpdateUserResponseDto {
     description: 'Role of the user',
   })
   role: string;
+
+  @ApiProperty({
+    example: '2023-10-01',
+    required: false,
+    description: 'lease start date',
+  })
+  lease_start_date: Date;
+
+  @ApiProperty({
+    example: '2024-10-01',
+    required: false,
+    description: 'lease end date',
+  })
+  lease_end_date: Date;
+
+  @ApiProperty({
+    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
+    description: 'UUID of the property',
+    required: false,
+  })
+  property_id: string;
 }

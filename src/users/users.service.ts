@@ -27,13 +27,18 @@ import { buildUserFilter } from 'src/filters/query-filter';
 import { Response } from 'express';
 import moment from 'moment';
 import { config } from 'src/config';
-import { connectionSource } from 'ormconfig';
-import { Property } from 'src/properties/entities/property.entity';
 import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { v4 as uuidv4 } from 'uuid';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
-
+import { Property } from 'src/properties/entities/property.entity';
+import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import {
+  PropertyStatusEnum,
+  TenantStatusEnum,
+} from 'src/properties/dto/create-property.dto';
+import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
+import { DateService } from 'src/utils/date.helper';
 
 @Injectable()
 export class UsersService {
@@ -44,13 +49,11 @@ export class UsersService {
     private readonly authService: AuthService,
     @InjectRepository(PasswordResetToken)
     private readonly passwordResetRepository: Repository<PasswordResetToken>,
-
-
   ) {}
 
   async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
     const { email, phone_number } = data;
-  
+
     const emailExist = await this.usersRepository.exists({ where: { email } });
     if (emailExist) {
       throw new HttpException(
@@ -58,7 +61,7 @@ export class UsersService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
-  
+
     const phoneNumberExist = await this.usersRepository.exists({
       where: { phone_number },
     });
@@ -68,17 +71,13 @@ export class UsersService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
-  
-    const queryRunner = connectionSource.createQueryRunner();
-  
-    await connectionSource.initialize();
+
+    const queryRunner =
+      this.usersRepository.manager.connection.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
-  
+
     try {
-      await connectionSource.initialize();
-      await queryRunner.connect();
-      await queryRunner.startTransaction();
       const userRole = data?.role
         ? RolesEnum[data?.role.toUpperCase()]
         : RolesEnum.TENANT;
@@ -88,65 +87,88 @@ export class UsersService {
         role: userRole,
         creator_id: userRole === RolesEnum.TENANT ? user_id : null,
       };
-  
+
       const createdUser = await queryRunner.manager.save(Users, newUser);
 
       if (!createdUser?.id) {
         throw new Error('User ID is missing after creation');
       }
-  
-      // Find property
-      const property = await queryRunner.manager.findOneBy(Property, {
-        id: data?.property_id,
-      });
-  
-      if (!property?.id) {
-        throw new HttpException(
-          `Property with id: ${data?.property_id} not found`,
-          HttpStatus.NOT_FOUND,
-        );
-      }
-  
-      // Check if rent exists
-      const isPropertyAvailable = await queryRunner.manager.findOneBy(Rent, {
-        property_id: data?.property_id,
-        status: Not(RentStatusEnum.PENDING),
-      });
-  
-      if (isPropertyAvailable?.id) {
-        throw new HttpException(
-          `Property with id: ${data?.property_id} is already rented`,
-          HttpStatus.UNPROCESSABLE_ENTITY,
-        );
-      }
-  
-      // Create rent record
-      const rent = {
-        tenant_id: createdUser.id,
-        lease_start_date: data?.lease_start_date,
-        lease_end_date: data?.lease_end_date,
-        property_id: data?.property_id,
-        amount_paid: property?.rental_price,
-        status: RentStatusEnum.PAID,
-      };
-  
-      await queryRunner.manager.save(Rent, rent);
-  
-      // Create password reset token
+
       if (createdUser.role === RolesEnum.TENANT) {
-        const token = await this.generatePasswordResetToken(createdUser.id, queryRunner);
-  
+        const property = await queryRunner.manager.findOne(Property, {
+          where: {
+            id: data.property_id,
+          },
+        });
+
+        if (!property?.id) {
+          throw new HttpException(
+            `Property with id: ${data?.property_id} not found`,
+            HttpStatus.NOT_FOUND,
+          );
+        }
+
+        const hasActiveRent = await queryRunner.manager.exists(Rent, {
+          where: {
+            property_id: data?.property_id,
+            status: Not(RentStatusEnum.PENDING),
+          },
+        });
+
+        if (hasActiveRent) {
+          throw new HttpException(
+            `Property with id: ${data?.property_id} is already rented`,
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        }
+
+        const rent = {
+          tenant_id: createdUser.id,
+          lease_start_date: data?.lease_start_date,
+          lease_end_date: data?.lease_end_date,
+          property_id: property?.id,
+          amount_paid: property?.rental_price,
+          status: RentStatusEnum.PAID,
+        };
+        await queryRunner.manager.save(Rent, rent);
+
+        await queryRunner.manager.save(PropertyTenant, {
+          property_id: property.id,
+          tenant_id: createdUser.id,
+          status: TenantStatusEnum.ACTIVE,
+        });
+
+        await queryRunner.manager.update(Property, property.id, {
+          property_status: PropertyStatusEnum.NOT_VACANT,
+        });
+
+        await queryRunner.manager.save(PropertyHistory, {
+          property_id: property.id,
+          tenant_id: createdUser.id,
+          move_in_date: DateService.getStartOfTheDay(new Date()),
+          monthly_rent: property?.rental_price,
+          owner_comment: null,
+          tenant_comment: null,
+          move_out_date: null,
+          move_out_reason: null,
+        });
+
+        const token = await this.generatePasswordResetToken(
+          createdUser.id,
+          queryRunner,
+        );
+
         const emailContent = clientSignUpEmailTemplate(
           `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
         );
-  
+
         await UtilService.sendEmail(
           email,
           EmailSubject.WELCOME_EMAIL,
           emailContent,
         );
       }
-  
+
       await queryRunner.commitTransaction();
       return createdUser;
     } catch (error) {
@@ -159,22 +181,24 @@ export class UsersService {
       await queryRunner.release();
     }
   }
-  
 
-  async generatePasswordResetToken(userId: string, queryRunner: QueryRunner): Promise<string> {
+  async generatePasswordResetToken(
+    userId: string,
+    queryRunner: QueryRunner,
+  ): Promise<string> {
     const token = uuidv4(); // Generate secure UUID
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 1); // Token valid for 1 hour
-  
+
     const passwordReset = queryRunner.manager.create(PasswordResetToken, {
       id: uuidv4(),
       user_id: userId,
       token,
       expires_at: expiresAt,
     });
-  
+
     await queryRunner.manager.save(PasswordResetToken, passwordReset);
-  
+
     return token;
   }
 
@@ -268,14 +292,14 @@ export class UsersService {
     res.cookie('access_token', access_token, {
       httpOnly: true,
       secure: this.configService.get<string>('NODE_ENV') === 'production', // Set to true in production for HTTPS
-      expires: moment().add(1, 'hour').toDate(),
+      expires: moment().add(8, 'hours').toDate(),
       sameSite: 'none',
     });
 
     return res.status(HttpStatus.OK).json({
       user,
       access_token,
-      expires_at: moment().add(1, 'hour').format(),
+      expires_at: moment().add(8, 'hours').format(),
     });
   }
 
@@ -311,13 +335,20 @@ export class UsersService {
   }
 
   async resetPassword(token: string, newPassword: string): Promise<void> {
-    const resetEntry = await this.passwordResetRepository.findOne({ where: { token } });
+    const resetEntry = await this.passwordResetRepository.findOne({
+      where: { token },
+    });
 
     if (!resetEntry || resetEntry.expires_at < new Date()) {
-      throw new HttpException('Invalid or expired token', HttpStatus.BAD_REQUEST);
+      throw new HttpException(
+        'Invalid or expired token',
+        HttpStatus.BAD_REQUEST,
+      );
     }
 
-    const user = await this.usersRepository.findOne({ where: { id: resetEntry.user_id } });
+    const user = await this.usersRepository.findOne({
+      where: { id: resetEntry.user_id },
+    });
 
     if (!user) {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);

@@ -60,8 +60,8 @@ export class PropertiesController {
   // @UseInterceptors(FilesInterceptor('property_images', 20))
   async createProperty(
     @Body() body: CreatePropertyDto,
-    @UploadedFiles() files: Array<Express.Multer.File>,
-    @Req() req: any
+    // @UploadedFiles() files: Array<Express.Multer.File>,
+    @Req() req: any,
   ) {
     try {
       // if (!files || files.length === 0) {
@@ -74,13 +74,16 @@ export class PropertiesController {
       // const uploadedUrls = await Promise.all(
       //   files.map((file) => this.fileUploadService.uploadFile(file)),
       // );
-      let owner_id= req?.user?.id;
+      const owner_id = req?.user?.id;
+      // const uploadedUrls = await Promise.all(
+      //   files.map((file) => this.fileUploadService.uploadFile(file)),
+      // );
       // body.property_images = uploadedUrls.map((upload) => upload.secure_url);
 
-      let payload = {
+      const payload = {
         owner_id,
-        ...body
-      }
+        ...body,
+      };
 
       return this.propertiesService.createProperty(payload);
     } catch (error) {
@@ -159,7 +162,7 @@ export class PropertiesController {
   @Get('service-request/:id')
   getServiceRequestOfAProperty(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
-      return this.propertiesService.getServiceRequestOfAProperty(id)
+      return this.propertiesService.getServiceRequestOfAProperty(id);
     } catch (error) {
       throw error;
     }

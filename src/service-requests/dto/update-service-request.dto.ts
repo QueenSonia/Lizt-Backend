@@ -39,7 +39,14 @@ export class UpdateServiceRequestResponseDto {
     description: 'Date when the issue was noticed',
     required: false,
   })
-  effective_date: Date;
+  date_reported: Date;
+
+  @ApiProperty({
+    example: '2024-03-21',
+    description: 'Date when the issue was resolved',
+    required: false,
+  })
+  resolution_date?: Date | null;
 
   @ApiProperty({
     example:

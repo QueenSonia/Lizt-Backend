@@ -111,8 +111,10 @@ export class ServiceRequestsService {
     return this.serviceRequestRepository.delete(id);
   }
 
-  async getPendingAndUrgentRequests(queryParams: ServiceRequestFilter, owner_id:string) {
-    console.log(queryParams, owner_id)
+  async getPendingAndUrgentRequests(
+    queryParams: ServiceRequestFilter,
+    owner_id: string,
+  ) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;

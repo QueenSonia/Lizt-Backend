@@ -25,7 +25,7 @@ export class UpdateServiceRequestResponseDto {
     description: 'Status of the service request',
     required: false,
   })
-  status: string;
+  status?: string | null;
 
   @ApiProperty({
     example: 'Broken Pipe',

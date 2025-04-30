@@ -41,7 +41,7 @@ export class ServiceRequest extends BaseEntity {
     ],
     default: ServiceRequestStatusEnum.PENDING,
   })
-  status: string;
+  status: string | null;
 
   @Column({ nullable: false, type: 'uuid' })
   tenant_id: string;

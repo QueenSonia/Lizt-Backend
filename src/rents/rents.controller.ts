@@ -45,7 +45,7 @@ export class RentsController {
   ) {}
 
   @ApiOperation({ summary: 'Pay Rent' })
-  @ApiConsumes('multipart/form-data')
+  // @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreateRentDto })
   @ApiCreatedResponse({ type: CreateRentDto })
   @ApiBadRequestResponse()
@@ -68,7 +68,6 @@ export class RentsController {
       // );
 
       // body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
-
       return this.rentsService.payRent(body);
     } catch (error) {
       throw error;

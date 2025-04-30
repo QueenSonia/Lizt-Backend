@@ -24,9 +24,10 @@ export class RentsService {
     private readonly rentIncreaseRepository: Repository<RentIncrease>,
   ) {}
 
-  async payRent(data: CreateRentDto): Promise<Rent> {
-    const { expiry_date } = data;
-    data.expiry_date = DateService.getEndOfTheDay(expiry_date);
+  async payRent(data: any): Promise<Rent> {
+    const { lease_start_date, lease_end_date } = data;
+    data.lease_start_date = DateService.getStartOfTheDay(lease_start_date);
+    data.lease_end_date = DateService.getEndOfTheDay(lease_end_date);
     return this.rentRepository.save(data);
   }
 

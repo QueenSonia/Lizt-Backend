@@ -32,13 +32,13 @@ export class UpdateRentResponseDto {
   })
   expiry_date: Date;
 
-  @ApiProperty({
-    type: 'array',
-    items: { type: 'string', format: 'binary' },
-    required: false,
-    description: 'Rent receipts',
-  })
-  rent_receipts: string[];
+  // @ApiProperty({
+  //   type: 'array',
+  //   items: { type: 'string', format: 'binary' },
+  //   required: false,
+  //   description: 'Rent receipts',
+  // })
+  // rent_receipts: string[];
 
   @ApiProperty({
     example: 'Pending',

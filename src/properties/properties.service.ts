@@ -104,7 +104,6 @@ export class PropertiesService {
   }
 
   async updatePropertyById(id: string, data: UpdatePropertyDto) {
-    console.log('data', data);
     return this.propertyRepository.update(id, data);
   }
 

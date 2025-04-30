@@ -3,11 +3,9 @@ import { Transform, Type } from 'class-transformer';
 import {
   IsNotEmpty,
   IsString,
-  IsEnum,
   IsOptional,
   IsUUID,
   IsDateString,
-  IsNumberString,
   IsNumber,
 } from 'class-validator';
 
@@ -57,21 +55,21 @@ export class CreateServiceRequestDto {
   @IsString()
   description: string;
 
-  @ApiProperty({
-    type: 'array',
-    items: { type: 'string', format: 'binary' },
-    required: false,
-    description: 'Images of the issue (optional)',
-  })
-  issue_images?: string[] | null;
+  // @ApiProperty({
+  //   type: 'array',
+  //   items: { type: 'string', format: 'binary' },
+  //   required: false,
+  //   description: 'Images of the issue (optional)',
+  // })
+  // issue_images?: string[] | null;
 
   @ApiProperty({
     example: 'pending',
     description: 'Status of the service request',
+    required: false,
   })
-  @IsNotEmpty()
-  @IsEnum(ServiceRequestStatusEnum)
-  status: string;
+  @IsOptional()
+  status?: string | null;
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',

@@ -9,13 +9,11 @@ import {
   ParseUUIDPipe,
   Put,
   Req,
-  UseInterceptors,
-  UploadedFiles,
   UseGuards,
 } from '@nestjs/common';
 import { RentsService } from './rents.service';
 import { CreateRentDto, RentFilter } from './dto/create-rent.dto';
-import { UpdateRentDto, UpdateRentResponseDto } from './dto/update-rent.dto';
+import { UpdateRentDto } from './dto/update-rent.dto';
 import {
   ApiOperation,
   ApiBody,
@@ -45,7 +43,7 @@ export class RentsController {
   ) {}
 
   @ApiOperation({ summary: 'Pay Rent' })
-  @ApiConsumes('multipart/form-data')
+  // @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreateRentDto })
   @ApiCreatedResponse({ type: CreateRentDto })
   @ApiBadRequestResponse()
@@ -68,7 +66,6 @@ export class RentsController {
       // );
 
       // body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
-
       return this.rentsService.payRent(body);
     } catch (error) {
       throw error;
@@ -199,25 +196,25 @@ export class RentsController {
   }
 
   @ApiOperation({ summary: 'Update Rent' })
-  @ApiConsumes('multipart/form-data')
+  // @ApiConsumes('multipart/form-data')
   @ApiBody({ type: UpdateRentDto })
   @ApiOkResponse({ description: 'Rent successfully updated' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
-  @UseInterceptors(FilesInterceptor('rent_receipts', 20))
+  // @UseInterceptors(FilesInterceptor('rent_receipts', 20))
   async updatePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdateRentResponseDto,
-    @UploadedFiles() files?: Array<Express.Multer.File>,
+    @Body() body: UpdateRentDto,
+    // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
-      if (files?.length) {
-        const uploadedUrls = await Promise.all(
-          files.map((file) => this.fileUploadService.uploadFile(file, 'rents')),
-        );
-        body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
-      }
+      // if (files?.length) {
+      //   const uploadedUrls = await Promise.all(
+      //     files.map((file) => this.fileUploadService.uploadFile(file, 'rents')),
+      //   );
+      //   body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
+      // }
       return this.rentsService.updateRentById(id, body);
     } catch (error) {
       throw error;

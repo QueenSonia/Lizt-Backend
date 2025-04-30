@@ -56,13 +56,13 @@ export class UpdateServiceRequestResponseDto {
   })
   description: string;
 
-  @ApiProperty({
-    type: 'array',
-    items: { type: 'string', format: 'binary' },
-    required: false,
-    description: 'Images of the issue (optional)',
-  })
-  issue_images?: string[] | null;
+  // @ApiProperty({
+  //   type: 'array',
+  //   items: { type: 'string', format: 'binary' },
+  //   required: false,
+  //   description: 'Images of the issue (optional)',
+  // })
+  // issue_images?: string[] | null;
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',

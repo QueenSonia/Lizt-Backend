@@ -55,13 +55,13 @@ export class CreateServiceRequestDto {
   @IsString()
   description: string;
 
-  @ApiProperty({
-    type: 'array',
-    items: { type: 'string', format: 'binary' },
-    required: false,
-    description: 'Images of the issue (optional)',
-  })
-  issue_images?: string[] | null;
+  // @ApiProperty({
+  //   type: 'array',
+  //   items: { type: 'string', format: 'binary' },
+  //   required: false,
+  //   description: 'Images of the issue (optional)',
+  // })
+  // issue_images?: string[] | null;
 
   @ApiProperty({
     example: 'pending',

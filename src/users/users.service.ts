@@ -1,10 +1,7 @@
 import {
-  BadRequestException,
-  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
-  InternalServerErrorException,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -17,7 +14,7 @@ import {
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
-import { DataSource, Not, QueryFailedError, QueryRunner, Repository } from 'typeorm';
+import { Not, QueryRunner, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
 import { RolesEnum } from 'src/base.entity';
@@ -47,7 +44,6 @@ export class UsersService {
     private readonly authService: AuthService,
     @InjectRepository(PasswordResetToken)
     private readonly passwordResetRepository: Repository<PasswordResetToken>,
-    private readonly dataSource: DataSource,
 
 
   ) {}
@@ -55,36 +51,38 @@ export class UsersService {
   async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
     const { email, phone_number } = data;
   
-    // Check for existing email
     const emailExist = await this.usersRepository.exists({ where: { email } });
     if (emailExist) {
       throw new HttpException(
-        `User with email: ${email} already exists`,
+        `User with email: ${email} already exist`,
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
   
-    // Check for existing phone number
     const phoneNumberExist = await this.usersRepository.exists({
       where: { phone_number },
     });
     if (phoneNumberExist) {
       throw new HttpException(
-        `User with phone number: ${phone_number} already exists`,
+        `User with phone number: ${phone_number} already exist`,
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
   
-    const queryRunner = this.dataSource.createQueryRunner();
+    const queryRunner = connectionSource.createQueryRunner();
   
+    await connectionSource.initialize();
     await queryRunner.connect();
     await queryRunner.startTransaction();
   
     try {
+      await connectionSource.initialize();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
       const userRole = data?.role
-        ? RolesEnum[data.role.toUpperCase()]
+        ? RolesEnum[data?.role.toUpperCase()]
         : RolesEnum.TENANT;
-  
+
       const newUser: IUser = {
         ...data,
         role: userRole,
@@ -92,49 +90,49 @@ export class UsersService {
       };
   
       const createdUser = await queryRunner.manager.save(Users, newUser);
-  
+
       if (!createdUser?.id) {
         throw new Error('User ID is missing after creation');
       }
   
-      // Validate property existence
+      // Find property
       const property = await queryRunner.manager.findOneBy(Property, {
         id: data?.property_id,
       });
   
       if (!property?.id) {
         throw new HttpException(
-          `Property with id: ${data.property_id} not found`,
+          `Property with id: ${data?.property_id} not found`,
           HttpStatus.NOT_FOUND,
         );
       }
   
-      // Check if rent already exists
+      // Check if rent exists
       const isPropertyAvailable = await queryRunner.manager.findOneBy(Rent, {
-        property_id: data.property_id,
+        property_id: data?.property_id,
         status: Not(RentStatusEnum.PENDING),
       });
   
       if (isPropertyAvailable?.id) {
         throw new HttpException(
-          `Property with id: ${data.property_id} is already rented`,
+          `Property with id: ${data?.property_id} is already rented`,
           HttpStatus.UNPROCESSABLE_ENTITY,
         );
       }
   
-      // Save rent
+      // Create rent record
       const rent = {
         tenant_id: createdUser.id,
         lease_start_date: data?.lease_start_date,
         lease_end_date: data?.lease_end_date,
         property_id: data?.property_id,
-        amount_paid: property.rental_price,
+        amount_paid: property?.rental_price,
         status: RentStatusEnum.PAID,
       };
   
       await queryRunner.manager.save(Rent, rent);
   
-      // Send email to tenant
+      // Create password reset token
       if (createdUser.role === RolesEnum.TENANT) {
         const token = await this.generatePasswordResetToken(createdUser.id, queryRunner);
   
@@ -153,15 +151,6 @@ export class UsersService {
       return createdUser;
     } catch (error) {
       await queryRunner.rollbackTransaction();
-  
-      // Handle known Postgres unique constraint violation
-      if (error?.code === '23505') {
-        throw new HttpException(
-          error?.detail || 'Duplicate data error',
-          HttpStatus.CONFLICT,
-        );
-      }
-  
       throw new HttpException(
         error?.message || 'An error occurred while creating user',
         HttpStatus.UNPROCESSABLE_ENTITY,
@@ -170,7 +159,6 @@ export class UsersService {
       await queryRunner.release();
     }
   }
-  
   
 
   async generatePasswordResetToken(userId: string, queryRunner: QueryRunner): Promise<string> {
@@ -233,51 +221,7 @@ export class UsersService {
   }
 
   async updateUserById(id: string, data: UpdateUserDto) {
-    if (!id) {
-      throw new UnauthorizedException('User ID is required.');
-    }
-
-    const user = await this.usersRepository.findOneBy({ id });
-    if (!user) {
-      throw new NotFoundException(`User with ID ${id} not found.`);
-    }
-
-    try {
-      const result = await this.usersRepository.update(id, data);
-
-      if (result.affected === 0) {
-        throw new BadRequestException('No changes were made.');
-      }
-
-      return { message: 'User successfully updated' };
-    } catch (error) {
-      this.handleDatabaseError(error);
-    }
-  }
-
-  private handleDatabaseError(error: unknown): never {
-    if (error instanceof QueryFailedError) {
-      const driverError = (error as any).driverError;
-      const detail: string = driverError?.detail || '';
-
-      if (driverError?.code === '23505') {
-        if (detail.includes('(email)')) {
-          throw new ConflictException('Email already exists.');
-        }
-
-        if (detail.includes('(phone_number)')) {
-          throw new ConflictException('Phone number already exists.');
-        }
-
-        throw new ConflictException('Duplicate entry detected.');
-      }
-    }
-
-    if (error instanceof HttpException) {
-      throw error; // rethrow known HTTP exceptions
-    }
-
-    throw new InternalServerErrorException('An unexpected error occurred.');
+    return this.usersRepository.update(id, data);
   }
 
   async deleteUserById(id: string) {

@@ -36,8 +36,8 @@ export class CreatePropertyDto {
   @IsString()
   property_type: string;
 
-  @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
-  property_images: string[];
+  // @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
+  // property_images: string[];
 
   @ApiProperty({
     example: 3,

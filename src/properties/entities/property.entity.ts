@@ -30,7 +30,7 @@ export class Property extends BaseEntity {
   @Column({ nullable: false, type: 'varchar' })
   property_type: string;
 
-  @Column({ nullable: false, type: 'varchar', array: true })
+  @Column({ nullable: true, type: 'varchar', array: true })
   property_images: string[];
 
   @Column({ nullable: false, type: 'int' })

@@ -57,25 +57,28 @@ export class PropertiesController {
   @Post()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-  @UseInterceptors(FilesInterceptor('property_images', 20))
+  // @UseInterceptors(FilesInterceptor('property_images', 20))
   async createProperty(
     @Body() body: CreatePropertyDto,
-    @UploadedFiles() files: Array<Express.Multer.File>,
+    // @UploadedFiles() files: Array<Express.Multer.File>,
     @Req() req: any,
   ) {
     try {
-      if (!files || files.length === 0) {
-        throw new HttpException(
-          'Property images are required',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
+      // if (!files || files.length === 0) {
+      //   throw new HttpException(
+      //     'Property images are required',
+      //     HttpStatus.BAD_REQUEST,
+      //   );
+      // }
 
-      const uploadedUrls = await Promise.all(
-        files.map((file) => this.fileUploadService.uploadFile(file)),
-      );
+      // const uploadedUrls = await Promise.all(
+      //   files.map((file) => this.fileUploadService.uploadFile(file)),
+      // );
       const owner_id = req?.user?.id;
-      body.property_images = uploadedUrls.map((upload) => upload.secure_url);
+      // const uploadedUrls = await Promise.all(
+      //   files.map((file) => this.fileUploadService.uploadFile(file)),
+      // );
+      // body.property_images = uploadedUrls.map((upload) => upload.secure_url);
 
       const payload = {
         owner_id,
@@ -143,6 +146,23 @@ export class PropertiesController {
   getRentsOfAProperty(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.propertiesService.getRentsOfAProperty(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Service Request Of A Property' })
+  @ApiOkResponse({
+    type: CreatePropertyDto,
+    description: 'Property and Service request successfully fetched',
+  })
+  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('service-request/:id')
+  getServiceRequestOfAProperty(@Param('id', new ParseUUIDPipe()) id: string) {
+    try {
+      return this.propertiesService.getServiceRequestOfAProperty(id);
     } catch (error) {
       throw error;
     }

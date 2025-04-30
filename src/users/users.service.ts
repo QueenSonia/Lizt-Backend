@@ -14,7 +14,7 @@ import {
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
-import { Repository } from 'typeorm';
+import { Not, QueryRunner, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
 import { RolesEnum } from 'src/base.entity';
@@ -28,6 +28,12 @@ import { Response } from 'express';
 import moment from 'moment';
 import { config } from 'src/config';
 import { connectionSource } from 'ormconfig';
+import { Property } from 'src/properties/entities/property.entity';
+import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import { Rent } from 'src/rents/entities/rent.entity';
+import { v4 as uuidv4 } from 'uuid';
+import { PasswordResetToken } from './entities/password-reset-token.entity';
+
 
 @Injectable()
 export class UsersService {
@@ -36,11 +42,15 @@ export class UsersService {
     private readonly usersRepository: Repository<Users>,
     private readonly configService: ConfigService,
     private readonly authService: AuthService,
+    @InjectRepository(PasswordResetToken)
+    private readonly passwordResetRepository: Repository<PasswordResetToken>,
+
+
   ) {}
 
   async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
     const { email, phone_number } = data;
-
+  
     const emailExist = await this.usersRepository.exists({ where: { email } });
     if (emailExist) {
       throw new HttpException(
@@ -48,7 +58,7 @@ export class UsersService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
-
+  
     const phoneNumberExist = await this.usersRepository.exists({
       where: { phone_number },
     });
@@ -58,8 +68,13 @@ export class UsersService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
+  
     const queryRunner = connectionSource.createQueryRunner();
-
+  
+    await connectionSource.initialize();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+  
     try {
       await connectionSource.initialize();
       await queryRunner.connect();
@@ -73,31 +88,94 @@ export class UsersService {
         role: userRole,
         creator_id: userRole === RolesEnum.TENANT ? user_id : null,
       };
-
+  
       const createdUser = await queryRunner.manager.save(Users, newUser);
 
-      if (createdUser.role === RolesEnum.TENANT) {
-        const emailContent = clientSignUpEmailTemplate(
-          this.configService.get<string>('LOGIN_URL')!,
+      if (!createdUser?.id) {
+        throw new Error('User ID is missing after creation');
+      }
+  
+      // Find property
+      const property = await queryRunner.manager.findOneBy(Property, {
+        id: data?.property_id,
+      });
+  
+      if (!property?.id) {
+        throw new HttpException(
+          `Property with id: ${data?.property_id} not found`,
+          HttpStatus.NOT_FOUND,
         );
+      }
+  
+      // Check if rent exists
+      const isPropertyAvailable = await queryRunner.manager.findOneBy(Rent, {
+        property_id: data?.property_id,
+        status: Not(RentStatusEnum.PENDING),
+      });
+  
+      if (isPropertyAvailable?.id) {
+        throw new HttpException(
+          `Property with id: ${data?.property_id} is already rented`,
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+  
+      // Create rent record
+      const rent = {
+        tenant_id: createdUser.id,
+        lease_start_date: data?.lease_start_date,
+        lease_end_date: data?.lease_end_date,
+        property_id: data?.property_id,
+        amount_paid: property?.rental_price,
+        status: RentStatusEnum.PAID,
+      };
+  
+      await queryRunner.manager.save(Rent, rent);
+  
+      // Create password reset token
+      if (createdUser.role === RolesEnum.TENANT) {
+        const token = await this.generatePasswordResetToken(createdUser.id, queryRunner);
+  
+        const emailContent = clientSignUpEmailTemplate(
+          `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
+        );
+  
         await UtilService.sendEmail(
           email,
           EmailSubject.WELCOME_EMAIL,
           emailContent,
         );
       }
+  
       await queryRunner.commitTransaction();
       return createdUser;
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw new HttpException(
-        error?.message || 'an error occurred while creating user',
+        error?.message || 'An error occurred while creating user',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     } finally {
       await queryRunner.release();
-      await connectionSource.destroy();
     }
+  }
+  
+
+  async generatePasswordResetToken(userId: string, queryRunner: QueryRunner): Promise<string> {
+    const token = uuidv4(); // Generate secure UUID
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 1); // Token valid for 1 hour
+  
+    const passwordReset = queryRunner.manager.create(PasswordResetToken, {
+      id: uuidv4(),
+      user_id: userId,
+      token,
+      expires_at: expiresAt,
+    });
+  
+    await queryRunner.manager.save(PasswordResetToken, passwordReset);
+  
+    return token;
   }
 
   async getAllUsers(queryParams: UserFilter) {
@@ -115,6 +193,7 @@ export class UsersService {
       skip,
       take: size,
       order: { created_at: 'DESC' },
+      relations: ['property_tenants', 'property_tenants.property'],
     });
 
     const totalPages = Math.ceil(count / size);
@@ -229,6 +308,25 @@ export class UsersService {
     }
 
     return tenant;
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    const resetEntry = await this.passwordResetRepository.findOne({ where: { token } });
+
+    if (!resetEntry || resetEntry.expires_at < new Date()) {
+      throw new HttpException('Invalid or expired token', HttpStatus.BAD_REQUEST);
+    }
+
+    const user = await this.usersRepository.findOne({ where: { id: resetEntry.user_id } });
+
+    if (!user) {
+      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+    }
+
+    user.password = await UtilService.hashPassword(newPassword);
+    await this.usersRepository.save(user);
+
+    await this.passwordResetRepository.delete({ id: resetEntry.id });
   }
 
   async getTenantsOfAnAdmin(queryParams: UserFilter) {

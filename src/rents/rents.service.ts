@@ -173,7 +173,7 @@ export class RentsService {
     return { message: 'Reminder sent successfully' };
   }
 
-  async getRentById(id: string): Promise<CreateRentDto> {
+  async getRentById(id: string) {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -205,6 +205,10 @@ export class RentsService {
 
     const existingRentIncrease = await this.rentIncreaseRepository.findOne({
       where: { property_id: data.property_id },
+    });
+
+    await this.propertyRepository.update(data.property_id, {
+      rental_price: data?.current_rent,
     });
 
     if (existingRentIncrease?.id) {

@@ -11,8 +11,6 @@ import {
   Req,
   UseInterceptors,
   UploadedFiles,
-  HttpException,
-  HttpStatus,
   UseGuards,
 } from '@nestjs/common';
 import { RentsService } from './rents.service';
@@ -53,23 +51,23 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  @UseInterceptors(FilesInterceptor('rent_receipts', 20))
+  // @UseInterceptors(FilesInterceptor('rent_receipts', 20))
   async payRent(
     @Body() body: CreateRentDto,
-    @UploadedFiles() files: Array<Express.Multer.File>,
+    // @UploadedFiles() files: Array<Express.Multer.File>,
   ) {
     try {
-      if (!files || files.length === 0) {
-        throw new HttpException(
-          'Rent receipts are required',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      const uploadedUrls = await Promise.all(
-        files.map((file) => this.fileUploadService.uploadFile(file, 'rents')),
-      );
+      // if (!files || files.length === 0) {
+      //   throw new HttpException(
+      //     'Rent receipts are required',
+      //     HttpStatus.BAD_REQUEST,
+      //   );
+      // }
+      // const uploadedUrls = await Promise.all(
+      //   files.map((file) => this.fileUploadService.uploadFile(file, 'rents')),
+      // );
 
-      body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
+      // body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
 
       return this.rentsService.payRent(body);
     } catch (error) {

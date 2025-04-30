@@ -49,8 +49,8 @@ export class CreateRentDto {
   @IsString()
   expiry_date: Date | string;
 
-  @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
-  rent_receipts: string[];
+  // @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
+  // rent_receipts: string[];
 
   @ApiProperty({
     example: 'pending',

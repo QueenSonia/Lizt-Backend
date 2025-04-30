@@ -1,12 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsNotEmpty,
-  IsString,
-  IsNumber,
-  IsEnum,
-  IsOptional,
-} from 'class-validator';
+import { IsNotEmpty, IsString, IsNumber, IsEnum } from 'class-validator';
 
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
@@ -66,16 +60,6 @@ export class CreatePropertyDto {
   @IsNotEmpty()
   @IsString()
   payment_frequency: string;
-
-  @ApiProperty({
-    example: 1,
-    description: 'How long a tenent is staying',
-    type: 'integer',
-  })
-  @IsNotEmpty()
-  @IsNumber()
-  @Type(() => Number)
-  lease_duration: number;
 
   @ApiProperty({
     example: 20000,

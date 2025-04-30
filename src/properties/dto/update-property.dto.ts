@@ -69,13 +69,6 @@ export class UpdatePropertyResponseDto {
   payment_frequency: string;
 
   @ApiProperty({
-    example: 1,
-    description: 'How long a tenent is staying',
-    required: false,
-  })
-  lease_duration: number;
-
-  @ApiProperty({
     example: 20000,
     description: 'Security payment',
     required: false,

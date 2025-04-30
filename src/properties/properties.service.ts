@@ -89,7 +89,6 @@ export class PropertiesService {
     return propertyAndRent;
   }
 
-
   async getServiceRequestOfAProperty(id: string): Promise<CreatePropertyDto> {
     const propertyAndRent = await this.propertyRepository.findOne({
       where: { id },

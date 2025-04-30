@@ -145,8 +145,8 @@ export class UsersService {
         });
 
         await queryRunner.manager.save(PropertyHistory, {
-          property_id: property.id,
-          tenant_id: createdUser.id,
+          property_id: property?.id,
+          tenant_id: createdUser?.id,
           move_in_date: DateService.getStartOfTheDay(new Date()),
           monthly_rent: property?.rental_price,
           owner_comment: null,
@@ -156,7 +156,7 @@ export class UsersService {
         });
 
         const token = await this.generatePasswordResetToken(
-          createdUser.id,
+          createdUser?.id,
           queryRunner,
         );
 
@@ -286,12 +286,6 @@ export class UsersService {
           tenant_id: user.id,
         },
       });
-      if (!findTenantProperty) {
-        throw new HttpException(
-          `Tenant with id: ${user.id} not found`,
-          HttpStatus.NOT_FOUND,
-        );
-      }
       user['property_id'] = findTenantProperty?.property_id;
     }
     const tokenData = {

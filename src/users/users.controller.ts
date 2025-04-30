@@ -134,13 +134,12 @@ export class UsersController {
   @ApiOkResponse({ description: 'User successfully updated' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
-  @Put('')
+  @Put(':id')
   updateUserById(
-    @Req() req: any,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: UpdateUserDto,
   ) {
     try {
-      const id = req?.user?.id;
       return this.usersService.updateUserById(id, body);
     } catch (error) {
       throw error;

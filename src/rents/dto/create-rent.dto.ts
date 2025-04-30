@@ -2,10 +2,12 @@ import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsNotEmpty,
-  IsUUID,
   IsNumber,
   IsEnum,
   IsString,
+  IsUUID,
+  IsDateString,
+  IsOptional,
 } from 'class-validator';
 
 export enum RentStatusEnum {
@@ -46,8 +48,9 @@ export class CreateRentDto {
     description: 'Due date for the rent',
     required: false,
   })
-  @IsString()
-  expiry_date: Date | string;
+  @IsOptional()
+  @IsDateString()
+  expiry_date: Date;
 
   // @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
   // rent_receipts: string[];
@@ -56,8 +59,25 @@ export class CreateRentDto {
     example: 'pending',
     description: 'Rent status',
   })
+  @IsOptional()
   @IsEnum(RentStatusEnum)
   status: string;
+
+  @ApiProperty({
+    example: '',
+    description: 'lease start date',
+  })
+  @IsNotEmpty()
+  @IsDateString()
+  lease_start_date: Date;
+
+  @ApiProperty({
+    example: '',
+    description: 'lease end date',
+  })
+  @IsNotEmpty()
+  @IsDateString()
+  lease_end_date: Date;
 }
 
 export class RentFilter {

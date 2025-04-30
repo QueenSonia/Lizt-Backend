@@ -17,10 +17,7 @@ import {
 } from '@nestjs/common';
 import { PropertiesService } from './properties.service';
 import { CreatePropertyDto, PropertyFilter } from './dto/create-property.dto';
-import {
-  UpdatePropertyDto,
-  UpdatePropertyResponseDto,
-} from './dto/update-property.dto';
+import { UpdatePropertyDto } from './dto/update-property.dto';
 import {
   ApiOperation,
   ApiBody,
@@ -49,7 +46,7 @@ export class PropertiesController {
   ) {}
 
   @ApiOperation({ summary: 'Create Property' })
-  @ApiConsumes('multipart/form-data')
+  // @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreatePropertyDto })
   @ApiCreatedResponse({ type: CreatePropertyDto })
   @ApiBadRequestResponse()
@@ -169,27 +166,27 @@ export class PropertiesController {
   }
 
   @ApiOperation({ summary: 'Update Property' })
-  @ApiConsumes('multipart/form-data')
+  // @ApiConsumes('multipart/form-data')
   @ApiBody({ type: UpdatePropertyDto })
   @ApiOkResponse({ description: 'Property successfully updated' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
-  @UseInterceptors(FilesInterceptor('property_images', 20))
+  // @UseInterceptors(FilesInterceptor('property_images', 20))
   async updatePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdatePropertyResponseDto,
-    @UploadedFiles() files?: Array<Express.Multer.File>,
+    @Body() body: UpdatePropertyDto,
+    // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
-      if (files?.length) {
-        const uploadedUrls = await Promise.all(
-          files.map((file) =>
-            this.fileUploadService.uploadFile(file, 'properties'),
-          ),
-        );
-        body.property_images = uploadedUrls.map((upload) => upload.secure_url);
-      }
+      // if (files?.length) {
+      //   const uploadedUrls = await Promise.all(
+      //     files.map((file) =>
+      //       this.fileUploadService.uploadFile(file, 'properties'),
+      //     ),
+      //   );
+      //   body.property_images = uploadedUrls.map((upload) => upload.secure_url);
+      // }
       return this.propertiesService.updatePropertyById(id, body);
     } catch (error) {
       throw error;

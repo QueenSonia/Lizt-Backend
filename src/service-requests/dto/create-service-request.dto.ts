@@ -1,6 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
-import { IsNotEmpty, IsString, IsEnum, IsOptional, IsUUID, IsDateString, IsNumberString, IsNumber } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsString,
+  IsEnum,
+  IsOptional,
+  IsUUID,
+  IsDateString,
+  IsNumberString,
+  IsNumber,
+} from 'class-validator';
 
 export enum ServiceRequestStatusEnum {
   PENDING = 'pending',
@@ -37,7 +46,7 @@ export class CreateServiceRequestDto {
   })
   @IsNotEmpty()
   @IsString()
-  effective_date: Date | string;
+  date_reported: Date | string;
 
   @ApiProperty({
     example:

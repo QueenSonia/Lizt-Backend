@@ -9,12 +9,19 @@ import { buildRentFilter } from 'src/filters/query-filter';
 import { rentReminderEmailTemplate } from 'src/utils/email-template';
 import { UtilService } from 'src/utils/utility-service';
 import { config } from 'src/config';
+import { RentIncrease } from './entities/rent-increase.entity';
+import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
+import { Property } from 'src/properties/entities/property.entity';
 
 @Injectable()
 export class RentsService {
   constructor(
     @InjectRepository(Rent)
     private readonly rentRepository: Repository<Rent>,
+    @InjectRepository(Property)
+    private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(RentIncrease)
+    private readonly rentIncreaseRepository: Repository<RentIncrease>,
   ) {}
 
   async payRent(data: CreateRentDto): Promise<Rent> {
@@ -183,5 +190,33 @@ export class RentsService {
 
   async deleteRentById(id: string) {
     return this.rentRepository.delete(id);
+  }
+
+  async saveOrUpdateRentIncrease(data: CreateRentIncreaseDto, userId: string) {
+    const property = await this.propertyRepository.findOne({
+      where: { id: data.property_id, owner_id: userId },
+    });
+    if (!property) {
+      throw new HttpException(
+        'You do not own this Property',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const existingRentIncrease = await this.rentIncreaseRepository.findOne({
+      where: { property_id: data.property_id },
+    });
+
+    if (existingRentIncrease?.id) {
+      return this.rentIncreaseRepository.update(existingRentIncrease.id, {
+        ...data,
+        rent_increase_date: DateService.getStartOfTheDay(new Date()),
+      });
+    }
+
+    return this.rentIncreaseRepository.save({
+      ...data,
+      rent_increase_date: DateService.getStartOfTheDay(new Date()),
+    });
   }
 }

@@ -6,6 +6,7 @@ import { Rent } from 'src/rents/entities/rent.entity';
 import { PropertyTenant } from './property-tenants.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
+import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -41,9 +42,6 @@ export class Property extends BaseEntity {
   @Column({ nullable: false, type: 'varchar' })
   payment_frequency: string;
 
-  @Column({ nullable: false, type: 'int' })
-  lease_duration: number;
-
   @Column({ type: 'int', nullable: false })
   security_deposit: number;
 
@@ -52,9 +50,6 @@ export class Property extends BaseEntity {
 
   @Column({ nullable: true, type: 'text' })
   comment?: string | null;
-
-  @Column({ nullable: true, type: 'date' })
-  move_in_date?: Date | string | null;
 
   @OneToMany(() => PropertyTenant, (t) => t.property)
   property_tenants: PropertyTenant[];
@@ -71,4 +66,7 @@ export class Property extends BaseEntity {
 
   @OneToMany(() => PropertyHistory, (ph) => ph.property)
   property_histories: PropertyHistory[];
+
+  @OneToMany(() => RentIncrease, (ri) => ri.property)
+  rent_increases: RentIncrease[];
 }

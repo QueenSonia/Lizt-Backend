@@ -28,7 +28,6 @@ export class PropertiesService {
 
   async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
     data.comment = data?.comment || null;
-    data.move_in_date = data?.move_in_date || null;
     return this.propertyRepository.save(data);
   }
 
@@ -65,7 +64,7 @@ export class PropertiesService {
   async getPropertyById(id: string): Promise<CreatePropertyDto> {
     const property = await this.propertyRepository.findOne({
       where: { id },
-      relations: ['property_tenants', 'property_tenants.tenant'],
+      relations: ['rents', 'property_tenants', 'property_tenants.tenant'],
     });
     if (!property?.id) {
       throw new HttpException(
@@ -175,7 +174,6 @@ export class PropertiesService {
       });
 
       await queryRunner.manager.update(Property, property_id, {
-        move_in_date: DateService.getStartOfTheDay(move_in_date),
         property_status: PropertyStatusEnum.NOT_VACANT,
       });
 
@@ -241,7 +239,6 @@ export class PropertiesService {
       });
 
       await queryRunner.manager.update(Property, property_id, {
-        move_in_date: null,
         property_status: PropertyStatusEnum.VACANT,
       });
 

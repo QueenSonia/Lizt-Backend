@@ -30,13 +30,6 @@ export class CreatePropertyDto {
   property_status: PropertyStatusEnum;
 
   @ApiProperty({
-    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
-    description: 'UUID of the owner of the property',
-  })
-  // @IsString()
-  // owner_id: string;
-
-  @ApiProperty({
     example: 'Duplex',
     description: 'Type of the property',
   })
@@ -111,15 +104,6 @@ export class CreatePropertyDto {
   })
   @IsString()
   comment?: string | null;
-
-  @ApiProperty({
-    example: '2024-03-21',
-    description: 'Date tenant moved in',
-    required: false,
-  })
-  @IsString()
-  @IsOptional()
-  move_in_date?: Date | string | null;
 }
 
 export enum TenantStatusEnum {

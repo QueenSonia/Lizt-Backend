@@ -189,14 +189,14 @@ export class UsersService {
     res.cookie('access_token', access_token, {
       httpOnly: true,
       secure: this.configService.get<string>('NODE_ENV') === 'production', // Set to true in production for HTTPS
-      expires: moment().add(1, 'hour').toDate(),
+      expires: moment().add(8, 'hours').toDate(),
       sameSite: 'none',
     });
 
     return res.status(HttpStatus.OK).json({
       user,
       access_token,
-      expires_at: moment().add(1, 'hour').format(),
+      expires_at: moment().add(8, 'hours').format(),
     });
   }
 

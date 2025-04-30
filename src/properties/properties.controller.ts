@@ -61,7 +61,7 @@ export class PropertiesController {
   async createProperty(
     @Body() body: CreatePropertyDto,
     @UploadedFiles() files: Array<Express.Multer.File>,
-    @Req() req: any
+    @Req() req: any,
   ) {
     try {
       if (!files || files.length === 0) {
@@ -74,13 +74,13 @@ export class PropertiesController {
       const uploadedUrls = await Promise.all(
         files.map((file) => this.fileUploadService.uploadFile(file)),
       );
-      let owner_id= req?.user?.id;
+      const owner_id = req?.user?.id;
       body.property_images = uploadedUrls.map((upload) => upload.secure_url);
 
-      let payload = {
+      const payload = {
         owner_id,
-        ...body
-      }
+        ...body,
+      };
 
       return this.propertiesService.createProperty(payload);
     } catch (error) {

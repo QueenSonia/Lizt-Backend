@@ -85,6 +85,23 @@ export class UsersController {
     }
   }
 
+  @ApiOperation({ summary: 'Get One User' })
+  @ApiOkResponse({
+    type: CreateUserDto,
+    description: 'User successfully fetched',
+  })
+  @ApiNotFoundResponse({ description: 'User not found' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get(':id')
+  getUserById(@Param('id', new ParseUUIDPipe()) id: string) {
+    try {
+      return this.usersService.getUserById(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get All Users' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
@@ -107,23 +124,6 @@ export class UsersController {
   getAllUsers(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllUsers(query);
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  @ApiOperation({ summary: 'Get One User' })
-  @ApiOkResponse({
-    type: CreateUserDto,
-    description: 'User successfully fetched',
-  })
-  @ApiNotFoundResponse({ description: 'User not found' })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get(':id')
-  getUserById(@Param('id', new ParseUUIDPipe()) id: string) {
-    try {
-      return this.usersService.getUserById(id);
     } catch (error) {
       throw error;
     }

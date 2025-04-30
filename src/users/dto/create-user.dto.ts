@@ -6,7 +6,6 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  IsUUID,
   Matches,
   MinLength,
 } from 'class-validator';
@@ -73,7 +72,7 @@ export class CreateUserDto {
     description: 'UUID of the property',
     required: false,
   })
-  @IsUUID()
+  @IsString()
   @IsOptional()
   property_id: string;
 }

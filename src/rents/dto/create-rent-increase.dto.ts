@@ -1,12 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  IsUUID,
-} from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateRentIncreaseDto {
   @ApiProperty({
@@ -14,7 +8,7 @@ export class CreateRentIncreaseDto {
     description: 'UUID of the property',
   })
   @IsNotEmpty()
-  @IsUUID()
+  @IsString()
   property_id: string;
 
   @ApiProperty({

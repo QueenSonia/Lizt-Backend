@@ -1,12 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsNotEmpty,
-  IsUUID,
-  IsNumber,
-  IsEnum,
-  IsString,
-} from 'class-validator';
+import { IsNotEmpty, IsNumber, IsEnum, IsString } from 'class-validator';
 
 export enum RentStatusEnum {
   PENDING = 'pending',
@@ -20,7 +14,7 @@ export class CreateRentDto {
     description: 'UUID of the property',
   })
   @IsNotEmpty()
-  @IsUUID()
+  @IsString()
   property_id: string;
 
   @ApiProperty({
@@ -28,7 +22,7 @@ export class CreateRentDto {
     description: 'UUID of the tenant',
   })
   @IsNotEmpty()
-  @IsUUID()
+  @IsString()
   tenant_id: string;
 
   @ApiProperty({

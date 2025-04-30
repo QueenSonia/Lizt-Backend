@@ -49,6 +49,8 @@ export class UsersService {
     private readonly authService: AuthService,
     @InjectRepository(PasswordResetToken)
     private readonly passwordResetRepository: Repository<PasswordResetToken>,
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepository: Repository<PropertyTenant>,
   ) {}
 
   async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
@@ -278,6 +280,20 @@ export class UsersService {
       );
     }
 
+    if (user?.role === RolesEnum.TENANT) {
+      const findTenantProperty = await this.propertyTenantRepository.findOne({
+        where: {
+          tenant_id: user.id,
+        },
+      });
+      if (!findTenantProperty) {
+        throw new HttpException(
+          `Tenant with id: ${user.id} not found`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+      user['property_id'] = findTenantProperty?.property_id;
+    }
     const tokenData = {
       id: user.id,
       first_name: user.first_name,

@@ -19,7 +19,7 @@ export const config = {
   username: PROD_DB_USERNAME!,
   password: PROD_DB_PASSWORD!,
   database: PROD_DB_NAME!,
-  entities:['dist/**/*.entity{.ts,.js}'],
+  entities: ['dist/**/*.entity{.ts,.js}'],
   synchronize: process.env.NODE_ENV === 'production' ? false : true,
   logging: true,
   migrations: ['dist/src/migrations/*{.ts,.js}'],

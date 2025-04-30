@@ -1,7 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
-  IsDate,
   IsDateString,
   IsEmail,
   IsNotEmpty,
@@ -69,13 +68,14 @@ export class CreateUserDto {
   @IsDateString()
   lease_end_date: Date;
 
-    @ApiProperty({
-      example: '90b7f325-be27-45a7-9688-fa49630cac8f',
-      description: 'UUID of the property',
-    })
-    @IsNotEmpty()
-    @IsUUID()
-    property_id: string;
+  @ApiProperty({
+    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
+    description: 'UUID of the property',
+    required: false,
+  })
+  @IsUUID()
+  @IsOptional()
+  property_id: string;
 }
 
 export class LoginDto {

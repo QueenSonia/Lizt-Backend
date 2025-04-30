@@ -114,7 +114,10 @@ export class ServiceRequestsController {
     @Req() req: any,
   ) {
     try {
-      return this.serviceRequestsService.getPendingAndUrgentRequests(query, req?.user.id);
+      return this.serviceRequestsService.getPendingAndUrgentRequests(
+        query,
+        req?.user.id,
+      );
     } catch (error) {
       throw error;
     }

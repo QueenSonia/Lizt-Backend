@@ -19,7 +19,10 @@ export class ServiceRequest extends BaseEntity {
   issue_category: string;
 
   @Column({ nullable: false, type: 'timestamp' })
-  effective_date: Date;
+  date_reported: Date;
+
+  @Column({ nullable: true, type: 'timestamp' })
+  resolution_date?: Date | null;
 
   @Column({ nullable: false, type: 'text' })
   description: string;

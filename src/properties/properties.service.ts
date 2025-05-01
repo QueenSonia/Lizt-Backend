@@ -8,22 +8,25 @@ import {
 import { UpdatePropertyDto } from './dto/update-property.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Property } from './entities/property.entity';
-import { IsNull, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 import { DateService } from 'src/utils/date.helper';
 import { connectionSource } from 'ormconfig';
 import { PropertyTenant } from './entities/property-tenants.entity';
-import { Rent } from 'src/rents/entities/rent.entity';
 import { config } from 'src/config';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
+import { PropertyGroup } from './entities/property-group.entity';
+import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 
 @Injectable()
 export class PropertiesService {
   constructor(
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(PropertyGroup)
+    private readonly propertyGroupRepository: Repository<PropertyGroup>,
   ) {}
 
   async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
@@ -294,5 +297,76 @@ export class PropertiesService {
       await queryRunner.release();
       await connectionSource.destroy();
     }
+  }
+  async createPropertyGroup(data: CreatePropertyGroupDto, owner_id: string) {
+    const properties = await this.propertyRepository.find({
+      where: {
+        id: In(data.property_ids),
+        owner_id,
+      },
+    });
+
+    if (properties.length !== data.property_ids.length) {
+      throw new HttpException(
+        'Some properties do not exist or do not belong to you',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    return this.propertyGroupRepository.save({
+      name: data.name,
+      property_ids: data.property_ids,
+      owner_id,
+    });
+  }
+
+  async getPropertyGroupById(id: string, owner_id: string) {
+    const propertyGroup = await this.propertyGroupRepository.findOne({
+      where: { id, owner_id },
+    });
+
+    if (!propertyGroup) {
+      throw new HttpException('Property group not found', HttpStatus.NOT_FOUND);
+    }
+
+    const properties = await this.propertyRepository.find({
+      where: { id: In(propertyGroup.property_ids) },
+    });
+
+    return {
+      ...propertyGroup,
+      properties,
+    };
+  }
+
+  async getAllPropertyGroups(owner_id: string) {
+    const propertyGroups = await this.propertyGroupRepository.find({
+      where: { owner_id },
+      order: { created_at: 'DESC' },
+    });
+
+    const allPropertyIds = [
+      ...new Set(propertyGroups.flatMap((group) => group.property_ids)),
+    ];
+
+    const properties = await this.propertyRepository.find({
+      where: { id: In(allPropertyIds) },
+    });
+
+    const propertyMap = new Map(
+      properties.map((property) => [property.id, property]),
+    );
+
+    const groupsWithProperties = propertyGroups.map((group) => ({
+      ...group,
+      properties: group.property_ids
+        .map((id) => propertyMap.get(id))
+        .filter(Boolean),
+    }));
+
+    return {
+      property_groups: groupsWithProperties,
+      total: propertyGroups.length,
+    };
   }
 }

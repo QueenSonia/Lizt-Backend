@@ -2,8 +2,12 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import {
   CreateServiceRequestDto,
   ServiceRequestFilter,
+  ServiceRequestStatusEnum,
 } from './dto/create-service-request.dto';
-import { UpdateServiceRequestDto } from './dto/update-service-request.dto';
+import {
+  UpdateServiceRequestDto,
+  UpdateServiceRequestResponseDto,
+} from './dto/update-service-request.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ServiceRequest } from './entities/service-request.entity';
 import { In, Repository } from 'typeorm';
@@ -53,6 +57,8 @@ export class ServiceRequestsService {
     );
     return this.serviceRequestRepository.save({
       ...data,
+      issue_images: data?.issue_images || null,
+      status: data?.status || ServiceRequestStatusEnum.PENDING,
       request_id: requestId,
     });
   }
@@ -103,7 +109,10 @@ export class ServiceRequestsService {
     return serviceRequest;
   }
 
-  async updateServiceRequestById(id: string, data: UpdateServiceRequestDto) {
+  async updateServiceRequestById(
+    id: string,
+    data: UpdateServiceRequestResponseDto,
+  ) {
     return this.serviceRequestRepository.update(id, data);
   }
 

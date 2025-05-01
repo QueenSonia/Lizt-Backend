@@ -37,6 +37,7 @@ import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { ADMIN_ROLES } from 'src/base.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
+import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 @ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
@@ -109,6 +110,24 @@ export class PropertiesController {
     try {
       query.owner_id = req?.user?.id;
       return this.propertiesService.getAllProperties(query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get All Property Groups' })
+  @ApiOkResponse({
+    description: 'List of property groups with their properties',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('property-groups')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  async getAllPropertyGroups(@Req() req: any) {
+    try {
+      const owner_id = req?.user?.id;
+      return this.propertiesService.getAllPropertyGroups(owner_id);
     } catch (error) {
       throw error;
     }
@@ -254,6 +273,45 @@ export class PropertiesController {
   moveTenantOut(@Body() moveOutData: MoveTenantOutDto) {
     try {
       return this.propertiesService.moveTenantOut(moveOutData);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Create Property Group' })
+  @ApiBody({ type: CreatePropertyGroupDto })
+  @ApiCreatedResponse({ type: CreatePropertyGroupDto })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Post('property-group')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  async createPropertyGroup(
+    @Body() body: CreatePropertyGroupDto,
+    @Req() req: any,
+  ) {
+    try {
+      const owner_id = req?.user?.id;
+      return this.propertiesService.createPropertyGroup(body, owner_id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Property Group Details' })
+  @ApiOkResponse({ description: 'Property group details with properties' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('property-group/:id')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  async getPropertyGroupById(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: any,
+  ) {
+    try {
+      const owner_id = req?.user?.id;
+      return this.propertiesService.getPropertyGroupById(id, owner_id);
     } catch (error) {
       throw error;
     }

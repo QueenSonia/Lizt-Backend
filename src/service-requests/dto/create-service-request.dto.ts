@@ -43,8 +43,8 @@ export class CreateServiceRequestDto {
     description: 'Date when the issue was noticed',
   })
   @IsNotEmpty()
-  @IsString()
-  date_reported: Date | string;
+  @IsDateString()
+  date_reported: Date;
 
   @ApiProperty({
     example:
@@ -55,13 +55,14 @@ export class CreateServiceRequestDto {
   @IsString()
   description: string;
 
-  // @ApiProperty({
-  //   type: 'array',
-  //   items: { type: 'string', format: 'binary' },
-  //   required: false,
-  //   description: 'Images of the issue (optional)',
-  // })
-  // issue_images?: string[] | null;
+  @ApiProperty({
+    type: 'array',
+    items: { type: 'string', format: 'binary' },
+    required: false,
+    description: 'Images of the issue (optional)',
+  })
+  @IsOptional()
+  issue_images?: string[] | null;
 
   @ApiProperty({
     example: 'pending',
@@ -69,6 +70,7 @@ export class CreateServiceRequestDto {
     required: false,
   })
   @IsOptional()
+  @IsString()
   status?: string | null;
 
   @ApiProperty({

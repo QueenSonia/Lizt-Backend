@@ -9,13 +9,18 @@ import {
   ParseUUIDPipe,
   Put,
   Req,
+  UseInterceptors,
+  UploadedFiles,
 } from '@nestjs/common';
 import { ServiceRequestsService } from './service-requests.service';
 import {
   CreateServiceRequestDto,
   ServiceRequestFilter,
 } from './dto/create-service-request.dto';
-import { UpdateServiceRequestDto } from './dto/update-service-request.dto';
+import {
+  UpdateServiceRequestDto,
+  UpdateServiceRequestResponseDto,
+} from './dto/update-service-request.dto';
 import {
   ApiOperation,
   ApiBody,
@@ -26,9 +31,11 @@ import {
   ApiNotFoundResponse,
   ApiQuery,
   ApiTags,
+  ApiConsumes,
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { FileUploadService } from 'src/utils/cloudinary';
+import { FilesInterceptor } from '@nestjs/platform-express';
 
 @ApiTags('Service-Requests')
 @Controller('service-requests')
@@ -39,26 +46,26 @@ export class ServiceRequestsController {
   ) {}
 
   @ApiOperation({ summary: 'Create Service Request' })
-  // @ApiConsumes('multipart/form-data')
+  @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreateServiceRequestDto })
   @ApiCreatedResponse({ type: CreateServiceRequestDto })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  // @UseInterceptors(FilesInterceptor('issue_images', 20))
+  @UseInterceptors(FilesInterceptor('issue_images', 20))
   async createServiceRequest(
     @Body() body: CreateServiceRequestDto,
-    // @UploadedFiles() files?: Array<Express.Multer.File>,
+    @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
-      // if (files?.length) {
-      //   const uploadedUrls = await Promise.all(
-      //     files.map((file) =>
-      //       this.fileUploadService.uploadFile(file, 'service-requests'),
-      //     ),
-      //   );
-      //   body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
-      // }
+      if (files?.length) {
+        const uploadedUrls = await Promise.all(
+          files.map((file) =>
+            this.fileUploadService.uploadFile(file, 'service-requests'),
+          ),
+        );
+        body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
+      }
       return this.serviceRequestsService.createServiceRequest(body);
     } catch (error) {
       throw error;
@@ -130,27 +137,27 @@ export class ServiceRequestsController {
   }
 
   @ApiOperation({ summary: 'Update Service Request' })
-  // @ApiConsumes('multipart/form-data')
-  @ApiBody({ type: UpdateServiceRequestDto })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ type: UpdateServiceRequestResponseDto })
   @ApiOkResponse({ description: 'Service request successfully updated' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
-  // @UseInterceptors(FilesInterceptor('issue_images', 20))
+  @UseInterceptors(FilesInterceptor('issue_images', 20))
   async updateServiceRequestById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdateServiceRequestDto,
-    // @UploadedFiles() files?: Array<Express.Multer.File>,
+    @Body() body: UpdateServiceRequestResponseDto,
+    @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
-      // if (files?.length) {
-      //   const uploadedUrls = await Promise.all(
-      //     files.map((file) =>
-      //       this.fileUploadService.uploadFile(file, 'service-requests'),
-      //     ),
-      //   );
-      //   body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
-      // }
+      if (files?.length) {
+        const uploadedUrls = await Promise.all(
+          files.map((file) =>
+            this.fileUploadService.uploadFile(file, 'service-requests'),
+          ),
+        );
+        body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
+      }
       return this.serviceRequestsService.updateServiceRequestById(id, body);
     } catch (error) {
       throw error;

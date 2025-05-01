@@ -36,6 +36,9 @@ export class Users extends BaseEntity {
   @Column({ nullable: false, type: 'boolean', default: false })
   is_verified: boolean;
 
+  @Column({ nullable: true, type: 'varchar', array: true })
+  logo_urls?: string[] | null;
+
   @Column({ nullable: true, type: 'uuid' })
   creator_id?: string | null;
 

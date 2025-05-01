@@ -158,4 +158,37 @@ export class ServiceRequestsService {
       },
     };
   }
+
+  async getServiceRequestsByTenantId(
+    tenant_id: string,
+    property_id: string,
+    queryParams: ServiceRequestFilter,
+  ) {
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size ? Number(queryParams.size) : 10;
+    const skip = (page - 1) * size;
+    const [serviceRequests, count] =
+      await this.serviceRequestRepository.findAndCount({
+        where: {
+          tenant_id,
+          property_id,
+        },
+        skip,
+        take: size,
+        order: { created_at: 'DESC' },
+      });
+    const totalPages = Math.ceil(count / size);
+    return {
+      service_requests: serviceRequests,
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
+  }
 }

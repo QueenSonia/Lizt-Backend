@@ -43,8 +43,8 @@ export class CreateServiceRequestDto {
     description: 'Date when the issue was noticed',
   })
   @IsNotEmpty()
-  @IsString()
-  date_reported: Date | string;
+  @IsDateString()
+  date_reported: Date;
 
   @ApiProperty({
     example:

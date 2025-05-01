@@ -11,9 +11,16 @@ import {
   Res,
   Delete,
   Req,
+  UseInterceptors,
+  UploadedFiles,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
-import { CreateUserDto, LoginDto, UserFilter } from './dto/create-user.dto';
+import {
+  CreateUserDto,
+  LoginDto,
+  UploadLogoDto,
+  UserFilter,
+} from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
@@ -23,6 +30,7 @@ import { SkipAuth } from 'src/auth/auth.decorator';
 import {
   ApiBadRequestResponse,
   ApiBody,
+  ApiConsumes,
   ApiCookieAuth,
   ApiCreatedResponse,
   ApiNotFoundResponse,
@@ -35,6 +43,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
+import { FilesInterceptor } from '@nestjs/platform-express';
 
 @ApiTags('Users')
 @Controller('users')
@@ -216,5 +225,27 @@ export class UsersController {
     const { token, newPassword } = body;
     await this.usersService.resetPassword(token, newPassword);
     return { message: 'Password reset successful' };
+  }
+
+  @ApiOperation({ summary: 'Upload Admin Logos' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ type: UploadLogoDto })
+  @ApiOkResponse({ description: 'Logos uploaded successfully' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Post('upload-logos')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  @UseInterceptors(FilesInterceptor('logos', 10))
+  async uploadLogos(
+    @UploadedFiles() files: Array<Express.Multer.File>,
+    @Req() req: any,
+  ) {
+    try {
+      const userId = req?.user?.id;
+      return await this.usersService.uploadLogos(userId, files);
+    } catch (error) {
+      throw error;
+    }
   }
 }

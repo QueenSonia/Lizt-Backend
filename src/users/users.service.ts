@@ -39,6 +39,7 @@ import {
 } from 'src/properties/dto/create-property.dto';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { DateService } from 'src/utils/date.helper';
+import { FileUploadService } from 'src/utils/cloudinary';
 
 @Injectable()
 export class UsersService {
@@ -51,6 +52,7 @@ export class UsersService {
     private readonly passwordResetRepository: Repository<PasswordResetToken>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
+    private readonly fileUploadService: FileUploadService,
   ) {}
 
   async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
@@ -398,5 +400,38 @@ export class UsersService {
         hasNextPage: page < totalPages,
       },
     };
+  }
+
+  async uploadLogos(
+    userId: string,
+    files: Express.Multer.File[],
+  ): Promise<Users> {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId, role: RolesEnum.ADMIN },
+    });
+
+    if (!user) {
+      throw new HttpException('Admin not found', HttpStatus.NOT_FOUND);
+    }
+
+    try {
+      const uploadedUrls = await Promise.all(
+        files.map((file) =>
+          this.fileUploadService.uploadFile(file, 'admin-logos'),
+        ),
+      );
+
+      const updatedUser = await this.usersRepository.save({
+        ...user,
+        logo_urls: uploadedUrls.map((upload) => upload.secure_url),
+      });
+
+      return updatedUser;
+    } catch (error) {
+      throw new HttpException(
+        'Error uploading logos',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }

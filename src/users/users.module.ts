@@ -6,6 +6,7 @@ import { Users } from './entities/user.entity';
 import { AuthModule } from 'src/auth/auth.module';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { FileUploadService } from 'src/utils/cloudinary';
 
 @Module({
   imports: [
@@ -13,7 +14,7 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
     AuthModule,
   ],
   controllers: [UsersController],
-  providers: [UsersService],
+  providers: [UsersService, FileUploadService],
   exports: [UsersService],
 })
 export class UsersModule {}

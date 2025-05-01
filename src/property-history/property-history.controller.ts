@@ -8,6 +8,7 @@ import {
   Delete,
   Query,
   ParseUUIDPipe,
+  Req,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -113,6 +114,33 @@ export class PropertyHistoryController {
   deletePropertyHistoryById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.propertyHistoryService.deletePropertyHistoryById(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Property Histories by Tenant ID' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Property histories for tenant successfully fetched',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('tenant-property/:property_id')
+  async getServiceRequestsByTenantAndProperty(
+    @Param('property_id', new ParseUUIDPipe()) property_id: string,
+    @Query() query: PropertyHistoryFilter,
+    @Req() req: any,
+  ) {
+    try {
+      const tenant_id = req?.user?.id;
+      return this.propertyHistoryService.getPropertyHistoryByTenantId(
+        tenant_id,
+        property_id,
+        query,
+      );
     } catch (error) {
       throw error;
     }

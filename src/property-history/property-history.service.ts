@@ -80,4 +80,37 @@ export class PropertyHistoryService {
     await this.getPropertyHistoryById(id);
     return this.propertyHistoryRepository.delete(id);
   }
+
+  async getPropertyHistoryByTenantId(
+    tenant_id: string,
+    property_id: string,
+    queryParams: PropertyHistoryFilter,
+  ) {
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size ? Number(queryParams.size) : 10;
+    const skip = (page - 1) * size;
+    const [propertyHistories, count] =
+      await this.propertyHistoryRepository.findAndCount({
+        where: {
+          tenant_id,
+          property_id,
+        },
+        skip,
+        take: size,
+        order: { created_at: 'DESC' },
+      });
+    const totalPages = Math.ceil(count / size);
+    return {
+      property_histories: propertyHistories,
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
+  }
 }

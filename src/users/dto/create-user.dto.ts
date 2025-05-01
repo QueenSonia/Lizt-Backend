@@ -103,6 +103,20 @@ export class LoginDto {
   password: string;
 }
 
+export class UploadLogoDto {
+  @ApiProperty({
+    type: 'array',
+    items: {
+      type: 'string',
+      format: 'binary',
+    },
+    description: 'Admin logo image files (max 5)',
+    required: true,
+  })
+  @IsOptional()
+  logos: Express.Multer.File[];
+}
+
 export interface IUser {
   id?: string;
   first_name: string;

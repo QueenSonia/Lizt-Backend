@@ -11,6 +11,7 @@ import { PropertiesModule } from './properties/properties.module';
 import { RentsModule } from './rents/rents.module';
 import { ServiceRequestsModule } from './service-requests/service-requests.module';
 import { PropertyHistoryModule } from './property-history/property-history.module';
+import { NoticeAgreementModule } from './notice-agreements/notice-agreement.module';
 
 dotenv.config();
 
@@ -37,6 +38,7 @@ dotenv.config();
     RentsModule,
     ServiceRequestsModule,
     PropertyHistoryModule,
+    NoticeAgreementModule
   ],
   controllers: [AppController],
   providers: [AppService],

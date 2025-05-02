@@ -6,8 +6,9 @@ import { Users } from 'src/users/entities/user.entity';
 import { JSDOM } from 'jsdom';
 import pdf from 'html-pdf';
 
-
-export const generatePdfBufferFromEditor = (htmlContent: string): Promise<Buffer> => {
+export const generatePdfBufferFromEditor = (
+  htmlContent: string,
+): Promise<Buffer> => {
   return new Promise((resolve, reject) => {
     const cssStyles = `
       <style>
@@ -82,8 +83,8 @@ export const generatePdfBufferFromEditor = (htmlContent: string): Promise<Buffer
       </html>
     `;
 
-    const options = {
-      format: 'A4',
+    const options: pdf.CreateOptions = {
+      format: 'A4' as const,
       border: '1in',
     };
 
@@ -93,7 +94,6 @@ export const generatePdfBufferFromEditor = (htmlContent: string): Promise<Buffer
     });
   });
 };
-
 
 // export const generatePdfBufferFromEditor = async (
 //   htmlContent: string
@@ -125,7 +125,7 @@ export const generatePdfBufferFromEditor = (htmlContent: string): Promise<Buffer
 // };
 
 export const generatePdfBufferFromHtml = async (
-  html: string
+  html: string,
 ): Promise<Buffer> => {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 50 });
@@ -140,11 +140,20 @@ export const generatePdfBufferFromHtml = async (
 
     Array.from(elements).forEach((el: Element) => {
       if (el.tagName === 'H1') {
-        doc.fontSize(20).text(el.textContent || '', { underline: true }).moveDown();
+        doc
+          .fontSize(20)
+          .text(el.textContent || '', { underline: true })
+          .moveDown();
       } else if (el.tagName === 'P') {
-        doc.fontSize(12).text(el.textContent || '').moveDown();
+        doc
+          .fontSize(12)
+          .text(el.textContent || '')
+          .moveDown();
       } else if (el.tagName === 'STRONG') {
-        doc.font('Helvetica-Bold').text(el.textContent || '').moveDown();
+        doc
+          .font('Helvetica-Bold')
+          .text(el.textContent || '')
+          .moveDown();
       } else {
         doc.text(el.textContent || '').moveDown();
       }
@@ -154,17 +163,15 @@ export const generatePdfBufferFromHtml = async (
   });
 };
 
-
-
 export const generatePdfFromTemplate = async (
   agreement: NoticeAgreement,
-  tenant: Users
+  tenant: Users,
 ): Promise<string> => {
-    const outputDir = path.join(process.cwd(), 'src', 'generated-contracts');
+  const outputDir = path.join(process.cwd(), 'src', 'generated-contracts');
 
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
 
   const pdfFileName = `${Date.now()}-notice.pdf`;
   const pdfPath = path.join(outputDir, pdfFileName);
@@ -201,95 +208,138 @@ export const generatePdfFromTemplate = async (
   });
 };
 
-
-
 export const generatePdfBufferFromTemplate = async (
-    agreement: any,
-    tenant: Users
-  ): Promise<Buffer> => {
-    return new Promise((resolve, reject) => {
-      const doc = new PDFDocument({ margin: 50 });
-      const buffers: Buffer[] = [];
-  
-      doc.on('data', buffers.push.bind(buffers));
-      doc.on('end', () => {
-        const pdfBuffer = Buffer.concat(buffers);
-        resolve(pdfBuffer);
-      });
-  
-      // Header
-      doc.fontSize(20).text(`${agreement.notice_type.toUpperCase()}`, { align: 'left' });
-      doc.moveDown(0.5);
-      doc.fontSize(12).text('27th January 2025', { align: 'left' });
-      doc.moveDown(1.5);
-  
-      // Address Block
-      doc.font('Helvetica-Bold').text(`Ms. ${tenant.first_name} ${tenant.last_name}`);
-      doc.font('Helvetica').text(`${agreement.property_name}`);
-      doc.text(`${agreement.property_location}`);
-    //   doc.text('Lekki Phase 1, Lagos State.');
-      doc.moveDown();
-  
-      // Salutation
-      doc.text(`Dear ${tenant.last_name},`);
-      doc.moveDown();
-  
-      // Body Title
-      doc.font('Helvetica-Bold').text(`${agreement.notice_type.toUpperCase()}`);
-      doc.moveDown(0.5);
-  
-      // Body Paragraph
-      doc.font('Helvetica').fontSize(11).text(
-        `This is to formally notify you that your tenancy over the one-bedroom apartment situated at ${agreement.property_location} which you currently occupy expires on the 31st of January 2025. Following the expiry of your tenancy, we hereby make you an offer to rent the apartment for another period upon the following terms:`,
-        { lineGap: 4 }
-      );
-      doc.moveDown();
-  
-      // Bullet Points
-      doc.font('Helvetica-Bold').text('• Permitted Use:', { continued: true }).font('Helvetica').text(
-        ' Apartment is not permitted for any other use apart from residential use by the Tenant. Any other use, commercial or otherwise is strictly prohibited.'
-      );
-  
-      doc.font('Helvetica-Bold').text('• Rent:', { continued: true }).font('Helvetica').text(' ₦2,800,000');
-      doc.font('Helvetica-Bold').text('• Service Charge:', { continued: true }).font('Helvetica').text(' ₦700,000');
-      doc.font('Helvetica-Bold').text('• Tenancy Term:', { continued: true }).font('Helvetica').text(' One Year Fixed');
-      doc.font('Helvetica-Bold').text('• Tenancy Expiry Date:', { continued: true }).font('Helvetica').text(
-        ' Commencing on the 1st of February 2025 and Expiring on the 31st of January 2026.'
-      );
-      doc.moveDown();
-  
-      // Payment instructions
-      doc.font('Helvetica').fontSize(11).text(
-        `Please make ALL payments on or before the due date of 31st of January 2025 into the company's account provided below:`,
-        { lineGap: 4 }
-      );
-      doc.moveDown();
-  
-      // Account info
-      doc.font('Helvetica-Bold').text('Account No:', { continued: true }).font('Helvetica').text(' 5401475004');
-      doc.font('Helvetica-Bold').text('Account Bank:', { continued: true }).font('Helvetica').text(' Providus Bank');
-      doc.font('Helvetica-Bold').text('Account Name:', { continued: true }).font('Helvetica').text(' Panda Homes Nigeria Limited');
-      doc.moveDown(2);
-  
-      // Signature
-      doc.text('Yours faithfully,');
-      doc.moveDown();
-      doc.font('Helvetica-Bold').text('Olatunji Oginni');
-      doc.font('Helvetica').text('Founder/CEO');
-      doc.moveDown(3);
-  
-      // Footer line
-      doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-      doc.moveDown(1);
-  
-      // Footer content
-      doc.fontSize(10).text(
-        '17 Ayinde Akinmade Street Lekki Phase 1, Lagos State',
-        { align: 'center' }
-      );
-      doc.fillColor('blue').text('www.getpanda.ng', { align: 'center', link: 'https://www.getpanda.ng' });
-  
-      doc.end();
+  agreement: any,
+  tenant: Users,
+): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 50 });
+    const buffers: Buffer[] = [];
+
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {
+      const pdfBuffer = Buffer.concat(buffers);
+      resolve(pdfBuffer);
     });
-  };
-  
+
+    // Header
+    doc
+      .fontSize(20)
+      .text(`${agreement.notice_type.toUpperCase()}`, { align: 'left' });
+    doc.moveDown(0.5);
+    doc.fontSize(12).text('27th January 2025', { align: 'left' });
+    doc.moveDown(1.5);
+
+    // Address Block
+    doc
+      .font('Helvetica-Bold')
+      .text(`Ms. ${tenant.first_name} ${tenant.last_name}`);
+    doc.font('Helvetica').text(`${agreement.property_name}`);
+    doc.text(`${agreement.property_location}`);
+    //   doc.text('Lekki Phase 1, Lagos State.');
+    doc.moveDown();
+
+    // Salutation
+    doc.text(`Dear ${tenant.last_name},`);
+    doc.moveDown();
+
+    // Body Title
+    doc.font('Helvetica-Bold').text(`${agreement.notice_type.toUpperCase()}`);
+    doc.moveDown(0.5);
+
+    // Body Paragraph
+    doc
+      .font('Helvetica')
+      .fontSize(11)
+      .text(
+        `This is to formally notify you that your tenancy over the one-bedroom apartment situated at ${agreement.property_location} which you currently occupy expires on the 31st of January 2025. Following the expiry of your tenancy, we hereby make you an offer to rent the apartment for another period upon the following terms:`,
+        { lineGap: 4 },
+      );
+    doc.moveDown();
+
+    // Bullet Points
+    doc
+      .font('Helvetica-Bold')
+      .text('• Permitted Use:', { continued: true })
+      .font('Helvetica')
+      .text(
+        ' Apartment is not permitted for any other use apart from residential use by the Tenant. Any other use, commercial or otherwise is strictly prohibited.',
+      );
+
+    doc
+      .font('Helvetica-Bold')
+      .text('• Rent:', { continued: true })
+      .font('Helvetica')
+      .text(' ₦2,800,000');
+    doc
+      .font('Helvetica-Bold')
+      .text('• Service Charge:', { continued: true })
+      .font('Helvetica')
+      .text(' ₦700,000');
+    doc
+      .font('Helvetica-Bold')
+      .text('• Tenancy Term:', { continued: true })
+      .font('Helvetica')
+      .text(' One Year Fixed');
+    doc
+      .font('Helvetica-Bold')
+      .text('• Tenancy Expiry Date:', { continued: true })
+      .font('Helvetica')
+      .text(
+        ' Commencing on the 1st of February 2025 and Expiring on the 31st of January 2026.',
+      );
+    doc.moveDown();
+
+    // Payment instructions
+    doc
+      .font('Helvetica')
+      .fontSize(11)
+      .text(
+        `Please make ALL payments on or before the due date of 31st of January 2025 into the company's account provided below:`,
+        { lineGap: 4 },
+      );
+    doc.moveDown();
+
+    // Account info
+    doc
+      .font('Helvetica-Bold')
+      .text('Account No:', { continued: true })
+      .font('Helvetica')
+      .text(' 5401475004');
+    doc
+      .font('Helvetica-Bold')
+      .text('Account Bank:', { continued: true })
+      .font('Helvetica')
+      .text(' Providus Bank');
+    doc
+      .font('Helvetica-Bold')
+      .text('Account Name:', { continued: true })
+      .font('Helvetica')
+      .text(' Panda Homes Nigeria Limited');
+    doc.moveDown(2);
+
+    // Signature
+    doc.text('Yours faithfully,');
+    doc.moveDown();
+    doc.font('Helvetica-Bold').text('Olatunji Oginni');
+    doc.font('Helvetica').text('Founder/CEO');
+    doc.moveDown(3);
+
+    // Footer line
+    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+    doc.moveDown(1);
+
+    // Footer content
+    doc
+      .fontSize(10)
+      .text('17 Ayinde Akinmade Street Lekki Phase 1, Lagos State', {
+        align: 'center',
+      });
+    doc.fillColor('blue').text('www.getpanda.ng', {
+      align: 'center',
+      link: 'https://www.getpanda.ng',
+    });
+
+    doc.end();
+  });
+};

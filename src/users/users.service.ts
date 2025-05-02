@@ -281,14 +281,14 @@ export class UsersService {
         { password: hashedPassword, is_verified: true },
       );
     }
-
+    const userObject = {};
     if (user?.role === RolesEnum.TENANT) {
       const findTenantProperty = await this.propertyTenantRepository.findOne({
         where: {
           tenant_id: user.id,
         },
       });
-      user['property_id'] = findTenantProperty?.property_id;
+      userObject['property_id'] = findTenantProperty?.property_id;
     }
     const tokenData = {
       id: user.id,
@@ -309,7 +309,20 @@ export class UsersService {
     });
 
     return res.status(HttpStatus.OK).json({
-      user,
+      user: {
+        ...userObject,
+        id: user?.id,
+        first_name: user?.first_name,
+        last_name: user?.last_name,
+        email: user?.email,
+        phone_number: user?.phone_number,
+        role: user?.role,
+        is_verified: user?.is_verified,
+        logo_urls: user?.logo_urls,
+        creator_id: user?.creator_id,
+        created_at: user?.created_at,
+        updated_at: user?.updated_at,
+      },
       access_token,
       expires_at: moment().add(8, 'hours').format(),
     });

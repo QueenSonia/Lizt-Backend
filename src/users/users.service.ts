@@ -248,6 +248,32 @@ export class UsersService {
     return user;
   }
 
+  async getUserFields(
+    user_id: string,
+    fields: string[],
+  ): Promise<Partial<IUser>> {
+    const selectFields = fields.reduce(
+      (acc, field) => {
+        acc[field] = true;
+        return acc;
+      },
+      {} as Record<string, boolean>,
+    );
+
+    const user = await this.usersRepository.findOne({
+      where: { id: user_id },
+      select: selectFields,
+    });
+
+    if (!user) {
+      throw new HttpException(
+        `User with id: ${user_id} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return user;
+  }
+
   async updateUserById(id: string, data: UpdateUserDto) {
     return this.usersRepository.update(id, data);
   }

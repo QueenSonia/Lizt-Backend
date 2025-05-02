@@ -5,6 +5,7 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
 import { Rent } from 'src/rents/entities/rent.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
+import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 
 @Unique(['email'])
 @Unique(['phone_number'])
@@ -56,4 +57,7 @@ export class Users extends BaseEntity {
 
   @OneToMany(() => PropertyHistory, (ph) => ph.tenant)
   property_histories: PropertyHistory[];
+
+  @OneToMany(() => NoticeAgreement, (na) => na.tenant)
+  notice_agreements: NoticeAgreement[];
 }

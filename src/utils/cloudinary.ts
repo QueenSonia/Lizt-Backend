@@ -48,4 +48,27 @@ export class FileUploadService {
       streamifier.createReadStream(file.buffer).pipe(uploadStream);
     });
   }
+
+  async uploadBuffer(
+    buffer: Buffer,
+    filename: string,
+    folder: string = 'notices',
+  ): Promise<UploadApiResponse> {
+    return new Promise<UploadApiResponse>((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder,
+          resource_type: 'raw',
+          public_id: filename.replace('.pdf', ''),
+        },
+        (error, result) => {
+          if (error) return reject(error);
+          resolve(result as UploadApiResponse);
+        },
+      );
+  
+      streamifier.createReadStream(buffer).pipe(uploadStream);
+    });
+  }
+  
 }

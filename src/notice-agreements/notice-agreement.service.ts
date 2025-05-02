@@ -48,7 +48,7 @@ export class NoticeAgreementService {
       ...dto,
       notice_id: `NTC-${uuidv4().slice(0, 8)}`,
       property_name: property.name,
-      tenant_name: tenant.first_name + " " + tenant.last_name,
+      tenant_name: tenant.first_name + ' ' + tenant.last_name,
     }) as any;
 
     await this.noticeRepo.save(agreement);
@@ -84,13 +84,11 @@ export class NoticeAgreementService {
   }
 
   async getAllNoticeAgreement(ownerId: string) {
-
-    console.log(ownerId)
+    console.log(ownerId);
     return await this.noticeRepo
       .createQueryBuilder('notice')
       .leftJoinAndSelect('notice.property', 'property')
       .where('property.owner_id = :ownerId', { ownerId })
       .getMany();
   }
-  
 }

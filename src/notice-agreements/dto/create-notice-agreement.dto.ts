@@ -1,5 +1,16 @@
-import { IsEnum, IsOptional, IsString, IsUUID, IsDateString, IsArray } from 'class-validator';
-import { NoticeStatus, NoticeType, SendVia } from '../entities/notice-agreement.entity';
+import {
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsUUID,
+  IsDateString,
+  IsArray,
+} from 'class-validator';
+import {
+  NoticeStatus,
+  NoticeType,
+  SendVia,
+} from '../entities/notice-agreement.entity';
 
 export class CreateNoticeAgreementDto {
   @IsEnum(NoticeType)
@@ -23,5 +34,5 @@ export class CreateNoticeAgreementDto {
   tenant_id: string;
 
   @IsString()
-  html_content:string
+  html_content: string;
 }

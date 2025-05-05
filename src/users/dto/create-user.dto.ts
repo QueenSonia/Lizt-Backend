@@ -129,6 +129,7 @@ export interface IUser {
 }
 
 export interface UserFilter {
+  search?:string
   first_name?: string;
   last_name?: string;
   email?: string;

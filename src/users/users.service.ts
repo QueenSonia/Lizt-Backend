@@ -23,7 +23,7 @@ import {
   clientSignUpEmailTemplate,
   EmailSubject,
 } from 'src/utils/email-template';
-import { buildUserFilter } from 'src/filters/query-filter';
+import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { Response } from 'express';
 import moment from 'moment';
 import { config } from 'src/config';
@@ -236,6 +236,47 @@ export class UsersService {
       },
     };
   }
+
+
+  async getAllTenants(queryParams: UserFilter) {
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size
+      ? Number(queryParams.size)
+      : config.DEFAULT_PER_PAGE;
+    const skip = (page - 1) * size;
+  
+    queryParams.role = RolesEnum.TENANT;
+  
+    const qb = this.usersRepository
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.property_tenants', 'property_tenants')
+      .leftJoinAndSelect('property_tenants.property', 'property')
+      .leftJoinAndSelect('user.rents', 'rents')
+      .where('user.role = :role', { role: RolesEnum.TENANT.toLowerCase() });
+  
+    buildUserFilterQB(qb, queryParams); // apply search & filters
+  
+    qb.orderBy('user.created_at', 'DESC')
+      .skip(skip)
+      .take(size);
+  
+    const [users, count] = await qb.getManyAndCount();
+  
+    const totalPages = Math.ceil(count / size);
+    return {
+      users,
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
+  }
+  
 
   async getUserById(id: string): Promise<IUser> {
     const user = await this.usersRepository.findOne({ where: { id } });

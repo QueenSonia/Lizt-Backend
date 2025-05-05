@@ -67,6 +67,34 @@ export class UsersController {
     }
   }
 
+
+  @ApiOperation({ summary: 'Get All Users' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiQuery({ name: 'first_name', required: false, type: String })
+  @ApiQuery({ name: 'last_name', required: false, type: String })
+  @ApiQuery({ name: 'role', required: false, type: String })
+  @ApiQuery({ name: 'email', required: false, type: String })
+  @ApiQuery({ name: 'phone_number', required: false, type: String })
+  @ApiQuery({ name: 'start_date', required: false, type: String })
+  @ApiQuery({ name: 'end_date', required: false, type: String })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Paginated list of users',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('/tenants')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  getAllTenants(@Query() query: UserFilter) {
+    try {
+      return this.usersService.getAllTenants(query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get Tenants Created By An Admin' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
@@ -137,6 +165,7 @@ export class UsersController {
       throw error;
     }
   }
+
 
   @ApiOperation({ summary: 'Update User' })
   @ApiBody({ type: UpdateUserDto })

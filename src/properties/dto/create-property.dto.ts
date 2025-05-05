@@ -18,10 +18,10 @@ export class CreatePropertyDto {
   @IsString()
   location: string;
 
-  @ApiProperty({ example: 'vacant', description: 'Status of the property' })
-  @IsNotEmpty()
-  @IsEnum(PropertyStatusEnum)
-  property_status: PropertyStatusEnum;
+  // @ApiProperty({ example: 'vacant', description: 'Status of the property' })
+  // @IsNotEmpty()
+  // @IsEnum(PropertyStatusEnum)
+  // property_status: PropertyStatusEnum;
 
   @ApiProperty({
     example: 'Duplex',
@@ -53,13 +53,13 @@ export class CreatePropertyDto {
   @Type(() => Number)
   rental_price: number;
 
-  @ApiProperty({
-    example: 'monthly',
-    description: 'Frequency of payment for the property',
-  })
-  @IsNotEmpty()
-  @IsString()
-  payment_frequency: string;
+  // @ApiProperty({
+  //   example: 'monthly',
+  //   description: 'Frequency of payment for the property',
+  // })
+  // @IsNotEmpty()
+  // @IsString()
+  // payment_frequency: string;
 
   @ApiProperty({
     example: 20000,
@@ -81,13 +81,13 @@ export class CreatePropertyDto {
   @Type(() => Number)
   service_charge: number;
 
-  @ApiProperty({
-    example: 'Available now',
-    description: 'Additional notes about the property',
-    required: false,
-  })
-  @IsString()
-  comment?: string | null;
+  // @ApiProperty({
+  //   example: 'Available now',
+  //   description: 'Additional notes about the property',
+  //   required: false,
+  // })
+  // @IsString()
+  // comment?: string | null;
 }
 
 export enum TenantStatusEnum {
@@ -96,6 +96,7 @@ export enum TenantStatusEnum {
 }
 
 export interface PropertyFilter {
+  search?:string
   name?: string;
   location?: string;
   property_status?: string;

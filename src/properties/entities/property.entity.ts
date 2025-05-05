@@ -17,6 +17,9 @@ export class Property extends BaseEntity {
   @Column({ nullable: false, type: 'varchar' })
   location: string;
 
+  @Column({ nullable: true, type: 'varchar' })
+  description: string;
+
   @Column({
     nullable: false,
     type: 'enum',
@@ -40,7 +43,7 @@ export class Property extends BaseEntity {
   @Column({ type: 'int', nullable: false })
   rental_price: number;
 
-  @Column({ nullable: false, type: 'varchar' })
+  @Column({ nullable: true, type: 'varchar' })
   payment_frequency: string;
 
   @Column({ type: 'int', nullable: false })

@@ -99,6 +99,7 @@ export class PropertiesController {
   @ApiQuery({ name: 'owner_id', required: false, type: String })
   @ApiQuery({ name: 'start_date', required: false, type: String })
   @ApiQuery({ name: 'end_date', required: false, type: String })
+  @ApiQuery({ name: 'search', required: false, type: String })
   @ApiOkResponse({
     type: PaginationResponseDto,
     description: 'Paginated list of properties',

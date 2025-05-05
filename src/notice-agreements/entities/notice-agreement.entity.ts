@@ -1,13 +1,7 @@
 import { BaseEntity } from 'src/base.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { Users } from 'src/users/entities/user.entity';
-import {
-  Column,
-  Entity,
-  JoinColumn,
-  ManyToOne,
-  PrimaryGeneratedColumn,
-} from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 
 export enum NoticeStatus {
   ACKNOWLEDGED = 'acknowledged',

@@ -76,7 +76,4 @@ export class Property extends BaseEntity {
 
   @OneToMany(() => NoticeAgreement, (na) => na.property)
   notice_agreements: NoticeAgreement[];
-
-
-
 }

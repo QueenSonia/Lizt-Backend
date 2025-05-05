@@ -2,17 +2,17 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NoticeAgreement } from './entities/notice-agreement.entity';
-import { CreateNoticeAgreementDto } from './dto/create-notice-agreement.dto';
+import {
+  CreateNoticeAgreementDto,
+  NoticeAgreementFilter,
+} from './dto/create-notice-agreement.dto';
 import { Property } from 'src/properties/entities/property.entity';
 import { Users } from 'src/users/entities/user.entity';
-import {
-  generatePdfBufferFromEditor,
-  generatePdfBufferFromTemplate,
-  generatePdfFromTemplate,
-} from './utils/pdf-generator';
-import { sendViaWhatsappOrEmail } from './utils/sender';
+import { generatePdfBufferFromEditor } from './utils/pdf-generator';
+import { sendEmailWithAttachment } from './utils/sender';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { v4 as uuidv4 } from 'uuid';
+import { config } from 'src/config';
 @Injectable()
 export class NoticeAgreementService {
   constructor(
@@ -31,7 +31,7 @@ export class NoticeAgreementService {
       relations: ['property_tenants'],
     });
 
-    let doesTenantExist = property?.property_tenants.find(
+    const doesTenantExist = property?.property_tenants.find(
       (tenant) => tenant.tenant_id === dto.tenant_id,
     );
 
@@ -48,13 +48,10 @@ export class NoticeAgreementService {
       ...dto,
       notice_id: `NTC-${uuidv4().slice(0, 8)}`,
       property_name: property.name,
-      tenant_name: tenant.first_name + " " + tenant.last_name,
+      tenant_name: tenant.first_name + ' ' + tenant.last_name,
     }) as any;
 
     await this.noticeRepo.save(agreement);
-
-    // agreement.effective_date = new Date(agreement.effective_date);
-    // agreement.property_location = property.location
 
     const pdfBuffer = await generatePdfBufferFromEditor(dto.html_content);
     const filename = `${Date.now()}-notice.pdf`;
@@ -67,7 +64,13 @@ export class NoticeAgreementService {
     agreement.notice_image = uploadResult.secure_url;
     await this.noticeRepo.save(agreement);
 
-    // agreement.notice_image = pdfPath
+    try {
+      await sendEmailWithAttachment(uploadResult.secure_url, tenant.email);
+      console.log(`Notice agreement sent successfully to ${tenant.email}`);
+    } catch (error) {
+      console.error('Failed to send notice agreement:', error);
+    }
+
     // await sendViaWhatsappOrEmail(
     //     pdfPath,
     //     agreement.send_via,
@@ -84,13 +87,72 @@ export class NoticeAgreementService {
   }
 
   async getAllNoticeAgreement(ownerId: string) {
-
-    console.log(ownerId)
+    console.log(ownerId);
     return await this.noticeRepo
       .createQueryBuilder('notice')
       .leftJoinAndSelect('notice.property', 'property')
       .where('property.owner_id = :ownerId', { ownerId })
       .getMany();
   }
-  
+
+  async resendNoticeAgreement(id: string) {
+    const notice = await this.noticeRepo.findOne({
+      where: { id },
+      relations: ['tenant'],
+    });
+
+    if (!notice) {
+      throw new NotFoundException('Notice agreement not found');
+    }
+
+    if (!notice.notice_image) {
+      throw new NotFoundException('Notice agreement PDF not found');
+    }
+
+    try {
+      await sendEmailWithAttachment(notice.notice_image, notice.tenant.email);
+      console.log(
+        `Notice agreement resent successfully to ${notice.tenant.email}`,
+      );
+      return { message: 'Notice agreement sent successfully' };
+    } catch (error) {
+      console.error('Failed to resend notice agreement:', error);
+      throw new Error('Failed to send notice agreement');
+    }
+  }
+
+  async getNoticeAgreementsByTenantId(
+    tenant_id: string,
+    queryParams: NoticeAgreementFilter,
+  ) {
+    const page = queryParams?.page
+      ? Number(queryParams?.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size
+      ? Number(queryParams.size)
+      : config.DEFAULT_PER_PAGE;
+    const skip = (page - 1) * size;
+
+    const [notices, count] = await this.noticeRepo.findAndCount({
+      where: {
+        tenant_id,
+      },
+      relations: ['property'],
+      skip,
+      take: size,
+      order: { created_at: 'DESC' },
+    });
+
+    const totalPages = Math.ceil(count / size);
+    return {
+      notice_agreements: notices,
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
+  }
 }

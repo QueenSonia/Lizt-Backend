@@ -66,9 +66,8 @@ export class FileUploadService {
           resolve(result as UploadApiResponse);
         },
       );
-  
+
       streamifier.createReadStream(buffer).pipe(uploadStream);
     });
   }
-  
 }

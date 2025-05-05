@@ -1,13 +1,11 @@
-// utils/sender.ts
 import * as nodemailer from 'nodemailer';
-import * as fs from 'fs';
 import { SendVia } from '../entities/notice-agreement.entity';
 
 export const sendViaWhatsappOrEmail = async (
   filePath: string,
   sendVia: SendVia[],
   recipientEmail?: string,
-  phoneNumber?: string
+  phoneNumber?: string,
 ) => {
   if (sendVia.includes(SendVia.EMAIL) && recipientEmail) {
     await sendEmailWithAttachment(filePath, recipientEmail);
@@ -18,12 +16,15 @@ export const sendViaWhatsappOrEmail = async (
   }
 };
 
-const sendEmailWithAttachment = async (filePath: string, recipient: string) => {
+export const sendEmailWithAttachment = async (
+  filePath: string,
+  recipient: string,
+) => {
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-      user: process.env.EMAIL_USER, // e.g., 'you@gmail.com'
-      pass: process.env.EMAIL_PASS, // your app password
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
     },
   });
 

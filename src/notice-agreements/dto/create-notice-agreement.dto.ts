@@ -1,5 +1,5 @@
-import { IsEnum, IsOptional, IsString, IsUUID, IsDateString, IsArray } from 'class-validator';
-import { NoticeStatus, NoticeType, SendVia } from '../entities/notice-agreement.entity';
+import { IsEnum, IsString, IsUUID, IsDateString } from 'class-validator';
+import { NoticeType } from '../entities/notice-agreement.entity';
 
 export class CreateNoticeAgreementDto {
   @IsEnum(NoticeType)
@@ -8,14 +8,6 @@ export class CreateNoticeAgreementDto {
   @IsDateString()
   effective_date: Date;
 
-  @IsArray()
-  @IsEnum(SendVia, { each: true })
-  send_via: SendVia[];
-
-  @IsOptional()
-  @IsString()
-  additional_notes?: string;
-
   @IsUUID()
   property_id: string;
 
@@ -23,5 +15,16 @@ export class CreateNoticeAgreementDto {
   tenant_id: string;
 
   @IsString()
-  html_content:string
+  html_content: string;
+}
+
+export interface NoticeAgreementFilter {
+  notice_type?: string;
+  effective_date?: string;
+  property_id?: string;
+  tenant_id?: string;
+  start_date?: string;
+  end_date?: string;
+  size?: number;
+  page?: number;
 }

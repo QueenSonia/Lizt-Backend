@@ -139,6 +139,41 @@ export class UsersController {
     }
   }
 
+  @ApiOperation({ summary: 'Get Specific User Fields' })
+  @ApiQuery({
+    name: 'fields',
+    required: true,
+    type: [String],
+    description: 'Array of user fields to retrieve',
+    example: [
+      'id',
+      'first_name',
+      'last_name',
+      'email',
+      'phone_number',
+      'role',
+      'is_verified',
+      'logo_urls',
+      'creator_id',
+      'created_at',
+      'updated_at',
+    ],
+  })
+  @ApiOkResponse({ description: 'User fields retrieved successfully' })
+  @ApiNotFoundResponse({ description: 'User not found' })
+  @ApiSecurity('access_token')
+  @Get('fields/:user_id')
+  async getUserFields(
+    @Param('user_id', new ParseUUIDPipe()) user_id: string,
+    @Query('fields') fields: string[],
+  ) {
+    if (!fields.length) {
+      throw new Error('Fields query parameter is required');
+    }
+    console.log('fields', fields);
+    return this.usersService.getUserFields(user_id, fields);
+  }
+
   @ApiOperation({ summary: 'Get All Users' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })

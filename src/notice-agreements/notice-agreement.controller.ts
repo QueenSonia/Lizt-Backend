@@ -24,15 +24,33 @@ import {
   ApiNotFoundResponse,
   ApiTags,
   ApiQuery,
+  ApiResponse,
 } from '@nestjs/swagger';
 import { ADMIN_ROLES } from 'src/base.entity';
 import { Roles } from 'src/auth/role.decorator';
 import { PaginationResponseDto } from './dto/paginate.dto';
+import { NoticeAnalyticsDTO } from './dto/notice-analytics.dto';
 
 @ApiTags('Notice-Agreements')
 @Controller('notice-agreement')
 export class NoticeAgreementController {
   constructor(private readonly service: NoticeAgreementService) {}
+
+  @UseGuards(RoleGuard)
+  @Get('analytics')
+  @ApiOperation({ summary: 'Get analytics of all notice agreements' })
+  @ApiResponse({
+    status: 200,
+    description: 'The analytics data of notice agreements',
+    type: NoticeAnalyticsDTO,
+  })
+  async getAnalytics(@Req() req: any) {
+    const owner_id = req?.user?.id;
+    if (!owner_id) {
+      throw new Error('Owner ID not found');
+    }
+    return await this.service.getNoticeAnalytics(owner_id);
+  }
 
   @ApiOperation({ summary: 'Create Notice Agreement' })
   @ApiBody({ type: CreateNoticeAgreementDto })
@@ -119,4 +137,5 @@ export class NoticeAgreementController {
       throw error;
     }
   }
+
 }

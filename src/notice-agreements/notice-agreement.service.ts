@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { NoticeAgreement } from './entities/notice-agreement.entity';
+import { NoticeAgreement, NoticeStatus } from './entities/notice-agreement.entity';
 import {
   CreateNoticeAgreementDto,
   NoticeAgreementFilter,
@@ -54,14 +54,15 @@ export class NoticeAgreementService {
     await this.noticeRepo.save(agreement);
 
     const pdfBuffer = await generatePdfBufferFromEditor(dto.html_content);
-    const filename = `${Date.now()}-notice.pdf`;
+    const filename = `${Date.now()}-notice`;
     const uploadResult = await this.fileUploadService.uploadBuffer(
       pdfBuffer,
       filename,
       'notices',
+      { resource_type: 'raw', format: 'pdf' } 
     );
 
-    agreement.notice_image = uploadResult.secure_url;
+    agreement.notice_image = `${uploadResult.secure_url}`
     await this.noticeRepo.save(agreement);
 
     try {
@@ -153,6 +154,37 @@ export class NoticeAgreementService {
         totalPages,
         hasNextPage: page < totalPages,
       },
+    };
+  }
+
+  async getNoticeAnalytics(id:string) {
+    const totalNotices = await this.noticeRepo.count({
+      where:{
+        property: {
+          owner_id:id
+        }
+      }
+    });
+
+    console.log({totalNotices})
+    
+    const acknowledgedNotices = await this.noticeRepo.count({
+      where: { status: NoticeStatus.ACKNOWLEDGED },
+    });
+
+    const unacknowledgedNotices = await this.noticeRepo.count({
+      where: { status: NoticeStatus.NOT_ACKNOWLEDGED },
+    });
+
+    const pendingNotices = await this.noticeRepo.count({
+      where: { status: NoticeStatus.PENDING },
+    });
+
+    return {
+      totalNotices,
+      acknowledgedNotices,
+      unacknowledgedNotices,
+      pendingNotices,
     };
   }
 }

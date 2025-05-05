@@ -30,7 +30,7 @@ export class PropertiesService {
   ) {}
 
   async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
-    data.comment = data?.comment || null;
+    // data.comment = data?.comment || null;
     return this.propertyRepository.save(data);
   }
 
@@ -46,6 +46,7 @@ export class PropertiesService {
     const query = await buildPropertyFilter(queryParams);
     const [properties, count] = await this.propertyRepository.findAndCount({
       where: query,
+      relations:['property_tenants', 'rents'],
       skip,
       take: size,
       order: { created_at: 'DESC' },

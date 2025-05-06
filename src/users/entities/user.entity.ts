@@ -1,4 +1,4 @@
-import { Column, Entity, OneToMany, Unique } from 'typeorm';
+import { Column, Entity, OneToMany, OneToOne, Unique } from 'typeorm';
 import { BaseEntity, RolesEnum } from '../../base.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
@@ -6,6 +6,7 @@ import { Rent } from 'src/rents/entities/rent.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
+import { KYC } from './kyc.entity';
 
 @Unique(['email'])
 @Unique(['phone_number'])
@@ -60,4 +61,7 @@ export class Users extends BaseEntity {
 
   @OneToMany(() => NoticeAgreement, (na) => na.tenant)
   notice_agreements: NoticeAgreement[];
+
+  @OneToOne(() => KYC, (kyc) => kyc.user)
+  kyc: KYC;
 }

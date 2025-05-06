@@ -37,6 +37,7 @@ export class ServiceRequestsService {
       },
     });
 
+
     if (!tenantExistInProperty?.id) {
       throw new HttpException(
         'You are not currently renting this property',
@@ -44,17 +45,18 @@ export class ServiceRequestsService {
       );
     }
 
-    const lastRequest = await this.serviceRequestRepository.findOne({
-      where: {
-        tenant_id: data.tenant_id,
-        property_id: data.property_id,
-      },
-      order: { created_at: 'DESC' },
-    });
+    // const lastRequest = await this.serviceRequestRepository.findOne({
+    //   where: {
+    //     tenant_id: data.tenant_id,
+    //     property_id: data.property_id,
+    //   },
+    //   order: { created_at: 'DESC' },
+    // });
 
-    const requestId = UtilService.generateServiceRequestId(
-      lastRequest?.request_id,
-    );
+
+    const requestId = UtilService.generateServiceRequestId();
+
+    console.log({requestId})
     return this.serviceRequestRepository.save({
       ...data,
       issue_images: data?.issue_images || null,

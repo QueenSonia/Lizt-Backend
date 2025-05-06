@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -40,6 +41,9 @@ import {
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { DateService } from 'src/utils/date.helper';
 import { FileUploadService } from 'src/utils/cloudinary';
+import { KYC } from './entities/kyc.entity';
+import { CreateKycDto } from './dto/create-kyc.dto';
+import { UpdateKycDto } from './dto/update-kyc.dto';
 
 @Injectable()
 export class UsersService {
@@ -53,6 +57,8 @@ export class UsersService {
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
     private readonly fileUploadService: FileUploadService,
+    @InjectRepository(KYC)
+    private readonly kycRepository: Repository<KYC>,
   ) {}
 
   async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
@@ -426,7 +432,7 @@ export class UsersService {
     return tenant;
   }
 
-  async resetPassword(token: string, newPassword: string): Promise<void> {
+  async resetPassword(token: string, newPassword: string, res:Response){
     const resetEntry = await this.passwordResetRepository.findOne({
       where: { token },
     });
@@ -449,7 +455,11 @@ export class UsersService {
     user.password = await UtilService.hashPassword(newPassword);
     await this.usersRepository.save(user);
 
-    await this.passwordResetRepository.delete({ id: resetEntry.id });
+    return res.status(HttpStatus.OK).json({
+      user_id:user.id
+    })
+
+    // await this.passwordResetRepository.delete({ id: resetEntry.id });
   }
 
   async getTenantsOfAnAdmin(queryParams: UserFilter) {
@@ -513,5 +523,62 @@ export class UsersService {
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
+  }
+
+
+  async createUserKyc(userId: string, data: CreateKycDto): Promise<KYC> {
+    const queryRunner =  this.usersRepository.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const user = await queryRunner.manager.findOne(Users, {
+        where: { id: userId },
+        relations: ['kyc'],
+      });
+
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      if (user.kyc) {
+        throw new BadRequestException('KYC already submitted');
+      }
+
+      const newKyc = this.kycRepository.create({
+        ...data,
+        user,
+      });
+
+      const savedKyc = await queryRunner.manager.save(KYC, newKyc);
+
+      user.is_verified = true;
+      await queryRunner.manager.save(Users, user);
+
+      await queryRunner.commitTransaction();
+      return savedKyc;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw new HttpException(
+        error?.message || 'An error occurred while submitting KYC',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  async update(userId: string, updateKycDto: UpdateKycDto): Promise<KYC> {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+      relations: ['kyc'],
+    });
+
+    if (!user || !user.kyc) {
+      throw new NotFoundException('KYC record not found for this user');
+    }
+
+    const updatedKyc = this.kycRepository.merge(user.kyc, updateKycDto);
+    return this.kycRepository.save(updatedKyc);
   }
 }

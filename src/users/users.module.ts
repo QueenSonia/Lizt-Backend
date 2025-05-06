@@ -7,10 +7,11 @@ import { AuthModule } from 'src/auth/auth.module';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { FileUploadService } from 'src/utils/cloudinary';
+import { KYC } from './entities/kyc.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Users, PasswordResetToken, PropertyTenant]),
+    TypeOrmModule.forFeature([Users, PasswordResetToken, PropertyTenant, KYC]),
     AuthModule,
   ],
   controllers: [UsersController],

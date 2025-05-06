@@ -68,7 +68,7 @@ export class PropertiesService {
   async getPropertyById(id: string): Promise<CreatePropertyDto> {
     const property = await this.propertyRepository.findOne({
       where: { id },
-      relations: ['rents', 'property_tenants', 'property_tenants.tenant'],
+      relations: ['rents', 'property_tenants', 'property_tenants.tenant', 'owner'],
     });
     if (!property?.id) {
       throw new HttpException(

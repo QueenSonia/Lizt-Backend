@@ -13,6 +13,7 @@ import {
   Req,
   UseInterceptors,
   UploadedFiles,
+  Patch,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import {
@@ -44,6 +45,9 @@ import {
 } from '@nestjs/swagger';
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import { CreateKycDto } from './dto/create-kyc.dto';
+import { KYC } from './entities/kyc.entity';
+import { UpdateKycDto } from './dto/update-kyc.dto';
 
 @ApiTags('Users')
 @Controller('users')
@@ -285,9 +289,9 @@ export class UsersController {
 
   @SkipAuth()
   @Post('reset-password')
-  async resetPassword(@Body() body: { token: string; newPassword: string }) {
+  async resetPassword(@Body() body: { token: string; newPassword: string }, @Res() res: Response) {
     const { token, newPassword } = body;
-    await this.usersService.resetPassword(token, newPassword);
+    await this.usersService.resetPassword(token, newPassword, res);
     return { message: 'Password reset successful' };
   }
 
@@ -311,5 +315,22 @@ export class UsersController {
     } catch (error) {
       throw error;
     }
+  }
+  @SkipAuth()
+  @Post('complete-kyc/:userId')
+  async completeKyc(
+    @Param('userId') userId: string,
+    @Body() createKycDto: CreateKycDto,
+  ): Promise<KYC> {
+    return this.usersService.createUserKyc(userId, createKycDto);
+  }
+  
+  @SkipAuth()
+  @Patch('update-kyc')
+  async updateKyc(
+    @Param('userId') userId: string,
+    @Body() updateKycDto: UpdateKycDto,
+  ): Promise<KYC> {
+    return this.usersService.update(userId, updateKycDto);
   }
 }

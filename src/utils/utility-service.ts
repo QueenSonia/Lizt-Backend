@@ -35,13 +35,12 @@ class UtilityService {
     return uuidv4();
   }
 
-  generateServiceRequestId(previousId?: string): string {
-    if (!previousId) {
-      return '#SR001';
-    }
-    const number = parseInt(previousId.replace('#SR', '')) + 1;
-    return `#SR${number.toString().padStart(3, '0')}`;
+  generateServiceRequestId(): string {
+    const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp
+    const random = Math.random().toString(36).substring(2, 5).toUpperCase();
+    return `#SR${timestamp}${random}`; // e.g., #SR893124X9K
   }
+  
 }
 
 export const UtilService = new UtilityService();

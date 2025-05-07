@@ -52,20 +52,20 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  @UseInterceptors(FilesInterceptor('issue_images', 20))
+  // @UseInterceptors(FilesInterceptor('issue_images', 20))
   async createServiceRequest(
     @Body() body: CreateServiceRequestDto,
-    @UploadedFiles() files?: Array<Express.Multer.File>,
+    // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
-      if (files?.length) {
-        const uploadedUrls = await Promise.all(
-          files.map((file) =>
-            this.fileUploadService.uploadFile(file, 'service-requests'),
-          ),
-        );
-        body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
-      }
+      // if (files?.length) {
+      //   const uploadedUrls = await Promise.all(
+      //     files.map((file) =>
+      //       this.fileUploadService.uploadFile(file, 'service-requests'),
+      //     ),
+      //   );
+      //   body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
+      // }
       return this.serviceRequestsService.createServiceRequest(body);
     } catch (error) {
       throw error;

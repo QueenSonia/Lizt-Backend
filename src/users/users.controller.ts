@@ -67,7 +67,6 @@ export class UsersController {
     }
   }
 
-
   @ApiOperation({ summary: 'Get All Users' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
@@ -200,7 +199,6 @@ export class UsersController {
       throw error;
     }
   }
-
 
   @ApiOperation({ summary: 'Update User' })
   @ApiBody({ type: UpdateUserDto })

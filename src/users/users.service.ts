@@ -237,7 +237,6 @@ export class UsersService {
     };
   }
 
-
   async getAllTenants(queryParams: UserFilter) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
@@ -246,24 +245,22 @@ export class UsersService {
       ? Number(queryParams.size)
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
-  
+
     queryParams.role = RolesEnum.TENANT;
-  
+
     const qb = this.usersRepository
       .createQueryBuilder('user')
       .leftJoinAndSelect('user.property_tenants', 'property_tenants')
       .leftJoinAndSelect('property_tenants.property', 'property')
       .leftJoinAndSelect('user.rents', 'rents')
       .where('user.role = :role', { role: RolesEnum.TENANT.toLowerCase() });
-  
+
     buildUserFilterQB(qb, queryParams); // apply search & filters
-  
-    qb.orderBy('user.created_at', 'DESC')
-      .skip(skip)
-      .take(size);
-  
+
+    qb.orderBy('user.created_at', 'DESC').skip(skip).take(size);
+
     const [users, count] = await qb.getManyAndCount();
-  
+
     const totalPages = Math.ceil(count / size);
     return {
       users,
@@ -276,7 +273,6 @@ export class UsersService {
       },
     };
   }
-  
 
   async getUserById(id: string): Promise<IUser> {
     const user = await this.usersRepository.findOne({ where: { id } });

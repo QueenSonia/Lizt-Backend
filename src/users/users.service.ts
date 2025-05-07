@@ -428,7 +428,7 @@ export class UsersService {
     return tenant;
   }
 
-  async resetPassword(token: string, newPassword: string, res:Response){
+  async resetPassword(token: string, newPassword: string, res: Response) {
     const resetEntry = await this.passwordResetRepository.findOne({
       where: { token },
     });
@@ -452,8 +452,8 @@ export class UsersService {
     await this.usersRepository.save(user);
 
     return res.status(HttpStatus.OK).json({
-      user_id:user.id
-    })
+      user_id: user.id,
+    });
 
     // await this.passwordResetRepository.delete({ id: resetEntry.id });
   }
@@ -521,9 +521,9 @@ export class UsersService {
     }
   }
 
-
   async createUserKyc(userId: string, data: CreateKycDto): Promise<KYC> {
-    const queryRunner =  this.usersRepository.manager.connection.createQueryRunner();
+    const queryRunner =
+      this.usersRepository.manager.connection.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 

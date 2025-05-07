@@ -40,7 +40,6 @@ class UtilityService {
     const random = Math.random().toString(36).substring(2, 5).toUpperCase();
     return `#SR${timestamp}${random}`; // e.g., #SR893124X9K
   }
-  
 }
 
 export const UtilService = new UtilityService();

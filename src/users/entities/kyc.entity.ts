@@ -64,7 +64,7 @@ export class KYC extends BaseEntity {
   @Column({ nullable: false, type: 'varchar' })
   annual_income: string;
 
-  @Column({ nullable: false, type: 'varchar', default:false })
+  @Column({ nullable: false, type: 'varchar', default: false })
   accept_terms_and_condition: boolean;
 
   @OneToOne(() => Users, (user) => user.kyc, { onDelete: 'CASCADE' })

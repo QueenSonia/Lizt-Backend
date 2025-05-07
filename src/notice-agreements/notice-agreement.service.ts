@@ -1,7 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { NoticeAgreement, NoticeStatus } from './entities/notice-agreement.entity';
+import {
+  NoticeAgreement,
+  NoticeStatus,
+} from './entities/notice-agreement.entity';
 import {
   CreateNoticeAgreementDto,
   NoticeAgreementFilter,
@@ -13,6 +16,7 @@ import { sendEmailWithAttachment } from './utils/sender';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from 'src/config';
+import { TwilioService } from 'src/twilio/twilio.service';
 @Injectable()
 export class NoticeAgreementService {
   constructor(
@@ -23,6 +27,7 @@ export class NoticeAgreementService {
     @InjectRepository(Users)
     private readonly userRepo: Repository<Users>,
     private readonly fileUploadService: FileUploadService,
+    private readonly twilioService: TwilioService,
   ) {}
 
   async create(dto: CreateNoticeAgreementDto) {
@@ -59,26 +64,27 @@ export class NoticeAgreementService {
       pdfBuffer,
       filename,
       'notices',
-      { resource_type: 'raw', format: 'pdf' } 
+      { resource_type: 'raw', format: 'pdf' },
     );
 
-    agreement.notice_image = `${uploadResult.secure_url}`
+    agreement.notice_image = `${uploadResult.secure_url}`;
     await this.noticeRepo.save(agreement);
 
     try {
-      await sendEmailWithAttachment(uploadResult.secure_url, tenant.email);
-      console.log(`Notice agreement sent successfully to ${tenant.email}`);
+      await Promise.all([
+        sendEmailWithAttachment(uploadResult.secure_url, tenant.email),
+        this.twilioService.sendWhatsAppMedia(
+          tenant.phone_number,
+          uploadResult.secure_url,
+          `Dear ${tenant.first_name}, please find your ${agreement.notice_type} notice attached.`,
+        ),
+      ]);
+      console.log(
+        `Notice agreement sent successfully to ${tenant.email} and WhatsApp`,
+      );
     } catch (error) {
       console.error('Failed to send notice agreement:', error);
     }
-
-    // await sendViaWhatsappOrEmail(
-    //     pdfPath,
-    //     agreement.send_via,
-    //     tenant.email,
-    //     tenant.phone_number
-    //   );
-    // send via WhatsApp/email
 
     return agreement;
   }
@@ -157,17 +163,17 @@ export class NoticeAgreementService {
     };
   }
 
-  async getNoticeAnalytics(id:string) {
+  async getNoticeAnalytics(id: string) {
     const totalNotices = await this.noticeRepo.count({
-      where:{
+      where: {
         property: {
-          owner_id:id
-        }
-      }
+          owner_id: id,
+        },
+      },
     });
 
-    console.log({totalNotices})
-    
+    console.log({ totalNotices });
+
     const acknowledgedNotices = await this.noticeRepo.count({
       where: { status: NoticeStatus.ACKNOWLEDGED },
     });

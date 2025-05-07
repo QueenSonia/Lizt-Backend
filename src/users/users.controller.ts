@@ -287,7 +287,10 @@ export class UsersController {
 
   @SkipAuth()
   @Post('reset-password')
-  async resetPassword(@Body() body: { token: string; newPassword: string }, @Res() res: Response) {
+  async resetPassword(
+    @Body() body: { token: string; newPassword: string },
+    @Res() res: Response,
+  ) {
     const { token, newPassword } = body;
     await this.usersService.resetPassword(token, newPassword, res);
     return { message: 'Password reset successful' };
@@ -322,7 +325,7 @@ export class UsersController {
   ): Promise<KYC> {
     return this.usersService.createUserKyc(userId, createKycDto);
   }
-  
+
   @SkipAuth()
   @Patch('update-kyc')
   async updateKyc(

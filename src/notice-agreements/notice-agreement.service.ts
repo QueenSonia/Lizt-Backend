@@ -74,7 +74,8 @@ export class NoticeAgreementService {
       await Promise.all([
         sendEmailWithAttachment(uploadResult.secure_url, tenant.email),
         this.twilioService.sendWhatsAppMedia(
-          tenant.phone_number,
+          // tenant.phone_number,
+          '+2348103367246',
           uploadResult.secure_url,
           `Dear ${tenant.first_name}, please find your ${agreement.notice_type} notice attached.`,
         ),

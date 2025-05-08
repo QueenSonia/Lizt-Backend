@@ -2,17 +2,17 @@
 import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class CreateKycDto {
-  @IsString()
-  @IsNotEmpty()
-  former_house_address: string;
+  // @IsString()
+  // @IsNotEmpty()
+  // former_house_address: string;
 
-  @IsString()
-  @IsNotEmpty()
-  reason_for_leaving: string;
+  // @IsString()
+  // @IsNotEmpty()
+  // reason_for_leaving: string;
 
-  @IsString()
-  @IsNotEmpty()
-  former_accomodation_type: string;
+  // @IsString()
+  // @IsNotEmpty()
+  // former_accomodation_type: string;
 
   @IsString()
   @IsNotEmpty()
@@ -30,13 +30,13 @@ export class CreateKycDto {
   @IsNotEmpty()
   state_of_origin: string;
 
-  @IsString()
-  @IsNotEmpty()
-  lga_of_origin: string;
+  // @IsString()
+  // @IsNotEmpty()
+  // lga_of_origin: string;
 
-  @IsString()
-  @IsNotEmpty()
-  home_town: string;
+  // @IsString()
+  // @IsNotEmpty()
+  // home_town: string;
 
   @IsString()
   @IsNotEmpty()
@@ -54,33 +54,33 @@ export class CreateKycDto {
   @IsString()
   name_of_spouse?: string;
 
-  @IsString()
-  @IsNotEmpty()
-  next_of_kin: string;
+  // @IsString()
+  // @IsNotEmpty()
+  // next_of_kin: string;
+
+  // @IsString()
+  // @IsNotEmpty()
+  // next_of_kin_address: string;
+
+  // @IsString()
+  // @IsNotEmpty()
+  // guarantor: string;
+
+  // @IsString()
+  // @IsNotEmpty()
+  // guarantor_address: string;
+
+  // @IsString()
+  // @IsNotEmpty()
+  // guarantor_occupation: string;
+
+  // @IsString()
+  // @IsNotEmpty()
+  // guarantor_phone_number: string;
 
   @IsString()
   @IsNotEmpty()
-  next_of_kin_address: string;
-
-  @IsString()
-  @IsNotEmpty()
-  guarantor: string;
-
-  @IsString()
-  @IsNotEmpty()
-  guarantor_address: string;
-
-  @IsString()
-  @IsNotEmpty()
-  guarantor_occupation: string;
-
-  @IsString()
-  @IsNotEmpty()
-  guarantor_phone_number: string;
-
-  @IsString()
-  @IsNotEmpty()
-  annual_income: string;
+  monthly_income: string;
 
   @IsBoolean()
   @IsNotEmpty()

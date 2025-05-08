@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import {
+  CreateAdminDto,
   CreateUserDto,
   IUser,
   LoginDto,
@@ -14,7 +15,7 @@ import {
 } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Users } from './entities/user.entity';
+import { Users} from './entities/user.entity';
 import { Not, QueryRunner, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
@@ -44,6 +45,7 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { KYC } from './entities/kyc.entity';
 import { CreateKycDto } from './dto/create-kyc.dto';
 import { UpdateKycDto } from './dto/update-kyc.dto';
+import bcrypt from 'bcryptjs/umd/types';
 
 @Injectable()
 export class UsersService {
@@ -581,4 +583,32 @@ export class UsersService {
     const updatedKyc = this.kycRepository.merge(user.kyc, updateKycDto);
     return this.kycRepository.save(updatedKyc);
   }
+
+  //create user that are admin
+  async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
+    const existing = await this.usersRepository.findOne({ where: { email: data.email } });
+
+    if (existing) {
+      throw new BadRequestException('User with this email already exists');
+    }
+
+    if(!data.password){
+      throw new BadRequestException('Password is required');
+    }
+
+    const hashedPassword = await UtilService.hashPassword(data.password)
+
+    const user = this.usersRepository.create({
+      ...data,
+      role: RolesEnum.ADMIN,
+      password: hashedPassword,
+      is_verified:true
+    });
+
+    const savedUser = await this.usersRepository.save(user);
+
+    const { password, ...result } = savedUser;
+    return result;
+  }
+
 }

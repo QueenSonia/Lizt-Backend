@@ -74,15 +74,15 @@ export class UsersService {
       );
     }
 
-    const phoneNumberExist = await this.usersRepository.exists({
-      where: { phone_number },
-    });
-    if (phoneNumberExist) {
-      throw new HttpException(
-        `User with phone number: ${phone_number} already exist`,
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
-    }
+    // const phoneNumberExist = await this.usersRepository.exists({
+    //   where: { phone_number },
+    // });
+    // if (phoneNumberExist) {
+    //   throw new HttpException(
+    //     `User with phone number: ${phone_number} already exist`,
+    //     HttpStatus.UNPROCESSABLE_ENTITY,
+    //   );
+    // }
 
     const queryRunner =
       this.usersRepository.manager.connection.createQueryRunner();

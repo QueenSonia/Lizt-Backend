@@ -9,7 +9,7 @@ import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement
 import { KYC } from './kyc.entity';
 
 @Unique(['email'])
-@Unique(['phone_number'])
+// @Unique(['phone_number'])
 @Entity({ name: 'users' })
 export class Users extends BaseEntity {
   @Column({ nullable: false, type: 'varchar' })

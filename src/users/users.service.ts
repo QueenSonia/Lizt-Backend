@@ -99,7 +99,7 @@ export class UsersService {
         role: userRole,
         creator_id: userRole === RolesEnum.TENANT ? user_id : null,
       };
-
+   
       const createdUser = await queryRunner.manager.save(Users, newUser);
 
       if (!createdUser?.id) {
@@ -119,7 +119,7 @@ export class UsersService {
             HttpStatus.NOT_FOUND,
           );
         }
-
+       
         const hasActiveRent = await queryRunner.manager.exists(Rent, {
           where: {
             property_id: data?.property_id,
@@ -133,13 +133,16 @@ export class UsersService {
             HttpStatus.UNPROCESSABLE_ENTITY,
           );
         }
-
+    
         const rent = {
           tenant_id: createdUser.id,
           lease_start_date: data?.lease_start_date,
           lease_end_date: data?.lease_end_date,
           property_id: property?.id,
-          amount_paid: property?.rental_price,
+          amount_paid: data?.rental_price,
+          rental_price: data?.rental_price,
+          security_deposit: data?.security_deposit,
+          service_charge: data?.service_charge,
           status: RentStatusEnum.PAID,
         };
         await queryRunner.manager.save(Rent, rent);
@@ -158,7 +161,7 @@ export class UsersService {
           property_id: property?.id,
           tenant_id: createdUser?.id,
           move_in_date: DateService.getStartOfTheDay(new Date()),
-          monthly_rent: property?.rental_price,
+          monthly_rent: data?.rental_price,
           owner_comment: null,
           tenant_comment: null,
           move_out_date: null,

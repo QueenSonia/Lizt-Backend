@@ -27,6 +27,15 @@ export class Rent extends BaseEntity {
   @Column({ nullable: true, type: 'varchar', array: true })
   rent_receipts?: string[] | null;
 
+  @Column({ type: 'int', nullable: true })
+    rental_price: number;
+  
+    @Column({ type: 'int', nullable: true })
+    security_deposit: number;
+  
+    @Column({ type: 'int', nullable: true })
+    service_charge: number;
+
   @Column({
     nullable: false,
     type: 'enum',

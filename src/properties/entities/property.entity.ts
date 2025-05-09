@@ -40,16 +40,16 @@ export class Property extends BaseEntity {
   @Column({ nullable: false, type: 'int' })
   no_of_bedrooms: number;
 
-  @Column({ type: 'int', nullable: false })
+  @Column({ type: 'int', nullable: true })
   rental_price: number;
 
   @Column({ nullable: true, type: 'varchar' })
   payment_frequency: string;
 
-  @Column({ type: 'int', nullable: false })
+  @Column({ type: 'int', nullable: true})
   security_deposit: number;
 
-  @Column({ type: 'int', nullable: false })
+  @Column({ type: 'int', nullable: true })
   service_charge: number;
 
   @Column({ nullable: true, type: 'text' })

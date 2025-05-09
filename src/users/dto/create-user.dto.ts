@@ -1,9 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsDateString,
   IsEmail,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Matches,
@@ -75,6 +76,37 @@ export class CreateUserDto {
   @IsString()
   @IsOptional()
   property_id: string;
+
+
+  @ApiProperty({
+    example: 500000,
+    description: 'Rental price of the property',
+    type: 'integer',
+  })
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  rental_price: number;
+
+    @ApiProperty({
+    example: 20000,
+    description: 'Security payment',
+    type: 'integer',
+  })
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  security_deposit: number;
+
+    @ApiProperty({
+    example: 50000,
+    description: 'Service charge',
+    type: 'integer',
+  })
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  service_charge: number;
 
   @ApiProperty({
     example: 'Password5%',

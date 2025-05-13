@@ -18,6 +18,11 @@ export class CreatePropertyDto {
   @IsString()
   location: string;
 
+    @ApiProperty({ example: 'lagos', description: 'Description of the property' })
+  @IsNotEmpty()
+  @IsString()
+  description: string;
+
   // @ApiProperty({ example: 'vacant', description: 'Status of the property' })
   // @IsNotEmpty()
   // @IsEnum(PropertyStatusEnum)

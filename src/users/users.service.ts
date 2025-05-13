@@ -29,7 +29,7 @@ import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { Response } from 'express';
 import moment from 'moment';
 import { config } from 'src/config';
-import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import { RentPaymentStatusEnum, RentStatusEnum } from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { v4 as uuidv4 } from 'uuid';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
@@ -123,7 +123,7 @@ export class UsersService {
         const hasActiveRent = await queryRunner.manager.exists(Rent, {
           where: {
             property_id: data?.property_id,
-            status: Not(RentStatusEnum.PENDING),
+            rent_status: Not(RentStatusEnum.ACTIVE),
           },
         });
 
@@ -143,7 +143,8 @@ export class UsersService {
           rental_price: data?.rental_price,
           security_deposit: data?.security_deposit,
           service_charge: data?.service_charge,
-          status: RentStatusEnum.PAID,
+          payment_status: RentPaymentStatusEnum.PAID,
+          rent_status: RentStatusEnum.ACTIVE
         };
         await queryRunner.manager.save(Rent, rent);
 

@@ -11,5 +11,6 @@ import { Property } from 'src/properties/entities/property.entity';
   imports: [TypeOrmModule.forFeature([Rent, RentIncrease, Property])],
   controllers: [RentsController],
   providers: [RentsService, FileUploadService],
+  exports: [RentsService, TypeOrmModule]
 })
 export class RentsModule {}

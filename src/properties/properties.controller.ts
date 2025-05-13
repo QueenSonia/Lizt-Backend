@@ -14,6 +14,7 @@ import {
   HttpStatus,
   UseGuards,
   Req,
+  NotFoundException,
 } from '@nestjs/common';
 import { PropertiesService } from './properties.service';
 import { CreatePropertyDto, PropertyFilter } from './dto/create-property.dto';
@@ -38,6 +39,7 @@ import { Roles } from 'src/auth/role.decorator';
 import { ADMIN_ROLES } from 'src/base.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
+import { RentsService } from 'src/rents/rents.service';
 @ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
@@ -195,7 +197,7 @@ export class PropertiesController {
   // @UseInterceptors(FilesInterceptor('property_images', 20))
   async updatePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdatePropertyDto,
+    @Body() body:UpdatePropertyDto,
     // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
@@ -207,6 +209,9 @@ export class PropertiesController {
       //   );
       //   body.property_images = uploadedUrls.map((upload) => upload.secure_url);
       // }
+  
+
+
       return this.propertiesService.updatePropertyById(id, body);
     } catch (error) {
       throw error;

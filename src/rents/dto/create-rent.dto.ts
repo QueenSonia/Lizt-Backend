@@ -10,10 +10,15 @@ import {
   IsOptional,
 } from 'class-validator';
 
-export enum RentStatusEnum {
+export enum RentPaymentStatusEnum {
   PENDING = 'pending',
   PAID = 'paid',
   OWING = 'owing',
+}
+
+export enum RentStatusEnum {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive'
 }
 
 export class CreateRentDto {

@@ -1,7 +1,7 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, LessThanOrEqual, Repository } from 'typeorm';
-import { CreateRentDto, RentFilter } from './dto/create-rent.dto';
+import { CreateRentDto, RentFilter, RentStatusEnum } from './dto/create-rent.dto';
 import { UpdateRentDto } from './dto/update-rent.dto';
 import { Rent } from './entities/rent.entity';
 import { DateService } from 'src/utils/date.helper';
@@ -185,7 +185,7 @@ export class RentsService {
     return rent;
   }
 
-  async updateRentById(id: string, data: UpdateRentDto) {
+  async updateRentById(id: string, data: any) {
     return this.rentRepository.update(id, data);
   }
 
@@ -223,5 +223,14 @@ export class RentsService {
       ...data,
       rent_increase_date: DateService.getStartOfTheDay(new Date()),
     });
+  }
+
+  async findActiveRent(query){
+    return this.rentRepository.findOne({
+      where: {
+        ...query,
+        rent_status:RentStatusEnum.ACTIVE
+      }
+    })
   }
 }

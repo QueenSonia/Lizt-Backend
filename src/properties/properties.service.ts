@@ -20,6 +20,7 @@ import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { PropertyGroup } from './entities/property-group.entity';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class PropertiesService {
@@ -30,12 +31,22 @@ export class PropertiesService {
     private readonly propertyGroupRepository: Repository<PropertyGroup>,
 
     private readonly rentService: RentsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
-    // data.comment = data?.comment || null;
-    return this.propertyRepository.save(data);
+    const createdProperty = await this.propertyRepository.save(data);
+
+    // ✅ Emit event after property is created
+    this.eventEmitter.emit('property.created', {
+      property_id: createdProperty.id,
+      name: createdProperty.name, // assuming you have a name field
+      // creator_id: createdProperty.creator_id, // optional if applicable
+    });
+
+    return createdProperty;
   }
+
 
   async getAllProperties(queryParams: PropertyFilter) {
     const page = queryParams?.page

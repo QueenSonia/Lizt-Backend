@@ -72,7 +72,6 @@ export class UsersController {
     }
   }
 
-
   @ApiOperation({ summary: 'Get All Users' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
@@ -206,7 +205,6 @@ export class UsersController {
     }
   }
 
-
   @ApiOperation({ summary: 'Update User' })
   @ApiBody({ type: UpdateUserDto })
   @ApiOkResponse({ description: 'User successfully updated' })
@@ -290,7 +288,10 @@ export class UsersController {
 
   @SkipAuth()
   @Post('reset-password')
-  async resetPassword(@Body() body: { token: string; newPassword: string }, @Res() res: Response) {
+  async resetPassword(
+    @Body() body: { token: string; newPassword: string },
+    @Res() res: Response,
+  ) {
     const { token, newPassword } = body;
     await this.usersService.resetPassword(token, newPassword, res);
     return { message: 'Password reset successful' };

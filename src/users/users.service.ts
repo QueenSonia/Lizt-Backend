@@ -15,7 +15,7 @@ import {
 } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Users} from './entities/user.entity';
+import { Users } from './entities/user.entity';
 import { Not, QueryRunner, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
@@ -29,7 +29,10 @@ import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { Response } from 'express';
 import moment from 'moment';
 import { config } from 'src/config';
-import { RentPaymentStatusEnum, RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import {
+  RentPaymentStatusEnum,
+  RentStatusEnum,
+} from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { v4 as uuidv4 } from 'uuid';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
@@ -46,6 +49,7 @@ import { KYC } from './entities/kyc.entity';
 import { CreateKycDto } from './dto/create-kyc.dto';
 import { UpdateKycDto } from './dto/update-kyc.dto';
 import bcrypt from 'bcryptjs/umd/types';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class UsersService {
@@ -61,6 +65,7 @@ export class UsersService {
     private readonly fileUploadService: FileUploadService,
     @InjectRepository(KYC)
     private readonly kycRepository: Repository<KYC>,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
@@ -73,16 +78,6 @@ export class UsersService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
-
-    // const phoneNumberExist = await this.usersRepository.exists({
-    //   where: { phone_number },
-    // });
-    // if (phoneNumberExist) {
-    //   throw new HttpException(
-    //     `User with phone number: ${phone_number} already exist`,
-    //     HttpStatus.UNPROCESSABLE_ENTITY,
-    //   );
-    // }
 
     const queryRunner =
       this.usersRepository.manager.connection.createQueryRunner();
@@ -99,7 +94,7 @@ export class UsersService {
         role: userRole,
         creator_id: userRole === RolesEnum.TENANT ? user_id : null,
       };
-   
+
       const createdUser = await queryRunner.manager.save(Users, newUser);
 
       if (!createdUser?.id) {
@@ -119,7 +114,7 @@ export class UsersService {
             HttpStatus.NOT_FOUND,
           );
         }
-       
+
         const hasActiveRent = await queryRunner.manager.exists(Rent, {
           where: {
             property_id: data?.property_id,
@@ -133,7 +128,7 @@ export class UsersService {
             HttpStatus.UNPROCESSABLE_ENTITY,
           );
         }
-    
+
         const rent = {
           tenant_id: createdUser.id,
           lease_start_date: data?.lease_start_date,
@@ -144,7 +139,7 @@ export class UsersService {
           security_deposit: data?.security_deposit,
           service_charge: data?.service_charge,
           payment_status: RentPaymentStatusEnum.PAID,
-          rent_status: RentStatusEnum.ACTIVE
+          rent_status: RentStatusEnum.ACTIVE,
         };
         await queryRunner.manager.save(Rent, rent);
 
@@ -186,6 +181,12 @@ export class UsersService {
       }
 
       await queryRunner.commitTransaction();
+
+      this.eventEmitter.emit('user.created', {
+        user_id: createdUser.id,
+        property_id: data.property_id,
+        role: createdUser.role,
+      });
       return createdUser;
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -249,7 +250,6 @@ export class UsersService {
     };
   }
 
-
   async getAllTenants(queryParams: UserFilter) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
@@ -258,24 +258,22 @@ export class UsersService {
       ? Number(queryParams.size)
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
-  
+
     queryParams.role = RolesEnum.TENANT;
-  
+
     const qb = this.usersRepository
       .createQueryBuilder('user')
       .leftJoinAndSelect('user.property_tenants', 'property_tenants')
       .leftJoinAndSelect('property_tenants.property', 'property')
       .leftJoinAndSelect('user.rents', 'rents')
       .where('user.role = :role', { role: RolesEnum.TENANT.toLowerCase() });
-  
+
     buildUserFilterQB(qb, queryParams); // apply search & filters
-  
-    qb.orderBy('user.created_at', 'DESC')
-      .skip(skip)
-      .take(size);
-  
+
+    qb.orderBy('user.created_at', 'DESC').skip(skip).take(size);
+
     const [users, count] = await qb.getManyAndCount();
-  
+
     const totalPages = Math.ceil(count / size);
     return {
       users,
@@ -288,7 +286,6 @@ export class UsersService {
       },
     };
   }
-  
 
   async getUserById(id: string): Promise<IUser> {
     const user = await this.usersRepository.findOne({ where: { id } });
@@ -438,7 +435,7 @@ export class UsersService {
     return tenant;
   }
 
-  async resetPassword(token: string, newPassword: string, res:Response){
+  async resetPassword(token: string, newPassword: string, res: Response) {
     const resetEntry = await this.passwordResetRepository.findOne({
       where: { token },
     });
@@ -462,8 +459,8 @@ export class UsersService {
     await this.usersRepository.save(user);
 
     return res.status(HttpStatus.OK).json({
-      user_id:user.id
-    })
+      user_id: user.id,
+    });
 
     // await this.passwordResetRepository.delete({ id: resetEntry.id });
   }
@@ -531,9 +528,9 @@ export class UsersService {
     }
   }
 
-
   async createUserKyc(userId: string, data: CreateKycDto): Promise<KYC> {
-    const queryRunner =  this.usersRepository.manager.connection.createQueryRunner();
+    const queryRunner =
+      this.usersRepository.manager.connection.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
@@ -590,23 +587,25 @@ export class UsersService {
 
   //create user that are admin
   async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
-    const existing = await this.usersRepository.findOne({ where: { email: data.email } });
+    const existing = await this.usersRepository.findOne({
+      where: { email: data.email },
+    });
 
     if (existing) {
       throw new BadRequestException('User with this email already exists');
     }
 
-    if(!data.password){
+    if (!data.password) {
       throw new BadRequestException('Password is required');
     }
 
-    const hashedPassword = await UtilService.hashPassword(data.password)
+    const hashedPassword = await UtilService.hashPassword(data.password);
 
     const user = this.usersRepository.create({
       ...data,
       role: RolesEnum.ADMIN,
       password: hashedPassword,
-      is_verified:true
+      is_verified: true,
     });
 
     const savedUser = await this.usersRepository.save(user);
@@ -614,5 +613,4 @@ export class UsersService {
     const { password, ...result } = savedUser;
     return result;
   }
-
 }

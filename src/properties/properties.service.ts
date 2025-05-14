@@ -19,6 +19,8 @@ import { PropertyHistory } from 'src/property-history/entities/property-history.
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { PropertyGroup } from './entities/property-group.entity';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
+import { RentsService } from 'src/rents/rents.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class PropertiesService {
@@ -27,12 +29,24 @@ export class PropertiesService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyGroup)
     private readonly propertyGroupRepository: Repository<PropertyGroup>,
+
+    private readonly rentService: RentsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
-    // data.comment = data?.comment || null;
-    return this.propertyRepository.save(data);
+    const createdProperty = await this.propertyRepository.save(data);
+
+    // ✅ Emit event after property is created
+    this.eventEmitter.emit('property.created', {
+      property_id: createdProperty.id,
+      name: createdProperty.name, // assuming you have a name field
+      // creator_id: createdProperty.creator_id, // optional if applicable
+    });
+
+    return createdProperty;
   }
+
 
   async getAllProperties(queryParams: PropertyFilter) {
     const page = queryParams?.page
@@ -46,7 +60,7 @@ export class PropertiesService {
     const query = await buildPropertyFilter(queryParams);
     const [properties, count] = await this.propertyRepository.findAndCount({
       where: query,
-      relations:['property_tenants', 'rents'],
+      relations: ['property_tenants', 'rents'],
       skip,
       take: size,
       order: { created_at: 'DESC' },
@@ -68,7 +82,12 @@ export class PropertiesService {
   async getPropertyById(id: string): Promise<CreatePropertyDto> {
     const property = await this.propertyRepository.findOne({
       where: { id },
-      relations: ['rents', 'property_tenants', 'property_tenants.tenant', 'owner'],
+      relations: [
+        'rents',
+        'property_tenants',
+        'property_tenants.tenant',
+        'owner',
+      ],
     });
     if (!property?.id) {
       throw new HttpException(
@@ -108,7 +127,28 @@ export class PropertiesService {
   }
 
   async updatePropertyById(id: string, data: UpdatePropertyDto) {
-    return this.propertyRepository.update(id, data);
+    try{
+    const activeRent = (await this.rentService.findActiveRent({
+      property_id: id,
+    })) as any;
+
+    if (!activeRent) {
+      throw new HttpException('No active Rent', HttpStatus.NOT_FOUND);
+    }
+    await this.rentService.updateRentById(activeRent.id, {
+      lease_start_date: data.lease_end_date,
+      lease_end_date: data.lease_end_date,
+      rental_price: data.rental_price,
+      service_charge: data.service_charge
+    });
+    return this.propertyRepository.update(id,{
+      name: data.name,
+      location: data.location,
+      no_of_bedrooms: data.no_of_bedrooms
+    });
+  }catch(error){
+    throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
   }
 
   async deletePropertyById(id: string) {

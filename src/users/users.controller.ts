@@ -17,6 +17,7 @@ import {
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import {
+  CreateAdminDto,
   CreateUserDto,
   LoginDto,
   UploadLogoDto,
@@ -333,5 +334,11 @@ export class UsersController {
     @Body() updateKycDto: UpdateKycDto,
   ): Promise<KYC> {
     return this.usersService.update(userId, updateKycDto);
+  }
+
+  @SkipAuth()
+  @Post('admin')
+  async createAdmin( @Body() createUserDto: CreateAdminDto){
+    return this.usersService.createAdmin(createUserDto);
   }
 }

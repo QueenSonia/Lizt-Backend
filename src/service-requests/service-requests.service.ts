@@ -56,7 +56,6 @@ export class ServiceRequestsService {
 
     const requestId = UtilService.generateServiceRequestId();
 
-    console.log({requestId})
     return this.serviceRequestRepository.save({
       ...data,
       issue_images: data?.issue_images || null,
@@ -65,7 +64,7 @@ export class ServiceRequestsService {
     });
   }
 
-  async getAllServiceRequests(queryParams: ServiceRequestFilter) {
+  async getAllServiceRequests(user_id:string, queryParams: ServiceRequestFilter) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -75,9 +74,15 @@ export class ServiceRequestsService {
     const skip = (page - 1) * size;
 
     const query = await buildServiceRequestFilter(queryParams);
+
+    
     const [serviceRequests, count] =
       await this.serviceRequestRepository.findAndCount({
-        where: query,
+        where: {...query, 
+          property: {
+            owner_id:user_id
+          }
+        },
         relations: ['tenant', 'property'],
         skip,
         take: size,

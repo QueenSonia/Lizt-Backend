@@ -87,9 +87,11 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
-  getAllServiceRequests(@Query() query: ServiceRequestFilter) {
+  getAllServiceRequests(@Query() query: ServiceRequestFilter, @Req() req: any) {
     try {
-      return this.serviceRequestsService.getAllServiceRequests(query);
+      const user_id = req?.user?.id
+
+      return this.serviceRequestsService.getAllServiceRequests(user_id, query);
     } catch (error) {
       throw error;
     }

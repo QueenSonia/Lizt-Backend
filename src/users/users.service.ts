@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import {
+  CreateAdminDto,
   CreateUserDto,
   IUser,
   LoginDto,
@@ -28,7 +29,10 @@ import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { Response } from 'express';
 import moment from 'moment';
 import { config } from 'src/config';
-import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import {
+  RentPaymentStatusEnum,
+  RentStatusEnum,
+} from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { v4 as uuidv4 } from 'uuid';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
@@ -44,6 +48,8 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { KYC } from './entities/kyc.entity';
 import { CreateKycDto } from './dto/create-kyc.dto';
 import { UpdateKycDto } from './dto/update-kyc.dto';
+import bcrypt from 'bcryptjs/umd/types';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class UsersService {
@@ -59,6 +65,7 @@ export class UsersService {
     private readonly fileUploadService: FileUploadService,
     @InjectRepository(KYC)
     private readonly kycRepository: Repository<KYC>,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
@@ -68,16 +75,6 @@ export class UsersService {
     if (emailExist) {
       throw new HttpException(
         `User with email: ${email} already exist`,
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
-    }
-
-    const phoneNumberExist = await this.usersRepository.exists({
-      where: { phone_number },
-    });
-    if (phoneNumberExist) {
-      throw new HttpException(
-        `User with phone number: ${phone_number} already exist`,
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
@@ -121,7 +118,7 @@ export class UsersService {
         const hasActiveRent = await queryRunner.manager.exists(Rent, {
           where: {
             property_id: data?.property_id,
-            status: Not(RentStatusEnum.PENDING),
+            rent_status: Not(RentStatusEnum.ACTIVE),
           },
         });
 
@@ -137,8 +134,12 @@ export class UsersService {
           lease_start_date: data?.lease_start_date,
           lease_end_date: data?.lease_end_date,
           property_id: property?.id,
-          amount_paid: property?.rental_price,
-          status: RentStatusEnum.PAID,
+          amount_paid: data?.rental_price,
+          rental_price: data?.rental_price,
+          security_deposit: data?.security_deposit,
+          service_charge: data?.service_charge,
+          payment_status: RentPaymentStatusEnum.PAID,
+          rent_status: RentStatusEnum.ACTIVE,
         };
         await queryRunner.manager.save(Rent, rent);
 
@@ -156,7 +157,7 @@ export class UsersService {
           property_id: property?.id,
           tenant_id: createdUser?.id,
           move_in_date: DateService.getStartOfTheDay(new Date()),
-          monthly_rent: property?.rental_price,
+          monthly_rent: data?.rental_price,
           owner_comment: null,
           tenant_comment: null,
           move_out_date: null,
@@ -180,6 +181,12 @@ export class UsersService {
       }
 
       await queryRunner.commitTransaction();
+
+      this.eventEmitter.emit('user.created', {
+        user_id: createdUser.id,
+        property_id: data.property_id,
+        role: createdUser.role,
+      });
       return createdUser;
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -576,5 +583,34 @@ export class UsersService {
 
     const updatedKyc = this.kycRepository.merge(user.kyc, updateKycDto);
     return this.kycRepository.save(updatedKyc);
+  }
+
+  //create user that are admin
+  async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
+    const existing = await this.usersRepository.findOne({
+      where: { email: data.email },
+    });
+
+    if (existing) {
+      throw new BadRequestException('User with this email already exists');
+    }
+
+    if (!data.password) {
+      throw new BadRequestException('Password is required');
+    }
+
+    const hashedPassword = await UtilService.hashPassword(data.password);
+
+    const user = this.usersRepository.create({
+      ...data,
+      role: RolesEnum.ADMIN,
+      password: hashedPassword,
+      is_verified: true,
+    });
+
+    const savedUser = await this.usersRepository.save(user);
+
+    const { password, ...result } = savedUser;
+    return result;
   }
 }

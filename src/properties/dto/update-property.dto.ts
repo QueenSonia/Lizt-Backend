@@ -1,7 +1,104 @@
 import { ApiProperty, PartialType } from '@nestjs/swagger';
-import { CreatePropertyDto, PropertyStatusEnum } from './create-property.dto';
+import { PropertyStatusEnum } from './create-property.dto';
 
-export class UpdatePropertyDto extends PartialType(CreatePropertyDto) {}
+import {
+  IsUUID,
+  IsOptional,
+  IsString,
+  IsNumber,
+  IsDateString,
+  IsEnum,
+  ValidateNested,
+  IsArray,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+
+
+export class UpdatePropertyDto {
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsUUID()
+  @IsOptional()
+  id?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  location?: string;
+
+  @ApiPropertyOptional({ enum: PropertyStatusEnum })
+  @IsEnum(PropertyStatusEnum)
+  @IsOptional()
+  rent_status?: PropertyStatusEnum;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  property_type?: string;
+
+  @ApiPropertyOptional({ type: Number, example: 1000000 })
+  @IsNumber()
+  @IsOptional()
+  rental_price?: number;
+
+  @ApiPropertyOptional({ type: Number, example: 50000 })
+  @IsNumber()
+  @IsOptional()
+  service_charge?: number;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  tenant_name?: string;
+
+  @ApiPropertyOptional({ example: '08104228894' })
+  @IsString()
+  @IsOptional()
+  phone_number?: string;
+
+  @ApiPropertyOptional({ example: 'active' })
+  @IsString()
+  @IsOptional()
+  occupancy_status?: string;
+
+  @ApiPropertyOptional({ example: 3 })
+  @IsNumber()
+  @IsOptional()
+  no_of_bedrooms?: number;
+
+  @ApiPropertyOptional({ type: String, format: 'date-time', example: '2025-05-10T00:00:00.000Z' })
+  @IsDateString()
+  @IsOptional()
+  lease_start_date?: string;
+
+  @ApiPropertyOptional({ type: String, format: 'date-time', example: '2025-12-10T00:00:00.000Z' })
+  @IsDateString()
+  @IsOptional()
+  lease_end_date?: string;
+
+  @ApiPropertyOptional({ example: '7 months' })
+  @IsString()
+  @IsOptional()
+  lease_duration?: string;
+
+  // @ApiPropertyOptional({ type: [Object] }) // Replace Object with a nested DTO if available
+  // @IsArray()
+  // @ValidateNested({ each: true })
+  // @Type(() => Object)
+  // @IsOptional()
+  // property_tenants?: any[];
+}
+
 
 export class UpdatePropertyResponseDto {
   @ApiProperty({

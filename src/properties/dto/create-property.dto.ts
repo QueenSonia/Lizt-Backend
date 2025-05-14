@@ -4,7 +4,7 @@ import { IsNotEmpty, IsString, IsNumber, IsEnum } from 'class-validator';
 
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
-  NOT_VACANT = 'not_vacant',
+  NOT_VACANT = 'occupied',
 }
 
 export class CreatePropertyDto {
@@ -17,6 +17,11 @@ export class CreatePropertyDto {
   @IsNotEmpty()
   @IsString()
   location: string;
+
+    @ApiProperty({ example: 'lagos', description: 'Description of the property' })
+  @IsNotEmpty()
+  @IsString()
+  description: string;
 
   // @ApiProperty({ example: 'vacant', description: 'Status of the property' })
   // @IsNotEmpty()
@@ -43,15 +48,15 @@ export class CreatePropertyDto {
   @Type(() => Number)
   no_of_bedrooms: number;
 
-  @ApiProperty({
-    example: 500000,
-    description: 'Rental price of the property',
-    type: 'integer',
-  })
-  @IsNotEmpty()
-  @IsNumber()
-  @Type(() => Number)
-  rental_price: number;
+  // @ApiProperty({
+  //   example: 500000,
+  //   description: 'Rental price of the property',
+  //   type: 'integer',
+  // })
+  // @IsNotEmpty()
+  // @IsNumber()
+  // @Type(() => Number)
+  // rental_price: number;
 
   // @ApiProperty({
   //   example: 'monthly',
@@ -61,25 +66,25 @@ export class CreatePropertyDto {
   // @IsString()
   // payment_frequency: string;
 
-  @ApiProperty({
-    example: 20000,
-    description: 'Security payment',
-    type: 'integer',
-  })
-  @IsNotEmpty()
-  @IsNumber()
-  @Type(() => Number)
-  security_deposit: number;
+  // @ApiProperty({
+  //   example: 20000,
+  //   description: 'Security payment',
+  //   type: 'integer',
+  // })
+  // @IsNotEmpty()
+  // @IsNumber()
+  // @Type(() => Number)
+  // security_deposit: number;
 
-  @ApiProperty({
-    example: 50000,
-    description: 'Service charge',
-    type: 'integer',
-  })
-  @IsNotEmpty()
-  @IsNumber()
-  @Type(() => Number)
-  service_charge: number;
+  // @ApiProperty({
+  //   example: 50000,
+  //   description: 'Service charge',
+  //   type: 'integer',
+  // })
+  // @IsNotEmpty()
+  // @IsNumber()
+  // @Type(() => Number)
+  // service_charge: number;
 
   // @ApiProperty({
   //   example: 'Available now',

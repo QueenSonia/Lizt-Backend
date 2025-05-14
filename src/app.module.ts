@@ -13,6 +13,8 @@ import { ServiceRequestsModule } from './service-requests/service-requests.modul
 import { PropertyHistoryModule } from './property-history/property-history.module';
 import { NoticeAgreementModule } from './notice-agreements/notice-agreement.module';
 import { TwilioModule } from './twilio/twilio.module';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { NotificationModule } from './notifications/notification.module';
 
 dotenv.config();
 
@@ -41,6 +43,8 @@ dotenv.config();
     PropertyHistoryModule,
     NoticeAgreementModule,
     TwilioModule,
+    NotificationModule,
+    EventEmitterModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [AppService],

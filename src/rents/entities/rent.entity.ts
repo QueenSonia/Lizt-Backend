@@ -2,7 +2,7 @@ import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { Users } from '../../users/entities/user.entity';
-import { RentStatusEnum } from '../dto/create-rent.dto';
+import { RentPaymentStatusEnum, RentStatusEnum } from '../dto/create-rent.dto';
 
 @Entity({ name: 'rents' })
 export class Rent extends BaseEntity {
@@ -27,13 +27,30 @@ export class Rent extends BaseEntity {
   @Column({ nullable: true, type: 'varchar', array: true })
   rent_receipts?: string[] | null;
 
+  @Column({ type: 'int', nullable: true })
+    rental_price: number;
+  
+    @Column({ type: 'int', nullable: true })
+    security_deposit: number;
+  
+    @Column({ type: 'int', nullable: true })
+    service_charge: number;
+
   @Column({
     nullable: false,
     type: 'enum',
-    enum: [RentStatusEnum.PENDING, RentStatusEnum.PAID, RentStatusEnum.OWING],
-    default: RentStatusEnum.PENDING,
+    enum: [RentPaymentStatusEnum.PENDING, RentPaymentStatusEnum.PAID, RentPaymentStatusEnum.OWING],
+    default: RentPaymentStatusEnum.PENDING,
   })
-  status: string;
+  payment_status: string;
+
+  @Column({
+    nullable: false,
+    type: 'enum',
+    enum: [RentStatusEnum.INACTIVE, RentStatusEnum.ACTIVE],
+    default: RentStatusEnum.INACTIVE,
+  })
+  rent_status: string;
 
   @ManyToOne(() => Property, (p) => p.rents)
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })

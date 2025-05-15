@@ -53,35 +53,37 @@ export class FileUploadService {
     buffer: Buffer,
     filename: string,
     folder: string = 'notices',
-    options: { resource_type?: string, format?: string } = { resource_type: 'pdf', format: 'pdf' }
+    options: { resource_type?: string; format?: string } = {
+      resource_type: 'pdf',
+      format: 'pdf',
+    },
   ): Promise<UploadApiResponse> {
     // Ensure filename has a .pdf extension
-    const fileWithPdfExtension = filename.endsWith('.pdf') ? filename : `${filename}.pdf`;
-  
+    const fileWithPdfExtension = filename.endsWith('.pdf')
+      ? filename
+      : `${filename}.pdf`;
+
     return new Promise<UploadApiResponse>((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
           folder,
-          resource_type: 'raw',  // Use raw for non-image files like PDFs
-          public_id: fileWithPdfExtension.replace('.pdf', ''),  // Remove '.pdf' from public_id
+          resource_type: 'raw', // Use raw for non-image files like PDFs
+          public_id: fileWithPdfExtension.replace('.pdf', ''), // Remove '.pdf' from public_id
           format: options.format || 'pdf',
         },
         (error, result) => {
           if (error) return reject(error);
-  
+
           // Append '.pdf' to secure_url to ensure the extension is there
           if (result?.secure_url && !result.secure_url.endsWith('.pdf')) {
             result.secure_url = `${result.secure_url}.pdf`;
           }
-  
+
           resolve(result as UploadApiResponse);
         },
       );
-  
+
       streamifier.createReadStream(buffer).pipe(uploadStream);
     });
   }
-  
-  
-  
 }

@@ -18,13 +18,21 @@ async function bootstrap(): Promise<NestExpressApplication> {
   const app = await NestFactory.create<NestExpressApplication>(
     AppModule,
     new ExpressAdapter(),
-    { cors: true },
+    {
+      cors: {
+        origin: (origin, callback) => {
+          callback(null, true); // Allow all origins (adjust if needed)
+        },
+        credentials: true,
+      },
+    },
   );
-  const configService = app.get(ConfigService);
 
+  const configService = app.get(ConfigService);
   const reflector = app.get(Reflector);
 
-  const PORT = +configService.get('PORT') || 3050;
+  // ✅ Correct port detection for Render
+  const PORT = +(process.env.PORT ?? configService.get('PORT') ?? 3050);
 
   app.use(cookieParser());
 
@@ -39,7 +47,7 @@ async function bootstrap(): Promise<NestExpressApplication> {
 
   app.useGlobalFilters(new HttpExceptionFilter(reflector));
 
-  const config = new DocumentBuilder()
+  const swaggerConfig = new DocumentBuilder()
     .setTitle('Panda Homes')
     .setDescription('This service enables users access Panda Homes')
     .setVersion('1.0')
@@ -50,13 +58,14 @@ async function bootstrap(): Promise<NestExpressApplication> {
     })
     .build();
 
-  const document = SwaggerModule.createDocument(app, config);
+  const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('documentationView', app, document);
 
   await app.listen(PORT, () => {
-    console.log(`Server running on port:: ${PORT}`);
+    console.log(`🚀 Server running on port:: ${PORT}`);
   });
 
   return app;
 }
+
 void bootstrap();

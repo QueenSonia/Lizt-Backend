@@ -8,6 +8,13 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { PropertiesModule } from './properties/properties.module';
+import { RentsModule } from './rents/rents.module';
+import { ServiceRequestsModule } from './service-requests/service-requests.module';
+import { PropertyHistoryModule } from './property-history/property-history.module';
+import { NoticeAgreementModule } from './notice-agreements/notice-agreement.module';
+import { TwilioModule } from './twilio/twilio.module';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { NotificationModule } from './notifications/notification.module';
 
 dotenv.config();
 
@@ -16,6 +23,7 @@ dotenv.config();
     ConfigModule.forRoot({
       isGlobal: true,
       load: [typeorm],
+      envFilePath: '.env',
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -30,6 +38,13 @@ dotenv.config();
     AuthModule,
     UsersModule,
     PropertiesModule,
+    RentsModule,
+    ServiceRequestsModule,
+    PropertyHistoryModule,
+    NoticeAgreementModule,
+    TwilioModule,
+    NotificationModule,
+    EventEmitterModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [AppService],

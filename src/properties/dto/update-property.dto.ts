@@ -1,78 +1,188 @@
 import { ApiProperty, PartialType } from '@nestjs/swagger';
-import { CreatePropertyDto, PropertyStatusEnum } from './create-property.dto';
+import { PropertyStatusEnum } from './create-property.dto';
 
-export class UpdatePropertyDto extends PartialType(CreatePropertyDto) {}
+import {
+  IsUUID,
+  IsOptional,
+  IsString,
+  IsNumber,
+  IsDateString,
+  IsEnum,
+  ValidateNested,
+  IsArray,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+
+
+export class UpdatePropertyDto {
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsUUID()
+  @IsOptional()
+  id?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  location?: string;
+
+  @ApiPropertyOptional({ enum: PropertyStatusEnum })
+  @IsEnum(PropertyStatusEnum)
+  @IsOptional()
+  rent_status?: PropertyStatusEnum;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  property_type?: string;
+
+  @ApiPropertyOptional({ type: Number, example: 1000000 })
+  @IsNumber()
+  @IsOptional()
+  rental_price?: number;
+
+  @ApiPropertyOptional({ type: Number, example: 50000 })
+  @IsNumber()
+  @IsOptional()
+  service_charge?: number;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  tenant_name?: string;
+
+  @ApiPropertyOptional({ example: '08104228894' })
+  @IsString()
+  @IsOptional()
+  phone_number?: string;
+
+  @ApiPropertyOptional({ example: 'active' })
+  @IsString()
+  @IsOptional()
+  occupancy_status?: string;
+
+  @ApiPropertyOptional({ example: 3 })
+  @IsNumber()
+  @IsOptional()
+  no_of_bedrooms?: number;
+
+  @ApiPropertyOptional({ type: String, format: 'date-time', example: '2025-05-10T00:00:00.000Z' })
+  @IsDateString()
+  @IsOptional()
+  lease_start_date?: string;
+
+  @ApiPropertyOptional({ type: String, format: 'date-time', example: '2025-12-10T00:00:00.000Z' })
+  @IsDateString()
+  @IsOptional()
+  lease_end_date?: string;
+
+  @ApiPropertyOptional({ example: '7 months' })
+  @IsString()
+  @IsOptional()
+  lease_duration?: string;
+
+  // @ApiPropertyOptional({ type: [Object] }) // Replace Object with a nested DTO if available
+  // @IsArray()
+  // @ValidateNested({ each: true })
+  // @Type(() => Object)
+  // @IsOptional()
+  // property_tenants?: any[];
+}
+
 
 export class UpdatePropertyResponseDto {
-  @ApiProperty({ example: 'Abuja Duplex', description: 'Name of the property' })
+  @ApiProperty({
+    example: 'Abuja Duplex',
+    description: 'Name of the property',
+    required: false,
+  })
   name: string;
 
-  @ApiProperty({ example: 'lagos', description: 'Location of the property' })
+  @ApiProperty({
+    example: 'lagos',
+    description: 'Location of the property',
+    required: false,
+  })
   location: string;
 
-  @ApiProperty({ example: 'vacant', description: 'Status of the property' })
+  @ApiProperty({
+    example: 'vacant',
+    description: 'Status of the property',
+    required: false,
+  })
   property_status: PropertyStatusEnum;
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',
     description: 'UUID of the tenant',
+    required: false,
   })
-  tenant_id: string;
+  owner_id: string;
 
-  @ApiProperty({ example: 1, description: 'No of bathrooms in the property' })
-  no_of_bathrooms: number;
+  @ApiProperty({
+    example: 'Duplex',
+    description: 'Type of the property',
+    required: false,
+  })
+  property_type: string;
 
-  @ApiProperty({ example: 3, description: 'No of bedrooms in the property' })
+  @ApiProperty({
+    type: 'array',
+    items: { type: 'string', format: 'binary' },
+    required: false,
+    description: 'Images of the property',
+  })
+  property_images: string[];
+
+  @ApiProperty({
+    example: 3,
+    description: 'No of bedrooms in the property',
+    required: false,
+  })
   no_of_bedrooms: number;
 
   @ApiProperty({
-    example: '500,000',
+    example: 500000,
     description: 'Rental price of the property',
+    required: false,
   })
-  rental_price: string;
+  rental_price: number;
 
   @ApiProperty({
     example: 'monthly',
     description: 'Frequency of payment for the property',
+    required: false,
   })
   payment_frequency: string;
 
-  @ApiProperty({ example: 1, description: 'How long a tenent is staying' })
-  lease_duration: number;
-
   @ApiProperty({
-    example: '20,000',
+    example: 20000,
     description: 'Security payment',
+    required: false,
   })
-  security_deposit: string;
+  security_deposit: number;
 
   @ApiProperty({
-    example: '50,000',
+    example: 50000,
     description: 'Service charge',
+    required: false,
   })
-  service_charge: string;
+  service_charge: number;
 
   @ApiProperty({
     example: 'Available now',
     description: 'Comment about the property',
+    required: false,
   })
-  comment: string;
-
-  @ApiProperty({
-    example: 'Available now',
-    description: 'Comment about the property',
-  })
-  move_in_date: Date;
-
-  @ApiProperty({
-    example: 'Active',
-    description: 'Status of the tenant',
-  })
-  occupant_status: string;
-
-  @ApiProperty({
-    example: '2025',
-    description: 'Year the property was built',
-  })
-  build_year: string;
+  comment?: string | null;
 }

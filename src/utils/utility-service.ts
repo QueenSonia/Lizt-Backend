@@ -34,6 +34,12 @@ class UtilityService {
   getUUID() {
     return uuidv4();
   }
+
+  generateServiceRequestId(): string {
+    const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp
+    const random = Math.random().toString(36).substring(2, 5).toUpperCase();
+    return `#SR${timestamp}${random}`; // e.g., #SR893124X9K
+  }
 }
 
 export const UtilService = new UtilityService();

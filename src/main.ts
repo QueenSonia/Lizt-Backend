@@ -21,9 +21,10 @@ async function bootstrap(): Promise<NestExpressApplication> {
     {
       cors: {
         origin: (origin, callback) => {
-          callback(null, true); // Allow all origins (adjust if needed)
+          // Allow any origin (use '*' for non-credentialed requests)
+          callback(null, true); // Allow all origins
         },
-        credentials: true,
+        credentials: true, // Allow cookies and credentials in the request
       },
     },
   );

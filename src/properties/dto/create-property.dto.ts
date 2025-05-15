@@ -1,9 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import { IsNotEmpty, IsString, IsNumber, IsEnum } from 'class-validator';
 
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
-  NOT_VACANT = 'not_vacant',
+  NOT_VACANT = 'occupied',
 }
 
 export class CreatePropertyDto {
@@ -17,99 +18,94 @@ export class CreatePropertyDto {
   @IsString()
   location: string;
 
-  @ApiProperty({ example: 'vacant', description: 'Status of the property' })
+    @ApiProperty({ example: 'lagos', description: 'Description of the property' })
   @IsNotEmpty()
-  @IsEnum(PropertyStatusEnum)
-  property_status: PropertyStatusEnum;
+  @IsString()
+  description: string;
+
+  // @ApiProperty({ example: 'vacant', description: 'Status of the property' })
+  // @IsNotEmpty()
+  // @IsEnum(PropertyStatusEnum)
+  // property_status: PropertyStatusEnum;
 
   @ApiProperty({
-    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
-    description: 'UUID of the tenant',
+    example: 'Duplex',
+    description: 'Type of the property',
   })
   @IsString()
-  tenant_id: string;
+  property_type: string;
 
-  @ApiProperty({ example: 1, description: 'No of bathrooms in the property' })
+  // @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
+  // property_images: string[];
+
+  @ApiProperty({
+    example: 3,
+    description: 'No of bedrooms in the property',
+    type: 'integer',
+  })
   @IsNotEmpty()
   @IsNumber()
-  no_of_bathrooms: number;
-
-  @ApiProperty({ example: 3, description: 'No of bedrooms in the property' })
-  @IsNotEmpty()
-  @IsNumber()
+  @Type(() => Number)
   no_of_bedrooms: number;
 
-  @ApiProperty({
-    example: '500,000',
-    description: 'Rental price of the property',
-  })
-  @IsNotEmpty()
-  @IsString()
-  rental_price: string;
+  // @ApiProperty({
+  //   example: 500000,
+  //   description: 'Rental price of the property',
+  //   type: 'integer',
+  // })
+  // @IsNotEmpty()
+  // @IsNumber()
+  // @Type(() => Number)
+  // rental_price: number;
 
-  @ApiProperty({
-    example: 'monthly',
-    description: 'Frequency of payment for the property',
-  })
-  @IsNotEmpty()
-  @IsString()
-  payment_frequency: string;
+  // @ApiProperty({
+  //   example: 'monthly',
+  //   description: 'Frequency of payment for the property',
+  // })
+  // @IsNotEmpty()
+  // @IsString()
+  // payment_frequency: string;
 
-  @ApiProperty({ example: 1, description: 'How long a tenent is staying' })
-  @IsNotEmpty()
-  @IsNumber()
-  lease_duration: number;
+  // @ApiProperty({
+  //   example: 20000,
+  //   description: 'Security payment',
+  //   type: 'integer',
+  // })
+  // @IsNotEmpty()
+  // @IsNumber()
+  // @Type(() => Number)
+  // security_deposit: number;
 
-  @ApiProperty({
-    example: '20,000',
-    description: 'Security payment',
-  })
-  @IsNotEmpty()
-  @IsString()
-  security_deposit: string;
+  // @ApiProperty({
+  //   example: 50000,
+  //   description: 'Service charge',
+  //   type: 'integer',
+  // })
+  // @IsNotEmpty()
+  // @IsNumber()
+  // @Type(() => Number)
+  // service_charge: number;
 
-  @ApiProperty({
-    example: '50,000',
-    description: 'Service charge',
-  })
-  @IsNotEmpty()
-  @IsString()
-  service_charge: string;
+  // @ApiProperty({
+  //   example: 'Available now',
+  //   description: 'Additional notes about the property',
+  //   required: false,
+  // })
+  // @IsString()
+  // comment?: string | null;
+}
 
-  @ApiProperty({
-    example: 'Available now',
-    description: 'Comment about the property',
-  })
-  @IsString()
-  comment: string;
-
-  @ApiProperty({
-    example: 'Available now',
-    description: 'Comment about the property',
-  })
-  @IsString()
-  move_in_date: Date;
-
-  @ApiProperty({
-    example: 'Active',
-    description: 'Status of the tenant',
-  })
-  @IsString()
-  occupant_status: string;
-
-  @ApiProperty({
-    example: '2025',
-    description: 'Year the property was built',
-  })
-  @IsString()
-  build_year: string;
+export enum TenantStatusEnum {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
 }
 
 export interface PropertyFilter {
+  search?:string
   name?: string;
   location?: string;
   property_status?: string;
-  tenant_id?: string;
+  owner_id?: string;
   start_date?: string;
   end_date?: string;
   size?: number;

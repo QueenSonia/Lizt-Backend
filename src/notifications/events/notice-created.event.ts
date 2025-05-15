@@ -1,7 +1,7 @@
 export interface NoticeAgreementCreatedEvent {
-  noticeId: number;
-  userId: number;
-  propertyId: number;
+  notice_id: number;
+  user_id: string;
   date: string;
   property_id: string;
+  property_name:string
 }

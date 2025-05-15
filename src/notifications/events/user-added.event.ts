@@ -1,6 +1,6 @@
 export interface UserAddedToPropertyEvent {
-  userId: number;
+  user_id: string;
   property_id: string;
-  addedBy: number;
+  property_name:string;
   date: string;
 }

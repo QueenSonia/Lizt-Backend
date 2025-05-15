@@ -1,6 +1,7 @@
 export interface ServiceRequestCreatedEvent {
-  requestId: number;
-  userId: number;
+  request_id: number;
+  user_id: number;
   date: string;
   property_id: string;
+  property_name:string
 }

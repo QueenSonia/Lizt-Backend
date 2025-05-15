@@ -16,6 +16,7 @@ import { UtilService } from 'src/utils/utility-service';
 import { config } from 'src/config';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -24,6 +25,7 @@ export class ServiceRequestsService {
     private readonly serviceRequestRepository: Repository<ServiceRequest>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
+     private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async createServiceRequest(
@@ -56,12 +58,19 @@ export class ServiceRequestsService {
 
     const requestId = UtilService.generateServiceRequestId();
 
-    return this.serviceRequestRepository.save({
+   const serviceRequest =  this.serviceRequestRepository.save({
       ...data,
       issue_images: data?.issue_images || null,
       status: data?.status || ServiceRequestStatusEnum.PENDING,
       request_id: requestId,
     });
+
+    this.eventEmitter.emit('service.created', {
+        user_id: data.tenant_id,
+        property_id: data.property_id,
+      });
+
+      return serviceRequest
   }
 
   async getAllServiceRequests(user_id:string, queryParams: ServiceRequestFilter) {

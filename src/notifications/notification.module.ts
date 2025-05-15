@@ -4,7 +4,6 @@ import { NotificationController } from './notification.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Notification } from './entities/notification.entity';
 import { NoticeAgreementListener } from './listeners/notice-agreement.listener';
-import { RentCreatedListener } from './listeners/rent-created.listener';
 import { UserAddedListener } from './listeners/user-added.listener';
 import { PropertyListener } from './listeners/property-created.listener';
 
@@ -16,7 +15,6 @@ import { PropertyListener } from './listeners/property-created.listener';
   providers: [
     NotificationService,
     NoticeAgreementListener,
-    RentCreatedListener,
     UserAddedListener,
     PropertyListener
   ],

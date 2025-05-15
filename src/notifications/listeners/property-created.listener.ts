@@ -2,6 +2,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { Injectable } from '@nestjs/common';
 import { NotificationService } from '../notification.service';
 import { NotificationType } from '../enums/notification-type';
+import { PropertyCreatedEvent } from '../events/property-created.event';
 
 
 @Injectable()
@@ -9,18 +10,14 @@ export class PropertyListener {
   constructor(private readonly notificationService: NotificationService) {}
 
   @OnEvent('property.created')
-  async handlePropertyCreated(payload: {
-    property_id: string;
-    name?: string;
-    creator_id?: string;
-  }) {
-    console.log('hello')
+  async handlePropertyCreated(event:PropertyCreatedEvent) {
     await this.notificationService.create({
       date: new Date().toISOString(),
       type: NotificationType.PROPERTY_CREATED,
-      description: `New property "${payload.name}" was created.`,
+      description: `New property ${event.property_name} was created.`,
       status: 'Completed',
-      property_id: payload.property_id,
+      property_id: event.property_id,
+      user_id: event.user_id
     });
   }
 }

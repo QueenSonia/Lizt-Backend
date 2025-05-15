@@ -7,4 +7,5 @@ export class CreateNotificationDto {
   description: string;
   status: 'Pending' | 'Completed';
   property_id:string;
+  user_id:string
 }

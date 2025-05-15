@@ -21,4 +21,7 @@ export class Notification {
 
   @Column()
   property_id: string; // <-- snake_case and UUID
+
+  @Column()
+  user_id:string
 }

@@ -101,7 +101,7 @@ export class UsersService {
         throw new Error('User ID is missing after creation');
       }
 
-      if (createdUser.role === RolesEnum.TENANT) {
+    
         const property = await queryRunner.manager.findOne(Property, {
           where: {
             id: data.property_id,
@@ -178,13 +178,14 @@ export class UsersService {
           EmailSubject.WELCOME_EMAIL,
           emailContent,
         );
-      }
+      
 
       await queryRunner.commitTransaction();
 
       this.eventEmitter.emit('user.created', {
-        user_id: createdUser.id,
+        user_id: property.owner_id,
         property_id: data.property_id,
+        property_name: property.name,
         role: createdUser.role,
       });
       return createdUser;

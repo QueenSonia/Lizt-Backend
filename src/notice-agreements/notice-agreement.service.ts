@@ -13,6 +13,7 @@ import { sendEmailWithAttachment } from './utils/sender';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from 'src/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 @Injectable()
 export class NoticeAgreementService {
   constructor(
@@ -23,6 +24,7 @@ export class NoticeAgreementService {
     @InjectRepository(Users)
     private readonly userRepo: Repository<Users>,
     private readonly fileUploadService: FileUploadService,
+        private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async create(dto: CreateNoticeAgreementDto) {
@@ -79,6 +81,12 @@ export class NoticeAgreementService {
     //     tenant.phone_number
     //   );
     // send via WhatsApp/email
+
+      this.eventEmitter.emit('notice.created', {
+        user_id: property.owner_id,
+        property_id: property.id,
+        property_name: property.name,
+      });
 
     return agreement;
   }

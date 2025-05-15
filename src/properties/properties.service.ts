@@ -40,8 +40,8 @@ export class PropertiesService {
     // ✅ Emit event after property is created
     this.eventEmitter.emit('property.created', {
       property_id: createdProperty.id,
-      name: createdProperty.name, // assuming you have a name field
-      // creator_id: createdProperty.creator_id, // optional if applicable
+      property_name: createdProperty.name, // assuming you have a name field
+      user_id: createdProperty.owner_id, // optional if applicable
     });
 
     return createdProperty;
@@ -133,7 +133,11 @@ export class PropertiesService {
     })) as any;
 
     if (!activeRent) {
-      throw new HttpException('No active Rent', HttpStatus.NOT_FOUND);
+       return this.propertyRepository.update(id,{
+      name: data.name,
+      location: data.location,
+      no_of_bedrooms: data.no_of_bedrooms
+    });
     }
     await this.rentService.updateRentById(activeRent.id, {
       lease_start_date: data.lease_end_date,

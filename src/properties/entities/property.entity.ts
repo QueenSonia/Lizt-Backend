@@ -8,6 +8,7 @@ import { ServiceRequest } from 'src/service-requests/entities/service-request.en
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
+import { Account } from 'src/users/entities/account.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -58,9 +59,9 @@ export class Property extends BaseEntity {
   @OneToMany(() => PropertyTenant, (t) => t.property)
   property_tenants: PropertyTenant[];
 
-  @ManyToOne(() => Users, (owner) => owner.properties)
+  @ManyToOne(() =>Account, (owner) => owner.properties)
   @JoinColumn({ name: 'owner_id', referencedColumnName: 'id' })
-  owner: Users;
+  owner: Account;
 
   @OneToMany(() => Rent, (r) => r.property)
   rents: Rent[];

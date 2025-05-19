@@ -3,6 +3,7 @@ import { BaseEntity } from '../../base.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { Property } from './property.entity';
 import { TenantStatusEnum } from '../dto/create-property.dto';
+import { Account } from 'src/users/entities/account.entity';
 
 @Entity({ name: 'property_tenants' })
 export class PropertyTenant extends BaseEntity {
@@ -24,7 +25,7 @@ export class PropertyTenant extends BaseEntity {
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() => Users, (u) => u.property_tenants)
+  @ManyToOne(() => Account, (u) => u.property_tenants)
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Users;
+  tenant: Account;
 }

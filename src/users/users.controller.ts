@@ -120,6 +120,7 @@ export class UsersController {
   getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
     try {
       query.creator_id = req?.user?.id;
+
       return this.usersService.getTenantsOfAnAdmin(query);
     } catch (error) {
       throw error;
@@ -293,7 +294,7 @@ export class UsersController {
     @Res() res: Response,
   ) {
     const { token, newPassword } = body;
-    await this.usersService.resetPassword(token, newPassword, res);
+    await this.usersService.resetPassword({token, newPassword}, res);
     return { message: 'Password reset successful' };
   }
 
@@ -340,5 +341,17 @@ export class UsersController {
   @Post('admin')
   async createAdmin( @Body() createUserDto: CreateAdminDto){
     return this.usersService.createAdmin(createUserDto);
+  }
+
+  @Get('sub-accounts')
+  async getSubAccounts(@Req() req) {
+      const adminId = req.user.id;
+    return this.usersService.getSubAccounts(adminId);
+  }
+
+  @Get('switch-account/:id')
+  async switchAccount(@Param('id') id: string, @Req() req, @Res() res: Response) {
+   const currentAccount = req.user; 
+    return this.usersService.switchAccount({targetAccountId:id, currentAccount, res});
   }
 }

@@ -153,7 +153,10 @@ export class RentsController {
   @Roles(ADMIN_ROLES.ADMIN)
   getOverdueRents(@Query() query: RentFilter, @Req() req: any) {
     try {
-      query.owner_id = req?.user?.id;
+      if (!query.property) {
+        query.property = {};
+      }
+      query.property.owner_id = req?.user?.id;
       return this.rentsService.getOverdueRents(query);
     } catch (error) {
       throw error;

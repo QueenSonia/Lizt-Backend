@@ -36,6 +36,31 @@ import { NoticeAnalyticsDTO } from './dto/notice-analytics.dto';
 export class NoticeAgreementController {
   constructor(private readonly service: NoticeAgreementService) {}
 
+
+  @ApiOperation({ summary: 'Get Notice Agreements by Tenant ID' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Notice agreements for tenant successfully fetched',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('tenant')
+  async getNoticeAgreementsByTenant(
+    @Query() query: NoticeAgreementFilter,
+    @Req() req: any,
+  ) {
+    try {
+      const tenant_id = req?.user?.id;
+
+      console.log(tenant_id)
+      return this.service.getNoticeAgreementsByTenantId(tenant_id, query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @UseGuards(RoleGuard)
   @Get('analytics')
   @ApiOperation({ summary: 'Get analytics of all notice agreements' })
@@ -116,26 +141,5 @@ export class NoticeAgreementController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Notice Agreements by Tenant ID' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'size', required: false, type: Number })
-  @ApiOkResponse({
-    type: PaginationResponseDto,
-    description: 'Notice agreements for tenant successfully fetched',
-  })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('tenant')
-  async getNoticeAgreementsByTenant(
-    @Query() query: NoticeAgreementFilter,
-    @Req() req: any,
-  ) {
-    try {
-      const tenant_id = req?.user?.id;
-      return this.service.getNoticeAgreementsByTenantId(tenant_id, query);
-    } catch (error) {
-      throw error;
-    }
-  }
 
 }

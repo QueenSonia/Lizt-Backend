@@ -7,11 +7,10 @@ import { ServiceRequestFilter } from 'src/service-requests/dto/create-service-re
 import { PropertyHistoryFilter } from 'src/property-history/dto/create-property-history.dto';
 
 export const buildUserFilter = async (queryParams: UserFilter) => {
-  const query = {};
+  const query = {} 
 
   if (queryParams?.search) {
     query['first_name'] = ILike(`%${queryParams.search}%`);
-
   }
   if (queryParams?.first_name)
     query['first_name'] = queryParams.first_name.toLowerCase();

@@ -128,7 +128,7 @@ export class RentsService {
     const [rents, count] = await this.rentRepository.findAndCount({
       where: {
         ...query,
-        expiry_date: LessThanOrEqual(currentDate),
+        // expiry_date: LessThanOrEqual(currentDate),
       },
       relations: ['tenant', 'property'],
       skip,
@@ -160,7 +160,7 @@ export class RentsService {
     }
 
     const emailContent = rentReminderEmailTemplate(
-      `${rent?.tenant?.first_name} ${rent?.tenant?.last_name}`,
+      `${rent?.tenant?.user.first_name} ${rent?.tenant?.user.last_name}`,
       rent?.property?.rental_price,
       DateService.getDateNormalFormat(rent?.expiry_date),
     );

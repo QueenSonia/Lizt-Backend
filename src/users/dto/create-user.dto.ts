@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsEmail,
   IsNotEmpty,
@@ -123,6 +124,17 @@ export class CreateUserDto {
     }
   )
   password?: string;
+
+
+   @ApiProperty({
+    example: false,
+    description: 'Sub_Account',
+    type: 'boolean',
+  })
+  @IsNotEmpty()
+  @IsBoolean()
+  @Type(() => Boolean)
+  is_sub_account: boolean;
   
 
 }
@@ -254,6 +266,7 @@ export interface UserFilter {
   last_name?: string;
   email?: string;
   creator_id?: string;
+  userId?: string;
   phone_number?: string;
   role?: string;
   start_date?: string;

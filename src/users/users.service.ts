@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -50,6 +51,9 @@ import { CreateKycDto } from './dto/create-kyc.dto';
 import { UpdateKycDto } from './dto/update-kyc.dto';
 import bcrypt from 'bcryptjs/umd/types';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Account } from './entities/account.entity';
+import { AnyAaaaRecord } from 'node:dns';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Injectable()
 export class UsersService {
@@ -66,9 +70,181 @@ export class UsersService {
     @InjectRepository(KYC)
     private readonly kycRepository: Repository<KYC>,
     private readonly eventEmitter: EventEmitter2,
+    @InjectRepository(Account)
+    private accountRepository: Repository<Account>,
   ) {}
 
-  async createUser(data: CreateUserDto, user_id: string): Promise<IUser> {
+  async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
+    const { email, phone_number, is_sub_account } = data;
+
+    const queryRunner =
+      this.usersRepository.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const userRole = data?.role
+        ? RolesEnum[data?.role.toUpperCase()]
+        : RolesEnum.TENANT;
+
+      let user = await this.usersRepository.findOne({
+        where: { email },
+      });
+
+      if (!user) {
+        user = await queryRunner.manager.save(Users, {
+          email,
+          phone_number,
+          first_name: data.first_name,
+          last_name: data.last_name,
+          creator_id: userRole === RolesEnum.TENANT ? creatorId : null,
+        });
+      }
+
+      const existingAccount = await this.accountRepository.findOne({
+        where: { email },
+      });
+
+      if (existingAccount) {
+        throw new HttpException(
+          `Account with email: ${email} already exists`,
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+
+      //check if a sub account allready exist for user with creatorId as account.id
+      const checkSubAccount = await this.accountRepository.findOne({
+        where: {
+          creator_id: creatorId,
+          is_sub_account: true,
+        },
+      });
+
+      if (checkSubAccount && is_sub_account) {
+        throw new HttpException(
+          `Sub account with email already exists`,
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+
+
+      // const hashedPassword = await UtilService.hashPassword(data.password);
+
+      //  console.log(hashedPassword)
+
+      const tenantAccount = this.accountRepository.create({
+        user,
+        creator_id: creatorId,
+        email,
+        role: userRole,
+        is_sub_account,
+        profile_name:is_sub_account ?  `${user.first_name} ${userRole} Account`: `${user.first_name} ${user.last_name} `,
+        is_verified: false,
+      }) as any
+
+      await queryRunner.manager.save(Account, tenantAccount);
+
+      const property = await queryRunner.manager.findOne(Property, {
+        where: { id: data.property_id },
+      });
+
+      if (!property?.id) {
+        throw new HttpException(
+          `Property with id: ${data?.property_id} not found`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      const hasActiveRent = await queryRunner.manager.exists(Rent, {
+        where: {
+          property_id: data?.property_id,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+      });
+
+      if (hasActiveRent) {
+        throw new HttpException(
+          `Property is already rented out`,
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+
+      const rent = {
+        tenant_id: tenantAccount.id,
+        lease_start_date: data?.lease_start_date,
+        lease_end_date: data?.lease_end_date,
+        property_id: property?.id,
+        amount_paid: data?.rental_price,
+        rental_price: data?.rental_price,
+        security_deposit: data?.security_deposit,
+        service_charge: data?.service_charge,
+        payment_status: RentPaymentStatusEnum.PAID,
+        rent_status: RentStatusEnum.ACTIVE,
+      };
+      await queryRunner.manager.save(Rent, rent);
+
+      await queryRunner.manager.save(PropertyTenant, {
+        property_id: property.id,
+        tenant_id: tenantAccount.id,
+        status: TenantStatusEnum.ACTIVE,
+      });
+
+      await queryRunner.manager.update(Property, property.id, {
+        property_status: PropertyStatusEnum.NOT_VACANT,
+      });
+
+      await queryRunner.manager.save(PropertyHistory, {
+        property_id: property?.id,
+        tenant_id: tenantAccount?.id,
+        move_in_date: DateService.getStartOfTheDay(new Date()),
+        monthly_rent: data?.rental_price,
+        owner_comment: null,
+        tenant_comment: null,
+        move_out_date: null,
+        move_out_reason: null,
+      });
+
+      if (!user?.id) {
+        throw new Error('User ID is missing after creation');
+      }
+
+      const token = await this.generatePasswordResetToken(
+        tenantAccount?.id,
+        queryRunner,
+      );
+
+      const emailContent = clientSignUpEmailTemplate(
+        `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
+      );
+
+      await UtilService.sendEmail(
+        email,
+        EmailSubject.WELCOME_EMAIL,
+        emailContent,
+      );
+
+      await queryRunner.commitTransaction();
+
+      this.eventEmitter.emit('user.created', {
+        user_id: property.owner_id,
+        property_id: data.property_id,
+        property_name: property.name,
+        role: userRole,
+      });
+
+      return tenantAccount;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw new HttpException(
+        error?.message || 'An error occurred while creating user',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  async createUserOld(data: CreateUserDto, user_id: string): Promise<IUser> {
     const { email, phone_number } = data;
 
     const emailExist = await this.usersRepository.exists({ where: { email } });
@@ -101,84 +277,88 @@ export class UsersService {
         throw new Error('User ID is missing after creation');
       }
 
-    
-        const property = await queryRunner.manager.findOne(Property, {
-          where: {
-            id: data.property_id,
-          },
-        });
+      await queryRunner.manager.save(Account, {
+        role: userRole,
+        user: createdUser,
+        profile_name: `${createdUser.first_name || 'User'}'s ${userRole} Account`,
+      });
 
-        if (!property?.id) {
-          throw new HttpException(
-            `Property with id: ${data?.property_id} not found`,
-            HttpStatus.NOT_FOUND,
-          );
-        }
+      const property = await queryRunner.manager.findOne(Property, {
+        where: {
+          id: data.property_id,
+        },
+      });
 
-        const hasActiveRent = await queryRunner.manager.exists(Rent, {
-          where: {
-            property_id: data?.property_id,
-            rent_status: Not(RentStatusEnum.ACTIVE),
-          },
-        });
-
-        if (hasActiveRent) {
-          throw new HttpException(
-            `Property with id: ${data?.property_id} is already rented`,
-            HttpStatus.UNPROCESSABLE_ENTITY,
-          );
-        }
-
-        const rent = {
-          tenant_id: createdUser.id,
-          lease_start_date: data?.lease_start_date,
-          lease_end_date: data?.lease_end_date,
-          property_id: property?.id,
-          amount_paid: data?.rental_price,
-          rental_price: data?.rental_price,
-          security_deposit: data?.security_deposit,
-          service_charge: data?.service_charge,
-          payment_status: RentPaymentStatusEnum.PAID,
-          rent_status: RentStatusEnum.ACTIVE,
-        };
-        await queryRunner.manager.save(Rent, rent);
-
-        await queryRunner.manager.save(PropertyTenant, {
-          property_id: property.id,
-          tenant_id: createdUser.id,
-          status: TenantStatusEnum.ACTIVE,
-        });
-
-        await queryRunner.manager.update(Property, property.id, {
-          property_status: PropertyStatusEnum.NOT_VACANT,
-        });
-
-        await queryRunner.manager.save(PropertyHistory, {
-          property_id: property?.id,
-          tenant_id: createdUser?.id,
-          move_in_date: DateService.getStartOfTheDay(new Date()),
-          monthly_rent: data?.rental_price,
-          owner_comment: null,
-          tenant_comment: null,
-          move_out_date: null,
-          move_out_reason: null,
-        });
-
-        const token = await this.generatePasswordResetToken(
-          createdUser?.id,
-          queryRunner,
+      if (!property?.id) {
+        throw new HttpException(
+          `Property with id: ${data?.property_id} not found`,
+          HttpStatus.NOT_FOUND,
         );
+      }
 
-        const emailContent = clientSignUpEmailTemplate(
-          `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
-        );
+      const hasActiveRent = await queryRunner.manager.exists(Rent, {
+        where: {
+          property_id: data?.property_id,
+          rent_status: Not(RentStatusEnum.ACTIVE),
+        },
+      });
 
-        await UtilService.sendEmail(
-          email,
-          EmailSubject.WELCOME_EMAIL,
-          emailContent,
+      if (hasActiveRent) {
+        throw new HttpException(
+          `Property with id: ${data?.property_id} is already rented`,
+          HttpStatus.UNPROCESSABLE_ENTITY,
         );
-      
+      }
+
+      const rent = {
+        tenant_id: createdUser.id,
+        lease_start_date: data?.lease_start_date,
+        lease_end_date: data?.lease_end_date,
+        property_id: property?.id,
+        amount_paid: data?.rental_price,
+        rental_price: data?.rental_price,
+        security_deposit: data?.security_deposit,
+        service_charge: data?.service_charge,
+        payment_status: RentPaymentStatusEnum.PAID,
+        rent_status: RentStatusEnum.ACTIVE,
+      };
+      await queryRunner.manager.save(Rent, rent);
+
+      await queryRunner.manager.save(PropertyTenant, {
+        property_id: property.id,
+        tenant_id: createdUser.id,
+        status: TenantStatusEnum.ACTIVE,
+      });
+
+      await queryRunner.manager.update(Property, property.id, {
+        property_status: PropertyStatusEnum.NOT_VACANT,
+      });
+
+      await queryRunner.manager.save(PropertyHistory, {
+        property_id: property?.id,
+        tenant_id: createdUser?.id,
+        move_in_date: DateService.getStartOfTheDay(new Date()),
+        monthly_rent: data?.rental_price,
+        owner_comment: null,
+        tenant_comment: null,
+        move_out_date: null,
+        move_out_reason: null,
+      });
+
+      const token = await this.generatePasswordResetToken(
+        createdUser?.id,
+        queryRunner,
+      );
+
+      const emailContent = clientSignUpEmailTemplate(
+        `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
+      );
+
+      await UtilService.sendEmail(
+        email,
+        EmailSubject.WELCOME_EMAIL,
+        emailContent,
+      );
 
       await queryRunner.commitTransaction();
 
@@ -333,48 +513,187 @@ export class UsersService {
     return this.usersRepository.delete(id);
   }
 
-  async loginUser(data: LoginDto, res: Response) {
+async loginUser(data: LoginDto, res: Response) {
+  const { email, password } = data;
+
+  const account = await this.accountRepository.findOne({
+    where: { email },
+    relations: ['user'],
+  });
+
+  if (!account?.id) {
+    throw new NotFoundException(`User with email: ${email} not found`);
+  }
+
+  if (account?.password) {
+    const isPasswordValid = await UtilService.validatePassword(password, account.password);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid password');
+    }
+  } else {
+    const hashedPassword = await UtilService.hashPassword(password);
+    await this.accountRepository.update(
+      { email },
+      { password: hashedPassword, is_verified: true },
+    );
+  }
+
+  const userObject: Record<string, any> = {};
+
+  // Extra info for TENANT
+  if (account.role === RolesEnum.TENANT) {
+    const findTenantProperty = await this.propertyTenantRepository.findOne({
+      where: {
+        tenant_id: account.id,
+      },
+    });
+    userObject['property_id'] = findTenantProperty?.property_id;
+  }
+
+  // Generate access token for current account
+  const tokenPayload = {
+    id: account.id,
+    first_name: account.user.first_name,
+    last_name: account.user.last_name,
+    email: account.email,
+    phone_number: account.user.phone_number,
+    role: account.role,
+  };
+
+  const access_token = await this.authService.generateToken(tokenPayload);
+
+  // Set cookie for session
+  res.cookie('access_token', access_token, {
+    httpOnly: true,
+    secure: this.configService.get<string>('NODE_ENV') === 'production',
+    expires: moment().add(8, 'hours').toDate(),
+    sameSite: 'none',
+  });
+
+  let related_accounts = [] as any
+  let parent_account_token: string | null = null;
+
+  // If current account is a creator, fetch sub-accounts
+  if (!account.creator_id) {
+    const subAccounts = await this.accountRepository.find({
+      where: { creator_id: account.id },
+      relations: ['user', 'property_tenants'],
+    });
+
+    related_accounts = await Promise.all(
+      subAccounts.map(async (sub) => {
+        const subTokenPayload = {
+          id: sub.id,
+          first_name: sub.user.first_name,
+          last_name: sub.user.last_name,
+          email: sub.email,
+          phone_number: sub.user.phone_number,
+          property_id: sub.property_tenants[0]?.property_id,
+          role: sub.role,
+        } as any
+
+        const sub_access_token = await this.authService.generateToken(subTokenPayload);
+
+        return {
+          id: sub.id,
+          email: sub.email,
+          role: sub.role,
+          first_name: sub.user.first_name,
+          last_name: sub.user.last_name,
+          access_token: sub_access_token,
+          property_id: sub.property_tenants[0]?.property_id,
+        };
+      }),
+    );
+  } else {
+    // If current account is a sub-account, get parent token
+    const parentAccount = await this.accountRepository.findOne({
+      where: { id: account.creator_id },
+      relations: ['user'],
+    });
+
+    if (parentAccount) {
+      const parentTokenData = {
+        id: parentAccount.id,
+        email: parentAccount.email,
+        role: parentAccount.role,
+        first_name: parentAccount.user.first_name,
+        last_name: parentAccount.user.last_name,
+      } as any
+
+      parent_account_token = await this.authService.generateToken(parentTokenData);
+    }
+  }
+
+  return res.status(HttpStatus.OK).json({
+    user: {
+      ...userObject,
+      id: account.id,
+      first_name: account.user.first_name,
+      last_name: account.user.last_name,
+      email: account.email,
+      phone_number: account.user.phone_number,
+      role: account.role,
+      is_verified: account.is_verified,
+      logo_urls: account.user.logo_urls,
+      creator_id: account.creator_id,
+      created_at: account.user.created_at,
+      updated_at: account.user.updated_at,
+    },
+    access_token,
+    related_accounts,       // Only present if creator
+    parent_account_token,   // Only present if sub-account
+    expires_at: moment().add(8, 'hours').format(),
+  });
+}
+
+
+
+
+  async loginUserOld(data: LoginDto, res: Response) {
     const { email, password } = data;
 
-    const user = await this.usersRepository.findOne({
+    const account = await this.accountRepository.findOne({
       where: { email },
+      relations: ['user'],
     });
-    if (!user?.id) {
+    if (!account?.id) {
       throw new NotFoundException(`User with email: ${data.email} not found`);
     }
 
-    if (user?.password) {
+    if (account?.password) {
       const isPasswordValid = await UtilService.validatePassword(
         password,
-        user?.password,
+        account?.password,
       );
       if (!isPasswordValid) {
         throw new UnauthorizedException('Invalid password');
       }
     } else {
       const hashedPassword = await UtilService.hashPassword(password);
-      await this.usersRepository.update(
+      await this.accountRepository.update(
         { email },
         { password: hashedPassword, is_verified: true },
       );
     }
+
     const userObject = {};
-    if (user?.role === RolesEnum.TENANT) {
+    if (account?.role === RolesEnum.TENANT) {
       const findTenantProperty = await this.propertyTenantRepository.findOne({
         where: {
-          tenant_id: user.id,
+          tenant_id: account.id,
         },
       });
       userObject['property_id'] = findTenantProperty?.property_id;
     }
     const tokenData = {
-      id: user.id,
-      first_name: user.first_name,
-      last_name: user.last_name,
-      email: user.email,
-      phone_number: user.phone_number,
-      role: user.role,
-    };
+      id: account?.id,
+      first_name: account.user.first_name,
+      last_name: account.user.last_name,
+      email: account.email,
+      phone_number: account.user.phone_number,
+      role: account.role,
+    } as any;
 
     const access_token = await this.authService.generateToken(tokenData);
 
@@ -388,17 +707,17 @@ export class UsersService {
     return res.status(HttpStatus.OK).json({
       user: {
         ...userObject,
-        id: user?.id,
-        first_name: user?.first_name,
-        last_name: user?.last_name,
-        email: user?.email,
-        phone_number: user?.phone_number,
-        role: user?.role,
-        is_verified: user?.is_verified,
-        logo_urls: user?.logo_urls,
-        creator_id: user?.creator_id,
-        created_at: user?.created_at,
-        updated_at: user?.updated_at,
+        id: account?.id,
+        first_name: account.user?.first_name,
+        last_name: account.user?.last_name,
+        email: account?.email,
+        phone_number: account.user?.phone_number,
+        role: account?.role,
+        is_verified: account?.is_verified,
+        logo_urls: account.user?.logo_urls,
+        creator_id: account.user?.creator_id,
+        created_at: account.user?.created_at,
+        updated_at: account.user?.updated_at,
       },
       access_token,
       expires_at: moment().add(8, 'hours').format(),
@@ -436,7 +755,9 @@ export class UsersService {
     return tenant;
   }
 
-  async resetPassword(token: string, newPassword: string, res: Response) {
+  async resetPassword(payload:ResetPasswordDto, res: Response) {
+
+    const {token, newPassword} = payload
     const resetEntry = await this.passwordResetRepository.findOne({
       where: { token },
     });
@@ -448,7 +769,7 @@ export class UsersService {
       );
     }
 
-    const user = await this.usersRepository.findOne({
+    const user = await this.accountRepository.findOne({
       where: { id: resetEntry.user_id },
     });
 
@@ -457,7 +778,7 @@ export class UsersService {
     }
 
     user.password = await UtilService.hashPassword(newPassword);
-    await this.usersRepository.save(user);
+    await this.accountRepository.save(user);
 
     return res.status(HttpStatus.OK).json({
       user_id: user.id,
@@ -476,8 +797,10 @@ export class UsersService {
     const skip = (page - 1) * size;
 
     const query = await buildUserFilter(queryParams);
-    const [users, count] = await this.usersRepository.findAndCount({
+
+    const [users, count] = await this.accountRepository.findAndCount({
       where: query,
+      relations: ['user', 'rents', 'property_tenants', 'properties'],
       skip,
       take: size,
       order: { created_at: 'DESC' },
@@ -531,12 +854,12 @@ export class UsersService {
 
   async createUserKyc(userId: string, data: CreateKycDto): Promise<KYC> {
     const queryRunner =
-      this.usersRepository.manager.connection.createQueryRunner();
+      this.accountRepository.manager.connection.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      const user = await queryRunner.manager.findOne(Users, {
+      const user = await queryRunner.manager.findOne(Account, {
         where: { id: userId },
         relations: ['kyc'],
       });
@@ -557,7 +880,7 @@ export class UsersService {
       const savedKyc = await queryRunner.manager.save(KYC, newKyc);
 
       user.is_verified = true;
-      await queryRunner.manager.save(Users, user);
+      await queryRunner.manager.save(Account, user);
 
       await queryRunner.commitTransaction();
       return savedKyc;
@@ -586,8 +909,52 @@ export class UsersService {
     return this.kycRepository.save(updatedKyc);
   }
 
-  //create user that are admin
   async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
+    const existingAccount = await this.accountRepository.findOne({
+      where: { email: data.email },
+    });
+
+    if (existingAccount) {
+      throw new BadRequestException('Account with this email already exists');
+    }
+
+    if (!data.password) {
+      throw new BadRequestException('Password is required');
+    }
+
+    let user = await this.usersRepository.findOne({
+      where: { phone_number: data.phone_number },
+    });
+    console.log({ user });
+    if (!user) {
+      user = await this.usersRepository.save({
+        phone_number: data.phone_number,
+        first_name: data.first_name,
+        last_name: data.last_name,
+        role: RolesEnum.ADMIN,
+        is_verified: true,
+      });
+
+      console.log('user', user);
+    }
+
+    const adminAccount = this.accountRepository.create({
+      user,
+      email: data.email,
+      password: await UtilService.hashPassword(data.password),
+      role: RolesEnum.ADMIN,
+      profile_name: `${user.first_name}'s Admin Account`,
+      is_verified: true,
+    });
+
+    await this.accountRepository.save(adminAccount);
+
+    const { password, ...result } = user;
+    return result;
+  }
+
+  //create user that are admin
+  async createAdminOld(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
     const existing = await this.usersRepository.findOne({
       where: { email: data.email },
     });
@@ -611,7 +978,66 @@ export class UsersService {
 
     const savedUser = await this.usersRepository.save(user);
 
+    await this.accountRepository.save({
+      role: RolesEnum.ADMIN,
+      user: savedUser,
+      profile_name: `${savedUser.first_name}'s Admin Account`,
+    });
+
     const { password, ...result } = savedUser;
     return result;
   }
+
+  async getSubAccounts(adminId:string): Promise<Account[]> {
+ // from JWT
+  const subAccounts = await this.accountRepository.find({
+    where: {
+      creator_id: adminId,
+      is_sub_account: true,
+    },
+    relations: ['user'],
+  });
+
+  return subAccounts;
+}
+
+async switchAccount({
+  targetAccountId,
+  currentAccount,
+  res,
+}: {
+  targetAccountId: string;
+  currentAccount: any;
+  res: Response;
+}) {
+  const target = await this.accountRepository.findOne({
+    where: { id: targetAccountId },
+    relations: ['user'], // you need this to access target.user.*
+  });
+
+  if (!target || target.creator_id !== currentAccount.id) {
+    throw new ForbiddenException('You cannot switch to this account');
+  }
+
+  const tokenPayload = {
+    id: target.id,
+    first_name: target.user.first_name,
+    last_name: target.user.last_name,
+    email: target.email,
+    phone_number: target.user.phone_number,
+    role: target.role,
+  } as any
+
+  const access_token = await this.authService.generateToken(tokenPayload);
+
+  res.cookie('access_token', access_token, {
+    httpOnly: true,
+    secure: this.configService.get<string>('NODE_ENV') === 'production',
+    expires: moment().add(8, 'hours').toDate(),
+    sameSite: 'none',
+  });
+
+  return { success: true, message: 'Switched account successfully' };
+}
+
 }

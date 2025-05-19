@@ -94,4 +94,7 @@ export class RentFilter {
   status?: string;
   start_date?: string;
   end_date?: string;
+  property?:{
+    owner_id?: string;
+  }
 }

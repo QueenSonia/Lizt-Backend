@@ -1,5 +1,6 @@
 import { BaseEntity } from 'src/base.entity';
 import { Property } from 'src/properties/entities/property.entity';
+import { Account } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 
@@ -72,7 +73,7 @@ export class NoticeAgreement extends BaseEntity {
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() => Users, (u) => u.notice_agreements)
+  @ManyToOne(() => Account, (u) => u.notice_agreements)
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Users;
+  tenant: Account;
 }

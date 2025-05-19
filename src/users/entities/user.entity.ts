@@ -7,6 +7,7 @@ import { ServiceRequest } from 'src/service-requests/entities/service-request.en
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 import { KYC } from './kyc.entity';
+import { Account } from './account.entity';
 
 @Unique(['email'])
 // @Unique(['phone_number'])
@@ -43,6 +44,9 @@ export class Users extends BaseEntity {
 
   @Column({ nullable: true, type: 'uuid' })
   creator_id?: string | null;
+
+  @OneToMany(() => Account, (account) => account.user)
+  accounts: Account[];
 
   @OneToMany(() => Property, (p) => p.owner)
   properties: Property[];

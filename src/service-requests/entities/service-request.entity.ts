@@ -3,6 +3,7 @@ import { BaseEntity } from '../../base.entity';
 import { Users } from '../../users/entities/user.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { ServiceRequestStatusEnum } from '../dto/create-service-request.dto';
+import { Account } from 'src/users/entities/account.entity';
 
 @Entity({ name: 'service_requests' })
 export class ServiceRequest extends BaseEntity {
@@ -49,9 +50,9 @@ export class ServiceRequest extends BaseEntity {
   @Column({ nullable: false, type: 'uuid' })
   property_id: string;
 
-  @ManyToOne(() => Users, (u) => u.service_requests)
+  @ManyToOne(() => Account, (u) => u.service_requests)
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Users;
+  tenant: Account;
 
   @ManyToOne(() => Property, (p) => p.service_requests)
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })

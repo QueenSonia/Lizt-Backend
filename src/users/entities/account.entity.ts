@@ -42,8 +42,8 @@ export class Account extends BaseEntity {
    @Column({ nullable: true })
   userId: string;
 
-  @Column({ nullable: false, type: 'boolean', default: false })
-  is_sub_account: boolean;
+  // @Column({ nullable: false, type: 'boolean', default: false })
+  // is_sub_account: boolean;
 
   @ManyToOne(() => Users, (user) => user.accounts, { onDelete: 'CASCADE' })
   user: Users;

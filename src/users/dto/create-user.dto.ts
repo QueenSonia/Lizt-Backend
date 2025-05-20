@@ -126,15 +126,15 @@ export class CreateUserDto {
   password?: string;
 
 
-   @ApiProperty({
-    example: false,
-    description: 'Sub_Account',
-    type: 'boolean',
-  })
-  @IsNotEmpty()
-  @IsBoolean()
-  @Type(() => Boolean)
-  is_sub_account: boolean;
+  //  @ApiProperty({
+  //   example: false,
+  //   description: 'Sub_Account',
+  //   type: 'boolean',
+  // })
+  // @IsNotEmpty()
+  // @IsBoolean()
+  // @Type(() => Boolean)
+  // is_sub_account: boolean;
   
 
 }

@@ -75,7 +75,7 @@ export class UsersService {
   ) {}
 
   async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
-    const { email, phone_number, is_sub_account } = data;
+    const { email, phone_number} = data;
 
     const queryRunner =
       this.usersRepository.manager.connection.createQueryRunner();
@@ -102,7 +102,7 @@ export class UsersService {
       }
 
       const existingAccount = await this.accountRepository.findOne({
-        where: { email },
+        where: { email, role: userRole },
       });
 
       if (existingAccount) {
@@ -113,19 +113,19 @@ export class UsersService {
       }
 
       //check if a sub account allready exist for user with creatorId as account.id
-      const checkSubAccount = await this.accountRepository.findOne({
-        where: {
-          creator_id: creatorId,
-          is_sub_account: true,
-        },
-      });
+      // const checkSubAccount = await this.accountRepository.findOne({
+      //   where: {
+      //     creator_id: creatorId,
+      //     is_sub_account: true,
+      //   },
+      // });
 
-      if (checkSubAccount && is_sub_account) {
-        throw new HttpException(
-          `Sub account with email already exists`,
-          HttpStatus.UNPROCESSABLE_ENTITY,
-        );
-      }
+      // if (checkSubAccount && is_sub_account) {
+      //   throw new HttpException(
+      //     `Sub account with email already exists`,
+      //     HttpStatus.UNPROCESSABLE_ENTITY,
+      //   );
+      // }
 
 
       // const hashedPassword = await UtilService.hashPassword(data.password);
@@ -137,8 +137,9 @@ export class UsersService {
         creator_id: creatorId,
         email,
         role: userRole,
-        is_sub_account,
-        profile_name:is_sub_account ?  `${user.first_name} ${userRole} Account`: `${user.first_name} ${user.last_name} `,
+        // is_sub_account,
+        // profile_name:is_sub_account ?  `${user.first_name} ${userRole} Account`: `${user.first_name} ${user.last_name} `,
+        profile_name:`${user.first_name} ${user.last_name}`,
         is_verified: false,
       }) as any
 
@@ -516,41 +517,63 @@ export class UsersService {
 async loginUser(data: LoginDto, res: Response) {
   const { email, password } = data;
 
-  const account = await this.accountRepository.findOne({
-    where: { email },
-    relations: ['user'],
-  });
+  // Fetch both accounts with the same email but different roles
+  const [tenantAccount, adminAccount] = await Promise.all([
+    this.accountRepository.findOne({
+      where: { email, role: RolesEnum.TENANT },
+      relations: ['user'],
+    }),
+    this.accountRepository.findOne({
+      where: { email, role: RolesEnum.ADMIN },
+      relations: ['user'],
+    }),
+  ]);
 
-  if (!account?.id) {
+  // Check if any account exists
+  if (!tenantAccount && !adminAccount) {
     throw new NotFoundException(`User with email: ${email} not found`);
   }
 
-  if (account?.password) {
-    const isPasswordValid = await UtilService.validatePassword(password, account.password);
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid password');
+  // Validate password for each account
+  const accounts = [tenantAccount, adminAccount].filter(Boolean) as any
+
+  let matchedAccount = null;
+
+  for (const account of accounts) {
+    if (account.password) {
+      const isPasswordValid = await UtilService.validatePassword(password, account.password);
+      if (isPasswordValid) {
+        matchedAccount = account;
+        break;
+      }
     }
-  } else {
-    const hashedPassword = await UtilService.hashPassword(password);
-    await this.accountRepository.update(
-      { email },
-      { password: hashedPassword, is_verified: true },
-    );
   }
+
+  // Handle no password match
+  if (!matchedAccount) {
+    throw new UnauthorizedException('Invalid password');
+  }
+
+  const account = matchedAccount as any
+
+  // Handle missing password (first-time login)
+  // if (!account.password) {
+  //   const hashedPassword = await UtilService.hashPassword(password);
+  //   await this.accountRepository.update(
+  //     { email, role: account.role },
+  //     { password: hashedPassword, is_verified: true },
+  //   );
+  // }
 
   const userObject: Record<string, any> = {};
 
-  // Extra info for TENANT
   if (account.role === RolesEnum.TENANT) {
     const findTenantProperty = await this.propertyTenantRepository.findOne({
-      where: {
-        tenant_id: account.id,
-      },
+      where: { tenant_id: account.id },
     });
     userObject['property_id'] = findTenantProperty?.property_id;
   }
 
-  // Generate access token for current account
   const tokenPayload = {
     id: account.id,
     first_name: account.user.first_name,
@@ -562,7 +585,6 @@ async loginUser(data: LoginDto, res: Response) {
 
   const access_token = await this.authService.generateToken(tokenPayload);
 
-  // Set cookie for session
   res.cookie('access_token', access_token, {
     httpOnly: true,
     secure: this.configService.get<string>('NODE_ENV') === 'production',
@@ -570,13 +592,12 @@ async loginUser(data: LoginDto, res: Response) {
     sameSite: 'none',
   });
 
-  let related_accounts = [] as any
+  let related_accounts = [] as any;
   let parent_account_token: string | null = null;
 
-  // If current account is a creator, fetch sub-accounts
   if (!account.creator_id) {
     const subAccounts = await this.accountRepository.find({
-      where: { creator_id: account.id },
+      where: { email, id: Not(account.id) },
       relations: ['user', 'property_tenants'],
     });
 
@@ -606,7 +627,6 @@ async loginUser(data: LoginDto, res: Response) {
       }),
     );
   } else {
-    // If current account is a sub-account, get parent token
     const parentAccount = await this.accountRepository.findOne({
       where: { id: account.creator_id },
       relations: ['user'],
@@ -641,11 +661,12 @@ async loginUser(data: LoginDto, res: Response) {
       updated_at: account.user.updated_at,
     },
     access_token,
-    related_accounts,       // Only present if creator
-    parent_account_token,   // Only present if sub-account
+    related_accounts,
+    parent_account_token,
     expires_at: moment().add(8, 'hours').format(),
   });
 }
+
 
 
 
@@ -911,11 +932,11 @@ async loginUser(data: LoginDto, res: Response) {
 
   async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
     const existingAccount = await this.accountRepository.findOne({
-      where: { email: data.email },
+      where: { email: data.email, role: RolesEnum.ADMIN },
     });
 
     if (existingAccount) {
-      throw new BadRequestException('Account with this email already exists');
+      throw new BadRequestException('Admin Account with this email already exists');
     }
 
     if (!data.password) {
@@ -933,6 +954,7 @@ async loginUser(data: LoginDto, res: Response) {
         last_name: data.last_name,
         role: RolesEnum.ADMIN,
         is_verified: true,
+        email: data.email,
       });
 
       console.log('user', user);
@@ -993,7 +1015,7 @@ async loginUser(data: LoginDto, res: Response) {
   const subAccounts = await this.accountRepository.find({
     where: {
       creator_id: adminId,
-      is_sub_account: true,
+      // is_sub_account: true,
     },
     relations: ['user'],
   });

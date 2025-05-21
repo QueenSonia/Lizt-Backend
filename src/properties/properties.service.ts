@@ -60,7 +60,7 @@ export class PropertiesService {
     const query = await buildPropertyFilter(queryParams);
     const [properties, count] = await this.propertyRepository.findAndCount({
       where: query,
-      relations: ['property_tenants', 'rents'],
+      relations: ['property_tenants', 'rents', 'rents.tenant'],
       skip,
       take: size,
       order: { created_at: 'DESC' },

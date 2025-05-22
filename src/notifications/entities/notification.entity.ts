@@ -1,6 +1,7 @@
 // entities/notification.entity.ts
-import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, ManyToOne } from 'typeorm';
 import { NotificationType } from '../enums/notification-type';
+import { Account } from 'src/users/entities/account.entity';
 
 @Entity()
 export class Notification {
@@ -24,4 +25,7 @@ export class Notification {
 
   @Column()
   user_id:string
+
+  @ManyToOne(() =>Account, (user) => user.notification, { onDelete: 'CASCADE' })
+  user: Account; // <-- snake_case and UUID
 }

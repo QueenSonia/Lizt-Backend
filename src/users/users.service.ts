@@ -226,7 +226,7 @@ export class UsersService {
 
       await queryRunner.commitTransaction();
 
-      this.eventEmitter.emit('user.created', {
+      this.eventEmitter.emit('user.added', {
         user_id: property.owner_id,
         property_id: data.property_id,
         property_name: property.name,
@@ -363,7 +363,7 @@ export class UsersService {
 
       await queryRunner.commitTransaction();
 
-      this.eventEmitter.emit('user.created', {
+      this.eventEmitter.emit('user.added', {
         user_id: property.owner_id,
         property_id: data.property_id,
         property_name: property.name,

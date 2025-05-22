@@ -15,6 +15,7 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
+import { Notification } from 'src/notifications/entities/notification.entity';
 
 @Entity('accounts')
 export class Account extends BaseEntity {
@@ -69,4 +70,7 @@ export class Account extends BaseEntity {
 
   @OneToOne(() => KYC, (kyc) => kyc.user)
   kyc: KYC;
+
+  @OneToMany(() => Notification, (notification) => notification.user)
+  notification: Notification[];
 }

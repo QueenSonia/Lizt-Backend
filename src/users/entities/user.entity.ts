@@ -68,4 +68,6 @@ export class Users extends BaseEntity {
 
   @OneToOne(() => KYC, (kyc) => kyc.user)
   kyc: KYC;
+
+  
 }

@@ -9,6 +9,7 @@ import { PropertyHistory } from 'src/property-history/entities/property-history.
 import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 import { Account } from 'src/users/entities/account.entity';
+import { Notification } from 'src/notifications/entities/notification.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -77,4 +78,7 @@ export class Property extends BaseEntity {
 
   @OneToMany(() => NoticeAgreement, (na) => na.property)
   notice_agreements: NoticeAgreement[];
+
+  @OneToMany(() => Notification, (no) => no.property)
+  notification: Notification[];
 }

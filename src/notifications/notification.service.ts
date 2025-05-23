@@ -25,10 +25,15 @@ export class NotificationService {
   }
 
   async findByPropertyId(property_id: string): Promise<Notification[]> {
-    return await this.notificationRepository.find({ where: { property_id } });
+    return await this.notificationRepository.find({ 
+      where: { 
+      property_id
+    },
+    relations: ['property']
+  });
   }
 
   async findByUserId(user_id: string): Promise<Notification[]> {
-    return await this.notificationRepository.find({ where: { user_id } });
+    return await this.notificationRepository.find({ where: { user_id },  relations: ['property'] });
   }
 }

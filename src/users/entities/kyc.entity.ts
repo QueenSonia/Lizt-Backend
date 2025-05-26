@@ -69,6 +69,6 @@ export class KYC extends BaseEntity {
   accept_terms_and_condition: boolean;
 
   @OneToOne(() => Account, (user) => user.kyc, { onDelete: 'CASCADE' })
-  @JoinColumn()
+  @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })
   user: Account;
 }

@@ -86,6 +86,7 @@ export class PropertiesService {
         'rents',
         'property_tenants',
         'property_tenants.tenant',
+        'property_tenants.tenant.user',
         'owner',
       ],
     });

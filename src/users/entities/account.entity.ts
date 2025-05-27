@@ -40,7 +40,7 @@ export class Account extends BaseEntity {
     @Column({ nullable: true })
   creator_id: string;
 
-   @Column({ nullable: true })
+   @Column({ nullable: false, type: 'uuid' })
   userId: string;
 
   // @Column({ nullable: false, type: 'boolean', default: false })

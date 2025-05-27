@@ -507,8 +507,21 @@ export class UsersService {
   }
 
   async updateUserById(id: string, data: UpdateUserDto) {
-    return this.usersRepository.update(id, data);
+    const account = await this.accountRepository.findOne({
+      where: { id  }
+    });
+
+    if(!account?.id) {
+      throw new NotFoundException(`Account with userId: ${id} not found`);
+    }
+
+    await this.accountRepository.update(account.id, {
+      profile_name: `${data.first_name} ${data.last_name}`,
+    })
+    return this.usersRepository.update(account.userId, data);
   }
+
+
 
   async deleteUserById(id: string) {
     return this.usersRepository.delete(id);

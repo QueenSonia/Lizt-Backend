@@ -13,6 +13,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
 
 
 export class UpdatePropertyDto {
@@ -36,10 +37,10 @@ export class UpdatePropertyDto {
   @IsOptional()
   location?: string;
 
-  @ApiPropertyOptional({ enum: PropertyStatusEnum })
-  @IsEnum(PropertyStatusEnum)
+  @ApiPropertyOptional({ enum:  RentStatusEnum })
+  @IsEnum( RentStatusEnum)
   @IsOptional()
-  rent_status?: PropertyStatusEnum;
+  rent_status?:  RentStatusEnum;
 
   @ApiPropertyOptional()
   @IsString()
@@ -56,6 +57,11 @@ export class UpdatePropertyDto {
   @IsOptional()
   service_charge?: number;
 
+    @ApiPropertyOptional({ type: Number, example: 50000 })
+  @IsNumber()
+  @IsOptional()
+  security_deposit?: number;
+
   @ApiPropertyOptional()
   @IsString()
   @IsOptional()
@@ -69,7 +75,7 @@ export class UpdatePropertyDto {
   @ApiPropertyOptional({ example: 'active' })
   @IsString()
   @IsOptional()
-  occupancy_status?: string;
+  occupancy_status?: PropertyStatusEnum;
 
   @ApiPropertyOptional({ example: 3 })
   @IsNumber()
@@ -90,6 +96,16 @@ export class UpdatePropertyDto {
   @IsString()
   @IsOptional()
   lease_duration?: string;
+
+   @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  first_name?: string;
+
+   @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  last_name?: string;
 
   // @ApiPropertyOptional({ type: [Object] }) // Replace Object with a nested DTO if available
   // @IsArray()

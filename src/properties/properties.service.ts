@@ -21,6 +21,8 @@ import { PropertyGroup } from './entities/property-group.entity';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Users } from 'src/users/entities/user.entity';
+import { UsersService } from 'src/users/users.service';
 
 @Injectable()
 export class PropertiesService {
@@ -29,7 +31,7 @@ export class PropertiesService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyGroup)
     private readonly propertyGroupRepository: Repository<PropertyGroup>,
-
+    private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
@@ -140,24 +142,46 @@ export class PropertiesService {
       no_of_bedrooms: data.no_of_bedrooms
     });
     }
+
+    await this.userService.updateUserById(activeRent.tenant_id, {
+      first_name: data.first_name,
+      last_name: data.last_name,
+      phone_number: data.phone_number,
+    })
     await this.rentService.updateRentById(activeRent.id, {
       lease_start_date: data.lease_end_date,
       lease_end_date: data.lease_end_date,
       rental_price: data.rental_price,
-      service_charge: data.service_charge
+      service_charge: data.service_charge,
+      security_deposit: data.security_deposit,
     });
     return this.propertyRepository.update(id,{
       name: data.name,
       location: data.location,
-      no_of_bedrooms: data.no_of_bedrooms
+      property_status: data.occupancy_status,
     });
+
+
   }catch(error){
     throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
   }
   }
 
   async deletePropertyById(id: string) {
+    try{ const property = await this.propertyRepository.findOne({
+      where: { id },
+    });
+
+    if(property?.property_status === PropertyStatusEnum.NOT_VACANT){
+      throw new HttpException(
+        'Cannot delete property that is not vacant',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     return this.propertyRepository.delete(id);
+  }catch(error){
+    throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
   }
 
   async getAdminDashboardStats(user_id: string) {

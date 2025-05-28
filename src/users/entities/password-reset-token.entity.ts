@@ -16,6 +16,9 @@ export class PasswordResetToken {
   @Column()
   token: string;
 
+  @Column({nullable:true})
+  otp:string
+
   @CreateDateColumn()
   created_at: Date;
 

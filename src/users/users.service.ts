@@ -23,6 +23,7 @@ import { AuthService } from 'src/auth/auth.service';
 import { RolesEnum } from 'src/base.entity';
 import { UtilService } from 'src/utils/utility-service';
 import {
+  clientForgotPasswordTemplate,
   clientSignUpEmailTemplate,
   EmailSubject,
 } from 'src/utils/email-template';
@@ -75,7 +76,7 @@ export class UsersService {
   ) {}
 
   async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
-    const { email, phone_number} = data;
+    const { email, phone_number } = data;
 
     const queryRunner =
       this.usersRepository.manager.connection.createQueryRunner();
@@ -127,7 +128,6 @@ export class UsersService {
       //   );
       // }
 
-
       // const hashedPassword = await UtilService.hashPassword(data.password);
 
       //  console.log(hashedPassword)
@@ -139,9 +139,9 @@ export class UsersService {
         role: userRole,
         // is_sub_account,
         // profile_name:is_sub_account ?  `${user.first_name} ${userRole} Account`: `${user.first_name} ${user.last_name} `,
-        profile_name:`${user.first_name} ${user.last_name}`,
+        profile_name: `${user.first_name} ${user.last_name}`,
         is_verified: false,
-      }) as any
+      }) as any;
 
       await queryRunner.manager.save(Account, tenantAccount);
 
@@ -508,181 +508,180 @@ export class UsersService {
 
   async updateUserById(id: string, data: UpdateUserDto) {
     const account = await this.accountRepository.findOne({
-      where: { id  }
+      where: { id },
     });
 
-    if(!account?.id) {
+    if (!account?.id) {
       throw new NotFoundException(`Account with userId: ${id} not found`);
     }
 
     await this.accountRepository.update(account.id, {
       profile_name: `${data.first_name} ${data.last_name}`,
-    })
+    });
     return this.usersRepository.update(account.userId, data);
   }
-
-
 
   async deleteUserById(id: string) {
     return this.usersRepository.delete(id);
   }
 
-async loginUser(data: LoginDto, res: Response) {
-  const { email, password } = data;
+  async loginUser(data: LoginDto, res: Response) {
+    const { email, password } = data;
 
-  // Fetch both accounts with the same email but different roles
-  const [tenantAccount, adminAccount] = await Promise.all([
-    this.accountRepository.findOne({
-      where: { email, role: RolesEnum.TENANT },
-      relations: ['user'],
-    }),
-    this.accountRepository.findOne({
-      where: { email, role: RolesEnum.ADMIN },
-      relations: ['user'],
-    }),
-  ]);
+    // Fetch both accounts with the same email but different roles
+    const [tenantAccount, adminAccount] = await Promise.all([
+      this.accountRepository.findOne({
+        where: { email, role: RolesEnum.TENANT },
+        relations: ['user'],
+      }),
+      this.accountRepository.findOne({
+        where: { email, role: RolesEnum.ADMIN },
+        relations: ['user'],
+      }),
+    ]);
 
-  // Check if any account exists
-  if (!tenantAccount && !adminAccount) {
-    throw new NotFoundException(`User with email: ${email} not found`);
-  }
+    // Check if any account exists
+    if (!tenantAccount && !adminAccount) {
+      throw new NotFoundException(`User with email: ${email} not found`);
+    }
 
-  // Validate password for each account
-  const accounts = [tenantAccount, adminAccount].filter(Boolean) as any
+    // Validate password for each account
+    const accounts = [tenantAccount, adminAccount].filter(Boolean) as any;
 
-  let matchedAccount = null;
+    let matchedAccount = null;
 
-  for (const account of accounts) {
-    if (account.password) {
-      const isPasswordValid = await UtilService.validatePassword(password, account.password);
-      if (isPasswordValid) {
-        matchedAccount = account;
-        break;
+    for (const account of accounts) {
+      if (account.password) {
+        const isPasswordValid = await UtilService.validatePassword(
+          password,
+          account.password,
+        );
+        if (isPasswordValid) {
+          matchedAccount = account;
+          break;
+        }
       }
     }
-  }
 
-  // Handle no password match
-  if (!matchedAccount) {
-    throw new UnauthorizedException('Invalid password');
-  }
-
-  const account = matchedAccount as any
-
-  // Handle missing password (first-time login)
-  // if (!account.password) {
-  //   const hashedPassword = await UtilService.hashPassword(password);
-  //   await this.accountRepository.update(
-  //     { email, role: account.role },
-  //     { password: hashedPassword, is_verified: true },
-  //   );
-  // }
-
-  const userObject: Record<string, any> = {};
-
-  if (account.role === RolesEnum.TENANT) {
-    const findTenantProperty = await this.propertyTenantRepository.findOne({
-      where: { tenant_id: account.id },
-    });
-    userObject['property_id'] = findTenantProperty?.property_id;
-  }
-
-  const tokenPayload = {
-    id: account.id,
-    first_name: account.user.first_name,
-    last_name: account.user.last_name,
-    email: account.email,
-    phone_number: account.user.phone_number,
-    role: account.role,
-  };
-
-  const access_token = await this.authService.generateToken(tokenPayload);
-
-  res.cookie('access_token', access_token, {
-    httpOnly: true,
-    secure: this.configService.get<string>('NODE_ENV') === 'production',
-    expires: moment().add(8, 'hours').toDate(),
-    sameSite: 'none',
-  });
-
-  let related_accounts = [] as any;
-  let parent_account_token: string | null = null;
-
-  if (!account.creator_id) {
-    const subAccounts = await this.accountRepository.find({
-      where: { email, id: Not(account.id) },
-      relations: ['user', 'property_tenants'],
-    });
-
-    related_accounts = await Promise.all(
-      subAccounts.map(async (sub) => {
-        const subTokenPayload = {
-          id: sub.id,
-          first_name: sub.user.first_name,
-          last_name: sub.user.last_name,
-          email: sub.email,
-          phone_number: sub.user.phone_number,
-          property_id: sub.property_tenants[0]?.property_id,
-          role: sub.role,
-        } as any
-
-        const sub_access_token = await this.authService.generateToken(subTokenPayload);
-
-        return {
-          id: sub.id,
-          email: sub.email,
-          role: sub.role,
-          first_name: sub.user.first_name,
-          last_name: sub.user.last_name,
-          access_token: sub_access_token,
-          property_id: sub.property_tenants[0]?.property_id,
-        };
-      }),
-    );
-  } else {
-    const parentAccount = await this.accountRepository.findOne({
-      where: { id: account.creator_id },
-      relations: ['user'],
-    });
-
-    if (parentAccount) {
-      const parentTokenData = {
-        id: parentAccount.id,
-        email: parentAccount.email,
-        role: parentAccount.role,
-        first_name: parentAccount.user.first_name,
-        last_name: parentAccount.user.last_name,
-      } as any
-
-      parent_account_token = await this.authService.generateToken(parentTokenData);
+    // Handle no password match
+    if (!matchedAccount) {
+      throw new UnauthorizedException('Invalid password');
     }
-  }
 
-  return res.status(HttpStatus.OK).json({
-    user: {
-      ...userObject,
+    const account = matchedAccount as any;
+
+    // Handle missing password (first-time login)
+    // if (!account.password) {
+    //   const hashedPassword = await UtilService.hashPassword(password);
+    //   await this.accountRepository.update(
+    //     { email, role: account.role },
+    //     { password: hashedPassword, is_verified: true },
+    //   );
+    // }
+
+    const userObject: Record<string, any> = {};
+
+    if (account.role === RolesEnum.TENANT) {
+      const findTenantProperty = await this.propertyTenantRepository.findOne({
+        where: { tenant_id: account.id },
+      });
+      userObject['property_id'] = findTenantProperty?.property_id;
+    }
+
+    const tokenPayload = {
       id: account.id,
       first_name: account.user.first_name,
       last_name: account.user.last_name,
       email: account.email,
       phone_number: account.user.phone_number,
       role: account.role,
-      is_verified: account.is_verified,
-      logo_urls: account.user.logo_urls,
-      creator_id: account.creator_id,
-      created_at: account.user.created_at,
-      updated_at: account.user.updated_at,
-    },
-    access_token,
-    related_accounts,
-    parent_account_token,
-    expires_at: moment().add(8, 'hours').format(),
-  });
-}
+    };
 
+    const access_token = await this.authService.generateToken(tokenPayload);
 
+    res.cookie('access_token', access_token, {
+      httpOnly: true,
+      secure: this.configService.get<string>('NODE_ENV') === 'production',
+      expires: moment().add(8, 'hours').toDate(),
+      sameSite: 'none',
+    });
 
+    let related_accounts = [] as any;
+    let parent_account_token: string | null = null;
 
+    if (!account.creator_id) {
+      const subAccounts = await this.accountRepository.find({
+        where: { email, id: Not(account.id) },
+        relations: ['user', 'property_tenants'],
+      });
+
+      related_accounts = await Promise.all(
+        subAccounts.map(async (sub) => {
+          const subTokenPayload = {
+            id: sub.id,
+            first_name: sub.user.first_name,
+            last_name: sub.user.last_name,
+            email: sub.email,
+            phone_number: sub.user.phone_number,
+            property_id: sub.property_tenants[0]?.property_id,
+            role: sub.role,
+          } as any;
+
+          const sub_access_token =
+            await this.authService.generateToken(subTokenPayload);
+
+          return {
+            id: sub.id,
+            email: sub.email,
+            role: sub.role,
+            first_name: sub.user.first_name,
+            last_name: sub.user.last_name,
+            access_token: sub_access_token,
+            property_id: sub.property_tenants[0]?.property_id,
+          };
+        }),
+      );
+    } else {
+      const parentAccount = await this.accountRepository.findOne({
+        where: { id: account.creator_id },
+        relations: ['user'],
+      });
+
+      if (parentAccount) {
+        const parentTokenData = {
+          id: parentAccount.id,
+          email: parentAccount.email,
+          role: parentAccount.role,
+          first_name: parentAccount.user.first_name,
+          last_name: parentAccount.user.last_name,
+        } as any;
+
+        parent_account_token =
+          await this.authService.generateToken(parentTokenData);
+      }
+    }
+
+    return res.status(HttpStatus.OK).json({
+      user: {
+        ...userObject,
+        id: account.id,
+        first_name: account.user.first_name,
+        last_name: account.user.last_name,
+        email: account.email,
+        phone_number: account.user.phone_number,
+        role: account.role,
+        is_verified: account.is_verified,
+        logo_urls: account.user.logo_urls,
+        creator_id: account.creator_id,
+        created_at: account.user.created_at,
+        updated_at: account.user.updated_at,
+      },
+      access_token,
+      related_accounts,
+      parent_account_token,
+      expires_at: moment().add(8, 'hours').format(),
+    });
+  }
 
   async loginUserOld(data: LoginDto, res: Response) {
     const { email, password } = data;
@@ -789,18 +788,126 @@ async loginUser(data: LoginDto, res: Response) {
     return tenant;
   }
 
-  async resetPassword(payload:ResetPasswordDto, res: Response) {
+  async forgotPassword(email: string) {
+  try {
+    const user = await this.accountRepository.findOne({ where: { email } });
 
-    const {token, newPassword} = payload
+    if (!user) {
+      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+    }
+
+    const otp = UtilService.generateOTP(6);
+    const token = uuidv4();
+    const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 min
+
+    await this.passwordResetRepository.save({
+      user_id: user.id,
+      token,
+      otp,
+      expires_at,
+    });
+
+    const emailContent = clientForgotPasswordTemplate(otp);
+
+    await UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent);
+
+    return {
+      message: 'OTP sent to email',
+      token,
+    };
+
+  } catch (error) {
+    console.error('[ForgotPassword Error]', error);
+    // Ensure the request is not hanging and sends a response
+    throw new HttpException(
+      'Failed to process forgot password request',
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
+  }
+}
+
+
+  async validateOtp(otp: string) {
+    const entry = await this.passwordResetRepository.findOne({
+      where: {  otp },
+    });
+
+    if (!entry || entry.expires_at < new Date()) {
+      throw new HttpException('Invalid or expired OTP', HttpStatus.BAD_REQUEST);
+    }
+
+    return {
+      message: 'OTP validated successfully',
+      token: entry.token
+    };
+  }
+
+async resendOtp(oldToken: string) {
+  const resetEntry = await this.passwordResetRepository.findOne({
+    where: { token: oldToken },
+  });
+
+  if (!resetEntry) {
+    throw new HttpException('Invalid token', HttpStatus.BAD_REQUEST);
+  }
+
+  const user = await this.accountRepository.findOne({
+    where: { id: resetEntry.user_id },
+  });
+
+  if (!user) {
+    throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+  }
+
+  // Optional: Prevent resending if recently sent
+  const now = new Date();
+  const timeDiff = (resetEntry.expires_at.getTime() - now.getTime()) / 1000;
+  if (timeDiff > 840) {
+    throw new HttpException(
+      'OTP already sent recently. Please wait a moment before requesting again.',
+      HttpStatus.TOO_MANY_REQUESTS
+    );
+  }
+
+  // Invalidate old token
+  await this.passwordResetRepository.delete({ id: resetEntry.id });
+
+  // Generate new OTP and token
+  const newOtp = UtilService.generateOTP(6);
+  const newToken = uuidv4();
+  const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 minutes
+
+  await this.passwordResetRepository.save({
+    user_id: user.id,
+    token: newToken,
+    otp: newOtp,
+    expires_at,
+  });
+
+  const emailContent = clientForgotPasswordTemplate(newOtp);
+  await UtilService.sendEmail(user.email, EmailSubject.RESEND_OTP, emailContent);
+
+  return {
+    message: 'OTP resent successfully',
+    token: newToken,
+  };
+}
+
+
+  async resetPassword(payload: ResetPasswordDto, res: Response) {
+    const { token, newPassword } = payload;
+
     const resetEntry = await this.passwordResetRepository.findOne({
       where: { token },
     });
 
-    if (!resetEntry || resetEntry.expires_at < new Date()) {
-      throw new HttpException(
-        'Invalid or expired token',
-        HttpStatus.BAD_REQUEST,
-      );
+    if (!resetEntry) {
+      throw new HttpException('Invalid token', HttpStatus.BAD_REQUEST);
+    }
+
+    if (resetEntry.expires_at < new Date()) {
+      await this.passwordResetRepository.delete({ id: resetEntry.id }); // Clean up expired token
+      throw new HttpException('Token has expired', HttpStatus.BAD_REQUEST);
     }
 
     const user = await this.accountRepository.findOne({
@@ -811,14 +918,17 @@ async loginUser(data: LoginDto, res: Response) {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);
     }
 
+    // Hash and update the password
     user.password = await UtilService.hashPassword(newPassword);
     await this.accountRepository.save(user);
 
+    // Delete token after successful password reset
+    await this.passwordResetRepository.delete({ id: resetEntry.id });
+
     return res.status(HttpStatus.OK).json({
+      message: 'Password reset successful',
       user_id: user.id,
     });
-
-    // await this.passwordResetRepository.delete({ id: resetEntry.id });
   }
 
   async getTenantsOfAnAdmin(queryParams: UserFilter) {
@@ -949,7 +1059,9 @@ async loginUser(data: LoginDto, res: Response) {
     });
 
     if (existingAccount) {
-      throw new BadRequestException('Admin Account with this email already exists');
+      throw new BadRequestException(
+        'Admin Account with this email already exists',
+      );
     }
 
     if (!data.password) {
@@ -1023,56 +1135,55 @@ async loginUser(data: LoginDto, res: Response) {
     return result;
   }
 
-  async getSubAccounts(adminId:string): Promise<Account[]> {
- // from JWT
-  const subAccounts = await this.accountRepository.find({
-    where: {
-      creator_id: adminId,
-      // is_sub_account: true,
-    },
-    relations: ['user'],
-  });
+  async getSubAccounts(adminId: string): Promise<Account[]> {
+    // from JWT
+    const subAccounts = await this.accountRepository.find({
+      where: {
+        creator_id: adminId,
+        // is_sub_account: true,
+      },
+      relations: ['user'],
+    });
 
-  return subAccounts;
-}
-
-async switchAccount({
-  targetAccountId,
-  currentAccount,
-  res,
-}: {
-  targetAccountId: string;
-  currentAccount: any;
-  res: Response;
-}) {
-  const target = await this.accountRepository.findOne({
-    where: { id: targetAccountId },
-    relations: ['user'], // you need this to access target.user.*
-  });
-
-  if (!target || target.creator_id !== currentAccount.id) {
-    throw new ForbiddenException('You cannot switch to this account');
+    return subAccounts;
   }
 
-  const tokenPayload = {
-    id: target.id,
-    first_name: target.user.first_name,
-    last_name: target.user.last_name,
-    email: target.email,
-    phone_number: target.user.phone_number,
-    role: target.role,
-  } as any
+  async switchAccount({
+    targetAccountId,
+    currentAccount,
+    res,
+  }: {
+    targetAccountId: string;
+    currentAccount: any;
+    res: Response;
+  }) {
+    const target = await this.accountRepository.findOne({
+      where: { id: targetAccountId },
+      relations: ['user'], // you need this to access target.user.*
+    });
 
-  const access_token = await this.authService.generateToken(tokenPayload);
+    if (!target || target.creator_id !== currentAccount.id) {
+      throw new ForbiddenException('You cannot switch to this account');
+    }
 
-  res.cookie('access_token', access_token, {
-    httpOnly: true,
-    secure: this.configService.get<string>('NODE_ENV') === 'production',
-    expires: moment().add(8, 'hours').toDate(),
-    sameSite: 'none',
-  });
+    const tokenPayload = {
+      id: target.id,
+      first_name: target.user.first_name,
+      last_name: target.user.last_name,
+      email: target.email,
+      phone_number: target.user.phone_number,
+      role: target.role,
+    } as any;
 
-  return { success: true, message: 'Switched account successfully' };
-}
+    const access_token = await this.authService.generateToken(tokenPayload);
 
+    res.cookie('access_token', access_token, {
+      httpOnly: true,
+      secure: this.configService.get<string>('NODE_ENV') === 'production',
+      expires: moment().add(8, 'hours').toDate(),
+      sameSite: 'none',
+    });
+
+    return { success: true, message: 'Switched account successfully' };
+  }
 }

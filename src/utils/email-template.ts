@@ -2,6 +2,7 @@ export enum EmailSubject {
   WELCOME_EMAIL = 'Welcome to Panda Homes!',
   COMPLETE_PROFILE = 'Kindly Complete Your Profile',
   SEND_RENT_REMINDER = 'Rent Payment Reminder',
+  RESEND_OTP = 'OTP Request'
 }
 
 export const clientSignUpEmailTemplate = (link: string) => `
@@ -21,6 +22,23 @@ export const clientSignUpEmailTemplate = (link: string) => `
     </p>
   </div>
 `;
+
+export const clientForgotPasswordTemplate = (otp: string) => `
+  <div style="width: 60%; margin: 0 auto; text-align: center; padding: 20px; border-radius: 10px; border: 2px solid #ff8c00; background-color: #fffaf0; font-family: Arial, sans-serif;">
+    <h3 style="font-size: 24px; color: #d2691e; margin-bottom: 10px;">Password Reset Request</h3>
+    <p style="font-size: 18px; color: #8b4513; margin: 10px 0;">
+      You recently requested to reset your password. Use the OTP below to proceed:
+    </p>
+    <div style="font-size: 36px; color: #ff4500; font-weight: bold; margin: 20px 0;">${otp}</div>
+    <p style="font-size: 16px; color: #8b4513; margin: 10px 0;">
+      This OTP is valid for the next 10 minutes. If you did not request a password reset, please ignore this email.
+    </p>
+    <p style="font-size: 18px; color: #2e8b57; margin-top: 20px;">
+      <strong style="color: #ff4500;">The Panda Homes Team</strong>
+    </p>
+  </div>
+`;
+
 
 export const rentReminderEmailTemplate = (
   tenantName: string,

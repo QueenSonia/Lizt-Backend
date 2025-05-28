@@ -288,13 +288,49 @@ export class UsersController {
   }
 
   @SkipAuth()
+  @Post('forgot-password')
+  async forgotPassword(@Body() body: { email: string }, @Res() res: Response) {
+    try {
+      const { email } = body;
+      await this.usersService.forgotPassword(email);
+      return res.status(200).json({ message: 'Check your Email' });
+    } catch (error) {
+      return res.status(500).json({ message: 'Internal Server Error' });
+    }
+  }
+
+  @SkipAuth()
+  @Post('validate-otp')
+  async validateOtp(@Body() body: { otp: string }, @Res() res: Response) {
+    try {
+      const { otp } = body;
+      const response = await this.usersService.validateOtp(otp);
+      return res.status(200).json(response);
+    } catch (error) {
+      return res.status(500).json({ message: 'Internal Server Error' });
+    }
+  }
+
+  @SkipAuth()
+  @Post('resend-otp')
+  async resendOtp(@Body() body: { token: string }, @Res() res: Response) {
+    try {
+      const { token } = body;
+      const response = await this.usersService.resendOtp(token);
+      return res.status(200).json(response);
+    } catch (error) {
+      return res.status(500).json({ message: 'Internal Server Error' });
+    }
+  }
+
+  @SkipAuth()
   @Post('reset-password')
   async resetPassword(
     @Body() body: { token: string; newPassword: string },
     @Res() res: Response,
   ) {
     const { token, newPassword } = body;
-    await this.usersService.resetPassword({token, newPassword}, res);
+    await this.usersService.resetPassword({ token, newPassword }, res);
     return { message: 'Password reset successful' };
   }
 
@@ -339,19 +375,27 @@ export class UsersController {
 
   @SkipAuth()
   @Post('admin')
-  async createAdmin( @Body() createUserDto: CreateAdminDto){
+  async createAdmin(@Body() createUserDto: CreateAdminDto) {
     return this.usersService.createAdmin(createUserDto);
   }
 
   @Get('sub-accounts')
   async getSubAccounts(@Req() req) {
-      const adminId = req.user.id;
+    const adminId = req.user.id;
     return this.usersService.getSubAccounts(adminId);
   }
 
   @Get('switch-account/:id')
-  async switchAccount(@Param('id') id: string, @Req() req, @Res() res: Response) {
-   const currentAccount = req.user; 
-    return this.usersService.switchAccount({targetAccountId:id, currentAccount, res});
+  async switchAccount(
+    @Param('id') id: string,
+    @Req() req,
+    @Res() res: Response,
+  ) {
+    const currentAccount = req.user;
+    return this.usersService.switchAccount({
+      targetAccountId: id,
+      currentAccount,
+      res,
+    });
   }
 }

@@ -96,12 +96,11 @@ export const buildUserFilterQB = (
 
 
 export const buildPropertyFilter = async (queryParams: PropertyFilter) => {
-  const query = {};
+  const query: any = {};
 
-    // General search (applies only to name, as .find doesn't support OR/ILIKE across fields)
-    if (queryParams?.search) {
-      query['name'] = ILike(`%${queryParams.search}%`);
-    }
+  if (queryParams?.search) {
+    query['name'] = ILike(`%${queryParams.search}%`);
+  }
   if (queryParams?.name) query['name'] = ILike(queryParams.name);
   if (queryParams?.owner_id) query['owner_id'] = queryParams.owner_id;
   if (queryParams?.location)
@@ -111,9 +110,9 @@ export const buildPropertyFilter = async (queryParams: PropertyFilter) => {
 
   if (queryParams?.start_date && queryParams?.end_date) {
     const regex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!regex.test(queryParams?.start_date)) {
+    if (!regex.test(queryParams.start_date)) {
       throw new HttpException(
-        `use date format yy-mm-dd`,
+        `Use date format yyyy-mm-dd`,
         HttpStatus.NOT_ACCEPTABLE,
       );
     }
@@ -122,8 +121,15 @@ export const buildPropertyFilter = async (queryParams: PropertyFilter) => {
       new Date(queryParams.end_date),
     );
   }
-  return query;
+
+  // Extract sort order separately
+  const order = {
+    created_at: queryParams.order === 'asc' ? 'asc' : 'desc',
+  };
+
+  return { query, order };
 };
+
 
 export const buildRentFilter = async (queryParams: RentFilter) => {
   const query = {};

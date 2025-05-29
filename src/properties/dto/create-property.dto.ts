@@ -110,4 +110,5 @@ export interface PropertyFilter {
   end_date?: string;
   size?: number;
   page?: number;
+  order?: 'asc' | 'desc'
 }

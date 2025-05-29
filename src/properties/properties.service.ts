@@ -59,13 +59,17 @@ export class PropertiesService {
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
-    const query = await buildPropertyFilter(queryParams);
+     const { query, order } = await buildPropertyFilter(queryParams);
+    // Ensure order values are lowercase ('asc' or 'desc') for TypeORM compatibility
+    const normalizedOrder = Object.fromEntries(
+      Object.entries(order).map(([key, value]) => [key, value?.toLowerCase()])
+    );
     const [properties, count] = await this.propertyRepository.findAndCount({
       where: query,
       relations: ['property_tenants', 'rents', 'rents.tenant'],
       skip,
       take: size,
-      order: { created_at: 'DESC' },
+      order: normalizedOrder
     });
 
     const totalPages = Math.ceil(count / size);

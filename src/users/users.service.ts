@@ -606,6 +606,7 @@ export class UsersService {
       secure: this.configService.get<string>('NODE_ENV') === 'production',
       expires: moment().add(8, 'hours').toDate(),
       sameSite: 'none',
+      domain: '.getpanda.co'
     });
 
     let related_accounts = [] as any;

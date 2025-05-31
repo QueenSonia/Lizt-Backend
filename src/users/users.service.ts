@@ -599,16 +599,6 @@ export class UsersService {
 
     const access_token = await this.authService.generateToken(tokenPayload);
 
-    console.log('env', this.configService.get<string>('NODE_ENV'))
-
-    res.cookie('access_token', access_token, {
-      httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV') === 'production',
-      expires: moment().add(8, 'hours').toDate(),
-      sameSite: 'none',
-      domain: '.getpanda.co'
-    });
-
     let related_accounts = [] as any;
     let parent_account_token: string | null = null;
 

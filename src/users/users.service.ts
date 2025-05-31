@@ -599,6 +599,8 @@ export class UsersService {
 
     const access_token = await this.authService.generateToken(tokenPayload);
 
+    console.log('env', this.configService.get<string>('NODE_ENV'))
+
     res.cookie('access_token', access_token, {
       httpOnly: true,
       secure: this.configService.get<string>('NODE_ENV') === 'production',

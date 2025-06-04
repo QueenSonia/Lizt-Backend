@@ -25,7 +25,7 @@ export const sendEmailWithAttachment = async (
   recipient: string,
 ) => {
   const transporter = nodemailer.createTransport({
-    host: 'wghp11.wghservers.com',
+    host: process.env.SMTP_HOST,
     port: 465,
     secure: true,
     auth: {

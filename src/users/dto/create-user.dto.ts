@@ -244,7 +244,7 @@ export class CreateAdminDto {
         'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
     }
   )
-  password?: string;
+  password: string;
   
 
 }

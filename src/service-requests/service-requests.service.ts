@@ -180,7 +180,6 @@ export class ServiceRequestsService {
     property_id: string,
     queryParams: ServiceRequestFilter,
   ) {
-    console.log({tenant_id})
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;

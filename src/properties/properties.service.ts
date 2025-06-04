@@ -189,7 +189,6 @@ export class PropertiesService {
   }
 
   async getAdminDashboardStats(user_id: string) {
-    console.log({user_id})
     const stats = await this.propertyRepository
       .createQueryBuilder('property')
       .leftJoin('property.property_tenants', 'property_tenants')

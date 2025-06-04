@@ -1,4 +1,12 @@
-import { Controller, Post, Body, Get, Param, Req } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Param,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { NotificationService } from './notification.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { Notification } from './entities/notification.entity';
@@ -9,7 +17,6 @@ export class NotificationController {
   @Get('user')
   findByUserId(@Req() req): Promise<Notification[]> {
     const user_id = req?.user?.id;
-    console.log('user_id', user_id);
     return this.service.findByUserId(user_id);
   }
 

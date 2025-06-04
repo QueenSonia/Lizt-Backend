@@ -66,8 +66,8 @@ export class NoticeAgreementService {
     const uploadResult = await this.fileUploadService.uploadBuffer(
       pdfBuffer,
       filename,
-      'notices',
-      { resource_type: 'raw', format: 'pdf' },
+      // 'notices',
+      // { resource_type: 'raw', format: 'pdf' },
     );
 
     agreement.notice_image = `${uploadResult.secure_url}`;
@@ -112,7 +112,6 @@ export class NoticeAgreementService {
   }
 
   async getAllNoticeAgreement(ownerId: string) {
-    console.log(ownerId);
     return await this.noticeRepo
       .createQueryBuilder('notice')
       .leftJoinAndSelect('notice.property', 'property')
@@ -189,9 +188,6 @@ export class NoticeAgreementService {
         },
       },
     });
-
-    console.log({ totalNotices });
-
     const acknowledgedNotices = await this.noticeRepo.count({
       where: { status: NoticeStatus.ACKNOWLEDGED },
     });

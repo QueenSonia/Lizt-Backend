@@ -9,11 +9,12 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
 import { FileUploadService } from 'src/utils/cloudinary';
 import { KYC } from './entities/kyc.entity';
 import { Account } from './entities/account.entity';
+import { TwilioModule } from 'src/twilio/twilio.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Users, PasswordResetToken, PropertyTenant, KYC, Account]),
-    AuthModule,
+    AuthModule, TwilioModule,
   ],
   controllers: [UsersController],
   providers: [UsersService, FileUploadService],

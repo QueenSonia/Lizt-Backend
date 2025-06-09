@@ -55,6 +55,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Account } from './entities/account.entity';
 import { AnyAaaaRecord } from 'node:dns';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { TwilioService } from 'src/twilio/twilio.service';
 
 @Injectable()
 export class UsersService {
@@ -73,6 +74,7 @@ export class UsersService {
     private readonly eventEmitter: EventEmitter2,
     @InjectRepository(Account)
     private accountRepository: Repository<Account>,
+    private readonly twilioService: TwilioService,
   ) {}
 
   async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
@@ -218,11 +220,19 @@ export class UsersService {
         `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
       );
 
-      await UtilService.sendEmail(
-        email,
-        EmailSubject.WELCOME_EMAIL,
-        emailContent,
-      );
+      await Promise.all([
+        UtilService.sendEmail(
+                email,
+                EmailSubject.WELCOME_EMAIL,
+                emailContent,
+              ),
+            
+        this.twilioService.sendWhatsAppMediaMessage(
+          phone_number,
+          emailContent
+        )
+      ])
+     
 
       await queryRunner.commitTransaction();
 

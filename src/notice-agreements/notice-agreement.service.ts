@@ -47,7 +47,12 @@ export class NoticeAgreementService {
       throw new NotFoundException('Tenant not found in property');
     }
 
-    const tenant = await this.accountRepo.findOneBy({ id: dto.tenant_id });
+    const tenant = await this.accountRepo.findOne(
+      {
+        where:{ id: dto.tenant_id },
+      relations: ['user']
+    }
+    );
 
     if (!property || !tenant)
       throw new NotFoundException('Property or tenant not found');
@@ -77,8 +82,7 @@ export class NoticeAgreementService {
       await Promise.all([
         sendEmailWithAttachment(uploadResult.secure_url, tenant.email),
         this.twilioService.sendWhatsAppMediaMessage(
-          // tenant.phone_number,
-          '+2348104228894',
+          tenant.user.phone_number,
           uploadResult.secure_url,
           `Dear ${tenant.profile_name}, please find your ${agreement.notice_type} notice attached.`,
         ),

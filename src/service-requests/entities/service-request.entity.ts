@@ -1,9 +1,11 @@
-import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Users } from '../../users/entities/user.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { ServiceRequestStatusEnum } from '../dto/create-service-request.dto';
 import { Account } from 'src/users/entities/account.entity';
+import { ChatMessage } from 'src/chat/chat-message.entity';
+
 
 @Entity({ name: 'service_requests' })
 export class ServiceRequest extends BaseEntity {
@@ -31,6 +33,12 @@ export class ServiceRequest extends BaseEntity {
   @Column({ nullable: true, type: 'varchar', array: true })
   issue_images?: string[] | null;
 
+  @Column({ nullable: true })
+  resolvedAt: Date;
+
+    @Column('text', { nullable: true })
+  notes: string;
+
   @Column({
     nullable: false,
     type: 'enum',
@@ -57,4 +65,7 @@ export class ServiceRequest extends BaseEntity {
   @ManyToOne(() => Property, (p) => p.service_requests)
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
+
+    @OneToMany(() => ChatMessage, message => message.serviceRequest)
+  messages: ChatMessage[];
 }

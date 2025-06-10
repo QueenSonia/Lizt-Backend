@@ -15,6 +15,7 @@ import { NoticeAgreementModule } from './notice-agreements/notice-agreement.modu
 import { TwilioModule } from './twilio/twilio.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { NotificationModule } from './notifications/notification.module';
+import { ChatModule } from './chat/chat.module';
 
 dotenv.config();
 
@@ -44,6 +45,7 @@ dotenv.config();
     NoticeAgreementModule,
     TwilioModule,
     NotificationModule,
+    ChatModule,
     EventEmitterModule.forRoot(),
   ],
   controllers: [AppController],

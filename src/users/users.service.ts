@@ -227,7 +227,7 @@ export class UsersService {
                 emailContent,
               ),
             
-        this.twilioService.sendWhatsAppMediaMessage(
+        this.twilioService.sendWhatsAppMessage(
           phone_number,
           emailContent
         )

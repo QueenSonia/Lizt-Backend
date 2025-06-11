@@ -194,11 +194,12 @@ async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
     const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
     const emailContent = clientSignUpEmailTemplate(resetLink);
 
+       await   UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
+
     // ❗ Critical: this can throw — must stay *inside* transaction
-    await Promise.all([
-      UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
-      this.twilioService.sendWhatsAppMessage(phone_number, emailContent),
-    ]);
+    // await Promise.all([
+    //   this.twilioService.sendWhatsAppMessage(phone_number, emailContent),
+    // ]);
 
     await queryRunner.commitTransaction();
 

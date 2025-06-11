@@ -22,6 +22,7 @@ export class TwilioService {
   }
 
   async sendWhatsAppMessage(to: string, body: string) {
+    console.log(to, body)
     return await this.client.messages.create({
       from: this.whatsappNumber,
       to: `whatsapp:${to}`,

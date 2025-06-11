@@ -20,13 +20,12 @@ dotenv.config();
 export const transporter = nodemailer.createTransport({
   host: 'smtp.sendgrid.net',
   port: 587,
-  secure: false, // true for 465, false for other ports (587 recommended)
+  secure: false, // use true for port 465 if needed
   auth: {
-    user: process.env.SENDGRID_API_KEY_ID, // this literal string is required
-    pass: process.env.SENDGRID_API_KEY, // your actual API key
+    user: 'apikey', // ❗ This must be the literal string 'apikey'
+    pass: process.env.SENDGRID_API_KEY,
   },
 });
-
 
   // export const transporter = nodemailer.createTransport({
   //   host: 'wghp11.wghservers.com',

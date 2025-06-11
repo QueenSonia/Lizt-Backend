@@ -6,20 +6,22 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 class UtilityService {
-  sendEmail = async (email: string, subject: string, htmlContent: string) => {
-    try {
-      const response = await transporter.sendMail({
-        from:"Panda Admin <getpanda.co>",
-        to: email,
-        subject,
-        html: htmlContent,
-      });
-      return response;
-    } catch (err) {
-      console.error('Error sending email:', err);
-      throw err
-    }
-  };
+ sendEmail = async (email: string, subject: string, htmlContent: string) => {
+  console.log(process.env.SENDGRID_API_EY)
+  try {
+    const response = await transporter.sendMail({
+      from: "Panda Admin <hello@getpanda.co>", // must be valid
+      to: email,
+      subject,
+      html: htmlContent,
+    });
+    return response;
+  } catch (err) {
+    console.error('Error sending email:', err);
+    throw err;
+  }
+};
+
 
   hashPassword = async (password: string) => {
     const saltRounds = 10;

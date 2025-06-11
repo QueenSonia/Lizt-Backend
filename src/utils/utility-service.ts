@@ -2,25 +2,49 @@ import { transporter } from './nodemailer-config';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
+import sgMail from '@sendgrid/mail';
 
 dotenv.config();
 
+
+
+sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
+
 class UtilityService {
+//  sendEmail = async (email: string, subject: string, htmlContent: string) => {
+//   console.log(process.env.SENDGRID_API_KEY)
+//   try {
+//     const response = await transporter.sendMail({
+//       from: "Panda Admin <hello@getpanda.co>", // must be valid
+//       to: email,
+//       subject,
+//       html: htmlContent,
+//     });
+//     return response;
+//   } catch (err) {
+//     console.error('Error sending email:', err);
+//     throw err;
+//   }
+// };
+
+
+
  sendEmail = async (email: string, subject: string, htmlContent: string) => {
-  console.log(process.env.SENDGRID_API_EY)
   try {
-    const response = await transporter.sendMail({
-      from: "Panda Admin <hello@getpanda.co>", // must be valid
+    const msg = {
       to: email,
-      subject,
+      from: 'hello@getpanda.co', // Must be verified in SendGrid
+      subject: subject,
       html: htmlContent,
-    });
+    };
+    const response = await sgMail.send(msg);
     return response;
-  } catch (err) {
-    console.error('Error sending email:', err);
-    throw err;
+  } catch (error) {
+    console.error('Error sending email via SendGrid API:', error.response?.body || error.message);
+    throw error;
   }
 };
+
 
 
   hashPassword = async (password: string) => {

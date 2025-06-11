@@ -2,10 +2,10 @@ export enum EmailSubject {
   WELCOME_EMAIL = 'Welcome to Panda Homes!',
   COMPLETE_PROFILE = 'Kindly Complete Your Profile',
   SEND_RENT_REMINDER = 'Rent Payment Reminder',
-  RESEND_OTP = 'OTP Request'
+  RESEND_OTP = 'OTP Request',
 }
 
-export const clientSignUpEmailTemplate = (link: string) => `
+export const clientSignUpEmailTemplate = (tenant: string, link: string) => `
   <div style="max-width: 600px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background-color: #ffffff;">
     <!-- Header with logo and social icons -->
     <div style="padding: 40px 40px 20px 40px; background-color: #ffffff;">
@@ -22,7 +22,7 @@ export const clientSignUpEmailTemplate = (link: string) => `
       <h1 style="font-size: 32px; font-weight: 600; color: #374151; margin: 0 0 30px 0; line-height: 1.2;">Welcome to Panda</h1>
       
       <!-- Greeting -->
-      <p style="font-size: 16px; color: #6B7280; margin: 0 0 30px 0;">Hi [Tenant Name],</p>
+      <p style="font-size: 16px; color: #6B7280; margin: 0 0 30px 0;">Hi ${tenant},</p>
       
       <!-- Main content -->
       <p style="font-size: 16px; color: #374151; line-height: 1.6; margin: 0 0 25px 0;">
@@ -64,6 +64,24 @@ export const clientSignUpEmailTemplate = (link: string) => `
       </a>
     </div>
   </div>
+`;
+
+export const clientSignUpWhatsappTemplate = (tenant: string, link: string) => `
+  Welcome to Panda!
+
+  Hi ${tenant},
+
+  Your new home for managing your tenancy is here.
+
+  ✅ View rent, lease, and history
+  ✅ Get property updates
+  ✅ Submit maintenance requests
+  ✅ Access documents easily
+
+  Click below to get started:
+  ${link}
+
+  - The Panda Team
 `;
 
 export const clientForgotPasswordTemplate = (otp: string) => `

@@ -25,6 +25,7 @@ import { UtilService } from 'src/utils/utility-service';
 import {
   clientForgotPasswordTemplate,
   clientSignUpEmailTemplate,
+  clientSignUpWhatsappTemplate,
   EmailSubject,
 } from 'src/utils/email-template';
 import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
@@ -192,12 +193,13 @@ export class UsersService {
       );
 
       const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
-      const emailContent = clientSignUpEmailTemplate(resetLink);
+      const emailContent = clientSignUpEmailTemplate(user.first_name, resetLink);
+      const whatsappContent = clientSignUpWhatsappTemplate(user.first_name, resetLink)
 
-      // ❗ Critical: this can throw — must stay *inside* transaction
+      // Critical: this can throw — must stay *inside* transaction
       await Promise.all([
         UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
-        this.twilioService.sendWhatsAppMessage(phone_number, emailContent),
+        this.twilioService.sendWhatsAppMessage(phone_number, whatsappContent)
       ]);
 
       await queryRunner.commitTransaction();
@@ -323,20 +325,20 @@ export class UsersService {
         move_out_reason: null,
       });
 
-      const token = await this.generatePasswordResetToken(
-        createdUser?.id,
-        queryRunner,
-      );
+      // const token = await this.generatePasswordResetToken(
+      //   createdUser?.id,
+      //   queryRunner,
+      // );
 
-      const emailContent = clientSignUpEmailTemplate(
-        `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
-      );
+      // const emailContent = clientSignUpEmailTemplate(
+      //   `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
+      // );
 
-      await UtilService.sendEmail(
-        email,
-        EmailSubject.WELCOME_EMAIL,
-        emailContent,
-      );
+      // await UtilService.sendEmail(
+      //   email,
+      //   EmailSubject.WELCOME_EMAIL,
+      //   emailContent,
+      // );
 
       await queryRunner.commitTransaction();
 

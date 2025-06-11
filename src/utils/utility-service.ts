@@ -9,7 +9,7 @@ class UtilityService {
   sendEmail = async (email: string, subject: string, htmlContent: string) => {
     try {
       const response = await transporter.sendMail({
-        from: process.env.GMAIL_USER,
+        from:"Panda Admin <getpanda.co>",
         to: email,
         subject,
         html: htmlContent,
@@ -17,6 +17,7 @@ class UtilityService {
       return response;
     } catch (err) {
       console.error('Error sending email:', err);
+      throw err
     }
   };
 

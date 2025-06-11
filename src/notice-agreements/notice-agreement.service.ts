@@ -17,7 +17,7 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from 'src/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { TwilioService } from 'src/twilio/twilio.service';
+import { TwilioService } from 'src/whatsapp/services/twilio.service';
 import { Account } from 'src/users/entities/account.entity';
 @Injectable()
 export class NoticeAgreementService {

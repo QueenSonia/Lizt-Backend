@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { TwilioService } from './twilio.service';
+import { TwilioService } from './services/twilio.service';
 
 describe('TwilioService', () => {
   let service: TwilioService;

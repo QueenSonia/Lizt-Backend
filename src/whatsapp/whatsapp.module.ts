@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TwilioModule as NestTwilioModule } from 'nestjs-twilio';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TwilioService } from './twilio.service';
+import { TwilioService } from './services/twilio.service';
+import { AfricaTalkingService } from './services/africastalking.service';
 
 @Module({
   imports: [
@@ -14,7 +15,7 @@ import { TwilioService } from './twilio.service';
       inject: [ConfigService],
     }),
   ],
-  providers: [TwilioService],
-  exports: [TwilioService],
+  providers: [TwilioService, AfricaTalkingService],
+  exports: [TwilioService,  AfricaTalkingService],
 })
-export class TwilioModule {}
+export class WhatsappModule {}

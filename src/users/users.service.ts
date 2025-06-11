@@ -55,7 +55,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Account } from './entities/account.entity';
 import { AnyAaaaRecord } from 'node:dns';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { TwilioService } from 'src/twilio/twilio.service';
+import { TwilioService } from 'src/whatsapp/services/twilio.service';
 
 @Injectable()
 export class UsersService {
@@ -76,154 +76,151 @@ export class UsersService {
     private accountRepository: Repository<Account>,
     private readonly twilioService: TwilioService,
 
-       private readonly dataSource: DataSource,
+    private readonly dataSource: DataSource,
   ) {}
 
-async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
-  const { email, phone_number } = data;
-  const queryRunner = this.dataSource.createQueryRunner();
+  async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
+    const { email, phone_number } = data;
+    const queryRunner = this.dataSource.createQueryRunner();
 
-  await queryRunner.connect();
-  await queryRunner.startTransaction();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-  try {
-    const userRole = data?.role
-      ? RolesEnum[data.role.toUpperCase()]
-      : RolesEnum.TENANT;
+    try {
+      const userRole = data?.role
+        ? RolesEnum[data.role.toUpperCase()]
+        : RolesEnum.TENANT;
 
-    // Check if user already exists
-    let user = await queryRunner.manager.findOne(Users, { where: { email } });
+      // Check if user already exists
+      let user = await queryRunner.manager.findOne(Users, { where: { email } });
 
-    if (!user) {
-      user = await queryRunner.manager.save(Users, {
-        email,
-        phone_number,
-        first_name: data.first_name,
-        last_name: data.last_name,
-        creator_id: userRole === RolesEnum.TENANT ? creatorId : null,
+      if (!user) {
+        user = await queryRunner.manager.save(Users, {
+          email,
+          phone_number,
+          first_name: data.first_name,
+          last_name: data.last_name,
+          creator_id: userRole === RolesEnum.TENANT ? creatorId : null,
+        });
+      }
+
+      // Check for existing account
+      const existingAccount = await queryRunner.manager.findOne(Account, {
+        where: { email, role: userRole },
       });
-    }
 
-    // Check for existing account
-    const existingAccount = await queryRunner.manager.findOne(Account, {
-      where: { email, role: userRole },
-    });
+      if (existingAccount) {
+        throw new HttpException(
+          `Account with email: ${email} already exists`,
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
 
-    if (existingAccount) {
-      throw new HttpException(
-        `Account with email: ${email} already exists`,
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
-    }
+      const property = await queryRunner.manager.findOne(Property, {
+        where: { id: data.property_id },
+      });
 
-    const property = await queryRunner.manager.findOne(Property, {
-      where: { id: data.property_id },
-    });
+      if (!property?.id) {
+        throw new HttpException(
+          `Property with id: ${data.property_id} not found`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
 
-    if (!property?.id) {
-      throw new HttpException(
-        `Property with id: ${data.property_id} not found`,
-        HttpStatus.NOT_FOUND,
-      );
-    }
+      const hasActiveRent = await queryRunner.manager.exists(Rent, {
+        where: {
+          property_id: data.property_id,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+      });
 
-    const hasActiveRent = await queryRunner.manager.exists(Rent, {
-      where: {
-        property_id: data.property_id,
+      if (hasActiveRent) {
+        throw new HttpException(
+          `Property is already rented out`,
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+
+      const tenantAccount = queryRunner.manager.create(Account, {
+        user,
+        creator_id: creatorId,
+        email,
+        role: userRole,
+        profile_name: `${user.first_name} ${user.last_name}`,
+        is_verified: false,
+      });
+
+      await queryRunner.manager.save(Account, tenantAccount);
+
+      await queryRunner.manager.save(Rent, {
+        tenant_id: tenantAccount.id,
+        lease_start_date: data.lease_start_date,
+        lease_end_date: data.lease_end_date,
+        property_id: property.id,
+        amount_paid: data.rental_price,
+        rental_price: data.rental_price,
+        security_deposit: data.security_deposit,
+        service_charge: data.service_charge,
+        payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
-      },
-    });
+      });
 
-    if (hasActiveRent) {
+      await Promise.all([
+        queryRunner.manager.save(PropertyTenant, {
+          property_id: property.id,
+          tenant_id: tenantAccount.id,
+          status: TenantStatusEnum.ACTIVE,
+        }),
+        queryRunner.manager.update(Property, property.id, {
+          property_status: PropertyStatusEnum.NOT_VACANT,
+        }),
+        queryRunner.manager.save(PropertyHistory, {
+          property_id: property.id,
+          tenant_id: tenantAccount.id,
+          move_in_date: DateService.getStartOfTheDay(new Date()),
+          monthly_rent: data.rental_price,
+          owner_comment: null,
+          tenant_comment: null,
+          move_out_date: null,
+          move_out_reason: null,
+        }),
+      ]);
+
+      const token = await this.generatePasswordResetToken(
+        tenantAccount.id as string,
+        queryRunner,
+      );
+
+      const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
+      const emailContent = clientSignUpEmailTemplate(resetLink);
+
+      // ❗ Critical: this can throw — must stay *inside* transaction
+      await Promise.all([
+        UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
+        this.twilioService.sendWhatsAppMessage(phone_number, emailContent),
+      ]);
+
+      await queryRunner.commitTransaction();
+
+      this.eventEmitter.emit('user.added', {
+        user_id: property.owner_id,
+        property_id: data.property_id,
+        property_name: property.name,
+        role: userRole,
+      });
+
+      return tenantAccount;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('Transaction rolled back due to:', error);
       throw new HttpException(
-        `Property is already rented out`,
+        error?.message || 'An error occurred while creating user',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
+    } finally {
+      await queryRunner.release();
     }
-
-    const tenantAccount = queryRunner.manager.create(Account, {
-      user,
-      creator_id: creatorId,
-      email,
-      role: userRole,
-      profile_name: `${user.first_name} ${user.last_name}`,
-      is_verified: false,
-    });
-
-    await queryRunner.manager.save(Account, tenantAccount);
-
-    await queryRunner.manager.save(Rent, {
-      tenant_id: tenantAccount.id,
-      lease_start_date: data.lease_start_date,
-      lease_end_date: data.lease_end_date,
-      property_id: property.id,
-      amount_paid: data.rental_price,
-      rental_price: data.rental_price,
-      security_deposit: data.security_deposit,
-      service_charge: data.service_charge,
-      payment_status: RentPaymentStatusEnum.PAID,
-      rent_status: RentStatusEnum.ACTIVE,
-    });
-
-    await Promise.all([
-      queryRunner.manager.save(PropertyTenant, {
-        property_id: property.id,
-        tenant_id: tenantAccount.id,
-        status: TenantStatusEnum.ACTIVE,
-      }),
-      queryRunner.manager.update(Property, property.id, {
-        property_status: PropertyStatusEnum.NOT_VACANT,
-      }),
-      queryRunner.manager.save(PropertyHistory, {
-        property_id: property.id,
-        tenant_id: tenantAccount.id,
-        move_in_date: DateService.getStartOfTheDay(new Date()),
-        monthly_rent: data.rental_price,
-        owner_comment: null,
-        tenant_comment: null,
-        move_out_date: null,
-        move_out_reason: null,
-      }),
-    ]);
-
-    const token = await this.generatePasswordResetToken(
-      tenantAccount.id as string,
-      queryRunner,
-    );
-
-    const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
-    const emailContent = clientSignUpEmailTemplate(resetLink);
-
-       await   UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
-
-    // ❗ Critical: this can throw — must stay *inside* transaction
-    // await Promise.all([
-    //   this.twilioService.sendWhatsAppMessage(phone_number, emailContent),
-    // ]);
-
-    await queryRunner.commitTransaction();
-
-    this.eventEmitter.emit('user.added', {
-      user_id: property.owner_id,
-      property_id: data.property_id,
-      property_name: property.name,
-      role: userRole,
-    });
-
-    return tenantAccount;
-  } catch (error) {
-    await queryRunner.rollbackTransaction();
-    console.error('Transaction rolled back due to:', error);
-    throw new HttpException(
-      error?.message || 'An error occurred while creating user',
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
-  } finally {
-    await queryRunner.release();
   }
-}
-
-
 
   async createUserOld(data: CreateUserDto, user_id: string): Promise<IUser> {
     const { email, phone_number } = data;
@@ -762,47 +759,49 @@ async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
   }
 
   async forgotPassword(email: string) {
-  try {
-    const user = await this.accountRepository.findOne({ where: { email } });
+    try {
+      const user = await this.accountRepository.findOne({ where: { email } });
 
-    if (!user) {
-      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+      if (!user) {
+        throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+      }
+
+      const otp = UtilService.generateOTP(6);
+      const token = uuidv4();
+      const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 min
+
+      await this.passwordResetRepository.save({
+        user_id: user.id,
+        token,
+        otp,
+        expires_at,
+      });
+
+      const emailContent = clientForgotPasswordTemplate(otp);
+
+      await UtilService.sendEmail(
+        email,
+        EmailSubject.WELCOME_EMAIL,
+        emailContent,
+      );
+
+      return {
+        message: 'OTP sent to email',
+        token,
+      };
+    } catch (error) {
+      console.error('[ForgotPassword Error]', error);
+      // Ensure the request is not hanging and sends a response
+      throw new HttpException(
+        'Failed to process forgot password request',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
     }
-
-    const otp = UtilService.generateOTP(6);
-    const token = uuidv4();
-    const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 min
-
-    await this.passwordResetRepository.save({
-      user_id: user.id,
-      token,
-      otp,
-      expires_at,
-    });
-
-    const emailContent = clientForgotPasswordTemplate(otp);
-
-    await UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent);
-
-    return {
-      message: 'OTP sent to email',
-      token,
-    };
-
-  } catch (error) {
-    console.error('[ForgotPassword Error]', error);
-    // Ensure the request is not hanging and sends a response
-    throw new HttpException(
-      'Failed to process forgot password request',
-      HttpStatus.INTERNAL_SERVER_ERROR,
-    );
   }
-}
-
 
   async validateOtp(otp: string) {
     const entry = await this.passwordResetRepository.findOne({
-      where: {  otp },
+      where: { otp },
     });
 
     if (!entry || entry.expires_at < new Date()) {
@@ -811,61 +810,64 @@ async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
 
     return {
       message: 'OTP validated successfully',
-      token: entry.token
+      token: entry.token,
     };
   }
 
-async resendOtp(oldToken: string) {
-  const resetEntry = await this.passwordResetRepository.findOne({
-    where: { token: oldToken },
-  });
+  async resendOtp(oldToken: string) {
+    const resetEntry = await this.passwordResetRepository.findOne({
+      where: { token: oldToken },
+    });
 
-  if (!resetEntry) {
-    throw new HttpException('Invalid token', HttpStatus.BAD_REQUEST);
-  }
+    if (!resetEntry) {
+      throw new HttpException('Invalid token', HttpStatus.BAD_REQUEST);
+    }
 
-  const user = await this.accountRepository.findOne({
-    where: { id: resetEntry.user_id },
-  });
+    const user = await this.accountRepository.findOne({
+      where: { id: resetEntry.user_id },
+    });
 
-  if (!user) {
-    throw new HttpException('User not found', HttpStatus.NOT_FOUND);
-  }
+    if (!user) {
+      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+    }
 
-  // Optional: Prevent resending if recently sent
-  const now = new Date();
-  const timeDiff = (resetEntry.expires_at.getTime() - now.getTime()) / 1000;
-  if (timeDiff > 840) {
-    throw new HttpException(
-      'OTP already sent recently. Please wait a moment before requesting again.',
-      HttpStatus.TOO_MANY_REQUESTS
+    // Optional: Prevent resending if recently sent
+    const now = new Date();
+    const timeDiff = (resetEntry.expires_at.getTime() - now.getTime()) / 1000;
+    if (timeDiff > 840) {
+      throw new HttpException(
+        'OTP already sent recently. Please wait a moment before requesting again.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    // Invalidate old token
+    await this.passwordResetRepository.delete({ id: resetEntry.id });
+
+    // Generate new OTP and token
+    const newOtp = UtilService.generateOTP(6);
+    const newToken = uuidv4();
+    const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 minutes
+
+    await this.passwordResetRepository.save({
+      user_id: user.id,
+      token: newToken,
+      otp: newOtp,
+      expires_at,
+    });
+
+    const emailContent = clientForgotPasswordTemplate(newOtp);
+    await UtilService.sendEmail(
+      user.email,
+      EmailSubject.RESEND_OTP,
+      emailContent,
     );
+
+    return {
+      message: 'OTP resent successfully',
+      token: newToken,
+    };
   }
-
-  // Invalidate old token
-  await this.passwordResetRepository.delete({ id: resetEntry.id });
-
-  // Generate new OTP and token
-  const newOtp = UtilService.generateOTP(6);
-  const newToken = uuidv4();
-  const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 minutes
-
-  await this.passwordResetRepository.save({
-    user_id: user.id,
-    token: newToken,
-    otp: newOtp,
-    expires_at,
-  });
-
-  const emailContent = clientForgotPasswordTemplate(newOtp);
-  await UtilService.sendEmail(user.email, EmailSubject.RESEND_OTP, emailContent);
-
-  return {
-    message: 'OTP resent successfully',
-    token: newToken,
-  };
-}
-
 
   async resetPassword(payload: ResetPasswordDto, res: Response) {
     const { token, newPassword } = payload;

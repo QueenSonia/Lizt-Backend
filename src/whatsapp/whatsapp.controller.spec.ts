@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { TwilioController } from './twilio.controller';
-import { TwilioService } from './twilio.service';
+import { TwilioController } from './whatsapp.controller';
+import { TwilioService } from './services/twilio.service';
 
 describe('TwilioController', () => {
   let controller: TwilioController;

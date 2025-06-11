@@ -12,7 +12,7 @@ import { RentsModule } from './rents/rents.module';
 import { ServiceRequestsModule } from './service-requests/service-requests.module';
 import { PropertyHistoryModule } from './property-history/property-history.module';
 import { NoticeAgreementModule } from './notice-agreements/notice-agreement.module';
-import { TwilioModule } from './twilio/twilio.module';
+import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { NotificationModule } from './notifications/notification.module';
 import { ChatModule } from './chat/chat.module';
@@ -43,7 +43,7 @@ dotenv.config();
     ServiceRequestsModule,
     PropertyHistoryModule,
     NoticeAgreementModule,
-    TwilioModule,
+    WhatsappModule,
     NotificationModule,
     ChatModule,
     EventEmitterModule.forRoot(),

@@ -17,7 +17,7 @@ import {
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
-import { Not, QueryRunner, Repository } from 'typeorm';
+import { DataSource, Not, QueryRunner, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
 import { RolesEnum } from 'src/base.entity';
@@ -75,22 +75,24 @@ export class UsersService {
     @InjectRepository(Account)
     private accountRepository: Repository<Account>,
     private readonly twilioService: TwilioService,
+
+       private readonly dataSource: DataSource,
   ) {}
 
-  async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
+async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
   const { email, phone_number } = data;
-  const queryRunner = this.usersRepository.manager.connection.createQueryRunner();
+  const queryRunner = this.dataSource.createQueryRunner();
 
   await queryRunner.connect();
   await queryRunner.startTransaction();
 
   try {
     const userRole = data?.role
-      ? RolesEnum[data?.role.toUpperCase()]
+      ? RolesEnum[data.role.toUpperCase()]
       : RolesEnum.TENANT;
 
     // Check if user already exists
-    let user = await this.usersRepository.findOne({ where: { email } });
+    let user = await queryRunner.manager.findOne(Users, { where: { email } });
 
     if (!user) {
       user = await queryRunner.manager.save(Users, {
@@ -102,8 +104,8 @@ export class UsersService {
       });
     }
 
-    // Prevent duplicate accounts
-    const existingAccount = await this.accountRepository.findOne({
+    // Check for existing account
+    const existingAccount = await queryRunner.manager.findOne(Account, {
       where: { email, role: userRole },
     });
 
@@ -114,7 +116,6 @@ export class UsersService {
       );
     }
 
-    // Validate property
     const property = await queryRunner.manager.findOne(Property, {
       where: { id: data.property_id },
     });
@@ -126,7 +127,6 @@ export class UsersService {
       );
     }
 
-    // Check for existing active rent
     const hasActiveRent = await queryRunner.manager.exists(Rent, {
       where: {
         property_id: data.property_id,
@@ -141,19 +141,17 @@ export class UsersService {
       );
     }
 
-    // Create tenant account
-    const tenantAccount = this.accountRepository.create({
+    const tenantAccount = queryRunner.manager.create(Account, {
       user,
       creator_id: creatorId,
       email,
       role: userRole,
       profile_name: `${user.first_name} ${user.last_name}`,
       is_verified: false,
-    }) as Account;
+    });
 
     await queryRunner.manager.save(Account, tenantAccount);
 
-    // Create rent
     await queryRunner.manager.save(Rent, {
       tenant_id: tenantAccount.id,
       lease_start_date: data.lease_start_date,
@@ -167,7 +165,6 @@ export class UsersService {
       rent_status: RentStatusEnum.ACTIVE,
     });
 
-    // Update tenant + property status
     await Promise.all([
       queryRunner.manager.save(PropertyTenant, {
         property_id: property.id,
@@ -189,19 +186,15 @@ export class UsersService {
       }),
     ]);
 
-    if (!user?.id) {
-      throw new Error('User ID is missing after creation');
-    }
-
-    // Send onboarding email + WhatsApp
     const token = await this.generatePasswordResetToken(
-     ( tenantAccount.id as string),
+      tenantAccount.id as string,
       queryRunner,
     );
 
     const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
     const emailContent = clientSignUpEmailTemplate(resetLink);
 
+    // ❗ Critical: this can throw — must stay *inside* transaction
     await Promise.all([
       UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
       this.twilioService.sendWhatsAppMessage(phone_number, emailContent),
@@ -218,8 +211,8 @@ export class UsersService {
 
     return tenantAccount;
   } catch (error) {
-    console.log(error)
     await queryRunner.rollbackTransaction();
+    console.error('Transaction rolled back due to:', error);
     throw new HttpException(
       error?.message || 'An error occurred while creating user',
       HttpStatus.UNPROCESSABLE_ENTITY,
@@ -228,6 +221,7 @@ export class UsersService {
     await queryRunner.release();
   }
 }
+
 
 
   async createUserOld(data: CreateUserDto, user_id: string): Promise<IUser> {

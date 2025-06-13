@@ -196,9 +196,12 @@ export class UsersService {
       const emailContent = clientSignUpEmailTemplate(user.first_name, resetLink);
       const whatsappContent = clientSignUpWhatsappTemplate(user.first_name, resetLink)
 
+      const pandaEmail = this.configService.get<string>('GMAIL_USER')!
+
       // Critical: this can throw — must stay *inside* transaction
       await Promise.all([
         UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
+        UtilService.sendEmail(pandaEmail, EmailSubject.WELCOME_EMAIL, emailContent),
         this.twilioService.sendWhatsAppMessage(phone_number, whatsappContent)
       ]);
 

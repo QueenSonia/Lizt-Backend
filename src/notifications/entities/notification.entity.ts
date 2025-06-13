@@ -9,11 +9,10 @@ import {
 import { NotificationType } from '../enums/notification-type';
 import { Account } from 'src/users/entities/account.entity';
 import { Property } from 'src/properties/entities/property.entity';
+import { BaseEntity } from 'src/base.entity';
 
 @Entity()
-export class Notification {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
+export class Notification extends BaseEntity  {
 
   @Column()
   date: string;

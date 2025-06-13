@@ -119,9 +119,10 @@ export class PropertiesController {
   }
 
   @Get('/vacant')
-  getVacantProperty(){
+  getVacantProperty(@Query() query: {owner_id:string}, @Req() req: any){
     try{
-      return this.propertiesService.getVacantProperty()
+         query.owner_id = req?.user?.id 
+      return this.propertiesService.getVacantProperty(query)
     }catch (error) {
       throw error;
     }

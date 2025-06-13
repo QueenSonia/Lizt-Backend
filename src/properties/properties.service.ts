@@ -85,10 +85,11 @@ export class PropertiesService {
     };
   }
 
-  async getVacantProperty(){
+  async getVacantProperty(query:{owner_id:string}){
     return await this.propertyRepository.find({
       where:{
-        property_status: PropertyStatusEnum.VACANT
+        property_status: PropertyStatusEnum.VACANT,
+        ...query
       },
        relations: ['property_tenants', 'rents', 'rents.tenant'],
     })

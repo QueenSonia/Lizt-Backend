@@ -12,6 +12,7 @@ import { config } from 'src/config';
 import { RentIncrease } from './entities/rent-increase.entity';
 import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
 import { Property } from 'src/properties/entities/property.entity';
+import { PropertyStatusEnum } from 'src/properties/dto/create-property.dto';
 
 @Injectable()
 export class RentsService {
@@ -233,4 +234,24 @@ export class RentsService {
       }
     })
   }
+
+
+ async deactivateTenant(tenant_id: string) {
+  const rent = await this.rentRepository.findOne({
+    where: {
+      tenant_id
+    }
+  })
+  if(rent){
+    await this.propertyRepository.update(
+      {id: rent.property_id},
+      {property_status: PropertyStatusEnum.NOT_VACANT}
+    )
+  }
+  await this.rentRepository.update(
+    { tenant_id }, // where condition
+    { rent_status: RentStatusEnum.INACTIVE } // update values
+  );
+}
+
 }

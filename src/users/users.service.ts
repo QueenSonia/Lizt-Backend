@@ -911,37 +911,44 @@ export class UsersService {
     });
   }
 
-  async getTenantsOfAnAdmin(queryParams: UserFilter) {
-    const page = queryParams?.page
-      ? Number(queryParams?.page)
-      : config.DEFAULT_PAGE_NO;
-    const size = queryParams?.size
-      ? Number(queryParams.size)
-      : config.DEFAULT_PER_PAGE;
-    const skip = (page - 1) * size;
+ async getTenantsOfAnAdmin(queryParams: UserFilter) {
+  const page = queryParams?.page ?? config.DEFAULT_PAGE_NO;
+  const size = queryParams?.size ?? config.DEFAULT_PER_PAGE;
+  const skip = (page - 1) * size;
 
-    const query = await buildUserFilter(queryParams);
+  const extraFilters = await buildUserFilter(queryParams);
 
-    const [users, count] = await this.accountRepository.findAndCount({
-      where: query,
-      relations: ['user', 'rents', 'property_tenants', 'properties'],
-      skip,
-      take: size,
-      order: { created_at: 'DESC' },
-    });
+  const queryBuilder = this.accountRepository.createQueryBuilder('account')
+    .leftJoinAndSelect('account.user', 'user')
+    .leftJoinAndSelect('account.rents', 'rents')
+    .leftJoinAndSelect('rents.property', 'property')
+    .leftJoinAndSelect('account.property_tenants', 'property_tenants')
+    .where('rents.rent_status = :status', { status: RentStatusEnum.ACTIVE })
+    .orderBy('account.created_at', 'DESC')
+    .skip(skip)
+    .take(size);
 
-    const totalPages = Math.ceil(count / size);
-    return {
-      users,
-      pagination: {
-        totalRows: count,
-        perPage: size,
-        currentPage: page,
-        totalPages,
-        hasNextPage: page < totalPages,
-      },
-    };
-  }
+  // Apply extra filters only on the `account` table
+  Object.entries(extraFilters).forEach(([key, value], index) => {
+    const paramName = `param${index}`;
+    queryBuilder.andWhere(`account.${key} = :${paramName}`, { [paramName]: value });
+  });
+
+  const [users, count] = await queryBuilder.getManyAndCount();
+
+  const totalPages = Math.ceil(count / size);
+  return {
+    users,
+    pagination: {
+      totalRows: count,
+      perPage: size,
+      currentPage: page,
+      totalPages,
+      hasNextPage: page < totalPages,
+    },
+  };
+}
+
 
   async uploadLogos(
     userId: string,

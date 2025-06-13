@@ -85,6 +85,15 @@ export class PropertiesService {
     };
   }
 
+  async getVacantProperty(){
+    return await this.propertyRepository.find({
+      where:{
+        property_status: PropertyStatusEnum.VACANT
+      },
+       relations: ['property_tenants', 'rents', 'rents.tenant'],
+    })
+  }
+
   async getPropertyById(id: string): Promise<CreatePropertyDto> {
     const property = await this.propertyRepository.findOne({
       where: { id },
@@ -184,6 +193,7 @@ export class PropertiesService {
     }
     return this.propertyRepository.delete(id);
   }catch(error){
+    console.log(error)
     throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
   }
   }

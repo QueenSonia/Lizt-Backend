@@ -118,6 +118,15 @@ export class PropertiesController {
     }
   }
 
+  @Get('/vacant')
+  getVacantProperty(){
+    try{
+      return this.propertiesService.getVacantProperty()
+    }catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get All Property Groups' })
   @ApiOkResponse({
     description: 'List of property groups with their properties',

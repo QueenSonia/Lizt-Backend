@@ -253,4 +253,16 @@ export class RentsController {
       throw error;
     }
   }
+
+  @Roles(ADMIN_ROLES.ADMIN)
+  @Put('/remove/:tenant_id')
+  async removeTenant(@Param('tenant_id', new ParseUUIDPipe()) tenant_id: string) {
+    try{
+      return this.rentsService.deactivateTenant(tenant_id)
+    } catch (error) {
+      throw error;
+    }
+  }
+
+
 }

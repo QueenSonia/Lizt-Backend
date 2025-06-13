@@ -63,7 +63,7 @@ export class RentsService {
   async getRentByTenantId(tenant_id: string) {
     const rent = await this.rentRepository.findOne({
       where: { tenant_id },
-      relations: ['tenant'],
+      relations: ['tenant', 'property'],
     });
     if (!rent?.id) {
       throw new HttpException(

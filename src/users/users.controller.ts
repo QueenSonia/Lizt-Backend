@@ -18,6 +18,7 @@ import {
 import { UsersService } from './users.service';
 import {
   CreateAdminDto,
+  CreateCustomerRepDto,
   CreateUserDto,
   LoginDto,
   UploadLogoDto,
@@ -378,6 +379,13 @@ export class UsersController {
   async createAdmin(@Body() createUserDto: CreateAdminDto) {
     return this.usersService.createAdmin(createUserDto);
   }
+
+   @SkipAuth()
+  @Post('rep')
+  async createCustomerRep(@Body() createUserDto: CreateCustomerRepDto) {
+    return this.usersService.createCustomerRep(createUserDto);
+  }
+
 
   @Get('sub-accounts')
   async getSubAccounts(@Req() req) {

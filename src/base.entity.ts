@@ -43,4 +43,5 @@ export enum ADMIN_ROLES {
 export enum RolesEnum {
   ADMIN = 'admin',
   TENANT = 'tenant',
+  REP = 'rep',
 }

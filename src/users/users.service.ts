@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import {
   CreateAdminDto,
+  CreateCustomerRepDto,
   CreateUserDto,
   IUser,
   LoginDto,
@@ -193,16 +194,26 @@ export class UsersService {
       );
 
       const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
-      const emailContent = clientSignUpEmailTemplate(user.first_name, resetLink);
-      const whatsappContent = clientSignUpWhatsappTemplate(user.first_name, resetLink)
+      const emailContent = clientSignUpEmailTemplate(
+        user.first_name,
+        resetLink,
+      );
+      const whatsappContent = clientSignUpWhatsappTemplate(
+        user.first_name,
+        resetLink,
+      );
 
-      const pandaEmail = this.configService.get<string>('GMAIL_USER')!
+      const pandaEmail = this.configService.get<string>('GMAIL_USER')!;
 
       // Critical: this can throw — must stay *inside* transaction
       await Promise.all([
         UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
-        UtilService.sendEmail(pandaEmail, EmailSubject.WELCOME_EMAIL, emailContent),
-        this.twilioService.sendWhatsAppMessage(phone_number, whatsappContent)
+        UtilService.sendEmail(
+          pandaEmail,
+          EmailSubject.WELCOME_EMAIL,
+          emailContent,
+        ),
+        this.twilioService.sendWhatsAppMessage(phone_number, whatsappContent),
       ]);
 
       await queryRunner.commitTransaction();
@@ -511,7 +522,7 @@ export class UsersService {
     const { email, password } = data;
 
     // Fetch both accounts with the same email but different roles
-    const [tenantAccount, adminAccount] = await Promise.all([
+    const [tenantAccount, adminAccount, repAccount] = await Promise.all([
       this.accountRepository.findOne({
         where: { email, role: RolesEnum.TENANT },
         relations: ['user'],
@@ -520,15 +531,25 @@ export class UsersService {
         where: { email, role: RolesEnum.ADMIN },
         relations: ['user'],
       }),
+         this.accountRepository.findOne({
+        where: { email, role: RolesEnum.REP },
+        relations: ['user'],
+      }),
     ]);
 
     // Check if any account exists
-    if (!tenantAccount && !adminAccount) {
+    if (!tenantAccount && !adminAccount && !repAccount) {
       throw new NotFoundException(`User with email: ${email} not found`);
     }
 
+    console.log({ tenantAccount, adminAccount, repAccount });
+
+    if (!tenantAccount?.is_verified && !adminAccount?.is_verified && !repAccount?.is_verified) {
+      throw new NotFoundException(`Your account is not verified`);
+    }
+
     // Validate password for each account
-    const accounts = [tenantAccount, adminAccount].filter(Boolean) as any;
+    const accounts = [tenantAccount, adminAccount, repAccount].filter(Boolean) as any;
 
     let matchedAccount = null;
 
@@ -894,12 +915,15 @@ export class UsersService {
       where: { id: resetEntry.user_id },
     });
 
+    console.log({ user });
+
     if (!user) {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);
     }
 
     // Hash and update the password
     user.password = await UtilService.hashPassword(newPassword);
+    user.is_verified = true;
     await this.accountRepository.save(user);
 
     // Delete token after successful password reset
@@ -911,44 +935,46 @@ export class UsersService {
     });
   }
 
- async getTenantsOfAnAdmin(queryParams: UserFilter) {
-  const page = queryParams?.page ?? config.DEFAULT_PAGE_NO;
-  const size = queryParams?.size ?? config.DEFAULT_PER_PAGE;
-  const skip = (page - 1) * size;
+  async getTenantsOfAnAdmin(queryParams: UserFilter) {
+    const page = queryParams?.page ?? config.DEFAULT_PAGE_NO;
+    const size = queryParams?.size ?? config.DEFAULT_PER_PAGE;
+    const skip = (page - 1) * size;
 
-  const extraFilters = await buildUserFilter(queryParams);
+    const extraFilters = await buildUserFilter(queryParams);
 
-  const queryBuilder = this.accountRepository.createQueryBuilder('account')
-    .leftJoinAndSelect('account.user', 'user')
-    .leftJoinAndSelect('account.rents', 'rents')
-    .leftJoinAndSelect('rents.property', 'property')
-    .leftJoinAndSelect('account.property_tenants', 'property_tenants')
-    .where('rents.rent_status = :status', { status: RentStatusEnum.ACTIVE })
-    .orderBy('account.created_at', 'DESC')
-    .skip(skip)
-    .take(size);
+    const queryBuilder = this.accountRepository
+      .createQueryBuilder('account')
+      .leftJoinAndSelect('account.user', 'user')
+      .leftJoinAndSelect('account.rents', 'rents')
+      .leftJoinAndSelect('rents.property', 'property')
+      .leftJoinAndSelect('account.property_tenants', 'property_tenants')
+      .where('rents.rent_status = :status', { status: RentStatusEnum.ACTIVE })
+      .orderBy('account.created_at', 'DESC')
+      .skip(skip)
+      .take(size);
 
-  // Apply extra filters only on the `account` table
-  Object.entries(extraFilters).forEach(([key, value], index) => {
-    const paramName = `param${index}`;
-    queryBuilder.andWhere(`account.${key} = :${paramName}`, { [paramName]: value });
-  });
+    // Apply extra filters only on the `account` table
+    Object.entries(extraFilters).forEach(([key, value], index) => {
+      const paramName = `param${index}`;
+      queryBuilder.andWhere(`account.${key} = :${paramName}`, {
+        [paramName]: value,
+      });
+    });
 
-  const [users, count] = await queryBuilder.getManyAndCount();
+    const [users, count] = await queryBuilder.getManyAndCount();
 
-  const totalPages = Math.ceil(count / size);
-  return {
-    users,
-    pagination: {
-      totalRows: count,
-      perPage: size,
-      currentPage: page,
-      totalPages,
-      hasNextPage: page < totalPages,
-    },
-  };
-}
-
+    const totalPages = Math.ceil(count / size);
+    return {
+      users,
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
+  }
 
   async uploadLogos(
     userId: string,
@@ -1086,7 +1112,6 @@ export class UsersService {
     const { password, ...result } = user;
     return result;
   }
-
   //create user that are admin
   async createAdminOld(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
     const existing = await this.usersRepository.findOne({
@@ -1119,6 +1144,69 @@ export class UsersService {
     });
 
     const { password, ...result } = savedUser;
+    return result;
+  }
+
+  async createCustomerRep(
+    data: CreateCustomerRepDto,
+  ): Promise<Omit<Users, 'password'>> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    const existingAccount = await this.accountRepository.findOne({
+      where: { email: data.email, role: RolesEnum.REP },
+    });
+
+    if (existingAccount) {
+      throw new BadRequestException(
+        'Admin Account with this email already exists',
+      );
+    }
+
+    // if (!data.password) {
+    //   throw new BadRequestException('Password is required');
+    // }
+
+    let user = await this.usersRepository.findOne({
+      where: { phone_number: data.phone_number },
+    });
+    console.log({ user });
+    if (!user) {
+      user = await this.usersRepository.save({
+        phone_number: data.phone_number,
+        first_name: data.first_name,
+        last_name: data.last_name,
+        role: RolesEnum.REP,
+        is_verified: true,
+        email: data.email,
+      });
+
+      console.log('user', user);
+    }
+
+    const repAccount = this.accountRepository.create({
+      user,
+      email: data.email,
+      password: '',
+      role: RolesEnum.REP,
+      profile_name: `${data.first_name} ${data.last_name}`,
+      is_verified: true,
+    });
+
+    await this.accountRepository.save(repAccount);
+
+    const token = await this.generatePasswordResetToken(
+      repAccount.id as string,
+      queryRunner,
+    );
+
+    const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
+    const emailContent = clientSignUpEmailTemplate(data.first_name, resetLink);
+
+    await UtilService.sendEmail(
+      data.email,
+      EmailSubject.WELCOME_EMAIL,
+      emailContent,
+    );
+    const { password, ...result } = user;
     return result;
   }
 

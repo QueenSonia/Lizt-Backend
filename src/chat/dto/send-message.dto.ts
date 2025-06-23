@@ -1,7 +1,7 @@
 import { MessageSender, MessageType } from '../chat-message.entity';
 
 export class SendMessageDto {
-  serviceRequestId: string;
+  requestId: string;
   sender: MessageSender;
   content: string;
   type?: MessageType;

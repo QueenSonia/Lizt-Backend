@@ -290,7 +290,7 @@ async tawkServiceRequest(payload: TawkWebhookPayload): Promise<AutoServiceReques
 
   async getServiceRequestsByTenantId(
     tenant_id: string,
-    property_id: string,
+    // property_id: string,
     queryParams: ServiceRequestFilter,
   ) {
     const page = queryParams?.page
@@ -303,9 +303,9 @@ async tawkServiceRequest(payload: TawkWebhookPayload): Promise<AutoServiceReques
     const [serviceRequests, count] =
       await this.serviceRequestRepository.findAndCount({
         where: {
-          tenant_id,
-          property_id,
+          tenant_id
         },
+        relations: ['tenant', 'property'],
         skip,
         take: size,
         order: { created_at: 'DESC' },

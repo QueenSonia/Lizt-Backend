@@ -15,14 +15,15 @@ export class TwilioService {
     );
     const whatsappNumber = configService.get('TWILIO_WHATSAPP_NUMBER');
     if (!whatsappNumber) {
-      throw new Error('TWILIO_WHATSAPP_NUMBER is not defined in the environment');
+      throw new Error(
+        'TWILIO_WHATSAPP_NUMBER is not defined in the environment',
+      );
     }
     this.whatsappNumber = whatsappNumber;
-
   }
 
   async sendWhatsAppMessage(to: string, body: string) {
-    console.log(to, body)
+    console.log(to, body);
     return await this.client.messages.create({
       from: this.whatsappNumber,
       to: `whatsapp:${to}`,
@@ -30,7 +31,11 @@ export class TwilioService {
     });
   }
 
-  async sendWhatsAppMediaMessage(to: string, mediaUrl: string, caption?: string) {
+  async sendWhatsAppMediaMessage(
+    to: string,
+    mediaUrl: string,
+    caption?: string,
+  ) {
     return await this.client.messages.create({
       from: this.whatsappNumber,
       to: `whatsapp:${to}`,

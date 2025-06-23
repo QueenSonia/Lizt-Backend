@@ -102,6 +102,33 @@ export class ServiceRequestsController {
     }
   }
 
+    @ApiOperation({ summary: 'Get Service Requests by Tenant ID' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Service requests for tenant successfully fetched',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('tenant')
+  async getServiceRequestsByTenant(
+    @Query() query: ServiceRequestFilter,
+    @Req() req: any,
+  ) {
+    try {
+      const tenant_id = req?.user?.id;
+      console.log({tenant_id})
+      return this.serviceRequestsService.getServiceRequestsByTenantId(
+        tenant_id,
+        query,
+      );
+    } catch (error) {
+      throw error;
+    }
+  }
+
+
   @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
@@ -184,32 +211,6 @@ export class ServiceRequestsController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Service Requests by Tenant ID' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'size', required: false, type: Number })
-  @ApiOkResponse({
-    type: PaginationResponseDto,
-    description: 'Service requests for tenant successfully fetched',
-  })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('tenant-property/:property_id')
-  async getServiceRequestsByTenantAndProperty(
-    @Param('property_id', new ParseUUIDPipe()) property_id: string,
-    @Query() query: ServiceRequestFilter,
-    @Req() req: any,
-  ) {
-    try {
-      const tenant_id = req?.user?.id;
-      return this.serviceRequestsService.getServiceRequestsByTenantId(
-        tenant_id,
-        property_id,
-        query,
-      );
-    } catch (error) {
-      throw error;
-    }
-  }
 
   @Post('tawk')
   async handleTawkWebhook(

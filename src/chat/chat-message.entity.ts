@@ -1,10 +1,12 @@
+import { BaseEntity } from 'src/base.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 
 export enum MessageSender {
   TENANT = 'tenant',
   REP = 'rep',
-  SYSTEM = 'system'
+  SYSTEM = 'system',
+  ADMIN = 'admin'
 }
 
 export enum MessageType {
@@ -15,12 +17,9 @@ export enum MessageType {
 }
 
 @Entity('chat_messages')
-export class ChatMessage {
-  @PrimaryGeneratedColumn()
-  id: number;
-
+export class ChatMessage extends BaseEntity {
   @Column()
-  serviceRequestId: string;
+  service_request_id: string;
 
   @Column({
     type: 'enum',
@@ -51,13 +50,12 @@ export class ChatMessage {
   senderName: string;
 
   @ManyToOne(() => ServiceRequest, serviceRequest => serviceRequest.messages, {
-    onDelete: 'CASCADE'
+      onDelete: 'CASCADE',
   })
-  @JoinColumn({ name: 'serviceRequestId' })
+  @JoinColumn({ name: 'service_request_id', referencedColumnName: 'request_id' })
   serviceRequest: ServiceRequest;
 
-  @CreateDateColumn()
-  createdAt: Date;
+
 
 
 }

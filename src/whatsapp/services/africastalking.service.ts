@@ -5,7 +5,8 @@ import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class AfricaTalkingService {
-  private readonly apiUrl = 'https://chat.africastalking.com/whatsapp/message/send';
+  private readonly apiUrl =
+    'https://chat.africastalking.com/whatsapp/message/send';
   private readonly apiKey: string;
   private readonly username: string;
 
@@ -14,7 +15,9 @@ export class AfricaTalkingService {
     this.username = configService.get<string>('AFRICAS_TALKING_USERNAME')!;
 
     if (!this.apiKey || !this.username) {
-      throw new Error('Missing Africa’s Talking API credentials in environment');
+      throw new Error(
+        'Missing Africa’s Talking API credentials in environment',
+      );
     }
   }
 
@@ -39,7 +42,10 @@ export class AfricaTalkingService {
 
       return response.data;
     } catch (error) {
-      console.error('Error sending WhatsApp message via Africa’s Talking:', error?.response?.data || error.message);
+      console.error(
+        'Error sending WhatsApp message via Africa’s Talking:',
+        error?.response?.data || error.message,
+      );
       throw error;
     }
   }

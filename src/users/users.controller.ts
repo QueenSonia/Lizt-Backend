@@ -21,6 +21,7 @@ import {
   CreateCustomerRepDto,
   CreateUserDto,
   LoginDto,
+  ResetDto,
   UploadLogoDto,
   UserFilter,
 } from './dto/create-user.dto';
@@ -327,7 +328,7 @@ export class UsersController {
   @SkipAuth()
   @Post('reset-password')
   async resetPassword(
-    @Body() body: { token: string; newPassword: string },
+    @Body() body: ResetDto,
     @Res() res: Response,
   ) {
     const { token, newPassword } = body;

@@ -165,6 +165,29 @@ export class LoginDto {
   password: string;
 }
 
+
+export class ResetDto {
+
+  @IsNotEmpty()
+  @IsEmail()
+  token: string;
+
+  @ApiProperty({
+    example: 'Password5%',
+    description: 'The password of the user',
+  })
+  @IsNotEmpty()
+  @IsString()
+  @Matches(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/,
+    {
+      message:
+        'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
+    },
+  )
+  newPassword: string;
+}
+
 export class UploadLogoDto {
   @ApiProperty({
     type: 'array',

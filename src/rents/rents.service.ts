@@ -22,7 +22,7 @@ export class RentsService {
     private readonly rentRepository: Repository<Rent>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
-    @InjectRepository(Property)
+    @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(RentIncrease)
     private readonly rentIncreaseRepository: Repository<RentIncrease>,
@@ -250,7 +250,7 @@ export class RentsService {
       {id: rent.property_id},
       {property_status: PropertyStatusEnum.VACANT}
     )
-        await this.propertyTenantRepository.update(
+      await this.propertyTenantRepository.update(
       {tenant_id: rent.tenant_id},
       {status: TenantStatusEnum.INACTIVE}
     )

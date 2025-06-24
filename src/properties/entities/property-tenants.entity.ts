@@ -21,7 +21,9 @@ export class PropertyTenant extends BaseEntity {
   })
   status: TenantStatusEnum;
 
-  @ManyToOne(() => Property, (p) => p.property_tenants)
+  @ManyToOne(() => Property, (p) => p.property_tenants, {
+  onDelete: 'CASCADE',
+})
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 

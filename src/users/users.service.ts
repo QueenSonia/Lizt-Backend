@@ -1157,7 +1157,7 @@ export class UsersService {
 
     if (existingAccount) {
       throw new BadRequestException(
-        'Admin Account with this email already exists',
+        'Rep Account with this email already exists',
       );
     }
 
@@ -1166,7 +1166,7 @@ export class UsersService {
     // }
 
     let user = await this.usersRepository.findOne({
-      where: { phone_number: data.phone_number },
+      where: { email:data.email },
     });
     console.log({ user });
     if (!user) {

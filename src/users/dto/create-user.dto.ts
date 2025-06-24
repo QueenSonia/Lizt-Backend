@@ -156,7 +156,7 @@ export class LoginDto {
   @IsNotEmpty()
   @IsString()
   @Matches(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/,
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/,
     {
       message:
         'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',

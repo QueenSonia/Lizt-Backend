@@ -62,7 +62,9 @@ export class ServiceRequest extends BaseEntity {
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
   tenant: Account;
 
-  @ManyToOne(() => Property, (p) => p.service_requests)
+  @ManyToOne(() => Property, (p) => p.service_requests, {
+  onDelete: 'CASCADE',
+})
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 

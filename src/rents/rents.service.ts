@@ -12,7 +12,8 @@ import { config } from 'src/config';
 import { RentIncrease } from './entities/rent-increase.entity';
 import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
 import { Property } from 'src/properties/entities/property.entity';
-import { PropertyStatusEnum } from 'src/properties/dto/create-property.dto';
+import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 
 @Injectable()
 export class RentsService {
@@ -21,6 +22,8 @@ export class RentsService {
     private readonly rentRepository: Repository<Rent>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(Property)
+    private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(RentIncrease)
     private readonly rentIncreaseRepository: Repository<RentIncrease>,
   ) {}
@@ -245,7 +248,11 @@ export class RentsService {
   if(rent){
     await this.propertyRepository.update(
       {id: rent.property_id},
-      {property_status: PropertyStatusEnum.NOT_VACANT}
+      {property_status: PropertyStatusEnum.VACANT}
+    )
+        await this.propertyTenantRepository.update(
+      {tenant_id: rent.tenant_id},
+      {status: TenantStatusEnum.INACTIVE}
     )
   }
   await this.rentRepository.update(

@@ -102,32 +102,6 @@ export class ServiceRequestsController {
     }
   }
 
-    @ApiOperation({ summary: 'Get Service Requests by Tenant ID' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'size', required: false, type: Number })
-  @ApiOkResponse({
-    type: PaginationResponseDto,
-    description: 'Service requests for tenant successfully fetched',
-  })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('tenant')
-  async getServiceRequestsByTenant(
-    @Query() query: ServiceRequestFilter,
-    @Req() req: any,
-  ) {
-    try {
-      const tenant_id = req?.user?.id;
-      console.log({tenant_id})
-      return this.serviceRequestsService.getServiceRequestsByTenantId(
-        tenant_id,
-        query,
-      );
-    } catch (error) {
-      throw error;
-    }
-  }
-
 
   @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
   @ApiQuery({ name: 'page', required: false, type: Number })
@@ -153,6 +127,26 @@ export class ServiceRequestsController {
     }
   }
 
+    @ApiOperation({ summary: 'Get One Service Request' })
+  @ApiOkResponse({
+    type: CreateServiceRequestDto,
+    description: 'Service request successfully fetched',
+  })
+  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('/tenant')
+  getServiceRequestByTenant(
+     @Req() req: any
+    ) {
+    try {
+      const status = req?.query?.status || '';
+      return this.serviceRequestsService.getServiceRequestByTenant(req?.user.id, status);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get One Service Request' })
   @ApiOkResponse({
     type: CreateServiceRequestDto,
@@ -162,13 +156,15 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  getServiceRequestById(@Param('id', new ParseUUIDPipe()) id: string) {
+  getServiceRequestById(
+    @Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.serviceRequestsService.getServiceRequestById(id);
     } catch (error) {
       throw error;
     }
   }
+
 
   @ApiOperation({ summary: 'Update Service Request' })
   @ApiConsumes('multipart/form-data')

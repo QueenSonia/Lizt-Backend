@@ -169,7 +169,6 @@ export class LoginDto {
 export class ResetDto {
 
   @IsNotEmpty()
-  @IsEmail()
   token: string;
 
   @ApiProperty({

@@ -7,6 +7,7 @@ import { ChatMessage, MessageSender, MessageType } from './chat-message.entity';
 import { UtilService } from 'src/utils/utility-service';
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 
 @Injectable()
@@ -19,6 +20,7 @@ export class ChatService {
 
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
 
@@ -52,6 +54,13 @@ async sendMessage(userId:string, sendMessageDto: SendMessageDto): Promise<ChatMe
   });
 
  await this.serviceRequestRepo.save(serviceRequest) as any
+
+   this.eventEmitter.emit('service.created', {
+      user_id: userId,
+      property_id: propertyTenant.property_id,
+      tenant_name: propertyTenant.tenant.profile_name,
+      property_name: propertyTenant.property.name,
+    });
 }
 
   // 2. Create and save the chat message

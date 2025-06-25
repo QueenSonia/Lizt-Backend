@@ -3,5 +3,6 @@ export interface NoticeAgreementCreatedEvent {
   user_id: string;
   date: string;
   property_id: string;
-  property_name:string
+  property_name:string;
+  tenant_name: string;
 }

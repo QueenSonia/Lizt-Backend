@@ -304,6 +304,23 @@ export class CreateCustomerRepDto {
   phone_number: string;
 
   @ApiProperty({
+    example: 'Password5%',
+    description: 'Password of the user (admin only)',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+    @Matches(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/,
+    {
+      message:
+        'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
+    },
+  )
+  password: string;
+  
+
+  @ApiProperty({
     example: 'admin',
     description: 'Role of the user',
     required: false,

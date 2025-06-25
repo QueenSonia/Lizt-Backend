@@ -1185,7 +1185,7 @@ export class UsersService {
     const repAccount = this.accountRepository.create({
       user,
       email: data.email,
-      password: '',
+      password: data.password ? await UtilService.hashPassword(data.password) : '',
       role: RolesEnum.REP,
       profile_name: `${data.first_name} ${data.last_name}`,
       is_verified: true,

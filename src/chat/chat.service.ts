@@ -72,6 +72,7 @@ export class ChatService {
     });
 
     return this.chatMessageRepository.save(message);
+  
   }
 
   async getAllMessages(): Promise<any[]> {

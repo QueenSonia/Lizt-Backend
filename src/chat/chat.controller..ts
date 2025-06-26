@@ -9,11 +9,11 @@ export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 
 
-  @Get()
-  @SkipAuth()
-  async getAllConversations() {
-    return this.chatService.getAllMessages();
-  }
+@Get()
+async getAllConversations(@Req() req) {
+  const currentUser = req.user.role; // Assuming role is 'admin' | 'tenant'
+  return this.chatService.getAllMessagesForUser(currentUser);
+}
 
     @SkipAuth()
   @Get('request/:requestId')
@@ -29,5 +29,12 @@ export class ChatController {
     const email = req.user?.email ;
     const {  message } = body;
     return UtilService.sendEmail(email, "Customer Contact", message);
+  }
+
+  @Post('mark-as-resolved/:requestId')
+  async markAsResolved(
+        @Req() req: any,
+  ){
+    return this.chatService.markAsResolved(req.params.requestId)
   }
 }

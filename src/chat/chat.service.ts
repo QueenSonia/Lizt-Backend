@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Not, Repository } from 'typeorm';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { SendMessageDto } from './dto/send-message.dto';
 import { ChatMessage, MessageSender, MessageType } from './chat-message.entity';
@@ -8,6 +8,7 @@ import { UtilService } from 'src/utils/utility-service';
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 
 @Injectable()
 export class ChatService {
@@ -75,23 +76,42 @@ export class ChatService {
   
   }
 
-  async getAllMessages(): Promise<any[]> {
-    return this.chatMessageRepository
-      .createQueryBuilder('message')
-      .select('message.service_request_id', 'requestId')
-      .addSelect('MAX(message.created_at)', 'lastMessageAt')
-      .addSelect('COUNT(*)', 'messageCount')
-      .leftJoin('message.serviceRequest', 'serviceRequest')
-      .addSelect('serviceRequest.tenant_name', 'tenant_name')
-      .addSelect('serviceRequest.issue_category', 'issue_category')
-      .addSelect('serviceRequest.description', 'description')
-      .groupBy('message.service_request_id')
-      .addGroupBy('serviceRequest.tenant_name')
-      .addGroupBy('serviceRequest.issue_category')
-      .addGroupBy('serviceRequest.description')
-      .orderBy('MAX(message.created_at)', 'DESC') // ✅ correct
-      .getRawMany();
-  }
+async getAllMessagesForUser(currentUser: 'admin' | 'tenant' | 'rep'): Promise<any[]> {
+  const normalizedUser = currentUser === 'rep' ? 'admin' : currentUser;
+
+  return this.chatMessageRepository
+    .createQueryBuilder('message')
+    .select('message.service_request_id', 'requestId')
+    .addSelect('MAX(message.created_at)', 'lastMessageAt')
+    .addSelect('COUNT(*)', 'messageCount')
+
+    // 🔥 Count unread messages not sent by the current user (i.e., incoming)
+    .addSelect(
+      `COUNT(CASE 
+         WHEN message.isRead = false 
+         AND message.sender != :normalizedUser 
+         THEN 1 
+       END)`,
+      'unread'
+    )
+
+    .leftJoin('message.serviceRequest', 'serviceRequest')
+    .addSelect('serviceRequest.tenant_name', 'tenant_name')
+    .addSelect('serviceRequest.issue_category', 'issue_category')
+    .addSelect('serviceRequest.description', 'description')
+    .addSelect('serviceRequest.status', 'status')
+
+    .groupBy('message.service_request_id')
+    .addGroupBy('serviceRequest.tenant_name')
+    .addGroupBy('serviceRequest.issue_category')
+    .addGroupBy('serviceRequest.description')
+    .addGroupBy('serviceRequest.status')
+    .orderBy('MAX(message.created_at)', 'DESC')
+    .setParameter('normalizedUser', normalizedUser)
+    .getRawMany();
+}
+
+
 
   async getMessagesByRequestId(requestId: string): Promise<ChatMessage[]> {
     console.log('Fetching messages for requestId:', requestId);
@@ -109,11 +129,21 @@ export class ChatService {
     await this.chatMessageRepository.update(
       {
         service_request_id: requestId,
-        sender,
+        sender: Not(sender),
         isRead: false,
       },
       { isRead: true },
     );
+  }
+
+  async markAsResolved(requestId:string){
+     await this.serviceRequestRepo.update(
+      {
+        request_id:requestId
+      },{
+        status: ServiceRequestStatusEnum.RESOLVED
+      }
+    )
   }
 
   async createSystemMessage(data: {

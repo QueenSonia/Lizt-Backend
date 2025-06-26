@@ -55,7 +55,4 @@ export class ChatMessage extends BaseEntity {
   @JoinColumn({ name: 'service_request_id', referencedColumnName: 'request_id' })
   serviceRequest: ServiceRequest;
 
-
-
-
 }

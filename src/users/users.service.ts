@@ -531,7 +531,7 @@ export class UsersService {
         where: { email, role: RolesEnum.ADMIN },
         relations: ['user'],
       }),
-         this.accountRepository.findOne({
+      this.accountRepository.findOne({
         where: { email, role: RolesEnum.REP },
         relations: ['user'],
       }),
@@ -542,14 +542,18 @@ export class UsersService {
       throw new NotFoundException(`User with email: ${email} not found`);
     }
 
-    console.log({ tenantAccount, adminAccount, repAccount });
-
-    if (!tenantAccount?.is_verified && !adminAccount?.is_verified && !repAccount?.is_verified) {
+    if (
+      !tenantAccount?.is_verified &&
+      !adminAccount?.is_verified &&
+      !repAccount?.is_verified
+    ) {
       throw new NotFoundException(`Your account is not verified`);
     }
 
     // Validate password for each account
-    const accounts = [tenantAccount, adminAccount, repAccount].filter(Boolean) as any;
+    const accounts = [tenantAccount, adminAccount, repAccount].filter(
+      Boolean,
+    ) as any;
 
     let matchedAccount = null;
 
@@ -582,6 +586,36 @@ export class UsersService {
     //   );
     // }
 
+    let related_accounts = [] as any;
+    let sub_access_token: string | null = null;
+    let parent_access_token: string | null = null;
+
+    if (account.role === RolesEnum.ADMIN) {
+      let subAccount = (await this.accountRepository.findOne({
+        where: {
+          id: Not(account.id),
+          email: account.email,
+          role: RolesEnum.TENANT,
+        },
+        relations: ['user', 'property_tenants'],
+      })) as any;
+
+      if (subAccount) {
+        const subTokenPayload = {
+          id: subAccount.id,
+          first_name: subAccount.user.first_name,
+          last_name: subAccount.user.last_name,
+          email: subAccount.email,
+          phone_number: subAccount.user.phone_number,
+          property_id: subAccount.property_tenants[0]?.property_id,
+          role: subAccount.role,
+        } as any;
+
+        sub_access_token =
+          await this.authService.generateToken(subTokenPayload);
+      }
+    }
+
     const userObject: Record<string, any> = {};
 
     if (account.role === RolesEnum.TENANT) {
@@ -589,6 +623,30 @@ export class UsersService {
         where: { tenant_id: account.id },
       });
       userObject['property_id'] = findTenantProperty?.property_id;
+
+      let parentAccount = (await this.accountRepository.findOne({
+        where: {
+          id: Not(account.id),
+          email: account.email,
+          role: RolesEnum.ADMIN,
+        },
+        relations: ['user', 'property_tenants'],
+      })) as any;
+
+      if (parentAccount) {
+        const subTokenPayload = {
+          id: parentAccount.id,
+          first_name: parentAccount.user.first_name,
+          last_name: parentAccount.user.last_name,
+          email: parentAccount.email,
+          phone_number: parentAccount.user.phone_number,
+          property_id: parentAccount.property_tenants[0]?.property_id,
+          role: parentAccount.role,
+        } as any;
+
+        parent_access_token =
+          await this.authService.generateToken(subTokenPayload);
+      }
     }
 
     const tokenPayload = {
@@ -601,61 +659,59 @@ export class UsersService {
     };
 
     const access_token = await this.authService.generateToken(tokenPayload);
+    // if (!account.creator_id) {
+    //   const subAccounts = await this.accountRepository.find({
+    //     where: { email, id: Not(account.id) },
+    //     relations: ['user', 'property_tenants'],
+    //   });
 
-    let related_accounts = [] as any;
-    let parent_account_token: string | null = null;
+    //   console.log(subAccounts)
 
-    if (!account.creator_id) {
-      const subAccounts = await this.accountRepository.find({
-        where: { email, id: Not(account.id) },
-        relations: ['user', 'property_tenants'],
-      });
+    //   related_accounts = await Promise.all(
+    //     subAccounts.map(async (sub) => {
+    // const subTokenPayload = {
+    //   id: sub.id,
+    //   first_name: sub.user.first_name,
+    //   last_name: sub.user.last_name,
+    //   email: sub.email,
+    //   phone_number: sub.user.phone_number,
+    //   property_id: sub.property_tenants[0]?.property_id,
+    //   role: sub.role,
+    // } as any;
 
-      related_accounts = await Promise.all(
-        subAccounts.map(async (sub) => {
-          const subTokenPayload = {
-            id: sub.id,
-            first_name: sub.user.first_name,
-            last_name: sub.user.last_name,
-            email: sub.email,
-            phone_number: sub.user.phone_number,
-            property_id: sub.property_tenants[0]?.property_id,
-            role: sub.role,
-          } as any;
+    // const sub_access_token =
+    //   await this.authService.generateToken(subTokenPayload);
 
-          const sub_access_token =
-            await this.authService.generateToken(subTokenPayload);
+    //       return {
+    //         id: sub.id,
+    //         email: sub.email,
+    //         role: sub.role,
+    //         first_name: sub.user.first_name,
+    //         last_name: sub.user.last_name,
+    //         access_token: sub_access_token,
+    //         property_id: sub.property_tenants[0]?.property_id,
+    //       };
+    //     }),
+    //   );
+    // } else {
+    //   const parentAccount = await this.accountRepository.findOne({
+    //     where: { id: account.creator_id },
+    //     relations: ['user'],
+    //   });
 
-          return {
-            id: sub.id,
-            email: sub.email,
-            role: sub.role,
-            first_name: sub.user.first_name,
-            last_name: sub.user.last_name,
-            access_token: sub_access_token,
-            property_id: sub.property_tenants[0]?.property_id,
-          };
-        }),
-      );
-    } else {
-      const parentAccount = await this.accountRepository.findOne({
-        where: { id: account.creator_id },
-        relations: ['user'],
-      });
+    //   if (parentAccount) {
+    //     const parentTokenData = {
+    //       id: parentAccount.id,
+    //       email: parentAccount.email,
+    //       role: parentAccount.role,
+    //       first_name: parentAccount.user.first_name,
+    //       last_name: parentAccount.user.last_name,
+    //     } as any;
 
-      if (parentAccount) {
-        const parentTokenData = {
-          id: parentAccount.id,
-          email: parentAccount.email,
-          role: parentAccount.role,
-          first_name: parentAccount.user.first_name,
-          last_name: parentAccount.user.last_name,
-        } as any;
-
-        parent_account_token =
-          await this.authService.generateToken(parentTokenData);
-      }
-    }
+    //     parent_account_token =
+    //       await this.authService.generateToken(parentTokenData);
+    //   }
+    // }
 
     return res.status(HttpStatus.OK).json({
       user: {
@@ -673,9 +729,11 @@ export class UsersService {
         updated_at: account.user.updated_at,
       },
       access_token,
-      related_accounts,
-      parent_account_token,
-      expires_at: moment().add(8, 'hours').format(),
+      sub_access_token,
+      parent_access_token,
+      // related_accounts,
+      // parent_account_token,
+      // expires_at: moment().add(8, 'hours').format(),
     });
   }
 
@@ -1166,7 +1224,7 @@ export class UsersService {
     // }
 
     let user = await this.usersRepository.findOne({
-      where: { email:data.email },
+      where: { email: data.email },
     });
     console.log({ user });
     if (!user) {
@@ -1185,7 +1243,9 @@ export class UsersService {
     const repAccount = this.accountRepository.create({
       user,
       email: data.email,
-      password: data.password ? await UtilService.hashPassword(data.password) : '',
+      password: data.password
+        ? await UtilService.hashPassword(data.password)
+        : '',
       role: RolesEnum.REP,
       profile_name: `${data.first_name} ${data.last_name}`,
       is_verified: true,

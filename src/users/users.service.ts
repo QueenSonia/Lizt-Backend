@@ -648,7 +648,6 @@ export class UsersService {
           await this.authService.generateToken(subTokenPayload);
       }
     }
-
     const tokenPayload = {
       id: account.id,
       first_name: account.user.first_name,

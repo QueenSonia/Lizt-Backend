@@ -6,6 +6,7 @@ import { Notification } from './entities/notification.entity';
 import { NoticeAgreementListener } from './listeners/notice-agreement.listener';
 import { UserAddedListener } from './listeners/user-added.listener';
 import { PropertyListener } from './listeners/property-created.listener';
+import { ServiceRequestListener } from './listeners/service-request.listener';
 
 @Module({
    imports: [
@@ -16,7 +17,8 @@ import { PropertyListener } from './listeners/property-created.listener';
     NotificationService,
     NoticeAgreementListener,
     UserAddedListener,
-    PropertyListener
+    PropertyListener,
+    ServiceRequestListener
   ],
   exports: [NotificationService],
 })

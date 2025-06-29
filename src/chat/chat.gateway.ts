@@ -58,7 +58,6 @@ export class ChatGateway {
     @MessageBody() data: SendMessageDto,
     @ConnectedSocket() client: Socket & { user?: { id: string } },
   ) {
-    console.log({data})
     const userId = client?.user?.id as string;
     // console.log('Sending message from user:', userId, 'with data:', data);
 

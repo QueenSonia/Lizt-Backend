@@ -193,6 +193,8 @@ export class ServiceRequestsService {
     this.eventEmitter.emit('service.created', {
       user_id: data.tenant_id,
       property_id: data.property_id,
+      tenant_name:tenantExistInProperty.tenant.profile_name,
+      property_name: tenantExistInProperty.property.name
     });
 
     return serviceRequest;

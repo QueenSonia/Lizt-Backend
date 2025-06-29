@@ -35,7 +35,9 @@ export class NotificationService {
 
   async findByUserId(user_id: string): Promise<Notification[]> {
     return await this.notificationRepository.find({ 
-      where: { user_id },  
+      where: { property:{
+        owner_id:user_id
+      }},  
       relations: ['property'],
       order:{
         date: "DESC"

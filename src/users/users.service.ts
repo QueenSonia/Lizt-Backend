@@ -522,13 +522,13 @@ export class UsersService {
     const { email, password } = data;
 
     // Fetch both accounts with the same email but different roles
-    const [tenantAccount, adminAccount, repAccount] = await Promise.all([
-      this.accountRepository.findOne({
-        where: { email, role: RolesEnum.TENANT },
-        relations: ['user'],
-      }),
+    const [adminAccount, tenantAccount,  repAccount] = await Promise.all([
       this.accountRepository.findOne({
         where: { email, role: RolesEnum.ADMIN },
+        relations: ['user'],
+      }),
+       this.accountRepository.findOne({
+        where: { email, role: RolesEnum.TENANT },
         relations: ['user'],
       }),
       this.accountRepository.findOne({
@@ -551,7 +551,7 @@ export class UsersService {
     }
 
     // Validate password for each account
-    const accounts = [tenantAccount, adminAccount, repAccount].filter(
+    const accounts = [adminAccount, tenantAccount,repAccount].filter(
       Boolean,
     ) as any;
 

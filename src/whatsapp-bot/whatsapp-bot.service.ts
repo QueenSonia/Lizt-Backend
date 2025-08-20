@@ -90,9 +90,9 @@ export class WhatsappBotService {
     if (message.type === 'text') {
       const text = message.text?.body;
 
-       if (text?.toLowerCase() === "start flow") {
-      this.sendFlow(from); // Call the send flow logic
-    }
+      if (text?.toLowerCase() === 'start flow') {
+        this.sendFlow(from); // Call the send flow logic
+      }
 
       if (userState === 'awaiting_description') {
         const user = await this.usersRepo.findOne({
@@ -143,28 +143,34 @@ export class WhatsappBotService {
         return;
       }
 
-        const user = await this.usersRepo.findOne({
-            where: {
-              phone_number: `+${from}`,
-              accounts: { role: RolesEnum.TENANT },
-            },
-            relations: ['accounts'],
-          });
+      console.log('querying users')
+      const user = await this.usersRepo.findOne({
+        where: {
+          phone_number: `+${from}`,
+          accounts: { role: RolesEnum.TENANT },
+        },
+        relations: ['accounts'],
+      });
 
-          if(user){
-             await this.sendButtons(
+      console.log('no user here', user)
+
+      if (!user) {
+        console.log('no user here')
+        await this.sendToAgentWithTemplate(from);
+      }
+      await this.sendButtons(
         from,
         '👋 Welcome to Property Kraft! What would you like to do?',
         [
           { id: 'service_request', title: 'Make a service request' },
           { id: 'view_tenancy', title: 'View tenancy details' },
-          { id: 'view_notices_and_documents', title: 'See notices and documents' },
-           { id: 'visit_site', title: 'Visit our website' },
+          {
+            id: 'view_notices_and_documents',
+            title: 'See notices and documents',
+          },
+          { id: 'visit_site', title: 'Visit our website' },
         ],
       );
-          }else{
-               await this.sendToAgentWithTemplate(from);
-          }
     }
 
     if (message.type === 'interactive') {
@@ -217,8 +223,14 @@ export class WhatsappBotService {
 
         case 'service_request':
           await this.sendButtons(from, '🛠️ What would you like to do?', [
-            { id: 'new_service_request', title: 'Make a New Maintenance Request' },
-            { id: 'view_service_request', title: 'View Status of Previous Requests' },
+            {
+              id: 'new_service_request',
+              title: 'Make a New Maintenance Request',
+            },
+            {
+              id: 'view_service_request',
+              title: 'View Status of Previous Requests',
+            },
           ]);
           break;
 
@@ -233,19 +245,17 @@ export class WhatsappBotService {
             return;
           }
 
-
-          let service_buttons: any = []
-
+          let service_buttons: any = [];
 
           let response = '📋 Here are your recent maintenance requests:\n';
-          serviceRequests.forEach((req:any, i) => {
+          serviceRequests.forEach((req: any, i) => {
             service_buttons.push({
               id: `${req.id}`,
               title: `${new Date(req.created_at).toLocaleDateString()} - ${req.issue_category} (${req.status})`,
-            })
+            });
           });
 
-          await this.sendButtons(from, response, service_buttons);      
+          await this.sendButtons(from, response, service_buttons);
           break;
 
         case 'new_service_request':
@@ -300,80 +310,85 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
- private async delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async sendToUserWithTemplate(phone_number:string, customer_name:string){
-  const payload = {
-    "messaging_product": "whatsapp",
-    "to": phone_number,
-    "type": "template",
-    "template": {
-        "name": "main_menu",
-        "language": {
-            "code": "en"
-        },
-        "components": [
-            {
-                "type": "body",
-                "parameters": [
-                    {
-                        "type": "text",
-                        "parameter_name":"name",
-                        "text":customer_name
-                    }
-                ]
-            }
-        ]
-    }
-}
-
- await this.sendToWhatsappAPI(payload);
-}
-
-async sendToAgentWithTemplate(phone_number){
-  const payload = {
-    "messaging_product": "whatsapp",
-    "to": phone_number,
-    "type": "template",
-    "template": {
-        "name": "agent_welcome",
-        "language": {
-            "code": "en"
-        },
-    }
+  private async delay(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
+  async sendToUserWithTemplate(phone_number: string, customer_name: string) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'main_menu',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                parameter_name: 'name',
+                text: customer_name,
+              },
+            ],
+          },
+        ],
+      },
+    };
 
     await this.sendToWhatsappAPI(payload);
-}
-
-
-async sendBulkMessageToCustomer(customer_phone_list: string[], text: string) {
-  // Remove duplicates & clean phone numbers
-  const cleanedNumbers = [...new Set(
-    customer_phone_list.map(num => {
-      let normalized = num.replace(/\D/g, ''); // Remove non-digits
-      if (!normalized.startsWith('234')) {
-        normalized = '234' + normalized.replace(/^0+/, ''); // Remove leading 0s
-      }
-      return normalized;
-    })
-  )];
-
-  // Calculate dynamic delay: at least 500ms, up to 2000ms
-  const baseDelay = 500;
-  const delayStep = 50; // extra ms per recipient
-  const delayMs = Math.min(baseDelay + cleanedNumbers.length * delayStep, 2000);
-
-  for (const phone_number of cleanedNumbers) {
-    await this.sendText(phone_number, text);
-    console.log(`Sent to ${phone_number}, waiting ${delayMs}ms before next...`);
-    await this.delay(delayMs);
   }
-}
 
-  
+  async sendToAgentWithTemplate(phone_number) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'agent_welcome',
+        language: {
+          code: 'en',
+        },
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  async sendBulkMessageToCustomer(customer_phone_list: string[], text: string) {
+    // Remove duplicates & clean phone numbers
+    const cleanedNumbers = [
+      ...new Set(
+        customer_phone_list.map((num) => {
+          let normalized = num.replace(/\D/g, ''); // Remove non-digits
+          if (!normalized.startsWith('234')) {
+            normalized = '234' + normalized.replace(/^0+/, ''); // Remove leading 0s
+          }
+          return normalized;
+        }),
+      ),
+    ];
+
+    // Calculate dynamic delay: at least 500ms, up to 2000ms
+    const baseDelay = 500;
+    const delayStep = 50; // extra ms per recipient
+    const delayMs = Math.min(
+      baseDelay + cleanedNumbers.length * delayStep,
+      2000,
+    );
+
+    for (const phone_number of cleanedNumbers) {
+      await this.sendText(phone_number, text);
+      console.log(
+        `Sent to ${phone_number}, waiting ${delayMs}ms before next...`,
+      );
+      await this.delay(delayMs);
+    }
+  }
+
   async sendText(to: string, text: string) {
     const payload = {
       messaging_product: 'whatsapp',
@@ -473,9 +488,9 @@ async sendBulkMessageToCustomer(customer_phone_list: string[], text: string) {
           parameters: {
             flow_id: '1435187147817037', // your flow_id
             flow_action: 'navigate',
-            flow_message_version:"3",
-            flow_cta: "Not shown in draft mode",
-            mode: "draft"
+            flow_message_version: '3',
+            flow_cta: 'Not shown in draft mode',
+            mode: 'draft',
             // flow_token: 'optional_prefill_token', // optional
             // flow_navigation: {
             //   screen: 'SERVICE_REQUEST', // start screen

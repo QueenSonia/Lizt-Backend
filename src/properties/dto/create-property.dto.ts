@@ -18,7 +18,7 @@ export class CreatePropertyDto {
   @IsString()
   location: string;
 
-    @ApiProperty({ example: 'lagos', description: 'Description of the property' })
+  @ApiProperty({ example: 'lagos', description: 'Description of the property' })
   @IsNotEmpty()
   @IsString()
   description: string;
@@ -101,14 +101,16 @@ export enum TenantStatusEnum {
 }
 
 export interface PropertyFilter {
-  search?:string
+  search?: string;
   name?: string;
   location?: string;
-  property_status?: string;
+  property_status?: PropertyStatusEnum;
   owner_id?: string;
   start_date?: string;
   end_date?: string;
+  sort_by?: string;
+  sort_order?: string;
   size?: number;
   page?: number;
-  order?: 'asc' | 'desc'
+  order?: 'asc' | 'desc';
 }

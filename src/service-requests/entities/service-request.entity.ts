@@ -1,10 +1,11 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, OneToOne } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Users } from '../../users/entities/user.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { ServiceRequestStatusEnum } from '../dto/create-service-request.dto';
 import { Account } from 'src/users/entities/account.entity';
 import { ChatMessage } from 'src/chat/chat-message.entity';
+import { Notification } from 'src/notifications/entities/notification.entity';
 
 
 @Entity({ name: 'service_requests' })
@@ -70,4 +71,8 @@ export class ServiceRequest extends BaseEntity {
 
     @OneToMany(() => ChatMessage, message => message.serviceRequest)
   messages: ChatMessage[];
+
+ @OneToOne(() => Notification, (notification) => notification.serviceRequest)
+  notification: Notification
+  
 }

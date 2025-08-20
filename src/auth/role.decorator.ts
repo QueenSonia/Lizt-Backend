@@ -10,4 +10,3 @@ export const ROLES_KEY = 'roles';
 export type UserRole = 'user' | 'admin';
 
 export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
-

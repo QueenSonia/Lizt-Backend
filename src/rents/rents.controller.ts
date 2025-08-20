@@ -256,9 +256,13 @@ export class RentsController {
 
   @Roles(ADMIN_ROLES.ADMIN)
   @Put('/remove/:tenant_id')
-  async removeTenant(@Param('tenant_id', new ParseUUIDPipe()) tenant_id: string) {
+  async removeTenant(
+    @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,
+  @Body() body: {property_id:string}
+  ) {
     try{
-      return this.rentsService.deactivateTenant(tenant_id)
+      const {property_id} = body
+      return this.rentsService.deactivateTenant({tenant_id, property_id})
     } catch (error) {
       throw error;
     }

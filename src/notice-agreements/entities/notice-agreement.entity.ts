@@ -16,6 +16,7 @@ export enum SendVia {
 }
 
 export enum NoticeType {
+  UPLOAD = 'uploaded_document',
   RENT_INCREASE = 'rent_increase',
   LEASE_RENEWAL = 'lease_renewal',
   EVICTION = 'eviction',
@@ -44,6 +45,13 @@ export class NoticeAgreement extends BaseEntity {
 
   @Column({ type: 'varchar', nullable: true })
   notice_image?: string | null;
+
+    @Column({ type: 'jsonb', nullable: true, default: [] })
+  notice_documents: {
+    url: string;
+    name?: string;
+    type?: string;
+  }[];
 
   @Column({
     type: 'enum',

@@ -239,12 +239,15 @@ export class RentsService {
   }
 
 
- async deactivateTenant(tenant_id: string) {
+ async deactivateTenant(data:{tenant_id: string, property_id:string}) {
+  const {tenant_id, property_id} = data
   const rent = await this.rentRepository.findOne({
     where: {
-      tenant_id
+      tenant_id, 
+      property_id
     }
   })
+
   if(rent){
     await this.propertyRepository.update(
       {id: rent.property_id},
@@ -254,11 +257,13 @@ export class RentsService {
       {tenant_id: rent.tenant_id},
       {status: TenantStatusEnum.INACTIVE}
     )
-  }
-  await this.rentRepository.update(
+
+      await this.rentRepository.update(
     { tenant_id }, // where condition
     { rent_status: RentStatusEnum.INACTIVE } // update values
   );
+  }
+
 }
 
 }

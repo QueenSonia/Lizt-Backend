@@ -31,6 +31,7 @@ import { Roles } from 'src/auth/role.decorator';
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { NoticeAnalyticsDTO } from './dto/notice-analytics.dto';
 import { SkipAuth } from 'src/auth/auth.decorator';
+import { UploadNoticeDocumentDto } from './dto/uplaod-notice-document.dto';
 
 @ApiTags('Notice-Agreements')
 @Controller('notice-agreement')
@@ -45,10 +46,10 @@ export class NoticeAgreementController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
-  getAllNoticeAgreement(@Req() req: any) {
+  getAllNoticeAgreement(@Req() req: any, @Query() query: NoticeAgreementFilter) {
     try {
       const owner_id = req?.user?.id;
-      return this.service.getAllNoticeAgreement(owner_id);
+      return this.service.getAllNoticeAgreement(owner_id, query);
     } catch (error) {
       throw error;
     }
@@ -136,6 +137,14 @@ export class NoticeAgreementController {
     } catch (error) {
       throw error;
     }
+  }
+
+    @Post('upload-document/:id')
+  async attachDocument(
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.service.attachNoticeDocument(id, body.document_url);
   }
 
 

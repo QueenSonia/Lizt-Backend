@@ -62,6 +62,7 @@ export class ChatService {
           property_id: propertyTenant.property_id,
           tenant_name: propertyTenant.tenant.profile_name,
           property_name: propertyTenant.property.name,
+          service_request_id: serviceRequest.id
         });
       }
     }

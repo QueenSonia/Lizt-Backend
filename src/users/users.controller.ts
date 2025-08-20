@@ -33,6 +33,7 @@ import { Response } from 'express';
 import { SkipAuth } from 'src/auth/auth.decorator';
 import {
   ApiBadRequestResponse,
+  ApiBearerAuth,
   ApiBody,
   ApiConsumes,
   ApiCookieAuth,
@@ -61,7 +62,7 @@ export class UsersController {
   @ApiBody({ type: CreateUserDto })
   @ApiCreatedResponse({ type: CreateUserDto })
   @ApiResponse({ status: 422, description: 'User with email already exist' })
-  @ApiSecurity('access_token')
+  @ApiBearerAuth()
   @Post()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
@@ -89,13 +90,23 @@ export class UsersController {
     description: 'Paginated list of users',
   })
   @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('/tenants')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
+  @ApiBearerAuth()
+  @Get('/tenants')
   getAllTenants(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllTenants(query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @Get('/profile')
+  getProfile(@Req() req: any) {
+    try {
+      const userId = req.query.user_id ||  req?.user?.id;
+      return this.usersService.getAccountById(userId);
     } catch (error) {
       throw error;
     }
@@ -121,9 +132,34 @@ export class UsersController {
   @Roles(ADMIN_ROLES.ADMIN)
   getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
     try {
-      query.creator_id = req?.user?.id;
+      let creator_id = req?.user?.id;
 
-      return this.usersService.getTenantsOfAnAdmin(query);
+      return this.usersService.getTenantsOfAnAdmin(creator_id, query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @Get('tenant-list/:tenant_id')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  getSingleTenantOfAnAdmin(@Req() req: any) {
+    try {
+      let tenant_id = req?.params.tenant_id
+
+      return this.usersService.getSingleTenantOfAnAdmin(tenant_id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Tenant and Property They Occupy' })
+  @ApiOkResponse({ type: CreateUserDto })
+  @ApiNotFoundResponse({ description: 'Tenant not found' })
+  @Get('tenant-property')
+  getTenantAndPropertyInfo(@Req() req: any) {
+    try {
+      return this.usersService.getTenantAndPropertyInfo(req.user.id);
     } catch (error) {
       throw error;
     }
@@ -275,20 +311,6 @@ export class UsersController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Tenant and Property They Occupy' })
-  @ApiOkResponse({ type: CreateUserDto })
-  @ApiNotFoundResponse({ description: 'Tenant not found' })
-  @Get('tenant-property/:tenant_id')
-  getTenantAndPropertyInfo(
-    @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,
-  ) {
-    try {
-      return this.usersService.getTenantAndPropertyInfo(tenant_id);
-    } catch (error) {
-      throw error;
-    }
-  }
-
   @SkipAuth()
   @Post('forgot-password')
   async forgotPassword(@Body() body: { email: string }, @Res() res: Response) {
@@ -327,10 +349,7 @@ export class UsersController {
 
   @SkipAuth()
   @Post('reset-password')
-  async resetPassword(
-    @Body() body: ResetDto,
-    @Res() res: Response,
-  ) {
+  async resetPassword(@Body() body: ResetDto, @Res() res: Response) {
     const { token, newPassword } = body;
     await this.usersService.resetPassword({ token, newPassword }, res);
     return { message: 'Password reset successful' };
@@ -381,12 +400,11 @@ export class UsersController {
     return this.usersService.createAdmin(createUserDto);
   }
 
-   @SkipAuth()
+  @SkipAuth()
   @Post('rep')
   async createCustomerRep(@Body() createUserDto: CreateCustomerRepDto) {
     return this.usersService.createCustomerRep(createUserDto);
   }
-
 
   @Get('sub-accounts')
   async getSubAccounts(@Req() req) {

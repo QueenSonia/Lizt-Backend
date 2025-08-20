@@ -7,10 +7,18 @@ import {
   IsNotEmpty,
   IsNumber,
   IsOptional,
+  IsPhoneNumber,
   IsString,
   Matches,
   MinLength,
+  ValidateIf,
+  IsIn,
 } from 'class-validator';
+import {
+  Gender,
+  MaritalStatus,
+  EmploymentStatus,
+} from '../../tenant-kyc/entities/tenant-kyc.entity';
 
 export class CreateUserDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })
@@ -39,7 +47,7 @@ export class CreateUserDto {
     description: 'Phone number of the user',
   })
   @IsNotEmpty()
-  @IsString()
+  @IsPhoneNumber()
   @MinLength(10)
   phone_number: string;
 
@@ -78,7 +86,6 @@ export class CreateUserDto {
   @IsOptional()
   property_id: string;
 
-
   @ApiProperty({
     example: 500000,
     description: 'Rental price of the property',
@@ -89,7 +96,7 @@ export class CreateUserDto {
   @Type(() => Number)
   rental_price: number;
 
-    @ApiProperty({
+  @ApiProperty({
     example: 20000,
     description: 'Security payment',
     type: 'integer',
@@ -99,7 +106,7 @@ export class CreateUserDto {
   @Type(() => Number)
   security_deposit: number;
 
-    @ApiProperty({
+  @ApiProperty({
     example: 50000,
     description: 'Service charge',
     type: 'integer',
@@ -109,22 +116,229 @@ export class CreateUserDto {
   @Type(() => Number)
   service_charge: number;
 
+  // @ApiProperty({
+  //   example: 'Password5%',
+  //   description: 'Password of the user (admin only)',
+  //   required: false,
+  // })
+  // @IsOptional()
+  // @IsString()
+  // @Matches(
+  //   /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/,
+  //   {
+  //     message:
+  //       'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
+  //   },
+  // )
+  // password?: string;
+
+  @ApiProperty({ example: '1990-01-01', description: 'Date of Birth' })
+  @IsNotEmpty()
+  @IsDateString()
+  date_of_birth: string;
+
+  @ApiProperty({ example: 'male', description: 'Gender', enum: Gender })
+  @IsNotEmpty()
+  @IsIn(Object.values(Gender))
+  gender: `${Gender}`;
+
+  @ApiProperty({ example: 'Lagos', description: 'State of Origin' })
+  @IsNotEmpty()
+  @IsString()
+  state_of_origin: string;
+
+  @ApiProperty({ example: 'Ikeja', description: 'Local Government Area' })
+  @IsNotEmpty()
+  @IsString()
+  lga: string;
+
+  @ApiProperty({ example: 'Nigerian', description: 'Nationality' })
+  @IsNotEmpty()
+  @IsString()
+  nationality: string;
+
   @ApiProperty({
-    example: 'Password5%',
-    description: 'Password of the user (admin only)',
+    example: 'employed',
+    description: 'Employment Status',
+    enum: EmploymentStatus,
+  })
+  @IsNotEmpty()
+  @IsIn(Object.values(EmploymentStatus))
+  employment_status: `${EmploymentStatus}`;
+
+  // Employed fields
+  @ApiProperty({
+    example: 'Company Ltd',
+    description: 'Employer Name',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
+  @IsString()
+  employer_name?: string;
+
+  @ApiProperty({
+    example: 'Software Engineer',
+    description: 'Job Title',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
+  @IsString()
+  job_title?: string;
+
+  @ApiProperty({
+    example: '123 Main St',
+    description: 'Employer Address',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
+  @IsString()
+  employer_address?: string;
+
+  @ApiProperty({
+    example: 100000,
+    description: 'Monthly Income (₦)',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  monthly_income?: number;
+
+  @ApiProperty({
+    example: 'work.email@company.com',
+    description: 'Work Email (Optional)',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsOptional()
+  @IsEmail()
+  work_email?: string;
+
+  // Self-employed fields
+  @ApiProperty({
+    example: 'My Business',
+    description: 'Business Name',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNotEmpty()
+  @IsString()
+  business_name?: string;
+
+  @ApiProperty({
+    example: 'Trading',
+    description: 'Nature of Business',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNotEmpty()
+  @IsString()
+  nature_of_business?: string;
+
+  @ApiProperty({
+    example: '123 Biz St',
+    description: 'Business Address',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNotEmpty()
+  @IsString()
+  business_address?: string;
+
+  @ApiProperty({
+    example: 100000,
+    description: 'Monthly Income (₦)',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  business_monthly_income?: number;
+
+  @ApiProperty({
+    example: 'www.business.com',
+    description: 'Business Website (Optional)',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsOptional()
+  @IsString()
+  business_website?: string;
+
+  @ApiProperty({
+    example: 'single',
+    description: 'Marital Status',
+    enum: MaritalStatus,
+  })
+  @IsNotEmpty()
+  @IsIn(Object.values(MaritalStatus))
+  marital_status: `${MaritalStatus}`;
+
+  // Spouse info (if married)
+  @ApiProperty({
+    example: 'Jane Doe',
+    description: 'Spouse Full Name',
+    required: false,
+  })
+  @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
+  @IsNotEmpty()
+  @IsString()
+  spouse_full_name?: string;
+
+  @ApiProperty({
+    example: '+2348000000000',
+    description: 'Spouse Phone Number',
+    required: false,
+  })
+  @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
+  @IsNotEmpty()
+  @IsPhoneNumber()
+  spouse_phone_number?: string;
+
+  @ApiProperty({
+    example: 'Engineer',
+    description: 'Spouse Occupation',
+    required: false,
+  })
+  @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
+  @IsNotEmpty()
+  @IsString()
+  spouse_occupation?: string;
+
+  @ApiProperty({
+    example: 'Company Ltd',
+    description: 'Spouse Employer (Optional)',
     required: false,
   })
   @IsOptional()
   @IsString()
-  @Matches(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/,
-    {
-      message:
-        'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
-    }
-  )
-  password?: string;
+  spouse_employer?: string;
 
+  @ApiProperty({
+    example: 'husband',
+    description: 'Source of Funds (if unemployed)',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.UNEMPLOYED)
+  @IsNotEmpty()
+  @IsString()
+  source_of_funds?: string;
+
+  @ApiProperty({
+    example: 400000,
+    description: 'Monthly Income Estimate (₦) (if unemployed)',
+    required: false,
+  })
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.UNEMPLOYED)
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  monthly_income_estimate?: number;
 
   //  @ApiProperty({
   //   example: false,
@@ -135,8 +349,6 @@ export class CreateUserDto {
   // @IsBoolean()
   // @Type(() => Boolean)
   // is_sub_account: boolean;
-  
-
 }
 
 export class LoginDto {
@@ -144,9 +356,9 @@ export class LoginDto {
     example: 'app-ag-ib-1@apple.com',
     description: 'The email of the user',
   })
-  @Transform((val) => val.value.toLowerCase())
   @IsNotEmpty()
-  @IsEmail()
+  @IsEmail(undefined, { message: 'Invalid email address' })
+  @Transform(({ value }) => typeof value === 'string' && value?.toLowerCase())
   email: string;
 
   @ApiProperty({
@@ -155,19 +367,14 @@ export class LoginDto {
   })
   @IsNotEmpty()
   @IsString()
-  @Matches(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/,
-    {
-      message:
-        'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
-    },
-  )
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/, {
+    message:
+      'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
+  })
   password: string;
 }
 
-
 export class ResetDto {
-
   @IsNotEmpty()
   token: string;
 
@@ -177,13 +384,10 @@ export class ResetDto {
   })
   @IsNotEmpty()
   @IsString()
-  @Matches(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/,
-    {
-      message:
-        'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
-    },
-  )
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/, {
+    message:
+      'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
+  })
   newPassword: string;
 }
 
@@ -201,10 +405,9 @@ export class UploadLogoDto {
   logos: Express.Multer.File[];
 }
 
-
 export class CreateAdminDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })
-  @Transform((val) => val.value.toLowerCase())
+  @Transform(({ value }) => typeof value === 'string' && value.toLowerCase())
   @IsNotEmpty()
   @IsString()
   first_name: string;
@@ -264,13 +467,10 @@ export class CreateAdminDto {
     {
       message:
         'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
-    }
+    },
   )
   password: string;
-  
-
 }
-
 
 export class CreateCustomerRepDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })
@@ -310,15 +510,11 @@ export class CreateCustomerRepDto {
   })
   @IsOptional()
   @IsString()
-    @Matches(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/,
-    {
-      message:
-        'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
-    },
-  )
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{6,}$/, {
+    message:
+      'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
+  })
   password: string;
-  
 
   @ApiProperty({
     example: 'admin',
@@ -354,10 +550,7 @@ export class CreateCustomerRepDto {
   //   }
   // )
   // password: string;
-  
-
 }
-
 
 export interface IUser {
   id?: string;
@@ -371,7 +564,7 @@ export interface IUser {
 }
 
 export interface UserFilter {
-  search?:string
+  search?: string;
   first_name?: string;
   last_name?: string;
   email?: string;
@@ -379,6 +572,8 @@ export interface UserFilter {
   userId?: string;
   phone_number?: string;
   role?: string;
+  sort_by?: string;
+  sort_order?: string;
   start_date?: string;
   end_date?: string;
   size?: number;

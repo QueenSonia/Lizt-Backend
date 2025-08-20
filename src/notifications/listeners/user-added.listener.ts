@@ -13,7 +13,7 @@ export class UserAddedListener {
     this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.USER_ADDED_TO_PROPERTY,
-        description: `User was added to property ${event.property_name} `,
+        description: `${event.profile_name} was added to ${event.property_name} `,
         status: 'Completed',
         property_id: event.property_id,
         user_id: event.user_id

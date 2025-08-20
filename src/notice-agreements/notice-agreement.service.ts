@@ -1,9 +1,14 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
   NoticeAgreement,
   NoticeStatus,
+  NoticeType,
 } from './entities/notice-agreement.entity';
 import {
   CreateNoticeAgreementDto,
@@ -12,13 +17,14 @@ import {
 import { Property } from 'src/properties/entities/property.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { generatePdfBufferFromEditor } from './utils/pdf-generator';
-import { sendEmailWithAttachment } from './utils/sender';
+import { sendEmailWithAttachment, sendEmailWithMultipleAttachments } from './utils/sender';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from 'src/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TwilioService } from 'src/whatsapp/services/twilio.service';
 import { Account } from 'src/users/entities/account.entity';
+import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 @Injectable()
 export class NoticeAgreementService {
   constructor(
@@ -27,9 +33,9 @@ export class NoticeAgreementService {
     @InjectRepository(Property)
     private readonly propertyRepo: Repository<Property>,
     @InjectRepository(Account)
-      private readonly accountRepo: Repository<Account>,
+    private readonly accountRepo: Repository<Account>,
     private readonly fileUploadService: FileUploadService,
-        private readonly eventEmitter: EventEmitter2,
+    private readonly eventEmitter: EventEmitter2,
     private readonly twilioService: TwilioService,
   ) {}
 
@@ -47,12 +53,10 @@ export class NoticeAgreementService {
       throw new NotFoundException('Tenant not found in property');
     }
 
-    const tenant = await this.accountRepo.findOne(
-      {
-        where:{ id: dto.tenant_id },
-      relations: ['user']
-    }
-    );
+    const tenant = await this.accountRepo.findOne({
+      where: { id: dto.tenant_id },
+      relations: ['user'],
+    });
 
     if (!property || !tenant)
       throw new NotFoundException('Property or tenant not found');
@@ -61,7 +65,7 @@ export class NoticeAgreementService {
       ...dto,
       notice_id: `NTC-${uuidv4().slice(0, 8)}`,
       property_name: property.name,
-      tenant_name: tenant.profile_name
+      tenant_name: tenant.profile_name,
     }) as any;
 
     await this.noticeRepo.save(agreement);
@@ -102,11 +106,11 @@ export class NoticeAgreementService {
     //   );
     // send via WhatsApp/email
 
-      this.eventEmitter.emit('notice.created', {
-        user_id: property.owner_id,
-        property_id: property.id,
-        property_name: property.name,
-      });
+    this.eventEmitter.emit('notice.created', {
+      user_id: property.owner_id,
+      property_id: property.id,
+      property_name: property.name,
+    });
 
     return agreement;
   }
@@ -115,12 +119,39 @@ export class NoticeAgreementService {
     return this.noticeRepo.findOne({ where: { id } });
   }
 
-  async getAllNoticeAgreement(ownerId: string) {
-    return await this.noticeRepo
+  async getAllNoticeAgreement(ownerId: string, queryParams: NoticeAgreementFilter) {
+
+      const page = queryParams.page ? Number(queryParams.page) : config.DEFAULT_PAGE_NO;
+      const size = queryParams.size ? Number(queryParams.size) : config.DEFAULT_PER_PAGE;
+      const skip = (page - 1) * size;
+    
+
+  const qb = await this.noticeRepo
       .createQueryBuilder('notice')
       .leftJoinAndSelect('notice.property', 'property')
       .where('property.owner_id = :ownerId', { ownerId })
-      .getMany();
+
+
+
+  // Apply sorting (rent requires custom logic)
+if (queryParams.sort_by && queryParams?.sort_order) {
+    qb.orderBy(`notice.${queryParams.sort_by}`, queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC');
+  }
+
+  const [notice, count] = await qb.skip(skip).take(size).getManyAndCount();
+
+  const totalPages = Math.ceil(count / size);
+
+  return {
+    notice,
+    pagination: {
+      totalRows: count,
+      perPage: size,
+      currentPage: page,
+      totalPages,
+      hasNextPage: page < totalPages,
+    },
+  };
   }
 
   async resendNoticeAgreement(id: string) {
@@ -211,4 +242,64 @@ export class NoticeAgreementService {
       pendingNotices,
     };
   }
+async attachNoticeDocument(property_id: string, fileUrls: string[]) {
+  try {
+    const property = await this.propertyRepo.findOne({
+      where: { id: property_id },
+      relations: ['property_tenants.tenant'],
+    });
+
+    if (!property) {
+      throw new BadRequestException('Unable to upload document for this property');
+    }
+
+    const activeTenant = property?.property_tenants.find(
+      (item) => item.status === TenantStatusEnum.ACTIVE,
+    );
+
+    if (!activeTenant) {
+      throw new NotFoundException('No active tenant on this property');
+    }
+
+
+
+    const documentObjects = fileUrls?.map((url) => ({
+      url,
+      // Optionally add `name` or `type` if provided from frontend
+    }));
+
+    const notice = this.noticeRepo.create({
+      notice_id: `NTC-${uuidv4().slice(0, 8)}`,
+      notice_type: NoticeType.UPLOAD,
+      property_id: property.id,
+      tenant_id: activeTenant.tenant_id,
+      notice_documents: documentObjects,
+      property_name: property.name,
+      tenant_name: activeTenant.tenant.profile_name,
+      effective_date: new Date(),
+    });
+
+    await this.noticeRepo.save(notice);
+
+    // Send email
+    await sendEmailWithMultipleAttachments(fileUrls, activeTenant.tenant.email);
+
+    // Emit event
+    this.eventEmitter.emit('notice.created', {
+      user_id: property.owner_id,
+      property_id: property.id,
+      property_name: property.name,
+    });
+
+    return {
+      message: 'Document(s) uploaded successfully',
+      files: documentObjects,
+    };
+  } catch (error) {
+    // Log the error for observability
+    console.error('Attach Notice Document Error:', error);
+    throw error; // Rethrow so NestJS handles it appropriately
+  }
+}
+
 }

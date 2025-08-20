@@ -28,7 +28,7 @@ export class Property extends BaseEntity {
     enum: [PropertyStatusEnum.NOT_VACANT, PropertyStatusEnum.VACANT],
     default: PropertyStatusEnum.VACANT,
   })
-  property_status: PropertyStatusEnum;
+  property_status: string;
 
   @Column({ nullable: false, type: 'uuid' })
   owner_id: string;
@@ -48,7 +48,7 @@ export class Property extends BaseEntity {
   @Column({ nullable: true, type: 'varchar' })
   payment_frequency: string;
 
-  @Column({ type: 'int', nullable: true})
+  @Column({ type: 'int', nullable: true })
   security_deposit: number;
 
   @Column({ type: 'int', nullable: true })
@@ -60,7 +60,7 @@ export class Property extends BaseEntity {
   @OneToMany(() => PropertyTenant, (t) => t.property)
   property_tenants: PropertyTenant[];
 
-  @ManyToOne(() =>Account, (owner) => owner.properties)
+  @ManyToOne(() => Account, (owner) => owner.properties)
   @JoinColumn({ name: 'owner_id', referencedColumnName: 'id' })
   owner: Account;
 

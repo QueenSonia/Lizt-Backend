@@ -14,7 +14,7 @@ export class NoticeAgreementListener {
     this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.NOTICE_AGREEMENT,
-        description: `You created a notice agreement for property ${event.property_name}.`,
+        description: `You created a notice agreement for ${event.property_name}.`,
         status: 'Completed',
         property_id: event.property_id,
         user_id:event.user_id

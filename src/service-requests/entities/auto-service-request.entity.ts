@@ -10,7 +10,6 @@ import {
   Index,
 } from 'typeorm';
 
-
 export enum ServiceRequestStatus {
   OPEN = 'open',
   IN_PROGRESS = 'in_progress',
@@ -147,14 +146,20 @@ export class AutoServiceRequest {
   updatedAt: Date;
 
   // Calculated fields
-  get isOverdue(): any {
-    return this.dueDate && this.dueDate < new Date() && this.status !== ServiceRequestStatus.CLOSED;
+  get isOverdue() {
+    return (
+      this.dueDate &&
+      this.dueDate < new Date() &&
+      this.status !== ServiceRequestStatus.CLOSED
+    );
   }
 
   get ageInDays(): number {
     const now = new Date();
     const created = new Date(this.createdAt);
-    return Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
+    return Math.floor(
+      (now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24),
+    );
   }
 
   // Helper methods
@@ -185,14 +190,14 @@ export class AutoServiceRequest {
 
   removeTag(tag: string): void {
     if (this.tags) {
-      this.tags = this.tags.filter(t => t !== tag);
+      this.tags = this.tags.filter((t) => t !== tag);
     }
   }
 
   updateTawkMetadata(updates: Partial<TawkMetadata>): void {
     if (this.source === ServiceRequestSource.TAWK_CHAT) {
       this.metadata = {
-        ...(this.metadata as TawkMetadata || {}),
+        ...((this.metadata as TawkMetadata) || {}),
         ...updates,
       };
     }

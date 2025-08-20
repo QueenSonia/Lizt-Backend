@@ -7,7 +7,7 @@ import {
 
 export class BaseEntity {
   @PrimaryGeneratedColumn('uuid')
-  id?: string;
+  id: string;
 
   @CreateDateColumn()
   public created_at?: Date | string;
@@ -44,4 +44,7 @@ export enum RolesEnum {
   ADMIN = 'admin',
   TENANT = 'tenant',
   REP = 'rep',
+  FACILITY_MANAGER = 'facility_manager'
 }
+
+// const a = '';

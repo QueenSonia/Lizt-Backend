@@ -16,6 +16,8 @@ import { PropertyHistory } from 'src/property-history/entities/property-history.
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
+import { Team } from './team.entity';
+import { TeamMember } from './team-member.entity';
 
 @Entity('accounts')
 export class Account extends BaseEntity {
@@ -37,10 +39,10 @@ export class Account extends BaseEntity {
   })
   role: RolesEnum;
 
-    @Column({ nullable: true })
+  @Column({ nullable: true })
   creator_id: string;
 
-   @Column({ nullable: false, type: 'uuid' })
+  @Column({ nullable: false, type: 'uuid' })
   userId: string;
 
   // @Column({ nullable: false, type: 'boolean', default: false })
@@ -54,9 +56,11 @@ export class Account extends BaseEntity {
   properties: Property[];
 
   @OneToMany(() => Rent, (r) => r.tenant)
-  rents: Rent[];
+  rents: Rent
 
-  @OneToMany(() => PropertyTenant, (pt) => pt.tenant)
+  @OneToMany(() => PropertyTenant, (pt) => pt.tenant, {
+    onDelete: 'CASCADE',
+  })
   property_tenants: PropertyTenant[];
 
   @OneToMany(() => PropertyHistory, (ph) => ph.tenant)
@@ -65,12 +69,16 @@ export class Account extends BaseEntity {
   @OneToMany(() => ServiceRequest, (sr) => sr.tenant)
   service_requests: ServiceRequest[];
 
-   @OneToMany(() => NoticeAgreement, (na) => na.tenant)
-    notice_agreements: NoticeAgreement[];
+  @OneToMany(() => NoticeAgreement, (na) => na.tenant)
+  notice_agreements: NoticeAgreement[];
 
   @OneToOne(() => KYC, (kyc) => kyc.user)
   kyc: KYC;
 
   @OneToMany(() => Notification, (notification) => notification.user)
   notification: Notification[];
+
+   // One account can be part of many teams through TeamMember
+  @OneToMany(() => TeamMember, (teamMember) => teamMember.account)
+  teamMemberships: TeamMember[];
 }

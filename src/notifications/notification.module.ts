@@ -7,6 +7,7 @@ import { NoticeAgreementListener } from './listeners/notice-agreement.listener';
 import { UserAddedListener } from './listeners/user-added.listener';
 import { PropertyListener } from './listeners/property-created.listener';
 import { ServiceRequestListener } from './listeners/service-request.listener';
+import { UserSignUpListener } from './listeners/user-signup.listener';
 
 @Module({
    imports: [
@@ -17,6 +18,7 @@ import { ServiceRequestListener } from './listeners/service-request.listener';
     NotificationService,
     NoticeAgreementListener,
     UserAddedListener,
+    UserSignUpListener,
     PropertyListener,
     ServiceRequestListener
   ],

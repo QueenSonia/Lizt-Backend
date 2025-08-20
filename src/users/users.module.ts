@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -10,14 +10,29 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { KYC } from './entities/kyc.entity';
 import { Account } from './entities/account.entity';
 import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
+import { Rent } from 'src/rents/entities/rent.entity';
+import { RentsModule } from 'src/rents/rents.module';
+import { Team } from './entities/team.entity';
+import { TeamMember } from './entities/team-member.entity';
 
+@Global()
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Users, PasswordResetToken, PropertyTenant, KYC, Account]),
-    AuthModule, WhatsappModule ,
+    TypeOrmModule.forFeature([
+      Account,
+      Users,
+      PasswordResetToken,
+      PropertyTenant,
+      KYC,
+      Rent,
+      Team,
+      TeamMember
+    ]),
+    AuthModule,
+    WhatsappModule,
   ],
   controllers: [UsersController],
   providers: [UsersService, FileUploadService],
-  exports: [UsersService],
+  exports: [UsersService, TypeOrmModule],
 })
 export class UsersModule {}

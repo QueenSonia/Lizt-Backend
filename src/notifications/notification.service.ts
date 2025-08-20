@@ -38,7 +38,7 @@ export class NotificationService {
       where: { property:{
         owner_id:user_id
       }},  
-      relations: ['property'],
+      relations: ['property', 'serviceRequest'],
       order:{
         date: "DESC"
       }

@@ -40,6 +40,7 @@ import { ADMIN_ROLES } from 'src/base.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
+import { AssignTenantDto } from './dto/assign-tenant.dto';
 @ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
@@ -331,5 +332,14 @@ export class PropertiesController {
     } catch (error) {
       throw error;
     }
+  }
+ @Post('assign-tenant/:id')
+@UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  async assignTenantToProperty(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() data:AssignTenantDto
+  ){
+    return this.propertiesService.assignTenant(id, data)
   }
 }

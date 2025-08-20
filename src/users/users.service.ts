@@ -58,6 +58,8 @@ import { Account } from './entities/account.entity';
 import { AnyAaaaRecord } from 'node:dns';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { TwilioService } from 'src/whatsapp/services/twilio.service';
+import { Team } from './entities/team.entity';
+import { TeamMember } from './entities/team-member.entity';
 
 @Injectable()
 export class UsersService {
@@ -70,6 +72,8 @@ export class UsersService {
     private readonly passwordResetRepository: Repository<PasswordResetToken>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
+    @InjectRepository(Rent)
+    private readonly rentRepository: Repository<Rent>,
     private readonly fileUploadService: FileUploadService,
     @InjectRepository(KYC)
     private readonly kycRepository: Repository<KYC>,
@@ -77,6 +81,10 @@ export class UsersService {
     @InjectRepository(Account)
     private accountRepository: Repository<Account>,
     private readonly twilioService: TwilioService,
+    @InjectRepository(Team)
+    private readonly teamRepository: Repository<Team>,
+    @InjectRepository(TeamMember)
+    private readonly teamMemberRepository: Repository<TeamMember>,
 
     private readonly dataSource: DataSource,
   ) {}
@@ -103,6 +111,41 @@ export class UsersService {
           first_name: data.first_name,
           last_name: data.last_name,
           creator_id: userRole === RolesEnum.TENANT ? creatorId : null,
+          gender: data.gender,
+          marital_status: data.marital_status,
+          employment_status: data.employment_status,
+          date_of_birth: data.date_of_birth,
+          state_of_origin: data.state_of_origin,
+          lga: data.lga,
+          nationality: data.nationality,
+          lease_start_date: data.lease_start_date,
+          lease_end_date: data.lease_end_date,
+          property_id: data.property_id,
+          rental_price: data.rental_price,
+          security_deposit: data.security_deposit,
+          service_charge: data.service_charge,
+          // password: data.password,
+
+          employer_name: data.employer_name,
+          job_title: data.job_title,
+          employer_address: data.employer_address,
+          monthly_income: data.monthly_income,
+          work_email: data.work_email,
+
+          business_name: data.business_name,
+          nature_of_business: data.nature_of_business,
+          business_address: data.business_address,
+          business_monthly_income: data.business_monthly_income,
+          business_website: data.business_website,
+
+          spouse_full_name: data.spouse_full_name,
+          spouse_phone_number: data.spouse_phone_number,
+          spouse_occupation: data.spouse_occupation,
+          spouse_employer: data.spouse_employer,
+
+          // Unemployed fields
+          source_of_funds: data.source_of_funds,
+          monthly_income_estimate: data.monthly_income_estimate,
         });
       }
 
@@ -148,7 +191,7 @@ export class UsersService {
         creator_id: creatorId,
         email,
         role: userRole,
-        profile_name: `${user.first_name} ${user.last_name}`,
+        profile_name: `${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
         is_verified: false,
       });
 
@@ -222,10 +265,16 @@ export class UsersService {
         user_id: property.owner_id,
         property_id: data.property_id,
         property_name: property.name,
+        profile_name: tenantAccount.profile_name,
         role: userRole,
       });
 
-      return tenantAccount;
+      let result = {
+        ...tenantAccount,
+        password_link: resetLink,
+      };
+
+      return result;
     } catch (error) {
       await queryRunner.rollbackTransaction();
       console.error('Transaction rolled back due to:', error);
@@ -380,7 +429,7 @@ export class UsersService {
   ): Promise<string> {
     const token = uuidv4(); // Generate secure UUID
     const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 1); // Token valid for 1 hour
+    expiresAt.setHours(expiresAt.getHours() + 24); // Token valid for 24 hour
 
     const passwordReset = queryRunner.manager.create(PasswordResetToken, {
       id: uuidv4(),
@@ -429,9 +478,11 @@ export class UsersService {
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
+
     const size = queryParams?.size
       ? Number(queryParams.size)
       : config.DEFAULT_PER_PAGE;
+
     const skip = (page - 1) * size;
 
     queryParams.role = RolesEnum.TENANT;
@@ -464,6 +515,17 @@ export class UsersService {
 
   async getUserById(id: string): Promise<IUser> {
     const user = await this.usersRepository.findOne({ where: { id } });
+    if (!user?.id) {
+      throw new HttpException(
+        `User with id: ${id} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return user;
+  }
+
+  async getAccountById(id: string): Promise<any> {
+    const user = await this.accountRepository.findOne({ where: { id } });
     if (!user?.id) {
       throw new HttpException(
         `User with id: ${id} not found`,
@@ -522,12 +584,13 @@ export class UsersService {
     const { email, password } = data;
 
     // Fetch both accounts with the same email but different roles
-    const [adminAccount, tenantAccount,  repAccount] = await Promise.all([
+
+    const [adminAccount, tenantAccount, repAccount] = await Promise.all([
       this.accountRepository.findOne({
         where: { email, role: RolesEnum.ADMIN },
         relations: ['user'],
       }),
-       this.accountRepository.findOne({
+      this.accountRepository.findOne({
         where: { email, role: RolesEnum.TENANT },
         relations: ['user'],
       }),
@@ -551,7 +614,7 @@ export class UsersService {
     }
 
     // Validate password for each account
-    const accounts = [adminAccount, tenantAccount,repAccount].filter(
+    const accounts = [adminAccount, tenantAccount, repAccount].filter(
       Boolean,
     ) as any;
 
@@ -576,15 +639,6 @@ export class UsersService {
     }
 
     const account = matchedAccount as any;
-
-    // Handle missing password (first-time login)
-    // if (!account.password) {
-    //   const hashedPassword = await UtilService.hashPassword(password);
-    //   await this.accountRepository.update(
-    //     { email, role: account.role },
-    //     { password: hashedPassword, is_verified: true },
-    //   );
-    // }
 
     let related_accounts = [] as any;
     let sub_access_token: string | null = null;
@@ -616,13 +670,13 @@ export class UsersService {
       }
     }
 
-    const userObject: Record<string, any> = {};
+    // const userObject: Record<string, any> = {};
 
     if (account.role === RolesEnum.TENANT) {
-      const findTenantProperty = await this.propertyTenantRepository.findOne({
-        where: { tenant_id: account.id },
-      });
-      userObject['property_id'] = findTenantProperty?.property_id;
+      // const findTenantProperty = await this.propertyTenantRepository.findOne({
+      //   where: { tenant_id: account.id },
+      // });
+      // userObject['property_id'] = findTenantProperty?.property_id;
 
       let parentAccount = (await this.accountRepository.findOne({
         where: {
@@ -648,6 +702,7 @@ export class UsersService {
           await this.authService.generateToken(subTokenPayload);
       }
     }
+
     const tokenPayload = {
       id: account.id,
       first_name: account.user.first_name,
@@ -658,63 +713,10 @@ export class UsersService {
     };
 
     const access_token = await this.authService.generateToken(tokenPayload);
-    // if (!account.creator_id) {
-    //   const subAccounts = await this.accountRepository.find({
-    //     where: { email, id: Not(account.id) },
-    //     relations: ['user', 'property_tenants'],
-    //   });
-
-    //   console.log(subAccounts)
-
-    //   related_accounts = await Promise.all(
-    //     subAccounts.map(async (sub) => {
-    // const subTokenPayload = {
-    //   id: sub.id,
-    //   first_name: sub.user.first_name,
-    //   last_name: sub.user.last_name,
-    //   email: sub.email,
-    //   phone_number: sub.user.phone_number,
-    //   property_id: sub.property_tenants[0]?.property_id,
-    //   role: sub.role,
-    // } as any;
-
-    // const sub_access_token =
-    //   await this.authService.generateToken(subTokenPayload);
-
-    //       return {
-    //         id: sub.id,
-    //         email: sub.email,
-    //         role: sub.role,
-    //         first_name: sub.user.first_name,
-    //         last_name: sub.user.last_name,
-    //         access_token: sub_access_token,
-    //         property_id: sub.property_tenants[0]?.property_id,
-    //       };
-    //     }),
-    //   );
-    // } else {
-    //   const parentAccount = await this.accountRepository.findOne({
-    //     where: { id: account.creator_id },
-    //     relations: ['user'],
-    //   });
-
-    //   if (parentAccount) {
-    //     const parentTokenData = {
-    //       id: parentAccount.id,
-    //       email: parentAccount.email,
-    //       role: parentAccount.role,
-    //       first_name: parentAccount.user.first_name,
-    //       last_name: parentAccount.user.last_name,
-    //     } as any;
-
-    //     parent_account_token =
-    //       await this.authService.generateToken(parentTokenData);
-    //   }
-    // }
 
     return res.status(HttpStatus.OK).json({
       user: {
-        ...userObject,
+        // ...userObject,
         id: account.id,
         first_name: account.user.first_name,
         last_name: account.user.last_name,
@@ -823,12 +825,16 @@ export class UsersService {
   }
 
   async getTenantAndPropertyInfo(tenant_id: string) {
-    const tenant = await this.usersRepository.findOne({
+    const tenant = await this.accountRepository.findOne({
       where: {
         id: tenant_id,
         role: RolesEnum.TENANT,
       },
-      relations: ['property_tenants', 'property_tenants.property'],
+      relations: [
+        'user',
+        'property_tenants',
+        'property_tenants.property.rents',
+      ],
     });
 
     if (!tenant?.id) {
@@ -970,9 +976,8 @@ export class UsersService {
 
     const user = await this.accountRepository.findOne({
       where: { id: resetEntry.user_id },
+      relations: ['property_tenants'],
     });
-
-    console.log({ user });
 
     if (!user) {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);
@@ -980,7 +985,16 @@ export class UsersService {
 
     // Hash and update the password
     user.password = await UtilService.hashPassword(newPassword);
-    user.is_verified = true;
+    if (!user.is_verified) {
+      user.is_verified = true;
+      this.eventEmitter.emit('user.signup', {
+        user_id: user.id,
+        profile_name: user.profile_name,
+        property_id: user.property_tenants[0].property_id,
+        role: RolesEnum.TENANT,
+      });
+    }
+
     await this.accountRepository.save(user);
 
     // Delete token after successful password reset
@@ -992,33 +1006,57 @@ export class UsersService {
     });
   }
 
-  async getTenantsOfAnAdmin(queryParams: UserFilter) {
+  async getTenantsOfAnAdmin(creator_id: string, queryParams: UserFilter) {
     const page = queryParams?.page ?? config.DEFAULT_PAGE_NO;
     const size = queryParams?.size ?? config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
     const extraFilters = await buildUserFilter(queryParams);
 
-    const queryBuilder = this.accountRepository
-      .createQueryBuilder('account')
-      .leftJoinAndSelect('account.user', 'user')
-      .leftJoinAndSelect('account.rents', 'rents')
+    //   const qb = this.accountRepository
+    // .createQueryBuilder('account')
+    // .leftJoinAndSelect('account.user', 'user')
+    // .leftJoinAndSelect('account.rents', 'rents', 'rents.rent_status = :status', { status: 'active' })
+    // .leftJoinAndSelect('rents.property', 'property')
+    // .where('account.creator_id = :creator_id', { creator_id });
+    const qb = this.accountRepository
+      .createQueryBuilder('accounts')
+      .leftJoinAndSelect('accounts.user', 'user')
+      .leftJoinAndSelect('accounts.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
-      .leftJoinAndSelect('account.property_tenants', 'property_tenants')
-      .where('rents.rent_status = :status', { status: RentStatusEnum.ACTIVE })
-      .orderBy('account.created_at', 'DESC')
-      .skip(skip)
-      .take(size);
+      .where('accounts.creator_id = :creator_id', { creator_id });
+    //   .leftJoinAndSelect('tenant.user', 'user')
+    // .leftJoinAndSelect('rents.property', 'property')
 
     // Apply extra filters only on the `account` table
-    Object.entries(extraFilters).forEach(([key, value], index) => {
-      const paramName = `param${index}`;
-      queryBuilder.andWhere(`account.${key} = :${paramName}`, {
-        [paramName]: value,
-      });
-    });
+    if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
+      qb.orderBy(
+        'rents.rental_price',
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    } else if (queryParams.sort_by === 'date' && queryParams?.sort_order) {
+      qb.orderBy(
+        'tenant.created_at',
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    } else if (queryParams.sort_by === 'name' && queryParams?.sort_order) {
+      qb.orderBy(
+        'tenant.profile_name',
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    } else if (queryParams.sort_by === 'property' && queryParams?.sort_order) {
+      qb.orderBy(
+        'property.name',
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    } else if (queryParams.sort_by && queryParams?.sort_order) {
+      qb.orderBy(
+        `property.${queryParams.sort_by}`,
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    }
 
-    const [users, count] = await queryBuilder.getManyAndCount();
+    const [users, count] = await qb.skip(skip).take(size).getManyAndCount();
 
     const totalPages = Math.ceil(count / size);
     return {
@@ -1031,6 +1069,22 @@ export class UsersService {
         hasNextPage: page < totalPages,
       },
     };
+  }
+
+  async getSingleTenantOfAnAdmin(tenant_id: string) {
+    const tenant = this.accountRepository
+      .createQueryBuilder('accounts')
+      .leftJoinAndSelect('accounts.user', 'user')
+      .leftJoinAndSelect('accounts.rents', 'rents')
+      .leftJoinAndSelect('rents.property', 'property')
+      .where('accounts.id = :tenant_id', { tenant_id })
+      .getOne();
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+
+    return tenant;
   }
 
   async uploadLogos(
@@ -1225,7 +1279,7 @@ export class UsersService {
     let user = await this.usersRepository.findOne({
       where: { email: data.email },
     });
-    console.log({ user });
+
     if (!user) {
       user = await this.usersRepository.save({
         phone_number: data.phone_number,
@@ -1320,4 +1374,57 @@ export class UsersService {
 
     return { success: true, message: 'Switched account successfully' };
   }
+
+async assignCollaboratorToTeam(
+  user_id: string, 
+  team_member: { email: string; permissions: string[]; role: RolesEnum }
+) {
+  try {
+    let team = await this.teamRepository.findOne({
+      where: { creator_id: user_id }
+    });
+
+    if (!team) {
+      // Check if this user is eligible to create a team
+      const team_admin_account = await this.accountRepository.findOne({
+        where: { id: user_id, role: RolesEnum.ADMIN }
+      });
+
+      if (!team_admin_account) {
+        throw new HttpException('Team admin account not found', HttpStatus.NOT_FOUND);
+      }
+
+      // Create a new team
+      team = this.teamRepository.create({
+        name: `${team_admin_account.profile_name} Team`,
+        creator_id: team_admin_account.id,
+      });
+      await this.teamRepository.save(team);
+    }
+
+    // Ensure user really owns this team before adding members
+    if (team.creator_id !== user_id) {
+      throw new HttpException('Not authorized to add members to this team', HttpStatus.FORBIDDEN);
+    }
+
+
+
+    // Add collaborator to the team
+    const new_team_member = this.teamMemberRepository.create({
+      email: team_member.email,
+      permissions: team_member.permissions,
+      team_id: team.id,
+      role: team_member.role,
+    });
+
+    await this.teamMemberRepository.save(new_team_member);
+    return new_team_member;
+
+  } catch (error) {
+    console.error('Error assigning collaborator to team:', error);
+    throw new HttpException('Could not assign collaborator', HttpStatus.INTERNAL_SERVER_ERROR);
+  }
 }
+
+}
+

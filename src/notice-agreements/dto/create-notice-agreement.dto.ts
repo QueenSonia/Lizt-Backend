@@ -25,6 +25,8 @@ export interface NoticeAgreementFilter {
   tenant_id?: string;
   start_date?: string;
   end_date?: string;
+  sort_by?:string;
+  sort_order?:string;
   size?: number;
   page?: number;
 }

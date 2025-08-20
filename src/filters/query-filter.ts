@@ -138,7 +138,6 @@ export const buildPropertyFilter = async (
 };
 
 
-
 export const buildRentFilter = async (queryParams: RentFilter) => {
   const query = {};
   if (queryParams?.property_id) query['property_id'] = queryParams.property_id;
@@ -169,10 +168,7 @@ export const buildServiceRequestFilter = async (
   const query = {};
   if (queryParams?.tenant_id) query['tenant_id'] = queryParams.tenant_id;
   if (queryParams?.property_id) query['property_id'] = queryParams.property_id;
-  // if (queryParams.owner_id) {
   //   query['property'] = { owner_id: queryParams.owner_id };
-  // }
-  if (queryParams?.status) query['status'] = queryParams.status.toLowerCase();
 
   if (queryParams?.start_date && queryParams?.end_date) {
     const regex = /^\d{4}-\d{2}-\d{2}$/;

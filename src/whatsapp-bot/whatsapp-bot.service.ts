@@ -85,75 +85,37 @@ export class WhatsappBotService {
     const from = message?.from;
     if (!from || !message) return;
 
-    const userState = await this.cache.get(`service_request_state_${from}`);
+    if (message.type === 'interactive') {
+      this.handleInteractive(message, from);
+    }
 
     if (message.type === 'text') {
-      const text = message.text?.body;
+      this.handleText(message, from);
+    }
+  }
 
-      if (text?.toLowerCase() === 'start flow') {
-        this.sendFlow(from); // Call the send flow logic
-      }
+  async handleText(message: any, from: string) {
+    console.log('Received text message:', message);
+    const text = message.text?.body;
 
-      if (userState === 'awaiting_description') {
-        const user = await this.usersRepo.findOne({
-          where: {
-            phone_number: `+${from}`,
-            accounts: { role: RolesEnum.TENANT },
-          },
-          relations: ['accounts'],
-        });
+    if (text?.toLowerCase() === 'start flow') {
+      this.sendFlow(from); // Call the send flow logic
+    }
 
-        if (!user?.accounts?.length) {
-          await this.sendText(
-            from,
-            'We could not find your tenancy information.',
-          );
-          await this.cache.delete(`service_request_state_${from}`);
-          return;
-        }
+    //handle redis cache
+    this.cachedResponse(from, text);
 
-        const tenantData = await this.userService.getTenantAndPropertyInfo(
-          user.accounts[0].id,
-        );
-        const propertyInfo = tenantData?.property_tenants?.[0];
+    const user = await this.usersRepo.findOne({
+      where: {
+        phone_number: `+${from}`,
+        accounts: { role: RolesEnum.TENANT },
+      },
+      relations: ['accounts'],
+    });
 
-        if (!propertyInfo) {
-          await this.sendText(from, 'No property found for your account.');
-          await this.cache.delete(`service_request_state_${from}`);
-          return;
-        }
-
-        const requestId = UtilService.generateServiceRequestId();
-
-        const request = this.serviceRequestRepo.create({
-          request_id: requestId,
-          tenant_id: tenantData.id,
-          property_id: propertyInfo.property?.id,
-          tenant_name: tenantData.profile_name,
-          property_name: propertyInfo.property?.name,
-          issue_category: 'service',
-          date_reported: new Date(),
-          description: text,
-          status: ServiceRequestStatusEnum.PENDING,
-        });
-
-        await this.serviceRequestRepo.save(request);
-        await this.sendText(from, '✅ Your service request has been logged.');
-        await this.cache.delete(`service_request_state_${from}`);
-        return;
-      }
-
-      const user = await this.usersRepo.findOne({
-        where: {
-          phone_number: `+${from}`,
-          accounts: { role: RolesEnum.TENANT },
-        },
-        relations: ['accounts'],
-      });
-
-      if (!user) {
-        await this.sendToAgentWithTemplate(from);
-      }else{
+    if (!user) {
+      await this.sendToAgentWithTemplate(from);
+    } else {
       await this.sendButtons(
         from,
         '👋 Welcome to Property Kraft! What would you like to do?',
@@ -167,111 +129,165 @@ export class WhatsappBotService {
           { id: 'visit_site', title: 'Visit our website' },
         ],
       );
-      }
-    }
-
-    if (message.type === 'interactive') {
-      const buttonReply = message.interactive?.button_reply;
-      if (!buttonReply) return;
-
-      switch (buttonReply.id) {
-        case 'visit_site':
-          await this.sendText(
-            from,
-            'Visit our website: https://propertykraft.africa',
-          );
-          break;
-
-        case 'view_tenancy':
-          const user = await this.usersRepo.findOne({
-            where: {
-              phone_number: `+${from}`,
-              accounts: { role: RolesEnum.TENANT },
-            },
-            relations: ['accounts'],
-          });
-
-          if (!user?.accounts?.length) {
-            await this.sendText(from, 'No tenancy info available.');
-            return;
-          }
-
-          const accountId = user.accounts[0].id;
-          const tenancy =
-            await this.userService.getTenantAndPropertyInfo(accountId);
-          const properties = tenancy?.property_tenants;
-
-          if (!properties?.length) {
-            await this.sendText(from, 'No properties found.');
-            return;
-          }
-
-          await this.sendText(from, 'Here are your properties:');
-          for (const [i, item] of properties.entries()) {
-            const rent = item.property.rents[0];
-            await this.sendText(
-              from,
-              `🏠 Property ${i + 1}: ${item.property.name}
-- Rent: ${rent.rental_price}
-- Due Date: ${new Date(rent.lease_end_date).toLocaleDateString()}`,
-            );
-          }
-          break;
-
-        case 'service_request':
-          await this.sendButtons(from, '🛠️ What would you like to do?', [
-            {
-              id: 'new_service_request',
-              title: 'New Request',
-            },
-            {
-              id: 'view_service_request',
-              title: 'Previous Requests',
-            },
-          ]);
-          break;
-
-        case 'view_service_request':
-          const serviceRequests = await this.serviceRequestRepo.find({
-            where: { tenant: { user: { phone_number: `+${from}` } } },
-            relations: ['tenant'],
-          });
-
-          if (!serviceRequests.length) {
-            await this.sendText(from, 'You have no service requests.');
-            return;
-          }
-
-          let service_buttons: any = [];
-
-          let response = '📋 Here are your recent maintenance requests:\n';
-          serviceRequests.forEach((req: any, i) => {
-            service_buttons.push({
-              id: `${req.id}`,
-              title: `${new Date(req.created_at).toLocaleDateString()} - ${req.issue_category} (${req.status})`,
-            });
-          });
-
-          await this.sendButtons(from, response, service_buttons);
-          break;
-
-        case 'new_service_request':
-          await this.cache.set(
-            `service_request_state_${from}`,
-            'awaiting_description',
-            300,
-          );
-          await this.sendText(
-            from,
-            'Please describe the issue you are facing.',
-          );
-          break;
-
-        default:
-          await this.sendText(from, '❓ Unknown option selected.');
-      }
     }
   }
+
+   async cachedResponse(from, text) {
+    const userState = await this.cache.get(`service_request_state_${from}`);
+    if (userState === 'awaiting_description') {
+      const user = await this.usersRepo.findOne({
+        where: {
+          phone_number: `+${from}`,
+          accounts: { role: RolesEnum.TENANT },
+        },
+        relations: ['accounts'],
+      });
+
+      if (!user?.accounts?.length) {
+        await this.sendText(
+          from,
+          'We could not find your tenancy information.',
+        );
+        await this.cache.delete(`service_request_state_${from}`);
+        return;
+      }
+
+      const tenantData = await this.userService.getTenantAndPropertyInfo(
+        user.accounts[0].id,
+      );
+      const propertyInfo = tenantData?.property_tenants?.[0];
+
+      if (!propertyInfo) {
+        await this.sendText(from, 'No property found for your account.');
+        await this.cache.delete(`service_request_state_${from}`);
+        return;
+      }
+
+      const requestId = UtilService.generateServiceRequestId();
+
+      const request = this.serviceRequestRepo.create({
+        request_id: requestId,
+        tenant_id: tenantData.id,
+        property_id: propertyInfo.property?.id,
+        tenant_name: tenantData.profile_name,
+        property_name: propertyInfo.property?.name,
+        issue_category: 'service',
+        date_reported: new Date(),
+        description: text,
+        status: ServiceRequestStatusEnum.PENDING,
+      });
+
+      await this.serviceRequestRepo.save(request);
+      await this.sendText(from, '✅ Your service request has been logged.');
+      await this.cache.delete(`service_request_state_${from}`);
+      return;
+    }
+  }
+
+  async handleInteractive(message: any, from: string) {
+    const buttonReply = message.interactive?.button_reply;
+    if (!buttonReply) return;
+
+    switch (buttonReply.id) {
+      case 'visit_site':
+        await this.sendText(
+          from,
+          'Visit our website: https://propertykraft.africa',
+        );
+        break;
+
+      case 'view_tenancy':
+        const user = await this.usersRepo.findOne({
+          where: {
+            phone_number: `+${from}`,
+            accounts: { role: RolesEnum.TENANT },
+          },
+          relations: ['accounts'],
+        });
+
+        if (!user?.accounts?.length) {
+          await this.sendText(from, 'No tenancy info available.');
+          return;
+        }
+
+        const accountId = user.accounts[0].id;
+        const tenancy =
+          await this.userService.getTenantAndPropertyInfo(accountId);
+        const properties = tenancy?.property_tenants;
+
+        if (!properties?.length) {
+          await this.sendText(from, 'No properties found.');
+          return;
+        }
+
+        await this.sendText(from, 'Here are your properties:');
+        for (const [i, item] of properties.entries()) {
+          const rent = item.property.rents[0];
+          await this.sendText(
+            from,
+            `Property ${i + 1}: ${item.property.name}\n Amount: ${rent.rental_price.toLocaleString(
+              'en-NG',
+              {
+                style: 'currency',
+                currency: 'NGN',
+              },
+            )}\n Expiry Date: ${new Date(rent.lease_end_date).toLocaleDateString()}`,
+          );
+        }
+        break;
+
+      case 'service_request':
+        await this.sendButtons(from, '🛠️ What would you like to do?', [
+          {
+            id: 'new_service_request',
+            title: 'New Request',
+          },
+          {
+            id: 'view_service_request',
+            title: 'Previous Requests',
+          },
+        ]);
+        break;
+
+      case 'view_service_request':
+        const serviceRequests = await this.serviceRequestRepo.find({
+          where: { tenant: { user: { phone_number: `+${from}` } } },
+          relations: ['tenant'],
+        });
+
+        if (!serviceRequests.length) {
+          await this.sendText(from, 'You have no service requests.');
+          return;
+        }
+
+        let service_buttons: any = [];
+
+        let response = '📋 Here are your recent maintenance requests:\n';
+        serviceRequests.forEach((req: any, i) => {
+          service_buttons.push({
+            id: `${req.id}`,
+            title: `${new Date(req.created_at).toLocaleDateString()} - ${req.issue_category} (${req.status})`,
+          });
+        });
+
+        await this.sendButtons(from, response, service_buttons);
+        break;
+
+      case 'new_service_request':
+        await this.cache.set(
+          `service_request_state_${from}`,
+          'awaiting_description',
+          300,
+        );
+        await this.sendText(from, 'Please describe the issue you are facing.');
+        break;
+
+      default:
+        await this.sendText(from, '❓ Unknown option selected.');
+    }
+  }
+
+ 
 
   async sendWhatsappMessageWithTemplate({
     phone_number,

@@ -130,7 +130,6 @@ let WhatsappBotService = class WhatsappBotService {
                 await this.cache.delete(`service_request_state_${from}`);
                 return;
             }
-            console.log('querying users');
             const user = await this.usersRepo.findOne({
                 where: {
                     phone_number: `+${from}`,
@@ -138,18 +137,12 @@ let WhatsappBotService = class WhatsappBotService {
                 },
                 relations: ['accounts'],
             });
-            console.log('no user here', user);
             if (!user) {
-                console.log('no user here');
                 await this.sendToAgentWithTemplate(from);
             }
             await this.sendButtons(from, '👋 Welcome to Property Kraft! What would you like to do?', [
                 { id: 'service_request', title: 'Make a service request' },
                 { id: 'view_tenancy', title: 'View tenancy details' },
-                {
-                    id: 'view_notices_and_documents',
-                    title: 'See notices and documents',
-                },
                 { id: 'visit_site', title: 'Visit our website' },
             ]);
         }

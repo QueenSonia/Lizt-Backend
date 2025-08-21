@@ -158,7 +158,7 @@ export class WhatsappBotService {
         from,
         '👋 Welcome to Property Kraft! What would you like to do?',
         [
-          { id: 'service_request', title: 'Make a service request' },
+          { id: 'service_request', title: 'Make service request' },
           { id: 'view_tenancy', title: 'View tenancy details' },
           // {
           //   id: 'view_notices_and_documents',

@@ -222,11 +222,11 @@ export class WhatsappBotService {
           await this.sendButtons(from, '🛠️ What would you like to do?', [
             {
               id: 'new_service_request',
-              title: 'Make a New Maintenance Request',
+              title: 'New Maintenance Request',
             },
             {
               id: 'view_service_request',
-              title: 'View Status of Previous Requests',
+              title: 'View Previous Requests',
             },
           ]);
           break;

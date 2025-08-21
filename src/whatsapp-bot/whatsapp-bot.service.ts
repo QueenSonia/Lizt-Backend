@@ -81,6 +81,7 @@ export class WhatsappBotService {
   }
 
   async handleMessage(messages: IncomingMessage[]) {
+      console.log('Received text message:', messages);
     const message = messages[0];
     const from = message?.from;
     if (!from || !message) return;
@@ -95,11 +96,33 @@ export class WhatsappBotService {
   }
 
   async handleText(message: any, from: string) {
-    console.log('Received text message:', message);
     const text = message.text?.body;
 
     if (text?.toLowerCase() === 'start flow') {
       this.sendFlow(from); // Call the send flow logic
+    }
+
+    if (text?.toLowerCase() === 'menu') {
+         await this.sendButtons(
+        from,
+        'Menu Options',
+        [
+          { id: 'service_request', title: 'Make service request' },
+          { id: 'view_tenancy', title: 'View tenancy details' },
+          // {
+          //   id: 'view_notices_and_documents',
+          //   title: 'See notices and documents',
+          // },
+          { id: 'visit_site', title: 'Visit our website' },
+        ],
+      );
+      return;
+    }
+
+    if( text.toLowerCase() === 'done') {
+      await this.cache.delete(`service_request_state_${from}`);
+      await this.sendText(from, 'Thank you!  Your session has ended.');
+      return;
     }
 
     //handle redis cache
@@ -231,11 +254,18 @@ export class WhatsappBotService {
                 style: 'currency',
                 currency: 'NGN',
               },
-            )}\n Expiry Date: ${new Date(rent.lease_end_date).toLocaleDateString()}`,
+            )}\n Due Date: ${new Date(rent.lease_end_date).toLocaleDateString()}`,
           );
-        }
-        break;
 
+           await this.cache.set(
+          `service_request_state_${from}`,
+          'other_options',
+          300,
+        );
+          await this.sendText(from, 'Type "menu" to see other options or "done" to finish.');
+      }
+        break;
+        
       case 'service_request':
         await this.sendButtons(from, '🛠️ What would you like to do?', [
           {

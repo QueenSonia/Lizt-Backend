@@ -143,7 +143,6 @@ export class WhatsappBotService {
         return;
       }
 
-      console.log('querying users')
       const user = await this.usersRepo.findOne({
         where: {
           phone_number: `+${from}`,
@@ -152,10 +151,7 @@ export class WhatsappBotService {
         relations: ['accounts'],
       });
 
-      console.log('no user here', user)
-
       if (!user) {
-        console.log('no user here')
         await this.sendToAgentWithTemplate(from);
       }
       await this.sendButtons(
@@ -164,10 +160,10 @@ export class WhatsappBotService {
         [
           { id: 'service_request', title: 'Make a service request' },
           { id: 'view_tenancy', title: 'View tenancy details' },
-          {
-            id: 'view_notices_and_documents',
-            title: 'See notices and documents',
-          },
+          // {
+          //   id: 'view_notices_and_documents',
+          //   title: 'See notices and documents',
+          // },
           { id: 'visit_site', title: 'Visit our website' },
         ],
       );

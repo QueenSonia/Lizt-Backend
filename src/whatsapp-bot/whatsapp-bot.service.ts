@@ -153,7 +153,7 @@ export class WhatsappBotService {
 
       if (!user) {
         await this.sendToAgentWithTemplate(from);
-      }
+      }else{
       await this.sendButtons(
         from,
         '👋 Welcome to Property Kraft! What would you like to do?',
@@ -167,6 +167,7 @@ export class WhatsappBotService {
           { id: 'visit_site', title: 'Visit our website' },
         ],
       );
+      }
     }
 
     if (message.type === 'interactive') {

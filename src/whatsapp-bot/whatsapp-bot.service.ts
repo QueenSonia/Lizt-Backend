@@ -231,14 +231,27 @@ export class WhatsappBotService {
       await this.sendText(from, response);
       await this.cache.delete(`service_request_state_${from}`);
 
-      await this.sendButtons(from, 'back', [
+
+            await this.cache.set(
+          `service_request_state_${from}`,
+          'back_to_requests',
+          300,
+        );
+
+    
+      return;
+
+    }
+
+       if (userState === 'back_to_requests') {
+          await this.sendButtons(from, 'back', [
           {
-            id: 'view_service_request',
+            id: 'service_request',
             title: 'Back to Requests',
           },
       ])
-      return;
-
+      await this.cache.delete(`service_request_state_${from}`);
+      return; 
     }
   }
 

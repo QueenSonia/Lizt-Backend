@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { Repository } from 'typeorm';
+import { ILike, Repository } from 'typeorm';
 
 import WhatsApp from 'whatsapp';
 import { Users } from 'src/users/entities/user.entity';
@@ -204,6 +204,42 @@ export class WhatsappBotService {
       await this.cache.delete(`service_request_state_${from}`);
       return;
     }
+
+    if (userState === 'view_single_service_request') {
+      const serviceRequests = await this.serviceRequestRepo.find({
+        where: {
+          tenant: { user: { phone_number: `+${from}` } },
+          description: ILike(`%${text}%`),
+        },
+        relations: ['tenant'],
+      });
+
+      if (!serviceRequests.length) {
+        await this.sendText(
+          from,
+          'No service requests found matching that description.',
+        );
+        await this.cache.delete(`service_request_state_${from}`);
+        return;
+      }
+
+      let response = 'Here are the matching service requests:\n';
+      serviceRequests.forEach((req: any, i) => {
+        response += `${req.description} (${new Date(req.created_at).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || 'N/A'}\n\n`;
+      });
+
+      await this.sendText(from, response);
+      await this.cache.delete(`service_request_state_${from}`);
+
+      await this.sendButtons(from, 'back', [
+          {
+            id: 'view_service_request',
+            title: 'Back to Requests',
+          },
+      ])
+      return;
+
+    }
   }
 
   async handleInteractive(message: any, from: string) {
@@ -289,14 +325,20 @@ export class WhatsappBotService {
           return;
         }
 
-        let service_buttons: any = [];
 
-        let response = '📋 Here are your recent maintenance requests:\n';
+        let response = 'Here are your recent maintenance requests:\n';
         serviceRequests.forEach((req: any, i) => {
-          response += `${new Date(req.created_at).toLocaleDateString()} - ${req.issue_category} (${req.status})\n`;
+          response += `${new Date(req.created_at).toLocaleDateString()} - \n Description: ${req.description}\n`;
         });
 
         await this.sendText(from, response);
+
+            await this.cache.set(
+          `service_request_state_${from}`,
+          'view_single_service_request',
+          300,
+        );
+          await this.sendText(from, 'Type your service request description to view more info on service request or "done" to finish.');
         break;
 
       case 'new_service_request':

@@ -199,23 +199,15 @@ export class WhatsappBotService {
       await this.sendText(from, response);
       await this.cache.delete(`service_request_state_${from}`);
 
-      await this.cache.set(
-        `service_request_state_${from}`,
-        'back_to_requests',
-        300,
-      );
-
-      return;
-    } else if (userState === 'back_to_requests') {
-      await this.sendButtons(from, 'back', [
+        await this.sendButtons(from, 'back', [
         {
           id: 'service_request',
           title: 'Back to Requests',
         },
       ]);
-      await this.cache.delete(`service_request_state_${from}`);
+
       return;
-    } else {
+    }  else {
       const user = await this.usersRepo.findOne({
         where: {
           phone_number: `+${from}`,

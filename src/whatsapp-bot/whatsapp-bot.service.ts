@@ -225,10 +225,10 @@ export class WhatsappBotService {
           [
             { id: 'service_request', title: 'Make service request' },
             { id: 'view_tenancy', title: 'View tenancy details' },
-            // {
-            //   id: 'view_notices_and_documents',
-            //   title: 'See notices and documents',
-            // },
+            {
+              id: 'view_notices_and_documents',
+              title: 'Notice and Document',
+            },
             { id: 'visit_site', title: 'Visit our website' },
           ],
         );
@@ -299,7 +299,7 @@ export class WhatsappBotService {
         break;
 
       case 'service_request':
-        await this.sendButtons(from, '🛠️ What would you like to do?', [
+        await this.sendButtons(from, 'What would you like to do?', [
           {
             id: 'new_service_request',
             title: 'New Request',

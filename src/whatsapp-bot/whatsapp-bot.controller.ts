@@ -53,7 +53,6 @@ export class WhatsappBotController {
   async create(@Body() payload: WhatsAppWebhookPayload) {
     try {
       const value: any = payload?.entry?.[0]?.changes?.[0]?.value;
-      console.log('Received webhook payload:', value);
       const messages = value?.messages;
       if (Array.isArray(messages)) {
         await this.whatsappBotService.handleMessage(messages);

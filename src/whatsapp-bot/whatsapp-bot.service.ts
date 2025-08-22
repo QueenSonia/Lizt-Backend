@@ -225,10 +225,10 @@ export class WhatsappBotService {
           [
             { id: 'service_request', title: 'Make service request' },
             { id: 'view_tenancy', title: 'View tenancy details' },
-            {
-              id: 'view_notices_and_documents',
-              title: 'Notice and Document',
-            },
+            // {
+            //   id: 'view_notices_and_documents',
+            //   title: 'See notices and documents',
+            // },
             { id: 'visit_site', title: 'Visit our website' },
           ],
         );

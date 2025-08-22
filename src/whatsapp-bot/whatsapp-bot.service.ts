@@ -140,7 +140,7 @@ export class WhatsappBotService {
     } else {
       await this.sendButtons(
         from,
-        `Hello ${user.first_name} Welcome to Property Kraft! What would you like to do today?`,
+        `Hello ${UtilService.toSentenceCase(user.first_name)} Welcome to Property Kraft! What would you like to do today?`,
         [
           { id: 'service_request', title: 'Make service request' },
           { id: 'view_tenancy', title: 'View tenancy details' },

@@ -102,23 +102,19 @@ export class WhatsappBotService {
     }
 
     if (text?.toLowerCase() === 'menu') {
-         await this.sendButtons(
-        from,
-        'Menu Options',
-        [
-          { id: 'service_request', title: 'Make service request' },
-          { id: 'view_tenancy', title: 'View tenancy details' },
-          // {
-          //   id: 'view_notices_and_documents',
-          //   title: 'See notices and documents',
-          // },
-          { id: 'visit_site', title: 'Visit our website' },
-        ],
-      );
+      await this.sendButtons(from, 'Menu Options', [
+        { id: 'service_request', title: 'Make service request' },
+        { id: 'view_tenancy', title: 'View tenancy details' },
+        // {
+        //   id: 'view_notices_and_documents',
+        //   title: 'See notices and documents',
+        // },
+        { id: 'visit_site', title: 'Visit our website' },
+      ]);
       return;
     }
 
-    if( text.toLowerCase() === 'done') {
+    if (text.toLowerCase() === 'done') {
       await this.cache.delete(`service_request_state_${from}`);
       await this.sendText(from, 'Thank you!  Your session has ended.');
       return;
@@ -126,35 +122,9 @@ export class WhatsappBotService {
 
     //handle redis cache
     this.cachedResponse(from, text);
-
-    const user = await this.usersRepo.findOne({
-      where: {
-        phone_number: `+${from}`,
-        accounts: { role: RolesEnum.TENANT },
-      },
-      relations: ['accounts'],
-    });
-
-    if (!user) {
-      await this.sendToAgentWithTemplate(from);
-    } else {
-      await this.sendButtons(
-        from,
-        `Hello ${UtilService.toSentenceCase(user.first_name)} Welcome to Property Kraft! What would you like to do today?`,
-        [
-          { id: 'service_request', title: 'Make service request' },
-          { id: 'view_tenancy', title: 'View tenancy details' },
-          // {
-          //   id: 'view_notices_and_documents',
-          //   title: 'See notices and documents',
-          // },
-          { id: 'visit_site', title: 'Visit our website' },
-        ],
-      );
-    }
   }
 
-   async cachedResponse(from, text) {
+  async cachedResponse(from, text) {
     const userState = await this.cache.get(`service_request_state_${from}`);
     if (userState === 'awaiting_description') {
       const user = await this.usersRepo.findOne({
@@ -203,9 +173,7 @@ export class WhatsappBotService {
       await this.sendText(from, '✅ Your service request has been logged.');
       await this.cache.delete(`service_request_state_${from}`);
       return;
-    }
-
-    if (userState === 'view_single_service_request') {
+    } else if (userState === 'view_single_service_request') {
       const serviceRequests = await this.serviceRequestRepo.find({
         where: {
           tenant: { user: { phone_number: `+${from}` } },
@@ -231,27 +199,48 @@ export class WhatsappBotService {
       await this.sendText(from, response);
       await this.cache.delete(`service_request_state_${from}`);
 
+      await this.cache.set(
+        `service_request_state_${from}`,
+        'back_to_requests',
+        300,
+      );
 
-            await this.cache.set(
-          `service_request_state_${from}`,
-          'back_to_requests',
-          300,
-        );
-
-    
       return;
-
-    }
-
-       if (userState === 'back_to_requests') {
-          await this.sendButtons(from, 'back', [
-          {
-            id: 'service_request',
-            title: 'Back to Requests',
-          },
-      ])
+    } else if (userState === 'back_to_requests') {
+      await this.sendButtons(from, 'back', [
+        {
+          id: 'service_request',
+          title: 'Back to Requests',
+        },
+      ]);
       await this.cache.delete(`service_request_state_${from}`);
-      return; 
+      return;
+    } else {
+      const user = await this.usersRepo.findOne({
+        where: {
+          phone_number: `+${from}`,
+          accounts: { role: RolesEnum.TENANT },
+        },
+        relations: ['accounts'],
+      });
+
+      if (!user) {
+        await this.sendToAgentWithTemplate(from);
+      } else {
+        await this.sendButtons(
+          from,
+          `Hello ${UtilService.toSentenceCase(user.first_name)} Welcome to Property Kraft! What would you like to do today?`,
+          [
+            { id: 'service_request', title: 'Make service request' },
+            { id: 'view_tenancy', title: 'View tenancy details' },
+            // {
+            //   id: 'view_notices_and_documents',
+            //   title: 'See notices and documents',
+            // },
+            { id: 'visit_site', title: 'Visit our website' },
+          ],
+        );
+      }
     }
   }
 
@@ -305,15 +294,18 @@ export class WhatsappBotService {
             )}\n Due Date: ${new Date(rent.lease_end_date).toLocaleDateString()}`,
           );
 
-           await this.cache.set(
-          `service_request_state_${from}`,
-          'other_options',
-          300,
-        );
-          await this.sendText(from, 'Type "menu" to see other options or "done" to finish.');
-      }
+          await this.cache.set(
+            `service_request_state_${from}`,
+            'other_options',
+            300,
+          );
+          await this.sendText(
+            from,
+            'Type "menu" to see other options or "done" to finish.',
+          );
+        }
         break;
-        
+
       case 'service_request':
         await this.sendButtons(from, '🛠️ What would you like to do?', [
           {
@@ -338,7 +330,6 @@ export class WhatsappBotService {
           return;
         }
 
-
         let response = 'Here are your recent maintenance requests:\n';
         serviceRequests.forEach((req: any, i) => {
           response += `${new Date(req.created_at).toLocaleDateString()} - \n Description: ${req.description}\n`;
@@ -346,12 +337,15 @@ export class WhatsappBotService {
 
         await this.sendText(from, response);
 
-            await this.cache.set(
+        await this.cache.set(
           `service_request_state_${from}`,
           'view_single_service_request',
           300,
         );
-          await this.sendText(from, 'Type your service request description to view more info on service request or "done" to finish.');
+        await this.sendText(
+          from,
+          'Type your service request description to view more info on service request or "done" to finish.',
+        );
         break;
 
       case 'new_service_request':
@@ -367,8 +361,6 @@ export class WhatsappBotService {
         await this.sendText(from, '❓ Unknown option selected.');
     }
   }
-
- 
 
   async sendWhatsappMessageWithTemplate({
     phone_number,

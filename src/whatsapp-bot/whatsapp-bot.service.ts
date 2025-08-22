@@ -81,7 +81,6 @@ export class WhatsappBotService {
   }
 
   async handleMessage(messages: IncomingMessage[]) {
-      console.log('Received text message:', messages);
     const message = messages[0];
     const from = message?.from;
     if (!from || !message) return;
@@ -141,7 +140,7 @@ export class WhatsappBotService {
     } else {
       await this.sendButtons(
         from,
-        '👋 Welcome to Property Kraft! What would you like to do?',
+        `Hello ${user.first_name} Welcome to Property Kraft! What would you like to do today?`,
         [
           { id: 'service_request', title: 'Make service request' },
           { id: 'view_tenancy', title: 'View tenancy details' },
@@ -294,13 +293,10 @@ export class WhatsappBotService {
 
         let response = '📋 Here are your recent maintenance requests:\n';
         serviceRequests.forEach((req: any, i) => {
-          service_buttons.push({
-            id: `${req.id}`,
-            title: `${new Date(req.created_at).toLocaleDateString()} - ${req.issue_category} (${req.status})`,
-          });
+          response += `${new Date(req.created_at).toLocaleDateString()} - ${req.issue_category} (${req.status})\n`;
         });
 
-        await this.sendButtons(from, response, service_buttons);
+        await this.sendText(from, response);
         break;
 
       case 'new_service_request':

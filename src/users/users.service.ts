@@ -1393,7 +1393,7 @@ async assignCollaboratorToTeam(
     try {
       // 1. Get or create team
       let team = await manager.getRepository(Team).findOne({
-        where: { creator_id: user_id },
+        where: { creatorId: user_id },
       });
 
       if (!team) {
@@ -1407,20 +1407,20 @@ async assignCollaboratorToTeam(
 
         team = manager.getRepository(Team).create({
           name: `${teamAdminAccount.profile_name} Team`,
-          creator_id: teamAdminAccount.id,
+          creatorId: teamAdminAccount.id,
         });
 
         await manager.getRepository(Team).save(team);
       }
 
       // 2. Ensure user really owns this team
-      if (team.creator_id !== user_id) {
+      if (team.creatorId !== user_id) {
         throw new HttpException('Not authorized to add members to this team', HttpStatus.FORBIDDEN);
       }
 
       // 3. Ensure collaborator is not already a member
       const existingMember = await manager.getRepository(TeamMember).findOne({
-        where: { email: team_member.email, team_id: team.id },
+        where: { email: team_member.email, teamId: team.id },
       });
 
       if (existingMember) {
@@ -1471,7 +1471,8 @@ async assignCollaboratorToTeam(
       const newTeamMember = manager.getRepository(TeamMember).create({
         email: team_member.email,
         permissions: team_member.permissions,
-        team_id: team.id,
+        teamId: team.id,
+        accountId: userAccount.id,
         role: team_member.role,
       });
 

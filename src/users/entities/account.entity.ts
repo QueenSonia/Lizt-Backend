@@ -81,4 +81,7 @@ export class Account extends BaseEntity {
    // One account can be part of many teams through TeamMember
   @OneToMany(() => TeamMember, (teamMember) => teamMember.account)
   teamMemberships: TeamMember[];
+
+  @OneToOne(() => Team, (team) => team.creatorId, { onDelete: 'CASCADE' })
+  team: Team;
 }

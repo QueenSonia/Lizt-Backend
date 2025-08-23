@@ -1,4 +1,4 @@
-import { Global, Module } from '@nestjs/common';
+import { forwardRef, Global, Module } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -14,6 +14,7 @@ import { Rent } from 'src/rents/entities/rent.entity';
 import { RentsModule } from 'src/rents/rents.module';
 import { Team } from './entities/team.entity';
 import { TeamMember } from './entities/team-member.entity';
+import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 
 @Global()
 @Module({
@@ -29,10 +30,10 @@ import { TeamMember } from './entities/team-member.entity';
       TeamMember
     ]),
     AuthModule,
-    WhatsappModule,
+    WhatsappBotModule
   ],
   controllers: [UsersController],
   providers: [UsersService, FileUploadService],
-  exports: [UsersService, TypeOrmModule],
+  exports: [UsersService, FileUploadService],
 })
 export class UsersModule {}

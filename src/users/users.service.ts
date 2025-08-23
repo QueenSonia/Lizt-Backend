@@ -60,6 +60,8 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { TwilioService } from 'src/whatsapp/services/twilio.service';
 import { Team } from './entities/team.entity';
 import { TeamMember } from './entities/team-member.entity';
+import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
+import { CacheService } from 'src/lib/cache';
 
 @Injectable()
 export class UsersService {
@@ -80,11 +82,12 @@ export class UsersService {
     private readonly eventEmitter: EventEmitter2,
     @InjectRepository(Account)
     private accountRepository: Repository<Account>,
-    private readonly twilioService: TwilioService,
     @InjectRepository(Team)
     private readonly teamRepository: Repository<Team>,
     @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
+    private readonly whatsappBotService: WhatsappBotService,
+    private readonly cache: CacheService,
 
     private readonly dataSource: DataSource,
   ) {}
@@ -256,7 +259,7 @@ export class UsersService {
           EmailSubject.WELCOME_EMAIL,
           emailContent,
         ),
-        this.twilioService.sendWhatsAppMessage(phone_number, whatsappContent),
+        // this.twilioService.sendWhatsAppMessage(phone_number, whatsappContent),
       ]);
 
       await queryRunner.commitTransaction();
@@ -1376,55 +1379,115 @@ export class UsersService {
   }
 
 async assignCollaboratorToTeam(
-  user_id: string, 
-  team_member: { email: string; permissions: string[]; role: RolesEnum }
+  user_id: string,
+  team_member: {
+    email: string;
+    permissions: string[];
+    role: RolesEnum;
+    first_name: string;
+    last_name: string;
+    phone_number: string;
+  }
 ) {
-  try {
-    let team = await this.teamRepository.findOne({
-      where: { creator_id: user_id }
-    });
-
-    if (!team) {
-      // Check if this user is eligible to create a team
-      const team_admin_account = await this.accountRepository.findOne({
-        where: { id: user_id, role: RolesEnum.ADMIN }
+  return await this.dataSource.transaction(async (manager) => {
+    try {
+      // 1. Get or create team
+      let team = await manager.getRepository(Team).findOne({
+        where: { creator_id: user_id },
       });
 
-      if (!team_admin_account) {
-        throw new HttpException('Team admin account not found', HttpStatus.NOT_FOUND);
+      if (!team) {
+        const teamAdminAccount = await manager.getRepository(Account).findOne({
+          where: { id: user_id, role: RolesEnum.ADMIN },
+        });
+
+        if (!teamAdminAccount) {
+          throw new HttpException('Team admin account not found', HttpStatus.NOT_FOUND);
+        }
+
+        team = manager.getRepository(Team).create({
+          name: `${teamAdminAccount.profile_name} Team`,
+          creator_id: teamAdminAccount.id,
+        });
+
+        await manager.getRepository(Team).save(team);
       }
 
-      // Create a new team
-      team = this.teamRepository.create({
-        name: `${team_admin_account.profile_name} Team`,
-        creator_id: team_admin_account.id,
+      // 2. Ensure user really owns this team
+      if (team.creator_id !== user_id) {
+        throw new HttpException('Not authorized to add members to this team', HttpStatus.FORBIDDEN);
+      }
+
+      // 3. Ensure collaborator is not already a member
+      const existingMember = await manager.getRepository(TeamMember).findOne({
+        where: { email: team_member.email, team_id: team.id },
       });
-      await this.teamRepository.save(team);
+
+      if (existingMember) {
+        throw new HttpException('Collaborator already in team', HttpStatus.CONFLICT);
+      }
+
+      // 4. Get or create user
+      let user = await manager.getRepository(Users).findOne({
+        where: { email: team_member.email },
+      });
+
+       let normalized_phone_number = team_member.phone_number.replace(/\D/g, ''); // Remove non-digits
+          if (!normalized_phone_number .startsWith('234')) {
+            normalized_phone_number  = '234' + normalized_phone_number .replace(/^0+/, ''); // Remove leading 0s
+          }
+
+      if (!user) {
+        user = await manager.getRepository(Users).save({
+          phone_number: normalized_phone_number,
+          first_name: team_member.first_name,
+          last_name: team_member.last_name,
+          role: team_member.role,
+          is_verified: true,
+          email: team_member.email,
+        });
+      }
+
+      // 5. Get or create account
+      let userAccount = await manager.getRepository(Account).findOne({
+        where: { email: team_member.email },
+      });
+
+      if (!userAccount) {
+        const generatedPassword = await UtilService.generatePassword(); // Await the promise
+        userAccount = manager.getRepository(Account).create({
+          user,
+          email: team_member.email,
+          password: generatedPassword, // assign the awaited value
+          role: team_member.role,
+          profile_name: `${team_member.first_name} ${team_member.last_name}`,
+          is_verified: true,
+        });
+
+        await manager.getRepository(Account).save(userAccount);
+      }
+
+      // 6. Add collaborator to team
+      const newTeamMember = manager.getRepository(TeamMember).create({
+        email: team_member.email,
+        permissions: team_member.permissions,
+        team_id: team.id,
+        role: team_member.role,
+      });
+
+      await manager.getRepository(TeamMember).save(newTeamMember);
+
+      await this.whatsappBotService.sendText(team_member.phone_number, `You have been added to the team: ${team.name} as a ${team_member.role}.`);
+
+      return newTeamMember;
+    } catch (error) {
+      console.error('Error assigning collaborator to team:', error);
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message || 'Could not assign collaborator', HttpStatus.INTERNAL_SERVER_ERROR);
     }
-
-    // Ensure user really owns this team before adding members
-    if (team.creator_id !== user_id) {
-      throw new HttpException('Not authorized to add members to this team', HttpStatus.FORBIDDEN);
-    }
-
-
-
-    // Add collaborator to the team
-    const new_team_member = this.teamMemberRepository.create({
-      email: team_member.email,
-      permissions: team_member.permissions,
-      team_id: team.id,
-      role: team_member.role,
-    });
-
-    await this.teamMemberRepository.save(new_team_member);
-    return new_team_member;
-
-  } catch (error) {
-    console.error('Error assigning collaborator to team:', error);
-    throw new HttpException('Could not assign collaborator', HttpStatus.INTERNAL_SERVER_ERROR);
-  }
+  });
 }
+
 
 }
 

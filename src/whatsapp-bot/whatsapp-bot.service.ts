@@ -14,6 +14,7 @@ import { UsersService } from 'src/users/users.service';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { IncomingMessage } from './utils';
+import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 
 @Injectable()
 export class WhatsappBotService {
@@ -26,9 +27,11 @@ export class WhatsappBotService {
     @InjectRepository(ServiceRequest)
     private readonly serviceRequestRepo: Repository<ServiceRequest>,
 
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepo: Repository<PropertyTenant>,
+
     private readonly cache: CacheService,
     private readonly config: ConfigService,
-    private readonly userService: UsersService,
   ) {}
 
   async getNextScreen(decryptedBody) {
@@ -135,6 +138,8 @@ export class WhatsappBotService {
         relations: ['accounts'],
       });
 
+      console.log({user})
+
       if (!user?.accounts?.length) {
         await this.sendText(
           from,
@@ -144,10 +149,15 @@ export class WhatsappBotService {
         return;
       }
 
-      const tenantData = await this.userService.getTenantAndPropertyInfo(
-        user.accounts[0].id,
-      );
-      const propertyInfo = tenantData?.property_tenants?.[0];
+      // const tenantData = await this.userService.getTenantAndPropertyInfo(
+      //   user.accounts[0].id,
+      // );
+
+      const  propertyInfo  =  await this.propertyTenantRepo.findOne({
+          where: { tenant_id: user.accounts[0].id },
+          relations: ['tenant']
+          })
+    
 
       if (!propertyInfo) {
         await this.sendText(from, 'No property found for your account.');
@@ -159,9 +169,9 @@ export class WhatsappBotService {
 
       const request = this.serviceRequestRepo.create({
         request_id: requestId,
-        tenant_id: tenantData.id,
+        tenant_id: propertyInfo.tenant.id,
         property_id: propertyInfo.property?.id,
-        tenant_name: tenantData.profile_name,
+        tenant_name: propertyInfo.tenant.profile_name,
         property_name: propertyInfo.property?.name,
         issue_category: 'service',
         date_reported: new Date(),
@@ -263,9 +273,14 @@ export class WhatsappBotService {
         }
 
         const accountId = user.accounts[0].id;
-        const tenancy =
-          await this.userService.getTenantAndPropertyInfo(accountId);
-        const properties = tenancy?.property_tenants;
+        // const tenancy =
+        //   await this.userService.getTenantAndPropertyInfo(accountId);
+
+         const properties =  await this.propertyTenantRepo.find({
+          where: { tenant_id: accountId },
+          })
+          
+        // const properties = tenancy?.property_tenants;
 
         if (!properties?.length) {
           await this.sendText(from, 'No properties found.');

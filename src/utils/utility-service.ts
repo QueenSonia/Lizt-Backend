@@ -26,6 +26,31 @@ class UtilityService {
   //   }
   // };
 
+  normalizePhoneNumber = (phone_number: string): string => {
+    if (!phone_number) return '';
+
+    // 1. Keep digits only
+    let normalized = phone_number.replace(/\D/g, '');
+
+    // 2. If number already starts with '234' (Nigeria country code), leave it
+    if (normalized.startsWith('234')) {
+      return normalized;
+    }
+
+    // 3. If number starts with '0', strip it and prepend '234'
+    if (normalized.startsWith('0')) {
+      normalized = '234' + normalized.slice(1);
+      return normalized;
+    }
+
+    // 4. If it's missing both '0' and '234' (e.g., "8031234567"), add '234'
+    if (/^[7-9]\d{9}$/.test(normalized)) {
+      normalized = '234' + normalized;
+    }
+
+    return normalized;
+  };
+
   sendEmail = async (email: string, subject: string, htmlContent: string) => {
     try {
       const msg = {

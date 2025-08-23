@@ -6,6 +6,7 @@ import { ServiceRequestStatusEnum } from '../dto/create-service-request.dto';
 import { Account } from 'src/users/entities/account.entity';
 import { ChatMessage } from 'src/chat/chat-message.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
+import { TeamMember } from 'src/users/entities/team-member.entity';
 
 
 @Entity({ name: 'service_requests' })
@@ -73,6 +74,14 @@ export class ServiceRequest extends BaseEntity {
   messages: ChatMessage[];
 
  @OneToOne(() => Notification, (notification) => notification.serviceRequest)
-  notification: Notification
+  notification: Notification;
+
+  @Column({ nullable: true, type: 'uuid' })
+  assigned_to: string;
+
+  @ManyToOne(() => TeamMember, (tm) => tm.account, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'assigned_to', referencedColumnName: 'id' })
+  facilityManager: TeamMember;
+
   
 }

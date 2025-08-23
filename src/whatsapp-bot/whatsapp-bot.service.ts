@@ -15,6 +15,7 @@ import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-servic
 import { UtilService } from 'src/utils/utility-service';
 import { IncomingMessage } from './utils';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 
 @Injectable()
 export class WhatsappBotService {
@@ -30,6 +31,7 @@ export class WhatsappBotService {
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
 
+    private readonly serviceRequestService: ServiceRequestsService,
     private readonly cache: CacheService,
     private readonly config: ConfigService,
   ) {}
@@ -153,35 +155,48 @@ export class WhatsappBotService {
       //   user.accounts[0].id,
       // );
 
-      const  propertyInfo  =  await this.propertyTenantRepo.findOne({
-          where: { tenant_id: user.accounts[0].id },
-          relations: ['tenant']
-          })
+      // const  propertyInfo  =  await this.propertyTenantRepo.findOne({
+      //     where: { tenant_id: user.accounts[0].id },
+      //     relations: ['tenant']
+      //     })
     
 
-      if (!propertyInfo) {
-        await this.sendText(from, 'No property found for your account.');
-        await this.cache.delete(`service_request_state_${from}`);
-        return;
-      }
+      // if (!propertyInfo) {
+      //   await this.sendText(from, 'No property found for your account.');
+      //   await this.cache.delete(`service_request_state_${from}`);
+      //   return;
+      // }
 
-      const requestId = UtilService.generateServiceRequestId();
+      // const requestId = UtilService.generateServiceRequestId();
 
-      const request = this.serviceRequestRepo.create({
-        request_id: requestId,
-        tenant_id: propertyInfo.tenant.id,
-        property_id: propertyInfo.property?.id,
-        tenant_name: propertyInfo.tenant.profile_name,
-        property_name: propertyInfo.property?.name,
-        issue_category: 'service',
-        date_reported: new Date(),
-        description: text,
-        status: ServiceRequestStatusEnum.PENDING,
-      });
+      // const request = this.serviceRequestRepo.create({
+      //   request_id: requestId,
+      //   tenant_id: propertyInfo.tenant.id,
+      //   property_id: propertyInfo.property?.id,
+      //   tenant_name: propertyInfo.tenant.profile_name,
+      //   property_name: propertyInfo.property?.name,
+      //   issue_category: 'service',
+      //   date_reported: new Date(),
+      //   description: text,
+      //   status: ServiceRequestStatusEnum.PENDING,
+      // });
 
-      await this.serviceRequestRepo.save(request);
-      await this.sendText(from, '✅ Your service request has been logged.');
+      // await this.serviceRequestRepo.save(request);
+      try{
+       const new_service_request =  await this.serviceRequestService.createServiceRequest({
+          tenant_id: user.accounts[0].id ,
+          text
+        })
+
+        if(new_service_request){
+           await this.sendText(from, '✅ Your service request has been logged.');
+        }  
+      }catch(error){
+        console.log(error)
+           await this.sendText(from, error.message || 'An error occurred while logging your request.');
       await this.cache.delete(`service_request_state_${from}`);
+      }
+   
       return;
     } else if (userState === 'view_single_service_request') {
       const serviceRequests = await this.serviceRequestRepo.find({

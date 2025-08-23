@@ -140,8 +140,6 @@ export class WhatsappBotService {
         relations: ['accounts'],
       });
 
-      console.log({user})
-
       if (!user?.accounts?.length) {
         await this.sendText(
           from,
@@ -151,37 +149,7 @@ export class WhatsappBotService {
         return;
       }
 
-      // const tenantData = await this.userService.getTenantAndPropertyInfo(
-      //   user.accounts[0].id,
-      // );
 
-      // const  propertyInfo  =  await this.propertyTenantRepo.findOne({
-      //     where: { tenant_id: user.accounts[0].id },
-      //     relations: ['tenant']
-      //     })
-    
-
-      // if (!propertyInfo) {
-      //   await this.sendText(from, 'No property found for your account.');
-      //   await this.cache.delete(`service_request_state_${from}`);
-      //   return;
-      // }
-
-      // const requestId = UtilService.generateServiceRequestId();
-
-      // const request = this.serviceRequestRepo.create({
-      //   request_id: requestId,
-      //   tenant_id: propertyInfo.tenant.id,
-      //   property_id: propertyInfo.property?.id,
-      //   tenant_name: propertyInfo.tenant.profile_name,
-      //   property_name: propertyInfo.property?.name,
-      //   issue_category: 'service',
-      //   date_reported: new Date(),
-      //   description: text,
-      //   status: ServiceRequestStatusEnum.PENDING,
-      // });
-
-      // await this.serviceRequestRepo.save(request);
       try{
        const new_service_request =  await this.serviceRequestService.createServiceRequest({
           tenant_id: user.accounts[0].id ,
@@ -190,6 +158,7 @@ export class WhatsappBotService {
 
         if(new_service_request){
            await this.sendText(from, '✅ Your service request has been logged.');
+            await this.cache.delete(`service_request_state_${from}`);
         }  
       }catch(error){
         console.log(error)

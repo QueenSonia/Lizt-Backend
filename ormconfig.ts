@@ -24,14 +24,14 @@ export const config = {
   password: PROD_DB_PASSWORD!,
   database: PROD_DB_NAME!,
   entities: ['dist/**/*.entity{.ts,.js}'],
-  synchronize: isProduction ? false : true,
+  // synchronize: isProduction ? false : true,
   migrations: ['dist/src/migrations/*{.ts,.js}'],
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 
   // ssl: {
   //   rejectUnauthorized: false,
   // },
-  // synchronize: true,
+  synchronize: true,
 } as DataSourceOptions;
 
 export default registerAs('typeorm', () => config);

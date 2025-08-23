@@ -116,7 +116,7 @@ export class ServiceRequestsService {
       team: { creatorId: tenantExistInProperty.property.owner_id },
       role: RolesEnum.FACILITY_MANAGER,
     },
-    relations: ['team', 'team.property', 'account', 'account.user'],
+    relations: ['team',  'account', 'account.user'],
   });
 
   if (!facilityManagers.length) {

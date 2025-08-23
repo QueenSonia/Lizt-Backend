@@ -28,7 +28,7 @@ import {
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
-import { ADMIN_ROLES } from 'src/base.entity';
+import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 import { Response } from 'express';
 import { SkipAuth } from 'src/auth/auth.decorator';
 import {
@@ -425,4 +425,24 @@ export class UsersController {
       res,
     });
   }
+
+  @Post('assign-collaborator')
+  async assignCollaborator(
+    @Body() team_member: { 
+        email: string;
+        permissions: string[];
+        role: RolesEnum;
+        first_name: string;
+        last_name: string;
+        phone_number: string;
+      },
+    @Req() req: any,
+  ) {
+    return this.usersService.assignCollaboratorToTeam(
+        req.user.id,
+      team_member,
+  
+    );
+  }
+  
 }

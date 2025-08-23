@@ -3,49 +3,53 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
 import sgMail from '@sendgrid/mail';
+import { randomBytes } from 'crypto';
 
 dotenv.config();
-
-
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
 class UtilityService {
-//  sendEmail = async (email: string, subject: string, htmlContent: string) => {
-//   console.log(process.env.SENDGRID_API_KEY)
-//   try {
-//     const response = await transporter.sendMail({
-//       from: "Panda Admin <hello@getpanda.co>", // must be valid
-//       to: email,
-//       subject,
-//       html: htmlContent,
-//     });
-//     return response;
-//   } catch (err) {
-//     console.error('Error sending email:', err);
-//     throw err;
-//   }
-// };
+  //  sendEmail = async (email: string, subject: string, htmlContent: string) => {
+  //   console.log(process.env.SENDGRID_API_KEY)
+  //   try {
+  //     const response = await transporter.sendMail({
+  //       from: "Panda Admin <hello@getpanda.co>", // must be valid
+  //       to: email,
+  //       subject,
+  //       html: htmlContent,
+  //     });
+  //     return response;
+  //   } catch (err) {
+  //     console.error('Error sending email:', err);
+  //     throw err;
+  //   }
+  // };
 
+  sendEmail = async (email: string, subject: string, htmlContent: string) => {
+    try {
+      const msg = {
+        to: email,
+        from: 'hello@getpanda.co', // Must be verified in SendGrid
+        subject: subject,
+        html: htmlContent,
+      };
+      const response = await sgMail.send(msg);
+      return response;
+    } catch (error) {
+      console.error(
+        'Error sending email via SendGrid API:',
+        error.response?.body || error.message,
+      );
+      throw error;
+    }
+  };
 
-
- sendEmail = async (email: string, subject: string, htmlContent: string) => {
-  try {
-    const msg = {
-      to: email,
-      from: 'hello@getpanda.co', // Must be verified in SendGrid
-      subject: subject,
-      html: htmlContent,
-    };
-    const response = await sgMail.send(msg);
-    return response;
-  } catch (error) {
-    console.error('Error sending email via SendGrid API:', error.response?.body || error.message);
-    throw error;
-  }
-};
-
-
+  generatePassword = async () => {
+    const plainPassword = randomBytes(8).toString('hex'); // e.g., 16 chars random password
+    const hashedPassword = await this.hashPassword(plainPassword);
+    return hashedPassword;
+  };
 
   hashPassword = async (password: string) => {
     const saltRounds = 10;
@@ -77,11 +81,10 @@ class UtilityService {
     return otp;
   }
 
-
   toSentenceCase(text: string): string {
-  if (!text) return '';
-  return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
-}
+    if (!text) return '';
+    return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+  }
 }
 
 export const UtilService = new UtilityService();

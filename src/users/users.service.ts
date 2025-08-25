@@ -1434,7 +1434,7 @@ async assignCollaboratorToTeam(
 
        let normalized_phone_number = team_member.phone_number.replace(/\D/g, ''); // Remove non-digits
           if (!normalized_phone_number.startsWith('234')) {
-            normalized_phone_number  = '234' + normalized_phone_number .replace(/^0+/, ''); // Remove leading 0s
+            normalized_phone_number  = '234' + normalized_phone_number.replace(/^0+/, ''); // Remove leading 0s
           }
 
       if (!user) {

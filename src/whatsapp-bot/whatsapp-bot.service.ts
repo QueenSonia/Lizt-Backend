@@ -316,12 +316,11 @@ export class WhatsappBotService {
           relations: ['accounts'],
         });
 
-        console.log({user})
-
         if (!user?.accounts?.length) {
           await this.sendText(from, 'No tenancy info available.');
           return;
         }
+        console.log(user.accounts)
 
         const accountId = user.accounts[0].id;
         // const tenancy =
@@ -329,9 +328,12 @@ export class WhatsappBotService {
 
         const properties = await this.propertyTenantRepo.find({
           where: { tenant_id: accountId },
+          relations: ['property', 'property.rents'],
         });
 
         // const properties = tenancy?.property_tenants;
+
+        console.log({properties})
 
         if (!properties?.length) {
           await this.sendText(from, 'No properties found.');

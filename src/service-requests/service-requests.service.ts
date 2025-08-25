@@ -121,7 +121,7 @@ export class ServiceRequestsService {
 
   if (!facilityManagers.length) {
     throw new HttpException(
-      'No facility manager assigned to this property',
+      'No facility manager assigned to this property yet',
       HttpStatus.BAD_REQUEST,
     );
   }

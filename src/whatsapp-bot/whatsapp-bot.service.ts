@@ -131,6 +131,19 @@ export class WhatsappBotService {
 
   async cachedResponse(from, text) {
     const userState = await this.cache.get(`service_request_state_${from}`);
+
+    const facility_manager = await this.usersRepo.findOne({
+      where: {
+        phone_number: `+${from}`,
+        accounts: { role: RolesEnum.FACILITY_MANAGER },
+      },
+      relations: ['accounts'],
+    });
+    if (facility_manager) {
+      await this.sendToAgentWithTemplate(from);
+      return;
+    }
+
     if (userState === 'awaiting_description') {
       const user = await this.usersRepo.findOne({
         where: {
@@ -149,25 +162,48 @@ export class WhatsappBotService {
         return;
       }
 
+      try {
+        const new_service_request =
+          await this.serviceRequestService.createServiceRequest({
+            tenant_id: user.accounts[0].id,
+            text,
+          });
 
-      try{
-       const new_service_request =  await this.serviceRequestService.createServiceRequest({
-          tenant_id: user.accounts[0].id ,
-          text
-        })
+        if (new_service_request) {
+          const {
+            created_at,
+            facility_manager_phone,
+            property_name,
+            property_location,
+            request_id
+          } = new_service_request as any;
+          await this.sendText(from, '✅ Your service request has been logged.');
+             await this.cache.delete(`service_request_state_${from}`);
 
-        if(new_service_request){
-          const {facility_manager_phone, property_name, property_location} = new_service_request as any
-           await this.sendText(from, '✅ Your service request has been logged.');
-            await this.sendText(facility_manager_phone, `New service request from ${user.first_name} ${user.last_name} for ${property_name} - ${property_location}. \n Issue: ${text} \n Contact Tenant: ${user.phone_number}`);
-            await this.cache.delete(`service_request_state_${from}`);
-        }  
-      }catch(error){
-        
-           await this.sendText(from, error.message || 'An error occurred while logging your request.');
-      await this.cache.delete(`service_request_state_${from}`);
+          await this.sendText(
+            facility_manager_phone,
+            `New service request: \n 
+              Property:${property_name} \n
+              Address: ${property_location} \n
+              Tenant:  ${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}  \n 
+              Issue: ${text} \n Contact Tenant: ${user.phone_number} \n
+              Time: ${new Date(created_at).toLocaleString()}`,
+          );
+
+          await this.sendButtons(facility_manager_phone, `Confirm request for request_id: ${request_id}`, [{
+            id: 'acknowledge_request',
+            title: 'Acknowledge',
+          }])
+       
+        }
+      } catch (error) {
+        await this.sendText(
+          from,
+          error.message || 'An error occurred while logging your request.',
+        );
+        await this.cache.delete(`service_request_state_${from}`);
       }
-   
+
       return;
     } else if (userState === 'view_single_service_request') {
       const serviceRequests = await this.serviceRequestRepo.find({
@@ -195,7 +231,7 @@ export class WhatsappBotService {
       await this.sendText(from, response);
       await this.cache.delete(`service_request_state_${from}`);
 
-        await this.sendButtons(from, 'back', [
+      await this.sendButtons(from, 'back', [
         {
           id: 'service_request',
           title: 'Back to Requests',
@@ -203,7 +239,29 @@ export class WhatsappBotService {
       ]);
 
       return;
-    }  else {
+    }else if (userState === 'acknowledged') {
+      const serviceRequest = await this.serviceRequestRepo.findOne({
+        where: {
+         request_id: text,
+        },
+        relations: ['tenant', 'facilityManager'],
+      });
+
+      if (!serviceRequest) {
+        await this.sendText(
+          from,
+          'No service requests found with that ID. try again',
+        );
+       
+        return;
+      }
+
+      serviceRequest.status = ServiceRequestStatusEnum.IN_PROGRESS;
+      await this.serviceRequestRepo.save(serviceRequest);
+      await this.sendText(from, `You have acknowledged service request ID: ${text}`);
+      await this.sendText(UtilService.normalizePhoneNumber(serviceRequest.tenant.user.phone_number), `Your service request with ID: ${text} is being processed by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`);
+      await this.cache.delete(`service_request_state_facility${from}`);
+    } else {
       const user = await this.usersRepo.findOne({
         where: {
           phone_number: `+${from}`,
@@ -262,10 +320,10 @@ export class WhatsappBotService {
         // const tenancy =
         //   await this.userService.getTenantAndPropertyInfo(accountId);
 
-         const properties =  await this.propertyTenantRepo.find({
+        const properties = await this.propertyTenantRepo.find({
           where: { tenant_id: accountId },
-          })
-          
+        });
+
         // const properties = tenancy?.property_tenants;
 
         if (!properties?.length) {
@@ -348,6 +406,15 @@ export class WhatsappBotService {
           300,
         );
         await this.sendText(from, 'Please describe the issue you are facing.');
+        break;
+      case 'acknowledge_request':
+         await this.cache.set(
+          `service_request_state_facility${from}`,
+          'acknowledged',
+          300,
+        );
+
+           await this.sendText(from, 'Please input service_request ID to acknowledge');
         break;
 
       default:

@@ -127,19 +127,6 @@ export class WhatsappBotController {
   }
 
 
-  @Post('/bulk-message')
-  async sendBulkMessageToCustomer(@Req() req: Request) {
-     try {
-      const {customer_phone_list, message} = req.body as {customer_phone_list: string[], message: string}
-      const response = await this.whatsappBotService.sendBulkMessageToCustomer(customer_phone_list, message);
-      return response;
-    } catch (error) {
-      console.error('Error sending bulk message:', error);
-      throw error;
-    }
-  }
-
-
 
   @Post('/user-message')
   async sendToUserWithTemplate(@Req() req: Request) {

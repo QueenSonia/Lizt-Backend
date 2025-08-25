@@ -17,6 +17,13 @@ import { IncomingMessage } from './utils';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 
+ // ✅ Reusable buttons
+const MAIN_MENU_BUTTONS = [
+  { id: 'service_request', title: 'Make service request' },
+  { id: 'view_tenancy', title: 'View tenancy details' },
+  { id: 'visit_site', title: 'Visit our website' },
+];
+
 @Injectable()
 export class WhatsappBotService {
   private wa = new WhatsApp();
@@ -146,7 +153,7 @@ export class WhatsappBotService {
           from,
           'No service requests found with that ID. try again',
         );
-       
+       await this.cache.delete(`service_request_state_facility_${from}`);
         return;
       }
 
@@ -454,10 +461,6 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-  private async delay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
   async sendToUserWithTemplate(phone_number: string, customer_name: string) {
     const payload = {
       messaging_product: 'whatsapp',
@@ -502,36 +505,6 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-  async sendBulkMessageToCustomer(customer_phone_list: string[], text: string) {
-    // Remove duplicates & clean phone numbers
-    const cleanedNumbers = [
-      ...new Set(
-        customer_phone_list.map((num) => {
-          let normalized = num.replace(/\D/g, ''); // Remove non-digits
-          if (!normalized.startsWith('234')) {
-            normalized = '234' + normalized.replace(/^0+/, ''); // Remove leading 0s
-          }
-          return normalized;
-        }),
-      ),
-    ];
-
-    // Calculate dynamic delay: at least 500ms, up to 2000ms
-    const baseDelay = 500;
-    const delayStep = 50; // extra ms per recipient
-    const delayMs = Math.min(
-      baseDelay + cleanedNumbers.length * delayStep,
-      2000,
-    );
-
-    for (const phone_number of cleanedNumbers) {
-      await this.sendText(phone_number, text);
-      console.log(
-        `Sent to ${phone_number}, waiting ${delayMs}ms before next...`,
-      );
-      await this.delay(delayMs);
-    }
-  }
 
   async sendText(to: string, text: string) {
     const payload = {
@@ -576,43 +549,6 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-  async sendCTAButton(to: string) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'button',
-        body: {
-          text: 'Check out our website or contact us!',
-        },
-        action: {
-          buttons: [
-            {
-              type: 'url',
-              url: 'https://propertykraft.com',
-              title: 'Visit Website',
-            },
-            {
-              type: 'call',
-              phone_number: '+2348100000000',
-              title: 'Call Us',
-            },
-          ],
-        },
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  async sendWelcomeMenu(to: string, name = 'Somto') {
-    await this.sendButtons(to, `Hi ${name}, what would you like to do today?`, [
-      { id: 'report_issue', title: 'Report an Issue' },
-      { id: 'my_details', title: 'View my details' },
-    ]);
-  }
 
   async sendFlow(recipientNumber: string) {
     const payload = {

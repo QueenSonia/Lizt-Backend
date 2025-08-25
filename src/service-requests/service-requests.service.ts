@@ -164,6 +164,8 @@ export class ServiceRequestsService {
 
   let result = {
     ...request,
+    property_name: tenantExistInProperty.property?.name,
+    property_location: tenantExistInProperty.property?.location,
     facility_manager_phone: UtilService.normalizePhoneNumber(selectedManager.account.user.phone_number),
   }
 

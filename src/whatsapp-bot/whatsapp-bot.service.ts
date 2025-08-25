@@ -157,11 +157,13 @@ export class WhatsappBotService {
         })
 
         if(new_service_request){
+          const {facility_manager_phone, property_name, property_location} = new_service_request as any
            await this.sendText(from, '✅ Your service request has been logged.');
+            await this.sendText(facility_manager_phone, `New service request from ${user.first_name} ${user.last_name} for ${property_name} - ${property_location}. \n Issue: ${text} \n Contact Tenant: ${user.phone_number}`);
             await this.cache.delete(`service_request_state_${from}`);
         }  
       }catch(error){
-        console.log(error)
+        
            await this.sendText(from, error.message || 'An error occurred while logging your request.');
       await this.cache.delete(`service_request_state_${from}`);
       }

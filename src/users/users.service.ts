@@ -1490,5 +1490,30 @@ async assignCollaboratorToTeam(
 }
 
 
+async getTeamMembers(user_id: string): Promise<TeamMember[]> {
+  // 1. Get team by creatorId
+  const team = await this.teamRepository.findOne({
+    where: { creatorId: user_id },
+  });
+
+  if (!team) {
+    throw new HttpException('Team not found', HttpStatus.NOT_FOUND);
+  }
+
+  // 2. Ensure user really owns this team
+  if (team.creatorId !== user_id) {
+    throw new HttpException('Not authorized to view members of this team', HttpStatus.FORBIDDEN);
+  }
+
+  // 3. Get team members
+  const members = await this.teamMemberRepository.find({
+    where: { teamId: team.id },
+    relations: ['account', 'account.user'],
+  });
+
+  return members;
+}
+
+
 }
 

@@ -58,6 +58,14 @@ import { UpdateKycDto } from './dto/update-kyc.dto';
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+
+  @Get('team-members')
+  async getTeamMembers(@Req() req: any) {
+    const team_id = req.user.id
+    return this.usersService.getTeamMembers(team_id);
+  }
+
+
   @ApiOperation({ summary: 'Create User' })
   @ApiBody({ type: CreateUserDto })
   @ApiCreatedResponse({ type: CreateUserDto })
@@ -444,5 +452,7 @@ export class UsersController {
   
     );
   }
+
+
   
 }

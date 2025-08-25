@@ -316,6 +316,8 @@ export class WhatsappBotService {
           relations: ['accounts'],
         });
 
+        console.log({user})
+
         if (!user?.accounts?.length) {
           await this.sendText(from, 'No tenancy info available.');
           return;

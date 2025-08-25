@@ -1478,7 +1478,13 @@ async assignCollaboratorToTeam(
 
       await manager.getRepository(TeamMember).save(newTeamMember);
 
-      await this.whatsappBotService.sendText(team_member.phone_number, `You have been added to the team: ${team.name} as a ${team_member.role}.`);
+      await this.whatsappBotService.sendToFacilityManagerWithTemplate({
+        phone_number: normalized_phone_number,
+        name:UtilService.toSentenceCase(team_member.first_name),
+        team: team.name,
+        role:"Facility Manager"
+
+      })
 
       return newTeamMember;
     } catch (error) {

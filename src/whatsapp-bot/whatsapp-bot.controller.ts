@@ -47,8 +47,8 @@ export class WhatsappBotController {
 
     throw new ForbiddenException();
   }
-  
- @SkipAuth()
+
+  @SkipAuth()
   @Post('webhook')
   async create(@Body() payload: WhatsAppWebhookPayload) {
     try {
@@ -66,7 +66,7 @@ export class WhatsappBotController {
   @HttpCode(200)
   @Post('')
   async handleRequest(@Req() req: Request, @Res() res: Response) {
-    console.log('hi')
+    console.log('hi');
     if (!process.env.PRIVATE_KEY) {
       throw new Error(
         'Private key is empty. Please check your env variable "PRIVATE_KEY".',
@@ -126,13 +126,33 @@ export class WhatsappBotController {
     );
   }
 
-
-
   @Post('/user-message')
   async sendToUserWithTemplate(@Req() req: Request) {
-     try {
-      const {phone_number, customer_name} = req.body as {phone_number: string, customer_name: string}
-      const response = await this.whatsappBotService.sendToAgentWithTemplate(phone_number);
+    try {
+      const { phone_number, customer_name } = req.body as {
+        phone_number: string;
+        customer_name: string;
+      };
+      const response =
+        await this.whatsappBotService.sendToAgentWithTemplate(phone_number);
+      return response;
+    } catch (error) {
+      console.error('Error sending user message:', error);
+      throw error;
+    }
+  }
+
+  @Post('/facility-message')
+  async sendToFacilityManagerWithTemplate(@Req() req: Request) {
+    try {
+      const { phone_number, name, team, role } = req.body as any;
+      const response =
+        await this.whatsappBotService.sendToFacilityManagerWithTemplate({
+          phone_number,
+          name,
+          team,
+          role,
+        });
       return response;
     } catch (error) {
       console.error('Error sending user message:', error);

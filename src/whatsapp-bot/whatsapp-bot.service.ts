@@ -17,7 +17,7 @@ import { IncomingMessage } from './utils';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 
- // ✅ Reusable buttons
+// ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
   { id: 'service_request', title: 'Make service request' },
   { id: 'view_tenancy', title: 'View tenancy details' },
@@ -138,12 +138,14 @@ export class WhatsappBotService {
 
   async cachedResponse(from, text) {
     const userState = await this.cache.get(`service_request_state_${from}`);
-    const facilityState = await this.cache.get(`service_request_state_facility_${from}`);
+    const facilityState = await this.cache.get(
+      `service_request_state_facility_${from}`,
+    );
 
-    if (facilityState=== 'acknowledged') {
+    if (facilityState === 'acknowledged') {
       const serviceRequest = await this.serviceRequestRepo.findOne({
         where: {
-         request_id: text,
+          request_id: text,
         },
         relations: ['tenant', 'facilityManager'],
       });
@@ -153,16 +155,24 @@ export class WhatsappBotService {
           from,
           'No service requests found with that ID. try again',
         );
-       await this.cache.delete(`service_request_state_facility_${from}`);
+        await this.cache.delete(`service_request_state_facility_${from}`);
         return;
       }
 
       serviceRequest.status = ServiceRequestStatusEnum.IN_PROGRESS;
       await this.serviceRequestRepo.save(serviceRequest);
-      await this.sendText(from, `You have acknowledged service request ID: ${text}`);
-      await this.sendText(UtilService.normalizePhoneNumber(serviceRequest.tenant.user.phone_number), `Your service request with ID: ${text} is being processed by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`);
+      await this.sendText(
+        from,
+        `You have acknowledged service request ID: ${text}`,
+      );
+      await this.sendText(
+        UtilService.normalizePhoneNumber(
+          serviceRequest.tenant.user.phone_number,
+        ),
+        `Your service request with ID: ${text} is being processed by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`,
+      );
       await this.cache.delete(`service_request_state_facility_${from}`);
-    } 
+    }
 
     // const facility_manager = await this.usersRepo.findOne({
     //   where: {
@@ -207,21 +217,26 @@ export class WhatsappBotService {
             facility_manager_phone,
             property_name,
             property_location,
-            request_id
+            request_id,
           } = new_service_request as any;
           await this.sendText(from, '✅ Your service request has been logged.');
-             await this.cache.delete(`service_request_state_${from}`);
+          await this.cache.delete(`service_request_state_${from}`);
 
           await this.sendText(
             facility_manager_phone,
             `New service request: \n Property:${property_name} \n Address: ${property_location} \n Tenant:  ${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}  \n Issue: ${text} \n Contact Tenant: ${user.phone_number} \n Time: ${new Date(created_at).toLocaleString()}`,
           );
 
-          await this.sendButtons(facility_manager_phone, `Confirm request for request_id: ${request_id}`, [{
-            id: 'acknowledge_request',
-            title: 'Acknowledge',
-          }])
-       
+          await this.sendButtons(
+            facility_manager_phone,
+            `Confirm request for request_id: ${request_id}`,
+            [
+              {
+                id: 'acknowledge_request',
+                title: 'Acknowledge',
+              },
+            ],
+          );
         }
       } catch (error) {
         await this.sendText(
@@ -414,13 +429,16 @@ export class WhatsappBotService {
         await this.sendText(from, 'Please describe the issue you are facing.');
         break;
       case 'acknowledge_request':
-         await this.cache.set(
+        await this.cache.set(
           `service_request_state_facility_${from}`,
           'acknowledged',
           300,
         );
 
-           await this.sendText(from, 'Please input service_request ID to acknowledge');
+        await this.sendText(
+          from,
+          'Please input service_request ID to acknowledge',
+        );
         break;
 
       default:
@@ -506,6 +524,43 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
+  async sendToFacilityManagerWithTemplate({ phone_number, name, team, role }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'facility_manager', // Your template name
+        language: {
+          code: 'en', // must match the language you set in WhatsApp template
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                parameter_name:'name',
+                text: name,
+              },
+              {
+                type: 'text',
+                 parameter_name:'team',
+                text: team,
+              },
+              {
+                type: 'text',
+                 parameter_name:'role',
+                text: role,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
 
   async sendText(to: string, text: string) {
     const payload = {
@@ -549,7 +604,6 @@ export class WhatsappBotService {
 
     await this.sendToWhatsappAPI(payload);
   }
-
 
   async sendFlow(recipientNumber: string) {
     const payload = {

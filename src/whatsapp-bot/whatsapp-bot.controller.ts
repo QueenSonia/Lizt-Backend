@@ -159,4 +159,34 @@ export class WhatsappBotController {
       throw error;
     }
   }
+
+  @Post('/facility-service-request')
+  async sendToFacilityServiceRequest(@Req() req: Request) {
+    try {
+      const {
+        phone_number,
+        manager_name,
+        property_name,
+        property_location,
+        tenant_name,
+        tenant_phone_number,
+        date_created,
+      } = req.body as any;
+      const response = await this.whatsappBotService.sendFacilityServiceRequest(
+        {
+          phone_number,
+          manager_name,
+          property_name,
+          property_location,
+          tenant_name,
+          tenant_phone_number,
+          date_created,
+        },
+      );
+      return response;
+    } catch (error) {
+      console.error('Error sending user message:', error);
+      throw error;
+    }
+  }
 }

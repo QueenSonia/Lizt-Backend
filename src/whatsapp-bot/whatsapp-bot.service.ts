@@ -215,6 +215,7 @@ export class WhatsappBotService {
           const {
             created_at,
             facility_manager_phone,
+            facility_manager_name,
             property_name,
             property_location,
             request_id,
@@ -226,6 +227,15 @@ export class WhatsappBotService {
             facility_manager_phone,
             `New service request: \n Property:${property_name} \n Address: ${property_location} \n Tenant:  ${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}  \n Issue: ${text} \n Contact Tenant: ${user.phone_number} \n Time: ${new Date(created_at).toLocaleString()}`,
           );
+
+          await this.sendFacilityServiceRequest({
+            phone_number: facility_manager_phone,
+            manager_name: facility_manager_name,
+            property_location: property_location,
+            tenant_name: ` ${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
+            tenant_phone_number: user.phone_number,
+            date_created: new Date(created_at).toLocaleDateString(),
+          })
 
           await this.sendButtons(
             facility_manager_phone,
@@ -523,8 +533,7 @@ export class WhatsappBotService {
 
     await this.sendToWhatsappAPI(payload);
   }
-
-  async sendToFacilityManagerWithTemplate({ phone_number, name, team, role }) {
+   async sendToFacilityManagerWithTemplate({ phone_number, name, team, role }) {
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -552,6 +561,54 @@ export class WhatsappBotService {
                 type: 'text',
                  parameter_name:'role',
                 text: role,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  async sendFacilityServiceRequest({ phone_number, manager_name, property_location, tenant_name, tenant_phone_number, date_created }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'facility_service_request', // Your template name
+        language: {
+          code: 'en', // must match the language you set in WhatsApp template
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                parameter_name:'manager_name',
+                text: manager_name,
+              },
+              {
+                type: 'text',
+                 parameter_name:'property_location',
+                text: property_location,
+              },
+              {
+                type: 'text',
+                 parameter_name:'tenant_name',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                 parameter_name:'tenant_phone_number',
+                text: tenant_phone_number,
+              },
+               {
+                type: 'text',
+                 parameter_name:'date_created',
+                text: date_created,
               },
             ],
           },

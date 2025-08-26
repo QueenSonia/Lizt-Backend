@@ -167,6 +167,7 @@ export class ServiceRequestsService {
     property_name: tenantExistInProperty.property?.name,
     property_location: tenantExistInProperty.property?.location,
     facility_manager_phone: UtilService.normalizePhoneNumber(selectedManager.account.user.phone_number),
+    facility_manager_name: UtilService.toSentenceCase(selectedManager.account.user.first_name)
   }
 
   return result;

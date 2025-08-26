@@ -231,6 +231,7 @@ export class WhatsappBotService {
           await this.sendFacilityServiceRequest({
             phone_number: facility_manager_phone,
             manager_name: facility_manager_name,
+            property_name: property_name,
             property_location: property_location,
             tenant_name: ` ${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
             tenant_phone_number: user.phone_number,
@@ -571,7 +572,7 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-  async sendFacilityServiceRequest({ phone_number, manager_name, property_location, tenant_name, tenant_phone_number, date_created }) {
+  async sendFacilityServiceRequest({ phone_number, manager_name, property_name, property_location, tenant_name, tenant_phone_number, date_created }) {
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -589,6 +590,11 @@ export class WhatsappBotService {
                 type: 'text',
                 parameter_name:'manager_name',
                 text: manager_name,
+              },
+              {
+                type: 'text',
+                parameter_name:'property_name',
+                text: property_name,
               },
               {
                 type: 'text',

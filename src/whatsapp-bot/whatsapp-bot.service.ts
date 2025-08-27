@@ -224,7 +224,7 @@ export class WhatsappBotService {
 
           for (const manager of facility_managers) {
             await this.sendFacilityServiceRequest({
-              phone_number: manager.phone,
+              phone_number: manager.phone_number,
               manager_name: manager.name,
               property_name: property_name,
               property_location: property_location,

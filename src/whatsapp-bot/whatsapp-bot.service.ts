@@ -214,8 +214,7 @@ export class WhatsappBotService {
         if (new_service_request) {
           const {
             created_at,
-            facility_manager_phone,
-            facility_manager_name,
+            facility_managers,
             property_name,
             property_location,
             request_id,
@@ -223,32 +222,40 @@ export class WhatsappBotService {
           await this.sendText(from, '✅ Your service request has been logged.');
           await this.cache.delete(`service_request_state_${from}`);
 
-          await this.sendText(
-            facility_manager_phone,
-            `New service request: \n Property:${property_name} \n Address: ${property_location} \n Tenant:  ${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}  \n Issue: ${text} \n Contact Tenant: ${user.phone_number} \n Time: ${new Date(created_at).toLocaleString()}`,
-          );
+          for (const manager of facility_managers) {
+            await this.sendFacilityServiceRequest({
+              phone_number: manager.phone,
+              manager_name: manager.name,
+              property_name: property_name,
+              property_location: property_location,
+              service_request: text,
+              tenant_name: `${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
+              tenant_phone_number: user.phone_number,
+              date_created: new Date(created_at).toLocaleString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true,
+              }),
+            });
 
-          await this.sendFacilityServiceRequest({
-            phone_number: facility_manager_phone,
-            manager_name: facility_manager_name,
-            property_name: property_name,
-            property_location: property_location,
-            service_request: text,
-            tenant_name: ` ${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
-            tenant_phone_number: user.phone_number,
-            date_created: new Date(created_at).toLocaleDateString(),
-          })
+            await this.sendButtons(
+              manager.phone,
+              `Confirm request for request_id: ${request_id}`,
+              [
+                {
+                  id: 'acknowledge_request',
+                  title: 'Acknowledge',
+                },
+              ],
+            );
 
-          await this.sendButtons(
-            facility_manager_phone,
-            `Confirm request for request_id: ${request_id}`,
-            [
-              {
-                id: 'acknowledge_request',
-                title: 'Acknowledge',
-              },
-            ],
-          );
+            // Add delay (e.g., 2 seconds)
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
         }
       } catch (error) {
         await this.sendText(
@@ -535,7 +542,7 @@ export class WhatsappBotService {
 
     await this.sendToWhatsappAPI(payload);
   }
-   async sendToFacilityManagerWithTemplate({ phone_number, name, team, role }) {
+  async sendToFacilityManagerWithTemplate({ phone_number, name, team, role }) {
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -551,17 +558,17 @@ export class WhatsappBotService {
             parameters: [
               {
                 type: 'text',
-                parameter_name:'name',
+                parameter_name: 'name',
                 text: name,
               },
               {
                 type: 'text',
-                 parameter_name:'team',
+                parameter_name: 'team',
                 text: team,
               },
               {
                 type: 'text',
-                 parameter_name:'role',
+                parameter_name: 'role',
                 text: role,
               },
             ],
@@ -573,7 +580,16 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-  async sendFacilityServiceRequest({ phone_number, manager_name, property_name, property_location, service_request, tenant_name, tenant_phone_number, date_created }) {
+  async sendFacilityServiceRequest({
+    phone_number,
+    manager_name,
+    property_name,
+    property_location,
+    service_request,
+    tenant_name,
+    tenant_phone_number,
+    date_created,
+  }) {
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -589,37 +605,37 @@ export class WhatsappBotService {
             parameters: [
               {
                 type: 'text',
-                parameter_name:'manager_name',
+                parameter_name: 'manager_name',
                 text: manager_name,
               },
               {
                 type: 'text',
-                parameter_name:'property_name',
+                parameter_name: 'property_name',
                 text: property_name,
               },
               {
                 type: 'text',
-                 parameter_name:'property_location',
+                parameter_name: 'property_location',
                 text: property_location,
               },
               {
                 type: 'text',
-                 parameter_name:'service_request',
+                parameter_name: 'service_request',
                 text: service_request,
               },
               {
                 type: 'text',
-                 parameter_name:'tenant_name',
+                parameter_name: 'tenant_name',
                 text: tenant_name,
               },
               {
                 type: 'text',
-                 parameter_name:'tenant_phone_number',
+                parameter_name: 'tenant_phone_number',
                 text: tenant_phone_number,
               },
-               {
+              {
                 type: 'text',
-                 parameter_name:'date_created',
+                parameter_name: 'date_created',
                 text: date_created,
               },
             ],

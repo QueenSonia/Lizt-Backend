@@ -127,8 +127,13 @@ export class ServiceRequestsService {
   }
 
   // 2. Pick a random facility manager
-  const randomIndex = Math.floor(Math.random() * facilityManagers.length);
-  const selectedManager = facilityManagers[randomIndex];
+  // const randomIndex = Math.floor(Math.random() * facilityManagers.length);
+  const selected_managers = facilityManagers.map((manager) => {
+    return{ 
+      phone_number:UtilService.normalizePhoneNumber(manager.account.user.phone_number),
+      name:UtilService.toSentenceCase(manager.account.user.first_name)
+    }
+  })
 
   const requestId = UtilService.generateServiceRequestId();
 
@@ -159,15 +164,13 @@ export class ServiceRequestsService {
     property_id: tenantExistInProperty.property?.id,
     tenant_name: tenantExistInProperty.tenant.profile_name,
     property_name: tenantExistInProperty.property.name,
-    assigned_to: selectedManager.accountId,
   });
 
   let result = {
     ...request,
     property_name: tenantExistInProperty.property?.name,
     property_location: tenantExistInProperty.property?.location,
-    facility_manager_phone: UtilService.normalizePhoneNumber(selectedManager.account.user.phone_number),
-    facility_manager_name: UtilService.toSentenceCase(selectedManager.account.user.first_name)
+    facility_managers: selected_managers
   }
 
   return result;

@@ -135,6 +135,8 @@ export class ServiceRequestsService {
     }
   })
 
+  console.log('Selected', selected_managers)
+
   const requestId = UtilService.generateServiceRequestId();
 
   // 3. Save the service request with the selected manager

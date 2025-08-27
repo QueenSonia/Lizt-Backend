@@ -390,11 +390,13 @@ export class WhatsappBotService {
             'other_options',
             300,
           );
-          await this.sendText(
+         
+        }
+
+         await this.sendText(
             from,
             'Type "menu" to see other options or "done" to finish.',
           );
-        }
         break;
 
       case 'service_request':

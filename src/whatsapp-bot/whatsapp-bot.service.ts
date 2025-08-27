@@ -243,7 +243,7 @@ export class WhatsappBotService {
             });
 
             await this.sendButtons(
-              manager.phone,
+              manager.phone_number,
               `Confirm request for request_id: ${request_id}`,
               [
                 {

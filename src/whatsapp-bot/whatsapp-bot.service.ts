@@ -97,16 +97,42 @@ export class WhatsappBotService {
     const from = message?.from;
     if (!from || !message) return;
 
-    if (message.type === 'interactive') {
-      this.handleInteractive(message, from);
-    }
+    const user = await this.usersRepo.findOne({
+      where: {
+        phone_number: `+${from}`,
+        // accounts: { role: RolesEnum.FACILITY_MANAGER },
+      },
+      relations: ['accounts'],
+    });
 
-    if (message.type === 'text') {
-      this.handleText(message, from);
+    const role = user?.role
+
+    switch (role) {
+      case RolesEnum.FACILITY_MANAGER:
+        console.log('Facility Manager Message');
+         if (message.type === 'interactive') {
+          this.handleFacilityInteractive(message, from);
+        }
+
+        if (message.type === 'text') {
+          this.handleFacilityText(message, from);
+        }
+      
+        break;
+    
+      default:
+        if (message.type === 'interactive') {
+          this.handleInteractive(message, from);
+        }
+
+        if (message.type === 'text') {
+          this.handleText(message, from);
+        }
+        break;
     }
   }
 
-  async handleText(message: any, from: string) {
+    async handleFacilityText(message: any, from: string) {
     const text = message.text?.body;
 
     if (text?.toLowerCase() === 'start flow') {
@@ -115,14 +141,10 @@ export class WhatsappBotService {
 
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(from, 'Menu Options', [
-        { id: 'service_request', title: 'Make service request' },
-        { id: 'view_tenancy', title: 'View tenancy details' },
-        // {
-        //   id: 'view_notices_and_documents',
-        //   title: 'See notices and documents',
-        // },
-        { id: 'visit_site', title: 'Visit our website' },
-      ]);
+            { id: 'service_request', title: 'Resolve service request' },
+            { id: 'view_account_info', title: 'View Account Info' },
+            { id: 'visit_site', title: 'Visit our website' },
+          ])
       return;
     }
 
@@ -133,12 +155,12 @@ export class WhatsappBotService {
     }
 
     //handle redis cache
-    this.cachedResponse(from, text);
+    this.cachedFacilityResponse(from, text);
   }
 
-  async cachedResponse(from, text) {
-    const userState = await this.cache.get(`service_request_state_${from}`);
-    const facilityState = await this.cache.get(
+
+  async cachedFacilityResponse(from, text) {
+     const facilityState = await this.cache.get(
       `service_request_state_facility_${from}`,
     );
 
@@ -172,20 +194,90 @@ export class WhatsappBotService {
         `Your service request with ID: ${text} is being processed by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`,
       );
       await this.cache.delete(`service_request_state_facility_${from}`);
+    }else{
+  
+      const user = await this.usersRepo.findOne({
+        where: {
+          phone_number: `+${from}`,
+          accounts: { role: RolesEnum.FACILITY_MANAGER },
+        },
+        relations: ['accounts'],
+      });
+
+      if (!user) {
+        await this.sendToAgentWithTemplate(from);
+      } else {
+        await this.sendButtons(
+          from,
+          `Hello Manager ${UtilService.toSentenceCase(user.first_name)} Welcome to Property Kraft! What would you like to do today?`,
+          [
+            { id: 'service_request', title: 'Resolve service request' },
+            { id: 'view_account_info', title: 'View Account Info' },
+            { id: 'visit_site', title: 'Visit our website' },
+          ],
+        );
+      }
+    }
+  }
+
+   async handleFacilityInteractive(message: any, from: string) {
+    const buttonReply = message.interactive?.button_reply;
+    if (!buttonReply) return;
+
+    switch (buttonReply.id) {
+      case 'acknowledge_request':
+        await this.cache.set(
+          `service_request_state_facility_${from}`,
+          'acknowledged',
+          300,
+        );
+
+        await this.sendText(
+          from,
+          'Please input service_request ID to acknowledge',
+        );
+        break;
+
+      default:
+        await this.sendText(from, '❓ Unknown option selected.');
+    }
+  }
+
+
+  // users
+  async handleText(message: any, from: string) {
+    const text = message.text?.body;
+
+    if (text?.toLowerCase() === 'start flow') {
+      this.sendFlow(from); // Call the send flow logic
     }
 
-    // const facility_manager = await this.usersRepo.findOne({
-    //   where: {
-    //     phone_number: `+${from}`,
-    //     accounts: { role: RolesEnum.FACILITY_MANAGER },
-    //   },
-    //   relations: ['accounts'],
-    // });
-    // if (facility_manager) {
-    //   await this.sendToAgentWithTemplate(from);
-    //   return;
-    // }
+    if (text?.toLowerCase() === 'menu') {
+      await this.sendButtons(from, 'Menu Options', [
+        { id: 'service_request', title: 'Make service request' },
+        { id: 'view_tenancy', title: 'View tenancy details' },
+        // {
+        //   id: 'view_notices_and_documents',
+        //   title: 'See notices and documents',
+        // },
+        { id: 'visit_site', title: 'Visit our website' },
+      ]);
+      return;
+    }
 
+    if (text.toLowerCase() === 'done') {
+      await this.cache.delete(`service_request_state_${from}`);
+      await this.sendText(from, 'Thank you!  Your session has ended.');
+      return;
+    }
+
+    //handle redis cache
+    this.cachedResponse(from, text);
+  }
+
+  async cachedResponse(from, text) {
+    const userState = await this.cache.get(`service_request_state_${from}`);
+   
     if (userState === 'awaiting_description') {
       const user = await this.usersRepo.findOne({
         where: {
@@ -390,13 +482,12 @@ export class WhatsappBotService {
             'other_options',
             300,
           );
-         
         }
 
-         await this.sendText(
-            from,
-            'Type "menu" to see other options or "done" to finish.',
-          );
+        await this.sendText(
+          from,
+          'Type "menu" to see other options or "done" to finish.',
+        );
         break;
 
       case 'service_request':
@@ -449,18 +540,7 @@ export class WhatsappBotService {
         );
         await this.sendText(from, 'Please describe the issue you are facing.');
         break;
-      case 'acknowledge_request':
-        await this.cache.set(
-          `service_request_state_facility_${from}`,
-          'acknowledged',
-          300,
-        );
-
-        await this.sendText(
-          from,
-          'Please input service_request ID to acknowledge',
-        );
-        break;
+   
 
       default:
         await this.sendText(from, '❓ Unknown option selected.');

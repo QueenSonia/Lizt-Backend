@@ -29,18 +29,22 @@ export class Rent extends BaseEntity {
   rent_receipts?: string[] | null;
 
   @Column({ type: 'int', nullable: true })
-    rental_price: number;
-  
-    @Column({ type: 'int', nullable: true })
-    security_deposit: number;
-  
-    @Column({ type: 'int', nullable: true })
-    service_charge: number;
+  rental_price: number;
+
+  @Column({ type: 'int', nullable: true })
+  security_deposit: number;
+
+  @Column({ type: 'int', nullable: true })
+  service_charge: number;
 
   @Column({
     nullable: false,
     type: 'enum',
-    enum: [RentPaymentStatusEnum.PENDING, RentPaymentStatusEnum.PAID, RentPaymentStatusEnum.OWING],
+    enum: [
+      RentPaymentStatusEnum.PENDING,
+      RentPaymentStatusEnum.PAID,
+      RentPaymentStatusEnum.OWING,
+    ],
     default: RentPaymentStatusEnum.PENDING,
   })
   payment_status: string;
@@ -53,13 +57,16 @@ export class Rent extends BaseEntity {
   })
   rent_status: string;
 
-  @ManyToOne(() => Property, (p) => p.rents,{
-  onDelete: 'CASCADE',
-})
+  @ManyToOne(() => Property, (p) => p.rents, {
+    onDelete: 'CASCADE',
+  })
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() =>Account, (u) => u.rents)
+  @ManyToOne(() => Account, (u) => u.rents,
+{
+    onDelete: 'CASCADE',
+  })
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
   tenant: Account;
 }

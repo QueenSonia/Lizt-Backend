@@ -19,6 +19,7 @@ import { UsersService } from './users.service';
 import {
   CreateAdminDto,
   CreateCustomerRepDto,
+  CreateTenantDto,
   CreateUserDto,
   LoginDto,
   ResetDto,
@@ -65,23 +66,32 @@ export class UsersController {
     return this.usersService.getTeamMembers(team_id);
   }
 
-
-  @ApiOperation({ summary: 'Create User' })
-  @ApiBody({ type: CreateUserDto })
-  @ApiCreatedResponse({ type: CreateUserDto })
-  @ApiResponse({ status: 422, description: 'User with email already exist' })
-  @ApiBearerAuth()
   @Post()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-  async createUser(@Body() body: CreateUserDto, @Req() req: any) {
+  async addTenant(@Body() body: CreateTenantDto, @Req() req: any) {
     try {
       const user_id = req?.user?.id;
-      return this.usersService.createUser(body, user_id);
+      return this.usersService.addTenant(user_id, body);
     } catch (error) {
       throw error;
     }
   }
+
+
+
+
+  // @Post()
+  // @UseGuards(RoleGuard)
+  // @Roles(ADMIN_ROLES.ADMIN)
+  // async createUser(@Body() body: CreateUserDto, @Req() req: any) {
+  //   try {
+  //     const user_id = req?.user?.id;
+  //     return this.usersService.createUser(body, user_id);
+  //   } catch (error) {
+  //     throw error;
+  //   }
+  // }
 
   @ApiOperation({ summary: 'Get All Users' })
   @ApiQuery({ name: 'page', required: false, type: Number })

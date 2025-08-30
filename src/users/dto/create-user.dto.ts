@@ -1,24 +1,166 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsBoolean,
+  IsDate,
   IsDateString,
   IsEmail,
+  IsEnum,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsPhoneNumber,
   IsString,
+  IsUUID,
   Matches,
   MinLength,
   ValidateIf,
-  IsIn,
 } from 'class-validator';
 import {
   Gender,
   MaritalStatus,
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
+
+export class CreateTenantDto {
+  @IsString()
+  @IsNotEmpty()
+  phone_number: string;
+
+  @IsString()
+  @IsNotEmpty()
+  first_name: string;
+
+  @IsString()
+  @IsNotEmpty()
+  last_name: string;
+
+  @IsEmail()
+  email: string;
+
+  @Type(() => Date)
+  @IsDate()
+  date_of_birth: Date;
+
+  @IsEnum(Gender)
+  gender: Gender;
+
+  @IsString()
+  state_of_origin: string;
+
+  @IsString()
+  lga: string;
+
+  @IsString()
+  nationality: string;
+
+  @IsEnum(EmploymentStatus)
+  employment_status: EmploymentStatus;
+
+  @IsEnum(MaritalStatus)
+  marital_status: MaritalStatus;
+
+  @IsUUID()
+  property_id: string;
+
+  // Rent details
+  @IsNotEmpty()
+  @IsDateString()
+  tenancy_start_date: Date;
+
+  @IsNotEmpty()
+  @IsDateString()
+  tenancy_end_date: Date;
+
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  rent_amount: number;
+
+  // -----------------------
+  // Employment (if EMPLOYED)
+  // -----------------------
+  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsString()
+  @IsNotEmpty()
+  employer_name: string;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsString()
+  @IsNotEmpty()
+  job_title: string;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsString()
+  employer_address: string;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNumber()
+  @Type(() => Number)
+  monthly_income: number;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsEmail()
+  work_email: string;
+
+  // -----------------------
+  // Self-Employed (if SELF_EMPLOYED)
+  // -----------------------
+  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsString()
+  business_name: string;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsString()
+  nature_of_business: string;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsString()
+  business_address: string;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNumber()
+  @Type(() => Number)
+  business_monthly_income: number;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsOptional()
+  @IsString()
+  business_website?: string;
+
+  // -----------------------
+  // Unemployed (if UNEMPLOYED)
+  // -----------------------
+  @ValidateIf(o => o.employment_status === EmploymentStatus.UNEMPLOYED)
+  @IsString()
+  source_of_funds: string;
+
+  @ValidateIf(o => o.employment_status === EmploymentStatus.UNEMPLOYED)
+  @IsNumber()
+  @Type(() => Number)
+  monthly_income_estimate: number;
+
+  // -----------------------
+  // Spouse (if MARRIED)
+  // -----------------------
+  @ValidateIf(o => o.marital_status === MaritalStatus.MARRIED)
+  @IsString()
+  spouse_full_name: string;
+
+  @ValidateIf(o => o.marital_status === MaritalStatus.MARRIED)
+  @IsString()
+  spouse_phone_number: string;
+
+  @ValidateIf(o => o.marital_status === MaritalStatus.MARRIED)
+  @IsString()
+  spouse_occupation: string;
+
+  @ValidateIf(o => o.marital_status === MaritalStatus.MARRIED)
+  @IsString()
+  spouse_employer: string;
+}
+
+
 
 export class CreateUserDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })

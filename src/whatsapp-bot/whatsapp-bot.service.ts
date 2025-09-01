@@ -307,7 +307,7 @@ export class WhatsappBotService {
         `Your service request with ID: ${requestId} has been resolved by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`,
       );
       await this.cache.delete(`service_request_state_facility_${from}`);
-
+      return;
     }
     else{
   

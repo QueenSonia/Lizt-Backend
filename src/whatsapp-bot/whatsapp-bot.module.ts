@@ -10,10 +10,11 @@ import { UsersService } from 'src/users/users.service';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 import { ServiceRequestsModule } from 'src/service-requests/service-requests.module';
+import { TeamMember } from 'src/users/entities/team-member.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ServiceRequest, Users, PropertyTenant]), 
+    TypeOrmModule.forFeature([ServiceRequest, Users, PropertyTenant, TeamMember]), 
     ServiceRequestsModule    
   ],
   controllers: [WhatsappBotController],

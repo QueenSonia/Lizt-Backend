@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { ILike, Repository } from 'typeorm';
+import { ILike, Not, Repository } from 'typeorm';
 
 import WhatsApp from 'whatsapp';
 import { Users } from 'src/users/entities/user.entity';
@@ -16,6 +16,7 @@ import { UtilService } from 'src/utils/utility-service';
 import { IncomingMessage } from './utils';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
+import { TeamMember } from 'src/users/entities/team-member.entity';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -37,6 +38,9 @@ export class WhatsappBotService {
 
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
+
+    @InjectRepository(TeamMember)
+    private readonly teamMemberRepo: Repository<TeamMember>,
 
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly cache: CacheService,
@@ -197,7 +201,115 @@ export class WhatsappBotService {
         `Your service request with ID: ${text} is being processed by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`,
       );
       await this.cache.delete(`service_request_state_facility_${from}`);
-    }else{
+    } else if (facilityState === 'resolve-or-update') {
+      if (text.toLowerCase() === 'update') {
+        await this.cache.set(
+          `service_request_state_facility_${from}`,
+          'awaiting_update',
+          300,
+        );
+        await this.sendText(
+          from,
+          'Please provide the request ID and feedback-update separated by a colon. e.g "#SR12345: Your request is being processed"',
+        );
+        return;
+      } else if (text.toLowerCase() === 'resolve') {
+        await this.cache.set(
+          `service_request_state_facility_${from}`,
+          'awaiting_resolution',
+          300,
+        );
+        await this.sendText(
+          from,
+          'Please provide the request ID to resolve e.g #SR12345',
+        );
+        return;
+      } else {
+        await this.sendText(
+          from,
+          'Invalid option. Please type "update" or "resolve".',
+        );
+        return;
+      }
+    }else if( facilityState === 'awaiting_update'){
+      const [requestId, ...feedbackParts] = text.split(':');
+      const feedback = feedbackParts.join(':').trim();
+      if (!requestId || !feedback) {
+        await this.sendText(
+          from,
+          'Invalid format. Please provide the request ID and feedback-update separated by a colon. e.g "#SR12345: Your request is being processed"',
+        );
+        return;
+      }
+      const serviceRequest = await this.serviceRequestRepo.findOne({
+        where: {
+          request_id: requestId.trim(),
+        },
+        relations: ['tenant', 'facilityManager'],
+      });
+
+      if (!serviceRequest) {
+        await this.sendText(
+          from,
+          'No service requests found with that ID. try again',
+        );
+        await this.cache.delete(`service_request_state_facility_${from}`);
+        return;
+      }
+      serviceRequest.notes = feedback;
+      await this.serviceRequestRepo.save(serviceRequest);
+      await this.sendText(
+        from,
+        `You have updated service request ID: ${requestId.trim()}`, 
+      );
+      await this.sendText(
+        UtilService.normalizePhoneNumber(
+          serviceRequest.tenant.user.phone_number,
+        ),
+        `Update on your service request with ID: ${requestId.trim()} - ${feedback}`,
+      );
+      await this.cache.delete(`service_request_state_facility_${from}`);
+    }else if(facilityState === 'awaiting_resolution'){
+      const requestId = text.trim();
+      if (!requestId) {
+        await this.sendText(
+          from,
+          'Invalid format. Please provide the request ID to resolve e.g "#SR12345"',
+        );
+        return;
+      }
+      const serviceRequest = await this.serviceRequestRepo.findOne({
+        where: {
+          request_id: requestId,
+        },
+        relations: ['tenant', 'facilityManager'],
+      });
+
+      if (!serviceRequest) {
+        await this.sendText(
+          from,
+          'No service requests found with that ID. try again',
+        );
+        await this.cache.delete(`service_request_state_facility_${from}`);
+        return;
+      }
+      serviceRequest.status = ServiceRequestStatusEnum.RESOLVED;
+      serviceRequest.resolution_date = new Date();
+      await this.serviceRequestRepo.save(serviceRequest);
+      await this.sendText(
+        from,
+        `You have resolved service request ID: ${requestId}`, 
+      );
+      await this.sendText(
+        UtilService.normalizePhoneNumber(
+          serviceRequest.tenant.user.phone_number,
+        ),
+        `Your service request with ID: ${requestId} has been resolved by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`,
+      );
+      await this.cache.delete(`service_request_state_facility_${from}`);
+
+    }
+    else{
   
       const user = await this.usersRepo.findOne({
         where: {
@@ -228,16 +340,84 @@ export class WhatsappBotService {
     if (!buttonReply) return;
 
     switch (buttonReply.id) {
+      case 'service_request':
+        let teamMemberInfo = await this.teamMemberRepo.findOne({
+          where:{
+            account: { user: { phone_number: `${from}` } }
+          },
+          relations:['team']
+        })
+
+        if(!teamMemberInfo){
+          await this.sendText(from, 'No team info available.');
+          return;
+        }
+
+        const serviceRequests = await this.serviceRequestRepo.find({
+          where: {
+            property:{
+              owner_id: teamMemberInfo.team.creatorId
+            },
+            status: Not(ServiceRequestStatusEnum.RESOLVED)
+          }
+        })
+        
+          let response = 'Here are the service requests:\n';
+        serviceRequests.forEach((req: any, i) => {
+          response += `- Request Id ${req.request_id} - \n Description: ${req.description}\n - Status: ${req.status}\n\n`;
+        });
+
+        await this.sendText(from, response);
+
+        await this.cache.set(
+          `service_request_state_facility_${from}`,
+          'resolve-or-update',
+          300,
+        );
+
+        await this.sendText(
+          from,
+          'Please type "update" to give update on the tenant request or "resolve" to resolve a request.',
+        );
+        break;
       case 'acknowledge_request':
         await this.cache.set(
           `service_request_state_facility_${from}`,
           'acknowledged',
           300,
         );
-
         await this.sendText(
           from,
-          'Please input service_request ID to acknowledge',
+          'Please provide the request ID to acknowledge',
+        );
+        break;
+      case 'view_account_info':
+       let teamMemberAccountInfo = await this.teamMemberRepo.findOne({
+          where:{
+            account: { user: { phone_number: `${from}` } }
+          },
+          relations:['account']
+        })
+
+        if(!teamMemberAccountInfo){
+          await this.sendText(from, 'No account info available.');
+          return;
+        }
+
+        await this.sendText(from, `Account Info for ${UtilService.toSentenceCase(teamMemberAccountInfo.account.profile_name)}:\n\n` +
+          `- Email: ${teamMemberAccountInfo.account.email}\n` +
+          `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
+          `- Role: ${UtilService.toSentenceCase(teamMemberAccountInfo.account.role)}`);
+
+          await this.sendText(
+          from,
+          'Type "menu" to see other options or "done" to finish.',
+        );
+        break; 
+      case 'visit_site':
+        await this.sendText(
+          from,
+          'Visit our website: https://propertykraft.africa',
         );
         break;
 

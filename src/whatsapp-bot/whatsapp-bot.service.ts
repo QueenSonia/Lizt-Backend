@@ -144,7 +144,7 @@ export class WhatsappBotService {
 
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(from, 'Menu Options', [
-            { id: 'service_request', title: 'Resolve service request' },
+            { id: 'service_request', title: 'Resolve request' },
             { id: 'view_account_info', title: 'View Account Info' },
             { id: 'visit_site', title: 'Visit our website' },
           ])

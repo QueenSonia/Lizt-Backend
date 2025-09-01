@@ -105,6 +105,8 @@ export class WhatsappBotService {
       relations: ['accounts'],
     });
 
+    console.log({user})
+
     const role = user?.role
 
     switch (role) {
@@ -115,6 +117,7 @@ export class WhatsappBotService {
         }
 
         if (message.type === 'text') {
+          console.log('in facility')
           this.handleFacilityText(message, from);
         }
       

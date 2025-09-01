@@ -99,7 +99,7 @@ export class WhatsappBotService {
 
     const user = await this.usersRepo.findOne({
       where: {
-        phone_number: `+${from}`,
+        phone_number: `${from}`,
         // accounts: { role: RolesEnum.FACILITY_MANAGER },
       },
       relations: ['accounts'],
@@ -201,7 +201,7 @@ export class WhatsappBotService {
   
       const user = await this.usersRepo.findOne({
         where: {
-          phone_number: `+${from}`,
+          phone_number: `${from}`,
           accounts: { role: RolesEnum.FACILITY_MANAGER },
         },
         relations: ['accounts'],
@@ -284,7 +284,7 @@ export class WhatsappBotService {
     if (userState === 'awaiting_description') {
       const user = await this.usersRepo.findOne({
         where: {
-          phone_number: `+${from}`,
+          phone_number: `${from}`,
           accounts: { role: RolesEnum.TENANT },
         },
         relations: ['accounts'],
@@ -364,7 +364,7 @@ export class WhatsappBotService {
     } else if (userState === 'view_single_service_request') {
       const serviceRequests = await this.serviceRequestRepo.find({
         where: {
-          tenant: { user: { phone_number: `+${from}` } },
+          tenant: { user: { phone_number: `${from}` } },
           description: ILike(`%${text}%`),
         },
         relations: ['tenant'],
@@ -398,7 +398,7 @@ export class WhatsappBotService {
     } else {
       const user = await this.usersRepo.findOne({
         where: {
-          phone_number: `+${from}`,
+          phone_number: `${from}`,
           accounts: { role: RolesEnum.TENANT },
         },
         relations: ['accounts'],
@@ -439,7 +439,7 @@ export class WhatsappBotService {
       case 'view_tenancy':
         const user = await this.usersRepo.findOne({
           where: {
-            phone_number: `+${from}`,
+            phone_number: `${from}`,
             accounts: { role: RolesEnum.TENANT },
           },
           relations: ['accounts'],
@@ -508,7 +508,7 @@ export class WhatsappBotService {
 
       case 'view_service_request':
         const serviceRequests = await this.serviceRequestRepo.find({
-          where: { tenant: { user: { phone_number: `+${from}` } } },
+          where: { tenant: { user: { phone_number: `${from}` } } },
           relations: ['tenant'],
         });
 

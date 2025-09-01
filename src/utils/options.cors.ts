@@ -10,7 +10,9 @@ const prodOrigin = [
   'http://localhost:3001',
   'http://localhost:3000',
   'https://getpanda.co',
-  'https://www.getpanda.co'
+  'https://www.getpanda.co',
+  'https://lizt.co',
+  'https://www.lizt.co'
 ];
 
 /** Allowed development origins */
@@ -22,7 +24,9 @@ const devOrigin = [
   'http://localhost:5173',
   '::1',
   'https://getpanda.co',
-  'https://www.getpanda.co'
+  'https://www.getpanda.co',
+  'https://lizt.co',
+  'https://www.lizt.co'
 ];
 
 const isProduction = process.env.NODE_ENV === 'production';

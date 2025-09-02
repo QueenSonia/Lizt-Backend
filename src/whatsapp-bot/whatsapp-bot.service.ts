@@ -403,6 +403,7 @@ export class WhatsappBotService {
           },
           relations:['account']
         })
+        console.log(teamMemberAccountInfo)
 
         if(!teamMemberAccountInfo){
           await this.sendText(from, 'No account info available.');

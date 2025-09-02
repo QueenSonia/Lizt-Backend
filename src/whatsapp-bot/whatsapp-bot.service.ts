@@ -401,7 +401,7 @@ export class WhatsappBotService {
           where:{
             account: { user: { phone_number: `${from}` } }
           },
-          relations:['account']
+          relations:['account', 'account.user']
         })
         console.log(teamMemberAccountInfo)
 

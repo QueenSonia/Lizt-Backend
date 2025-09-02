@@ -157,6 +157,7 @@ export class WhatsappBotService {
 
     if (text.toLowerCase() === 'done') {
       await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`service_request_state_facility_${from}`);
       await this.sendText(from, 'Thank you!  Your session has ended.');
       return;
     }
@@ -238,6 +239,10 @@ export class WhatsappBotService {
         await this.sendText(
           from,
           'Invalid format. Please provide the request ID and feedback-update separated by a colon. e.g "#SR12345: Your request is being processed"',
+        );
+          await this.sendText(
+          from,
+          'Type the right format to see other options or "done" to finish.',
         );
         return;
       }

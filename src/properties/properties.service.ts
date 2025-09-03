@@ -63,7 +63,11 @@ export class PropertiesService {
         const property = await this.getPropertyById(createdProperty.id)
     const admin_phone_number = UtilService.normalizePhoneNumber(property.owner.user.phone_number)
 
-    await this.userService.getWhatsappText(admin_phone_number, `New property ${createdProperty.name} was created.`)
+    await this.userService.sendPropertiesNotification({
+      phone_number:admin_phone_number,
+      name:"Admin",
+      property_name:createdProperty.name
+    })
 
     return createdProperty;
   }

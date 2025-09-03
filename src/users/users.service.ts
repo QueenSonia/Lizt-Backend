@@ -1669,6 +1669,10 @@ async getWhatsappText(from, message){
   return await this.whatsappBotService.sendText(from, message)
 }
 
+async sendPropertiesNotification({phone_number, name, property_name}){
+  return await this.whatsappBotService.sendToPropertiesCreatedTemplate({phone_number, name, property_name})
+}
+
 
 }
 

@@ -850,6 +850,39 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
+   async sendToPropertiesCreatedTemplate({ phone_number, name, property_name }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'properties_created', // Your template name
+        language: {
+          code: 'en', // must match the language you set in WhatsApp template
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                parameter_name: 'name',
+                text: name,
+              },
+              {
+                type: 'text',
+                parameter_name: 'property_name',
+                text: property_name,
+              }
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   async sendFacilityServiceRequest({
     phone_number,
     manager_name,

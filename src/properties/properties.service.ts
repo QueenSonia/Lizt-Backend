@@ -111,7 +111,7 @@ export class PropertiesService {
     });
   }
 
-  async getPropertyById(id: string): Promise<CreatePropertyDto> {
+  async getPropertyById(id: string): Promise<any> {
     const property = await this.propertyRepository.findOne({
       where: { id },
       relations: [
@@ -120,6 +120,7 @@ export class PropertiesService {
         'property_tenants.tenant',
         'property_tenants.tenant.user',
         'owner',
+        'owner.user'
       ],
     });
     if (!property?.id) {

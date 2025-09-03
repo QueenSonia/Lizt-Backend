@@ -60,57 +60,74 @@ export class PropertiesService {
       user_id: createdProperty.owner_id, // optional if applicable
     });
 
-        const property = await this.getPropertyById(createdProperty.id)
-    const admin_phone_number = UtilService.normalizePhoneNumber(property.owner.user.phone_number)
+    const property = await this.getPropertyById(createdProperty.id);
+    const admin_phone_number = UtilService.normalizePhoneNumber(
+      property.owner.user.phone_number,
+    );
 
     await this.userService.sendPropertiesNotification({
-      phone_number:admin_phone_number,
-      name:"Admin",
-      property_name:createdProperty.name
-    })
+      phone_number: admin_phone_number,
+      name: 'Admin',
+      property_name: createdProperty.name,
+    });
 
     return createdProperty;
   }
 
- async getAllProperties(queryParams: PropertyFilter) {
-  const page = queryParams.page ? Number(queryParams.page) : config.DEFAULT_PAGE_NO;
-  const size = queryParams.size ? Number(queryParams.size) : config.DEFAULT_PER_PAGE;
-  const skip = (page - 1) * size;
+  async getAllProperties(queryParams: PropertyFilter) {
+    const page = queryParams.page
+      ? Number(queryParams.page)
+      : config.DEFAULT_PAGE_NO;
+    const size = queryParams.size
+      ? Number(queryParams.size)
+      : config.DEFAULT_PER_PAGE;
+    const skip = (page - 1) * size;
 
-  const { query, order } = await buildPropertyFilter(queryParams);
+    const { query, order } = await buildPropertyFilter(queryParams);
 
-  const qb = this.propertyRepository
-    .createQueryBuilder('property')
-    .leftJoinAndSelect('property.rents', 'rents')
-    .leftJoinAndSelect('rents.tenant', 'tenant')
-    .leftJoinAndSelect('property.property_tenants', 'property_tenants')
-    .where(query);
+    const qb = this.propertyRepository
+      .createQueryBuilder('property')
+      .leftJoinAndSelect('property.rents', 'rents')
+      .leftJoinAndSelect('rents.tenant', 'tenant')
+      .leftJoinAndSelect('property.property_tenants', 'property_tenants')
+      .where(query);
 
-  // Apply sorting (rent requires custom logic)
-  if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
-    qb.orderBy('rents.rental_price', queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC');
-  }else if (queryParams.sort_by === 'expiry' && queryParams?.sort_order) {
-    qb.orderBy('rents.lease_end_date', queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC');
-  } else if (queryParams.sort_by && queryParams?.sort_order) {
-    qb.orderBy(`property.${queryParams.sort_by}`, queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC');
+    // Apply sorting (rent requires custom logic)
+    if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
+      qb.orderBy(
+        'rents.rental_price',
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    } else if (queryParams.sort_by === 'expiry' && queryParams?.sort_order) {
+      qb.orderBy(
+        'rents.lease_end_date',
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    } else if (queryParams.sort_by && queryParams?.sort_order) {
+      qb.orderBy(
+        `property.${queryParams.sort_by}`,
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    }
+
+    const [properties, count] = await qb
+      .skip(skip)
+      .take(size)
+      .getManyAndCount();
+
+    const totalPages = Math.ceil(count / size);
+
+    return {
+      properties,
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
   }
-
-  const [properties, count] = await qb.skip(skip).take(size).getManyAndCount();
-
-  const totalPages = Math.ceil(count / size);
-
-  return {
-    properties,
-    pagination: {
-      totalRows: count,
-      perPage: size,
-      currentPage: page,
-      totalPages,
-      hasNextPage: page < totalPages,
-    },
-  };
-}
-
 
   async getVacantProperty(query: { owner_id: string }) {
     return await this.propertyRepository.find({
@@ -131,7 +148,7 @@ export class PropertiesService {
         'property_tenants.tenant',
         'property_tenants.tenant.user',
         'owner',
-        'owner.user'
+        'owner.user',
       ],
     });
     if (!property?.id) {

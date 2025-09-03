@@ -17,6 +17,7 @@ import { IncomingMessage } from './utils';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 import { TeamMember } from 'src/users/entities/team-member.entity';
+import { PropertiesService } from 'src/properties/properties.service';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -498,10 +499,12 @@ export class WhatsappBotService {
             property_name,
             property_location,
             request_id,
+            property_id
           } = new_service_request as any;
           await this.sendText(from, '✅ Your service request has been logged.');
           await this.cache.delete(`service_request_state_${from}`);
 
+        
           for (const manager of facility_managers) {
             await this.sendFacilityServiceRequest({
               phone_number: manager.phone_number,
@@ -535,7 +538,40 @@ export class WhatsappBotService {
 
             // Add delay (e.g., 2 seconds)
             await new Promise((resolve) => setTimeout(resolve, 2000));
-          }
+          } 
+
+           const property_tenant = await this.propertyTenantRepo.findOne({
+            where:{
+              property_id
+            },
+            relations: ['property']
+           })
+
+           if(property_tenant){
+               const admin_phone_number = UtilService.normalizePhoneNumber(
+                property_tenant?.property.owner.user.phone_number,
+              );
+
+               await this.sendFacilityServiceRequest({
+              phone_number: admin_phone_number ,
+              manager_name: UtilService.toSentenceCase(property_tenant.property.owner.user.first_name),
+              property_name: property_name,
+              property_location: property_location,
+              service_request: text,
+              tenant_name: `${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
+              tenant_phone_number: user.phone_number,
+              date_created: new Date(created_at).toLocaleString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true,
+              }),
+            });
+           }
+             
         }
       } catch (error) {
         await this.sendText(
@@ -868,6 +904,44 @@ export class WhatsappBotService {
                 type: 'text',
                 parameter_name: 'name',
                 text: name,
+              },
+              {
+                type: 'text',
+                parameter_name: 'property_name',
+                text: property_name,
+              }
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+    async sendUserAddedTemplate({ phone_number, name, user, property_name }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'user_added', // Your template name
+        language: {
+          code: 'en', // must match the language you set in WhatsApp template
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                parameter_name: 'name',
+                text: name,
+              },
+              {
+                type: 'text',
+                parameter_name: 'user',
+                text: user,
               },
               {
                 type: 'text',

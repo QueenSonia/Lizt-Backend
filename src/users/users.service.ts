@@ -93,149 +93,197 @@ export class UsersService {
     private readonly dataSource: DataSource,
   ) {}
 
-async addTenant(user_id: string, dto: CreateTenantDto) {
-  const {
-    phone_number, first_name, last_name, email, date_of_birth, gender,
-    state_of_origin, lga, nationality, employment_status,
-    marital_status, property_id, rent_amount, tenancy_start_date, tenancy_end_date,
-    employer_name, job_title, employer_address, monthly_income, work_email,
-    business_name, nature_of_business, business_address, business_monthly_income, business_website,
-    source_of_funds, monthly_income_estimate,
-    spouse_full_name, spouse_phone_number, spouse_occupation, spouse_employer
-  } = dto;
+  async addTenant(user_id: string, dto: CreateTenantDto) {
+    const {
+      phone_number,
+      first_name,
+      last_name,
+      email,
+      date_of_birth,
+      gender,
+      state_of_origin,
+      lga,
+      nationality,
+      employment_status,
+      marital_status,
+      property_id,
+      rent_amount,
+      tenancy_start_date,
+      tenancy_end_date,
+      employer_name,
+      job_title,
+      employer_address,
+      monthly_income,
+      work_email,
+      business_name,
+      nature_of_business,
+      business_address,
+      business_monthly_income,
+      business_website,
+      source_of_funds,
+      monthly_income_estimate,
+      spouse_full_name,
+      spouse_phone_number,
+      spouse_occupation,
+      spouse_employer,
+    } = dto;
 
-  return await this.dataSource.transaction(async (manager) => {
-    try {
-      // 1. Check existing user
-      let tenantUser = await manager.getRepository(Users).findOne({
-        where: { phone_number: UtilService.normalizePhoneNumber(phone_number) },
-      });
+    const admin = await this.accountRepository.findOne({
+      where: {
+        id: user_id,
+        role: RolesEnum.ADMIN,
+      },
+      relations: ['user'],
+    }) as any;
 
-      if (tenantUser) {
-        throw new HttpException(
-          `Account with phone: ${UtilService.normalizePhoneNumber( phone_number)} already exists`,
-          HttpStatus.UNPROCESSABLE_ENTITY,
+    if (!admin) {
+      throw new HttpException('admin account not found', HttpStatus.NOT_FOUND);
+    }
+
+    return await this.dataSource.transaction(async (manager) => {
+      try {
+        // 1. Check existing user
+        let tenantUser = await manager.getRepository(Users).findOne({
+          where: {
+            phone_number: UtilService.normalizePhoneNumber(phone_number),
+          },
+        });
+
+        if (tenantUser) {
+          throw new HttpException(
+            `Account with phone: ${UtilService.normalizePhoneNumber(phone_number)} already exists`,
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        }
+
+        const property = await manager.getRepository(Property).findOne({
+          where: { id: property_id },
+        });
+
+        const hasActiveRent = await manager.getRepository(Rent).findOne({
+          where: {
+            property_id: property_id,
+            rent_status: RentStatusEnum.ACTIVE,
+          },
+        });
+
+        if (hasActiveRent) {
+          throw new HttpException(
+            `Property is already rented out`,
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        }
+
+        // 2. Create tenant user
+        tenantUser = manager.getRepository(Users).create({
+          first_name: UtilService.toSentenceCase(first_name),
+          last_name: UtilService.toSentenceCase(last_name),
+          email,
+          phone_number: UtilService.normalizePhoneNumber(phone_number),
+          date_of_birth,
+          gender,
+          state_of_origin,
+          lga,
+          nationality,
+          employment_status,
+          marital_status,
+          role: RolesEnum.TENANT,
+          is_verified: true,
+          employer_name,
+          job_title,
+          employer_address,
+          monthly_income,
+          work_email,
+          nature_of_business,
+          business_name,
+          business_address,
+          business_monthly_income,
+          business_website,
+          source_of_funds,
+          monthly_income_estimate,
+          spouse_full_name,
+          spouse_phone_number,
+          spouse_occupation,
+          spouse_employer,
+        });
+
+        await manager.getRepository(Users).save(tenantUser);
+
+        // 3. Create tenant account
+        const generatedPassword = await UtilService.generatePassword();
+
+        const userAccount = manager.getRepository(Account).create({
+          user: tenantUser,
+          email,
+          password: generatedPassword,
+          is_verified: true,
+          profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          role: RolesEnum.TENANT,
+          creator_id: user_id,
+        });
+
+        await manager.getRepository(Account).save(userAccount);
+
+        console.log(tenancy_start_date, tenancy_end_date);
+
+        // 4. create rent record
+        const rent = manager.getRepository(Rent).create({
+          property_id,
+          tenant_id: userAccount.id,
+          amount_paid: rent_amount,
+          rental_price: rent_amount,
+          lease_start_date: tenancy_start_date,
+          lease_end_date: tenancy_end_date,
+          rent_status: RentStatusEnum.ACTIVE,
+        });
+
+        await manager.getRepository(Rent).save(rent);
+
+        // 5. Assign tenant to property
+        const propertyTenant = manager.getRepository(PropertyTenant).create({
+          property_id,
+          tenant_id: userAccount.id,
+          status: TenantStatusEnum.ACTIVE,
+        });
+
+        await manager.getRepository(PropertyTenant).save(propertyTenant);
+
+        // 5. Notify tenant
+        await this.whatsappBotService.sendToUserWithTemplate(
+          UtilService.normalizePhoneNumber(tenantUser.phone_number),
+          `${tenantUser.first_name} ${tenantUser.last_name}`,
         );
-      }
-
-      const property = await manager.getRepository(Property).findOne({
-        where:{id:property_id}
-      })
-
-      const hasActiveRent = await manager.getRepository(Rent).findOne({
-        where:{
-          property_id:property_id,
-          rent_status: RentStatusEnum.ACTIVE}
-      })
-
-
-         if (hasActiveRent) {
-        throw new HttpException(
-          `Property is already rented out`,
-          HttpStatus.UNPROCESSABLE_ENTITY,
-        );
-      }
-
-
-      // 2. Create tenant user
-      tenantUser = manager.getRepository(Users).create({
-        first_name: UtilService.toSentenceCase(first_name),
-        last_name: UtilService.toSentenceCase(last_name),
-        email,
-        phone_number: UtilService.normalizePhoneNumber( phone_number),
-        date_of_birth,
-        gender,
-        state_of_origin,
-        lga,
-        nationality,
-        employment_status,
-        marital_status,
-        role: RolesEnum.TENANT,
-        is_verified: true,
-        employer_name,
-        job_title,
-        employer_address,
-        monthly_income,
-        work_email,
-        nature_of_business,
-        business_name,
-        business_address,
-        business_monthly_income,
-        business_website,
-        source_of_funds,
-        monthly_income_estimate,
-        spouse_full_name,
-        spouse_phone_number,
-        spouse_occupation,
-        spouse_employer
-      });
-
-      await manager.getRepository(Users).save(tenantUser);
-
-      // 3. Create tenant account
-      const generatedPassword = await UtilService.generatePassword();
-
-      const userAccount = manager.getRepository(Account).create({
-        user: tenantUser,
-        email,
-        password: generatedPassword,
-        is_verified: true,
-        profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-        role: RolesEnum.TENANT,
-        creator_id: user_id,
-      });
-
-      await manager.getRepository(Account).save(userAccount);
-
-      console.log(tenancy_start_date, tenancy_end_date)
-      
-      // 4. create rent record
-      const rent = manager.getRepository(Rent).create({
-        property_id,
-        tenant_id: userAccount.id,
-        amount_paid: rent_amount,
-        rental_price: rent_amount,
-        lease_start_date: tenancy_start_date,
-        lease_end_date: tenancy_end_date,
-        rent_status: RentStatusEnum.ACTIVE,
-      });
-
-      await manager.getRepository(Rent).save(rent);
-
-
-      // 5. Assign tenant to property
-      const propertyTenant = manager.getRepository(PropertyTenant).create({
-        property_id,
-        tenant_id: userAccount.id,
-        status: TenantStatusEnum.ACTIVE,
-      });
-
-      await manager.getRepository(PropertyTenant).save(propertyTenant);
-
-      // 5. Notify tenant
-      await this.whatsappBotService.sendToUserWithTemplate(
-        UtilService.normalizePhoneNumber(tenantUser.phone_number),
-        `${tenantUser.first_name} ${tenantUser.last_name}`,
-      );
 
         this.eventEmitter.emit('user.added', {
-        user_id: user_id,
-        property_id: property_id,
-        property_name: property?.name,
-        profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-        role: RolesEnum.TENANT,
-      });
+          user_id: user_id,
+          property_id: property_id,
+          property_name: property?.name,
+          profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          role: RolesEnum.TENANT,
+        });
 
-      return tenantUser;
-    } catch (error) {
-      console.error("Error creating tenant:", error);
-      if (error instanceof HttpException) throw error;
-      throw new HttpException(error.message || "Could not create tenant", HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-  });
-}
+        const admin_phone_number = UtilService.normalizePhoneNumber(
+          admin.user.phone_number,
+        );
 
+        await this.sendUserAddedTemplate({
+          phone_number: admin_phone_number,
+          name: 'Admin',
+          user: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          property_name: property?.name,
+        });
 
+        return tenantUser;
+      } catch (error) {
+        console.error('Error creating tenant:', error);
+        if (error instanceof HttpException) throw error;
+        throw new HttpException(
+          error.message || 'Could not create tenant',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+    });
+  }
 
   async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
     const { email, phone_number } = data;
@@ -1523,156 +1571,180 @@ async addTenant(user_id: string, dto: CreateTenantDto) {
     return { success: true, message: 'Switched account successfully' };
   }
 
-async assignCollaboratorToTeam(
-  user_id: string,
-  team_member: {
-    email: string;
-    permissions: string[];
-    role: RolesEnum;
-    first_name: string;
-    last_name: string;
-    phone_number: string;
-  }
-) {
-  return await this.dataSource.transaction(async (manager) => {
-    try {
-      // 1. Get or create team
-      let team = await manager.getRepository(Team).findOne({
-        where: { creatorId: user_id },
-      });
-
-      if (!team) {
-        const teamAdminAccount = await manager.getRepository(Account).findOne({
-          where: { id: user_id, role: RolesEnum.ADMIN },
+  async assignCollaboratorToTeam(
+    user_id: string,
+    team_member: {
+      email: string;
+      permissions: string[];
+      role: RolesEnum;
+      first_name: string;
+      last_name: string;
+      phone_number: string;
+    },
+  ) {
+    return await this.dataSource.transaction(async (manager) => {
+      try {
+        // 1. Get or create team
+        let team = await manager.getRepository(Team).findOne({
+          where: { creatorId: user_id },
         });
 
-        if (!teamAdminAccount) {
-          throw new HttpException('Team admin account not found', HttpStatus.NOT_FOUND);
-        }
+        if (!team) {
+          const teamAdminAccount = await manager
+            .getRepository(Account)
+            .findOne({
+              where: { id: user_id, role: RolesEnum.ADMIN },
+            });
 
-        team = manager.getRepository(Team).create({
-          name: `${teamAdminAccount.profile_name} Team`,
-          creatorId: teamAdminAccount.id,
-        });
-
-        await manager.getRepository(Team).save(team);
-      }
-
-      // 2. Ensure user really owns this team
-      if (team.creatorId !== user_id) {
-        throw new HttpException('Not authorized to add members to this team', HttpStatus.FORBIDDEN);
-      }
-
-      // 3. Ensure collaborator is not already a member
-      const existingMember = await manager.getRepository(TeamMember).findOne({
-        where: { email: team_member.email, teamId: team.id },
-      });
-
-      if (existingMember) {
-        throw new HttpException('Collaborator already in team', HttpStatus.CONFLICT);
-      }
-
-      // 4. Get or create user
-      let user = await manager.getRepository(Users).findOne({
-        where: { email: team_member.email },
-      });
-
-       let normalized_phone_number = team_member.phone_number.replace(/\D/g, ''); // Remove non-digits
-          if (!normalized_phone_number.startsWith('234')) {
-            normalized_phone_number  = '234' + normalized_phone_number.replace(/^0+/, ''); // Remove leading 0s
+          if (!teamAdminAccount) {
+            throw new HttpException(
+              'Team admin account not found',
+              HttpStatus.NOT_FOUND,
+            );
           }
 
-      if (!user) {
-        user = await manager.getRepository(Users).save({
+          team = manager.getRepository(Team).create({
+            name: `${teamAdminAccount.profile_name} Team`,
+            creatorId: teamAdminAccount.id,
+          });
+
+          await manager.getRepository(Team).save(team);
+        }
+
+        // 2. Ensure user really owns this team
+        if (team.creatorId !== user_id) {
+          throw new HttpException(
+            'Not authorized to add members to this team',
+            HttpStatus.FORBIDDEN,
+          );
+        }
+
+        // 3. Ensure collaborator is not already a member
+        const existingMember = await manager.getRepository(TeamMember).findOne({
+          where: { email: team_member.email, teamId: team.id },
+        });
+
+        if (existingMember) {
+          throw new HttpException(
+            'Collaborator already in team',
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        // 4. Get or create user
+        let user = await manager.getRepository(Users).findOne({
+          where: { email: team_member.email },
+        });
+
+        let normalized_phone_number = team_member.phone_number.replace(
+          /\D/g,
+          '',
+        ); // Remove non-digits
+        if (!normalized_phone_number.startsWith('234')) {
+          normalized_phone_number =
+            '234' + normalized_phone_number.replace(/^0+/, ''); // Remove leading 0s
+        }
+
+        if (!user) {
+          user = await manager.getRepository(Users).save({
+            phone_number: normalized_phone_number,
+            first_name: team_member.first_name,
+            last_name: team_member.last_name,
+            role: team_member.role,
+            is_verified: true,
+            email: team_member.email,
+          });
+        }
+
+        // 5. Get or create account
+        let userAccount = await manager.getRepository(Account).findOne({
+          where: { email: team_member.email },
+        });
+
+        if (!userAccount) {
+          const generatedPassword = await UtilService.generatePassword(); // Await the promise
+          userAccount = manager.getRepository(Account).create({
+            user,
+            email: team_member.email,
+            password: generatedPassword, // assign the awaited value
+            role: team_member.role,
+            profile_name: `${team_member.first_name} ${team_member.last_name}`,
+            is_verified: true,
+          });
+
+          await manager.getRepository(Account).save(userAccount);
+        }
+
+        // 6. Add collaborator to team
+        const newTeamMember = manager.getRepository(TeamMember).create({
+          email: team_member.email,
+          permissions: team_member.permissions,
+          teamId: team.id,
+          accountId: userAccount.id,
+          role: team_member.role,
+        });
+
+        await manager.getRepository(TeamMember).save(newTeamMember);
+
+        await this.whatsappBotService.sendToFacilityManagerWithTemplate({
           phone_number: normalized_phone_number,
-          first_name: team_member.first_name,
-          last_name: team_member.last_name,
-          role: team_member.role,
-          is_verified: true,
-          email: team_member.email,
-        });
-      }
-
-      // 5. Get or create account
-      let userAccount = await manager.getRepository(Account).findOne({
-        where: { email: team_member.email },
-      });
-
-      if (!userAccount) {
-        const generatedPassword = await UtilService.generatePassword(); // Await the promise
-        userAccount = manager.getRepository(Account).create({
-          user,
-          email: team_member.email,
-          password: generatedPassword, // assign the awaited value
-          role: team_member.role,
-          profile_name: `${team_member.first_name} ${team_member.last_name}`,
-          is_verified: true,
+          name: UtilService.toSentenceCase(team_member.first_name),
+          team: team.name,
+          role: 'Facility Manager',
         });
 
-        await manager.getRepository(Account).save(userAccount);
+        return newTeamMember;
+      } catch (error) {
+        console.error('Error assigning collaborator to team:', error);
+        if (error instanceof HttpException) throw error;
+        throw new HttpException(
+          error.message || 'Could not assign collaborator',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
       }
+    });
+  }
 
-      // 6. Add collaborator to team
-      const newTeamMember = manager.getRepository(TeamMember).create({
-        email: team_member.email,
-        permissions: team_member.permissions,
-        teamId: team.id,
-        accountId: userAccount.id,
-        role: team_member.role,
-      });
+  async getTeamMembers(user_id: string): Promise<TeamMember[]> {
+    // 1. Get team by creatorId
+    const team = await this.teamRepository.findOne({
+      where: { creatorId: user_id },
+    });
 
-      await manager.getRepository(TeamMember).save(newTeamMember);
-
-      await this.whatsappBotService.sendToFacilityManagerWithTemplate({
-        phone_number: normalized_phone_number,
-        name:UtilService.toSentenceCase(team_member.first_name),
-        team: team.name,
-        role:"Facility Manager"
-
-      })
-
-      return newTeamMember;
-    } catch (error) {
-      console.error('Error assigning collaborator to team:', error);
-      if (error instanceof HttpException) throw error;
-      throw new HttpException(error.message || 'Could not assign collaborator', HttpStatus.INTERNAL_SERVER_ERROR);
+    if (!team) {
+      throw new HttpException('Team not found', HttpStatus.NOT_FOUND);
     }
-  });
-}
 
+    // 2. Ensure user really owns this team
+    if (team.creatorId !== user_id) {
+      throw new HttpException(
+        'Not authorized to view members of this team',
+        HttpStatus.FORBIDDEN,
+      );
+    }
 
-async getTeamMembers(user_id: string): Promise<TeamMember[]> {
-  // 1. Get team by creatorId
-  const team = await this.teamRepository.findOne({
-    where: { creatorId: user_id },
-  });
+    // 3. Get team members
+    const members = await this.teamMemberRepository.find({
+      where: { teamId: team.id },
+      relations: ['account', 'account.user'],
+    });
 
-  if (!team) {
-    throw new HttpException('Team not found', HttpStatus.NOT_FOUND);
+    return members;
   }
 
-  // 2. Ensure user really owns this team
-  if (team.creatorId !== user_id) {
-    throw new HttpException('Not authorized to view members of this team', HttpStatus.FORBIDDEN);
+  async getWhatsappText(from, message) {
+    return await this.whatsappBotService.sendText(from, message);
   }
 
-  // 3. Get team members
-  const members = await this.teamMemberRepository.find({
-    where: { teamId: team.id },
-    relations: ['account', 'account.user'],
-  });
+  async sendPropertiesNotification({ phone_number, name, property_name }) {
+    return await this.whatsappBotService.sendToPropertiesCreatedTemplate({
+      phone_number,
+      name,
+      property_name,
+    });
+  }
 
-  return members;
+  async sendUserAddedTemplate({phone_number, name, user, property_name}){
+    return await this.whatsappBotService.sendUserAddedTemplate({phone_number, name, user, property_name})
+  }
 }
-
-async getWhatsappText(from, message){
-  return await this.whatsappBotService.sendText(from, message)
-}
-
-async sendPropertiesNotification({phone_number, name, property_name}){
-  return await this.whatsappBotService.sendToPropertiesCreatedTemplate({phone_number, name, property_name})
-}
-
-
-}
-

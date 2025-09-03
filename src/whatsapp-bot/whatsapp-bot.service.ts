@@ -110,24 +110,24 @@ export class WhatsappBotService {
       relations: ['accounts'],
     });
 
-    console.log({user})
+    console.log({ user });
 
-    const role = user?.role
+    const role = user?.role;
 
     switch (role) {
       case RolesEnum.FACILITY_MANAGER:
         console.log('Facility Manager Message');
-         if (message.type === 'interactive') {
+        if (message.type === 'interactive') {
           this.handleFacilityInteractive(message, from);
         }
 
         if (message.type === 'text') {
-          console.log('in facility')
+          console.log('in facility');
           this.handleFacilityText(message, from);
         }
-      
+
         break;
-    
+
       default:
         if (message.type === 'interactive') {
           this.handleInteractive(message, from);
@@ -140,7 +140,7 @@ export class WhatsappBotService {
     }
   }
 
-    async handleFacilityText(message: any, from: string) {
+  async handleFacilityText(message: any, from: string) {
     const text = message.text?.body;
 
     if (text?.toLowerCase() === 'start flow') {
@@ -149,10 +149,10 @@ export class WhatsappBotService {
 
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(from, 'Menu Options', [
-            { id: 'service_request', title: 'Resolve request' },
-            { id: 'view_account_info', title: 'View Account Info' },
-            { id: 'visit_site', title: 'Visit our website' },
-          ])
+        { id: 'service_request', title: 'Resolve request' },
+        { id: 'view_account_info', title: 'View Account Info' },
+        { id: 'visit_site', title: 'Visit our website' },
+      ]);
       return;
     }
 
@@ -167,9 +167,8 @@ export class WhatsappBotService {
     this.cachedFacilityResponse(from, text);
   }
 
-
   async cachedFacilityResponse(from, text) {
-     const facilityState = await this.cache.get(
+    const facilityState = await this.cache.get(
       `service_request_state_facility_${from}`,
     );
 
@@ -233,7 +232,7 @@ export class WhatsappBotService {
         );
         return;
       }
-    }else if( facilityState === 'awaiting_update'){
+    } else if (facilityState === 'awaiting_update') {
       const [requestId, ...feedbackParts] = text.split(':');
       const feedback = feedbackParts.join(':').trim();
       if (!requestId || !feedback) {
@@ -241,7 +240,7 @@ export class WhatsappBotService {
           from,
           'Invalid format. Please provide the request ID and feedback-update separated by a colon. e.g "#SR12345: Your request is being processed"',
         );
-          await this.sendText(
+        await this.sendText(
           from,
           'Type the right format to see other options or "done" to finish.',
         );
@@ -266,7 +265,7 @@ export class WhatsappBotService {
       await this.serviceRequestRepo.save(serviceRequest);
       await this.sendText(
         from,
-        `You have updated service request ID: ${requestId.trim()}`, 
+        `You have updated service request ID: ${requestId.trim()}`,
       );
       await this.sendText(
         UtilService.normalizePhoneNumber(
@@ -275,7 +274,7 @@ export class WhatsappBotService {
         `Update on your service request with ID: ${requestId.trim()} - ${feedback}`,
       );
       await this.cache.delete(`service_request_state_facility_${from}`);
-    }else if(facilityState === 'awaiting_resolution'){
+    } else if (facilityState === 'awaiting_resolution') {
       const requestId = text.trim();
       if (!requestId) {
         await this.sendText(
@@ -304,7 +303,7 @@ export class WhatsappBotService {
       await this.serviceRequestRepo.save(serviceRequest);
       await this.sendText(
         from,
-        `You have resolved service request ID: ${requestId}`, 
+        `You have resolved service request ID: ${requestId}`,
       );
       await this.sendText(
         UtilService.normalizePhoneNumber(
@@ -314,9 +313,7 @@ export class WhatsappBotService {
       );
       await this.cache.delete(`service_request_state_facility_${from}`);
       return;
-    }
-    else{
-  
+    } else {
       const user = await this.usersRepo.findOne({
         where: {
           phone_number: `${from}`,
@@ -341,34 +338,34 @@ export class WhatsappBotService {
     }
   }
 
-   async handleFacilityInteractive(message: any, from: string) {
+  async handleFacilityInteractive(message: any, from: string) {
     const buttonReply = message.interactive?.button_reply;
     if (!buttonReply) return;
 
     switch (buttonReply.id) {
       case 'service_request':
         let teamMemberInfo = await this.teamMemberRepo.findOne({
-          where:{
-            account: { user: { phone_number: `${from}` } }
+          where: {
+            account: { user: { phone_number: `${from}` } },
           },
-          relations:['team']
-        })
+          relations: ['team'],
+        });
 
-        if(!teamMemberInfo){
+        if (!teamMemberInfo) {
           await this.sendText(from, 'No team info available.');
           return;
         }
 
         const serviceRequests = await this.serviceRequestRepo.find({
           where: {
-            property:{
-              owner_id: teamMemberInfo.team.creatorId
+            property: {
+              owner_id: teamMemberInfo.team.creatorId,
             },
-            status: Not(ServiceRequestStatusEnum.RESOLVED)
-          }
-        })
-        
-          let response = 'Here are the service requests:\n';
+            status: Not(ServiceRequestStatusEnum.RESOLVED),
+          },
+        });
+
+        let response = 'Here are the service requests:\n';
         serviceRequests.forEach((req: any, i) => {
           response += `- Request Id ${req.request_id} - \n Description: ${req.description}\n - Status: ${req.status}\n\n`;
         });
@@ -398,28 +395,31 @@ export class WhatsappBotService {
         );
         break;
       case 'view_account_info':
-       let teamMemberAccountInfo = await this.teamMemberRepo.findOne({
-          where:{
-            account: { user: { phone_number: `${from}` } }
+        let teamMemberAccountInfo = await this.teamMemberRepo.findOne({
+          where: {
+            account: { user: { phone_number: `${from}` } },
           },
-          relations:['account', 'account.user']
-        })
+          relations: ['account', 'account.user'],
+        });
 
-        if(!teamMemberAccountInfo){
+        if (!teamMemberAccountInfo) {
           await this.sendText(from, 'No account info available.');
           return;
         }
 
-        await this.sendText(from, `Account Info for ${UtilService.toSentenceCase(teamMemberAccountInfo.account.profile_name)}:\n\n` +
-          `- Email: ${teamMemberAccountInfo.account.email}\n` +
-          `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-          `- Role: ${UtilService.toSentenceCase(teamMemberAccountInfo.account.role)}`);
+        await this.sendText(
+          from,
+          `Account Info for ${UtilService.toSentenceCase(teamMemberAccountInfo.account.profile_name)}:\n\n` +
+            `- Email: ${teamMemberAccountInfo.account.email}\n` +
+            `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
+            `- Role: ${UtilService.toSentenceCase(teamMemberAccountInfo.account.role)}`,
+        );
 
-          await this.sendText(
+        await this.sendText(
           from,
           'Type "menu" to see other options or "done" to finish.',
         );
-        break; 
+        break;
       case 'visit_site':
         await this.sendText(
           from,
@@ -431,7 +431,6 @@ export class WhatsappBotService {
         await this.sendText(from, '❓ Unknown option selected.');
     }
   }
-
 
   // users
   async handleText(message: any, from: string) {
@@ -466,7 +465,7 @@ export class WhatsappBotService {
 
   async cachedResponse(from, text) {
     const userState = await this.cache.get(`service_request_state_${from}`);
-   
+
     if (userState === 'awaiting_description') {
       const user = await this.usersRepo.findOne({
         where: {
@@ -499,12 +498,11 @@ export class WhatsappBotService {
             property_name,
             property_location,
             request_id,
-            property_id
+            property_id,
           } = new_service_request as any;
           await this.sendText(from, '✅ Your service request has been logged.');
           await this.cache.delete(`service_request_state_${from}`);
 
-        
           for (const manager of facility_managers) {
             await this.sendFacilityServiceRequest({
               phone_number: manager.phone_number,
@@ -538,23 +536,25 @@ export class WhatsappBotService {
 
             // Add delay (e.g., 2 seconds)
             await new Promise((resolve) => setTimeout(resolve, 2000));
-          } 
+          }
 
-           const property_tenant = await this.propertyTenantRepo.findOne({
-            where:{
-              property_id
+          const property_tenant = await this.propertyTenantRepo.findOne({
+            where: {
+              property_id,
             },
-            relations: ['property']
-           })
+            relations: ['property', 'property.owner', 'property.owner.user'],
+          });
 
-           if(property_tenant){
-               const admin_phone_number = UtilService.normalizePhoneNumber(
-                property_tenant?.property.owner.user.phone_number,
-              );
+          if (property_tenant) {
+            const admin_phone_number = UtilService.normalizePhoneNumber(
+              property_tenant?.property.owner.user.phone_number,
+            );
 
-               await this.sendFacilityServiceRequest({
-              phone_number: admin_phone_number ,
-              manager_name: UtilService.toSentenceCase(property_tenant.property.owner.user.first_name),
+            await this.sendFacilityServiceRequest({
+              phone_number: admin_phone_number,
+              manager_name: UtilService.toSentenceCase(
+                property_tenant.property.owner.user.first_name,
+              ),
               property_name: property_name,
               property_location: property_location,
               service_request: text,
@@ -570,8 +570,7 @@ export class WhatsappBotService {
                 hour12: true,
               }),
             });
-           }
-             
+          }
         }
       } catch (error) {
         await this.sendText(
@@ -764,7 +763,6 @@ export class WhatsappBotService {
         );
         await this.sendText(from, 'Please describe the issue you are facing.');
         break;
-   
 
       default:
         await this.sendText(from, '❓ Unknown option selected.');
@@ -886,7 +884,7 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-   async sendToPropertiesCreatedTemplate({ phone_number, name, property_name }) {
+  async sendToPropertiesCreatedTemplate({ phone_number, name, property_name }) {
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -909,7 +907,7 @@ export class WhatsappBotService {
                 type: 'text',
                 parameter_name: 'property_name',
                 text: property_name,
-              }
+              },
             ],
           },
         ],
@@ -919,7 +917,7 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-    async sendUserAddedTemplate({ phone_number, name, user, property_name }) {
+  async sendUserAddedTemplate({ phone_number, name, user, property_name }) {
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -947,7 +945,7 @@ export class WhatsappBotService {
                 type: 'text',
                 parameter_name: 'property_name',
                 text: property_name,
-              }
+              },
             ],
           },
         ],

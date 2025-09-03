@@ -5,6 +5,7 @@ import { NotificationType } from '../enums/notification-type';
 import { PropertyCreatedEvent } from '../events/property-created.event';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { PropertiesService } from 'src/properties/properties.service';
+import { UtilService } from 'src/utils/utility-service';
 
 
 @Injectable()
@@ -27,7 +28,7 @@ export class PropertyListener {
     });
 
     const property = await this.propertyService.getPropertyById(event.property_id)
-    const admin_phone_number = property.owner.user.phone_number
+    const admin_phone_number = UtilService.normalizePhoneNumber(property.owner.user.phone_number)
 
     await this.whatsappService.sendText(admin_phone_number, `New property ${event.property_name} was created.`)
   }

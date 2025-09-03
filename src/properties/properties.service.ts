@@ -34,6 +34,8 @@ import {
   RentPaymentStatusEnum,
   RentStatusEnum,
 } from 'src/rents/dto/create-rent.dto';
+import { UtilService } from 'src/utils/utility-service';
+import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 
 @Injectable()
 export class PropertiesService {
@@ -57,6 +59,11 @@ export class PropertiesService {
       property_name: createdProperty.name, // assuming you have a name field
       user_id: createdProperty.owner_id, // optional if applicable
     });
+
+        const property = await this.getPropertyById(createdProperty.id)
+    const admin_phone_number = UtilService.normalizePhoneNumber(property.owner.user.phone_number)
+
+    await this.userService.getWhatsappText(admin_phone_number, `New property ${createdProperty.name} was created.`)
 
     return createdProperty;
   }

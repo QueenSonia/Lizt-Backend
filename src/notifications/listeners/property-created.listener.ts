@@ -11,9 +11,7 @@ import { UtilService } from 'src/utils/utility-service';
 @Injectable()
 export class PropertyListener {
   constructor(
-    private readonly notificationService: NotificationService,
-    private readonly whatsappService: WhatsappBotService,
-    private readonly propertyService: PropertiesService,
+    private readonly notificationService: NotificationService
   ) {}
 
   @OnEvent('property.created')
@@ -27,9 +25,5 @@ export class PropertyListener {
       user_id: event.user_id
     });
 
-    const property = await this.propertyService.getPropertyById(event.property_id)
-    const admin_phone_number = UtilService.normalizePhoneNumber(property.owner.user.phone_number)
-
-    await this.whatsappService.sendText(admin_phone_number, `New property ${event.property_name} was created.`)
   }
 }

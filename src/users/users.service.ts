@@ -1665,6 +1665,10 @@ async getTeamMembers(user_id: string): Promise<TeamMember[]> {
   return members;
 }
 
+async getWhatsappText(from, message){
+  return await this.whatsappBotService.sendText(from, message)
+}
+
 
 }
 

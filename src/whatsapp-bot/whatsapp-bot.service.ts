@@ -208,7 +208,7 @@ export class WhatsappBotService {
      2. Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you.\n 
      3. Maintenance Management – tenants can log service requests with you for quick action. \n Please choose one of the options below:`, [
             { id: 'rent_reminder', title: 'Rent Reminders' },
-            { id: 'reminder_collection', title: 'Reminders & Collections' },
+            { id: 'reminder_collection', title: 'Reminders/Collection' },
             { id: 'all', title: 'All' },
           ])
        

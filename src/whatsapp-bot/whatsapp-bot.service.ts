@@ -116,16 +116,6 @@ export class WhatsappBotService {
 
     console.log({ user });
 
-    if(!user || user==null){
-        if (message.type === 'interactive') {
-          this.handleInteractive(message, from);
-        }
-
-        if (message.type === 'text') {
-          this.handleText(message, from);
-        }
-    }
-
     const role = user?.role;
 
     switch (role) {
@@ -141,14 +131,22 @@ export class WhatsappBotService {
         }
 
         break;
-      default:
-        console.log("in default")
+      case RolesEnum.TENANT:
         if (message.type === 'interactive') {
           this.handleInteractive(message, from);
         }
 
         if (message.type === 'text') {
           this.handleText(message, from);
+        }
+        break;
+      default:
+        if (message.type === 'interactive') {
+          this.handleDefaultInteractive(message, from);
+        }
+
+        if (message.type === 'text') {
+          this.handleDefaultText(message, from);
         }
     }
   }

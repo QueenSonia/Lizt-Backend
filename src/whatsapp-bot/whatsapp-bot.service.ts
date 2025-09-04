@@ -116,7 +116,7 @@ export class WhatsappBotService {
 
     console.log({ user });
 
-    if(!user){
+    if(!user || user==null){
         if (message.type === 'interactive') {
           this.handleInteractive(message, from);
         }
@@ -142,6 +142,7 @@ export class WhatsappBotService {
 
         break;
       default:
+        console.log("in default")
         if (message.type === 'interactive') {
           this.handleInteractive(message, from);
         }

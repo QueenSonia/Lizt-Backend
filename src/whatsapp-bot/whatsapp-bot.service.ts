@@ -18,6 +18,7 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { PropertiesService } from 'src/properties/properties.service';
+import { Waitlist } from 'src/users/entities/waitlist.entity';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -42,6 +43,9 @@ export class WhatsappBotService {
 
     @InjectRepository(TeamMember)
     private readonly teamMemberRepo: Repository<TeamMember>,
+
+    @InjectRepository(Waitlist)
+    private readonly waitlistRepo: Repository<Waitlist>,
 
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly cache: CacheService,
@@ -127,8 +131,7 @@ export class WhatsappBotService {
         }
 
         break;
-
-      default:
+      case RolesEnum.TENANT:
         if (message.type === 'interactive') {
           this.handleInteractive(message, from);
         }
@@ -137,6 +140,83 @@ export class WhatsappBotService {
           this.handleText(message, from);
         }
         break;
+      default:
+        if (message.type === 'interactive') {
+          this.handleInteractive(message, from);
+        }
+
+        if (message.type === 'text') {
+          this.handleText(message, from);
+        }
+
+        break;
+    }
+  }
+
+  async handleDefaultText(message: any, from: string) {
+     const text = message.text?.body;
+   this.handleDefaultCachedResponse(from,text)
+  }
+
+  async handleDefaultCachedResponse(from, text){
+    const default_state = await this.cache.get(`service_request_state_default_${from}`);
+
+    if(default_state.includes('property_owner_options')){
+      let option = default_state.split('property_owner_options')[1].slice(1)
+
+     let waitlist = this.waitlistRepo.create({
+        full_name:text,
+        phone_number: UtilService.normalizePhoneNumber(from),
+        option
+      })
+
+      await this.waitlistRepo.save(waitlist)
+
+      await this.sendText(from, `Thanks, ${text}! Someone from our team will reach out shortly to help you complete setup.`)
+      await this.sendText(from, 'Know another landlord who could benefit from Lizt? Share their name & number, and we’ll reach out directly (mentioning you).')
+
+      await this.cache.delete(`service_request_state_default_${from}`);
+      return;
+
+    }else{
+       await this.sendButtons(
+      from,
+      `Hello! Welcome to Lizt by Property Kraft – we make property management seamless for owners, managers, and renters.\n Which best describes you?`,
+      [
+        { id: 'property_owner', title: 'Property Owner' },
+        { id: 'property_manager', title: 'Property Manager' },
+        { id: 'house_hunter', title: 'House Hunter' },
+      ],
+    );
+    }
+  }
+
+  async handleDefaultInteractive(message: any, from: string) {
+    const buttonReply = message.interactive?.button_reply;
+    if (!buttonReply) return;
+
+    switch (buttonReply.id) {
+      case 'property_owner':
+        await this.sendText(
+          from,
+          `Great! As a Property Owner, you can use Lizt to:\n 1.	Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries. \n 2.	Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you. \n 3.	Maintenance Management – tenants can log service requests with you for quick action.`,
+        );
+
+        await this.sendButtons(from, 'Please choose one option below:', 
+          [
+            { id: 'rent_reminder', title: 'Rent Reminders' },
+            { id: 'reminder_collection', title: 'Reminders & Collections' },
+            { id: 'all', title: 'All' }
+      ])
+        break;
+      case 'rent_reminder':
+      default:
+        await this.sendText(from, `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`);
+         await this.cache.set(
+            `service_request_state_default_${from}`,
+            `property_owner_options_${buttonReply.id}`,
+            300,
+          );
     }
   }
 
@@ -629,7 +709,7 @@ export class WhatsappBotService {
       } else {
         await this.sendButtons(
           from,
-          `Hello ${UtilService.toSentenceCase(user.first_name)} Welcome to Property Kraft! What would you like to do today?`,
+          `Hello ${UtilService.toSentenceCase(user.first_name)} Welcome to Lizt by Property Kraft! What would you like to do today?`,
           [
             { id: 'service_request', title: 'Make service request' },
             { id: 'view_tenancy', title: 'View tenancy details' },

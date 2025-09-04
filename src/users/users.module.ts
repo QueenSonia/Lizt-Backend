@@ -15,6 +15,7 @@ import { RentsModule } from 'src/rents/rents.module';
 import { Team } from './entities/team.entity';
 import { TeamMember } from './entities/team-member.entity';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
+import { Waitlist } from './entities/waitlist.entity';
 
 @Global()
 @Module({
@@ -27,7 +28,8 @@ import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
       KYC,
       Rent,
       Team,
-      TeamMember
+      TeamMember,
+      Waitlist
     ]),
     AuthModule,
     WhatsappBotModule

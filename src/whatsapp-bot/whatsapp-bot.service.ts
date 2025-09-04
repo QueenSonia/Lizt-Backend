@@ -202,21 +202,16 @@ export class WhatsappBotService {
 
     switch (buttonReply.id) {
       case 'property_owner':
-        await Promise.all([
-          this.sendText(
-            from,
-            `Great! As a Property Owner, you can use Lizt to:\n 
+      
+         await this.sendButtons(from, `Great! As a Property Owner, you can use Lizt to:\n 
      1. Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries.\n 
      2. Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you.\n 
-     3. Maintenance Management – tenants can log service requests with you for quick action.`,
-          ),
-          this.sendButtons(from, 'Please choose one option below:', [
+     3. Maintenance Management – tenants can log service requests with you for quick action. \n Please choose one of the options below:`, [
             { id: 'rent_reminder', title: 'Rent Reminders' },
             { id: 'reminder_collection', title: 'Reminders & Collections' },
             { id: 'all', title: 'All' },
-          ]),
-        ]);
-
+          ])
+       
         break;
       case 'rent_reminder':
       default:

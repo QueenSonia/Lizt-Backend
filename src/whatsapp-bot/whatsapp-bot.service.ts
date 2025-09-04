@@ -159,7 +159,7 @@ export class WhatsappBotService {
   async handleDefaultCachedResponse(from, text){
     const default_state = await this.cache.get(`service_request_state_default_${from}`);
 
-    if(default_state.includes('property_owner_options')){
+    if(default_state && default_state.includes('property_owner_options')){
       let option = default_state.split('property_owner_options')[1].slice(1)
 
      let waitlist = this.waitlistRepo.create({

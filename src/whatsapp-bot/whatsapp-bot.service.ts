@@ -152,40 +152,47 @@ export class WhatsappBotService {
   }
 
   async handleDefaultText(message: any, from: string) {
-     const text = message.text?.body;
-   this.handleDefaultCachedResponse(from,text)
+    const text = message.text?.body;
+    this.handleDefaultCachedResponse(from, text);
   }
 
-  async handleDefaultCachedResponse(from, text){
-    const default_state = await this.cache.get(`service_request_state_default_${from}`);
+  async handleDefaultCachedResponse(from, text) {
+    const default_state = await this.cache.get(
+      `service_request_state_default_${from}`,
+    );
 
-    if(default_state && default_state.includes('property_owner_options')){
-      let option = default_state.split('property_owner_options')[1].slice(1)
+    if (default_state && default_state.includes('property_owner_options')) {
+      let option = default_state.split('property_owner_options')[1].slice(1);
 
-     let waitlist = this.waitlistRepo.create({
-        full_name:text,
+      let waitlist = this.waitlistRepo.create({
+        full_name: text,
         phone_number: UtilService.normalizePhoneNumber(from),
-        option
-      })
+        option,
+      });
 
-      await this.waitlistRepo.save(waitlist)
+      await this.waitlistRepo.save(waitlist);
 
-      await this.sendText(from, `Thanks, ${text}! Someone from our team will reach out shortly to help you complete setup.`)
-      await this.sendText(from, 'Know another landlord who could benefit from Lizt? Share their name & number, and we’ll reach out directly (mentioning you).')
+      await this.sendText(
+        from,
+        `Thanks, ${text}! Someone from our team will reach out shortly to help you complete setup.`,
+      );
+      await this.sendText(
+        from,
+        'Know another landlord who could benefit from Lizt? Share their name & number, and we’ll reach out directly (mentioning you).',
+      );
 
       await this.cache.delete(`service_request_state_default_${from}`);
       return;
-
-    }else{
-       await this.sendButtons(
-      from,
-      `Hello! Welcome to Lizt by Property Kraft – we make property management seamless for owners, managers, and renters.\n Which best describes you?`,
-      [
-        { id: 'property_owner', title: 'Property Owner' },
-        { id: 'property_manager', title: 'Property Manager' },
-        { id: 'house_hunter', title: 'House Hunter' },
-      ],
-    );
+    } else {
+      await this.sendButtons(
+        from,
+        `Hello! Welcome to Lizt by Property Kraft – we make property management seamless for owners, managers, and renters.\n Which best describes you?`,
+        [
+          { id: 'property_owner', title: 'Property Owner' },
+          { id: 'property_manager', title: 'Property Manager' },
+          { id: 'house_hunter', title: 'House Hunter' },
+        ],
+      );
     }
   }
 
@@ -195,26 +202,33 @@ export class WhatsappBotService {
 
     switch (buttonReply.id) {
       case 'property_owner':
-        await this.sendText(
-          from,
-          `Great! As a Property Owner, you can use Lizt to:\n 1.	Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries. \n 2.	Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you. \n 3.	Maintenance Management – tenants can log service requests with you for quick action.`,
-        );
-
-        await this.sendButtons(from, 'Please choose one option below:', 
-          [
+        await Promise.all([
+          this.sendText(
+            from,
+            `Great! As a Property Owner, you can use Lizt to:\n 
+     1. Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries.\n 
+     2. Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you.\n 
+     3. Maintenance Management – tenants can log service requests with you for quick action.`,
+          ),
+          this.sendButtons(from, 'Please choose one option below:', [
             { id: 'rent_reminder', title: 'Rent Reminders' },
             { id: 'reminder_collection', title: 'Reminders & Collections' },
-            { id: 'all', title: 'All' }
-      ])
+            { id: 'all', title: 'All' },
+          ]),
+        ]);
+
         break;
       case 'rent_reminder':
       default:
-        await this.sendText(from, `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`);
-         await this.cache.set(
-            `service_request_state_default_${from}`,
-            `property_owner_options_${buttonReply.id}`,
-            300,
-          );
+        await this.sendText(
+          from,
+          `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`,
+        );
+        await this.cache.set(
+          `service_request_state_default_${from}`,
+          `property_owner_options_${buttonReply.id}`,
+          300,
+        );
     }
   }
 

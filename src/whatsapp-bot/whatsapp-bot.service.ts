@@ -181,6 +181,8 @@ export class WhatsappBotService {
         'Know another landlord who could benefit from Lizt? Share their name & number, and we’ll reach out directly (mentioning you).',
       );
 
+      await this.sendText('2349138834648', `${text} just joined your waitlist and is in interested in ${option}`)
+
       await this.cache.delete(`service_request_state_default_${from}`);
       return;
     } else {

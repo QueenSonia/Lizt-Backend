@@ -237,6 +237,20 @@ export class WhatsappBotService {
       this.sendFlow(from); // Call the send flow logic
     }
 
+    if (text?.toLowerCase() === 'acknowledge request'){
+        await this.cache.set(
+          `service_request_state_facility_${from}`,
+          'acknowledged',
+          300,
+        );
+        await this.sendText(
+          from,
+          'Please provide the request ID to acknowledge',
+        );
+    }
+
+
+
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(from, 'Menu Options', [
         { id: 'service_request', title: 'Resolve request' },
@@ -473,17 +487,7 @@ export class WhatsappBotService {
           'Please type "update" to give update on the tenant request or "resolve" to resolve a request.',
         );
         break;
-      case 'acknowledge_request':
-        await this.cache.set(
-          `service_request_state_facility_${from}`,
-          'acknowledged',
-          300,
-        );
-        await this.sendText(
-          from,
-          'Please provide the request ID to acknowledge',
-        );
-        break;
+      
       case 'view_account_info':
         let teamMemberAccountInfo = await this.teamMemberRepo.findOne({
           where: {

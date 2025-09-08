@@ -661,6 +661,7 @@ export class WhatsappBotService {
             });
           }
         }
+        await this.cache.delete(`service_request_state_${from}`);
       } catch (error) {
         await this.sendText(
           from,

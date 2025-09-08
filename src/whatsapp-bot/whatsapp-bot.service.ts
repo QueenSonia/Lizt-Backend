@@ -132,6 +132,7 @@ export class WhatsappBotService {
 
         break;
       case RolesEnum.TENANT:
+                console.log('In tenant');
         if (message.type === 'interactive') {
           this.handleInteractive(message, from);
         }

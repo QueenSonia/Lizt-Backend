@@ -738,6 +738,7 @@ export class WhatsappBotService {
   async handleInteractive(message: any, from: string) {
     const buttonReply = message.interactive?.button_reply;
     if (!buttonReply) return;
+    console.log(buttonReply.id, "bID")
 
     switch (buttonReply.id) {
       case 'visit_site':

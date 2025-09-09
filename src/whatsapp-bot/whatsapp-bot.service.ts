@@ -242,6 +242,9 @@ export class WhatsappBotService {
         from,
         'Thank you for sharing a referral with us, your session has ended',
       );
+
+        await this.cache.delete(`service_request_state_default_${from}`);
+        return;
     } else {
       await this.sendButtons(
         from,
@@ -291,6 +294,8 @@ export class WhatsappBotService {
 
   async handleFacilityText(message: any, from: string) {
     const text = message.text?.body;
+
+    console.log(text, "facility")
 
     if (text?.toLowerCase() === 'start flow') {
       this.sendFlow(from); // Call the send flow logic
@@ -588,6 +593,8 @@ export class WhatsappBotService {
       this.sendFlow(from); // Call the send flow logic
     }
 
+    console.log(text, "tenant")
+
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(from, 'Menu Options', [
         { id: 'service_request', title: 'Make service request' },
@@ -671,16 +678,16 @@ export class WhatsappBotService {
               }),
             });
 
-            await this.sendButtons(
-              manager.phone_number,
-              `Confirm request for request_id: ${request_id}`,
-              [
-                {
-                  id: 'acknowledge_request',
-                  title: 'Acknowledge',
-                },
-              ],
-            );
+            // await this.sendButtons(
+            //   manager.phone_number,
+            //   `Confirm request for request_id: ${request_id}`,
+            //   [
+            //     {
+            //       id: 'acknowledge_request',
+            //       title: 'Acknowledge',
+            //     },
+            //   ],
+            // );
 
             // Add delay (e.g., 2 seconds)
             await new Promise((resolve) => setTimeout(resolve, 2000));

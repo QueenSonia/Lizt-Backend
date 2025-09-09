@@ -132,7 +132,7 @@ export class WhatsappBotService {
 
         break;
       case RolesEnum.TENANT:
-                console.log('In tenant');
+        console.log('In tenant');
         if (message.type === 'interactive') {
           this.handleInteractive(message, from);
         }
@@ -154,6 +154,13 @@ export class WhatsappBotService {
 
   async handleDefaultText(message: any, from: string) {
     const text = message.text?.body;
+
+    if (text.toLowerCase() === 'done') {
+      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.sendText(from, 'Thank you!  Your session has ended.');
+      return;
+    }
     this.handleDefaultCachedResponse(from, text);
   }
 
@@ -177,15 +184,64 @@ export class WhatsappBotService {
         from,
         `Thanks, ${text}! Someone from our team will reach out shortly to help you complete setup.`,
       );
+
       await this.sendText(
-        from,
-        'Know another landlord who could benefit from Lizt? Share their name & number, and we’ll reach out directly (mentioning you).',
+        '2349138834648',
+        `${text} just joined your waitlist and is in interested in ${option}`,
       );
 
-      await this.sendText('2349138834648', `${text} just joined your waitlist and is in interested in ${option}`)
+      await this.sendText(
+        from,
+        'Know another landlord who could benefit from Lizt? Share their name & number in this format \n e.g John James:08123456789 \n, and we’ll reach out directly (mentioning you). \n If not, reply "done" to end session',
+      );
 
-      await this.cache.delete(`service_request_state_default_${from}`);
+      await this.cache.set(
+        `service_request_state_default_${from}`,
+        `share_referral`,
+        300,
+      );
+
       return;
+    } else if (default_state === 'share_referral') {
+      let [referral_name, referral_phone_number] = text.trim().split(':');
+
+      if (!referral_name || !referral_phone_number) {
+        await this.sendText(
+          from,
+          'Invalid format. Please use: Name:PhoneNumber',
+        );
+        return;
+      }
+
+      const waitlist = await this.waitlistRepo.findOne({
+        where: { phone_number: from },
+      });
+
+      if (!waitlist) {
+        await this.sendText(from, 'Information not found');
+        return;
+      }
+
+      const normalizedPhone = UtilService.normalizePhoneNumber(
+        referral_phone_number,
+      );
+      if (!normalizedPhone) {
+        await this.sendText(
+          from,
+          'Invalid phone number format, please try again.',
+        );
+        return;
+      }
+
+      waitlist.referral_name = referral_name.trim();
+      waitlist.referral_phone_number = normalizedPhone;
+
+      await this.waitlistRepo.save(waitlist);
+
+      await this.sendText(
+        from,
+        'Thank you for sharing a referral with us, your session has ended',
+      );
     } else {
       await this.sendButtons(
         from,
@@ -205,16 +261,19 @@ export class WhatsappBotService {
 
     switch (buttonReply.id) {
       case 'property_owner':
-      
-         await this.sendButtons(from, `Great! As a Property Owner, you can use Lizt to:\n 
+        await this.sendButtons(
+          from,
+          `Great! As a Property Owner, you can use Lizt to:\n 
      1. Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries.\n 
      2. Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you.\n 
-     3. Maintenance Management – tenants can log service requests with you for quick action. \n Please choose one of the options below:`, [
+     3. Maintenance Management – tenants can log service requests with you for quick action. \n Please choose one of the options below:`,
+          [
             { id: 'rent_reminder', title: 'Rent Reminders' },
             { id: 'reminder_collection', title: 'Reminders/Collection' },
             { id: 'all', title: 'All' },
-          ])
-       
+          ],
+        );
+
         break;
       case 'rent_reminder':
       default:
@@ -237,19 +296,14 @@ export class WhatsappBotService {
       this.sendFlow(from); // Call the send flow logic
     }
 
-    if (text?.toLowerCase() === 'acknowledge request'){
-        await this.cache.set(
-          `service_request_state_facility_${from}`,
-          'acknowledged',
-          300,
-        );
-        await this.sendText(
-          from,
-          'Please provide the request ID to acknowledge',
-        );
+    if (text?.toLowerCase() === 'acknowledge request') {
+      await this.cache.set(
+        `service_request_state_facility_${from}`,
+        'acknowledged',
+        300,
+      );
+      await this.sendText(from, 'Please provide the request ID to acknowledge');
     }
-
-
 
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(from, 'Menu Options', [
@@ -487,7 +541,7 @@ export class WhatsappBotService {
           'Please type "update" to give update on the tenant request or "resolve" to resolve a request.',
         );
         break;
-      
+
       case 'view_account_info':
         let teamMemberAccountInfo = await this.teamMemberRepo.findOne({
           where: {
@@ -742,7 +796,7 @@ export class WhatsappBotService {
   async handleInteractive(message: any, from: string) {
     const buttonReply = message.interactive?.button_reply;
     if (!buttonReply) return;
-    console.log(buttonReply.id, "bID")
+    console.log(buttonReply.id, 'bID');
 
     switch (buttonReply.id) {
       case 'visit_site':

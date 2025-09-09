@@ -12,9 +12,9 @@ export class Waitlist extends BaseEntity {
       @Column({ nullable: false, type: 'varchar' })
       option: string;
 
-      @Column({ nullable: false, type: 'varchar' })
+      @Column({ nullable: true, type: 'varchar' })
       referral_name: string;
 
-      @Column({ nullable: false, type: 'varchar' })
+      @Column({ nullable: true, type: 'varchar' })
       referral_phone_number: string;
 }

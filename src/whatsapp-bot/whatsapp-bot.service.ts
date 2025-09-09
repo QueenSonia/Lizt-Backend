@@ -157,7 +157,7 @@ export class WhatsappBotService {
 
     if (text.toLowerCase() === 'done') {
       await this.cache.delete(`service_request_state_${from}`);
-      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.cache.delete(`service_request_state_default_${from}`);
       await this.sendText(from, 'Thank you!  Your session has ended.');
       return;
     }

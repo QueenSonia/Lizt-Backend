@@ -152,5 +152,5 @@ export class CreateTenantKycDto {
   reference2_phone_number?: string;
 
   @IsUUID()
-  admin_id: string;
+  landlord_id: string;
 }

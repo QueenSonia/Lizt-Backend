@@ -17,7 +17,7 @@ import { TenantKycService } from './tenant-kyc.service';
 import { CreateTenantKycDto, UpdateTenantKycDto } from './dto';
 import { SkipAuth } from 'src/auth/auth.decorator';
 import { RoleGuard } from 'src/auth/role.guard';
-import { ADMIN_ROLES } from 'src/base.entity';
+import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 import { Roles } from 'src/auth/role.decorator';
 import { CurrentUser } from 'src/lib/utils';
 import {
@@ -55,7 +55,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   @Get()
   findAll(
     @Query() query: ParseTenantKycQueryDto,
@@ -76,6 +76,8 @@ export class TenantKycController {
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
+
+   
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser('id') admin_id: string) {
     return this.tenantKycService.findOne(admin_id, id);
@@ -92,7 +94,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   @Patch(':id')
   update(
     @Param('id') id: string,
@@ -113,7 +115,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   @Delete(':id')
   deleteOne(@Param('id') id: string, @CurrentUser('id') admin_id: string) {
     return this.tenantKycService.deleteOne(admin_id, id);
@@ -129,7 +131,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   @Delete('bulk')
   deleteMany(
     @Body() bulkDeleteTenantKycDto: BulkDeleteTenantKycDto,
@@ -148,7 +150,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   @Delete()
   deleteAll(@CurrentUser('id') admin_id: string) {
     return this.tenantKycService.deleteAll(admin_id);

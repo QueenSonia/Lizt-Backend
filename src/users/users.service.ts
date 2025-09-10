@@ -131,7 +131,7 @@ export class UsersService {
     const admin = await this.accountRepository.findOne({
       where: {
         id: user_id,
-        role: RolesEnum.ADMIN,
+        role: RolesEnum.LANDLORD,
       },
       relations: ['user'],
     }) as any;
@@ -781,9 +781,13 @@ export class UsersService {
 
     // Fetch both accounts with the same email but different roles
 
-    const [adminAccount, tenantAccount, repAccount] = await Promise.all([
+    const [adminAccount, landlordAccount, tenantAccount, repAccount] = await Promise.all([
       this.accountRepository.findOne({
         where: { email, role: RolesEnum.ADMIN },
+        relations: ['user'],
+      }),
+      this.accountRepository.findOne({
+        where: { email, role: RolesEnum.LANDLORD },
         relations: ['user'],
       }),
       this.accountRepository.findOne({
@@ -797,20 +801,21 @@ export class UsersService {
     ]);
 
     // Check if any account exists
-    if (!tenantAccount && !adminAccount && !repAccount) {
+    if (!adminAccount && !tenantAccount && !landlordAccount && !repAccount) {
       throw new NotFoundException(`User with email: ${email} not found`);
     }
 
     if (
-      !tenantAccount?.is_verified &&
       !adminAccount?.is_verified &&
+      !tenantAccount?.is_verified &&
+      !landlordAccount?.is_verified &&
       !repAccount?.is_verified
     ) {
       throw new NotFoundException(`Your account is not verified`);
     }
 
     // Validate password for each account
-    const accounts = [adminAccount, tenantAccount, repAccount].filter(
+    const accounts = [adminAccount, landlordAccount, tenantAccount, repAccount].filter(
       Boolean,
     ) as any;
 
@@ -840,7 +845,7 @@ export class UsersService {
     let sub_access_token: string | null = null;
     let parent_access_token: string | null = null;
 
-    if (account.role === RolesEnum.ADMIN) {
+    if (account.role === RolesEnum.LANDLORD) {
       let subAccount = (await this.accountRepository.findOne({
         where: {
           id: Not(account.id),
@@ -878,7 +883,7 @@ export class UsersService {
         where: {
           id: Not(account.id),
           email: account.email,
-          role: RolesEnum.ADMIN,
+          role: RolesEnum.LANDLORD,
         },
         relations: ['user', 'property_tenants'],
       })) as any;
@@ -1288,7 +1293,7 @@ export class UsersService {
     files: Express.Multer.File[],
   ): Promise<Users> {
     const user = await this.usersRepository.findOne({
-      where: { id: userId, role: RolesEnum.ADMIN },
+      where: { id: userId, role: RolesEnum.LANDLORD },
     });
 
     if (!user) {
@@ -1375,7 +1380,7 @@ export class UsersService {
 
   async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
     const existingAccount = await this.accountRepository.findOne({
-      where: { email: data.email, role: RolesEnum.ADMIN },
+      where: { email: data.email, role: RolesEnum.LANDLORD },
     });
 
     if (existingAccount) {
@@ -1397,7 +1402,7 @@ export class UsersService {
         phone_number: data.phone_number,
         first_name: data.first_name,
         last_name: data.last_name,
-        role: RolesEnum.ADMIN,
+        role: RolesEnum.LANDLORD,
         is_verified: true,
         email: data.email,
       });
@@ -1405,16 +1410,16 @@ export class UsersService {
       console.log('user', user);
     }
 
-    const adminAccount = this.accountRepository.create({
+    const landlordAccount = this.accountRepository.create({
       user,
       email: data.email,
       password: await UtilService.hashPassword(data.password),
-      role: RolesEnum.ADMIN,
+      role: RolesEnum.LANDLORD,
       profile_name: `${user.first_name}'s Admin Account`,
       is_verified: true,
     });
 
-    await this.accountRepository.save(adminAccount);
+    await this.accountRepository.save(landlordAccount);
 
     const { password, ...result } = user;
     return result;
@@ -1437,7 +1442,7 @@ export class UsersService {
 
     const user = this.usersRepository.create({
       ...data,
-      role: RolesEnum.ADMIN,
+      role: RolesEnum.LANDLORD,
       password: hashedPassword,
       is_verified: true,
     });
@@ -1445,7 +1450,7 @@ export class UsersService {
     const savedUser = await this.usersRepository.save(user);
 
     await this.accountRepository.save({
-      role: RolesEnum.ADMIN,
+      role: RolesEnum.LANDLORD,
       user: savedUser,
       profile_name: `${savedUser.first_name}'s Admin Account`,
     });
@@ -1593,7 +1598,7 @@ export class UsersService {
           const teamAdminAccount = await manager
             .getRepository(Account)
             .findOne({
-              where: { id: user_id, role: RolesEnum.ADMIN },
+              where: { id: user_id, role: RolesEnum.LANDLORD },
             });
 
           if (!teamAdminAccount) {

@@ -68,7 +68,7 @@ export class UsersController {
 
   @Post()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   async addTenant(@Body() body: CreateTenantDto, @Req() req: any) {
     try {
       const user_id = req?.user?.id;
@@ -83,8 +83,7 @@ export class UsersController {
 
   // @Post()
   // @UseGuards(RoleGuard)
-  // @Roles(ADMIN_ROLES.ADMIN)
-  // async createUser(@Body() body: CreateUserDto, @Req() req: any) {
+  // @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)// async createUser(@Body() body: CreateUserDto, @Req() req: any) {
   //   try {
   //     const user_id = req?.user?.id;
   //     return this.usersService.createUser(body, user_id);
@@ -109,7 +108,7 @@ export class UsersController {
   })
   @ApiBadRequestResponse()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)  
   @ApiBearerAuth()
   @Get('/tenants')
   getAllTenants(@Query() query: UserFilter) {
@@ -147,9 +146,10 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Get('tenant-list')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+ @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
     try {
+      console.log()
       let creator_id = req?.user?.id;
 
       return this.usersService.getTenantsOfAnAdmin(creator_id, query);
@@ -160,7 +160,7 @@ export class UsersController {
 
   @Get('tenant-list/:tenant_id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   getSingleTenantOfAnAdmin(@Req() req: any) {
     try {
       let tenant_id = req?.params.tenant_id
@@ -254,6 +254,7 @@ export class UsersController {
   @Get()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
+
   getAllUsers(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllUsers(query);
@@ -320,7 +321,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Delete(':id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   deleteUserById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.usersService.deleteUserById(id);
@@ -381,7 +382,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Post('upload-logos')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   @UseInterceptors(FilesInterceptor('logos', 10))
   async uploadLogos(
     @UploadedFiles() files: Array<Express.Multer.File>,

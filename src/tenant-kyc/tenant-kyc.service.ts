@@ -29,14 +29,14 @@ export class TenantKycService {
   ) {}
 
   async create(dto: CreateTenantKycDto) {
-    const admin = await this.accountRepo.findOneBy({
-      id: dto.admin_id,
-      role: RolesEnum.ADMIN,
+    const landlord= await this.accountRepo.findOneBy({
+      id: dto.landlord_id,
+      role: RolesEnum.LANDLORD,
     });
 
-    if (!admin)
+    if (!landlord)
       throw new BadRequestException(
-        `Invalid or non-existent ref with id: ${dto.admin_id}`,
+        `Invalid or non-existent ref with id: ${dto.landlord_id}`,
       );
 
     const identity_hash = this.generateIdentityHash(dto);

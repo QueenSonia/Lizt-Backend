@@ -1378,7 +1378,7 @@ export class UsersService {
     return this.kycRepository.save(updatedKyc);
   }
 
-  async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
+  async createLandlord(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
     const existingAccount = await this.accountRepository.findOne({
       where: { email: data.email, role: RolesEnum.LANDLORD },
     });
@@ -1420,6 +1420,53 @@ export class UsersService {
     });
 
     await this.accountRepository.save(landlordAccount);
+
+    const { password, ...result } = user;
+    return result;
+  }
+
+    async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
+    const existingAccount = await this.accountRepository.findOne({
+      where: { email: data.email, role: RolesEnum.ADMIN },
+    });
+
+    if (existingAccount) {
+      throw new BadRequestException(
+        'Admin Account with this email already exists',
+      );
+    }
+
+    if (!data.password) {
+      throw new BadRequestException('Password is required');
+    }
+
+    let user = await this.usersRepository.findOne({
+      where: { phone_number: data.phone_number },
+    });
+    console.log({ user });
+    if (!user) {
+      user = await this.usersRepository.save({
+        phone_number: data.phone_number,
+        first_name: data.first_name,
+        last_name: data.last_name,
+        role: RolesEnum.ADMIN,
+        is_verified: true,
+        email: data.email,
+      });
+
+      console.log('user', user);
+    }
+
+    const adminAccount = this.accountRepository.create({
+      user,
+      email: data.email,
+      password: await UtilService.hashPassword(data.password),
+      role: RolesEnum.ADMIN,
+      profile_name: `${user.first_name}'s Admin Account`,
+      is_verified: true,
+    });
+
+    await this.accountRepository.save(adminAccount);
 
     const { password, ...result } = user;
     return result;

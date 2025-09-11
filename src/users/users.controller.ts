@@ -420,6 +420,12 @@ export class UsersController {
   }
 
   @SkipAuth()
+  @Post('landlord')
+  async createLandlord(@Body() createUserDto: CreateAdminDto) {
+    return this.usersService.createLandlord(createUserDto);
+  }
+
+  @SkipAuth()
   @Post('rep')
   async createCustomerRep(@Body() createUserDto: CreateCustomerRepDto) {
     return this.usersService.createCustomerRep(createUserDto);

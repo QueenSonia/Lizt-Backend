@@ -141,6 +141,16 @@ export class WhatsappBotService {
           this.handleText(message, from);
         }
         break;
+      case RolesEnum.LANDLORD:
+        console.log('In Landlord');
+        if (message.type === 'interactive') {
+          this.handleLandlordInteractive(message, from);
+        }
+
+        if (message.type === 'text') {
+          this.handleLandlordText(message, from);
+        }
+        break;
       default:
         if (message.type === 'interactive') {
           this.handleDefaultInteractive(message, from);
@@ -151,6 +161,222 @@ export class WhatsappBotService {
         }
     }
   }
+
+    async handleLandlordText(message: any, from: string) {
+    const text = message.text?.body;
+
+    if (text.toLowerCase() === 'done') {
+      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`service_request_state_landlord_${from}`);
+      await this.sendText(from, 'Thank you!  Your session has ended.');
+      return;
+    }
+
+     if (text?.toLowerCase() === 'menu') {
+      await this.sendButtons(
+        from,
+        `Main Menu`,
+        [
+          { id: 'view_tenancies', title: 'View tenancies' },
+          { id: 'view_maintenance', title: 'maintenance requests' },
+          { id: 'new_tenant', title: 'Add new tenant' },
+        ],
+      );
+      return;
+    }
+    this.handleDefaultCachedResponse(from, text);
+  }
+
+   async handleLandlordCachedResponse(from, text) {
+    const landlord_state = await this.cache.get(
+      `service_request_state_landlord_${from}`,
+    );
+
+    if (landlord_state && landlord_state.includes('property_owner_options')) {
+      let option = landlord_state.split('property_owner_options')[1].slice(1);
+
+      let waitlist = this.waitlistRepo.create({
+        full_name: text,
+        phone_number: UtilService.normalizePhoneNumber(from),
+        option,
+      });
+
+      await this.waitlistRepo.save(waitlist);
+
+      await this.sendText(
+        from,
+        `Thanks, ${text}! Someone from our team will reach out shortly to help you complete setup.`,
+      );
+
+      await this.sendText(
+        '2349138834648',
+        `${text} just joined your waitlist and is in interested in ${option}`,
+      );
+
+      await this.sendText(
+        from,
+        'Know another landlord who could benefit from Lizt? Share their name & number in this format \n e.g John James:08123456789 \n, and we’ll reach out directly (mentioning you). \n If not, reply "done" to end session',
+      );
+
+      await this.cache.set(
+        `service_request_state_landlord_${from}`,
+        `share_referral`,
+        300,
+      );
+
+      return;
+    } else if (landlord_state === 'share_referral') {
+      let [referral_name, referral_phone_number] = text.trim().split(':');
+
+      if (!referral_name || !referral_phone_number) {
+        await this.sendText(
+          from,
+          'Invalid format. Please use: Name:PhoneNumber',
+        );
+        return;
+      }
+
+      const waitlist = await this.waitlistRepo.findOne({
+        where: { phone_number: from },
+      });
+
+      if (!waitlist) {
+        await this.sendText(from, 'Information not found');
+        return;
+      }
+
+      const normalizedPhone = UtilService.normalizePhoneNumber(
+        referral_phone_number,
+      );
+      if (!normalizedPhone) {
+        await this.sendText(
+          from,
+          'Invalid phone number format, please try again.',
+        );
+        return;
+      }
+
+      waitlist.referral_name = referral_name.trim();
+      waitlist.referral_phone_number = normalizedPhone;
+
+      await this.waitlistRepo.save(waitlist);
+
+      await this.sendText(
+        from,
+        'Thank you for sharing a referral with us, your session has ended',
+      );
+
+      await this.cache.delete(`service_request_state_landlord_${from}`);
+      return;
+    } else {
+      await this.sendButtons(
+        from,
+        `Main Menu`,
+        [
+          { id: 'view_tenancies', title: 'View tenancies' },
+          { id: 'view_maintenance', title: 'maintenance requests' },
+          { id: 'new_tenant', title: 'Add new tenant' },
+        ],
+      );
+    }
+  }
+
+    async handleLandlordInteractive(message: any, from: string) {
+    const buttonReply = message.interactive?.button_reply;
+    if (!buttonReply) return;
+
+    switch (buttonReply.id) {
+      case 'view_tenancies':
+        // Find the property owner user by phone number
+        const ownerUser = await this.usersRepo.findOne({
+          where: { phone_number: `${from}`, accounts: {
+            role: RolesEnum.LANDLORD
+          } },
+          relations: ['accounts'],
+        });
+
+        if (!ownerUser) {
+          await this.sendText(from, 'No tenancy info available.');
+          return;
+        }
+
+        // Find all properties where the owner is this user
+        const properties = await this.propertyTenantRepo.find({
+          where: {
+            property: {
+              owner_id: ownerUser.accounts[0].id 
+              },
+            },
+          relations: [
+            'property',
+            'property.owner',
+            'property.owner.user',
+            'property.rents',
+          ],
+        });
+
+        console.log(properties)
+
+        if (!properties?.length) {
+          await this.sendText(from, 'No properties found.');
+          return;
+        }
+
+        await this.sendText(from, 'Here are your properties:');
+        for (const [i, item] of properties.entries()) {
+          const rent = item.property.rents[0];
+          await this.sendText(
+            from,
+            `Property ${i + 1}: ${item.property.name}\n Amount: ${rent?.rental_price?.toLocaleString(
+              'en-NG',
+              {
+                style: 'currency',
+                currency: 'NGN',
+              },
+            )}\n Due Date: ${rent?.lease_end_date ? new Date(rent.lease_end_date).toLocaleDateString() : 'N/A'}`,
+          );
+
+          await this.cache.set(
+            `service_request_state_landlord_${from}`,
+            'other_options',
+            300,
+          );
+        }
+
+        await this.sendText(
+          from,
+          'Type "menu" to see other options or "done" to finish.',
+        );
+        break;
+      case 'property_owner':
+        await this.sendButtons(
+          from,
+          `Great! As a Property Owner, you can use Lizt to:\n 
+     1. Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries.\n 
+     2. Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you.\n 
+     3. Maintenance Management – tenants can log service requests with you for quick action. \n Please choose one of the options below:`,
+          [
+            { id: 'rent_reminder', title: 'Rent Reminders' },
+            { id: 'reminder_collection', title: 'Reminders/Collection' },
+            { id: 'all', title: 'All' },
+          ],
+        );
+
+        break;
+      case 'rent_reminder':
+      default:
+        await this.sendText(
+          from,
+          `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`,
+        );
+        await this.cache.set(
+          `service_request_state_default_${from}`,
+          `property_owner_options_${buttonReply.id}`,
+          300,
+        );
+    }
+  }
+
 
   async handleDefaultText(message: any, from: string) {
     const text = message.text?.body;
@@ -243,8 +469,8 @@ export class WhatsappBotService {
         'Thank you for sharing a referral with us, your session has ended',
       );
 
-        await this.cache.delete(`service_request_state_default_${from}`);
-        return;
+      await this.cache.delete(`service_request_state_default_${from}`);
+      return;
     } else {
       await this.sendButtons(
         from,
@@ -295,7 +521,7 @@ export class WhatsappBotService {
   async handleFacilityText(message: any, from: string) {
     const text = message.text?.body;
 
-    console.log(text, "facility")
+    console.log(text, 'facility');
 
     if (text?.toLowerCase() === 'start flow') {
       this.sendFlow(from); // Call the send flow logic
@@ -593,7 +819,7 @@ export class WhatsappBotService {
       this.sendFlow(from); // Call the send flow logic
     }
 
-    console.log(text, "tenant")
+    console.log(text, 'tenant');
 
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(from, 'Menu Options', [

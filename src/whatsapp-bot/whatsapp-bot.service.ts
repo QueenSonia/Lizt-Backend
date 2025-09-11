@@ -184,7 +184,7 @@ export class WhatsappBotService {
       );
       return;
     }
-    this.handleDefaultCachedResponse(from, text);
+    this.handleLandlordCachedResponse(from, text);
   }
 
    async handleLandlordCachedResponse(from, text) {

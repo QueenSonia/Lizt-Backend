@@ -162,7 +162,7 @@ export class WhatsappBotService {
     }
   }
 
-    async handleLandlordText(message: any, from: string) {
+  async handleLandlordText(message: any, from: string) {
     const text = message.text?.body;
 
     if (text.toLowerCase() === 'done') {
@@ -172,22 +172,18 @@ export class WhatsappBotService {
       return;
     }
 
-     if (text?.toLowerCase() === 'menu') {
-      await this.sendButtons(
-        from,
-        `Main Menu`,
-        [
-          { id: 'view_tenancies', title: 'View tenancies' },
-          { id: 'view_maintenance', title: 'maintenance requests' },
-          { id: 'new_tenant', title: 'Add new tenant' },
-        ],
-      );
+    if (text?.toLowerCase() === 'menu') {
+      await this.sendButtons(from, `Main Menu`, [
+        { id: 'view_tenancies', title: 'View tenancies' },
+        { id: 'view_maintenance', title: 'maintenance requests' },
+        { id: 'new_tenant', title: 'Add new tenant' },
+      ]);
       return;
     }
     this.handleLandlordCachedResponse(from, text);
   }
 
-   async handleLandlordCachedResponse(from, text) {
+  async handleLandlordCachedResponse(from, text) {
     const landlord_state = await this.cache.get(
       `service_request_state_landlord_${from}`,
     );
@@ -269,19 +265,15 @@ export class WhatsappBotService {
       await this.cache.delete(`service_request_state_landlord_${from}`);
       return;
     } else {
-      await this.sendButtons(
-        from,
-        `Main Menu`,
-        [
-          { id: 'view_tenancies', title: 'View tenancies' },
-          { id: 'view_maintenance', title: 'maintenance requests' },
-          { id: 'new_tenant', title: 'Add new tenant' },
-        ],
-      );
+      await this.sendButtons(from, `Main Menu`, [
+        { id: 'view_tenancies', title: 'View tenancies' },
+        { id: 'view_maintenance', title: 'maintenance requests' },
+        { id: 'new_tenant', title: 'Add new tenant' },
+      ]);
     }
   }
 
-    async handleLandlordInteractive(message: any, from: string) {
+  async handleLandlordInteractive(message: any, from: string) {
     const buttonReply = message.interactive?.button_reply;
     if (!buttonReply) return;
 
@@ -289,9 +281,7 @@ export class WhatsappBotService {
       case 'view_tenancies':
         // Find the property owner user by phone number
         const ownerUser = await this.usersRepo.findOne({
-          where: { phone_number: `${from}`, accounts: {
-            role: RolesEnum.LANDLORD
-          } },
+          where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
           relations: ['accounts'],
         });
 
@@ -304,9 +294,9 @@ export class WhatsappBotService {
         const properties = await this.propertyTenantRepo.find({
           where: {
             property: {
-              owner_id: ownerUser.accounts[0].id 
-              },
+              owner_id: ownerUser.accounts[0].id,
             },
+          },
           relations: [
             'property',
             'property.owner',
@@ -315,7 +305,7 @@ export class WhatsappBotService {
           ],
         });
 
-        console.log(properties)
+        console.log(properties);
 
         if (!properties?.length) {
           await this.sendText(from, 'No properties found.');
@@ -376,7 +366,6 @@ export class WhatsappBotService {
         );
     }
   }
-
 
   async handleDefaultText(message: any, from: string) {
     const text = message.text?.body;

@@ -58,6 +58,13 @@ import { UpdateKycDto } from './dto/update-kyc.dto';
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
+  
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN) 
+  @Get('/waitlist')
+  async getWaitlist(){
+    return this.usersService.getWaitlist()
+  }
 
 
   @Get('team-members')
@@ -469,7 +476,6 @@ export class UsersController {
   
     );
   }
-
 
   
 }

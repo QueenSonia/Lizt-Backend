@@ -32,7 +32,7 @@ import { Waitlist } from './entities/waitlist.entity';
       Waitlist
     ]),
     AuthModule,
-    WhatsappBotModule
+     forwardRef(() => WhatsappBotModule),
   ],
   controllers: [UsersController],
   providers: [UsersService, FileUploadService],

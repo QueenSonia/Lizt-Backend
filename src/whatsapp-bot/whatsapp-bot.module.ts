@@ -17,7 +17,8 @@ import { Waitlist } from 'src/users/entities/waitlist.entity';
 @Module({
   imports: [
     TypeOrmModule.forFeature([ServiceRequest, Users, PropertyTenant, TeamMember, Waitlist]), 
-    ServiceRequestsModule
+    ServiceRequestsModule,
+    forwardRef(() => UsersModule), 
   ],
   controllers: [WhatsappBotController],
   providers: [WhatsappBotService],

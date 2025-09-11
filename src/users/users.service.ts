@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   ForbiddenException,
+  forwardRef,
   HttpException,
   HttpStatus,
+  Inject,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -63,6 +65,7 @@ import { Team } from './entities/team.entity';
 import { TeamMember } from './entities/team-member.entity';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { CacheService } from 'src/lib/cache';
+import { Waitlist } from './entities/waitlist.entity';
 
 @Injectable()
 export class UsersService {
@@ -88,6 +91,8 @@ export class UsersService {
     @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
     private readonly whatsappBotService: WhatsappBotService,
+     @InjectRepository(Waitlist)
+    private readonly waitlistRepository: Repository<Waitlist>,
     private readonly cache: CacheService,
 
     private readonly dataSource: DataSource,
@@ -1798,5 +1803,8 @@ export class UsersService {
 
   async sendUserAddedTemplate({phone_number, name, user, property_name}){
     return await this.whatsappBotService.sendUserAddedTemplate({phone_number, name, user, property_name})
+  }
+  async getWaitlist(){
+    return await this.waitlistRepository.find()
   }
 }

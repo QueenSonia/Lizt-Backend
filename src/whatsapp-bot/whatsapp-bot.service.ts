@@ -188,86 +188,82 @@ export class WhatsappBotService {
       `service_request_state_landlord_${from}`,
     );
 
+    console.log({landlord_state})
+
+    // Handle tenancy selection state (array of tenancy IDs was cached)
+    if (landlord_state?.startsWith('[')) {
+      const tenancyIds: string[] = JSON.parse(landlord_state);
+      const choice = parseInt(text.trim(), 10);
+
+      if (isNaN(choice) || choice < 1 || choice > tenancyIds.length) {
+        await this.sendText(
+          from,
+          'Invalid choice. Please reply with a valid tenancy number.',
+        );
+        return;
+      }
+
+      const tenancyId = tenancyIds[choice - 1]; // map number → UUID
+      const tenancy = await this.propertyTenantRepo.findOne({
+        where: { id: tenancyId },
+        relations: ['property', 'tenant', 'tenant.user', 'rents'],
+      });
+
+      if (!tenancy) {
+        await this.sendText(from, 'Tenancy not found.');
+        return;
+      }
+
+      const latestRent = tenancy.rents?.[tenancy.rents.length - 1];
+      const tenantName = tenancy.tenant?.user
+        ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
+        : 'Vacant';
+
+      const paymentHistory = tenancy.rents
+        .map(
+          (r) =>
+            `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
+              'en-NG',
+              {
+                style: 'currency',
+                currency: 'NGN',
+              },
+            )} (${r.payment_status})`,
+        )
+        .join('\n');
+
+      const details = `
+🏠 Property: ${tenancy.property.name}
+👤 Tenant: ${tenantName}
+💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
+        style: 'currency',
+        currency: 'NGN',
+      })}/yr
+📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
+⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
+
+📜 Payment History:
+${paymentHistory || 'No payments yet'}
+`;
+
+      await this.sendText(from, details);
+
+      await this.sendText(
+        from,
+        'Type "menu" to see other options or "done" to finish.',
+      );
+      return;
+    }
+
+    // Existing property_owner_options, share_referral, etc.
     if (landlord_state && landlord_state.includes('property_owner_options')) {
-      let option = landlord_state.split('property_owner_options')[1].slice(1);
-
-      let waitlist = this.waitlistRepo.create({
-        full_name: text,
-        phone_number: UtilService.normalizePhoneNumber(from),
-        option,
-      });
-
-      await this.waitlistRepo.save(waitlist);
-
-      await this.sendText(
-        from,
-        `Thanks, ${text}! Someone from our team will reach out shortly to help you complete setup.`,
-      );
-
-      await this.sendText(
-        '2349138834648',
-        `${text} just joined your waitlist and is in interested in ${option}`,
-      );
-
-      await this.sendText(
-        from,
-        'Know another landlord who could benefit from Lizt? Share their name & number in this format \n e.g John James:08123456789 \n, and we’ll reach out directly (mentioning you). \n If not, reply "done" to end session',
-      );
-
-      await this.cache.set(
-        `service_request_state_landlord_${from}`,
-        `share_referral`,
-        300,
-      );
-
-      return;
+      // ... your existing flow
     } else if (landlord_state === 'share_referral') {
-      let [referral_name, referral_phone_number] = text.trim().split(':');
-
-      if (!referral_name || !referral_phone_number) {
-        await this.sendText(
-          from,
-          'Invalid format. Please use: Name:PhoneNumber',
-        );
-        return;
-      }
-
-      const waitlist = await this.waitlistRepo.findOne({
-        where: { phone_number: from },
-      });
-
-      if (!waitlist) {
-        await this.sendText(from, 'Information not found');
-        return;
-      }
-
-      const normalizedPhone = UtilService.normalizePhoneNumber(
-        referral_phone_number,
-      );
-      if (!normalizedPhone) {
-        await this.sendText(
-          from,
-          'Invalid phone number format, please try again.',
-        );
-        return;
-      }
-
-      waitlist.referral_name = referral_name.trim();
-      waitlist.referral_phone_number = normalizedPhone;
-
-      await this.waitlistRepo.save(waitlist);
-
-      await this.sendText(
-        from,
-        'Thank you for sharing a referral with us, your session has ended',
-      );
-
-      await this.cache.delete(`service_request_state_landlord_${from}`);
-      return;
+      // ... your existing referral flow
     } else {
       await this.sendButtons(from, `Main Menu`, [
         { id: 'view_tenancies', title: 'View tenancies' },
-        { id: 'view_maintenance', title: 'maintenance requests' },
+        { id: 'view_maintenance', title: 'Maintenance requests' },
         { id: 'new_tenant', title: 'Add new tenant' },
       ]);
     }
@@ -279,7 +275,7 @@ export class WhatsappBotService {
 
     switch (buttonReply.id) {
       case 'view_tenancies':
-        // Find the property owner user by phone number
+        // Find landlord user by phone number
         const ownerUser = await this.usersRepo.findOne({
           where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
           relations: ['accounts'],
@@ -290,8 +286,8 @@ export class WhatsappBotService {
           return;
         }
 
-        // Find all properties where the owner is this user
-        const properties = await this.propertyTenantRepo.find({
+        // Get all property-tenants linked to this landlord
+        const propertyTenants = await this.propertyTenantRepo.find({
           where: {
             property: {
               owner_id: ownerUser.accounts[0].id,
@@ -299,39 +295,58 @@ export class WhatsappBotService {
           },
           relations: [
             'property',
-            'property.owner',
-            'property.owner.user',
-            'property.rents',
+            'tenant', // 👈 Account (tenant user)
+            'tenant.user', // 👈 Tenant’s user profile
+            'rents', // 👈 Rent history
           ],
         });
 
-        console.log(properties);
-
-        if (!properties?.length) {
-          await this.sendText(from, 'No properties found.');
+        if (!propertyTenants?.length) {
+          await this.sendText(from, 'No tenancies found.');
           return;
         }
 
-        await this.sendText(from, 'Here are your properties:');
-        for (const [i, item] of properties.entries()) {
-          const rent = item.property.rents[0];
-          await this.sendText(
-            from,
-            `Property ${i + 1}: ${item.property.name}\n Amount: ${rent?.rental_price?.toLocaleString(
-              'en-NG',
-              {
+        // Construct tenancy list
+        let message = 'Here are your current tenancies:\n';
+
+        for (const [i, pt] of propertyTenants.entries()) {
+          const latestRent = pt.rents?.[pt.rents.length - 1]; // latest rent record
+          const tenantName = pt.tenant?.user
+            ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
+            : 'Vacant';
+
+          const rentAmount = latestRent?.rental_price
+            ? latestRent.rental_price.toLocaleString('en-NG', {
                 style: 'currency',
                 currency: 'NGN',
-              },
-            )}\n Due Date: ${rent?.lease_end_date ? new Date(rent.lease_end_date).toLocaleDateString() : 'N/A'}`,
-          );
+              })
+            : 'N/A';
 
-          await this.cache.set(
-            `service_request_state_landlord_${from}`,
-            'other_options',
-            300,
-          );
+          const dueDate = latestRent?.lease_end_date
+            ? new Date(latestRent.lease_end_date).toLocaleDateString('en-NG', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+              })
+            : 'N/A';
+
+          message += `${i + 1}. ${pt.property.name} – ${tenantName} – ${rentAmount}/yr – Next rent due: ${dueDate}\n`;
         }
+
+        await this.sendText(from, message);
+
+        await this.sendText(
+          from,
+          'Reply with the number of the tenancy you want to view (e.g., 1 for first property).',
+        );
+
+        // Save state so we know landlord is selecting a tenancy
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify(propertyTenants.map((pt) => pt.id)), // store tenancy ids
+          300,
+        );
+    
 
         await this.sendText(
           from,

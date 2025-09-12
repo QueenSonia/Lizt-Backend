@@ -1,8 +1,9 @@
-import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Property } from './property.entity';
 import { TenantStatusEnum } from '../dto/create-property.dto';
 import { Account } from 'src/users/entities/account.entity';
+import { Rent } from 'src/rents/entities/rent.entity';
 
 @Entity({ name: 'property_tenants' })
 export class PropertyTenant extends BaseEntity {
@@ -32,4 +33,10 @@ export class PropertyTenant extends BaseEntity {
   })
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
   tenant: Account;
+
+  @OneToMany(() => Rent, (rent) => rent.propertyTenant, {
+  cascade: true,
+})
+rents: Rent[];
+
 }

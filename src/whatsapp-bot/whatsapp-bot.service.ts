@@ -286,6 +286,8 @@ ${paymentHistory || 'No payments yet'}
           return;
         }
 
+        console.log({ownerUser})
+
         // Get all property-tenants linked to this landlord
         const propertyTenants = await this.propertyTenantRepo.find({
           where: {
@@ -314,6 +316,8 @@ ${paymentHistory || 'No payments yet'}
           const tenantName = pt.tenant?.user
             ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
             : 'Vacant';
+
+          console.log({latestRent})
 
           const rentAmount = latestRent?.rental_price
             ? latestRent.rental_price.toLocaleString('en-NG', {

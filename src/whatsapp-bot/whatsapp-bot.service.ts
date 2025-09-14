@@ -188,57 +188,71 @@ export class WhatsappBotService {
       `service_request_state_landlord_${from}`,
     );
 
-    console.log({landlord_state})
+    console.log({ landlord_state });
 
     // Handle tenancy selection state (array of tenancy IDs was cached)
-    if (landlord_state?.startsWith('[')) {
-      const tenancyIds: string[] = JSON.parse(landlord_state);
-      const choice = parseInt(text.trim(), 10);
+    let tenancyIds: string[] = [];
 
-      if (isNaN(choice) || choice < 1 || choice > tenancyIds.length) {
-        await this.sendText(
-          from,
-          'Invalid choice. Please reply with a valid tenancy number.',
-        );
-        return;
-      }
+    if (typeof landlord_state === 'string') {
+      tenancyIds = JSON.parse(landlord_state);
+    } else if (Array.isArray(landlord_state)) {
+      tenancyIds = landlord_state;
+    }
 
-      const tenancyId = tenancyIds[choice - 1]; // map number → UUID
-      const tenancy = await this.propertyTenantRepo.findOne({
-        where: { id: tenancyId },
-        relations: ['property', 'tenant', 'tenant.user', 'rents'],
-      });
+    if (!tenancyIds.length) {
+      await this.sendText(
+        from,
+        'No tenancy selection found. Please try again.',
+      );
+      return;
+    }
 
-      if (!tenancy) {
-        await this.sendText(from, 'Tenancy not found.');
-        return;
-      }
+    const choice = parseInt(text.trim(), 10);
 
-      const latestRent = tenancy.rents?.[tenancy.rents.length - 1];
-      const tenantName = tenancy.tenant?.user
-        ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
-        : 'Vacant';
+    if (isNaN(choice) || choice < 1 || choice > tenancyIds.length) {
+      await this.sendText(
+        from,
+        'Invalid choice. Please reply with a valid tenancy number.',
+      );
+      return;
+    }
 
-      const paymentHistory = tenancy.rents
-        .map(
-          (r) =>
-            `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
-              'en-NG',
-              {
-                style: 'currency',
-                currency: 'NGN',
-              },
-            )} (${r.payment_status})`,
-        )
-        .join('\n');
+    const tenancyId = tenancyIds[choice - 1]; // map number → UUID
+    const tenancy = await this.propertyTenantRepo.findOne({
+      where: { id: tenancyId },
+      relations: ['property', 'tenant', 'tenant.user', 'rents'],
+    });
 
-      const details = `
+    if (!tenancy) {
+      await this.sendText(from, 'Tenancy not found.');
+      return;
+    }
+
+    const latestRent = tenancy.rents?.[tenancy.rents.length - 1];
+    const tenantName = tenancy.tenant?.user
+      ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
+      : 'Vacant';
+
+    const paymentHistory = tenancy.rents
+      .map(
+        (r) =>
+          `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
+            'en-NG',
+            {
+              style: 'currency',
+              currency: 'NGN',
+            },
+          )} (${r.payment_status})`,
+      )
+      .join('\n');
+
+    const details = `
 🏠 Property: ${tenancy.property.name}
 👤 Tenant: ${tenantName}
 💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
-        style: 'currency',
-        currency: 'NGN',
-      })}/yr
+      style: 'currency',
+      currency: 'NGN',
+    })}/yr
 📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
 ⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
 
@@ -246,14 +260,13 @@ export class WhatsappBotService {
 ${paymentHistory || 'No payments yet'}
 `;
 
-      await this.sendText(from, details);
+    await this.sendText(from, details);
 
-      await this.sendText(
-        from,
-        'Type "menu" to see other options or "done" to finish.',
-      );
-      return;
-    }
+    await this.sendText(
+      from,
+      'Type "menu" to see other options or "done" to finish.',
+    );
+    return;
 
     // Existing property_owner_options, share_referral, etc.
     if (landlord_state && landlord_state.includes('property_owner_options')) {
@@ -286,7 +299,7 @@ ${paymentHistory || 'No payments yet'}
           return;
         }
 
-        console.log({ownerUser})
+        console.log({ ownerUser: ownerUser.accounts });
 
         // Get all property-tenants linked to this landlord
         const propertyTenants = await this.propertyTenantRepo.find({
@@ -317,7 +330,7 @@ ${paymentHistory || 'No payments yet'}
             ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
             : 'Vacant';
 
-          console.log({latestRent})
+          console.log({ latestRent });
 
           const rentAmount = latestRent?.rental_price
             ? latestRent.rental_price.toLocaleString('en-NG', {
@@ -350,7 +363,6 @@ ${paymentHistory || 'No payments yet'}
           JSON.stringify(propertyTenants.map((pt) => pt.id)), // store tenancy ids
           300,
         );
-    
 
         await this.sendText(
           from,

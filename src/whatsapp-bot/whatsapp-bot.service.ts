@@ -247,18 +247,18 @@ export class WhatsappBotService {
       .join('\n');
 
     const details = `
-🏠 Property: ${tenancy.property.name}
-👤 Tenant: ${tenantName}
-💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
-      style: 'currency',
-      currency: 'NGN',
-    })}/yr
-📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
-⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
+        🏠 Property: ${tenancy.property.name}
+        👤 Tenant: ${tenantName}
+        💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
+          style: 'currency',
+          currency: 'NGN',
+        })}/yr
+        📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
+        ⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
 
-📜 Payment History:
-${paymentHistory || 'No payments yet'}
-`;
+        📜 Payment History:
+        ${paymentHistory || 'No payments yet'}
+        `;
 
     await this.sendText(from, details);
 
@@ -266,7 +266,7 @@ ${paymentHistory || 'No payments yet'}
       from,
       'Type "menu" to see other options or "done" to finish.',
     );
-    return;
+    // return;
 
     // Existing property_owner_options, share_referral, etc.
     if (landlord_state && landlord_state.includes('property_owner_options')) {
@@ -323,14 +323,15 @@ ${paymentHistory || 'No payments yet'}
 
         // Construct tenancy list
         let message = 'Here are your current tenancies:\n';
+        console.log({propertyTenants})
 
         for (const [i, pt] of propertyTenants.entries()) {
-          const latestRent = pt.rents?.[pt.rents.length - 1]; // latest rent record
+          // tenancy-level rents
+          const latestRent = pt.rents?.[pt.rents.length - 1] || null;
+
           const tenantName = pt.tenant?.user
             ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
             : 'Vacant';
-
-          console.log({ latestRent });
 
           const rentAmount = latestRent?.rental_price
             ? latestRent.rental_price.toLocaleString('en-NG', {

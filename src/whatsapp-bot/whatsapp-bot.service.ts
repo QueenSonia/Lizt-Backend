@@ -313,7 +313,6 @@ export class WhatsappBotService {
             'property.rents',
             'tenant', // 👈 Account (tenant user)
             'tenant.user', // 👈 Tenant’s user profile
-            'rents', // 👈 Rent history
           ],
         });
 

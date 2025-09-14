@@ -71,8 +71,6 @@ export class Rent extends BaseEntity {
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
   tenant: Account;
 
-  @ManyToOne(() => PropertyTenant, (pt) => pt.rents)
-@JoinColumn({ name: 'property_tenant_id' })
-propertyTenant: PropertyTenant;
+
 
 }

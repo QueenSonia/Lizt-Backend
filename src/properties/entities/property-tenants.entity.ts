@@ -34,9 +34,5 @@ export class PropertyTenant extends BaseEntity {
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
   tenant: Account;
 
-  @OneToMany(() => Rent, (rent) => rent.propertyTenant, {
-  cascade: true,
-})
-rents: Rent[];
 
 }

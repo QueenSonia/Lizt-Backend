@@ -310,6 +310,7 @@ export class WhatsappBotService {
           },
           relations: [
             'property',
+            'property.rents',
             'tenant', // 👈 Account (tenant user)
             'tenant.user', // 👈 Tenant’s user profile
             'rents', // 👈 Rent history
@@ -327,7 +328,7 @@ export class WhatsappBotService {
 
         for (const [i, pt] of propertyTenants.entries()) {
           // tenancy-level rents
-          const latestRent = pt.rents?.[pt.rents.length - 1] || null;
+          const latestRent = pt.property.rents?.[pt.property.rents.length - 1] || null;
 
           const tenantName = pt.tenant?.user
             ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`

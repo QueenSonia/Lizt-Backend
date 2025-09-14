@@ -220,7 +220,7 @@ export class WhatsappBotService {
     const tenancyId = tenancyIds[choice - 1]; // map number → UUID
     const tenancy = await this.propertyTenantRepo.findOne({
       where: { id: tenancyId },
-      relations: ['property', 'tenant', 'tenant.user', 'rents'],
+      relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
     });
 
     if (!tenancy) {
@@ -228,12 +228,12 @@ export class WhatsappBotService {
       return;
     }
 
-    const latestRent = tenancy.rents?.[tenancy.rents.length - 1];
+    const latestRent = tenancy.property.rents?.[tenancy.property.rents.length - 1];
     const tenantName = tenancy.tenant?.user
       ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
       : 'Vacant';
 
-    const paymentHistory = tenancy.rents
+    const paymentHistory = tenancy.property.rents
       .map(
         (r) =>
           `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(

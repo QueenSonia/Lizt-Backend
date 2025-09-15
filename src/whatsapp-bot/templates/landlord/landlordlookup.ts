@@ -25,7 +25,9 @@ export class LandlordLookup {
 
     let parsed: { type: "tenancy" | "maintenance"; ids: string[]; step: string };
     try {
-      parsed = JSON.parse(raw);
+      parsed = raw
+
+      console.log({parsed})
     } catch (err) {
       await this.sendText(from, "Something went wrong. Please try again.");
       return;

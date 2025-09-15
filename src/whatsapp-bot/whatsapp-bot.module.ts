@@ -12,11 +12,13 @@ import { ServiceRequestsService } from 'src/service-requests/service-requests.se
 import { ServiceRequestsModule } from 'src/service-requests/service-requests.module';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { Waitlist } from 'src/users/entities/waitlist.entity';
+import { Property } from 'src/properties/entities/property.entity';
+import { Account } from 'src/users/entities/account.entity';
 
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ServiceRequest, Users, PropertyTenant, TeamMember, Waitlist]), 
+    TypeOrmModule.forFeature([ServiceRequest, Users, PropertyTenant, TeamMember, Waitlist, Property, Account]), 
     ServiceRequestsModule,
     forwardRef(() => UsersModule), 
   ],

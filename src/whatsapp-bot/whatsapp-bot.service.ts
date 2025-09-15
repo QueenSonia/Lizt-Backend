@@ -19,6 +19,9 @@ import { ServiceRequestsService } from 'src/service-requests/service-requests.se
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { PropertiesService } from 'src/properties/properties.service';
 import { Waitlist } from 'src/users/entities/waitlist.entity';
+import { Property } from 'src/properties/entities/property.entity';
+import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import { Account } from 'src/users/entities/account.entity';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -46,6 +49,12 @@ export class WhatsappBotService {
 
     @InjectRepository(Waitlist)
     private readonly waitlistRepo: Repository<Waitlist>,
+
+    @InjectRepository(Property)
+    private readonly propertyRepo: Repository<Property>,
+
+    @InjectRepository(Account)
+    private readonly accountRepo: Repository<Account>,
 
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly cache: CacheService,
@@ -99,6 +108,170 @@ export class WhatsappBotService {
 
     console.error('Unhandled request body:', decryptedBody);
     throw new Error('Unhandled endpoint request.');
+  }
+
+  // Step 1: Start New Tenant Flow
+  async startAddTenantFlow(from: string) {
+    await this.sendText(
+      from,
+      'You’d like to add a new tenant. Please share the basic details and we’ll set it up for you.\n\n👉 What is the tenant’s full name?',
+    );
+
+    await this.cache.set(
+      `service_request_state_landlord_${from}`,
+      JSON.stringify({ type: 'add_tenant', step: 'ask_name', data: {} }),
+      300,
+    );
+  }
+
+  // Step 2-4: Handle landlord responses for Add Tenant flow
+  async handleAddTenantResponse(from: string, text: string) {
+    const stateRaw = await this.cache.get(
+      `service_request_state_landlord_${from}`,
+    );
+    if (!stateRaw) {
+      await this.sendText(from, 'No active tenant flow. Please try again.');
+      return;
+    }
+
+    const state = JSON.parse(stateRaw);
+    const { step, data } = state;
+
+    switch (step) {
+      case 'ask_name':
+        data.full_name = text.trim();
+        await this.sendText(from, '📱 What is the tenant’s phone number?');
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify({ type: 'add_tenant', step: 'ask_phone', data }),
+          300,
+        );
+        break;
+
+      case 'ask_phone':
+        data.phone = text.trim();
+        await this.sendText(
+          from,
+          "✉️ Do you want to add their email? If yes, type it now. If not, reply 'skip'.",
+        );
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify({ type: 'add_tenant', step: 'ask_email', data }),
+          300,
+        );
+        break;
+
+      case 'ask_email':
+        if (text.toLowerCase() !== 'skip') {
+          data.email = text.trim();
+        }
+
+        // ✅ Fetch landlord with properties
+        const ownerUser = await this.usersRepo.findOne({
+          where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+          relations: ['accounts', 'accounts.properties'],
+        });
+
+        if (!ownerUser) {
+          await this.sendText(from, 'No properties found for your account.');
+          return;
+        }
+
+        const properties = await this.propertyRepo.find({
+          where: { owner_id: ownerUser.accounts[0].id },
+          relations: ['property_tenants', 'property_tenants.tenant'],
+        });
+
+        if (!properties.length) {
+          await this.sendText(from, 'You don’t have any properties yet.');
+          return;
+        }
+
+        let propertyList = '🏘️ Which unit will this tenant occupy?\n';
+        let vacantUnitsList: string[] = [];
+
+        for (const property of properties) {
+          // 🔍 Check if any tenant has ACTIVE status
+          const hasActiveTenant = property.property_tenants?.some(
+            (pt) => pt.status === TenantStatusEnum.ACTIVE,
+          );
+
+          if (!hasActiveTenant) {
+            vacantUnitsList.push(property.id);
+            propertyList += `${vacantUnitsList.length}. ${property.name} (Vacant)\n`;
+          }
+        }
+
+        if (!vacantUnitsList.length) {
+          await this.sendText(from, 'No vacant units available.');
+          return;
+        }
+
+        await this.sendText(
+          from,
+          propertyList +
+            '\nReply with the number for the unit this tenant will occupy.',
+        );
+
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify({
+            type: 'add_tenant',
+            step: 'select_unit',
+            data: { ...data, vacantUnits: vacantUnitsList },
+          }),
+          300,
+        );
+        break;
+
+      case 'select_unit':
+        const choice = parseInt(text.trim(), 10);
+        let vacantUnits = data.vacantUnits;
+
+        if (isNaN(choice) || choice < 1 || choice > vacantUnits.length) {
+          await this.sendText(
+            from,
+            'Invalid choice. Please reply with a valid number.',
+          );
+          return;
+        }
+
+        const unitId = vacantUnits[choice - 1];
+
+        // ✅ Create new User + Account + PropertyTenant
+        const [first_name, ...last_name_parts] = data.full_name.split(' ');
+        const last_name = last_name_parts.join(' ') || '';
+
+        const newUser = this.usersRepo.create({
+          first_name,
+          last_name,
+          phone_number: data.phone,
+          email: data.email || null,
+        });
+        await this.usersRepo.save(newUser);
+
+        const newAccount = this.accountRepo.create({
+          email: data.email || null,
+          role: RolesEnum.TENANT,
+          user: newUser,
+          userId: newUser.id,
+        });
+        await this.accountRepo.save(newAccount);
+
+        const propertyTenant = this.propertyTenantRepo.create({
+          property_id: unitId, // ✅ correct field
+          tenant: newAccount,
+        });
+        await this.propertyTenantRepo.save(propertyTenant);
+
+        await this.sendText(
+          from,
+          `Got it ✅. You’re adding *${data.full_name}* to unit ${unitId}. Our team will complete the setup and confirm once it’s done.`,
+        );
+
+        await this.cache.delete(`service_request_state_landlord_${from}`);
+        break;
+    }
   }
 
   async handleMessage(messages: IncomingMessage[]) {
@@ -193,17 +366,15 @@ export class WhatsappBotService {
       return;
     }
 
-
     let parsed: { type: string; ids: string[] };
 
-
-try {
-  parsed = landlord_state;
-} catch (err) {
-  console.error('Invalid landlord_state:', landlord_state);
-  await this.sendText(from, 'Something went wrong. Please try again.');
-  return;
-}
+    try {
+      parsed = landlord_state;
+    } catch (err) {
+      console.error('Invalid landlord_state:', landlord_state);
+      await this.sendText(from, 'Something went wrong. Please try again.');
+      return;
+    }
 
     const { type, ids } = parsed;
     const choice = parseInt(text.trim(), 10);
@@ -303,6 +474,8 @@ ${paymentHistory || 'No payments yet'}
         await this.sendText(from, details);
         return;
       }
+    } else if (type === 'add_tenant') {
+      await this.handleAddTenantResponse(from, text);
     }
 
     await this.sendText(from, 'Selection not found.');
@@ -463,6 +636,9 @@ ${paymentHistory || 'No payments yet'}
           300,
         );
         break;
+
+      case 'new_tenant':
+        await this.startAddTenantFlow(from);
       default:
         await this.sendText(
           from,

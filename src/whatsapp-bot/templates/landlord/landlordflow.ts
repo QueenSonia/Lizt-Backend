@@ -43,7 +43,9 @@ export class LandlordFlow {
       return;
     }
 
-    const { type } = JSON.parse(raw);
+    const { type } = raw;
+
+    console.log({type})
 
     if (type === "add_tenant") {
       await this.handleAddTenantText(from, text);

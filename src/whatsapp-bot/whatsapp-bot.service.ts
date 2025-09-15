@@ -193,14 +193,12 @@ export class WhatsappBotService {
       return;
     }
 
-    console.log({landlord_state: landlord_state.type, ids: landlord_state.ids})
-
 
     let parsed: { type: string; ids: string[] };
 
 
 try {
-  parsed = JSON.parse(landlord_state);
+  parsed = landlord_state;
 } catch (err) {
   console.error('Invalid landlord_state:', landlord_state);
   await this.sendText(from, 'Something went wrong. Please try again.');

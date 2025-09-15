@@ -1,3 +1,4 @@
+import { ConfigService } from "@nestjs/config";
 import { RolesEnum } from "src/base.entity";
 import { CacheService } from "src/lib/cache";
 import { PropertyTenant } from "src/properties/entities/property-tenants.entity";
@@ -8,13 +9,16 @@ import { Repository } from "typeorm";
 
 
 export class LandlordFlow {
+         private whatsappUtil: WhatsappUtils
   constructor(
     private usersRepo: Repository<Users>,
     private serviceRequestRepo: Repository<ServiceRequest>,
     private propertyTenantRepo: Repository<PropertyTenant>,
     private cache: CacheService,
-       private whatsappUtil: WhatsappUtils,
-  ) {}
+  ) {
+      const config = new ConfigService();
+    this.whatsappUtil = new WhatsappUtils(config);
+  }
 
   /**
    * Handle landlord TEXT input

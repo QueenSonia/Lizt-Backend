@@ -5,15 +5,19 @@ import { Users } from "src/users/entities/user.entity";
 import { ServiceRequest } from "src/service-requests/entities/service-request.entity";
 import { PropertyTenant } from "src/properties/entities/property-tenants.entity";
 import { WhatsappUtils } from "src/whatsapp-bot/utils/whatsapp";
+import { ConfigService } from "@nestjs/config";
 
 export class LandlordInteractive {
+        private whatsappUtil: WhatsappUtils
   constructor(
     private usersRepo: Repository<Users>,
     private serviceRequestRepo: Repository<ServiceRequest>,
     private propertyTenantRepo: Repository<PropertyTenant>,
-    private whatsappUtil: WhatsappUtils,
     private cache: CacheService,
-  ) {}
+  ) {
+      const config = new ConfigService();
+    this.whatsappUtil = new WhatsappUtils(config);
+  }
 
   async handle(message: any, from: string) {
     const buttonReply = message.interactive?.button_reply;

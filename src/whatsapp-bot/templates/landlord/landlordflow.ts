@@ -1,0 +1,230 @@
+import { RolesEnum } from "src/base.entity";
+import { CacheService } from "src/lib/cache";
+import { PropertyTenant } from "src/properties/entities/property-tenants.entity";
+import { ServiceRequest } from "src/service-requests/entities/service-request.entity";
+import { Users } from "src/users/entities/user.entity";
+import { Repository } from "typeorm";
+
+
+export class LandlordFlow {
+  constructor(
+    private usersRepo: Repository<Users>,
+    private serviceRequestRepo: Repository<ServiceRequest>,
+    private propertyTenantRepo: Repository<PropertyTenant>,
+    private cache: CacheService,
+    private sendText: (to: string, text: string) => Promise<void>
+  ) {}
+
+  /**
+   * Handle landlord TEXT input
+   */
+  async handleText(from: string, text: string) {
+    if (["done", "menu"].includes(text?.toLowerCase())) {
+      await this.handleExitOrMenu(from, text);
+      return;
+    }
+
+    const raw = await this.cache.get(`service_request_state_landlord_${from}`);
+    if (!raw) {
+      await this.sendText(from, "No active landlord flow.");
+      return;
+    }
+
+    const { type } = JSON.parse(raw);
+
+    if (type === "add_tenant") {
+      await this.handleAddTenantText(from, text);
+    } else if (["tenancy", "maintenance"].includes(type)) {
+      await this.handleLookupText(from, text);
+    } else {
+      await this.sendText(from, "Invalid state. Please try again.");
+    }
+  }
+
+  /**
+   * Handle landlord INTERACTIVE button clicks
+   */
+  async handleInteractive(message: any, from: string) {
+    const buttonReply = message.interactive?.button_reply;
+    if (!buttonReply) return;
+
+    const handlers: Record<string, () => Promise<void>> = {
+      view_tenancies: () => this.handleViewTenancies(from),
+      view_maintenance: () => this.handleViewMaintenance(from),
+      new_tenant: () => this.startAddTenantFlow(from),
+    };
+
+    const handler = handlers[buttonReply.id];
+    if (handler) {
+      await handler();
+    } else {
+      await this.handleFallback(from, buttonReply.id);
+    }
+  }
+
+  // ------------------------
+  // TEXT flow pieces
+  // ------------------------
+
+  private async handleAddTenantText(from: string, text: string) {
+    // delegate to steps or handle inline
+    await this.sendText(from, `Processing tenant addition: ${text}`);
+  }
+
+  private async handleLookupText(from: string, text: string) {
+    await this.sendText(from, `Looking up details for: ${text}`);
+  }
+
+  async handleExitOrMenu(from: string, text: string) {
+    if (text.toLowerCase() === "done") {
+      await this.sendText(from, "Thanks! You’ve exited landlord flow.");
+      await this.cache.delete(`service_request_state_landlord_${from}`);
+    } else {
+      await this.sendText(
+        from,
+        "Menu options:\n1. View Tenancies\n2. View Maintenance\n3. Add Tenant"
+      );
+    }
+  }
+
+  // ------------------------
+  // INTERACTIVE flow pieces
+  // ------------------------
+
+  private async handleViewTenancies(from: string) {
+    const ownerUser = await this.usersRepo.findOne({
+      where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+      relations: ["accounts"],
+    });
+
+    if (!ownerUser) {
+      await this.sendText(from, "No tenancy info available.");
+      return;
+    }
+
+    const propertyTenants = await this.propertyTenantRepo.find({
+      where: { property: { owner_id: ownerUser.accounts[0].id } },
+      relations: ["property", "property.rents", "tenant", "tenant.user"],
+    });
+
+    if (!propertyTenants?.length) {
+      await this.sendText(from, "No tenancies found.");
+      return;
+    }
+
+    let tenancyMessage = "Here are your current tenancies:\n";
+    for (const [i, pt] of propertyTenants.entries()) {
+      const latestRent = pt.property.rents?.[pt.property.rents.length - 1] || null;
+      const tenantName = pt.tenant?.user
+        ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
+        : "Vacant";
+
+      const rentAmount = latestRent?.rental_price
+        ? latestRent.rental_price.toLocaleString("en-NG", {
+            style: "currency",
+            currency: "NGN",
+          })
+        : "N/A";
+
+      const dueDate = latestRent?.lease_end_date
+        ? new Date(latestRent.lease_end_date).toLocaleDateString("en-NG", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          })
+        : "N/A";
+
+      tenancyMessage += `${i + 1}. ${pt.property.name} – ${tenantName} – ${rentAmount}/yr – Next rent due: ${dueDate}\n`;
+    }
+
+    await this.sendText(from, tenancyMessage);
+    await this.sendText(
+      from,
+      "Reply with the number of the tenancy you want to view (e.g., 1 for first property)."
+    );
+
+    await this.cache.set(
+      `service_request_state_landlord_${from}`,
+      JSON.stringify({
+        type: "tenancy",
+        ids: propertyTenants.map((pt) => pt.id),
+        step: "no_step",
+        data: {},
+      }),
+      300
+    );
+  }
+
+  private async handleViewMaintenance(from: string) {
+    const ownerUser = await this.usersRepo.findOne({
+      where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+      relations: ["accounts"],
+    });
+
+    if (!ownerUser) {
+      await this.sendText(from, "No maintenance info available.");
+      return;
+    }
+
+    const serviceRequests = await this.serviceRequestRepo.find({
+      where: { property: { owner_id: ownerUser.accounts[0].id } },
+      relations: ["property", "tenant", "tenant.user", "facilityManager", "notification"],
+      order: { date_reported: "DESC" },
+    });
+
+    if (!serviceRequests?.length) {
+      await this.sendText(from, "No maintenance requests found.");
+      return;
+    }
+
+    let maintenanceMessage = "Here are open maintenance requests:\n";
+    for (const [i, req] of serviceRequests.entries()) {
+      const reportedDate = new Date(req.date_reported).toLocaleDateString("en-NG", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+
+      maintenanceMessage += `${i + 1}. ${req.property_name} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
+    }
+
+    await this.sendText(from, maintenanceMessage);
+    await this.sendText(from, "Reply with the number of the request you want to view.");
+
+    await this.cache.set(
+      `service_request_state_landlord_${from}`,
+      JSON.stringify({
+        type: "maintenance",
+        ids: serviceRequests.map((req) => req.id),
+        step: "no_step",
+        data: {},
+      }),
+      300
+    );
+  }
+
+  private async startAddTenantFlow(from: string) {
+    await this.sendText(from, "Starting tenant onboarding...");
+    await this.cache.set(
+      `service_request_state_landlord_${from}`,
+      JSON.stringify({
+        type: "add_tenant",
+        step: 1,
+        data: {},
+      }),
+      300
+    );
+  }
+
+  private async handleFallback(from: string, id: string) {
+    await this.sendText(
+      from,
+      `Got it! You selected ${id}. Before we connect you with our team, may we have your full name?`
+    );
+    await this.cache.set(
+      `service_request_state_default_${from}`,
+      `property_owner_options_${id}`,
+      300
+    );
+  }
+}

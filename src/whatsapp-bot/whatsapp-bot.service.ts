@@ -22,6 +22,9 @@ import { Waitlist } from 'src/users/entities/waitlist.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { Account } from 'src/users/entities/account.entity';
+import { LandlordFlow } from './templates/landlord/landlordflow';
+import { LandlordLookup } from './templates/landlord/landlordlookup';
+import { LandlordInteractive } from './templates/landlord/landinteractive';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -55,6 +58,8 @@ export class WhatsappBotService {
 
     @InjectRepository(Account)
     private readonly accountRepo: Repository<Account>,
+
+    private readonly flow: LandlordFlow,
 
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly cache: CacheService,
@@ -317,12 +322,13 @@ export class WhatsappBotService {
       case RolesEnum.LANDLORD:
         console.log('In Landlord');
         if (message.type === 'interactive') {
-          this.handleLandlordInteractive(message, from);
+          this.flow.handleInteractive(message, from);
         }
 
         if (message.type === 'text') {
-          this.handleLandlordText(message, from);
+          this.flow.handleText(from, message as any);
         }
+
         break;
       default:
         if (message.type === 'interactive') {
@@ -335,322 +341,360 @@ export class WhatsappBotService {
     }
   }
 
-  async handleLandlordText(message: any, from: string) {
-    const text = message.text?.body;
+  // async handleLandlordText(message: any, from: string) {
+  //   const text = message.text?.body;
 
-    if (text.toLowerCase() === 'done') {
-      await this.cache.delete(`service_request_state_${from}`);
-      await this.cache.delete(`service_request_state_landlord_${from}`);
-      await this.sendText(from, 'Thank you!  Your session has ended.');
-      return;
-    }
+  //   if (text.toLowerCase() === 'done') {
+  //     await this.cache.delete(`service_request_state_${from}`);
+  //     await this.cache.delete(`service_request_state_landlord_${from}`);
+  //     await this.sendText(from, 'Thank you!  Your session has ended.');
+  //     return;
+  //   }
 
-    if (text?.toLowerCase() === 'menu') {
-      await this.sendButtons(from, `Main Menu`, [
-        { id: 'view_tenancies', title: 'View tenancies' },
-        { id: 'view_maintenance', title: 'maintenance requests' },
-        { id: 'new_tenant', title: 'Add new tenant' },
-      ]);
-      return;
-    }
-    this.handleLandlordCachedResponse(from, text);
-  }
+  //   if (text?.toLowerCase() === 'menu') {
+  //     await this.sendButtons(from, `Main Menu`, [
+  //       { id: 'view_tenancies', title: 'View tenancies' },
+  //       { id: 'view_maintenance', title: 'maintenance requests' },
+  //       { id: 'new_tenant', title: 'Add new tenant' },
+  //     ]);
+  //     return;
+  //   }
+  //   this.handleLandlordCachedResponse(from, text);
+  // }
 
-  async handleLandlordCachedResponse(from: string, text: string) {
-    const landlord_state = await this.cache.get(
-      `service_request_state_landlord_${from}`,
-    );
+  //   async handleLandlordText(message: any, from: string) {
+  //   const text = message.text?.body;
 
-    if (!landlord_state) {
-      await this.sendText(from, 'No cached selection found. Please try again.');
-      return;
-    }
+  //   if (["done", "menu"].includes(text?.toLowerCase())) {
+  //     await this.flow.handleExitOrMenu(from, text);
+  //     return;
+  //   }
 
-    let parsed: { type: string; ids: string[] };
+  //   const raw = await this.cache.get(`service_request_state_landlord_${from}`);
+  //   if (!raw) {
+  //     await this.sendText(from, "No active landlord flow.");
+  //     return;
+  //   }
 
-    try {
-      parsed = landlord_state;
-    } catch (err) {
-      console.error('Invalid landlord_state:', landlord_state);
-      await this.sendText(from, 'Something went wrong. Please try again.');
-      return;
-    }
+  //   const { type, step } = JSON.parse(raw);
 
-    const { type, ids } = parsed;
-    const choice = parseInt(text.trim(), 10);
+  //   if (type === "add_tenant") {
+  //     await this.flow.handleLandlordText(from, text);
+  //   } else if (["tenancy", "maintenance"].includes(type)) {
+  //     await this.lookup.handleLookup(from, text);
+  //   } else {
+  //     await this.sendText(from, "Invalid state. Please try again.");
+  //   }
+  // }
 
-    if (isNaN(choice) || choice < 1 || choice > ids.length) {
-      await this.sendText(
-        from,
-        'Invalid choice. Please reply with a valid number.',
-      );
-      return;
-    }
+  //   async handleLandlordCachedResponse(from: string, text: string) {
+  //     const landlord_state = await this.cache.get(
+  //       `service_request_state_landlord_${from}`,
+  //     );
 
-    const selectedId = ids[choice - 1];
+  //     if (!landlord_state) {
+  //       await this.sendText(from, 'No cached selection found. Please try again.');
+  //       return;
+  //     }
 
-    if (type === 'tenancy') {
-      // fetch tenancy details
-      // 👇 Figure out whether this ID belongs to tenancy or maintenance
-      const tenancy = await this.propertyTenantRepo.findOne({
-        where: { id: selectedId },
-        relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
-      });
+  //     let parsed: { type: string; step:string, ids: string[] };
 
-      if (tenancy) {
-        // --- Tenancy details ---
-        const latestRent =
-          tenancy.property.rents?.[tenancy.property.rents.length - 1] || null;
+  //     try {
+  //       parsed = landlord_state;
 
-        const tenantName = tenancy.tenant?.user
-          ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
-          : 'Vacant';
+  //         if(parsed.step === 'no_step'){
 
-        const paymentHistory = tenancy.property.rents
-          .map(
-            (r) =>
-              `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
-                'en-NG',
-                { style: 'currency', currency: 'NGN' },
-              )} (${r.payment_status})`,
-          )
-          .join('\n');
+  //     const { type, ids } = parsed;
+  //     const choice = parseInt(text.trim(), 10);
 
-        const details = `
-🏠 Property: ${tenancy.property.name}
-👤 Tenant: ${tenantName}
-💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
-          style: 'currency',
-          currency: 'NGN',
-        })}/yr
-📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
-⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
+  //     if (isNaN(choice) || choice < 1 || choice > ids.length) {
+  //       await this.sendText(
+  //         from,
+  //         'Invalid choice. Please reply with a valid number.',
+  //       );
+  //       return;
+  //     }
 
-📜 Payment History:
-${paymentHistory || 'No payments yet'}
-    `;
+  //     const selectedId = ids[choice - 1];
 
-        await this.sendText(from, details);
-        return;
-      }
-    } else if (type === 'maintenance') {
-      // fetch maintenance details
+  //     if (type === 'tenancy') {
+  //       // fetch tenancy details
+  //       // 👇 Figure out whether this ID belongs to tenancy or maintenance
+  //       const tenancy = await this.propertyTenantRepo.findOne({
+  //         where: { id: selectedId },
+  //         relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
+  //       });
 
-      // --- If not tenancy, try maintenance ---
-      const maintenance = await this.serviceRequestRepo.findOne({
-        where: { id: selectedId },
-        relations: [
-          'property',
-          'tenant',
-          'tenant.user',
-          'facilityManager',
-          'notification',
-        ],
-      });
+  //       if (tenancy) {
+  //         // --- Tenancy details ---
+  //         const latestRent =
+  //           tenancy.property.rents?.[tenancy.property.rents.length - 1] || null;
 
-      if (maintenance) {
-        const reportedDate = new Date(
-          maintenance.date_reported,
-        ).toLocaleDateString('en-NG', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-        });
+  //         const tenantName = tenancy.tenant?.user
+  //           ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
+  //           : 'Vacant';
 
-        const tenantName = maintenance.tenant?.user
-          ? `${maintenance.tenant.user.first_name} ${maintenance.tenant.user.last_name}`
-          : 'Unknown';
+  //         const paymentHistory = tenancy.property.rents
+  //           .map(
+  //             (r) =>
+  //               `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
+  //                 'en-NG',
+  //                 { style: 'currency', currency: 'NGN' },
+  //               )} (${r.payment_status})`,
+  //           )
+  //           .join('\n');
 
-        const details = `
-🛠️ Maintenance Request
-🏠 Property: ${maintenance.property?.name}
-👤 Tenant: ${tenantName}
-📅 Reported: ${reportedDate}
-📂 Category: ${maintenance.issue_category}
-📌 Status: ${maintenance.status}
-🔧 Facility Manager: ${maintenance.facilityManager?.account.profile_name || 'N/A'}
-    `;
+  //         const details = `
+  // 🏠 Property: ${tenancy.property.name}
+  // 👤 Tenant: ${tenantName}
+  // 💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
+  //           style: 'currency',
+  //           currency: 'NGN',
+  //         })}/yr
+  // 📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
+  // ⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
 
-        await this.sendText(from, details);
-        return;
-      }
-    } else if (type === 'add_tenant') {
-      await this.handleAddTenantResponse(from, text);
-    }
+  // 📜 Payment History:
+  // ${paymentHistory || 'No payments yet'}
+  //     `;
 
-    await this.sendText(from, 'Selection not found.');
-  }
+  //         await this.sendText(from, details);
+  //         return;
+  //       }
+  //     } else if (type === 'maintenance') {
+  //       // fetch maintenance details
 
-  async handleLandlordInteractive(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply;
-    if (!buttonReply) return;
+  //       // --- If not tenancy, try maintenance ---
+  //       const maintenance = await this.serviceRequestRepo.findOne({
+  //         where: { id: selectedId },
+  //         relations: [
+  //           'property',
+  //           'tenant',
+  //           'tenant.user',
+  //           'facilityManager',
+  //           'notification',
+  //         ],
+  //       });
 
-    switch (buttonReply.id) {
-      case 'view_tenancies':
-        // Find landlord user by phone number
-        const ownerUser = await this.usersRepo.findOne({
-          where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
-          relations: ['accounts'],
-        });
+  //       if (maintenance) {
+  //         const reportedDate = new Date(
+  //           maintenance.date_reported,
+  //         ).toLocaleDateString('en-NG', {
+  //           year: 'numeric',
+  //           month: 'short',
+  //           day: 'numeric',
+  //         });
 
-        if (!ownerUser) {
-          await this.sendText(from, 'No tenancy info available.');
-          return;
-        }
+  //         const tenantName = maintenance.tenant?.user
+  //           ? `${maintenance.tenant.user.first_name} ${maintenance.tenant.user.last_name}`
+  //           : 'Unknown';
 
-        console.log({ ownerUser: ownerUser.accounts });
+  //         const details = `
+  // 🛠️ Maintenance Request
+  // 🏠 Property: ${maintenance.property?.name}
+  // 👤 Tenant: ${tenantName}
+  // 📅 Reported: ${reportedDate}
+  // 📂 Category: ${maintenance.issue_category}
+  // 📌 Status: ${maintenance.status}
+  // 🔧 Facility Manager: ${maintenance.facilityManager?.account.profile_name || 'N/A'}
+  //     `;
 
-        // Get all property-tenants linked to this landlord
-        const propertyTenants = await this.propertyTenantRepo.find({
-          where: {
-            property: {
-              owner_id: ownerUser.accounts[0].id,
-            },
-          },
-          relations: [
-            'property',
-            'property.rents',
-            'tenant', // 👈 Account (tenant user)
-            'tenant.user', // 👈 Tenant’s user profile
-          ],
-        });
+  //         await this.sendText(from, details);
+  //         return;
+  //       }
+  //     }
 
-        if (!propertyTenants?.length) {
-          await this.sendText(from, 'No tenancies found.');
-          return;
-        }
+  //         }else{
+  //               await this.handleAddTenantResponse(from, text);
+  //         }
 
-        // Construct tenancy list
-        let tenancyMessage = 'Here are your current tenancies:\n';
-        console.log({ propertyTenants });
+  //     } catch (err) {
+  //       console.error('Invalid landlord_state:', landlord_state);
+  //       await this.sendText(from, 'Something went wrong. Please try again.');
+  //       return;
+  //     }
 
-        for (const [i, pt] of propertyTenants.entries()) {
-          // tenancy-level rents
-          const latestRent =
-            pt.property.rents?.[pt.property.rents.length - 1] || null;
+  //     await this.sendText(from, 'Selection not found.');
+  //   }
 
-          const tenantName = pt.tenant?.user
-            ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
-            : 'Vacant';
+  // async handleLandlordInteractive(message: any, from: string) {
+  //   await this.landlordInteractive.handle(message, from);
+  // }
 
-          const rentAmount = latestRent?.rental_price
-            ? latestRent.rental_price.toLocaleString('en-NG', {
-                style: 'currency',
-                currency: 'NGN',
-              })
-            : 'N/A';
+  // async handleLandlordInteractive(message: any, from: string) {
+  //   const buttonReply = message.interactive?.button_reply;
+  //   if (!buttonReply) return;
 
-          const dueDate = latestRent?.lease_end_date
-            ? new Date(latestRent.lease_end_date).toLocaleDateString('en-NG', {
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric',
-              })
-            : 'N/A';
+  //   switch (buttonReply.id) {
+  //     case 'view_tenancies':
+  //       // Find landlord user by phone number
+  //       const ownerUser = await this.usersRepo.findOne({
+  //         where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+  //         relations: ['accounts'],
+  //       });
 
-          tenancyMessage += `${i + 1}. ${pt.property.name} – ${tenantName} – ${rentAmount}/yr – Next rent due: ${dueDate}\n`;
-        }
+  //       if (!ownerUser) {
+  //         await this.sendText(from, 'No tenancy info available.');
+  //         return;
+  //       }
 
-        await this.sendText(from, tenancyMessage);
+  //       console.log({ ownerUser: ownerUser.accounts });
 
-        await this.sendText(
-          from,
-          'Reply with the number of the tenancy you want to view (e.g., 1 for first property).',
-        );
+  //       // Get all property-tenants linked to this landlord
+  //       const propertyTenants = await this.propertyTenantRepo.find({
+  //         where: {
+  //           property: {
+  //             owner_id: ownerUser.accounts[0].id,
+  //           },
+  //         },
+  //         relations: [
+  //           'property',
+  //           'property.rents',
+  //           'tenant', // 👈 Account (tenant user)
+  //           'tenant.user', // 👈 Tenant’s user profile
+  //         ],
+  //       });
 
-        // Save state so we know landlord is selecting a tenancy
-        await this.cache.set(
-          `service_request_state_landlord_${from}`,
-          JSON.stringify({
-            type: 'tenancy',
-            ids: propertyTenants.map((pt) => pt.id),
-          }), // store tenancy ids
-          300,
-        );
+  //       if (!propertyTenants?.length) {
+  //         await this.sendText(from, 'No tenancies found.');
+  //         return;
+  //       }
 
-        await this.sendText(
-          from,
-          'Type "menu" to see other options or "done" to finish.',
-        );
-        break;
+  //       // Construct tenancy list
+  //       let tenancyMessage = 'Here are your current tenancies:\n';
+  //       console.log({ propertyTenants });
 
-      case 'view_maintenance':
-        // Find landlord
-        const ownerUserMaintenance = await this.usersRepo.findOne({
-          where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
-          relations: ['accounts'],
-        });
+  //       for (const [i, pt] of propertyTenants.entries()) {
+  //         // tenancy-level rents
+  //         const latestRent =
+  //           pt.property.rents?.[pt.property.rents.length - 1] || null;
 
-        if (!ownerUserMaintenance) {
-          await this.sendText(from, 'No maintenance info available.');
-          return;
-        }
+  //         const tenantName = pt.tenant?.user
+  //           ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
+  //           : 'Vacant';
 
-        // Get service requests for properties owned by this landlord
-        const serviceRequests = await this.serviceRequestRepo.find({
-          where: {
-            property: {
-              owner_id: ownerUserMaintenance.accounts[0].id,
-            },
-          },
-          relations: [
-            'property',
-            'tenant',
-            'tenant.user',
-            'facilityManager',
-            'notification',
-          ],
-          order: { date_reported: 'DESC' },
-        });
+  //         const rentAmount = latestRent?.rental_price
+  //           ? latestRent.rental_price.toLocaleString('en-NG', {
+  //               style: 'currency',
+  //               currency: 'NGN',
+  //             })
+  //           : 'N/A';
 
-        if (!serviceRequests?.length) {
-          await this.sendText(from, 'No maintenance requests found.');
-          return;
-        }
+  //         const dueDate = latestRent?.lease_end_date
+  //           ? new Date(latestRent.lease_end_date).toLocaleDateString('en-NG', {
+  //               year: 'numeric',
+  //               month: 'short',
+  //               day: 'numeric',
+  //             })
+  //           : 'N/A';
 
-        // Construct list
-        let maintenanceMessage =
-          'Here are open maintenance requests for your properties:\n';
-        for (const [i, req] of serviceRequests.entries()) {
-          const reportedDate = new Date(req.date_reported).toLocaleDateString(
-            'en-NG',
-            { year: 'numeric', month: 'short', day: 'numeric' },
-          );
+  //         tenancyMessage += `${i + 1}. ${pt.property.name} – ${tenantName} – ${rentAmount}/yr – Next rent due: ${dueDate}\n`;
+  //       }
 
-          maintenanceMessage += `${i + 1}. ${req.property_name} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
-        }
+  //       await this.sendText(from, tenancyMessage);
 
-        await this.sendText(from, maintenanceMessage);
-        await this.sendText(
-          from,
-          'Reply with the number of the request you want to view.',
-        );
+  //       await this.sendText(
+  //         from,
+  //         'Reply with the number of the tenancy you want to view (e.g., 1 for first property).',
+  //       );
 
-        // Cache the UUIDs for later lookup
-        await this.cache.set(
-          `service_request_state_landlord_${from}`,
-          JSON.stringify({
-            type: 'maintenance',
-            ids: serviceRequests.map((req) => req.id),
-          }),
-          300,
-        );
-        break;
+  //       // Save state so we know landlord is selecting a tenancy
+  //       await this.cache.set(
+  //         `service_request_state_landlord_${from}`,
+  //         JSON.stringify({
+  //           type: 'tenancy',
+  //           ids: propertyTenants.map((pt) => pt.id),
+  //           step: "no_step",
+  //           data:{}
+  //         }), // store tenancy ids
+  //         300,
+  //       );
 
-      case 'new_tenant':
-        await this.startAddTenantFlow(from);
-      default:
-        await this.sendText(
-          from,
-          `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`,
-        );
-        await this.cache.set(
-          `service_request_state_default_${from}`,
-          `property_owner_options_${buttonReply.id}`,
-          300,
-        );
-    }
-  }
+  //       await this.sendText(
+  //         from,
+  //         'Type "menu" to see other options or "done" to finish.',
+  //       );
+  //       break;
+
+  //     case 'view_maintenance':
+  //       // Find landlord
+  //       const ownerUserMaintenance = await this.usersRepo.findOne({
+  //         where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+  //         relations: ['accounts'],
+  //       });
+
+  //       if (!ownerUserMaintenance) {
+  //         await this.sendText(from, 'No maintenance info available.');
+  //         return;
+  //       }
+
+  //       // Get service requests for properties owned by this landlord
+  //       const serviceRequests = await this.serviceRequestRepo.find({
+  //         where: {
+  //           property: {
+  //             owner_id: ownerUserMaintenance.accounts[0].id,
+  //           },
+  //         },
+  //         relations: [
+  //           'property',
+  //           'tenant',
+  //           'tenant.user',
+  //           'facilityManager',
+  //           'notification',
+  //         ],
+  //         order: { date_reported: 'DESC' },
+  //       });
+
+  //       if (!serviceRequests?.length) {
+  //         await this.sendText(from, 'No maintenance requests found.');
+  //         return;
+  //       }
+
+  //       // Construct list
+  //       let maintenanceMessage =
+  //         'Here are open maintenance requests for your properties:\n';
+  //       for (const [i, req] of serviceRequests.entries()) {
+  //         const reportedDate = new Date(req.date_reported).toLocaleDateString(
+  //           'en-NG',
+  //           { year: 'numeric', month: 'short', day: 'numeric' },
+  //         );
+
+  //         maintenanceMessage += `${i + 1}. ${req.property_name} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
+  //       }
+
+  //       await this.sendText(from, maintenanceMessage);
+  //       await this.sendText(
+  //         from,
+  //         'Reply with the number of the request you want to view.',
+  //       );
+
+  //       // Cache the UUIDs for later lookup
+  //       await this.cache.set(
+  //         `service_request_state_landlord_${from}`,
+  //         JSON.stringify({
+  //           type: 'maintenance',
+  //           ids: serviceRequests.map((req) => req.id),
+  //           step: "no_step",
+  //           data:{}
+  //         }),
+  //         300,
+  //       );
+  //       break;
+
+  //     case 'new_tenant':
+  //       await this.startAddTenantFlow(from);
+  //     default:
+  //       await this.sendText(
+  //         from,
+  //         `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`,
+  //       );
+  //       await this.cache.set(
+  //         `service_request_state_default_${from}`,
+  //         `property_owner_options_${buttonReply.id}`,
+  //         300,
+  //       );
+  //   }
+  // }
 
   async handleDefaultText(message: any, from: string) {
     const text = message.text?.body;

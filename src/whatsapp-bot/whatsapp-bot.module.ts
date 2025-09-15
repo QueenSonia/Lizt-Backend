@@ -14,6 +14,7 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
 import { Waitlist } from 'src/users/entities/waitlist.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { Account } from 'src/users/entities/account.entity';
+import { LandlordFlow } from './templates/landlord/landlordflow';
 
 
 @Module({
@@ -23,7 +24,7 @@ import { Account } from 'src/users/entities/account.entity';
     forwardRef(() => UsersModule), 
   ],
   controllers: [WhatsappBotController],
-  providers: [WhatsappBotService],
+  providers: [WhatsappBotService,   LandlordFlow,],
   exports: [WhatsappBotService],
 })
 export class WhatsappBotModule {}

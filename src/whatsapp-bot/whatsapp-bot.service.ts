@@ -326,7 +326,7 @@ export class WhatsappBotService {
         }
 
         if (message.type === 'text') {
-          this.flow.handleText(from, message as any);
+          this.flow.handleText(from, message.text?.body as any);
         }
 
         break;

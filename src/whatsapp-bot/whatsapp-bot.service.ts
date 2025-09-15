@@ -196,12 +196,9 @@ export class WhatsappBotService {
     console.log({landlord_state})
 
     let parsed: { type: string; ids: string[] };
-    try {
+
       parsed = JSON.parse(landlord_state);
-    } catch {
-      await this.sendText(from, 'Session expired. Please try again.');
-      return;
-    }
+ 
 
     const { type, ids } = parsed;
     const choice = parseInt(text.trim(), 10);

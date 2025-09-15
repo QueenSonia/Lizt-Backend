@@ -193,6 +193,8 @@ export class WhatsappBotService {
       return;
     }
 
+    console.log({landlord_state})
+
     let parsed: { type: string; ids: string[] };
     try {
       parsed = JSON.parse(landlord_state);

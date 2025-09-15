@@ -183,103 +183,125 @@ export class WhatsappBotService {
     this.handleLandlordCachedResponse(from, text);
   }
 
-  async handleLandlordCachedResponse(from, text) {
+  async handleLandlordCachedResponse(from: string, text: string) {
     const landlord_state = await this.cache.get(
       `service_request_state_landlord_${from}`,
     );
 
     console.log({ landlord_state });
 
-    // Handle tenancy selection state (array of tenancy IDs was cached)
-    let tenancyIds: string[] = [];
+    let cachedIds: string[] = [];
 
     if (typeof landlord_state === 'string') {
-      tenancyIds = JSON.parse(landlord_state);
+      try {
+        cachedIds = JSON.parse(landlord_state);
+      } catch {
+        cachedIds = [];
+      }
     } else if (Array.isArray(landlord_state)) {
-      tenancyIds = landlord_state;
+      cachedIds = landlord_state;
     }
 
-    if (!tenancyIds.length) {
-      await this.sendText(
-        from,
-        'No tenancy selection found. Please try again.',
-      );
+    if (!cachedIds.length) {
+      await this.sendText(from, 'No cached selection found. Please try again.');
       return;
     }
 
     const choice = parseInt(text.trim(), 10);
 
-    if (isNaN(choice) || choice < 1 || choice > tenancyIds.length) {
+    if (isNaN(choice) || choice < 1 || choice > cachedIds.length) {
       await this.sendText(
         from,
-        'Invalid choice. Please reply with a valid tenancy number.',
+        'Invalid choice. Please reply with a valid number.',
       );
       return;
     }
 
-    const tenancyId = tenancyIds[choice - 1]; // map number → UUID
+    const selectedId = cachedIds[choice - 1];
+
+    // 👇 Figure out whether this ID belongs to tenancy or maintenance
     const tenancy = await this.propertyTenantRepo.findOne({
-      where: { id: tenancyId },
+      where: { id: selectedId },
       relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
     });
 
-    if (!tenancy) {
-      await this.sendText(from, 'Tenancy not found.');
+    if (tenancy) {
+      // --- Tenancy details ---
+      const latestRent =
+        tenancy.property.rents?.[tenancy.property.rents.length - 1] || null;
+
+      const tenantName = tenancy.tenant?.user
+        ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
+        : 'Vacant';
+
+      const paymentHistory = tenancy.property.rents
+        .map(
+          (r) =>
+            `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
+              'en-NG',
+              { style: 'currency', currency: 'NGN' },
+            )} (${r.payment_status})`,
+        )
+        .join('\n');
+
+      const details = `
+🏠 Property: ${tenancy.property.name}
+👤 Tenant: ${tenantName}
+💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
+        style: 'currency',
+        currency: 'NGN',
+      })}/yr
+📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
+⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
+
+📜 Payment History:
+${paymentHistory || 'No payments yet'}
+    `;
+
+      await this.sendText(from, details);
       return;
     }
 
-    const latestRent = tenancy.property.rents?.[tenancy.property.rents.length - 1];
-    const tenantName = tenancy.tenant?.user
-      ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
-      : 'Vacant';
+    // --- If not tenancy, try maintenance ---
+    const maintenance = await this.serviceRequestRepo.findOne({
+      where: { id: selectedId },
+      relations: [
+        'property',
+        'tenant',
+        'tenant.user',
+        'facilityManager',
+        'notification',
+      ],
+    });
 
-    const paymentHistory = tenancy.property.rents
-      .map(
-        (r) =>
-          `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
-            'en-NG',
-            {
-              style: 'currency',
-              currency: 'NGN',
-            },
-          )} (${r.payment_status})`,
-      )
-      .join('\n');
+    if (maintenance) {
+      const reportedDate = new Date(
+        maintenance.date_reported,
+      ).toLocaleDateString('en-NG', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      });
 
-    const details = `
-        🏠 Property: ${tenancy.property.name}
-        👤 Tenant: ${tenantName}
-        💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
-          style: 'currency',
-          currency: 'NGN',
-        })}/yr
-        📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
-        ⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
+      const tenantName = maintenance.tenant?.user
+        ? `${maintenance.tenant.user.first_name} ${maintenance.tenant.user.last_name}`
+        : 'Unknown';
 
-        📜 Payment History:
-        ${paymentHistory || 'No payments yet'}
-        `;
+      const details = `
+🛠️ Maintenance Request
+🏠 Property: ${maintenance.property?.name}
+👤 Tenant: ${tenantName}
+📅 Reported: ${reportedDate}
+📂 Category: ${maintenance.issue_category}
+📌 Status: ${maintenance.status}
+🔧 Facility Manager: ${maintenance.facilityManager?.account.profile_name || 'N/A'}
+    `;
 
-    await this.sendText(from, details);
-
-    await this.sendText(
-      from,
-      'Type "menu" to see other options or "done" to finish.',
-    );
-    // return;
-
-    // Existing property_owner_options, share_referral, etc.
-    if (landlord_state && landlord_state.includes('property_owner_options')) {
-      // ... your existing flow
-    } else if (landlord_state === 'share_referral') {
-      // ... your existing referral flow
-    } else {
-      await this.sendButtons(from, `Main Menu`, [
-        { id: 'view_tenancies', title: 'View tenancies' },
-        { id: 'view_maintenance', title: 'Maintenance requests' },
-        { id: 'new_tenant', title: 'Add new tenant' },
-      ]);
+      await this.sendText(from, details);
+      return;
     }
+
+    await this.sendText(from, 'Selection not found.');
   }
 
   async handleLandlordInteractive(message: any, from: string) {
@@ -322,12 +344,13 @@ export class WhatsappBotService {
         }
 
         // Construct tenancy list
-        let message = 'Here are your current tenancies:\n';
-        console.log({propertyTenants})
+        let tenancyMessage = 'Here are your current tenancies:\n';
+        console.log({ propertyTenants });
 
         for (const [i, pt] of propertyTenants.entries()) {
           // tenancy-level rents
-          const latestRent = pt.property.rents?.[pt.property.rents.length - 1] || null;
+          const latestRent =
+            pt.property.rents?.[pt.property.rents.length - 1] || null;
 
           const tenantName = pt.tenant?.user
             ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
@@ -348,10 +371,10 @@ export class WhatsappBotService {
               })
             : 'N/A';
 
-          message += `${i + 1}. ${pt.property.name} – ${tenantName} – ${rentAmount}/yr – Next rent due: ${dueDate}\n`;
+          tenancyMessage += `${i + 1}. ${pt.property.name} – ${tenantName} – ${rentAmount}/yr – Next rent due: ${dueDate}\n`;
         }
 
-        await this.sendText(from, message);
+        await this.sendText(from, tenancyMessage);
 
         await this.sendText(
           from,
@@ -370,22 +393,66 @@ export class WhatsappBotService {
           'Type "menu" to see other options or "done" to finish.',
         );
         break;
-      case 'property_owner':
-        await this.sendButtons(
-          from,
-          `Great! As a Property Owner, you can use Lizt to:\n 
-     1. Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries.\n 
-     2. Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you.\n 
-     3. Maintenance Management – tenants can log service requests with you for quick action. \n Please choose one of the options below:`,
-          [
-            { id: 'rent_reminder', title: 'Rent Reminders' },
-            { id: 'reminder_collection', title: 'Reminders/Collection' },
-            { id: 'all', title: 'All' },
+
+      case 'view-maintenance':
+        // Find landlord
+        const ownerUserMaintenance = await this.usersRepo.findOne({
+          where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+          relations: ['accounts'],
+        });
+
+        if (!ownerUserMaintenance) {
+          await this.sendText(from, 'No maintenance info available.');
+          return;
+        }
+
+        // Get service requests for properties owned by this landlord
+        const serviceRequests = await this.serviceRequestRepo.find({
+          where: {
+            property: {
+              owner_id: ownerUserMaintenance.accounts[0].id,
+            },
+          },
+          relations: [
+            'property',
+            'tenant',
+            'tenant.user',
+            'facilityManager',
+            'notification',
           ],
+          order: { date_reported: 'DESC' },
+        });
+
+        if (!serviceRequests?.length) {
+          await this.sendText(from, 'No maintenance requests found.');
+          return;
+        }
+
+        // Construct list
+        let maintenanceMessage =
+          'Here are open maintenance requests for your properties:\n';
+        for (const [i, req] of serviceRequests.entries()) {
+          const reportedDate = new Date(req.date_reported).toLocaleDateString(
+            'en-NG',
+            { year: 'numeric', month: 'short', day: 'numeric' },
+          );
+
+          maintenanceMessage += `${i + 1}. ${req.property_name} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
+        }
+
+        await this.sendText(from, maintenanceMessage);
+        await this.sendText(
+          from,
+          'Reply with the number of the request you want to view.',
         );
 
+        // Cache the UUIDs for later lookup
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify(serviceRequests.map((req) => req.id)),
+          300,
+        );
         break;
-      case 'rent_reminder':
       default:
         await this.sendText(
           from,

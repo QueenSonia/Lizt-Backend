@@ -38,7 +38,7 @@ export class LandlordLookup {
       return;
     }
 
-    if (parsed.step !== "select_item") {
+    if (parsed.step !== "no_step") {
       await this.whatsappUtil.sendText(from, "No active lookup. Please try again.");
       return;
     }

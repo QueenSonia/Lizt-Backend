@@ -8,10 +8,12 @@ import { ServiceRequest } from "src/service-requests/entities/service-request.en
 import { Users } from "src/users/entities/user.entity";
 import { WhatsappUtils } from "src/whatsapp-bot/utils/whatsapp";
 import { Repository } from "typeorm";
+import { LandlordLookup } from "./landlordlookup";
 
 @Injectable() 
 export class LandlordFlow {
-         private whatsappUtil: WhatsappUtils
+         private whatsappUtil: WhatsappUtils;
+         private lookup: LandlordLookup
   constructor(
      @InjectRepository(Users)
     private readonly usersRepo: Repository<Users>,
@@ -26,6 +28,7 @@ export class LandlordFlow {
   ) {
       const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config);
+    this.lookup = new LandlordLookup(cache, propertyTenantRepo, serviceRequestRepo)
   }
 
   /**
@@ -87,7 +90,7 @@ export class LandlordFlow {
   }
 
   private async handleLookupText(from: string, text: string) {
-    await this.whatsappUtil.sendText(from, `Looking up details for: ${text}`);
+    await this.lookup.handleLookup(from, `${text}`);
   }
 
   async handleExitOrMenu(from: string, text: string) {

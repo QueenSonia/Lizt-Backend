@@ -1,16 +1,21 @@
+import { ConfigService } from "@nestjs/config";
 import { CacheService } from "src/lib/cache";
 import { PropertyTenant } from "src/properties/entities/property-tenants.entity";
 import { ServiceRequest } from "src/service-requests/entities/service-request.entity";
+import { WhatsappUtils } from "src/whatsapp-bot/utils/whatsapp";
 import { Repository } from "typeorm/repository/Repository";
 
 // --- landlordLookup.ts ---
 export class LandlordLookup {
+     private whatsappUtil: WhatsappUtils;
   constructor(
     private cache: CacheService,
       private propertyTenantRepo: Repository<PropertyTenant>,
     private serviceRequestRepo: Repository<ServiceRequest>,
-    private sendText: (to: string, text: string) => Promise<void>
-  ) {}
+  ) {
+          const config = new ConfigService();
+        this.whatsappUtil = new WhatsappUtils(config);
+  }
 
   private key(from: string) {
     return `service_request_state_landlord_${from}`;
@@ -19,7 +24,7 @@ export class LandlordLookup {
   async handleLookup(from: string, text: string) {
     const raw = await this.cache.get(this.key(from));
     if (!raw) {
-      await this.sendText(from, "No cached selection found. Please try again.");
+      await this.whatsappUtil.sendText(from, "No cached selection found. Please try again.");
       return;
     }
 
@@ -29,18 +34,18 @@ export class LandlordLookup {
 
       console.log({parsed})
     } catch (err) {
-      await this.sendText(from, "Something went wrong. Please try again.");
+      await this.whatsappUtil.sendText(from, "Something went wrong. Please try again.");
       return;
     }
 
     if (parsed.step !== "select_item") {
-      await this.sendText(from, "No active lookup. Please try again.");
+      await this.whatsappUtil.sendText(from, "No active lookup. Please try again.");
       return;
     }
 
     const choice = parseInt(text.trim(), 10);
     if (isNaN(choice) || choice < 1 || choice > parsed.ids.length) {
-      await this.sendText(from, "Invalid choice. Please reply with a valid number.");
+      await this.whatsappUtil.sendText(from, "Invalid choice. Please reply with a valid number.");
       return;
     }
 
@@ -59,7 +64,7 @@ export class LandlordLookup {
     });
 
     if (!tenancy) {
-      await this.sendText(from, "Tenancy not found.");
+      await this.whatsappUtil.sendText(from, "Tenancy not found.");
       return;
     }
 
@@ -93,7 +98,7 @@ export class LandlordLookup {
 ${paymentHistory}
     `;
 
-    await this.sendText(from, details);
+    await this.whatsappUtil.sendText(from, details);
   }
 
   private async showMaintenanceDetails(from: string, requestId: string) {
@@ -103,7 +108,7 @@ ${paymentHistory}
     });
 
     if (!maintenance) {
-      await this.sendText(from, "Maintenance request not found.");
+      await this.whatsappUtil.sendText(from, "Maintenance request not found.");
       return;
     }
 
@@ -127,6 +132,6 @@ ${paymentHistory}
 🔧 Facility Manager: ${maintenance.facilityManager?.account.profile_name || "N/A"}
     `;
 
-    await this.sendText(from, details);
+    await this.whatsappUtil.sendText(from, details);
   }
 }

@@ -188,28 +188,23 @@ export class WhatsappBotService {
       `service_request_state_landlord_${from}`,
     );
 
-    console.log({ landlord_state });
-
-    let cachedIds: string[] = [];
-
-    if (typeof landlord_state === 'string') {
-      try {
-        cachedIds = JSON.parse(landlord_state);
-      } catch {
-        cachedIds = [];
-      }
-    } else if (Array.isArray(landlord_state)) {
-      cachedIds = landlord_state;
-    }
-
-    if (!cachedIds.length) {
+    if (!landlord_state) {
       await this.sendText(from, 'No cached selection found. Please try again.');
       return;
     }
 
+    let parsed: { type: string; ids: string[] };
+    try {
+      parsed = JSON.parse(landlord_state);
+    } catch {
+      await this.sendText(from, 'Session expired. Please try again.');
+      return;
+    }
+
+    const { type, ids } = parsed;
     const choice = parseInt(text.trim(), 10);
 
-    if (isNaN(choice) || choice < 1 || choice > cachedIds.length) {
+    if (isNaN(choice) || choice < 1 || choice > ids.length) {
       await this.sendText(
         from,
         'Invalid choice. Please reply with a valid number.',
@@ -217,40 +212,42 @@ export class WhatsappBotService {
       return;
     }
 
-    const selectedId = cachedIds[choice - 1];
+    const selectedId = ids[choice - 1];
 
-    // 👇 Figure out whether this ID belongs to tenancy or maintenance
-    const tenancy = await this.propertyTenantRepo.findOne({
-      where: { id: selectedId },
-      relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
-    });
+    if (type === 'tenancy') {
+      // fetch tenancy details
+      // 👇 Figure out whether this ID belongs to tenancy or maintenance
+      const tenancy = await this.propertyTenantRepo.findOne({
+        where: { id: selectedId },
+        relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
+      });
 
-    if (tenancy) {
-      // --- Tenancy details ---
-      const latestRent =
-        tenancy.property.rents?.[tenancy.property.rents.length - 1] || null;
+      if (tenancy) {
+        // --- Tenancy details ---
+        const latestRent =
+          tenancy.property.rents?.[tenancy.property.rents.length - 1] || null;
 
-      const tenantName = tenancy.tenant?.user
-        ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
-        : 'Vacant';
+        const tenantName = tenancy.tenant?.user
+          ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
+          : 'Vacant';
 
-      const paymentHistory = tenancy.property.rents
-        .map(
-          (r) =>
-            `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
-              'en-NG',
-              { style: 'currency', currency: 'NGN' },
-            )} (${r.payment_status})`,
-        )
-        .join('\n');
+        const paymentHistory = tenancy.property.rents
+          .map(
+            (r) =>
+              `${new Date(r.lease_start_date).toLocaleDateString()} - ${r.amount_paid?.toLocaleString(
+                'en-NG',
+                { style: 'currency', currency: 'NGN' },
+              )} (${r.payment_status})`,
+          )
+          .join('\n');
 
-      const details = `
+        const details = `
 🏠 Property: ${tenancy.property.name}
 👤 Tenant: ${tenantName}
 💵 Rent: ${latestRent?.rental_price?.toLocaleString('en-NG', {
-        style: 'currency',
-        currency: 'NGN',
-      })}/yr
+          style: 'currency',
+          currency: 'NGN',
+        })}/yr
 📅 Lease: ${latestRent?.lease_start_date?.toLocaleDateString()} → ${latestRent?.lease_end_date?.toLocaleDateString()}
 ⚖️ Outstanding: ${latestRent?.payment_status === 'OWING' ? 'Yes' : 'No'}
 
@@ -258,36 +255,38 @@ export class WhatsappBotService {
 ${paymentHistory || 'No payments yet'}
     `;
 
-      await this.sendText(from, details);
-      return;
-    }
+        await this.sendText(from, details);
+        return;
+      }
+    } else if (type === 'maintenance') {
+      // fetch maintenance details
 
-    // --- If not tenancy, try maintenance ---
-    const maintenance = await this.serviceRequestRepo.findOne({
-      where: { id: selectedId },
-      relations: [
-        'property',
-        'tenant',
-        'tenant.user',
-        'facilityManager',
-        'notification',
-      ],
-    });
-
-    if (maintenance) {
-      const reportedDate = new Date(
-        maintenance.date_reported,
-      ).toLocaleDateString('en-NG', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
+      // --- If not tenancy, try maintenance ---
+      const maintenance = await this.serviceRequestRepo.findOne({
+        where: { id: selectedId },
+        relations: [
+          'property',
+          'tenant',
+          'tenant.user',
+          'facilityManager',
+          'notification',
+        ],
       });
 
-      const tenantName = maintenance.tenant?.user
-        ? `${maintenance.tenant.user.first_name} ${maintenance.tenant.user.last_name}`
-        : 'Unknown';
+      if (maintenance) {
+        const reportedDate = new Date(
+          maintenance.date_reported,
+        ).toLocaleDateString('en-NG', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        });
 
-      const details = `
+        const tenantName = maintenance.tenant?.user
+          ? `${maintenance.tenant.user.first_name} ${maintenance.tenant.user.last_name}`
+          : 'Unknown';
+
+        const details = `
 🛠️ Maintenance Request
 🏠 Property: ${maintenance.property?.name}
 👤 Tenant: ${tenantName}
@@ -297,8 +296,9 @@ ${paymentHistory || 'No payments yet'}
 🔧 Facility Manager: ${maintenance.facilityManager?.account.profile_name || 'N/A'}
     `;
 
-      await this.sendText(from, details);
-      return;
+        await this.sendText(from, details);
+        return;
+      }
     }
 
     await this.sendText(from, 'Selection not found.');
@@ -384,7 +384,10 @@ ${paymentHistory || 'No payments yet'}
         // Save state so we know landlord is selecting a tenancy
         await this.cache.set(
           `service_request_state_landlord_${from}`,
-          JSON.stringify(propertyTenants.map((pt) => pt.id)), // store tenancy ids
+          JSON.stringify({
+            type: 'tenancy',
+            ids: propertyTenants.map((pt) => pt.id),
+          }), // store tenancy ids
           300,
         );
 
@@ -394,7 +397,7 @@ ${paymentHistory || 'No payments yet'}
         );
         break;
 
-      case 'view-maintenance':
+      case 'view_maintenance':
         // Find landlord
         const ownerUserMaintenance = await this.usersRepo.findOne({
           where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
@@ -449,7 +452,10 @@ ${paymentHistory || 'No payments yet'}
         // Cache the UUIDs for later lookup
         await this.cache.set(
           `service_request_state_landlord_${from}`,
-          JSON.stringify(serviceRequests.map((req) => req.id)),
+          JSON.stringify({
+            type: 'maintenance',
+            ids: serviceRequests.map((req) => req.id),
+          }),
           300,
         );
         break;

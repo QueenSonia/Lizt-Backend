@@ -352,13 +352,13 @@ export class WhatsappBotService {
   //   }
 
   //   if (text?.toLowerCase() === 'menu') {
-  //     await this.sendButtons(from, `Main Menu`, [
-  //       { id: 'view_tenancies', title: 'View tenancies' },
-  //       { id: 'view_maintenance', title: 'maintenance requests' },
-  //       { id: 'new_tenant', title: 'Add new tenant' },
-  //     ]);
-  //     return;
-  //   }
+    //   await this.sendButtons(from, `Main Menu`, [
+    //     { id: 'view_tenancies', title: 'View tenancies' },
+    //     { id: 'view_maintenance', title: 'maintenance requests' },
+    //     { id: 'new_tenant', title: 'Add new tenant' },
+    //   ]);
+    //   return;
+    // }
   //   this.handleLandlordCachedResponse(from, text);
   // }
 

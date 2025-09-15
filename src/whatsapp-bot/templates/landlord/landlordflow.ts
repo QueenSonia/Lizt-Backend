@@ -3,6 +3,7 @@ import { CacheService } from "src/lib/cache";
 import { PropertyTenant } from "src/properties/entities/property-tenants.entity";
 import { ServiceRequest } from "src/service-requests/entities/service-request.entity";
 import { Users } from "src/users/entities/user.entity";
+import { WhatsappUtils } from "src/whatsapp-bot/utils/whatsapp";
 import { Repository } from "typeorm";
 
 
@@ -12,7 +13,7 @@ export class LandlordFlow {
     private serviceRequestRepo: Repository<ServiceRequest>,
     private propertyTenantRepo: Repository<PropertyTenant>,
     private cache: CacheService,
-    private sendText: (to: string, text: string) => Promise<void>
+       private whatsappUtil: WhatsappUtils,
   ) {}
 
   /**
@@ -26,7 +27,7 @@ export class LandlordFlow {
 
     const raw = await this.cache.get(`service_request_state_landlord_${from}`);
     if (!raw) {
-      await this.sendText(from, "No active landlord flow.");
+      await this.whatsappUtil.sendText(from, "No active landlord flow.");
       return;
     }
 
@@ -37,7 +38,7 @@ export class LandlordFlow {
     } else if (["tenancy", "maintenance"].includes(type)) {
       await this.handleLookupText(from, text);
     } else {
-      await this.sendText(from, "Invalid state. Please try again.");
+      await this.whatsappUtil.sendText(from, "Invalid state. Please try again.");
     }
   }
 
@@ -68,23 +69,26 @@ export class LandlordFlow {
 
   private async handleAddTenantText(from: string, text: string) {
     // delegate to steps or handle inline
-    await this.sendText(from, `Processing tenant addition: ${text}`);
+    await this.whatsappUtil.sendText(from, `Processing tenant addition: ${text}`);
   }
 
   private async handleLookupText(from: string, text: string) {
-    await this.sendText(from, `Looking up details for: ${text}`);
+    await this.whatsappUtil.sendText(from, `Looking up details for: ${text}`);
   }
 
   async handleExitOrMenu(from: string, text: string) {
     if (text.toLowerCase() === "done") {
-      await this.sendText(from, "Thanks! You’ve exited landlord flow.");
+      await this.whatsappUtil.sendText(from, "Thanks! You’ve exited landlord flow.");
       await this.cache.delete(`service_request_state_landlord_${from}`);
     } else {
-      await this.sendText(
-        from,
-        "Menu options:\n1. View Tenancies\n2. View Maintenance\n3. Add Tenant"
-      );
+              await this.whatsappUtil.sendButtons(from, `Main Menu`, [
+        { id: 'view_tenancies', title: 'View tenancies' },
+        { id: 'view_maintenance', title: 'maintenance requests' },
+        { id: 'new_tenant', title: 'Add new tenant' },
+      ]);
+      return;
     }
+    
   }
 
   // ------------------------
@@ -98,7 +102,7 @@ export class LandlordFlow {
     });
 
     if (!ownerUser) {
-      await this.sendText(from, "No tenancy info available.");
+      await this.whatsappUtil.sendText(from, "No tenancy info available.");
       return;
     }
 
@@ -108,7 +112,7 @@ export class LandlordFlow {
     });
 
     if (!propertyTenants?.length) {
-      await this.sendText(from, "No tenancies found.");
+      await this.whatsappUtil.sendText(from, "No tenancies found.");
       return;
     }
 
@@ -137,8 +141,8 @@ export class LandlordFlow {
       tenancyMessage += `${i + 1}. ${pt.property.name} – ${tenantName} – ${rentAmount}/yr – Next rent due: ${dueDate}\n`;
     }
 
-    await this.sendText(from, tenancyMessage);
-    await this.sendText(
+    await this.whatsappUtil.sendText(from, tenancyMessage);
+    await this.whatsappUtil.sendText(
       from,
       "Reply with the number of the tenancy you want to view (e.g., 1 for first property)."
     );
@@ -162,7 +166,7 @@ export class LandlordFlow {
     });
 
     if (!ownerUser) {
-      await this.sendText(from, "No maintenance info available.");
+      await this.whatsappUtil.sendText(from, "No maintenance info available.");
       return;
     }
 
@@ -173,7 +177,7 @@ export class LandlordFlow {
     });
 
     if (!serviceRequests?.length) {
-      await this.sendText(from, "No maintenance requests found.");
+      await this.whatsappUtil.sendText(from, "No maintenance requests found.");
       return;
     }
 
@@ -188,8 +192,8 @@ export class LandlordFlow {
       maintenanceMessage += `${i + 1}. ${req.property_name} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
     }
 
-    await this.sendText(from, maintenanceMessage);
-    await this.sendText(from, "Reply with the number of the request you want to view.");
+    await this.whatsappUtil.sendText(from, maintenanceMessage);
+    await this.whatsappUtil.sendText(from, "Reply with the number of the request you want to view.");
 
     await this.cache.set(
       `service_request_state_landlord_${from}`,
@@ -204,7 +208,7 @@ export class LandlordFlow {
   }
 
   private async startAddTenantFlow(from: string) {
-    await this.sendText(from, "Starting tenant onboarding...");
+    await this.whatsappUtil.sendText(from, "Starting tenant onboarding...");
     await this.cache.set(
       `service_request_state_landlord_${from}`,
       JSON.stringify({
@@ -217,7 +221,7 @@ export class LandlordFlow {
   }
 
   private async handleFallback(from: string, id: string) {
-    await this.sendText(
+    await this.whatsappUtil.sendText(
       from,
       `Got it! You selected ${id}. Before we connect you with our team, may we have your full name?`
     );

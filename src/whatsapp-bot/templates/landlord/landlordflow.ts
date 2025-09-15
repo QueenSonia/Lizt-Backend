@@ -1,4 +1,6 @@
+import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { InjectRepository } from "@nestjs/typeorm";
 import { RolesEnum } from "src/base.entity";
 import { CacheService } from "src/lib/cache";
 import { PropertyTenant } from "src/properties/entities/property-tenants.entity";
@@ -7,14 +9,20 @@ import { Users } from "src/users/entities/user.entity";
 import { WhatsappUtils } from "src/whatsapp-bot/utils/whatsapp";
 import { Repository } from "typeorm";
 
-
+@Injectable() 
 export class LandlordFlow {
          private whatsappUtil: WhatsappUtils
   constructor(
-    private usersRepo: Repository<Users>,
-    private serviceRequestRepo: Repository<ServiceRequest>,
-    private propertyTenantRepo: Repository<PropertyTenant>,
-    private cache: CacheService,
+     @InjectRepository(Users)
+    private readonly usersRepo: Repository<Users>,
+
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepo: Repository<PropertyTenant>,
+
+    @InjectRepository(ServiceRequest)
+    private readonly serviceRequestRepo: Repository<ServiceRequest>,
+
+    private readonly cache: CacheService,
   ) {
       const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config);

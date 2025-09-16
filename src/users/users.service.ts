@@ -12,6 +12,7 @@ import {
 import {
   CreateAdminDto,
   CreateCustomerRepDto,
+  CreateLandlordDto,
   CreateTenantDto,
   CreateUserDto,
   IUser,
@@ -1383,7 +1384,7 @@ export class UsersService {
     return this.kycRepository.save(updatedKyc);
   }
 
-  async createLandlord(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
+  async createLandlord(data: CreateLandlordDto): Promise<Omit<Users, 'password'>> {
     const existingAccount = await this.accountRepository.findOne({
       where: { email: data.email, role: RolesEnum.LANDLORD },
     });
@@ -1420,7 +1421,7 @@ export class UsersService {
       email: data.email,
       password: await UtilService.hashPassword(data.password),
       role: RolesEnum.LANDLORD,
-      profile_name: `${user.first_name}'s Admin Account`,
+      profile_name:data.agency_name,
       is_verified: true,
     });
 

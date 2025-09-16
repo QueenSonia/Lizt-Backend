@@ -19,6 +19,7 @@ import { UsersService } from './users.service';
 import {
   CreateAdminDto,
   CreateCustomerRepDto,
+  CreateLandlordDto,
   CreateTenantDto,
   CreateUserDto,
   LoginDto,
@@ -428,7 +429,7 @@ export class UsersController {
 
   @SkipAuth()
   @Post('landlord')
-  async createLandlord(@Body() createUserDto: CreateAdminDto) {
+  async createLandlord(@Body() createUserDto: CreateLandlordDto) {
     return this.usersService.createLandlord(createUserDto);
   }
 

@@ -12,6 +12,7 @@ import { LandlordLookup } from "./landlordlookup";
 import { Account } from "src/users/entities/account.entity";
 import { Property } from "src/properties/entities/property.entity";
 import { TenantStatusEnum } from "src/properties/dto/create-property.dto";
+import { UtilService } from "src/utils/utility-service";
 
 @Injectable() 
 export class LandlordFlow {
@@ -156,7 +157,7 @@ export class LandlordFlow {
           }
   
           let propertyList = '🏘️ Which unit will this tenant occupy?\n';
-          let vacantUnitsList: string[] = [];
+          let vacantUnitsList: any[] = [];
   
           for (const property of properties) {
             // 🔍 Check if any tenant has ACTIVE status
@@ -165,7 +166,10 @@ export class LandlordFlow {
             );
   
             if (!hasActiveTenant) {
-              vacantUnitsList.push(property.id);
+              vacantUnitsList.push({
+                id:property.id,
+                name: property.name
+            });
               propertyList += `${vacantUnitsList.length}. ${property.name} (Vacant)\n`;
             }
           }
@@ -204,7 +208,7 @@ export class LandlordFlow {
             return;
           }
   
-          const unitId = vacantUnits[choice - 1];
+          const unit = vacantUnits[choice - 1];
   
           // ✅ Create new User + Account + PropertyTenant
           const [first_name, ...last_name_parts] = data.full_name.split(' ');
@@ -215,6 +219,7 @@ export class LandlordFlow {
             last_name,
             phone_number: data.phone,
             email: data.email || null,
+            is_verified: true
           });
           await this.usersRepo.save(newUser);
   
@@ -223,18 +228,20 @@ export class LandlordFlow {
             role: RolesEnum.TENANT,
             user: newUser,
             userId: newUser.id,
+            is_verified: true,
+            password: await UtilService.generatePassword()
           });
           await this.accountRepo.save(newAccount);
   
           const propertyTenant = this.propertyTenantRepo.create({
-            property_id: unitId, // ✅ correct field
+            property_id: unit.id, // ✅ correct field
             tenant: newAccount,
           });
           await this.propertyTenantRepo.save(propertyTenant);
   
           await this.whatsappUtil.sendText(
             from,
-            `Got it ✅. You’re adding *${data.full_name}* to unit ${unitId}. Our team will complete the setup and confirm once it’s done.`,
+            `Got it ✅. You’re adding *${data.full_name}* to unit ${unit.name}. View Tenancy to see tenant information`,
           );
   
           await this.cache.delete(`service_request_state_landlord_${from}`);
@@ -251,7 +258,12 @@ export class LandlordFlow {
       await this.whatsappUtil.sendText(from, "Thanks! You’ve exited landlord flow.");
       await this.cache.delete(`service_request_state_landlord_${from}`);
     } else {
-              await this.whatsappUtil.sendButtons(from, `Main Menu`, [
+          const ownerUser = await this.usersRepo.findOne({
+            where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+            relations: ['accounts'],
+          });
+
+              await this.whatsappUtil.sendButtons(from, `Hello ${ownerUser?.accounts[0].profile_name}, What do you want to do today?`, [
         { id: 'view_tenancies', title: 'View tenancies' },
         { id: 'view_maintenance', title: 'maintenance requests' },
         { id: 'new_tenant', title: 'Add new tenant' },

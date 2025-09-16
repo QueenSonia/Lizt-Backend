@@ -614,6 +614,78 @@ export class CreateAdminDto {
   password: string;
 }
 
+export class CreateLandlordDto {
+  @ApiProperty({ example: 'John', description: 'First name of the user' })
+  @Transform(({ value }) => typeof value === 'string' && value.toLowerCase())
+  @IsNotEmpty()
+  @IsString()
+  first_name: string;
+
+  @ApiProperty({ example: 'Doe', description: 'Last name of the user' })
+  @Transform((val) => val.value.toLowerCase())
+  @IsNotEmpty()
+  @IsString()
+  last_name: string;
+
+   @ApiProperty({ example: 'your_brand', description: 'Name of agency' })
+  @Transform((val) => val.value.toLowerCase())
+  @IsNotEmpty()
+  @IsString()
+  agency_name: string;
+
+  @ApiProperty({
+    example: 'user@example.com',
+    description: 'Email of the user',
+  })
+  @Transform((val) => val.value.toLowerCase())
+  @IsNotEmpty()
+  @IsEmail()
+  email: string;
+
+  @ApiProperty({
+    example: '+2348104467932',
+    description: 'Phone number of the user',
+  })
+  @IsNotEmpty()
+  @IsString()
+  @MinLength(10)
+  phone_number: string;
+
+  @ApiProperty({
+    example: 'admin',
+    description: 'Role of the user',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @Transform((val) => val.value.toLowerCase())
+  role?: string;
+
+  @ApiProperty({
+    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
+    description: 'UUID of the property',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  property_id: string;
+
+  @ApiProperty({
+    example: 'Password5%',
+    description: 'Password of the user (admin only)',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/,
+    {
+      message:
+        'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character.',
+    },
+  )
+  password: string;
+}
 export class CreateCustomerRepDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })
   @Transform((val) => val.value.toLowerCase())

@@ -409,7 +409,7 @@ export class LandlordFlow {
       'property.rents',
       'rent',
       'rent.rent_status = :status',
-      { status: 'ACTIVE' },
+      { status: RentStatusEnum.ACTIVE },
     )
     .where('property.owner_id = :ownerId', {
       ownerId: ownerUser.accounts[0].id,

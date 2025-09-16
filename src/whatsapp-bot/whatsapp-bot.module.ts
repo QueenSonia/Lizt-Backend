@@ -15,11 +15,12 @@ import { Waitlist } from 'src/users/entities/waitlist.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { LandlordFlow } from './templates/landlord/landlordflow';
+import { Rent } from 'src/rents/entities/rent.entity';
 
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ServiceRequest, Users, PropertyTenant, TeamMember, Waitlist, Property, Account]), 
+    TypeOrmModule.forFeature([ServiceRequest, Users, PropertyTenant, TeamMember, Waitlist, Property, Account, Rent]), 
     ServiceRequestsModule,
     forwardRef(() => UsersModule), 
   ],

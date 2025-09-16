@@ -396,10 +396,28 @@ export class LandlordFlow {
       return;
     }
 
-    const propertyTenants = await this.propertyTenantRepo.find({
-      where: { property: { owner_id: ownerUser.accounts[0].id } },
-      relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
-    });
+ const propertyTenants = await this.propertyTenantRepo
+  .createQueryBuilder('pt')
+  .leftJoinAndSelect('pt.property', 'property')
+  .leftJoinAndSelect('pt.tenant', 'tenant')
+  .leftJoinAndSelect('tenant.user', 'user')
+  .leftJoinAndSelect(
+    qb =>
+      qb
+        .from('rent', 'r')
+        .select('r.*')
+        .distinctOn(['r.property_id'])
+        .orderBy('r.property_id')
+        .addOrderBy('r.lease_end_date', 'DESC'),
+    'latest_rent',
+    'latest_rent.property_id = property.id'
+  )
+  .where('property.owner_id = :ownerId', { ownerId: ownerUser.accounts[0].id })
+  .orderBy('latest_rent.lease_end_date', 'ASC')
+  .getMany();
+
+  console.log(propertyTenants)
+
 
     if (!propertyTenants?.length) {
       await this.whatsappUtil.sendText(from, 'No tenancies found.');
@@ -489,7 +507,7 @@ export class LandlordFlow {
         },
       );
 
-      maintenanceMessage += `${i + 1}. ${req.property_name} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
+      maintenanceMessage += `${i + 1}. ${req.property_name}\n${req.issue_category}\nReported ${reportedDate}\nStatus: ${req.status}\n\n`;
     }
 
     await this.whatsappUtil.sendText(from, maintenanceMessage);

@@ -139,7 +139,7 @@ export class LandlordFlow {
         data.phone = text.trim();
         await this.whatsappUtil.sendText(
           from,
-          "✉️ Do you want to add their email? If yes, type it now. If not, reply 'skip'.",
+          "✉️ What is your tenant's email",
         );
         await this.cache.set(
           `service_request_state_landlord_${from}`,
@@ -301,7 +301,7 @@ export class LandlordFlow {
         const newUser = this.usersRepo.create({
           first_name,
           last_name,
-          phone_number: data.phone,
+          phone_number: UtilService.normalizePhoneNumber(data.phone),
           email: data.email || null,
           is_verified: true,
         });
@@ -323,6 +323,7 @@ export class LandlordFlow {
           status: TenantStatusEnum.ACTIVE,
         });
         await this.propertyTenantRepo.save(propertyTenant);
+        console.log(lease_start_date, lease_end_date)
 
         const rent = this.rentRepo.create({
           property_id: data.selectedUnit.id,

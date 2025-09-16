@@ -80,7 +80,7 @@ export class LandlordInteractive {
           })
         : "N/A";
 
-      tenancyMessage += `${i + 1}. ${pt.property.name} – ${tenantName} – ${rentAmount}/yr – Next rent due: ${dueDate}\n`;
+      tenancyMessage += `${i + 1}. ${pt.property.name}\n${tenantName}\n${rentAmount}/yr\nNext rent due: ${dueDate}\n\n`;
     }
 
     await this.whatsappUtil.sendText(from, tenancyMessage);

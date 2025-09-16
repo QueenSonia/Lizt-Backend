@@ -13,7 +13,10 @@ import { Account } from 'src/users/entities/account.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { UtilService } from 'src/utils/utility-service';
-import { RentPaymentStatusEnum, RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import {
+  RentPaymentStatusEnum,
+  RentStatusEnum,
+} from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 
 @Injectable()
@@ -323,7 +326,7 @@ export class LandlordFlow {
           status: TenantStatusEnum.ACTIVE,
         });
         await this.propertyTenantRepo.save(propertyTenant);
-        console.log(lease_start_date, lease_end_date)
+        console.log(lease_start_date, lease_end_date);
 
         const rent = this.rentRepo.create({
           property_id: data.selectedUnit.id,
@@ -386,87 +389,83 @@ export class LandlordFlow {
   // ------------------------
 
   private async handleViewTenancies(from: string) {
-    const ownerUser = await this.usersRepo.findOne({
-      where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
-      relations: ['accounts'],
-    });
+  const ownerUser = await this.usersRepo.findOne({
+    where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+    relations: ['accounts'],
+  });
 
-    if (!ownerUser) {
-      await this.whatsappUtil.sendText(from, 'No tenancy info available.');
-      return;
-    }
-
- const propertyTenants = await this.propertyTenantRepo
-  .createQueryBuilder('pt')
-  .leftJoinAndSelect('pt.property', 'property')
-  .leftJoinAndSelect('pt.tenant', 'tenant')
-  .leftJoinAndSelect('tenant.user', 'user')
-  .leftJoinAndSelect(
-    qb =>
-      qb
-        .from('rent', 'r')
-        .select('r.*')
-        .distinctOn(['r.property_id'])
-        .orderBy('r.property_id')
-        .addOrderBy('r.lease_end_date', 'DESC'),
-    'latest_rent',
-    'latest_rent.property_id = property.id'
-  )
-  .where('property.owner_id = :ownerId', { ownerId: ownerUser.accounts[0].id })
-  .orderBy('latest_rent.lease_end_date', 'ASC')
-  .getMany();
-
-  console.log(propertyTenants)
-
-
-    if (!propertyTenants?.length) {
-      await this.whatsappUtil.sendText(from, 'No tenancies found.');
-      return;
-    }
-
-    let tenancyMessage = 'Here are your current tenancies:\n';
-    for (const [i, pt] of propertyTenants.entries()) {
-      const latestRent =
-        pt.property.rents?.[pt.property.rents.length - 1] || null;
-      const tenantName = pt.tenant?.user
-        ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
-        : 'Vacant';
-
-      const rentAmount = latestRent?.rental_price
-        ? latestRent.rental_price.toLocaleString('en-NG', {
-            style: 'currency',
-            currency: 'NGN',
-          })
-        : 'N/A';
-
-      const dueDate = latestRent?.lease_end_date
-        ? new Date(latestRent.lease_end_date).toLocaleDateString('en-NG', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-          })
-        : 'N/A';
-
-      tenancyMessage += `${i + 1}. ${pt.property.name}\n${tenantName}\n${rentAmount}/yr\nNext rent due: ${dueDate}\n\n`;
-    }
-
-    await this.whatsappUtil.sendText(from, tenancyMessage);
-    await this.whatsappUtil.sendText(
-      from,
-      'Reply with the number of the tenancy you want to view (e.g., 1 for first property).',
-    );
-
-    await this.cache.set(
-      `service_request_state_landlord_${from}`,
-      JSON.stringify({
-        type: 'tenancy',
-        ids: propertyTenants.map((pt) => pt.id),
-        step: 'no_step',
-        data: {},
-      }),
-      300,
-    );
+  if (!ownerUser) {
+    await this.whatsappUtil.sendText(from, 'No tenancy info available.');
+    return;
   }
+
+  // Use query builder to fetch tenants with latest ACTIVE rent
+  const propertyTenants = await this.propertyTenantRepo
+    .createQueryBuilder('pt')
+    .leftJoinAndSelect('pt.property', 'property')
+    .leftJoinAndSelect('pt.tenant', 'tenant')
+    .leftJoinAndSelect('tenant.user', 'user')
+    .leftJoinAndSelect(
+      'property.rents',
+      'rent',
+      'rent.rent_status = :status',
+      { status: 'ACTIVE' },
+    )
+    .where('property.owner_id = :ownerId', {
+      ownerId: ownerUser.accounts[0].id,
+    })
+    .orderBy('rent.lease_end_date', 'ASC')
+    .getMany();
+
+  if (!propertyTenants?.length) {
+    await this.whatsappUtil.sendText(from, 'No tenancies found.');
+    return;
+  }
+
+  // Build message
+  let tenancyMessage = 'Here are your current tenancies:\n';
+  for (const [i, pt] of propertyTenants.entries()) {
+    const latestRent = pt.property.rents?.[0] || null; // filtered to ACTIVE only
+    const tenantName = pt.tenant?.user
+      ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
+      : 'Vacant';
+
+    const rentAmount = latestRent?.rental_price
+      ? latestRent.rental_price.toLocaleString('en-NG', {
+          style: 'currency',
+          currency: 'NGN',
+        })
+      : 'N/A';
+
+    const dueDate = latestRent?.lease_end_date
+      ? new Date(latestRent.lease_end_date).toLocaleDateString('en-NG', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        })
+      : 'N/A';
+
+    tenancyMessage += `${i + 1}. ${pt.property.name}\n${tenantName}\n${rentAmount}/yr\nNext rent due: ${dueDate}\n\n`;
+  }
+
+  await this.whatsappUtil.sendText(from, tenancyMessage);
+  await this.whatsappUtil.sendText(
+    from,
+    'Reply with the number of the tenancy you want to view (e.g., 1 for first property).',
+  );
+
+  await this.cache.set(
+    `service_request_state_landlord_${from}`,
+    JSON.stringify({
+      type: 'tenancy',
+      ids: propertyTenants.map((pt) => pt.id),
+      step: 'no_step',
+      data: {},
+    }),
+    300,
+  );
+}
+
 
   private async handleViewMaintenance(from: string) {
     const ownerUser = await this.usersRepo.findOne({

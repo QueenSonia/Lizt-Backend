@@ -13,7 +13,7 @@ import { Account } from 'src/users/entities/account.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { UtilService } from 'src/utils/utility-service';
-import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import { RentPaymentStatusEnum, RentStatusEnum } from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 
 @Injectable()
@@ -331,7 +331,7 @@ export class LandlordFlow {
           rental_price: data.rental_price,
           lease_start_date,
           lease_end_date,
-          payment_status: RentStatusEnum.ACTIVE,
+          payment_status: RentPaymentStatusEnum.PAID,
           rent_status: RentStatusEnum.ACTIVE,
           amount_paid: 0,
         });

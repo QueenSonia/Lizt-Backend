@@ -379,11 +379,12 @@ export class LandlordFlow {
 
   private async startAddTenantFlow(from: string) {
     await this.whatsappUtil.sendText(from, "Starting tenant onboarding...");
+     await this.whatsappUtil.sendText(from, "whats your tenant's full name");
     await this.cache.set(
       `service_request_state_landlord_${from}`,
       JSON.stringify({
         type: "add_tenant",
-        step: 1,
+        step: "ask_name",
         data: {},
       }),
       300

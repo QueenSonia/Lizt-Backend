@@ -102,7 +102,7 @@ export class LandlordFlow {
         return;
       }
   
-      const state = JSON.parse(stateRaw);
+      const state = stateRaw;
       const { step, data } = state;
   
       switch (step) {

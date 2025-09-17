@@ -37,7 +37,7 @@ async handleLookup(from: string, text: string) {
   };
 
   try {
-    parsed = JSON.parse(raw);
+    parsed = raw
   } catch (err) {
     await this.whatsappUtil.sendText(from, "Something went wrong. Please try again.");
     return;

@@ -138,7 +138,7 @@ private async handlePropertySelection(from: string, propertyId: string) {
         type: 'property_action',
         tenancyId: tenancy.id,
         occupied: true,
-        step: 'no_action',
+        step: 'awaiting_action',
       }),
       300,
     );

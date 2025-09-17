@@ -21,41 +21,90 @@ export class LandlordLookup {
     return `service_request_state_landlord_${from}`;
   }
 
-  async handleLookup(from: string, text: string) {
-    const raw = await this.cache.get(this.key(from));
-    if (!raw) {
-      await this.whatsappUtil.sendText(from, "No cached selection found. Please try again.");
-      return;
-    }
+async handleLookup(from: string, text: string) {
+  const raw = await this.cache.get(this.key(from));
+  if (!raw) {
+    await this.whatsappUtil.sendText(from, "No cached selection found. Please try again.");
+    return;
+  }
 
-    let parsed: { type: "tenancy" | "maintenance"; ids: string[]; step: string };
-    try {
-      parsed = raw
+  let parsed: { 
+    type: "tenancy" | "maintenance" | "property_action"; 
+    ids?: string[]; 
+    step: string; 
+    tenancyId?: string;
+    occupied?: boolean;
+  };
 
-      console.log({parsed})
-    } catch (err) {
-      await this.whatsappUtil.sendText(from, "Something went wrong. Please try again.");
-      return;
-    }
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    await this.whatsappUtil.sendText(from, "Something went wrong. Please try again.");
+    return;
+  }
 
-    if (parsed.step !== "no_step") {
-      await this.whatsappUtil.sendText(from, "No active lookup. Please try again.");
-      return;
-    }
+  const choice = parseInt(text.trim(), 10);
+  if (isNaN(choice)) {
+    await this.whatsappUtil.sendText(from, "Invalid choice. Please reply with a valid number.");
+    return;
+  }
 
-    const choice = parseInt(text.trim(), 10);
-    if (isNaN(choice) || choice < 1 || choice > parsed.ids.length) {
+  // === 1. User is choosing from the tenancy list ===
+  if (parsed.type === "tenancy" && parsed.step === "no_step") {
+    if (!parsed.ids?.length || choice < 1 || choice > parsed.ids.length) {
       await this.whatsappUtil.sendText(from, "Invalid choice. Please reply with a valid number.");
       return;
     }
-
     const selectedId = parsed.ids[choice - 1];
-    if (parsed.type === "tenancy") {
-      await this.handlePropertySelection(from, selectedId);
-    } else {
-      await this.showMaintenanceDetails(from, selectedId);
-    }
+    await this.handlePropertySelection(from, selectedId);
+    return;
   }
+
+  // === 2. User is choosing from property action menu ===
+  if (parsed.type === "property_action" && parsed.step === "awaiting_action") {
+    if (parsed.occupied) {
+      switch (choice) {
+        case 1:
+          await this.showTenancyDetails(from, parsed.tenancyId!);
+          break;
+        case 2:
+          await this.showMaintenanceList(from, parsed.tenancyId!);
+          break;
+        case 3:
+          await this.startAddTenantFlow(from, parsed.tenancyId!);
+          break;
+        default:
+          await this.whatsappUtil.sendText(from, "Invalid choice. Reply 1, 2, or 3.");
+      }
+    } else {
+      switch (choice) {
+        case 1:
+          await this.startAddTenantFlow(from, parsed.tenancyId!);
+          break;
+        case 2:
+          await this.showMaintenanceList(from, parsed.tenancyId!);
+          break;
+        default:
+          await this.whatsappUtil.sendText(from, "Invalid choice. Reply 1 or 2.");
+      }
+    }
+    return;
+  }
+
+  // === 3. User is choosing a maintenance request ===
+  if (parsed.type === "maintenance" && parsed.step === "no_step") {
+    if (!parsed.ids?.length || choice < 1 || choice > parsed.ids.length) {
+      await this.whatsappUtil.sendText(from, "Invalid choice. Please reply with a valid number.");
+      return;
+    }
+    const selectedId = parsed.ids[choice - 1];
+    await this.showMaintenanceDetails(from, selectedId);
+    return;
+  }
+
+  await this.whatsappUtil.sendText(from, "No active lookup. Please try again.");
+}
+
 
 
 private async handlePropertySelection(from: string, propertyId: string) {
@@ -89,7 +138,7 @@ private async handlePropertySelection(from: string, propertyId: string) {
         type: 'property_action',
         tenancyId: tenancy.id,
         occupied: true,
-        step: 'awaiting_action',
+        step: 'no_action',
       }),
       300,
     );
@@ -160,6 +209,50 @@ ${paymentHistory}
     await this.whatsappUtil.sendText(from, details);
   }
 
+  private async showMaintenanceList(from: string, tenancyId: string) {
+  const tenancy = await this.propertyTenantRepo.findOne({
+    where: { id: tenancyId },
+    relations: ["property"],
+  });
+
+  if (!tenancy) {
+    await this.whatsappUtil.sendText(from, "Property not found.");
+    return;
+  }
+
+  const requests = await this.serviceRequestRepo.find({
+    where: { property_id: tenancy.property.id },
+    order: { created_at: "DESC" },
+  });
+
+  if (!requests?.length) {
+    await this.whatsappUtil.sendText(from, `No maintenance requests for ${tenancy.property.name}.`);
+    return;
+  }
+
+  let message = `🛠 Maintenance Requests for ${tenancy.property.name}:\n`;
+  requests.forEach((r, i) => {
+    message += `${i + 1}. ${r.issue_category} - ${r.status}\n`;
+  });
+
+  await this.whatsappUtil.sendText(from, message);
+  await this.whatsappUtil.sendText(
+    from,
+    "Reply with the number of the request you want to view."
+  );
+
+  await this.cache.set(
+    this.key(from),
+    JSON.stringify({
+      type: "maintenance",
+      ids: requests.map((r) => r.id),
+      step: "no_step",
+    }),
+    300
+  );
+}
+
+
   private async showMaintenanceDetails(from: string, requestId: string) {
     const maintenance = await this.serviceRequestRepo.findOne({
       where: { id: requestId },
@@ -193,4 +286,19 @@ ${paymentHistory}
 
     await this.whatsappUtil.sendText(from, details);
   }
+
+  private async startAddTenantFlow(from: string, tenancyId: string) {
+  await this.whatsappUtil.sendText(from, "Please enter tenant details (name, phone, etc).");
+  
+  await this.cache.set(
+    this.key(from),
+    JSON.stringify({
+      type: "add_tenant",
+      tenancyId,
+      step: "awaiting_tenant_info",
+    }),
+    300
+  );
+}
+
 }

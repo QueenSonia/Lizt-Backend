@@ -444,7 +444,7 @@ private async handleViewPropertiesAndTenancies(from: string) {
     `service_request_state_landlord_${from}`,
     JSON.stringify({
       type: 'tenancy',
-      step: 'select_property',
+      step: 'no_step',
       ids: propertyIds,
       data: {},
     }),

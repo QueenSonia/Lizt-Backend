@@ -232,7 +232,7 @@ ${paymentHistory}
 
   let message = `🛠 Maintenance Requests for ${tenancy.property.name}:\n`;
   requests.forEach((r, i) => {
-    message += `${i + 1}. ${r.issue_category} - ${r.status}\n`;
+    message += `${i + 1}. ${r.issue_category}\n${r.description}\n${r.status}\n`;
   });
 
   await this.whatsappUtil.sendText(from, message);

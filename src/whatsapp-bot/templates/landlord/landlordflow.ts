@@ -74,7 +74,7 @@ export class LandlordFlow {
 
     if (type === 'add_tenant') {
       await this.handleAddTenantText(from, text);
-    } else if (['tenancy', 'maintenance'].includes(type)) {
+    } else if (['tenancy', 'maintenance', 'property_action'].includes(type)) {
       await this.handleLookupText(from, text);
     } else {
       await this.whatsappUtil.sendText(

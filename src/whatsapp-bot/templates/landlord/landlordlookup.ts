@@ -51,11 +51,70 @@ export class LandlordLookup {
 
     const selectedId = parsed.ids[choice - 1];
     if (parsed.type === "tenancy") {
-      await this.showTenancyDetails(from, selectedId);
+      await this.handlePropertySelection(from, selectedId);
     } else {
       await this.showMaintenanceDetails(from, selectedId);
     }
   }
+
+
+private async handlePropertySelection(from: string, propertyId: string) {
+  const tenancy = await this.propertyTenantRepo.findOne({
+    where: { property_id: propertyId },
+    relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
+  });
+
+  if (!tenancy) {
+    await this.whatsappUtil.sendText(from, 'Tenancy not found.');
+    return;
+  }
+
+  const tenantName = tenancy.tenant?.user
+    ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
+    : null;
+
+  if (tenantName) {
+    // Occupied Property Menu
+    await this.whatsappUtil.sendText(
+      from,
+      `You selected ${tenancy.property.name} (Occupied by ${tenantName}). What would you like to do?\n
+1. View Tenancy Details
+2. View Maintenance Requests
+3. Add a New Tenant (replaces existing)`,
+    );
+
+    await this.cache.set(
+      this.key(from),
+      JSON.stringify({
+        type: 'property_action',
+        tenancyId: tenancy.id,
+        occupied: true,
+        step: 'awaiting_action',
+      }),
+      300,
+    );
+  } else {
+    // Vacant Property Menu
+    await this.whatsappUtil.sendText(
+      from,
+      `You selected ${tenancy.property.name} (Vacant). What would you like to do?\n
+1. Add a New Tenant
+2. View Maintenance Requests`,
+    );
+
+    await this.cache.set(
+      this.key(from),
+      JSON.stringify({
+        type: 'property_action',
+        tenancyId: tenancy.id,
+        occupied: false,
+        step: 'awaiting_action',
+      }),
+      300,
+    );
+  }
+}
+
 
   private async showTenancyDetails(from: string, tenancyId: string) {
     const tenancy = await this.propertyTenantRepo.findOne({

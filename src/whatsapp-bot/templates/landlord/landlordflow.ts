@@ -92,7 +92,7 @@ export class LandlordFlow {
     if (!buttonReply) return;
 
     const handlers: Record<string, () => Promise<void>> = {
-      view_tenancies: () => this.handleViewTenancies(from),
+      view_tenancies: () => this.handleViewPropertiesAndTenancies(from),
       view_maintenance: () => this.handleViewMaintenance(from),
       new_tenant: () => this.startAddTenantFlow(from),
     };
@@ -387,84 +387,71 @@ export class LandlordFlow {
   // ------------------------
   // INTERACTIVE flow pieces
   // ------------------------
-
-  private async handleViewTenancies(from: string) {
+private async handleViewPropertiesAndTenancies(from: string) {
   const ownerUser = await this.usersRepo.findOne({
     where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
     relations: ['accounts'],
   });
 
   if (!ownerUser) {
-    await this.whatsappUtil.sendText(from, 'No tenancy info available.');
+    await this.whatsappUtil.sendText(from, 'No property info available.');
     return;
   }
 
-  // Use query builder to fetch tenants with latest ACTIVE rent
-  const propertyTenants = await this.propertyTenantRepo
-    .createQueryBuilder('pt')
-    .leftJoinAndSelect('pt.property', 'property')
-    .leftJoinAndSelect('pt.tenant', 'tenant')
-    .leftJoinAndSelect('tenant.user', 'user')
-    .leftJoinAndSelect(
-      'property.rents',
-      'rent',
-      'rent.rent_status = :status',
-      { status: RentStatusEnum.ACTIVE },
-    )
-    .where('property.owner_id = :ownerId', {
-      ownerId: ownerUser.accounts[0].id,
-    })
-    .orderBy('rent.lease_end_date', 'ASC')
-    .getMany();
+  // Fetch all properties with tenants and rents
+  const properties = await this.propertyRepo.find({
+    where: { owner_id: ownerUser.accounts[0].id },
+    relations: [
+      'property_tenants',
+      'property_tenants.tenant',
+      'property_tenants.tenant.user',
+      'rents',
+    ],
+  });
 
-  if (!propertyTenants?.length) {
-    await this.whatsappUtil.sendText(from, 'No tenancies found.');
+  if (!properties.length) {
+    await this.whatsappUtil.sendText(from, 'You don’t have any properties yet.');
     return;
   }
 
-  // Build message
-  let tenancyMessage = 'Here are your current tenancies:\n';
-  for (const [i, pt] of propertyTenants.entries()) {
-    const latestRent = pt.property.rents?.[0] || null; // filtered to ACTIVE only
-    const tenantName = pt.tenant?.user
-      ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
-      : 'Vacant';
+  // Build property list message
+  let message = 'Here are your properties:\n';
+  const propertyIds: string[] = [];
 
-    const rentAmount = latestRent?.rental_price
-      ? latestRent.rental_price.toLocaleString('en-NG', {
-          style: 'currency',
-          currency: 'NGN',
-        })
-      : 'N/A';
+  for (const [i, property] of properties.entries()) {
+    const activeTenant = property.property_tenants?.find(
+      (pt) => pt.status === TenantStatusEnum.ACTIVE,
+    );
 
-    const dueDate = latestRent?.lease_end_date
-      ? new Date(latestRent.lease_end_date).toLocaleDateString('en-NG', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-        })
-      : 'N/A';
+    const tenantName = activeTenant?.tenant?.user
+      ? `${activeTenant.tenant.user.first_name} ${activeTenant.tenant.user.last_name}`
+      : null;
 
-    tenancyMessage += `${i + 1}. ${pt.property.name}\n${tenantName}\n${rentAmount}/yr\nNext rent due: ${dueDate}\n\n`;
+    message += `${i + 1}. ${property.name} – ${
+      tenantName ? `Occupied (Tenant: ${tenantName})` : 'Vacant'
+    }\n`;
+
+    propertyIds.push(property.id);
   }
 
-  await this.whatsappUtil.sendText(from, tenancyMessage);
   await this.whatsappUtil.sendText(
     from,
-    'Reply with the number of the tenancy you want to view (e.g., 1 for first property).',
+    message + '\nReply with the number of the property you want to manage.',
   );
 
+  // Cache state for next step
   await this.cache.set(
     `service_request_state_landlord_${from}`,
     JSON.stringify({
       type: 'tenancy',
-      ids: propertyTenants.map((pt) => pt.id),
-      step: 'no_step',
+      step: 'select_property',
+      ids: propertyIds,
       data: {},
     }),
     300,
   );
 }
+
 
 
   private async handleViewMaintenance(from: string) {

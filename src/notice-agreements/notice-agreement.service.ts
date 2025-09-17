@@ -22,7 +22,6 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from 'src/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { TwilioService } from 'src/whatsapp/services/twilio.service';
 import { Account } from 'src/users/entities/account.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 @Injectable()
@@ -35,8 +34,7 @@ export class NoticeAgreementService {
     @InjectRepository(Account)
     private readonly accountRepo: Repository<Account>,
     private readonly fileUploadService: FileUploadService,
-    private readonly eventEmitter: EventEmitter2,
-    private readonly twilioService: TwilioService,
+    private readonly eventEmitter: EventEmitter2
   ) {}
 
   async create(dto: CreateNoticeAgreementDto) {
@@ -85,11 +83,6 @@ export class NoticeAgreementService {
     try {
       await Promise.all([
         sendEmailWithAttachment(uploadResult.secure_url, tenant.email),
-        this.twilioService.sendWhatsAppMediaMessage(
-          tenant.user.phone_number,
-          uploadResult.secure_url,
-          `Dear ${tenant.profile_name}, please find your ${agreement.notice_type} notice attached.`,
-        ),
       ]);
       console.log(
         `Notice agreement sent successfully to ${tenant.email} and WhatsApp`,

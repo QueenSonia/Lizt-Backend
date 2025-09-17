@@ -9,7 +9,6 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
 import { FileUploadService } from 'src/utils/cloudinary';
 import { KYC } from './entities/kyc.entity';
 import { Account } from './entities/account.entity';
-import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { RentsModule } from 'src/rents/rents.module';
 import { Team } from './entities/team.entity';

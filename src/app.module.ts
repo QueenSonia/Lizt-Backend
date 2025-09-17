@@ -14,7 +14,6 @@ import { RentsModule } from './rents/rents.module';
 import { ServiceRequestsModule } from './service-requests/service-requests.module';
 import { PropertyHistoryModule } from './property-history/property-history.module';
 import { NoticeAgreementModule } from './notice-agreements/notice-agreement.module';
-import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { NotificationModule } from './notifications/notification.module';
 import { ChatModule } from './chat/chat.module';
 import { DatabaseService } from './database.service';
@@ -51,7 +50,6 @@ config({ default_node_env: 'production' });
     ServiceRequestsModule,
     PropertyHistoryModule,
     NoticeAgreementModule,
-    WhatsappModule,
     NotificationModule,
     ChatModule,
     EventEmitterModule.forRoot(),

@@ -61,7 +61,6 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Account } from './entities/account.entity';
 import { AnyAaaaRecord } from 'node:dns';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { TwilioService } from 'src/whatsapp/services/twilio.service';
 import { Team } from './entities/team.entity';
 import { TeamMember } from './entities/team-member.entity';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
@@ -1807,5 +1806,13 @@ export class UsersService {
   }
   async getWaitlist(){
     return await this.waitlistRepository.find()
+  }
+
+    async getLandlords(){
+    return await this.usersRepository.find({
+      where:{
+        
+      }
+    })
   }
 }

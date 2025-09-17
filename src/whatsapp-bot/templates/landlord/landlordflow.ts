@@ -11,7 +11,7 @@ import { Repository } from 'typeorm';
 import { LandlordLookup } from './landlordlookup';
 import { Account } from 'src/users/entities/account.entity';
 import { Property } from 'src/properties/entities/property.entity';
-import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { UtilService } from 'src/utils/utility-service';
 import {
   RentPaymentStatusEnum,
@@ -81,6 +81,7 @@ export class LandlordFlow {
         from,
         'Invalid state. Please try again.',
       );
+       await this.handleExitOrMenu(from, text);
     }
   }
 
@@ -92,7 +93,9 @@ export class LandlordFlow {
     if (!buttonReply) return;
 
     const handlers: Record<string, () => Promise<void>> = {
-      view_tenancies: () => this.handleViewPropertiesAndTenancies(from),
+      view_properties: () => this.handleViewProperties(from),
+      view_vacant: () => this.handleVacantProperties(from),
+      view_occupied: () => this.handleOccupiedProperties(from),
       view_maintenance: () => this.handleViewMaintenance(from),
       new_tenant: () => this.startAddTenantFlow(from),
     };
@@ -358,6 +361,20 @@ export class LandlordFlow {
     await this.lookup.handleLookup(from, `${text}`);
   }
 
+  async handleViewProperties(from: string){
+   
+      await this.whatsappUtil.sendButtons(
+        from,
+        `Property Menu`,
+        [
+          { id: 'view_vacant', title: 'Vacant' },
+          { id: 'view_occupied', title: 'Occupied ' },
+        ],
+      );
+      return;
+    
+  }
+
   async handleExitOrMenu(from: string, text: string) {
     if (text.toLowerCase() === 'done') {
       await this.whatsappUtil.sendText(
@@ -375,7 +392,7 @@ export class LandlordFlow {
         from,
         `Hello ${ownerUser?.accounts[0].profile_name}, What do you want to do today?`,
         [
-          { id: 'view_tenancies', title: 'View tenancies' },
+          { id: 'view_properties', title: 'View properties' },
           { id: 'view_maintenance', title: 'maintenance requests' },
           { id: 'new_tenant', title: 'Add new tenant' },
         ],
@@ -387,7 +404,7 @@ export class LandlordFlow {
   // ------------------------
   // INTERACTIVE flow pieces
   // ------------------------
-private async handleViewPropertiesAndTenancies(from: string) {
+  private async handleVacantProperties(from: string) {
   const ownerUser = await this.usersRepo.findOne({
     where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
     relations: ['accounts'],
@@ -400,7 +417,7 @@ private async handleViewPropertiesAndTenancies(from: string) {
 
   // Fetch all properties with tenants and rents
   const properties = await this.propertyRepo.find({
-    where: { owner_id: ownerUser.accounts[0].id },
+    where: { owner_id: ownerUser.accounts[0].id, property_status: PropertyStatusEnum.VACANT },
     relations: [
       'property_tenants',
       'property_tenants.tenant',
@@ -415,7 +432,7 @@ private async handleViewPropertiesAndTenancies(from: string) {
   }
 
   // Build property list message
-  let message = 'Here are your properties:\n';
+  let message = 'Here are your vacant properties:\n';
   const propertyIds: string[] = [];
 
   for (const [i, property] of properties.entries()) {
@@ -436,7 +453,7 @@ private async handleViewPropertiesAndTenancies(from: string) {
 
   await this.whatsappUtil.sendText(
     from,
-    message + '\nReply with the number of the property you want to manage.',
+    message + '\nReply with the number of the property you want to assigned to a tenant.',
   );
 
   // Cache state for next step
@@ -451,6 +468,86 @@ private async handleViewPropertiesAndTenancies(from: string) {
     300,
   );
 }
+private async handleOccupiedProperties(from: string) {
+  const ownerUser = await this.usersRepo.findOne({
+    where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+    relations: ['accounts'],
+  });
+
+  if (!ownerUser) {
+    await this.whatsappUtil.sendText(from, 'No property info available.');
+    return;
+  }
+
+  // Fetch properties with tenants and rents
+  const properties = await this.propertyRepo.find({
+    where: { owner_id: ownerUser.accounts[0].id },
+    relations: [
+      'property_tenants',
+      'property_tenants.tenant',
+      'property_tenants.tenant.user',
+      'rents',
+    ],
+  });
+
+  if (!properties.length) {
+    await this.whatsappUtil.sendText(from, 'You don’t have any properties yet.');
+    return;
+  }
+
+  // 🔹 Sort properties by ACTIVE rent lease_end_date
+  const sortedProperties = properties.sort((a, b) => {
+    const aRent = a.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
+    const bRent = b.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
+
+    const aDate = aRent ? new Date(aRent.lease_end_date).getTime() : 0;
+    const bDate = bRent ? new Date(bRent.lease_end_date).getTime() : 0;
+
+    return aDate - bDate; // earliest active lease ends first
+  });
+
+  // Build message
+  let message = 'Here are your occupied properties (ordered by active lease end date):\n';
+  const propertyIds: string[] = [];
+
+  for (const [i, property] of sortedProperties.entries()) {
+    const activeTenant = property.property_tenants?.find(
+      (pt) => pt.status === TenantStatusEnum.ACTIVE,
+    );
+
+    const tenantName = activeTenant?.tenant?.user
+      ? `${activeTenant.tenant.user.first_name} ${activeTenant.tenant.user.last_name}`
+      : null;
+
+    // Grab the ACTIVE rent
+    const activeRent = property.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
+    const leaseEnd = activeRent ? new Date(activeRent.lease_end_date).toLocaleDateString() : 'N/A';
+
+    message += `${i + 1}. ${property.name} – ${
+      tenantName ? `Occupied (Tenant: ${tenantName}, Lease ends: ${leaseEnd})` : 'Vacant'
+    }\n`;
+
+    propertyIds.push(property.id);
+  }
+
+  await this.whatsappUtil.sendText(
+    from,
+    message + '\nReply with the number of the property you want to manage.',
+  );
+
+  // Cache state
+  await this.cache.set(
+    `service_request_state_landlord_${from}`,
+    JSON.stringify({
+      type: 'tenancy',
+      step: 'no_step',
+      ids: propertyIds,
+      data: {},
+    }),
+    300,
+  );
+}
+
 
 
 

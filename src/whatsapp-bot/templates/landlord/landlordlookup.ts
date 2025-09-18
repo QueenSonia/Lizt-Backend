@@ -1,7 +1,15 @@
 import { ConfigService } from "@nestjs/config";
+import { RolesEnum } from "src/base.entity";
 import { CacheService } from "src/lib/cache";
+import { PropertyStatusEnum, TenantStatusEnum } from "src/properties/dto/create-property.dto";
 import { PropertyTenant } from "src/properties/entities/property-tenants.entity";
+import { Property } from "src/properties/entities/property.entity";
+import { RentPaymentStatusEnum, RentStatusEnum } from "src/rents/dto/create-rent.dto";
+import { Rent } from "src/rents/entities/rent.entity";
 import { ServiceRequest } from "src/service-requests/entities/service-request.entity";
+import { Account } from "src/users/entities/account.entity";
+import { Users } from "src/users/entities/user.entity";
+import { UtilService } from "src/utils/utility-service";
 import { WhatsappUtils } from "src/whatsapp-bot/utils/whatsapp";
 import { Repository } from "typeorm/repository/Repository";
 
@@ -11,7 +19,11 @@ export class LandlordLookup {
   constructor(
     private cache: CacheService,
       private propertyTenantRepo: Repository<PropertyTenant>,
+      private propertyRepo: Repository<Property>,
     private serviceRequestRepo: Repository<ServiceRequest>,
+      private readonly usersRepo: Repository<Users>,
+      private readonly rentRepo: Repository<Rent>,
+      private readonly accountRepo: Repository<Account>
   ) {
           const config = new ConfigService();
         this.whatsappUtil = new WhatsappUtils(config);
@@ -19,6 +31,251 @@ export class LandlordLookup {
 
   private key(from: string) {
     return `service_request_state_landlord_${from}`;
+  }
+
+   async handleAddTenantText(from: string, text: string) {
+    const stateRaw = await this.cache.get(
+      `service_request_state_landlord_${from}`,
+    );
+    if (!stateRaw) {
+      await this.whatsappUtil.sendText(
+        from,
+        'No active tenant flow. Please try again.',
+      );
+      return;
+    }
+
+    const state = stateRaw;
+    const { step, data } = state;
+
+    switch (step) {
+      case 'ask_name':
+        data.full_name = text.trim();
+        await this.whatsappUtil.sendText(
+          from,
+          '📱 What is the tenant’s phone number?',
+        );
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify({ type: 'add_tenant', step: 'ask_phone', data }),
+          300,
+        );
+        break;
+
+      case 'ask_phone':
+        data.phone = text.trim();
+        await this.whatsappUtil.sendText(
+          from,
+          "✉️ What is your tenant's email",
+        );
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify({ type: 'add_tenant', step: 'ask_email', data }),
+          300,
+        );
+        break;
+
+      case 'ask_email':
+        if (text.toLowerCase() !== 'skip') {
+          data.email = text.trim();
+        }
+
+        // ✅ Fetch landlord with properties
+        const ownerUser = await this.usersRepo.findOne({
+          where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+          relations: ['accounts', 'accounts.properties'],
+        });
+
+        if (!ownerUser) {
+          await this.whatsappUtil.sendText(
+            from,
+            'No properties found for your account.',
+          );
+          return;
+        }
+
+        const properties = await this.propertyRepo.find({
+          where: { owner_id: ownerUser.accounts[0].id },
+          relations: ['property_tenants', 'property_tenants.tenant'],
+        });
+
+        if (!properties.length) {
+          await this.whatsappUtil.sendText(
+            from,
+            'You don’t have any properties yet.',
+          );
+          return;
+        }
+
+        let propertyList = '🏘️ Which unit will this tenant occupy?\n';
+        let vacantUnitsList: any[] = [];
+
+        for (const property of properties) {
+          // 🔍 Check if any tenant has ACTIVE status
+          const hasActiveTenant = property.property_tenants?.some(
+            (pt) => pt.status === TenantStatusEnum.ACTIVE,
+          );
+
+          if (!hasActiveTenant) {
+            vacantUnitsList.push({
+              id: property.id,
+              name: property.name,
+            });
+            propertyList += `${vacantUnitsList.length}. ${property.name} (Vacant)\n`;
+          }
+        }
+
+        if (!vacantUnitsList.length) {
+          await this.whatsappUtil.sendText(from, 'No vacant units available.');
+          return;
+        }
+
+        await this.whatsappUtil.sendText(
+          from,
+          propertyList +
+            '\nReply with the number for the unit this tenant will occupy.',
+        );
+
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify({
+            type: 'add_tenant',
+            step: 'select_unit',
+            data: { ...data, vacantUnits: vacantUnitsList },
+          }),
+          300,
+        );
+        break;
+
+      case 'select_unit':
+        const choice = parseInt(text.trim(), 10);
+        const vacantUnits = data.vacantUnits;
+
+        if (isNaN(choice) || choice < 1 || choice > vacantUnits.length) {
+          await this.whatsappUtil.sendText(
+            from,
+            'Invalid choice. Please reply with a valid number.',
+          );
+          return;
+        }
+
+        const unit = vacantUnits[choice - 1];
+        data.selectedUnit = unit;
+
+        await this.whatsappUtil.sendText(
+          from,
+          `💵 What is the *annual rental price* for ${unit.name}? (in NGN)`,
+        );
+
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify({
+            type: 'add_tenant',
+            step: 'ask_rent',
+            data,
+          }),
+          300,
+        );
+        break;
+
+      case 'ask_rent':
+        const rentAmount = parseInt(text.trim(), 10);
+        if (isNaN(rentAmount) || rentAmount <= 0) {
+          await this.whatsappUtil.sendText(
+            from,
+            'Please enter a valid rent amount.',
+          );
+          return;
+        }
+        data.rental_price = rentAmount;
+
+        await this.whatsappUtil.sendText(
+          from,
+          '📅 What is the *lease duration*? (in months, e.g. 12)',
+        );
+
+        await this.cache.set(
+          `service_request_state_landlord_${from}`,
+          JSON.stringify({
+            type: 'add_tenant',
+            step: 'ask_duration',
+            data,
+          }),
+          300,
+        );
+        break;
+
+      case 'ask_duration':
+        const duration = parseInt(text.trim(), 10);
+        if (isNaN(duration) || duration <= 0) {
+          await this.whatsappUtil.sendText(
+            from,
+            'Please enter a valid number of months.',
+          );
+          return;
+        }
+        data.lease_duration_months = duration;
+
+        // ✅ Compute lease dates
+        const lease_start_date = new Date();
+        const lease_end_date = new Date(lease_start_date);
+        lease_end_date.setMonth(lease_start_date.getMonth() + duration);
+
+        // ✅ Create User, Account, PropertyTenant, and Rent
+        const [first_name, ...last_name_parts] = data.full_name.split(' ');
+        const last_name = last_name_parts.join(' ') || '';
+
+        const newUser = this.usersRepo.create({
+          first_name,
+          last_name,
+          phone_number: UtilService.normalizePhoneNumber(data.phone),
+          email: data.email || null,
+          is_verified: true,
+        });
+        await this.usersRepo.save(newUser);
+
+        const newAccount = this.accountRepo.create({
+          email: data.email || null,
+          role: RolesEnum.TENANT,
+          user: newUser,
+          userId: newUser.id,
+          is_verified: true,
+          password: await UtilService.generatePassword(),
+        });
+        await this.accountRepo.save(newAccount);
+
+        const propertyTenant = this.propertyTenantRepo.create({
+          property_id: data.selectedUnit.id,
+          tenant: newAccount,
+          status: TenantStatusEnum.ACTIVE,
+        });
+        await this.propertyTenantRepo.save(propertyTenant);
+        console.log(lease_start_date, lease_end_date);
+
+        const rent = this.rentRepo.create({
+          property_id: data.selectedUnit.id,
+          tenant_id: newAccount.id,
+          rental_price: data.rental_price,
+          lease_start_date,
+          lease_end_date,
+          payment_status: RentPaymentStatusEnum.PAID,
+          rent_status: RentStatusEnum.ACTIVE,
+          amount_paid: 0,
+        });
+        await this.rentRepo.save(rent);
+
+        await this.whatsappUtil.sendText(
+          from,
+          `✅ Tenant *${data.full_name}* has been added to ${data.selectedUnit.name}.
+    
+💵 Rent: NGN ${data.rental_price}
+📅 Lease: ${lease_start_date.toDateString()} → ${lease_end_date.toDateString()}
+`,
+        );
+
+        await this.cache.delete(`service_request_state_landlord_${from}`);
+        break;
+    }
   }
 
 async handleLookup(from: string, text: string) {
@@ -71,7 +328,7 @@ async handleLookup(from: string, text: string) {
           await this.showMaintenanceList(from, parsed.tenancyId!);
           break;
         case 3:
-          await this.startAddTenantFlow(from, parsed.tenancyId!);
+          await this.startAddTenantFlow(from);
           break;
         default:
           await this.whatsappUtil.sendText(from, "Invalid choice. Reply 1, 2, or 3.");
@@ -79,7 +336,7 @@ async handleLookup(from: string, text: string) {
     } else {
       switch (choice) {
         case 1:
-          await this.startAddTenantFlow(from, parsed.tenancyId!);
+          await this.startAddTenantFlow(from);
           break;
         case 2:
           await this.showMaintenanceList(from, parsed.tenancyId!);
@@ -105,20 +362,42 @@ async handleLookup(from: string, text: string) {
   await this.whatsappUtil.sendText(from, "No active lookup. Please try again.");
 }
 
-
-
 private async handlePropertySelection(from: string, propertyId: string) {
-  const tenancy = await this.propertyTenantRepo.findOne({
-    where: { property_id: propertyId },
-    relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
+  const property = await this.propertyRepo.findOne({
+    where: { id: propertyId },
+    relations: ['property_tenants', 'property_tenants.tenant'],
   });
 
-  if (!tenancy) {
-    await this.whatsappUtil.sendText(from, 'Tenancy not found.');
+  if (!property) {
+    await this.whatsappUtil.sendText(from, 'property not found');
     return;
   }
 
-  const tenantName = tenancy.tenant?.user
+  let tenancy = property.property_tenants?.find(
+        (pt) => pt.status === TenantStatusEnum.ACTIVE,
+      );
+
+  if(!tenancy){
+     // Vacant Property Menu
+    await this.whatsappUtil.sendText(
+      from,
+      `You selected ${property.name} (Vacant). What would you like to do?\n
+1. Add a New Tenant`
+    );
+
+    await this.cache.set(
+      this.key(from),
+      JSON.stringify({
+        type: 'property_action',
+        tenancyId: property.id,
+        occupied: false,
+        step: 'awaiting_action',
+      }),
+      300,
+    );
+  }
+
+  const tenantName = tenancy?.tenant?.user
     ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
     : null;
 
@@ -126,42 +405,23 @@ private async handlePropertySelection(from: string, propertyId: string) {
     // Occupied Property Menu
     await this.whatsappUtil.sendText(
       from,
-      `You selected ${tenancy.property.name} (Occupied by ${tenantName}). What would you like to do?\n
+      `You selected ${property.name} (Occupied by ${tenantName}). What would you like to do?\n
 1. View Tenancy Details
 2. View Maintenance Requests
-3. Add a New Tenant (replaces existing)`,
+`
     );
 
     await this.cache.set(
       this.key(from),
       JSON.stringify({
         type: 'property_action',
-        tenancyId: tenancy.id,
+        tenancyId: tenancy?.id,
         occupied: true,
         step: 'awaiting_action',
       }),
       300,
     );
-  } else {
-    // Vacant Property Menu
-    await this.whatsappUtil.sendText(
-      from,
-      `You selected ${tenancy.property.name} (Vacant). What would you like to do?\n
-1. Add a New Tenant
-2. View Maintenance Requests`,
-    );
-
-    await this.cache.set(
-      this.key(from),
-      JSON.stringify({
-        type: 'property_action',
-        tenancyId: tenancy.id,
-        occupied: false,
-        step: 'awaiting_action',
-      }),
-      300,
-    );
-  }
+  } 
 }
 
 
@@ -287,18 +547,268 @@ ${paymentHistory}
     await this.whatsappUtil.sendText(from, details);
   }
 
-  private async startAddTenantFlow(from: string, tenancyId: string) {
-  await this.whatsappUtil.sendText(from, "Please enter tenant details (name, phone, etc).");
-  
+  async handleExitOrMenu(from: string, text: string) {
+    if (text.toLowerCase() === 'done') {
+      await this.whatsappUtil.sendText(
+        from,
+        'Thanks! You’ve exited landlord flow.',
+      );
+      await this.cache.delete(`service_request_state_landlord_${from}`);
+    } else {
+      const ownerUser = await this.usersRepo.findOne({
+        where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+        relations: ['accounts'],
+      });
+
+      await this.whatsappUtil.sendButtons(
+        from,
+        `Hello ${ownerUser?.accounts[0].profile_name}, What do you want to do today?`,
+        [
+          { id: 'view_properties', title: 'View properties' },
+          { id: 'view_maintenance', title: 'maintenance requests' },
+          { id: 'new_tenant', title: 'Add new tenant' },
+        ],
+      );
+      return;
+    }
+  }
+
+  async handleViewProperties(from: string){
+   
+      await this.whatsappUtil.sendButtons(
+        from,
+        `Property Menu`,
+        [
+          { id: 'view_vacant', title: 'Vacant' },
+          { id: 'view_occupied', title: 'Occupied ' },
+        ],
+      );
+      return;
+    
+  }
+
+  async handleVacantProperties(from: string) {
+  const ownerUser = await this.usersRepo.findOne({
+    where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+    relations: ['accounts'],
+  });
+
+  if (!ownerUser) {
+    await this.whatsappUtil.sendText(from, 'No property info available.');
+    return;
+  }
+
+  // Fetch all properties with tenants and rents
+  const properties = await this.propertyRepo.find({
+    where: { owner_id: ownerUser.accounts[0].id, property_status: PropertyStatusEnum.VACANT },
+    relations: [
+      'property_tenants',
+      'property_tenants.tenant',
+      'property_tenants.tenant.user',
+      'rents',
+    ],
+  });
+
+  if (!properties.length) {
+    await this.whatsappUtil.sendText(from, 'You don’t have any properties yet.');
+    return;
+  }
+
+  // Build property list message
+  let message = 'Here are your vacant properties:\n';
+  const propertyIds: string[] = [];
+
+  for (const [i, property] of properties.entries()) {
+    const activeTenant = property.property_tenants?.find(
+      (pt) => pt.status === TenantStatusEnum.ACTIVE,
+    );
+
+    const tenantName = activeTenant?.tenant?.user
+      ? `${activeTenant.tenant.user.first_name} ${activeTenant.tenant.user.last_name}`
+      : null;
+
+    message += `${i + 1}. ${property.name} – ${
+      tenantName ? `Occupied (Tenant: ${tenantName})` : 'Vacant'
+    }\n`;
+
+    propertyIds.push(property.id);
+  }
+
+  await this.whatsappUtil.sendText(
+    from,
+    message + '\nReply with the number of the property you want to assigned to a tenant.',
+  );
+
+  // Cache state for next step
   await this.cache.set(
-    this.key(from),
+    `service_request_state_landlord_${from}`,
     JSON.stringify({
-      type: "add_tenant",
-      tenancyId,
-      step: "awaiting_tenant_info",
+      type: 'tenancy',
+      step: 'no_step',
+      ids: propertyIds,
+      data: {},
     }),
-    300
+    300,
   );
 }
+
+async handleOccupiedProperties(from: string) {
+  const ownerUser = await this.usersRepo.findOne({
+    where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+    relations: ['accounts'],
+  });
+
+  if (!ownerUser) {
+    await this.whatsappUtil.sendText(from, 'No property info available.');
+    return;
+  }
+
+  // Fetch properties with tenants and rents
+  const properties = await this.propertyRepo.find({
+    where: { owner_id: ownerUser.accounts[0].id ,  property_status: PropertyStatusEnum.NOT_VACANT},
+    relations: [
+      'property_tenants',
+      'property_tenants.tenant',
+      'property_tenants.tenant.user',
+      'rents',
+    ],
+  });
+
+  if (!properties.length) {
+    await this.whatsappUtil.sendText(from, 'You don’t have any properties yet.');
+    return;
+  }
+
+  // 🔹 Sort properties by ACTIVE rent lease_end_date
+  const sortedProperties = properties.sort((a, b) => {
+    const aRent = a.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
+    const bRent = b.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
+
+    const aDate = aRent ? new Date(aRent.lease_end_date).getTime() : 0;
+    const bDate = bRent ? new Date(bRent.lease_end_date).getTime() : 0;
+
+    return aDate - bDate; // earliest active lease ends first
+  });
+
+  // Build message
+  let message = 'Here are your occupied properties (ordered by active lease end date):\n';
+  const propertyIds: string[] = [];
+
+  for (const [i, property] of sortedProperties.entries()) {
+    const activeTenant = property.property_tenants?.find(
+      (pt) => pt.status === TenantStatusEnum.ACTIVE,
+    );
+
+    const tenantName = activeTenant?.tenant?.user
+      ? `${activeTenant.tenant.user.first_name} ${activeTenant.tenant.user.last_name}`
+      : null;
+
+    // Grab the ACTIVE rent
+    const activeRent = property.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
+    const leaseEnd = activeRent ? new Date(activeRent.lease_end_date).toLocaleDateString() : 'N/A';
+
+    message += `${i + 1}. ${property.name} – ${
+      tenantName ? `Occupied (Tenant: ${tenantName}, Lease ends: ${leaseEnd})` : 'Vacant'
+    }\n`;
+
+    propertyIds.push(property.id);
+  }
+
+  await this.whatsappUtil.sendText(
+    from,
+    message + '\nReply with the number of the property you want to manage.',
+  );
+
+  // Cache state
+  await this.cache.set(
+    `service_request_state_landlord_${from}`,
+    JSON.stringify({
+      type: 'tenancy',
+      step: 'no_step',
+      ids: propertyIds,
+      data: {},
+    }),
+    300,
+  );
+}
+
+  async handleViewMaintenance(from: string) {
+    const ownerUser = await this.usersRepo.findOne({
+      where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+      relations: ['accounts'],
+    });
+
+    if (!ownerUser) {
+      await this.whatsappUtil.sendText(from, 'No maintenance info available.');
+      return;
+    }
+
+    const serviceRequests = await this.serviceRequestRepo.find({
+      where: { property: { owner_id: ownerUser.accounts[0].id } },
+      relations: [
+        'property',
+        'tenant',
+        'tenant.user',
+        'facilityManager',
+        'notification',
+      ],
+      order: { date_reported: 'DESC' },
+    });
+
+    if (!serviceRequests?.length) {
+      await this.whatsappUtil.sendText(from, 'No maintenance requests found.');
+      return;
+    }
+
+    let maintenanceMessage = 'Here are open maintenance requests:\n';
+    for (const [i, req] of serviceRequests.entries()) {
+      const reportedDate = new Date(req.date_reported).toLocaleDateString(
+        'en-NG',
+        {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        },
+      );
+
+      maintenanceMessage += `${i + 1}. ${req.property_name}\n${req.issue_category}\nReported ${reportedDate}\nStatus: ${req.status}\n\n`;
+    }
+
+    await this.whatsappUtil.sendText(from, maintenanceMessage);
+    await this.whatsappUtil.sendText(
+      from,
+      'Reply with the number of the request you want to view.',
+    );
+
+    await this.cache.set(
+      `service_request_state_landlord_${from}`,
+      JSON.stringify({
+        type: 'maintenance',
+        ids: serviceRequests.map((req) => req.id),
+        step: 'no_step',
+        data: {},
+      }),
+      300,
+    );
+  }
+
+  async startAddTenantFlow(from: string) {
+    await this.whatsappUtil.sendText(from, 'Starting tenant onboarding...');
+    await this.whatsappUtil.sendText(from, "whats your tenant's full name");
+    await this.cache.set(
+      `service_request_state_landlord_${from}`,
+      JSON.stringify({
+        type: 'add_tenant',
+        step: 'ask_name',
+        data: {},
+      }),
+      300,
+    );
+  }
+
+
+
+
+
 
 }

@@ -19,23 +19,23 @@ export class LandlordInteractive {
     this.whatsappUtil = new WhatsappUtils(config);
   }
 
-  async handle(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply;
-    if (!buttonReply) return;
+  // async handle(message: any, from: string) {
+  //   const buttonReply = message.interactive?.button_reply;
+  //   if (!buttonReply) return;
 
-    const handlers: Record<string, () => Promise<void>> = {
-      view_tenancies: () => this.handleViewTenancies(from),
-      view_maintenance: () => this.handleViewMaintenance(from),
-      new_tenant: () => this.handleNewTenant(from),
-    };
+  //   const handlers: Record<string, () => Promise<void>> = {
+  //     view_tenancies: () => this.handleViewTenancies(from),
+  //     view_maintenance: () => this.handleViewMaintenance(from),
+  //     new_tenant: () => this.handleNewTenant(from),
+  //   };
 
-    const handler = handlers[buttonReply.id];
-    if (handler) {
-      await handler();
-    } else {
-      await this.handleFallback(from, buttonReply.id);
-    }
-  }
+  //   const handler = handlers[buttonReply.id];
+  //   if (handler) {
+  //     await handler();
+  //   } else {
+  //     await this.handleFallback(from, buttonReply.id);
+  //   }
+  // }
 
   private async handleViewTenancies(from: string) {
     const ownerUser = await this.usersRepo.findOne({

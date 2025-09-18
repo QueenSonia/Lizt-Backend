@@ -115,19 +115,6 @@ export class WhatsappBotService {
     throw new Error('Unhandled endpoint request.');
   }
 
-  // Step 1: Start New Tenant Flow
-  async startAddTenantFlow(from: string) {
-    await this.sendText(
-      from,
-      'You’d like to add a new tenant. Please share the basic details and we’ll set it up for you.\n\n👉 What is the tenant’s full name?',
-    );
-
-    await this.cache.set(
-      `service_request_state_landlord_${from}`,
-      JSON.stringify({ type: 'add_tenant', step: 'ask_name', data: {} }),
-      300,
-    );
-  }
 
 
   async handleMessage(messages: IncomingMessage[]) {

@@ -369,7 +369,7 @@ async handleLookup(from: string, text: string) {
 private async handlePropertySelection(from: string, propertyId: string) {
   const property = await this.propertyRepo.findOne({
     where: { id: propertyId },
-    relations: ['property_tenants', 'property_tenants.tenant'],
+    relations: ['property_tenants', 'property_tenants.tenant.user'],
   });
 
   if (!property) {

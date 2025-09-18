@@ -303,6 +303,7 @@ async handleLookup(from: string, text: string) {
   const choice = parseInt(text.trim(), 10);
   if (isNaN(choice)) {
     await this.whatsappUtil.sendText(from, "Invalid choice. Please reply with a valid number.");
+    await this.cache.delete(`service_request_state_landlord_${from}`)
     return;
   }
 

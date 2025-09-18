@@ -300,7 +300,9 @@ async handleLookup(from: string, text: string) {
     return;
   }
 
+  console.log(raw)
   const choice = parseInt(text.trim(), 10);
+  console.log({choice})
   if (isNaN(choice)) {
     await this.whatsappUtil.sendText(from, "Invalid choice. Please reply with a valid number.");
     await this.cache.delete(`service_request_state_landlord_${from}`)
@@ -314,6 +316,7 @@ async handleLookup(from: string, text: string) {
       return;
     }
     const selectedId = parsed.ids[choice - 1];
+    console.log(selectedId)
     await this.handlePropertySelection(from, selectedId);
     return;
   }

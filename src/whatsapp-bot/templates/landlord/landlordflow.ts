@@ -68,7 +68,7 @@ export class LandlordFlow {
 
     const raw = await this.cache.get(`service_request_state_landlord_${from}`);
     if (!raw) {
-      await this.whatsappUtil.sendText(from, 'No active landlord flow.');
+       await this.lookup.handleExitOrMenu(from, text);
       return;
     }
 

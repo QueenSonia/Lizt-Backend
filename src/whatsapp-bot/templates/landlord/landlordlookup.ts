@@ -401,6 +401,8 @@ private async handlePropertySelection(from: string, propertyId: string) {
     );
   }
 
+  console.log({tenancy})
+
   const tenantName = tenancy?.tenant?.user
     ? `${tenancy.tenant.user.first_name} ${tenancy.tenant.user.last_name}`
     : null;

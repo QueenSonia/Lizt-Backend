@@ -67,6 +67,14 @@ export class UsersController {
     return this.usersService.getWaitlist()
   }
 
+    @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN) 
+  @Get('/landlord')
+  async getLandlords(){
+    return this.usersService.getLandlords()
+  }
+
+
 
   @Get('team-members')
   async getTeamMembers(@Req() req: any) {

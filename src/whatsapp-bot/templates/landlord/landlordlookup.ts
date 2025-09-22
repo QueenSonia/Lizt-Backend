@@ -225,9 +225,18 @@ export class LandlordLookup {
         const [first_name, ...last_name_parts] = data.full_name.split(' ');
         const last_name = last_name_parts.join(' ') || '';
 
+         const property = await this.propertyRepo.findOne({where:{id: data.selectedUnit.id}})
+         if(!property){
+          return
+         }
+        
+        property.property_status = PropertyStatusEnum.NOT_VACANT
+
+        await this.propertyRepo.save(property)
+
         const newUser = this.usersRepo.create({
-          first_name,
-          last_name,
+          first_name: UtilService.toSentenceCase(first_name),
+          last_name:  UtilService.toSentenceCase(last_name),
           phone_number: UtilService.normalizePhoneNumber(data.phone),
           email: data.email || null,
           is_verified: true,
@@ -243,6 +252,7 @@ export class LandlordLookup {
           password: await UtilService.generatePassword(),
         });
         await this.accountRepo.save(newAccount);
+       
 
         const propertyTenant = this.propertyTenantRepo.create({
           property_id: data.selectedUnit.id,

@@ -1140,6 +1140,39 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
+  async sendTenantWelcomeTemplate({ phone_number, tenant_name, landlord_name }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_welcome', // Your template name
+        language: {
+          code: 'en', // must match the language you set in WhatsApp template
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                parameter_name: 'tenant_name',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                parameter_name: 'landlord_name',
+                text: landlord_name,
+              }
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   async sendFacilityServiceRequest({
     phone_number,
     manager_name,

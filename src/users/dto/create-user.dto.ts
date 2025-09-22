@@ -29,6 +29,37 @@ export class CreateTenantDto {
 
   @IsString()
   @IsNotEmpty()
+  full_name: string;
+
+  @IsEmail()
+  email: string;
+
+  @IsUUID()
+  property_id: string;
+
+  // Rent details
+  // @IsNotEmpty()
+  // @IsDateString()
+  // tenancy_start_date: Date;
+
+  @IsNotEmpty()
+  @IsDateString()
+  due_date: Date;
+
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  rent_amount: number;
+
+}
+
+export class CreateTenantKycDto {
+  @IsString()
+  @IsNotEmpty()
+  phone_number: string;
+
+  @IsString()
+  @IsNotEmpty()
   first_name: string;
 
   @IsString()

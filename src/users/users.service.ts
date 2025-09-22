@@ -14,6 +14,7 @@ import {
   CreateCustomerRepDto,
   CreateLandlordDto,
   CreateTenantDto,
+  CreateTenantKycDto,
   CreateUserDto,
   IUser,
   LoginDto,
@@ -101,6 +102,167 @@ export class UsersService {
   async addTenant(user_id: string, dto: CreateTenantDto) {
     const {
       phone_number,
+     full_name,
+     rent_amount,
+     due_date,
+      email,
+      property_id,
+  
+    } = dto;
+
+    const admin = await this.accountRepository.findOne({
+      where: {
+        id: user_id,
+        role: RolesEnum.LANDLORD,
+      },
+      relations: ['user'],
+    }) as any;
+
+    if (!admin) {
+      throw new HttpException('admin account not found', HttpStatus.NOT_FOUND);
+    }
+
+    return await this.dataSource.transaction(async (manager) => {
+      try {
+        // 1. Check existing user
+        let tenantUser = await manager.getRepository(Users).findOne({
+          where: {
+            phone_number: UtilService.normalizePhoneNumber(phone_number),
+          },
+        });
+
+        if (tenantUser) {
+          throw new HttpException(
+            `Account with phone: ${UtilService.normalizePhoneNumber(phone_number)} already exists`,
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        }
+
+        const property = await manager.getRepository(Property).findOne({
+          where: { id: property_id },
+        });
+
+        if(!property){
+          return;
+        }
+
+        const hasActiveRent = await manager.getRepository(Rent).findOne({
+          where: {
+            property_id: property_id,
+            rent_status: RentStatusEnum.ACTIVE,
+          },
+        });
+
+        if (hasActiveRent) {
+          throw new HttpException(
+            `Property is already rented out`,
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        }
+
+        const [first_name, last_name] = full_name.split(' ')
+        // 2. Create tenant user
+        tenantUser = manager.getRepository(Users).create({
+          first_name: UtilService.toSentenceCase(first_name),
+          last_name: UtilService.toSentenceCase(last_name),
+          email,
+          phone_number: UtilService.normalizePhoneNumber(phone_number),
+          role: RolesEnum.TENANT,
+          is_verified: true,
+         
+        });
+
+        await manager.getRepository(Users).save(tenantUser);
+
+        // 3. Create tenant account
+        const generatedPassword = await UtilService.generatePassword();
+
+        const userAccount = manager.getRepository(Account).create({
+          user: tenantUser,
+          email,
+          password: generatedPassword,
+          is_verified: true,
+          profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          role: RolesEnum.TENANT,
+          creator_id: user_id,
+        });
+
+        await manager.getRepository(Account).save(userAccount);
+
+        // console.log(tenancy_start_date, tenancy_end_date);
+        property.property_status = PropertyStatusEnum.NOT_VACANT
+
+        manager.getRepository(Property).save(property)
+
+        // 4. create rent record
+        const rent = manager.getRepository(Rent).create({
+          property_id,
+          tenant_id: userAccount.id,
+          amount_paid: rent_amount,
+          rental_price: rent_amount,
+          lease_start_date: new Date().toISOString(),
+          lease_end_date: due_date,
+          rent_status: RentStatusEnum.ACTIVE,
+        });
+
+        await manager.getRepository(Rent).save(rent);
+
+        // 5. Assign tenant to property
+        const propertyTenant = manager.getRepository(PropertyTenant).create({
+          property_id,
+          tenant_id: userAccount.id,
+          status: TenantStatusEnum.ACTIVE,
+        });
+
+        await manager.getRepository(PropertyTenant).save(propertyTenant);
+
+        // 5. Notify tenant
+        // await this.whatsappBotService.sendToUserWithTemplate(
+        //   UtilService.normalizePhoneNumber(tenantUser.phone_number),
+        //   `${tenantUser.first_name} ${tenantUser.last_name}`,
+        // );
+
+        this.eventEmitter.emit('user.added', {
+          user_id: user_id,
+          property_id: property_id,
+          property_name: property?.name,
+          profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          role: RolesEnum.TENANT,
+        });
+
+        const admin_phone_number = UtilService.normalizePhoneNumber(
+          admin.user.phone_number,
+        );
+
+        await this.whatsappBotService.sendTenantWelcomeTemplate({
+          phone_number:  UtilService.normalizePhoneNumber(phone_number),
+          tenant_name: `${UtilService.toSentenceCase(first_name)} ${UtilService.toSentenceCase(last_name)}`,
+          landlord_name: admin.profile_name
+        })
+
+        await this.sendUserAddedTemplate({
+          phone_number: admin_phone_number,
+          name: 'Admin',
+          user: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          property_name: property?.name,
+        });
+
+        return tenantUser;
+      } catch (error) {
+        console.error('Error creating tenant:', error);
+        if (error instanceof HttpException) throw error;
+        throw new HttpException(
+          error.message || 'Could not create tenant',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+    });
+  }
+
+
+   async addTenantKyc(user_id: string, dto: CreateTenantKycDto) {
+    const {
+      phone_number,
       first_name,
       last_name,
       email,
@@ -164,6 +326,10 @@ export class UsersService {
         const property = await manager.getRepository(Property).findOne({
           where: { id: property_id },
         });
+
+        if(!property){
+          return;
+        }
 
         const hasActiveRent = await manager.getRepository(Rent).findOne({
           where: {
@@ -229,7 +395,10 @@ export class UsersService {
 
         await manager.getRepository(Account).save(userAccount);
 
-        console.log(tenancy_start_date, tenancy_end_date);
+        // console.log(tenancy_start_date, tenancy_end_date);
+        property.property_status = PropertyStatusEnum.NOT_VACANT
+
+        manager.getRepository(Property).save(property)
 
         // 4. create rent record
         const rent = manager.getRepository(Rent).create({
@@ -270,6 +439,12 @@ export class UsersService {
         const admin_phone_number = UtilService.normalizePhoneNumber(
           admin.user.phone_number,
         );
+
+        await this.whatsappBotService.sendTenantWelcomeTemplate({
+          phone_number:  UtilService.normalizePhoneNumber(phone_number),
+          tenant_name: `${UtilService.toSentenceCase(first_name)} ${UtilService.toSentenceCase(last_name)}`,
+          landlord_name: admin.profile_name
+        })
 
         await this.sendUserAddedTemplate({
           phone_number: admin_phone_number,
@@ -1811,7 +1986,7 @@ export class UsersService {
     async getLandlords(){
     return await this.usersRepository.find({
       where:{
-        
+        role: RolesEnum.LANDLORD
       }
     })
   }

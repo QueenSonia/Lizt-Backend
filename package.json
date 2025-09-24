@@ -15,7 +15,7 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "dev": "npm run start:dev",
-    "start:prod:render": "node dist/src/main.js",
+    "start:prod:render": "npm run build && node dist/src/main.js",
     "start:prod": "npm run build && node --max_old_space_size=1536 dist/src/main.js",
     "pm2:start": "pm2 start dist/src/main.js --name panda-backend",
     "start:debug": "nest start --debug --watch",

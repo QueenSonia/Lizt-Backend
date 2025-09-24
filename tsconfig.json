@@ -17,10 +17,6 @@
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": false,
     "strictBindCallApply": false,
-    "noFallthroughCasesInSwitch": false,
-    "paths": {
-      "src/*": ["./dist/src/*"] //production
-      // "src/*": ["./src/*"] //development
-    }
+    "noFallthroughCasesInSwitch": false
   }
 }

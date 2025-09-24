@@ -19,7 +19,8 @@
     "strictBindCallApply": false,
     "noFallthroughCasesInSwitch": false,
     "paths": {
-      "src/*": ["src/*"]
+      "src/*": ["./dist/src/*"] //production
+      // "src/*": ["./src/*"] //development
     }
   }
 }

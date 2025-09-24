@@ -1,6 +1,7 @@
 import { BaseEntity } from 'src/base.entity';
 import { Column, Entity, JoinColumn, OneToOne } from 'typeorm';
 import { Users } from './user.entity';
+import { Account } from './account.entity';
 
 @Entity()
 export class KYC extends BaseEntity {
@@ -67,7 +68,7 @@ export class KYC extends BaseEntity {
   @Column({ nullable: false, type: 'varchar', default: false })
   accept_terms_and_condition: boolean;
 
-  @OneToOne(() => Users, (user) => user.kyc, { onDelete: 'CASCADE' })
-  @JoinColumn()
-  user: Users;
+  @OneToOne(() => Account, (user) => user.kyc, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })
+  user: Account;
 }

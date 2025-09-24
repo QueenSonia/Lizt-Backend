@@ -1,4 +1,9 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   CreatePropertyDto,
   PropertyFilter,
@@ -8,7 +13,7 @@ import {
 import { UpdatePropertyDto } from './dto/update-property.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Property } from './entities/property.entity';
-import { In, IsNull, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 import { DateService } from 'src/utils/date.helper';
@@ -21,6 +26,16 @@ import { PropertyGroup } from './entities/property-group.entity';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Users } from 'src/users/entities/user.entity';
+import { UsersService } from 'src/users/users.service';
+import { AssignTenantDto } from './dto/assign-tenant.dto';
+import { Rent } from 'src/rents/entities/rent.entity';
+import {
+  RentPaymentStatusEnum,
+  RentStatusEnum,
+} from 'src/rents/dto/create-rent.dto';
+import { UtilService } from 'src/utils/utility-service';
+import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 
 @Injectable()
 export class PropertiesService {
@@ -29,9 +44,10 @@ export class PropertiesService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyGroup)
     private readonly propertyGroupRepository: Repository<PropertyGroup>,
-
+    private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly dataSource: DataSource,
   ) {}
 
   async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
@@ -44,49 +60,95 @@ export class PropertiesService {
       user_id: createdProperty.owner_id, // optional if applicable
     });
 
+    const property = await this.getPropertyById(createdProperty.id);
+    const admin_phone_number = UtilService.normalizePhoneNumber(
+      property.owner.user.phone_number,
+    );
+
+    await this.userService.sendPropertiesNotification({
+      phone_number: admin_phone_number,
+      name: 'Admin',
+      property_name: createdProperty.name,
+    });
+
     return createdProperty;
   }
 
-
   async getAllProperties(queryParams: PropertyFilter) {
-    const page = queryParams?.page
-      ? Number(queryParams?.page)
+    const page = queryParams.page
+      ? Number(queryParams.page)
       : config.DEFAULT_PAGE_NO;
-    const size = queryParams?.size
+    const size = queryParams.size
       ? Number(queryParams.size)
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
-    const query = await buildPropertyFilter(queryParams);
-    const [properties, count] = await this.propertyRepository.findAndCount({
-      where: query,
-      relations: ['property_tenants', 'rents'],
-      skip,
-      take: size,
-      order: { created_at: 'DESC' },
-    });
+    const { query, order } = await buildPropertyFilter(queryParams);
+
+    const qb = this.propertyRepository
+      .createQueryBuilder('property')
+      .leftJoinAndSelect('property.rents', 'rents')
+      .leftJoinAndSelect('rents.tenant', 'tenant')
+      .leftJoinAndSelect('property.property_tenants', 'property_tenants')
+      .where(query);
+
+    // Apply sorting (rent requires custom logic)
+    if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
+      qb.orderBy(
+        'rents.rental_price',
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    } else if (queryParams.sort_by === 'expiry' && queryParams?.sort_order) {
+      qb.orderBy(
+        'rents.lease_end_date',
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    } else if (queryParams.sort_by && queryParams?.sort_order) {
+      qb.orderBy(
+        `property.${queryParams.sort_by}`,
+        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+      );
+    }
+
+    const [properties, count] = await qb
+      .skip(skip)
+      .take(size)
+      .getManyAndCount();
 
     const totalPages = Math.ceil(count / size);
+
     return {
       properties,
       pagination: {
         totalRows: count,
         perPage: size,
         currentPage: page,
-        totalPages: Math.ceil(count / size),
+        totalPages,
         hasNextPage: page < totalPages,
       },
     };
   }
 
-  async getPropertyById(id: string): Promise<CreatePropertyDto> {
+  async getVacantProperty(query: { owner_id: string }) {
+    return await this.propertyRepository.find({
+      where: {
+        property_status: PropertyStatusEnum.VACANT,
+        ...query,
+      },
+      relations: ['property_tenants', 'rents', 'rents.tenant'],
+    });
+  }
+
+  async getPropertyById(id: string): Promise<any> {
     const property = await this.propertyRepository.findOne({
       where: { id },
       relations: [
         'rents',
         'property_tenants',
         'property_tenants.tenant',
+        'property_tenants.tenant.user',
         'owner',
+        'owner.user',
       ],
     });
     if (!property?.id) {
@@ -127,36 +189,58 @@ export class PropertiesService {
   }
 
   async updatePropertyById(id: string, data: UpdatePropertyDto) {
-    try{
-    const activeRent = (await this.rentService.findActiveRent({
-      property_id: id,
-    })) as any;
+    try {
+      const activeRent = (await this.rentService.findActiveRent({
+        property_id: id,
+      })) as any;
 
-    if (!activeRent) {
-       return this.propertyRepository.update(id,{
-      name: data.name,
-      location: data.location,
-      no_of_bedrooms: data.no_of_bedrooms
-    });
+      if (!activeRent) {
+        return this.propertyRepository.update(id, {
+          name: data.name,
+          location: data.location,
+          no_of_bedrooms: data.no_of_bedrooms,
+        });
+      }
+
+      await this.userService.updateUserById(activeRent.tenant_id, {
+        first_name: data.first_name,
+        last_name: data.last_name,
+        phone_number: data.phone_number,
+      });
+      await this.rentService.updateRentById(activeRent.id, {
+        lease_start_date: data.lease_end_date,
+        lease_end_date: data.lease_end_date,
+        rental_price: data.rental_price,
+        service_charge: data.service_charge,
+        security_deposit: data.security_deposit,
+      });
+      return this.propertyRepository.update(id, {
+        name: data.name,
+        location: data.location,
+        property_status: data.occupancy_status,
+      });
+    } catch (error) {
+      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
     }
-    await this.rentService.updateRentById(activeRent.id, {
-      lease_start_date: data.lease_end_date,
-      lease_end_date: data.lease_end_date,
-      rental_price: data.rental_price,
-      service_charge: data.service_charge
-    });
-    return this.propertyRepository.update(id,{
-      name: data.name,
-      location: data.location,
-      no_of_bedrooms: data.no_of_bedrooms
-    });
-  }catch(error){
-    throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
-  }
   }
 
   async deletePropertyById(id: string) {
-    return this.propertyRepository.delete(id);
+    try {
+      const property = await this.propertyRepository.findOne({
+        where: { id },
+      });
+
+      if (property?.property_status === PropertyStatusEnum.NOT_VACANT) {
+        throw new HttpException(
+          'Cannot delete property that is not vacant',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      return this.propertyRepository.delete(id);
+    } catch (error) {
+      console.log(error);
+      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
   }
 
   async getAdminDashboardStats(user_id: string) {
@@ -413,5 +497,77 @@ export class PropertiesService {
       property_groups: groupsWithProperties,
       total: propertyGroups.length,
     };
+  }
+
+  async assignTenant(id: string, data: AssignTenantDto) {
+    const queryRunner = this.dataSource.createQueryRunner();
+
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      const property = await queryRunner.manager.findOne(Property, {
+        where: { id },
+      });
+
+      if (!property?.id) {
+        throw new HttpException(
+          `Property with id: ${id} not found`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      const tenant = await this.userService.getAccountById(data.tenant_id);
+      if (!tenant) throw new NotFoundException('Tenant not found');
+
+      await queryRunner.manager.save(Rent, {
+        tenant_id: data.tenant_id,
+        lease_start_date: data.lease_start_date,
+        lease_end_date: data.lease_end_date,
+        property_id: property.id,
+        amount_paid: data.rental_price,
+        rental_price: data.rental_price,
+        security_deposit: data.security_deposit,
+        service_charge: data.service_charge,
+        payment_status: RentPaymentStatusEnum.PAID,
+        rent_status: RentStatusEnum.ACTIVE,
+      });
+
+      await Promise.all([
+        queryRunner.manager.save(PropertyTenant, {
+          property_id: property.id,
+          tenant_id: data.tenant_id,
+          status: TenantStatusEnum.ACTIVE,
+        }),
+        queryRunner.manager.update(Property, property.id, {
+          property_status: PropertyStatusEnum.NOT_VACANT,
+        }),
+        queryRunner.manager.save(PropertyHistory, {
+          property_id: property.id,
+          tenant_id: data.tenant_id,
+          move_in_date: DateService.getStartOfTheDay(new Date()),
+          monthly_rent: data.rental_price,
+          owner_comment: null,
+          tenant_comment: null,
+          move_out_date: null,
+          move_out_reason: null,
+        }),
+      ]);
+
+      await queryRunner.commitTransaction();
+
+      return {
+        message: 'Tenant Added Successfully',
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('Transaction rolled back due to:', error);
+      throw new HttpException(
+        error?.message ||
+          'An error occurred while assigning Tenant To property',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    } finally {
+      await queryRunner.release();
+    }
   }
 }

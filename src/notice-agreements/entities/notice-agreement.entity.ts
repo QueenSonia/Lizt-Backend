@@ -1,5 +1,6 @@
 import { BaseEntity } from 'src/base.entity';
 import { Property } from 'src/properties/entities/property.entity';
+import { Account } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 
@@ -15,6 +16,7 @@ export enum SendVia {
 }
 
 export enum NoticeType {
+  UPLOAD = 'uploaded_document',
   RENT_INCREASE = 'rent_increase',
   LEASE_RENEWAL = 'lease_renewal',
   EVICTION = 'eviction',
@@ -44,6 +46,13 @@ export class NoticeAgreement extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   notice_image?: string | null;
 
+    @Column({ type: 'jsonb', nullable: true, default: [] })
+  notice_documents: {
+    url: string;
+    name?: string;
+    type?: string;
+  }[];
+
   @Column({
     type: 'enum',
     enum: NoticeStatus,
@@ -72,7 +81,7 @@ export class NoticeAgreement extends BaseEntity {
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() => Users, (u) => u.notice_agreements)
+  @ManyToOne(() => Account, (u) => u.notice_agreements)
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Users;
+  tenant: Account;
 }

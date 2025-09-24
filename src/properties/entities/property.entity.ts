@@ -8,6 +8,8 @@ import { ServiceRequest } from 'src/service-requests/entities/service-request.en
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
+import { Account } from 'src/users/entities/account.entity';
+import { Notification } from 'src/notifications/entities/notification.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -26,7 +28,7 @@ export class Property extends BaseEntity {
     enum: [PropertyStatusEnum.NOT_VACANT, PropertyStatusEnum.VACANT],
     default: PropertyStatusEnum.VACANT,
   })
-  property_status: PropertyStatusEnum;
+  property_status: string;
 
   @Column({ nullable: false, type: 'uuid' })
   owner_id: string;
@@ -46,7 +48,7 @@ export class Property extends BaseEntity {
   @Column({ nullable: true, type: 'varchar' })
   payment_frequency: string;
 
-  @Column({ type: 'int', nullable: true})
+  @Column({ type: 'int', nullable: true })
   security_deposit: number;
 
   @Column({ type: 'int', nullable: true })
@@ -58,9 +60,9 @@ export class Property extends BaseEntity {
   @OneToMany(() => PropertyTenant, (t) => t.property)
   property_tenants: PropertyTenant[];
 
-  @ManyToOne(() => Users, (owner) => owner.properties)
+  @ManyToOne(() => Account, (owner) => owner.properties)
   @JoinColumn({ name: 'owner_id', referencedColumnName: 'id' })
-  owner: Users;
+  owner: Account;
 
   @OneToMany(() => Rent, (r) => r.property)
   rents: Rent[];
@@ -76,4 +78,7 @@ export class Property extends BaseEntity {
 
   @OneToMany(() => NoticeAgreement, (na) => na.property)
   notice_agreements: NoticeAgreement[];
+
+  @OneToMany(() => Notification, (no) => no.property)
+  notification: Notification[];
 }

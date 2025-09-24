@@ -30,11 +30,52 @@ import { ADMIN_ROLES } from 'src/base.entity';
 import { Roles } from 'src/auth/role.decorator';
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { NoticeAnalyticsDTO } from './dto/notice-analytics.dto';
+import { SkipAuth } from 'src/auth/auth.decorator';
+import { UploadNoticeDocumentDto } from './dto/uplaod-notice-document.dto';
 
 @ApiTags('Notice-Agreements')
 @Controller('notice-agreement')
 export class NoticeAgreementController {
   constructor(private readonly service: NoticeAgreementService) {}
+
+  @ApiOperation({ summary: 'Get All Notice Agreements' })
+  @ApiOkResponse({
+    type: [CreateNoticeAgreementDto],
+    description: 'List of notice agreements',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get()
+  getAllNoticeAgreement(@Req() req: any, @Query() query: NoticeAgreementFilter) {
+    try {
+      const owner_id = req?.user?.id;
+      return this.service.getAllNoticeAgreement(owner_id, query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Notice Agreements by Tenant ID' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiOkResponse({
+    type: PaginationResponseDto,
+    description: 'Notice agreements for tenant successfully fetched',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('tenant')
+  async getNoticeAgreementsByTenant(
+    @Query() query: NoticeAgreementFilter,
+    @Req() req: any,
+  ) {
+    try {
+      const tenant_id = req?.user?.id;
+      return this.service.getNoticeAgreementsByTenantId(tenant_id, query);
+    } catch (error) {
+      throw error;
+    }
+  }
 
   @UseGuards(RoleGuard)
   @Get('analytics')
@@ -66,24 +107,6 @@ export class NoticeAgreementController {
     }
   }
 
-  @ApiOperation({ summary: 'Get All Notice Agreements' })
-  @ApiOkResponse({
-    type: [CreateNoticeAgreementDto],
-    description: 'List of notice agreements',
-  })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
-  @Get()
-  getAllNoticeAgreement(@Req() req: any) {
-    try {
-      const owner_id = req?.user?.id;
-      return this.service.getAllNoticeAgreement(owner_id);
-    } catch (error) {
-      throw error;
-    }
-  }
 
   @ApiOperation({ summary: 'Get One Notice Agreement' })
   @ApiOkResponse({
@@ -116,26 +139,13 @@ export class NoticeAgreementController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Notice Agreements by Tenant ID' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'size', required: false, type: Number })
-  @ApiOkResponse({
-    type: PaginationResponseDto,
-    description: 'Notice agreements for tenant successfully fetched',
-  })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('tenant')
-  async getNoticeAgreementsByTenant(
-    @Query() query: NoticeAgreementFilter,
-    @Req() req: any,
+    @Post('upload-document/:id')
+  async attachDocument(
+    @Param('id') id: string,
+    @Body() body: any,
   ) {
-    try {
-      const tenant_id = req?.user?.id;
-      return this.service.getNoticeAgreementsByTenantId(tenant_id, query);
-    } catch (error) {
-      throw error;
-    }
+    return this.service.attachNoticeDocument(id, body.document_url);
   }
+
 
 }

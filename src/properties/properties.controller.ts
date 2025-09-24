@@ -36,10 +36,11 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
-import { ADMIN_ROLES } from 'src/base.entity';
+import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
+import { AssignTenantDto } from './dto/assign-tenant.dto';
 @ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
@@ -56,7 +57,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   // @UseInterceptors(FilesInterceptor('property_images', 20))
   async createProperty(
     @Body() body: CreatePropertyDto,
@@ -118,6 +119,16 @@ export class PropertiesController {
     }
   }
 
+  @Get('/vacant')
+  getVacantProperty(@Query() query: {owner_id:string}, @Req() req: any){
+    try{
+         query.owner_id = req?.user?.id 
+      return this.propertiesService.getVacantProperty(query)
+    }catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get All Property Groups' })
   @ApiOkResponse({
     description: 'List of property groups with their properties',
@@ -126,8 +137,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('property-groups')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
-  async getAllPropertyGroups(@Req() req: any) {
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)async getAllPropertyGroups(@Req() req: any) {
     try {
       const owner_id = req?.user?.id;
       return this.propertiesService.getAllPropertyGroups(owner_id);
@@ -244,7 +254,7 @@ export class PropertiesController {
   })
   @Get('admin/dashboard')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   async getAdminDashboardStats(@Req() req: any) {
     try {
       const user_id = req?.user?.id;
@@ -259,7 +269,7 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   @Post('move-in')
   moveTenantIn(@Body() moveInData: MoveTenantInDto) {
     try {
@@ -275,6 +285,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
+
   @Post('move-out')
   moveTenantOut(@Body() moveOutData: MoveTenantOutDto) {
     try {
@@ -291,7 +302,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('property-group')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   async createPropertyGroup(
     @Body() body: CreatePropertyGroupDto,
     @Req() req: any,
@@ -310,7 +321,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('property-group/:id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   async getPropertyGroupById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
@@ -321,5 +332,14 @@ export class PropertiesController {
     } catch (error) {
       throw error;
     }
+  }
+ @Post('assign-tenant/:id')
+@UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  async assignTenantToProperty(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() data:AssignTenantDto
+  ){
+    return this.propertiesService.assignTenant(id, data)
   }
 }

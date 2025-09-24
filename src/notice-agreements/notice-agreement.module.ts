@@ -6,12 +6,11 @@ import { NoticeAgreement } from './entities/notice-agreement.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { FileUploadService } from 'src/utils/cloudinary';
-import { TwilioModule } from 'src/twilio/twilio.module';
+import { Account } from 'src/users/entities/account.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([NoticeAgreement, Property, Users]),
-    TwilioModule,
+    TypeOrmModule.forFeature([NoticeAgreement, Property, Users, Account]),
   ],
   controllers: [NoticeAgreementController],
   providers: [NoticeAgreementService, FileUploadService],

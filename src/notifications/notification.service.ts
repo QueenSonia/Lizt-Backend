@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import {Repository } from 'typeorm';
 import { Notification } from './entities/notification.entity';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 
@@ -25,6 +25,23 @@ export class NotificationService {
   }
 
   async findByPropertyId(property_id: string): Promise<Notification[]> {
-    return await this.notificationRepository.find({ where: { property_id } });
+    return await this.notificationRepository.find({ 
+      where: { 
+      property_id
+    },
+    relations: ['property']
+  });
+  }
+
+  async findByUserId(user_id: string): Promise<Notification[]> {
+    return await this.notificationRepository.find({ 
+      where: { property:{
+        owner_id:user_id
+      }},  
+      relations: ['property', 'serviceRequest'],
+      order:{
+        date: "DESC"
+      }
+    });
   }
 }

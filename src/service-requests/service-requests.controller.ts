@@ -11,8 +11,12 @@ import {
   Req,
   UseInterceptors,
   UploadedFiles,
+  HttpStatus,
+  HttpException,
+  RawBodyRequest,
+  Headers as HeadersDecorator,
 } from '@nestjs/common';
-import { ServiceRequestsService } from './service-requests.service';
+import { ServiceRequestsService, TawkWebhookPayload } from './service-requests.service';
 import {
   CreateServiceRequestDto,
   ServiceRequestFilter,
@@ -36,6 +40,7 @@ import {
 import { PaginationResponseDto } from './dto/paginate.dto';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import * as crypto from 'crypto';
 
 @ApiTags('Service-Requests')
 @Controller('service-requests')
@@ -97,6 +102,7 @@ export class ServiceRequestsController {
     }
   }
 
+
   @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
@@ -121,6 +127,26 @@ export class ServiceRequestsController {
     }
   }
 
+    @ApiOperation({ summary: 'Get One Service Request' })
+  @ApiOkResponse({
+    type: CreateServiceRequestDto,
+    description: 'Service request successfully fetched',
+  })
+  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get('/tenant')
+  getServiceRequestByTenant(
+     @Req() req: any
+    ) {
+    try {
+      const status = req?.query?.status || '';
+      return this.serviceRequestsService.getServiceRequestByTenant(req?.user.id, status);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get One Service Request' })
   @ApiOkResponse({
     type: CreateServiceRequestDto,
@@ -130,13 +156,15 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  getServiceRequestById(@Param('id', new ParseUUIDPipe()) id: string) {
+  getServiceRequestById(
+    @Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.serviceRequestsService.getServiceRequestById(id);
     } catch (error) {
       throw error;
     }
   }
+
 
   @ApiOperation({ summary: 'Update Service Request' })
   @ApiConsumes('multipart/form-data')
@@ -179,30 +207,18 @@ export class ServiceRequestsController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Service Requests by Tenant ID' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'size', required: false, type: Number })
-  @ApiOkResponse({
-    type: PaginationResponseDto,
-    description: 'Service requests for tenant successfully fetched',
-  })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('tenant-property/:property_id')
-  async getServiceRequestsByTenantAndProperty(
-    @Param('property_id', new ParseUUIDPipe()) property_id: string,
-    @Query() query: ServiceRequestFilter,
-    @Req() req: any,
-  ) {
-    try {
-      const tenant_id = req?.user?.id;
-      return this.serviceRequestsService.getServiceRequestsByTenantId(
-        tenant_id,
-        property_id,
-        query,
-      );
-    } catch (error) {
-      throw error;
-    }
+
+  private isSupportedEvent(event: string): boolean {
+    return ['chat:start', 'chat:end', 'ticket:create'].includes(event);
+  }
+
+  // Health check endpoint for Tawk.to to verify webhook is working
+  @Post('health')
+  async healthCheck() {
+    return {
+      status: 'ok',
+      service: 'tawk-webhook',
+      timestamp: new Date().toISOString()
+    };
   }
 }

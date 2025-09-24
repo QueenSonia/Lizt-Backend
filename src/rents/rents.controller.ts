@@ -31,7 +31,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
-import { ADMIN_ROLES } from 'src/base.entity';
+import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
 
 @ApiTags('Rents')
@@ -123,7 +123,7 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('due')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   getDueRentsWithinSevenDays(@Query() query: RentFilter, @Req() req: any) {
     try {
       query.owner_id = req?.user?.id;
@@ -150,10 +150,13 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('overdue')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   getOverdueRents(@Query() query: RentFilter, @Req() req: any) {
     try {
-      query.owner_id = req?.user?.id;
+      if (!query.property) {
+        query.property = {};
+      }
+      query.property.owner_id = req?.user?.id;
       return this.rentsService.getOverdueRents(query);
     } catch (error) {
       throw error;
@@ -169,8 +172,7 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('reminder/:id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
-  sendReminder(@Param('id', new ParseUUIDPipe()) id: string) {
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)sendReminder(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.rentsService.sendRentReminder(id);
     } catch (error) {
@@ -239,7 +241,7 @@ export class RentsController {
   @ApiNotFoundResponse({ description: 'You do not own this Property' })
   @Post('increase')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   async saveOrUpdateRentIncrease(
     @Body() body: CreateRentIncreaseDto,
     @Req() req: any,
@@ -250,4 +252,20 @@ export class RentsController {
       throw error;
     }
   }
+
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Put('/remove/:tenant_id')
+  async removeTenant(
+    @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,
+  @Body() body: {property_id:string}
+  ) {
+    try{
+      const {property_id} = body
+      return this.rentsService.deactivateTenant({tenant_id, property_id})
+    } catch (error) {
+      throw error;
+    }
+  }
+
+
 }

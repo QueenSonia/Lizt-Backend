@@ -1,0 +1,357 @@
+{
+  "routing_model": {
+    "WELCOME_SCREEN": [
+      "SERVICE_REQUEST"
+    ],
+    "SERVICE_REQUEST": [
+      "REPORT_ISSUE_INPUT",
+      "VIEW_REQUESTS_LIST"
+    ],
+    "REPORT_ISSUE_INPUT": [
+      "ISSUE_LOGGED_CONFIRMATION"
+    ],
+    "ISSUE_LOGGED_CONFIRMATION": [
+      "TERMINAL_SCREEN"
+    ],
+    "VIEW_REQUESTS_LIST": [
+      "REQUEST_DETAIL"
+    ],
+    "REQUEST_DETAIL": [
+      "TERMINAL_SCREEN"
+    ]
+  },
+  "data_api_version": "3.0",
+  "version": "7.2",
+  "screens": [
+    {
+      "id": "WELCOME_SCREEN",
+      "title": "Welcome!",
+      "data": {
+        "tenant_default_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "service_request",
+              "title": "🛠 Service Request"
+            },
+            {
+              "id": "view_tenancy",
+              "title": "📄 View Tenancy"
+            },
+            {
+              "id": "documents",
+              "title": "📁 Documents"
+            },
+            {
+              "id": "talk_to_support",
+              "title": "👩‍💻 Talk to Support"
+            }
+          ]
+        },
+        "user": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "__example__": {
+            "name": "Somto"
+          }
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "tenant_options_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "Hello ${user.name}! 👋"
+              },
+              {
+                "type": "TextBody",
+                "text": "What would you like to do today?"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "label": "Choose an option",
+                "name": "tenant_default_action",
+                "required": true,
+                "data-source": "${data.tenant_default_actions}"
+              },
+              {
+                "type": "Footer",
+                "label": "Proceed",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "name": "SERVICE_REQUEST",
+                    "type": "object"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SERVICE_REQUEST",
+      "title": "Service Requests",
+      "data": {
+        "request_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "report",
+              "title": "➕ Report an Issue"
+            },
+            {
+              "id": "view",
+              "title": "👀 View My Requests"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "service_request_menu",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "label": "Choose an option",
+                "name": "request_action",
+                "required": true,
+                "data-source": "${data.request_actions}"
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "service_action": "${form.request_action}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "REPORT_ISSUE_INPUT",
+      "title": "Report an Issue",
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "report_issue_form",
+            "children": [
+              {
+                "type": "TextBody",
+                "text": "Please describe the issue you're facing."
+              },
+              {
+                "type": "TextInput",
+                "label": "Describe the issue",
+                "name": "issue_description",
+                "required": true
+              },
+              {
+                "type": "Footer",
+                "label": "Submit",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "issue_description": "${form.issue_description}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ISSUE_LOGGED_CONFIRMATION",
+      "title": "Success",
+      "terminal": false,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "issue_confirmation",
+            "children": [
+              {
+                "type": "TextBody",
+                "text": "Your issue has been logged. Our team will attend to it shortly. 🙌"
+              },
+              {
+                "type": "Footer",
+                "label": "Close",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "go_next": true
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "VIEW_REQUESTS_LIST",
+      "title": "My Requests",
+      "data": {
+        "requests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "req_1",
+              "title": "🚰 Kitchen tap leaking"
+            },
+            {
+              "id": "req_2",
+              "title": "💡 Corridor light not working"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "view_requests_form",
+            "children": [
+              {
+                "type": "RadioButtonsGroup",
+                "label": "Select a request to view details",
+                "name": "selected_request",
+                "required": true,
+                "data-source": "${data.requests}"
+              },
+              {
+                "type": "Footer",
+                "label": "View Details",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "selected_request_id": "${form.selected_request}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "REQUEST_DETAIL",
+      "title": "Request Details",
+      "data": {
+        "status": {
+          "type": "string",
+          "__example__": "Pending"
+        },
+        "description": {
+          "type": "string",
+          "__example__": "Tap in kitchen leaking"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "request_detail_form",
+            "children": [
+              {
+                "type": "TextSubheading",
+                "text": "Status: ${data.status}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.description}"
+              },
+              {
+                "type": "Footer",
+                "label": "Mark as Resolved",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "mark_resolved": true
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TERMINAL_SCREEN",
+      "title": "Done",
+      "terminal": true,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "final",
+            "children": [
+              {
+                "type": "TextBody",
+                "text": "Thank you. Returning to WhatsApp..."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

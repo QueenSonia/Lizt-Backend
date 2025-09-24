@@ -3,6 +3,7 @@ import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Users } from '../../users/entities/user.entity';
 import { Property } from '../../properties/entities/property.entity';
+import { Account } from 'src/users/entities/account.entity';
 
 export enum MoveOutReasonEnum {
   LEASE_ENDED = 'lease_ended',
@@ -42,11 +43,13 @@ export class PropertyHistory extends BaseEntity {
   @Column({ type: 'int', nullable: false })
   monthly_rent: number;
 
-  @ManyToOne(() => Property, (p) => p.property_histories)
+  @ManyToOne(() => Property, (p) => p.property_histories,{
+  onDelete: 'CASCADE',
+})
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() => Users, (u) => u.property_histories)
+  @ManyToOne(() => Account, (u) => u.property_histories)
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Users;
+  tenant: Account;
 }

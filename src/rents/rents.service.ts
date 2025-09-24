@@ -12,6 +12,8 @@ import { config } from 'src/config';
 import { RentIncrease } from './entities/rent-increase.entity';
 import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
 import { Property } from 'src/properties/entities/property.entity';
+import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 
 @Injectable()
 export class RentsService {
@@ -20,6 +22,8 @@ export class RentsService {
     private readonly rentRepository: Repository<Rent>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(RentIncrease)
     private readonly rentIncreaseRepository: Repository<RentIncrease>,
   ) {}
@@ -63,7 +67,7 @@ export class RentsService {
   async getRentByTenantId(tenant_id: string) {
     const rent = await this.rentRepository.findOne({
       where: { tenant_id },
-      relations: ['tenant'],
+      relations: ['tenant', 'property'],
     });
     if (!rent?.id) {
       throw new HttpException(
@@ -128,7 +132,7 @@ export class RentsService {
     const [rents, count] = await this.rentRepository.findAndCount({
       where: {
         ...query,
-        expiry_date: LessThanOrEqual(currentDate),
+        // expiry_date: LessThanOrEqual(currentDate),
       },
       relations: ['tenant', 'property'],
       skip,
@@ -160,7 +164,7 @@ export class RentsService {
     }
 
     const emailContent = rentReminderEmailTemplate(
-      `${rent?.tenant?.first_name} ${rent?.tenant?.last_name}`,
+      `${rent?.tenant?.user.first_name} ${rent?.tenant?.user.last_name}`,
       rent?.property?.rental_price,
       DateService.getDateNormalFormat(rent?.expiry_date),
     );
@@ -233,4 +237,33 @@ export class RentsService {
       }
     })
   }
+
+
+ async deactivateTenant(data:{tenant_id: string, property_id:string}) {
+  const {tenant_id, property_id} = data
+  const rent = await this.rentRepository.findOne({
+    where: {
+      tenant_id, 
+      property_id
+    }
+  })
+
+  if(rent){
+    await this.propertyRepository.update(
+      {id: rent.property_id},
+      {property_status: PropertyStatusEnum.VACANT}
+    )
+      await this.propertyTenantRepository.update(
+      {tenant_id: rent.tenant_id},
+      {status: TenantStatusEnum.INACTIVE}
+    )
+
+      await this.rentRepository.update(
+    { tenant_id }, // where condition
+    { rent_status: RentStatusEnum.INACTIVE } // update values
+  );
+  }
+
+}
+
 }

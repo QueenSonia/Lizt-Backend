@@ -15,7 +15,7 @@ export class AuthService {
     const account_token = await this.jwtService.signAsync(payload, {
       secret: this.configService.get<string>('JWT_SECRET'),
       issuer: 'PANDA-HOMES',
-      expiresIn: this.configService.get<string>('JWT_EXPIRY'),
+      expiresIn: '365d', // 1 year
     });
     return account_token;
   }

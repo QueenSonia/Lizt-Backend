@@ -1,8 +1,9 @@
-import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
-import { Users } from 'src/users/entities/user.entity';
 import { Property } from './property.entity';
 import { TenantStatusEnum } from '../dto/create-property.dto';
+import { Account } from 'src/users/entities/account.entity';
+import { Rent } from 'src/rents/entities/rent.entity';
 
 @Entity({ name: 'property_tenants' })
 export class PropertyTenant extends BaseEntity {
@@ -20,11 +21,17 @@ export class PropertyTenant extends BaseEntity {
   })
   status: TenantStatusEnum;
 
-  @ManyToOne(() => Property, (p) => p.property_tenants)
+  @ManyToOne(() => Property, (p) => p.property_tenants, {
+    onDelete: 'CASCADE',
+  })
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() => Users, (u) => u.property_tenants)
+  @ManyToOne(() => Account, (u) => u.property_tenants, {
+    onDelete: 'CASCADE',
+    cascade: true,
+  })
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Users;
+  tenant: Account;
+
 }

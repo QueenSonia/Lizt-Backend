@@ -1,8 +1,13 @@
-import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, OneToOne } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Users } from '../../users/entities/user.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { ServiceRequestStatusEnum } from '../dto/create-service-request.dto';
+import { Account } from 'src/users/entities/account.entity';
+import { ChatMessage } from 'src/chat/chat-message.entity';
+import { Notification } from 'src/notifications/entities/notification.entity';
+import { TeamMember } from 'src/users/entities/team-member.entity';
+
 
 @Entity({ name: 'service_requests' })
 export class ServiceRequest extends BaseEntity {
@@ -30,6 +35,12 @@ export class ServiceRequest extends BaseEntity {
   @Column({ nullable: true, type: 'varchar', array: true })
   issue_images?: string[] | null;
 
+  @Column({ nullable: true })
+  resolvedAt: Date;
+
+    @Column('text', { nullable: true })
+  notes: string;
+
   @Column({
     nullable: false,
     type: 'enum',
@@ -49,11 +60,28 @@ export class ServiceRequest extends BaseEntity {
   @Column({ nullable: false, type: 'uuid' })
   property_id: string;
 
-  @ManyToOne(() => Users, (u) => u.service_requests)
+  @ManyToOne(() => Account, (u) => u.service_requests)
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Users;
+  tenant: Account;
 
-  @ManyToOne(() => Property, (p) => p.service_requests)
+  @ManyToOne(() => Property, (p) => p.service_requests, {
+  onDelete: 'CASCADE',
+})
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
+
+    @OneToMany(() => ChatMessage, message => message.serviceRequest)
+  messages: ChatMessage[];
+
+ @OneToOne(() => Notification, (notification) => notification.serviceRequest)
+  notification: Notification;
+
+  @Column({ nullable: true, type: 'uuid' })
+  assigned_to: string;
+
+  @ManyToOne(() => TeamMember, (tm) => tm.account, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'assigned_to', referencedColumnName: 'id' })
+  facilityManager: TeamMember;
+
+  
 }

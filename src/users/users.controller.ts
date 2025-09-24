@@ -18,19 +18,24 @@ import {
 import { UsersService } from './users.service';
 import {
   CreateAdminDto,
+  CreateCustomerRepDto,
+  CreateLandlordDto,
+  CreateTenantDto,
   CreateUserDto,
   LoginDto,
+  ResetDto,
   UploadLogoDto,
   UserFilter,
 } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
-import { ADMIN_ROLES } from 'src/base.entity';
+import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 import { Response } from 'express';
 import { SkipAuth } from 'src/auth/auth.decorator';
 import {
   ApiBadRequestResponse,
+  ApiBearerAuth,
   ApiBody,
   ApiConsumes,
   ApiCookieAuth,
@@ -54,23 +59,54 @@ import { UpdateKycDto } from './dto/update-kyc.dto';
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
+  
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN) 
+  @Get('/waitlist')
+  async getWaitlist(){
+    return this.usersService.getWaitlist()
+  }
 
-  @ApiOperation({ summary: 'Create User' })
-  @ApiBody({ type: CreateUserDto })
-  @ApiCreatedResponse({ type: CreateUserDto })
-  @ApiResponse({ status: 422, description: 'User with email already exist' })
-  @ApiSecurity('access_token')
+    @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN) 
+  @Get('/landlord')
+  async getLandlords(){
+    return this.usersService.getLandlords()
+  }
+
+
+
+  @Get('team-members')
+  async getTeamMembers(@Req() req: any) {
+    const team_id = req.user.id
+    return this.usersService.getTeamMembers(team_id);
+  }
+
   @Post()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
-  async createUser(@Body() body: CreateUserDto, @Req() req: any) {
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  async addTenant(@Body() body: CreateTenantDto, @Req() req: any) {
     try {
       const user_id = req?.user?.id;
-      return this.usersService.createUser(body, user_id);
+      return this.usersService.addTenant(user_id, body);
     } catch (error) {
       throw error;
     }
   }
+
+
+
+
+  // @Post()
+  // @UseGuards(RoleGuard)
+  // @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)// async createUser(@Body() body: CreateUserDto, @Req() req: any) {
+  //   try {
+  //     const user_id = req?.user?.id;
+  //     return this.usersService.createUser(body, user_id);
+  //   } catch (error) {
+  //     throw error;
+  //   }
+  // }
 
   @ApiOperation({ summary: 'Get All Users' })
   @ApiQuery({ name: 'page', required: false, type: Number })
@@ -87,13 +123,23 @@ export class UsersController {
     description: 'Paginated list of users',
   })
   @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Get('/tenants')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)  
+  @ApiBearerAuth()
+  @Get('/tenants')
   getAllTenants(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllTenants(query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @Get('/profile')
+  getProfile(@Req() req: any) {
+    try {
+      const userId = req.query.user_id ||  req?.user?.id;
+      return this.usersService.getAccountById(userId);
     } catch (error) {
       throw error;
     }
@@ -116,11 +162,38 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Get('tenant-list')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+ @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
     try {
-      query.creator_id = req?.user?.id;
-      return this.usersService.getTenantsOfAnAdmin(query);
+      console.log()
+      let creator_id = req?.user?.id;
+
+      return this.usersService.getTenantsOfAnAdmin(creator_id, query);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @Get('tenant-list/:tenant_id')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  getSingleTenantOfAnAdmin(@Req() req: any) {
+    try {
+      let tenant_id = req?.params.tenant_id
+
+      return this.usersService.getSingleTenantOfAnAdmin(tenant_id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Tenant and Property They Occupy' })
+  @ApiOkResponse({ type: CreateUserDto })
+  @ApiNotFoundResponse({ description: 'Tenant not found' })
+  @Get('tenant-property')
+  getTenantAndPropertyInfo(@Req() req: any) {
+    try {
+      return this.usersService.getTenantAndPropertyInfo(req.user.id);
     } catch (error) {
       throw error;
     }
@@ -197,6 +270,7 @@ export class UsersController {
   @Get()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
+
   getAllUsers(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllUsers(query);
@@ -263,7 +337,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Delete(':id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   deleteUserById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.usersService.deleteUserById(id);
@@ -272,28 +346,47 @@ export class UsersController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Tenant and Property They Occupy' })
-  @ApiOkResponse({ type: CreateUserDto })
-  @ApiNotFoundResponse({ description: 'Tenant not found' })
-  @Get('tenant-property/:tenant_id')
-  getTenantAndPropertyInfo(
-    @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,
-  ) {
+  @SkipAuth()
+  @Post('forgot-password')
+  async forgotPassword(@Body() body: { email: string }, @Res() res: Response) {
     try {
-      return this.usersService.getTenantAndPropertyInfo(tenant_id);
+      const { email } = body;
+      await this.usersService.forgotPassword(email);
+      return res.status(200).json({ message: 'Check your Email' });
     } catch (error) {
-      throw error;
+      return res.status(500).json({ message: 'Internal Server Error' });
+    }
+  }
+
+  @SkipAuth()
+  @Post('validate-otp')
+  async validateOtp(@Body() body: { otp: string }, @Res() res: Response) {
+    try {
+      const { otp } = body;
+      const response = await this.usersService.validateOtp(otp);
+      return res.status(200).json(response);
+    } catch (error) {
+      return res.status(500).json({ message: 'Internal Server Error' });
+    }
+  }
+
+  @SkipAuth()
+  @Post('resend-otp')
+  async resendOtp(@Body() body: { token: string }, @Res() res: Response) {
+    try {
+      const { token } = body;
+      const response = await this.usersService.resendOtp(token);
+      return res.status(200).json(response);
+    } catch (error) {
+      return res.status(500).json({ message: 'Internal Server Error' });
     }
   }
 
   @SkipAuth()
   @Post('reset-password')
-  async resetPassword(
-    @Body() body: { token: string; newPassword: string },
-    @Res() res: Response,
-  ) {
+  async resetPassword(@Body() body: ResetDto, @Res() res: Response) {
     const { token, newPassword } = body;
-    await this.usersService.resetPassword(token, newPassword, res);
+    await this.usersService.resetPassword({ token, newPassword }, res);
     return { message: 'Password reset successful' };
   }
 
@@ -305,7 +398,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Post('upload-logos')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
   @UseInterceptors(FilesInterceptor('logos', 10))
   async uploadLogos(
     @UploadedFiles() files: Array<Express.Multer.File>,
@@ -338,7 +431,60 @@ export class UsersController {
 
   @SkipAuth()
   @Post('admin')
-  async createAdmin( @Body() createUserDto: CreateAdminDto){
+  async createAdmin(@Body() createUserDto: CreateAdminDto) {
     return this.usersService.createAdmin(createUserDto);
   }
+
+  @SkipAuth()
+  @Post('landlord')
+  async createLandlord(@Body() createUserDto: CreateLandlordDto) {
+    return this.usersService.createLandlord(createUserDto);
+  }
+
+  @SkipAuth()
+  @Post('rep')
+  async createCustomerRep(@Body() createUserDto: CreateCustomerRepDto) {
+    return this.usersService.createCustomerRep(createUserDto);
+  }
+
+  @Get('sub-accounts')
+  async getSubAccounts(@Req() req) {
+    const adminId = req.user.id;
+    return this.usersService.getSubAccounts(adminId);
+  }
+
+  @Get('switch-account/:id')
+  async switchAccount(
+    @Param('id') id: string,
+    @Req() req,
+    @Res() res: Response,
+  ) {
+    const currentAccount = req.user;
+    return this.usersService.switchAccount({
+      targetAccountId: id,
+      currentAccount,
+      res,
+    });
+  }
+
+  @Post('assign-collaborator')
+  async assignCollaborator(
+    @Body() team_member: { 
+        email: string;
+        permissions: string[];
+        role: RolesEnum;
+        first_name: string;
+        last_name: string;
+        phone_number: string;
+      },
+    @Req() req: any,
+  ) {
+    return this.usersService.assignCollaboratorToTeam(
+        req.user.id,
+      team_member,
+  
+    );
+  }
+
+  
 }

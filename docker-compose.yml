@@ -1,0 +1,51 @@
+services:
+  dev-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: panda
+      POSTGRES_PASSWORD: 123
+      POSTGRES_DB: panda_homes
+    ports:
+      - '5432:5432'
+    networks:
+      - panda_homes
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U panda -d panda_homes']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - '5050:80'
+    networks:
+      - panda_homes
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      dev-db:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    networks:
+      - panda_homes
+    volumes:
+      - redis_dev_data:/data
+
+networks:
+  panda_homes:
+    driver: bridge
+
+volumes:
+  postgres_dev_data:
+  redis_dev_data:
+  pgadmin_data:

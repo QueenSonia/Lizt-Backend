@@ -9,6 +9,7 @@
     "db:dev:rm": "docker compose rm dev-db redis pgadmin -s -f -v",
     "db:dev:up": "docker compose up dev-db redis pgadmin -d",
     "db:dev:restart": "npm db:dev:rm && npm db:dev:up",
+    "build:render": "tsc -p tsconfig.build.json",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",

@@ -17,9 +17,6 @@
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": false,
     "strictBindCallApply": false,
-    "noFallthroughCasesInSwitch": false,
-    "moduleResolution": "node",
-    "types": ["node", "express", "bcryptjs", "cookie-parser"],
-    "typeRoots": ["./node_modules/@types"]
+    "noFallthroughCasesInSwitch": false
   }
 }

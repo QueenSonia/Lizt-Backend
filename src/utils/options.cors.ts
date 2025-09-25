@@ -13,7 +13,7 @@ const prodOrigin = [
   'https://www.getpanda.co',
   'https://lizt.co',
   'https://www.lizt.co',
-  'http://165.227.189.210:3150/',
+  'https://lizt-frontend.vercel.app',
 ];
 
 /** Allowed development origins */

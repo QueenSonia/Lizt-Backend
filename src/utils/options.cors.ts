@@ -12,7 +12,8 @@ const prodOrigin = [
   'https://getpanda.co',
   'https://www.getpanda.co',
   'https://lizt.co',
-  'https://www.lizt.co'
+  'https://www.lizt.co',
+  'http://165.227.189.210:3150/',
 ];
 
 /** Allowed development origins */
@@ -26,7 +27,7 @@ const devOrigin = [
   'https://getpanda.co',
   'https://www.getpanda.co',
   'https://lizt.co',
-  'https://www.lizt.co'
+  'https://www.lizt.co',
 ];
 
 const isProduction = process.env.NODE_ENV === 'production';

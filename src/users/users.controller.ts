@@ -59,32 +59,36 @@ import { UpdateKycDto } from './dto/update-kyc.dto';
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
-  
+
+  @SkipAuth()
+  @Get('/test-dev')
+  async testDev() {
+    return 'dev is working';
+  }
+
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN) 
+  @Roles(ADMIN_ROLES.ADMIN)
   @Get('/waitlist')
-  async getWaitlist(){
-    return this.usersService.getWaitlist()
+  async getWaitlist() {
+    return this.usersService.getWaitlist();
   }
 
-    @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN) 
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
   @Get('/landlord')
-  async getLandlords(){
-    return this.usersService.getLandlords()
+  async getLandlords() {
+    return this.usersService.getLandlords();
   }
-
-
 
   @Get('team-members')
   async getTeamMembers(@Req() req: any) {
-    const team_id = req.user.id
+    const team_id = req.user.id;
     return this.usersService.getTeamMembers(team_id);
   }
 
   @Post()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async addTenant(@Body() body: CreateTenantDto, @Req() req: any) {
     try {
       const user_id = req?.user?.id;
@@ -93,9 +97,6 @@ export class UsersController {
       throw error;
     }
   }
-
-
-
 
   // @Post()
   // @UseGuards(RoleGuard)
@@ -124,7 +125,7 @@ export class UsersController {
   })
   @ApiBadRequestResponse()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)  
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @ApiBearerAuth()
   @Get('/tenants')
   getAllTenants(@Query() query: UserFilter) {
@@ -138,7 +139,7 @@ export class UsersController {
   @Get('/profile')
   getProfile(@Req() req: any) {
     try {
-      const userId = req.query.user_id ||  req?.user?.id;
+      const userId = req.query.user_id || req?.user?.id;
       return this.usersService.getAccountById(userId);
     } catch (error) {
       throw error;
@@ -162,11 +163,11 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Get('tenant-list')
   @UseGuards(RoleGuard)
- @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
     try {
-      console.log()
-      let creator_id = req?.user?.id;
+      console.log();
+      const creator_id = req?.user?.id;
 
       return this.usersService.getTenantsOfAnAdmin(creator_id, query);
     } catch (error) {
@@ -176,10 +177,10 @@ export class UsersController {
 
   @Get('tenant-list/:tenant_id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   getSingleTenantOfAnAdmin(@Req() req: any) {
     try {
-      let tenant_id = req?.params.tenant_id
+      const tenant_id = req?.params.tenant_id;
 
       return this.usersService.getSingleTenantOfAnAdmin(tenant_id);
     } catch (error) {
@@ -270,7 +271,6 @@ export class UsersController {
   @Get()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-
   getAllUsers(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllUsers(query);
@@ -337,7 +337,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Delete(':id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   deleteUserById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.usersService.deleteUserById(id);
@@ -398,7 +398,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Post('upload-logos')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @UseInterceptors(FilesInterceptor('logos', 10))
   async uploadLogos(
     @UploadedFiles() files: Array<Express.Multer.File>,
@@ -469,22 +469,17 @@ export class UsersController {
 
   @Post('assign-collaborator')
   async assignCollaborator(
-    @Body() team_member: { 
-        email: string;
-        permissions: string[];
-        role: RolesEnum;
-        first_name: string;
-        last_name: string;
-        phone_number: string;
-      },
+    @Body()
+    team_member: {
+      email: string;
+      permissions: string[];
+      role: RolesEnum;
+      first_name: string;
+      last_name: string;
+      phone_number: string;
+    },
     @Req() req: any,
   ) {
-    return this.usersService.assignCollaboratorToTeam(
-        req.user.id,
-      team_member,
-  
-    );
+    return this.usersService.assignCollaboratorToTeam(req.user.id, team_member);
   }
-
-  
 }

@@ -34,14 +34,6 @@ async function bootstrap(): Promise<NestExpressApplication> {
   app.enableCors(corsOptions);
   app.use(helmet());
   app.use(cookieParser());
-  app.use(
-    express.json({
-      verify: (req, res, buf, encoding) => {
-        const enc: BufferEncoding = (encoding || 'utf8') as BufferEncoding;
-        req['rawBody'] = buf.toString(enc);
-      },
-    }),
-  );
 
   app.useGlobalPipes(
     new ValidationPipe({

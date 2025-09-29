@@ -9,4 +9,7 @@ module.exports = {
   collectCoverageFrom: ['**/*.(t|j)s', '!test/**/*.(t|j)s'],
   coverageDirectory: '/coverage',
   testEnvironment: 'node',
+  moduleNameMapper: {
+    '^src/(.*)$': '<rootDir>/$1',
+  },
 };

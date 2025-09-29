@@ -58,7 +58,7 @@ export const corsOptions: CorsOptions = {
 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   origin: (origin, callback) => {
-    if (allowedOrigins.includes(origin!) || !origin) {
+    if (allowedOrigins.includes(origin) || !origin) {
       callback(null, true);
     } else {
       callback(new Error('NOT ALLOWED BY CORS'));

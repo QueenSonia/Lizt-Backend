@@ -19,11 +19,11 @@ describe('NotificationController', () => {
 
   it('should return created notification from controller', async () => {
     const result = controller.create({
-        date: '2025-03-20',
-        type: NotificationType.LEASE_SIGNED,
-        description: 'You signed rental agreement.',
-        status: 'Completed',
-        property_id: ''
+      date: '2025-03-20',
+      type: NotificationType.LEASE_SIGNED,
+      description: 'You signed rental agreement.',
+      status: 'Completed',
+      property_id: '',
     });
 
     expect(result).toHaveProperty('id');

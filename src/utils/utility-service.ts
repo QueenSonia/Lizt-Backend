@@ -9,7 +9,7 @@ dotenv.config();
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
-class UtilityService {
+export class UtilityService {
   //  sendEmail = async (email: string, subject: string, htmlContent: string) => {
   //   console.log(process.env.SENDGRID_API_KEY)
   //   try {

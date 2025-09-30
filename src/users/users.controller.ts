@@ -14,6 +14,8 @@ import {
   UseInterceptors,
   UploadedFiles,
   Patch,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import {
@@ -70,14 +72,28 @@ export class UsersController {
   @Roles(ADMIN_ROLES.ADMIN)
   @Get('/waitlist')
   async getWaitlist() {
-    return this.usersService.getWaitlist();
+    try {
+      return this.usersService.getWaitlist();
+    } catch (error) {
+      throw new HttpException(
+        'Failed to get waitlist',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
   @Get('/landlord')
   async getLandlords() {
-    return this.usersService.getLandlords();
+    try {
+      return this.usersService.getLandlords();
+    } catch (error) {
+      throw new HttpException(
+        'Failed to get landlords',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   @Get('team-members')

@@ -28,10 +28,10 @@ import { Waitlist } from './entities/waitlist.entity';
       Rent,
       Team,
       TeamMember,
-      Waitlist
+      Waitlist,
     ]),
     AuthModule,
-     forwardRef(() => WhatsappBotModule),
+    forwardRef(() => WhatsappBotModule),
   ],
   controllers: [UsersController],
   providers: [UsersService, FileUploadService],

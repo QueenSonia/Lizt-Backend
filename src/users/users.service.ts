@@ -99,6 +99,7 @@ export class UsersService {
     private readonly dataSource: DataSource,
   ) {}
 
+  // Only admin and landlord can add tenant
   async addTenant(user_id: string, dto: CreateTenantDto) {
     const {
       phone_number,
@@ -190,7 +191,7 @@ export class UsersService {
         // console.log(tenancy_start_date, tenancy_end_date);
         property.property_status = PropertyStatusEnum.NOT_VACANT;
 
-        manager.getRepository(Property).save(property);
+        await manager.getRepository(Property).save(property);
 
         // 4. create rent record
         const rent = manager.getRepository(Rent).create({
@@ -395,7 +396,7 @@ export class UsersService {
         // console.log(tenancy_start_date, tenancy_end_date);
         property.property_status = PropertyStatusEnum.NOT_VACANT;
 
-        manager.getRepository(Property).save(property);
+        await manager.getRepository(Property).save(property);
 
         // 4. create rent record
         const rent = manager.getRepository(Rent).create({
@@ -605,7 +606,7 @@ export class UsersService {
       ]);
 
       const token = await this.generatePasswordResetToken(
-        tenantAccount.id as string,
+        tenantAccount.id,
         queryRunner,
       );
 
@@ -642,7 +643,7 @@ export class UsersService {
         role: userRole,
       });
 
-      let result = {
+      const result = {
         ...tenantAccount,
         password_link: resetLink,
       };
@@ -1022,12 +1023,12 @@ export class UsersService {
 
     const account = matchedAccount as any;
 
-    let related_accounts = [] as any;
+    // let related_accounts = [] as any;
     let sub_access_token: string | null = null;
     let parent_access_token: string | null = null;
 
     if (account.role === RolesEnum.LANDLORD) {
-      let subAccount = (await this.accountRepository.findOne({
+      const subAccount = (await this.accountRepository.findOne({
         where: {
           id: Not(account.id),
           email: account.email,
@@ -1060,7 +1061,7 @@ export class UsersService {
       // });
       // userObject['property_id'] = findTenantProperty?.property_id;
 
-      let parentAccount = (await this.accountRepository.findOne({
+      const parentAccount = (await this.accountRepository.findOne({
         where: {
           id: Not(account.id),
           email: account.email,
@@ -1454,7 +1455,7 @@ export class UsersService {
   }
 
   async getSingleTenantOfAnAdmin(tenant_id: string) {
-    const tenant = this.accountRepository
+    const tenant = await this.accountRepository
       .createQueryBuilder('accounts')
       .leftJoinAndSelect('accounts.user', 'user')
       .leftJoinAndSelect('accounts.rents', 'rents')
@@ -1738,7 +1739,7 @@ export class UsersService {
     await this.accountRepository.save(repAccount);
 
     const token = await this.generatePasswordResetToken(
-      repAccount.id as string,
+      repAccount.id,
       queryRunner,
     );
 

@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { JwtStrategy } from 'src/auth/jwt.strategy';
+import { IReqUser, RolesEnum } from 'src/base.entity';
 
 describe('JwtStrategy', () => {
   let strategy: JwtStrategy;
@@ -42,7 +43,7 @@ describe('JwtStrategy', () => {
       const payload = {
         id: '1',
         email: 'test@example.com',
-        role: 'user',
+        role: RolesEnum.ADMIN,
         first_name: 'Test',
         last_name: 'User',
         phone_number: '09012345678',
@@ -55,11 +56,11 @@ describe('JwtStrategy', () => {
       expect(result).toEqual({
         id: '1',
         email: 'test@example.com',
-        role: 'user',
+        role: RolesEnum.ADMIN,
         first_name: 'Test',
         last_name: 'User',
         phone_number: '09012345678',
-      });
+      } as IReqUser);
     });
   });
 });

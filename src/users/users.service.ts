@@ -92,7 +92,7 @@ export class UsersService {
     @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
     private readonly whatsappBotService: WhatsappBotService,
-     @InjectRepository(Waitlist)
+    @InjectRepository(Waitlist)
     private readonly waitlistRepository: Repository<Waitlist>,
     private readonly cache: CacheService,
 
@@ -102,21 +102,20 @@ export class UsersService {
   async addTenant(user_id: string, dto: CreateTenantDto) {
     const {
       phone_number,
-     full_name,
-     rent_amount,
-     due_date,
+      full_name,
+      rent_amount,
+      due_date,
       email,
       property_id,
-  
     } = dto;
 
-    const admin = await this.accountRepository.findOne({
+    const admin = (await this.accountRepository.findOne({
       where: {
         id: user_id,
         role: RolesEnum.LANDLORD,
       },
       relations: ['user'],
-    }) as any;
+    })) as any;
 
     if (!admin) {
       throw new HttpException('admin account not found', HttpStatus.NOT_FOUND);
@@ -142,7 +141,7 @@ export class UsersService {
           where: { id: property_id },
         });
 
-        if(!property){
+        if (!property) {
           return;
         }
 
@@ -160,7 +159,7 @@ export class UsersService {
           );
         }
 
-        const [first_name, last_name] = full_name.split(' ')
+        const [first_name, last_name] = full_name.split(' ');
         // 2. Create tenant user
         tenantUser = manager.getRepository(Users).create({
           first_name: UtilService.toSentenceCase(first_name),
@@ -169,7 +168,6 @@ export class UsersService {
           phone_number: UtilService.normalizePhoneNumber(phone_number),
           role: RolesEnum.TENANT,
           is_verified: true,
-         
         });
 
         await manager.getRepository(Users).save(tenantUser);
@@ -190,9 +188,9 @@ export class UsersService {
         await manager.getRepository(Account).save(userAccount);
 
         // console.log(tenancy_start_date, tenancy_end_date);
-        property.property_status = PropertyStatusEnum.NOT_VACANT
+        property.property_status = PropertyStatusEnum.NOT_VACANT;
 
-        manager.getRepository(Property).save(property)
+        manager.getRepository(Property).save(property);
 
         // 4. create rent record
         const rent = manager.getRepository(Rent).create({
@@ -235,10 +233,10 @@ export class UsersService {
         );
 
         await this.whatsappBotService.sendTenantWelcomeTemplate({
-          phone_number:  UtilService.normalizePhoneNumber(phone_number),
+          phone_number: UtilService.normalizePhoneNumber(phone_number),
           tenant_name: `${UtilService.toSentenceCase(first_name)} ${UtilService.toSentenceCase(last_name)}`,
-          landlord_name: admin.profile_name
-        })
+          landlord_name: admin.profile_name,
+        });
 
         await this.sendUserAddedTemplate({
           phone_number: admin_phone_number,
@@ -259,8 +257,7 @@ export class UsersService {
     });
   }
 
-
-   async addTenantKyc(user_id: string, dto: CreateTenantKycDto) {
+  async addTenantKyc(user_id: string, dto: CreateTenantKycDto) {
     const {
       phone_number,
       first_name,
@@ -295,13 +292,13 @@ export class UsersService {
       spouse_employer,
     } = dto;
 
-    const admin = await this.accountRepository.findOne({
+    const admin = (await this.accountRepository.findOne({
       where: {
         id: user_id,
         role: RolesEnum.LANDLORD,
       },
       relations: ['user'],
-    }) as any;
+    })) as any;
 
     if (!admin) {
       throw new HttpException('admin account not found', HttpStatus.NOT_FOUND);
@@ -327,7 +324,7 @@ export class UsersService {
           where: { id: property_id },
         });
 
-        if(!property){
+        if (!property) {
           return;
         }
 
@@ -396,9 +393,9 @@ export class UsersService {
         await manager.getRepository(Account).save(userAccount);
 
         // console.log(tenancy_start_date, tenancy_end_date);
-        property.property_status = PropertyStatusEnum.NOT_VACANT
+        property.property_status = PropertyStatusEnum.NOT_VACANT;
 
-        manager.getRepository(Property).save(property)
+        manager.getRepository(Property).save(property);
 
         // 4. create rent record
         const rent = manager.getRepository(Rent).create({
@@ -441,10 +438,10 @@ export class UsersService {
         );
 
         await this.whatsappBotService.sendTenantWelcomeTemplate({
-          phone_number:  UtilService.normalizePhoneNumber(phone_number),
+          phone_number: UtilService.normalizePhoneNumber(phone_number),
           tenant_name: `${UtilService.toSentenceCase(first_name)} ${UtilService.toSentenceCase(last_name)}`,
-          landlord_name: admin.profile_name
-        })
+          landlord_name: admin.profile_name,
+        });
 
         await this.sendUserAddedTemplate({
           phone_number: admin_phone_number,
@@ -961,24 +958,25 @@ export class UsersService {
 
     // Fetch both accounts with the same email but different roles
 
-    const [adminAccount, landlordAccount, tenantAccount, repAccount] = await Promise.all([
-      this.accountRepository.findOne({
-        where: { email, role: RolesEnum.ADMIN },
-        relations: ['user'],
-      }),
-      this.accountRepository.findOne({
-        where: { email, role: RolesEnum.LANDLORD },
-        relations: ['user'],
-      }),
-      this.accountRepository.findOne({
-        where: { email, role: RolesEnum.TENANT },
-        relations: ['user'],
-      }),
-      this.accountRepository.findOne({
-        where: { email, role: RolesEnum.REP },
-        relations: ['user'],
-      }),
-    ]);
+    const [adminAccount, landlordAccount, tenantAccount, repAccount] =
+      await Promise.all([
+        this.accountRepository.findOne({
+          where: { email, role: RolesEnum.ADMIN },
+          relations: ['user'],
+        }),
+        this.accountRepository.findOne({
+          where: { email, role: RolesEnum.LANDLORD },
+          relations: ['user'],
+        }),
+        this.accountRepository.findOne({
+          where: { email, role: RolesEnum.TENANT },
+          relations: ['user'],
+        }),
+        this.accountRepository.findOne({
+          where: { email, role: RolesEnum.REP },
+          relations: ['user'],
+        }),
+      ]);
 
     // Check if any account exists
     if (!adminAccount && !tenantAccount && !landlordAccount && !repAccount) {
@@ -995,9 +993,12 @@ export class UsersService {
     }
 
     // Validate password for each account
-    const accounts = [adminAccount, landlordAccount, tenantAccount, repAccount].filter(
-      Boolean,
-    ) as any;
+    const accounts = [
+      adminAccount,
+      landlordAccount,
+      tenantAccount,
+      repAccount,
+    ].filter(Boolean) as any;
 
     let matchedAccount = null;
 
@@ -1558,7 +1559,9 @@ export class UsersService {
     return this.kycRepository.save(updatedKyc);
   }
 
-  async createLandlord(data: CreateLandlordDto): Promise<Omit<Users, 'password'>> {
+  async createLandlord(
+    data: CreateLandlordDto,
+  ): Promise<Omit<Users, 'password'>> {
     const existingAccount = await this.accountRepository.findOne({
       where: { email: data.email, role: RolesEnum.LANDLORD },
     });
@@ -1595,7 +1598,7 @@ export class UsersService {
       email: data.email,
       password: await UtilService.hashPassword(data.password),
       role: RolesEnum.LANDLORD,
-      profile_name:data.agency_name,
+      profile_name: data.agency_name,
       is_verified: true,
     });
 
@@ -1605,7 +1608,7 @@ export class UsersService {
     return result;
   }
 
-    async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
+  async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
     const existingAccount = await this.accountRepository.findOne({
       where: { email: data.email, role: RolesEnum.ADMIN },
     });
@@ -1976,18 +1979,23 @@ export class UsersService {
     });
   }
 
-  async sendUserAddedTemplate({phone_number, name, user, property_name}){
-    return await this.whatsappBotService.sendUserAddedTemplate({phone_number, name, user, property_name})
+  async sendUserAddedTemplate({ phone_number, name, user, property_name }) {
+    return await this.whatsappBotService.sendUserAddedTemplate({
+      phone_number,
+      name,
+      user,
+      property_name,
+    });
   }
-  async getWaitlist(){
-    return await this.waitlistRepository.find()
+  async getWaitlist() {
+    return await this.waitlistRepository.find();
   }
 
-    async getLandlords(){
+  async getLandlords() {
     return await this.usersRepository.find({
-      where:{
-        role: RolesEnum.LANDLORD
-      }
-    })
+      where: {
+        role: RolesEnum.LANDLORD,
+      },
+    });
   }
 }

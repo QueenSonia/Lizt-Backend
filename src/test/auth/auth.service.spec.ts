@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuthService } from 'src/auth/auth.service';
+import { IReqUser, RolesEnum } from 'src/base.entity';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -39,10 +40,10 @@ describe('AuthService', () => {
   describe('generateToken', () => {
     it('should generate a JWT token for a user', async () => {
       // Arrange
-      const user = {
+      const user: IReqUser = {
         id: '1',
         email: 'test@example.com',
-        role: 'user',
+        role: RolesEnum.ADMIN,
         first_name: 'Test',
         last_name: 'User',
         phone_number: '09012345678',

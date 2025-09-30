@@ -50,7 +50,6 @@ export class CreateTenantDto {
   @IsNumber()
   @Type(() => Number)
   rent_amount: number;
-
 }
 
 export class CreateTenantKycDto {
@@ -111,50 +110,50 @@ export class CreateTenantKycDto {
   // -----------------------
   // Employment (if EMPLOYED)
   // -----------------------
-  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsString()
   @IsNotEmpty()
   employer_name: string;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsString()
   @IsNotEmpty()
   job_title: string;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsString()
   employer_address: string;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsNumber()
   @Type(() => Number)
   monthly_income: number;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsEmail()
   work_email: string;
 
   // -----------------------
   // Self-Employed (if SELF_EMPLOYED)
   // -----------------------
-  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
   @IsString()
   business_name: string;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
   @IsString()
   nature_of_business: string;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
   @IsString()
   business_address: string;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
   @IsNumber()
   @Type(() => Number)
   business_monthly_income: number;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
   @IsOptional()
   @IsString()
   business_website?: string;
@@ -162,11 +161,11 @@ export class CreateTenantKycDto {
   // -----------------------
   // Unemployed (if UNEMPLOYED)
   // -----------------------
-  @ValidateIf(o => o.employment_status === EmploymentStatus.UNEMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.UNEMPLOYED)
   @IsString()
   source_of_funds: string;
 
-  @ValidateIf(o => o.employment_status === EmploymentStatus.UNEMPLOYED)
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.UNEMPLOYED)
   @IsNumber()
   @Type(() => Number)
   monthly_income_estimate: number;
@@ -174,24 +173,22 @@ export class CreateTenantKycDto {
   // -----------------------
   // Spouse (if MARRIED)
   // -----------------------
-  @ValidateIf(o => o.marital_status === MaritalStatus.MARRIED)
+  @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
   @IsString()
   spouse_full_name: string;
 
-  @ValidateIf(o => o.marital_status === MaritalStatus.MARRIED)
+  @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
   @IsString()
   spouse_phone_number: string;
 
-  @ValidateIf(o => o.marital_status === MaritalStatus.MARRIED)
+  @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
   @IsString()
   spouse_occupation: string;
 
-  @ValidateIf(o => o.marital_status === MaritalStatus.MARRIED)
+  @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
   @IsString()
   spouse_employer: string;
 }
-
-
 
 export class CreateUserDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })
@@ -658,7 +655,7 @@ export class CreateLandlordDto {
   @IsString()
   last_name: string;
 
-   @ApiProperty({ example: 'your_brand', description: 'Name of agency' })
+  @ApiProperty({ example: 'your_brand', description: 'Name of agency' })
   @Transform((val) => val.value.toLowerCase())
   @IsNotEmpty()
   @IsString()

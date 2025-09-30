@@ -3,6 +3,7 @@ import { AuthController } from '../../auth/auth.controller';
 import { AuthService } from '../../auth/auth.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { IReqUser, RolesEnum } from 'src/base.entity';
 
 describe('AuthController', () => {
   let controller: AuthController;
@@ -34,10 +35,10 @@ describe('AuthController', () => {
 
   // describe('generateToken', () => {
   //   it('should call AuthService.generateToken and return the token', async () => {
-  //     const user = {
+  //     const user: IReqUser = {
   //       id: '1',
   //       email: 'test@example.com',
-  //       role: 'user',
+  //       role: RolesEnum.ADMIN,
   //       first_name: 'Test',
   //       last_name: 'User',
   //       phone_number: '09012345678',
@@ -54,10 +55,10 @@ describe('AuthController', () => {
   //   });
 
   //   it('should throw an error if AuthService.generateToken fails', async () => {
-  //     const user = {
+  //     const user: IReqUser = {
   //       id: '1',
   //       email: 'test@example.com',
-  //       role: 'user',
+  //       role: RolesEnum.ADMIN,
   //       first_name: 'Test',
   //       last_name: 'User',
   //       phone_number: '09012345678',

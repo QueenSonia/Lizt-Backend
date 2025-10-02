@@ -1,6 +1,7 @@
-import { Controller } from '@nestjs/common';
+import { Body, Controller, Post } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { SkipAuth } from './auth.decorator';
+import { IReqUser } from 'src/base.entity';
 
 // @SkipAuth()
 @Controller('auth')

@@ -414,8 +414,11 @@ export class UsersController {
   @Post('reset-password')
   async resetPassword(@Body() body: ResetDto, @Res() res: Response) {
     const { token, newPassword } = body;
-    await this.usersService.resetPassword({ token, newPassword }, res);
-    return { message: 'Password reset successful' };
+    const result = await this.usersService.resetPassword(
+      { token, newPassword },
+      res,
+    );
+    return res.status(200).json(result);
   }
 
   @ApiOperation({ summary: 'Upload Admin Logos' })

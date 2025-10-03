@@ -23,7 +23,7 @@ import {
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
-import { DataSource, Not, QueryRunner, Repository } from 'typeorm';
+import { DataSource, In, Not, QueryRunner, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
 import { RolesEnum } from 'src/base.entity';
@@ -67,6 +67,13 @@ import { TeamMember } from './entities/team-member.entity';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { CacheService } from 'src/lib/cache';
 import { Waitlist } from './entities/waitlist.entity';
+import { error } from 'node:console';
+
+interface SwitchAccountParams {
+  targetAccountId: string;
+  currentAccount: { id: string };
+  res: Response;
+}
 
 @Injectable()
 export class UsersService {
@@ -110,13 +117,13 @@ export class UsersService {
       property_id,
     } = dto;
 
-    const admin = (await this.accountRepository.findOne({
+    const admin = await this.accountRepository.findOne({
       where: {
         id: user_id,
-        role: RolesEnum.LANDLORD,
+        role: In([RolesEnum.ADMIN, RolesEnum.LANDLORD]),
       },
       relations: ['user'],
-    })) as any;
+    });
 
     if (!admin) {
       throw new HttpException('admin account not found', HttpStatus.NOT_FOUND);
@@ -143,7 +150,7 @@ export class UsersService {
         });
 
         if (!property) {
-          return;
+          throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
         }
 
         const hasActiveRent = await manager.getRepository(Rent).findOne({
@@ -188,7 +195,6 @@ export class UsersService {
 
         await manager.getRepository(Account).save(userAccount);
 
-        // console.log(tenancy_start_date, tenancy_end_date);
         property.property_status = PropertyStatusEnum.NOT_VACANT;
 
         await manager.getRepository(Property).save(property);
@@ -258,7 +264,7 @@ export class UsersService {
     });
   }
 
-  async addTenantKyc(user_id: string, dto: CreateTenantKycDto) {
+  async addTenantKyc(user_id: string, dto: CreateTenantKycDto): Promise<Users> {
     const {
       phone_number,
       first_name,
@@ -326,7 +332,7 @@ export class UsersService {
         });
 
         if (!property) {
-          return;
+          throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
         }
 
         const hasActiveRent = await manager.getRepository(Rent).findOne({
@@ -472,7 +478,7 @@ export class UsersService {
 
     try {
       const userRole = data?.role
-        ? RolesEnum[data.role.toUpperCase()]
+        ? RolesEnum[data.role.toUpperCase() as keyof typeof RolesEnum]
         : RolesEnum.TENANT;
 
       // Check if user already exists
@@ -801,324 +807,376 @@ export class UsersService {
     userId: string,
     queryRunner: QueryRunner,
   ): Promise<string> {
-    const token = uuidv4(); // Generate secure UUID
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24); // Token valid for 24 hour
+    try {
+      const token = uuidv4(); // Generate secure UUID
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + 24); // Token valid for 24 hour
 
-    const passwordReset = queryRunner.manager.create(PasswordResetToken, {
-      id: uuidv4(),
-      user_id: userId,
-      token,
-      expires_at: expiresAt,
-    });
+      const passwordReset = queryRunner.manager.create(PasswordResetToken, {
+        id: uuidv4(),
+        user_id: userId,
+        token,
+        expires_at: expiresAt,
+      });
 
-    await queryRunner.manager.save(PasswordResetToken, passwordReset);
+      await queryRunner.manager.save(PasswordResetToken, passwordReset);
 
-    return token;
-  }
-
-  async getAllUsers(queryParams: UserFilter) {
-    const page = queryParams?.page
-      ? Number(queryParams?.page)
-      : config.DEFAULT_PAGE_NO;
-    const size = queryParams?.size
-      ? Number(queryParams.size)
-      : config.DEFAULT_PER_PAGE;
-    const skip = (page - 1) * size;
-
-    const query = await buildUserFilter(queryParams);
-    const [users, count] = await this.usersRepository.findAndCount({
-      where: query,
-      skip,
-      take: size,
-      order: { created_at: 'DESC' },
-      relations: ['property_tenants', 'property_tenants.property'],
-    });
-
-    const totalPages = Math.ceil(count / size);
-    return {
-      users,
-      pagination: {
-        totalRows: count,
-        perPage: size,
-        currentPage: page,
-        totalPages,
-        hasNextPage: page < totalPages,
-      },
-    };
-  }
-
-  async getAllTenants(queryParams: UserFilter) {
-    const page = queryParams?.page
-      ? Number(queryParams?.page)
-      : config.DEFAULT_PAGE_NO;
-
-    const size = queryParams?.size
-      ? Number(queryParams.size)
-      : config.DEFAULT_PER_PAGE;
-
-    const skip = (page - 1) * size;
-
-    queryParams.role = RolesEnum.TENANT;
-
-    const qb = this.usersRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.property_tenants', 'property_tenants')
-      .leftJoinAndSelect('property_tenants.property', 'property')
-      .leftJoinAndSelect('user.rents', 'rents')
-      .where('user.role = :role', { role: RolesEnum.TENANT.toLowerCase() });
-
-    buildUserFilterQB(qb, queryParams); // apply search & filters
-
-    qb.orderBy('user.created_at', 'DESC').skip(skip).take(size);
-
-    const [users, count] = await qb.getManyAndCount();
-
-    const totalPages = Math.ceil(count / size);
-    return {
-      users,
-      pagination: {
-        totalRows: count,
-        perPage: size,
-        currentPage: page,
-        totalPages,
-        hasNextPage: page < totalPages,
-      },
-    };
-  }
-
-  async getUserById(id: string): Promise<IUser> {
-    const user = await this.usersRepository.findOne({ where: { id } });
-    if (!user?.id) {
+      return token;
+    } catch (error) {
       throw new HttpException(
-        `User with id: ${id} not found`,
-        HttpStatus.NOT_FOUND,
+        'Failed to generate reset token',
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
-    return user;
   }
 
-  async getAccountById(id: string): Promise<any> {
-    const user = await this.accountRepository.findOne({ where: { id } });
-    if (!user?.id) {
+  async getAllUsers(queryParams: UserFilter): Promise<{
+    users: Users[];
+    pagination: {
+      totalRows: number;
+      perPage: number;
+      currentPage: number;
+      totalPages: number;
+      hasNextPage: boolean;
+    };
+  }> {
+    try {
+      const page = queryParams?.page
+        ? Number(queryParams?.page)
+        : config.DEFAULT_PAGE_NO;
+      const size = queryParams?.size
+        ? Number(queryParams.size)
+        : config.DEFAULT_PER_PAGE;
+      const skip = (page - 1) * size;
+
+      const query = await buildUserFilter(queryParams);
+      const [users, count] = await this.usersRepository.findAndCount({
+        where: query,
+        skip,
+        take: size,
+        order: { created_at: 'DESC' },
+        relations: ['property_tenants', 'property_tenants.property'],
+      });
+
+      const totalPages = Math.ceil(count / size);
+      return {
+        users,
+        pagination: {
+          totalRows: count,
+          perPage: size,
+          currentPage: page,
+          totalPages,
+          hasNextPage: page < totalPages,
+        },
+      };
+    } catch (error) {
       throw new HttpException(
-        `User with id: ${id} not found`,
-        HttpStatus.NOT_FOUND,
+        'Failed to get all users',
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
-    return user;
+  }
+
+  async getAllTenants(queryParams: UserFilter): Promise<{
+    users: Users[];
+    pagination: {
+      totalRows: number;
+      perPage: number;
+      currentPage: number;
+      totalPages: number;
+      hasNextPage: boolean;
+    };
+  }> {
+    try {
+      const page = queryParams?.page
+        ? Number(queryParams?.page)
+        : config.DEFAULT_PAGE_NO;
+
+      const size = queryParams?.size
+        ? Number(queryParams.size)
+        : config.DEFAULT_PER_PAGE;
+
+      const skip = (page - 1) * size;
+
+      queryParams.role = RolesEnum.TENANT;
+
+      const qb = this.usersRepository
+        .createQueryBuilder('user')
+        .leftJoinAndSelect('user.property_tenants', 'property_tenants')
+        .leftJoinAndSelect('property_tenants.property', 'property')
+        .leftJoinAndSelect('user.rents', 'rents')
+        .where('user.role = :role', { role: RolesEnum.TENANT.toLowerCase() });
+
+      buildUserFilterQB(qb, queryParams); // apply search & filters
+
+      qb.orderBy('user.created_at', 'DESC').skip(skip).take(size);
+
+      const [users, count] = await qb.getManyAndCount();
+
+      const totalPages = Math.ceil(count / size);
+      return {
+        users,
+        pagination: {
+          totalRows: count,
+          perPage: size,
+          currentPage: page,
+          totalPages,
+          hasNextPage: page < totalPages,
+        },
+      };
+    } catch (error) {
+      throw new HttpException(
+        'Failed to get all tenants',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  async getUserById(id: string): Promise<Users> {
+    try {
+      const user = await this.usersRepository.findOne({ where: { id } });
+      if (!user?.id) {
+        throw new HttpException(
+          `User with id: ${id} not found`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+      return user;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async getAccountById(id: string): Promise<Account> {
+    try {
+      const user = await this.accountRepository.findOne({ where: { id } });
+      if (!user?.id) {
+        throw new HttpException(
+          `User with id: ${id} not found`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+      return user;
+    } catch (error) {
+      throw error;
+    }
   }
 
   async getUserFields(
     user_id: string,
     fields: string[],
-  ): Promise<Partial<IUser>> {
-    const selectFields = fields.reduce(
-      (acc, field) => {
-        acc[field] = true;
-        return acc;
-      },
-      {} as Record<string, boolean>,
-    );
-
-    const user = await this.usersRepository.findOne({
-      where: { id: user_id },
-      select: selectFields,
-    });
-
-    if (!user) {
-      throw new HttpException(
-        `User with id: ${user_id} not found`,
-        HttpStatus.NOT_FOUND,
+  ): Promise<Partial<Users>> {
+    try {
+      const selectFields = fields.reduce(
+        (acc, field) => {
+          acc[field] = true;
+          return acc;
+        },
+        {} as Record<string, boolean>,
       );
+
+      const user = await this.usersRepository.findOne({
+        where: { id: user_id },
+        select: selectFields,
+      });
+
+      if (!user) {
+        throw new HttpException(
+          `User with id: ${user_id} not found`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+      return user;
+    } catch (error) {
+      throw error;
     }
-    return user;
   }
 
   async updateUserById(id: string, data: UpdateUserDto) {
-    const account = await this.accountRepository.findOne({
-      where: { id },
-    });
+    try {
+      const account = await this.accountRepository.findOne({
+        where: { id },
+      });
 
-    if (!account?.id) {
-      throw new NotFoundException(`Account with userId: ${id} not found`);
+      if (!account?.id) {
+        throw new NotFoundException(`Account with userId: ${id} not found`);
+      }
+
+      await this.accountRepository.update(account.id, {
+        profile_name: `${data.first_name} ${data.last_name}`,
+      });
+      return await this.usersRepository.update(account.userId, data);
+    } catch (error) {
+      throw error;
     }
-
-    await this.accountRepository.update(account.id, {
-      profile_name: `${data.first_name} ${data.last_name}`,
-    });
-    return this.usersRepository.update(account.userId, data);
   }
 
   async deleteUserById(id: string) {
-    return this.usersRepository.delete(id);
+    try {
+      return await this.usersRepository.delete(id);
+    } catch (error) {
+      throw error;
+    }
   }
 
   async loginUser(data: LoginDto, res: Response) {
-    const { email, password } = data;
+    try {
+      const { email, password } = data;
 
-    // Fetch both accounts with the same email but different roles
+      // Fetch both accounts with the same email but different roles
 
-    const [adminAccount, landlordAccount, tenantAccount, repAccount] =
-      await Promise.all([
-        this.accountRepository.findOne({
-          where: { email, role: RolesEnum.ADMIN },
-          relations: ['user'],
-        }),
-        this.accountRepository.findOne({
-          where: { email, role: RolesEnum.LANDLORD },
-          relations: ['user'],
-        }),
-        this.accountRepository.findOne({
-          where: { email, role: RolesEnum.TENANT },
-          relations: ['user'],
-        }),
-        this.accountRepository.findOne({
-          where: { email, role: RolesEnum.REP },
-          relations: ['user'],
-        }),
-      ]);
+      const [adminAccount, landlordAccount, tenantAccount, repAccount] =
+        await Promise.all([
+          this.accountRepository.findOne({
+            where: { email, role: RolesEnum.ADMIN },
+            relations: ['user'],
+          }),
+          this.accountRepository.findOne({
+            where: { email, role: RolesEnum.LANDLORD },
+            relations: ['user'],
+          }),
+          this.accountRepository.findOne({
+            where: { email, role: RolesEnum.TENANT },
+            relations: ['user'],
+          }),
+          this.accountRepository.findOne({
+            where: { email, role: RolesEnum.REP },
+            relations: ['user'],
+          }),
+        ]);
 
-    // Check if any account exists
-    if (!adminAccount && !tenantAccount && !landlordAccount && !repAccount) {
-      throw new NotFoundException(`User with email: ${email} not found`);
-    }
+      // Check if any account exists
+      if (!adminAccount && !tenantAccount && !landlordAccount && !repAccount) {
+        throw new NotFoundException(`User with email: ${email} not found`);
+      }
 
-    if (
-      !adminAccount?.is_verified &&
-      !tenantAccount?.is_verified &&
-      !landlordAccount?.is_verified &&
-      !repAccount?.is_verified
-    ) {
-      throw new NotFoundException(`Your account is not verified`);
-    }
+      if (
+        !adminAccount?.is_verified &&
+        !tenantAccount?.is_verified &&
+        !landlordAccount?.is_verified &&
+        !repAccount?.is_verified
+      ) {
+        throw new NotFoundException(`Your account is not verified`);
+      }
 
-    // Validate password for each account
-    const accounts = [
-      adminAccount,
-      landlordAccount,
-      tenantAccount,
-      repAccount,
-    ].filter(Boolean) as any;
+      // Validate password for each account
+      const accounts = [
+        adminAccount,
+        landlordAccount,
+        tenantAccount,
+        repAccount,
+      ].filter(Boolean) as Account[];
 
-    let matchedAccount = null;
+      let matchedAccount: Account | null = null;
 
-    for (const account of accounts) {
-      if (account.password) {
-        const isPasswordValid = await UtilService.validatePassword(
-          password,
-          account.password,
-        );
-        if (isPasswordValid) {
-          matchedAccount = account;
-          break;
+      for (const account of accounts) {
+        if (account.password) {
+          const isPasswordValid = await UtilService.validatePassword(
+            password,
+            account.password,
+          );
+          if (isPasswordValid) {
+            matchedAccount = account;
+            break;
+          }
         }
       }
-    }
 
-    // Handle no password match
-    if (!matchedAccount) {
-      throw new UnauthorizedException('Invalid password');
-    }
-
-    const account = matchedAccount as any;
-
-    // let related_accounts = [] as any;
-    let sub_access_token: string | null = null;
-    let parent_access_token: string | null = null;
-
-    if (account.role === RolesEnum.LANDLORD) {
-      const subAccount = (await this.accountRepository.findOne({
-        where: {
-          id: Not(account.id),
-          email: account.email,
-          role: RolesEnum.TENANT,
-        },
-        relations: ['user', 'property_tenants'],
-      })) as any;
-
-      if (subAccount) {
-        const subTokenPayload = {
-          id: subAccount.id,
-          first_name: subAccount.user.first_name,
-          last_name: subAccount.user.last_name,
-          email: subAccount.email,
-          phone_number: subAccount.user.phone_number,
-          property_id: subAccount.property_tenants[0]?.property_id,
-          role: subAccount.role,
-        } as any;
-
-        sub_access_token =
-          await this.authService.generateToken(subTokenPayload);
+      // Handle no password match
+      if (!matchedAccount) {
+        throw new UnauthorizedException('Invalid password');
       }
-    }
 
-    // const userObject: Record<string, any> = {};
+      const account = matchedAccount;
 
-    if (account.role === RolesEnum.TENANT) {
-      // const findTenantProperty = await this.propertyTenantRepository.findOne({
-      //   where: { tenant_id: account.id },
-      // });
-      // userObject['property_id'] = findTenantProperty?.property_id;
+      // let related_accounts = [] as any;
+      let sub_access_token: string | null = null;
+      let parent_access_token: string | null = null;
 
-      const parentAccount = (await this.accountRepository.findOne({
-        where: {
-          id: Not(account.id),
-          email: account.email,
-          role: RolesEnum.LANDLORD,
-        },
-        relations: ['user', 'property_tenants'],
-      })) as any;
+      if (account.role === RolesEnum.LANDLORD) {
+        const subAccount = await this.accountRepository.findOne({
+          where: {
+            id: Not(account.id),
+            email: account.email,
+            role: RolesEnum.TENANT,
+          },
+          relations: ['user', 'property_tenants'],
+        });
 
-      if (parentAccount) {
-        const subTokenPayload = {
-          id: parentAccount.id,
-          first_name: parentAccount.user.first_name,
-          last_name: parentAccount.user.last_name,
-          email: parentAccount.email,
-          phone_number: parentAccount.user.phone_number,
-          property_id: parentAccount.property_tenants[0]?.property_id,
-          role: parentAccount.role,
-        } as any;
+        if (subAccount) {
+          const subTokenPayload = {
+            id: subAccount.id,
+            first_name: subAccount.user.first_name,
+            last_name: subAccount.user.last_name,
+            email: subAccount.email,
+            phone_number: subAccount.user.phone_number,
+            property_id: subAccount.property_tenants[0]?.property_id,
+            role: subAccount.role,
+          };
 
-        parent_access_token =
-          await this.authService.generateToken(subTokenPayload);
+          sub_access_token =
+            await this.authService.generateToken(subTokenPayload);
+        }
       }
-    }
 
-    const tokenPayload = {
-      id: account.id,
-      first_name: account.user.first_name,
-      last_name: account.user.last_name,
-      email: account.email,
-      phone_number: account.user.phone_number,
-      role: account.role,
-    };
+      if (account.role === RolesEnum.TENANT) {
+        const parentAccount = await this.accountRepository.findOne({
+          where: {
+            id: Not(account.id),
+            email: account.email,
+            role: RolesEnum.LANDLORD,
+          },
+          relations: ['user', 'property_tenants'],
+        });
 
-    const access_token = await this.authService.generateToken(tokenPayload);
+        if (parentAccount) {
+          const subTokenPayload = {
+            id: parentAccount.id,
+            first_name: parentAccount.user.first_name,
+            last_name: parentAccount.user.last_name,
+            email: parentAccount.email,
+            phone_number: parentAccount.user.phone_number,
+            property_id: parentAccount.property_tenants[0]?.property_id,
+            role: parentAccount.role,
+          } as any;
 
-    return res.status(HttpStatus.OK).json({
-      user: {
-        // ...userObject,
+          parent_access_token =
+            await this.authService.generateToken(subTokenPayload);
+        }
+      }
+
+      const tokenPayload = {
         id: account.id,
         first_name: account.user.first_name,
         last_name: account.user.last_name,
         email: account.email,
         phone_number: account.user.phone_number,
         role: account.role,
-        is_verified: account.is_verified,
-        logo_urls: account.user.logo_urls,
-        creator_id: account.creator_id,
-        created_at: account.user.created_at,
-        updated_at: account.user.updated_at,
-      },
-      access_token,
-      sub_access_token,
-      parent_access_token,
-      // related_accounts,
-      // parent_account_token,
-      // expires_at: moment().add(8, 'hours').format(),
-    });
+      };
+
+      const access_token = await this.authService.generateToken(tokenPayload);
+
+      return res.status(HttpStatus.OK).json({
+        user: {
+          id: account.id,
+          first_name: account.user.first_name,
+          last_name: account.user.last_name,
+          email: account.email,
+          phone_number: account.user.phone_number,
+          role: account.role,
+          is_verified: account.is_verified,
+          logo_urls: account.user.logo_urls,
+          creator_id: account.creator_id,
+          created_at: account.user.created_at,
+          updated_at: account.user.updated_at,
+        },
+        access_token,
+        sub_access_token,
+        parent_access_token,
+      });
+    } catch (error) {
+      throw error;
+    }
   }
 
   async loginUserOld(data: LoginDto, res: Response) {
@@ -1196,41 +1254,52 @@ export class UsersService {
   }
 
   async logoutUser(res: Response) {
-    res.clearCookie('access_token', {
-      httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV') === 'production',
-      sameSite: 'strict',
-    });
+    try {
+      res.clearCookie('access_token', {
+        httpOnly: true,
+        secure: this.configService.get<string>('NODE_ENV') === 'production',
+        sameSite: 'strict',
+      });
 
-    return res.status(HttpStatus.OK).json({
-      message: 'Logout successful',
-    });
-  }
-
-  async getTenantAndPropertyInfo(tenant_id: string) {
-    const tenant = await this.accountRepository.findOne({
-      where: {
-        id: tenant_id,
-        role: RolesEnum.TENANT,
-      },
-      relations: [
-        'user',
-        'property_tenants',
-        'property_tenants.property.rents',
-      ],
-    });
-
-    if (!tenant?.id) {
-      throw new HttpException(
-        `Tenant with id: ${tenant_id} not found`,
-        HttpStatus.NOT_FOUND,
-      );
+      return res.status(HttpStatus.OK).json({
+        message: 'Logout successful',
+      });
+    } catch (error) {
+      throw error;
     }
-
-    return tenant;
   }
 
-  async forgotPassword(email: string) {
+  async getTenantAndPropertyInfo(tenant_id: string): Promise<Account> {
+    try {
+      const tenant = await this.accountRepository.findOne({
+        where: {
+          id: tenant_id,
+          role: RolesEnum.TENANT,
+        },
+        relations: [
+          'user',
+          'property_tenants',
+          'property_tenants.property.rents',
+        ],
+      });
+
+      if (!tenant?.id) {
+        throw new HttpException(
+          `Tenant with id: ${tenant_id} not found`,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      return tenant;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async forgotPassword(email: string): Promise<{
+    message: string;
+    token: string;
+  }> {
     try {
       const user = await this.accountRepository.findOne({ where: { email } });
 
@@ -1262,7 +1331,7 @@ export class UsersService {
         token,
       };
     } catch (error) {
-      console.error('[ForgotPassword Error]', error);
+      // console.error('[ForgotPassword Error]', error);
       // Ensure the request is not hanging and sends a response
       throw new HttpException(
         'Failed to process forgot password request',
@@ -1271,203 +1340,246 @@ export class UsersService {
     }
   }
 
-  async validateOtp(otp: string) {
-    const entry = await this.passwordResetRepository.findOne({
-      where: { otp },
-    });
+  async validateOtp(otp: string): Promise<{
+    message: string;
+    token: string;
+  }> {
+    try {
+      const entry = await this.passwordResetRepository.findOne({
+        where: { otp },
+      });
 
-    if (!entry || entry.expires_at < new Date()) {
-      throw new HttpException('Invalid or expired OTP', HttpStatus.BAD_REQUEST);
+      if (!entry || entry.expires_at < new Date()) {
+        throw new HttpException(
+          'Invalid or expired OTP',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      return {
+        message: 'OTP validated successfully',
+        token: entry.token,
+      };
+    } catch (error) {
+      throw error;
     }
-
-    return {
-      message: 'OTP validated successfully',
-      token: entry.token,
-    };
   }
 
-  async resendOtp(oldToken: string) {
-    const resetEntry = await this.passwordResetRepository.findOne({
-      where: { token: oldToken },
-    });
+  async resendOtp(
+    oldToken: string,
+  ): Promise<{ message: string; token: string }> {
+    try {
+      const resetEntry = await this.passwordResetRepository.findOne({
+        where: { token: oldToken },
+      });
 
-    if (!resetEntry) {
-      throw new HttpException('Invalid token', HttpStatus.BAD_REQUEST);
-    }
+      if (!resetEntry) {
+        throw new HttpException('Invalid token', HttpStatus.BAD_REQUEST);
+      }
 
-    const user = await this.accountRepository.findOne({
-      where: { id: resetEntry.user_id },
-    });
+      const user = await this.accountRepository.findOne({
+        where: { id: resetEntry.user_id },
+      });
 
-    if (!user) {
-      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
-    }
+      if (!user) {
+        throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+      }
 
-    // Optional: Prevent resending if recently sent
-    const now = new Date();
-    const timeDiff = (resetEntry.expires_at.getTime() - now.getTime()) / 1000;
-    if (timeDiff > 840) {
-      throw new HttpException(
-        'OTP already sent recently. Please wait a moment before requesting again.',
-        HttpStatus.TOO_MANY_REQUESTS,
+      // Optional: Prevent resending if recently sent
+      const now = new Date();
+      const timeDiff = (resetEntry.expires_at.getTime() - now.getTime()) / 1000;
+      if (timeDiff > 840) {
+        throw new HttpException(
+          'OTP already sent recently. Please wait a moment before requesting again.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+
+      // Invalidate old token
+      await this.passwordResetRepository.delete({ id: resetEntry.id });
+
+      // Generate new OTP and token
+      const newOtp = UtilService.generateOTP(6);
+      const newToken = uuidv4();
+      const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 minutes
+
+      await this.passwordResetRepository.save({
+        user_id: user.id,
+        token: newToken,
+        otp: newOtp,
+        expires_at,
+      });
+
+      const emailContent = clientForgotPasswordTemplate(newOtp);
+      await UtilService.sendEmail(
+        user.email,
+        EmailSubject.RESEND_OTP,
+        emailContent,
       );
+
+      return {
+        message: 'OTP resent successfully',
+        token: newToken,
+      };
+    } catch (error) {
+      throw error;
     }
-
-    // Invalidate old token
-    await this.passwordResetRepository.delete({ id: resetEntry.id });
-
-    // Generate new OTP and token
-    const newOtp = UtilService.generateOTP(6);
-    const newToken = uuidv4();
-    const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 minutes
-
-    await this.passwordResetRepository.save({
-      user_id: user.id,
-      token: newToken,
-      otp: newOtp,
-      expires_at,
-    });
-
-    const emailContent = clientForgotPasswordTemplate(newOtp);
-    await UtilService.sendEmail(
-      user.email,
-      EmailSubject.RESEND_OTP,
-      emailContent,
-    );
-
-    return {
-      message: 'OTP resent successfully',
-      token: newToken,
-    };
   }
 
   async resetPassword(payload: ResetPasswordDto, res: Response) {
-    const { token, newPassword } = payload;
+    try {
+      const { token, newPassword } = payload;
 
-    const resetEntry = await this.passwordResetRepository.findOne({
-      where: { token },
-    });
-
-    if (!resetEntry) {
-      throw new HttpException('Invalid token', HttpStatus.BAD_REQUEST);
-    }
-
-    if (resetEntry.expires_at < new Date()) {
-      await this.passwordResetRepository.delete({ id: resetEntry.id }); // Clean up expired token
-      throw new HttpException('Token has expired', HttpStatus.BAD_REQUEST);
-    }
-
-    const user = await this.accountRepository.findOne({
-      where: { id: resetEntry.user_id },
-      relations: ['property_tenants'],
-    });
-
-    if (!user) {
-      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
-    }
-
-    // Hash and update the password
-    user.password = await UtilService.hashPassword(newPassword);
-    if (!user.is_verified) {
-      user.is_verified = true;
-      this.eventEmitter.emit('user.signup', {
-        user_id: user.id,
-        profile_name: user.profile_name,
-        property_id: user.property_tenants[0].property_id,
-        role: RolesEnum.TENANT,
+      const resetEntry = await this.passwordResetRepository.findOne({
+        where: { token },
       });
+
+      if (!resetEntry) {
+        throw new HttpException('Invalid token', HttpStatus.BAD_REQUEST);
+      }
+
+      if (resetEntry.expires_at < new Date()) {
+        await this.passwordResetRepository.delete({ id: resetEntry.id }); // Clean up expired token
+        throw new HttpException('Token has expired', HttpStatus.BAD_REQUEST);
+      }
+
+      const user = await this.accountRepository.findOne({
+        where: { id: resetEntry.user_id },
+        relations: ['property_tenants'],
+      });
+
+      if (!user) {
+        throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+      }
+
+      // Hash and update the password
+      user.password = await UtilService.hashPassword(newPassword);
+      if (!user.is_verified) {
+        user.is_verified = true;
+        this.eventEmitter.emit('user.signup', {
+          user_id: user.id,
+          profile_name: user.profile_name,
+          property_id: user.property_tenants[0].property_id,
+          role: RolesEnum.TENANT,
+        });
+      }
+
+      await this.accountRepository.save(user);
+
+      // Delete token after successful password reset
+      await this.passwordResetRepository.delete({ id: resetEntry.id });
+
+      return {
+        message: 'Password reset successful',
+        user_id: user.id,
+      };
+    } catch (error) {
+      throw error;
     }
-
-    await this.accountRepository.save(user);
-
-    // Delete token after successful password reset
-    await this.passwordResetRepository.delete({ id: resetEntry.id });
-
-    return res.status(HttpStatus.OK).json({
-      message: 'Password reset successful',
-      user_id: user.id,
-    });
   }
 
-  async getTenantsOfAnAdmin(creator_id: string, queryParams: UserFilter) {
-    const page = queryParams?.page ?? config.DEFAULT_PAGE_NO;
-    const size = queryParams?.size ?? config.DEFAULT_PER_PAGE;
-    const skip = (page - 1) * size;
-
-    const extraFilters = await buildUserFilter(queryParams);
-
-    //   const qb = this.accountRepository
-    // .createQueryBuilder('account')
-    // .leftJoinAndSelect('account.user', 'user')
-    // .leftJoinAndSelect('account.rents', 'rents', 'rents.rent_status = :status', { status: 'active' })
-    // .leftJoinAndSelect('rents.property', 'property')
-    // .where('account.creator_id = :creator_id', { creator_id });
-    const qb = this.accountRepository
-      .createQueryBuilder('accounts')
-      .leftJoinAndSelect('accounts.user', 'user')
-      .leftJoinAndSelect('accounts.rents', 'rents')
-      .leftJoinAndSelect('rents.property', 'property')
-      .where('accounts.creator_id = :creator_id', { creator_id });
-    //   .leftJoinAndSelect('tenant.user', 'user')
-    // .leftJoinAndSelect('rents.property', 'property')
-
-    // Apply extra filters only on the `account` table
-    if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
-      qb.orderBy(
-        'rents.rental_price',
-        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
-      );
-    } else if (queryParams.sort_by === 'date' && queryParams?.sort_order) {
-      qb.orderBy(
-        'tenant.created_at',
-        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
-      );
-    } else if (queryParams.sort_by === 'name' && queryParams?.sort_order) {
-      qb.orderBy(
-        'tenant.profile_name',
-        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
-      );
-    } else if (queryParams.sort_by === 'property' && queryParams?.sort_order) {
-      qb.orderBy(
-        'property.name',
-        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
-      );
-    } else if (queryParams.sort_by && queryParams?.sort_order) {
-      qb.orderBy(
-        `property.${queryParams.sort_by}`,
-        queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
-      );
-    }
-
-    const [users, count] = await qb.skip(skip).take(size).getManyAndCount();
-
-    const totalPages = Math.ceil(count / size);
-    return {
-      users,
-      pagination: {
-        totalRows: count,
-        perPage: size,
-        currentPage: page,
-        totalPages,
-        hasNextPage: page < totalPages,
-      },
+  async getTenantsOfAnAdmin(
+    creator_id: string,
+    queryParams: UserFilter,
+  ): Promise<{
+    users: Account[];
+    pagination: {
+      totalRows: number;
+      perPage: number;
+      currentPage: number;
+      totalPages: number;
+      hasNextPage: boolean;
     };
+  }> {
+    try {
+      const page = queryParams?.page ?? config.DEFAULT_PAGE_NO;
+      const size = queryParams?.size ?? config.DEFAULT_PER_PAGE;
+      const skip = (page - 1) * size;
+
+      const extraFilters = await buildUserFilter(queryParams);
+
+      //   const qb = this.accountRepository
+      // .createQueryBuilder('account')
+      // .leftJoinAndSelect('account.user', 'user')
+      // .leftJoinAndSelect('account.rents', 'rents', 'rents.rent_status = :status', { status: 'active' })
+      // .leftJoinAndSelect('rents.property', 'property')
+      // .where('account.creator_id = :creator_id', { creator_id });
+      const qb = this.accountRepository
+        .createQueryBuilder('accounts')
+        .leftJoinAndSelect('accounts.user', 'user')
+        .leftJoinAndSelect('accounts.rents', 'rents')
+        .leftJoinAndSelect('rents.property', 'property')
+        .where('accounts.creator_id = :creator_id', { creator_id });
+      //   .leftJoinAndSelect('tenant.user', 'user')
+      // .leftJoinAndSelect('rents.property', 'property')
+
+      // Apply extra filters only on the `account` table
+      if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
+        qb.orderBy(
+          'rents.rental_price',
+          queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+        );
+      } else if (queryParams.sort_by === 'date' && queryParams?.sort_order) {
+        qb.orderBy(
+          'tenant.created_at',
+          queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+        );
+      } else if (queryParams.sort_by === 'name' && queryParams?.sort_order) {
+        qb.orderBy(
+          'tenant.profile_name',
+          queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+        );
+      } else if (
+        queryParams.sort_by === 'property' &&
+        queryParams?.sort_order
+      ) {
+        qb.orderBy(
+          'property.name',
+          queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+        );
+      } else if (queryParams.sort_by && queryParams?.sort_order) {
+        qb.orderBy(
+          `property.${queryParams.sort_by}`,
+          queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
+        );
+      }
+
+      const [users, count] = await qb.skip(skip).take(size).getManyAndCount();
+
+      const totalPages = Math.ceil(count / size);
+      return {
+        users,
+        pagination: {
+          totalRows: count,
+          perPage: size,
+          currentPage: page,
+          totalPages,
+          hasNextPage: page < totalPages,
+        },
+      };
+    } catch (error) {
+      throw error;
+    }
   }
 
-  async getSingleTenantOfAnAdmin(tenant_id: string) {
-    const tenant = await this.accountRepository
-      .createQueryBuilder('accounts')
-      .leftJoinAndSelect('accounts.user', 'user')
-      .leftJoinAndSelect('accounts.rents', 'rents')
-      .leftJoinAndSelect('rents.property', 'property')
-      .where('accounts.id = :tenant_id', { tenant_id })
-      .getOne();
+  async getSingleTenantOfAnAdmin(tenant_id: string): Promise<Account> {
+    try {
+      const tenant = await this.accountRepository
+        .createQueryBuilder('accounts')
+        .leftJoinAndSelect('accounts.user', 'user')
+        .leftJoinAndSelect('accounts.rents', 'rents')
+        .leftJoinAndSelect('rents.property', 'property')
+        .where('accounts.id = :tenant_id', { tenant_id })
+        .getOne();
 
-    if (!tenant) {
-      throw new NotFoundException('Tenant not found');
+      if (!tenant) {
+        throw new NotFoundException('Tenant not found');
+      }
+
+      return tenant;
+    } catch (error) {
+      throw error;
     }
-
-    return tenant;
   }
 
   async uploadLogos(
@@ -1547,114 +1659,122 @@ export class UsersService {
   }
 
   async update(userId: string, updateKycDto: UpdateKycDto): Promise<KYC> {
-    const user = await this.usersRepository.findOne({
-      where: { id: userId },
-      relations: ['kyc'],
-    });
+    try {
+      const user = await this.usersRepository.findOne({
+        where: { id: userId },
+        relations: ['kyc'],
+      });
 
-    if (!user || !user.kyc) {
-      throw new NotFoundException('KYC record not found for this user');
+      if (!user || !user.kyc) {
+        throw new NotFoundException('KYC record not found for this user');
+      }
+
+      const updatedKyc = this.kycRepository.merge(user.kyc, updateKycDto);
+      return this.kycRepository.save(updatedKyc);
+    } catch (error) {
+      throw error;
     }
-
-    const updatedKyc = this.kycRepository.merge(user.kyc, updateKycDto);
-    return this.kycRepository.save(updatedKyc);
   }
 
   async createLandlord(
     data: CreateLandlordDto,
   ): Promise<Omit<Users, 'password'>> {
-    const existingAccount = await this.accountRepository.findOne({
-      where: { email: data.email, role: RolesEnum.LANDLORD },
-    });
-
-    if (existingAccount) {
-      throw new BadRequestException(
-        'Admin Account with this email already exists',
-      );
-    }
-
-    if (!data.password) {
-      throw new BadRequestException('Password is required');
-    }
-
-    let user = await this.usersRepository.findOne({
-      where: { phone_number: data.phone_number },
-    });
-    console.log({ user });
-    if (!user) {
-      user = await this.usersRepository.save({
-        phone_number: data.phone_number,
-        first_name: data.first_name,
-        last_name: data.last_name,
-        role: RolesEnum.LANDLORD,
-        is_verified: true,
-        email: data.email,
+    try {
+      const existingAccount = await this.accountRepository.findOne({
+        where: { email: data.email, role: RolesEnum.LANDLORD },
       });
 
-      console.log('user', user);
+      if (existingAccount) {
+        throw new BadRequestException(
+          'Admin Account with this email already exists',
+        );
+      }
+
+      if (!data.password) {
+        throw new BadRequestException('Password is required');
+      }
+
+      let user = await this.usersRepository.findOne({
+        where: { phone_number: data.phone_number },
+      });
+
+      if (!user) {
+        user = await this.usersRepository.save({
+          phone_number: data.phone_number,
+          first_name: data.first_name,
+          last_name: data.last_name,
+          role: RolesEnum.LANDLORD,
+          is_verified: true,
+          email: data.email,
+        });
+      }
+
+      const landlordAccount = this.accountRepository.create({
+        user,
+        email: data.email,
+        password: await UtilService.hashPassword(data.password),
+        role: RolesEnum.LANDLORD,
+        profile_name: data.agency_name,
+        is_verified: true,
+      });
+
+      await this.accountRepository.save(landlordAccount);
+
+      const { password, ...result } = user;
+      return result;
+    } catch (error) {
+      throw error;
     }
-
-    const landlordAccount = this.accountRepository.create({
-      user,
-      email: data.email,
-      password: await UtilService.hashPassword(data.password),
-      role: RolesEnum.LANDLORD,
-      profile_name: data.agency_name,
-      is_verified: true,
-    });
-
-    await this.accountRepository.save(landlordAccount);
-
-    const { password, ...result } = user;
-    return result;
   }
 
   async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
-    const existingAccount = await this.accountRepository.findOne({
-      where: { email: data.email, role: RolesEnum.ADMIN },
-    });
-
-    if (existingAccount) {
-      throw new BadRequestException(
-        'Admin Account with this email already exists',
-      );
-    }
-
-    if (!data.password) {
-      throw new BadRequestException('Password is required');
-    }
-
-    let user = await this.usersRepository.findOne({
-      where: { phone_number: data.phone_number },
-    });
-    console.log({ user });
-    if (!user) {
-      user = await this.usersRepository.save({
-        phone_number: data.phone_number,
-        first_name: data.first_name,
-        last_name: data.last_name,
-        role: RolesEnum.ADMIN,
-        is_verified: true,
-        email: data.email,
+    try {
+      const existingAccount = await this.accountRepository.findOne({
+        where: { email: data.email, role: RolesEnum.ADMIN },
       });
 
-      console.log('user', user);
+      if (existingAccount) {
+        throw new BadRequestException(
+          'Admin Account with this email already exists',
+        );
+      }
+
+      if (!data.password) {
+        throw new BadRequestException('Password is required');
+      }
+
+      let user = await this.usersRepository.findOne({
+        where: { phone_number: data.phone_number },
+      });
+      if (!user) {
+        user = await this.usersRepository.save({
+          phone_number: data.phone_number,
+          first_name: data.first_name,
+          last_name: data.last_name,
+          role: RolesEnum.ADMIN,
+          is_verified: true,
+          email: data.email,
+        });
+      }
+
+      const adminAccount = this.accountRepository.create({
+        user,
+        email: data.email,
+        password: await UtilService.hashPassword(data.password),
+        role: RolesEnum.ADMIN,
+        profile_name: `${user.first_name}'s Admin Account`,
+        is_verified: true,
+      });
+
+      await this.accountRepository.save(adminAccount);
+
+      const { password, ...result } = user;
+      return result;
+    } catch (error) {
+      throw error;
     }
-
-    const adminAccount = this.accountRepository.create({
-      user,
-      email: data.email,
-      password: await UtilService.hashPassword(data.password),
-      role: RolesEnum.ADMIN,
-      profile_name: `${user.first_name}'s Admin Account`,
-      is_verified: true,
-    });
-
-    await this.accountRepository.save(adminAccount);
-
-    const { password, ...result } = user;
-    return result;
   }
+
   //create user that are admin
   async createAdminOld(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
     const existing = await this.usersRepository.findOne({
@@ -1694,117 +1814,148 @@ export class UsersService {
     data: CreateCustomerRepDto,
   ): Promise<Omit<Users, 'password'>> {
     const queryRunner = this.dataSource.createQueryRunner();
-    const existingAccount = await this.accountRepository.findOne({
-      where: { email: data.email, role: RolesEnum.REP },
-    });
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    if (existingAccount) {
-      throw new BadRequestException(
-        'Rep Account with this email already exists',
-      );
-    }
-
-    // if (!data.password) {
-    //   throw new BadRequestException('Password is required');
-    // }
-
-    let user = await this.usersRepository.findOne({
-      where: { email: data.email },
-    });
-
-    if (!user) {
-      user = await this.usersRepository.save({
-        phone_number: data.phone_number,
-        first_name: data.first_name,
-        last_name: data.last_name,
-        role: RolesEnum.REP,
-        is_verified: true,
-        email: data.email,
+    try {
+      // Check for existing account
+      const existingAccount = await queryRunner.manager.findOne(Account, {
+        where: { email: data.email, role: RolesEnum.REP },
       });
 
-      console.log('user', user);
+      if (existingAccount) {
+        throw new BadRequestException(
+          'Rep Account with this email already exists',
+        );
+      }
+
+      // Check for existing user
+      let user = await queryRunner.manager.findOne(Users, {
+        where: { email: data.email },
+      });
+
+      if (!user) {
+        user = await queryRunner.manager.save(Users, {
+          phone_number: data.phone_number,
+          first_name: data.first_name,
+          last_name: data.last_name,
+          role: RolesEnum.REP,
+          is_verified: true,
+          email: data.email,
+        });
+      }
+
+      // Create rep account
+      const repAccount = queryRunner.manager.create(Account, {
+        user,
+        email: data.email,
+        password: data.password
+          ? await UtilService.hashPassword(data.password)
+          : '',
+        role: RolesEnum.REP,
+        profile_name: `${data.first_name} ${data.last_name}`,
+        is_verified: true,
+      });
+
+      await queryRunner.manager.save(Account, repAccount);
+
+      // Generate password reset token
+      const token = await this.generatePasswordResetToken(
+        repAccount.id,
+        queryRunner,
+      );
+
+      await queryRunner.commitTransaction();
+
+      // Send email (outside transaction as it's not a database operation)
+      const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
+      const emailContent = clientSignUpEmailTemplate(
+        data.first_name,
+        resetLink,
+      );
+
+      await UtilService.sendEmail(
+        data.email,
+        EmailSubject.WELCOME_EMAIL,
+        emailContent,
+      );
+
+      const { password, ...result } = user;
+      return result;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+
+      // Re-throw original exceptions if they're already proper exceptions
+      if (
+        error instanceof HttpException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      throw new HttpException(
+        error?.message || 'An error occurred while creating customer rep',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    } finally {
+      await queryRunner.release();
     }
-
-    const repAccount = this.accountRepository.create({
-      user,
-      email: data.email,
-      password: data.password
-        ? await UtilService.hashPassword(data.password)
-        : '',
-      role: RolesEnum.REP,
-      profile_name: `${data.first_name} ${data.last_name}`,
-      is_verified: true,
-    });
-
-    await this.accountRepository.save(repAccount);
-
-    const token = await this.generatePasswordResetToken(
-      repAccount.id,
-      queryRunner,
-    );
-
-    const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
-    const emailContent = clientSignUpEmailTemplate(data.first_name, resetLink);
-
-    await UtilService.sendEmail(
-      data.email,
-      EmailSubject.WELCOME_EMAIL,
-      emailContent,
-    );
-    const { password, ...result } = user;
-    return result;
   }
 
   async getSubAccounts(adminId: string): Promise<Account[]> {
     // from JWT
-    const subAccounts = await this.accountRepository.find({
-      where: {
-        creator_id: adminId,
-        // is_sub_account: true,
-      },
-      relations: ['user'],
-    });
+    try {
+      const subAccounts = await this.accountRepository.find({
+        where: {
+          creator_id: adminId,
+          // is_sub_account: true,
+        },
+        relations: ['user'],
+      });
 
-    return subAccounts;
+      return subAccounts;
+    } catch (error) {
+      throw error;
+    }
   }
 
-  async switchAccount({
-    targetAccountId,
-    currentAccount,
-    res,
-  }: {
-    targetAccountId: string;
-    currentAccount: any;
-    res: Response;
-  }) {
-    const target = await this.accountRepository.findOne({
-      where: { id: targetAccountId },
-      relations: ['user'], // you need this to access target.user.*
-    });
+  async switchAccount(params: SwitchAccountParams): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    try {
+      const { targetAccountId, currentAccount, res } = params;
+      const target = await this.accountRepository.findOne({
+        where: { id: targetAccountId },
+        relations: ['user'], // you need this to access target.user.*
+      });
 
-    if (!target || target.creator_id !== currentAccount.id) {
-      throw new ForbiddenException('You cannot switch to this account');
+      if (!target || target.creator_id !== currentAccount.id) {
+        throw new ForbiddenException('You cannot switch to this account');
+      }
+
+      const tokenPayload = {
+        id: target.id,
+        first_name: target.user.first_name,
+        last_name: target.user.last_name,
+        email: target.email,
+        phone_number: target.user.phone_number,
+        role: target.role,
+      };
+
+      const access_token = await this.authService.generateToken(tokenPayload);
+
+      res.cookie('access_token', access_token, {
+        httpOnly: true,
+        secure: this.configService.get<string>('NODE_ENV') === 'production',
+        expires: moment().add(8, 'hours').toDate(),
+        sameSite: 'none',
+      });
+
+      return { success: true, message: 'Switched account successfully' };
+    } catch (error) {
+      throw error;
     }
-
-    const tokenPayload = {
-      id: target.id,
-      first_name: target.user.first_name,
-      last_name: target.user.last_name,
-      email: target.email,
-      phone_number: target.user.phone_number,
-      role: target.role,
-    } as any;
-
-    const access_token = await this.authService.generateToken(tokenPayload);
-
-    res.cookie('access_token', access_token, {
-      httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV') === 'production',
-      expires: moment().add(8, 'hours').toDate(),
-      sameSite: 'none',
-    });
-
-    return { success: true, message: 'Switched account successfully' };
   }
 
   async assignCollaboratorToTeam(
@@ -1817,7 +1968,7 @@ export class UsersService {
       last_name: string;
       phone_number: string;
     },
-  ) {
+  ): Promise<TeamMember> {
     return await this.dataSource.transaction(async (manager) => {
       try {
         // 1. Get or create team
@@ -1942,61 +2093,92 @@ export class UsersService {
   }
 
   async getTeamMembers(user_id: string): Promise<TeamMember[]> {
-    // 1. Get team by creatorId
-    const team = await this.teamRepository.findOne({
-      where: { creatorId: user_id },
-    });
+    try {
+      // 1. Get team by creatorId
+      const team = await this.teamRepository.findOne({
+        where: { creatorId: user_id },
+      });
 
-    if (!team) {
-      throw new HttpException('Team not found', HttpStatus.NOT_FOUND);
+      if (!team) {
+        throw new HttpException('Team not found', HttpStatus.NOT_FOUND);
+      }
+
+      // 2. Ensure user really owns this team
+      if (team.creatorId !== user_id) {
+        throw new HttpException(
+          'Not authorized to view members of this team',
+          HttpStatus.FORBIDDEN,
+        );
+      }
+
+      // 3. Get team members
+      const members = await this.teamMemberRepository.find({
+        where: { teamId: team.id },
+        relations: ['account', 'account.user'],
+      });
+
+      return members;
+    } catch (error) {
+      throw error;
     }
-
-    // 2. Ensure user really owns this team
-    if (team.creatorId !== user_id) {
-      throw new HttpException(
-        'Not authorized to view members of this team',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-
-    // 3. Get team members
-    const members = await this.teamMemberRepository.find({
-      where: { teamId: team.id },
-      relations: ['account', 'account.user'],
-    });
-
-    return members;
   }
 
-  async getWhatsappText(from, message) {
-    return await this.whatsappBotService.sendText(from, message);
+  async getWhatsappText(from: string, message: string) {
+    try {
+      return await this.whatsappBotService.sendText(from, message);
+    } catch (error) {
+      throw error;
+    }
   }
 
   async sendPropertiesNotification({ phone_number, name, property_name }) {
-    return await this.whatsappBotService.sendToPropertiesCreatedTemplate({
-      phone_number,
-      name,
-      property_name,
-    });
+    try {
+      return await this.whatsappBotService.sendToPropertiesCreatedTemplate({
+        phone_number,
+        name,
+        property_name,
+      });
+    } catch (error) {
+      throw error;
+    }
   }
 
   async sendUserAddedTemplate({ phone_number, name, user, property_name }) {
-    return await this.whatsappBotService.sendUserAddedTemplate({
-      phone_number,
-      name,
-      user,
-      property_name,
-    });
-  }
-  async getWaitlist() {
-    return await this.waitlistRepository.find();
+    try {
+      return await this.whatsappBotService.sendUserAddedTemplate({
+        phone_number,
+        name,
+        user,
+        property_name,
+      });
+    } catch (error) {
+      throw error;
+    }
   }
 
-  async getLandlords() {
-    return await this.usersRepository.find({
-      where: {
-        role: RolesEnum.LANDLORD,
-      },
-    });
+  async getWaitlist(): Promise<Waitlist[]> {
+    try {
+      return await this.waitlistRepository.find();
+    } catch (error) {
+      throw new HttpException(
+        'Failed to get waitlist',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  async getLandlords(): Promise<Users[]> {
+    try {
+      return await this.usersRepository.find({
+        where: {
+          role: RolesEnum.LANDLORD,
+        },
+      });
+    } catch (error) {
+      throw new HttpException(
+        'Failed to get landlords',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }

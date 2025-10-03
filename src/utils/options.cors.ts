@@ -12,7 +12,8 @@ const prodOrigin = [
   'https://getpanda.co',
   'https://www.getpanda.co',
   'https://lizt.co',
-  'https://www.lizt.co'
+  'https://www.lizt.co',
+  'https://lizt-frontend.vercel.app',
 ];
 
 /** Allowed development origins */
@@ -26,7 +27,7 @@ const devOrigin = [
   'https://getpanda.co',
   'https://www.getpanda.co',
   'https://lizt.co',
-  'https://www.lizt.co'
+  'https://www.lizt.co',
 ];
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -57,7 +58,7 @@ export const corsOptions: CorsOptions = {
 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   origin: (origin, callback) => {
-    if (allowedOrigins.includes(origin!) || !origin) {
+    if (allowedOrigins.includes(origin) || !origin) {
       callback(null, true);
     } else {
       callback(new Error('NOT ALLOWED BY CORS'));

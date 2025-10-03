@@ -15,11 +15,11 @@ describe('NotificationService', () => {
 
   it('should create a notification', async () => {
     const notification = service.create({
-        date: '2025-03-20',
-        type: NotificationType.LEASE_SIGNED,
-        description: 'You signed rental agreement.',
-        status: 'Completed',
-        property_id: ''
+      date: '2025-03-20',
+      type: NotificationType.LEASE_SIGNED,
+      description: 'You signed rental agreement.',
+      status: 'Completed',
+      property_id: '',
     });
 
     expect(notification).toHaveProperty('id');

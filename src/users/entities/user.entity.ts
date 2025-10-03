@@ -1,4 +1,11 @@
-import { Column, Entity, ManyToOne, OneToMany, OneToOne, Unique } from 'typeorm';
+import {
+  Column,
+  Entity,
+  ManyToOne,
+  OneToMany,
+  OneToOne,
+  Unique,
+} from 'typeorm';
 import { BaseEntity, RolesEnum } from '../../base.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
@@ -149,5 +156,4 @@ export class Users extends BaseEntity {
 
   @OneToOne(() => TenantKyc, (tenant_kyc) => tenant_kyc.user)
   tenant_kyc?: Users;
-
 }

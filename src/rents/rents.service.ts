@@ -1,7 +1,11 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, LessThanOrEqual, Repository } from 'typeorm';
-import { CreateRentDto, RentFilter, RentStatusEnum } from './dto/create-rent.dto';
+import {
+  CreateRentDto,
+  RentFilter,
+  RentStatusEnum,
+} from './dto/create-rent.dto';
 import { UpdateRentDto } from './dto/update-rent.dto';
 import { Rent } from './entities/rent.entity';
 import { DateService } from 'src/utils/date.helper';
@@ -12,7 +16,10 @@ import { config } from 'src/config';
 import { RentIncrease } from './entities/rent-increase.entity';
 import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
 import { Property } from 'src/properties/entities/property.entity';
-import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import {
+  PropertyStatusEnum,
+  TenantStatusEnum,
+} from 'src/properties/dto/create-property.dto';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 
 @Injectable()
@@ -28,14 +35,14 @@ export class RentsService {
     private readonly rentIncreaseRepository: Repository<RentIncrease>,
   ) {}
 
-  async payRent(data: any): Promise<Rent> {
+  payRent = async (data: any): Promise<Rent> => {
     const { lease_start_date, lease_end_date } = data;
     data.lease_start_date = DateService.getStartOfTheDay(lease_start_date);
     data.lease_end_date = DateService.getEndOfTheDay(lease_end_date);
     return this.rentRepository.save(data);
-  }
+  };
 
-  async getAllRents(queryParams: RentFilter) {
+  getAllRents = async (queryParams: RentFilter) => {
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -62,9 +69,9 @@ export class RentsService {
         hasNextPage: page < totalPages,
       },
     };
-  }
+  };
 
-  async getRentByTenantId(tenant_id: string) {
+  getRentByTenantId = async (tenant_id: string) => {
     const rent = await this.rentRepository.findOne({
       where: { tenant_id },
       relations: ['tenant', 'property'],
@@ -76,9 +83,9 @@ export class RentsService {
       );
     }
     return rent;
-  }
+  };
 
-  async getDueRentsWithinSevenDays(queryParams: RentFilter) {
+  getDueRentsWithinSevenDays = async (queryParams: RentFilter) => {
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -115,9 +122,9 @@ export class RentsService {
         hasNextPage: page < totalPages,
       },
     };
-  }
+  };
 
-  async getOverdueRents(queryParams: RentFilter) {
+  getOverdueRents = async (queryParams: RentFilter) => {
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -151,9 +158,9 @@ export class RentsService {
         hasNextPage: page < totalPages,
       },
     };
-  }
+  };
 
-  async sendRentReminder(id: string) {
+  sendRentReminder = async (id: string) => {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -176,9 +183,9 @@ export class RentsService {
     );
 
     return { message: 'Reminder sent successfully' };
-  }
+  };
 
-  async getRentById(id: string) {
+  getRentById = async (id: string) => {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -187,17 +194,20 @@ export class RentsService {
       throw new HttpException(`Rent not found`, HttpStatus.NOT_FOUND);
     }
     return rent;
-  }
+  };
 
-  async updateRentById(id: string, data: any) {
+  updateRentById = async (id: string, data: any) => {
     return this.rentRepository.update(id, data);
-  }
+  };
 
-  async deleteRentById(id: string) {
+  deleteRentById = async (id: string) => {
     return this.rentRepository.delete(id);
-  }
+  };
 
-  async saveOrUpdateRentIncrease(data: CreateRentIncreaseDto, userId: string) {
+  saveOrUpdateRentIncrease = async (
+    data: CreateRentIncreaseDto,
+    userId: string,
+  ) => {
     const property = await this.propertyRepository.findOne({
       where: { id: data.property_id, owner_id: userId },
     });
@@ -227,43 +237,43 @@ export class RentsService {
       ...data,
       rent_increase_date: DateService.getStartOfTheDay(new Date()),
     });
-  }
+  };
 
-  async findActiveRent(query){
+  async findActiveRent(query) {
     return this.rentRepository.findOne({
       where: {
         ...query,
-        rent_status:RentStatusEnum.ACTIVE
-      }
-    })
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
   }
 
+  deactivateTenant = async (data: {
+    tenant_id: string;
+    property_id: string;
+  }) => {
+    const { tenant_id, property_id } = data;
+    const rent = await this.rentRepository.findOne({
+      where: {
+        tenant_id,
+        property_id,
+      },
+    });
 
- async deactivateTenant(data:{tenant_id: string, property_id:string}) {
-  const {tenant_id, property_id} = data
-  const rent = await this.rentRepository.findOne({
-    where: {
-      tenant_id, 
-      property_id
-    }
-  })
-
-  if(rent){
-    await this.propertyRepository.update(
-      {id: rent.property_id},
-      {property_status: PropertyStatusEnum.VACANT}
-    )
+    if (rent) {
+      await this.propertyRepository.update(
+        { id: rent.property_id },
+        { property_status: PropertyStatusEnum.VACANT },
+      );
       await this.propertyTenantRepository.update(
-      {tenant_id: rent.tenant_id},
-      {status: TenantStatusEnum.INACTIVE}
-    )
+        { tenant_id: rent.tenant_id },
+        { status: TenantStatusEnum.INACTIVE },
+      );
 
       await this.rentRepository.update(
-    { tenant_id }, // where condition
-    { rent_status: RentStatusEnum.INACTIVE } // update values
-  );
-  }
-
-}
-
+        { tenant_id }, // where condition
+        { rent_status: RentStatusEnum.INACTIVE }, // update values
+      );
+    }
+  };
 }

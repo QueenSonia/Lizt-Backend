@@ -28,8 +28,8 @@ export class TenantKycService {
     private accountRepo: Repository<Account>,
   ) {}
 
-  async create(dto: CreateTenantKycDto) {
-    const landlord= await this.accountRepo.findOneBy({
+  create = async (dto: CreateTenantKycDto) => {
+    const landlord = await this.accountRepo.findOneBy({
       id: dto.landlord_id,
       role: RolesEnum.LANDLORD,
     });
@@ -46,9 +46,9 @@ export class TenantKycService {
       throw new ConflictException('Duplicate request; awaiting review.');
 
     await this.tenantKycRepo.save({ ...dto, identity_hash });
-  }
+  };
 
-  async findAll(admin_id: string, query: ParseTenantKycQueryDto) {
+  findAll = async (admin_id: string, query: ParseTenantKycQueryDto) => {
     const { limit, page, fields } = query;
 
     const selectFields = fields ? fields.split(',').filter(Boolean) : undefined;
@@ -64,9 +64,9 @@ export class TenantKycService {
     });
 
     return { data, pagination };
-  }
+  };
 
-  async findOne(admin_id: string, id: string) {
+  findOne = async (admin_id: string, id: string) => {
     const kyc_data = await this.tenantKycRepo.findOneBy({
       id,
       admin_id,
@@ -75,9 +75,9 @@ export class TenantKycService {
     if (!kyc_data) throw new NotFoundException();
 
     return kyc_data;
-  }
+  };
 
-  async update(admin_id: string, id: string, dto: UpdateTenantKycDto) {
+  update = async (admin_id: string, id: string, dto: UpdateTenantKycDto) => {
     const kyc_data = await this.tenantKycRepo.findOneBy({
       id,
       admin_id,
@@ -88,22 +88,22 @@ export class TenantKycService {
     Object.assign(kyc_data, dto);
 
     return await this.tenantKycRepo.save(kyc_data);
-  }
+  };
 
-  async deleteOne(admin_id: string, id: string) {
+  deleteOne = async (admin_id: string, id: string) => {
     const result = await this.tenantKycRepo.delete({ id, admin_id });
 
     if (result.affected === 0)
       throw new NotFoundException('KYC record not found');
-  }
+  };
 
-  async deleteMany(admin_id: string, { ids }: BulkDeleteTenantKycDto) {
+  deleteMany = async (admin_id: string, { ids }: BulkDeleteTenantKycDto) => {
     await this.tenantKycRepo.delete(ids.map((id) => ({ id, admin_id })));
-  }
+  };
 
-  async deleteAll(admin_id: string) {
+  deleteAll = async (admin_id: string) => {
     await this.tenantKycRepo.delete({ admin_id });
-  }
+  };
 
   private generateIdentityHash(dto: CreateTenantKycDto) {
     const fields = [

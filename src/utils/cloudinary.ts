@@ -15,10 +15,10 @@ export class FileUploadService {
     });
   }
 
-  async uploadFile(
+  uploadFile = async (
     file: Express.Multer.File,
     folder: string = 'properties',
-  ): Promise<UploadApiResponse> {
+  ): Promise<UploadApiResponse> => {
     const allowedMimeTypes = [
       'image/png',
       'image/jpg',
@@ -56,7 +56,7 @@ export class FileUploadService {
 
       streamifier.createReadStream(file.buffer).pipe(uploadStream);
     });
-  }
+  };
 
   async uploadBuffer(
     buffer: Buffer,

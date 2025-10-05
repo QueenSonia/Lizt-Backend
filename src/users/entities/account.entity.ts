@@ -56,7 +56,7 @@ export class Account extends BaseEntity {
   properties: Property[];
 
   @OneToMany(() => Rent, (r) => r.tenant)
-  rents: Rent
+  rents: Rent;
 
   @OneToMany(() => PropertyTenant, (pt) => pt.tenant, {
     onDelete: 'CASCADE',
@@ -78,7 +78,7 @@ export class Account extends BaseEntity {
   @OneToMany(() => Notification, (notification) => notification.user)
   notification: Notification[];
 
-   // One account can be part of many teams through TeamMember
+  // One account can be part of many teams through TeamMember
   @OneToMany(() => TeamMember, (teamMember) => teamMember.account)
   teamMemberships: TeamMember[];
 

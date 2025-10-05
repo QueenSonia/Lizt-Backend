@@ -17,13 +17,13 @@ export class PropertyHistoryService {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
   ) {}
 
-  async createPropertyHistory(
+  createPropertyHistory = async (
     data: CreatePropertyHistoryDto,
-  ): Promise<CreatePropertyHistoryDto> {
+  ): Promise<CreatePropertyHistoryDto> => {
     return this.propertyHistoryRepository.save(data);
-  }
+  };
 
-  async getAllPropertyHistories(queryParams: PropertyHistoryFilter) {
+  getAllPropertyHistories = async (queryParams: PropertyHistoryFilter) => {
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -53,9 +53,11 @@ export class PropertyHistoryService {
         hasNextPage: page < totalPages,
       },
     };
-  }
+  };
 
-  async getPropertyHistoryById(id: string): Promise<CreatePropertyHistoryDto> {
+  getPropertyHistoryById = async (
+    id: string,
+  ): Promise<CreatePropertyHistoryDto> => {
     const propertyHistory = await this.propertyHistoryRepository.findOne({
       where: { id },
       relations: ['property', 'tenant'],
@@ -69,23 +71,26 @@ export class PropertyHistoryService {
     }
 
     return propertyHistory;
-  }
+  };
 
-  async updatePropertyHistoryById(id: string, data: UpdatePropertyHistoryDto) {
+  updatePropertyHistoryById = async (
+    id: string,
+    data: UpdatePropertyHistoryDto,
+  ) => {
     await this.getPropertyHistoryById(id);
     return this.propertyHistoryRepository.update(id, data);
-  }
+  };
 
-  async deletePropertyHistoryById(id: string) {
+  deletePropertyHistoryById = async (id: string) => {
     await this.getPropertyHistoryById(id);
     return this.propertyHistoryRepository.delete(id);
-  }
+  };
 
-  async getPropertyHistoryByTenantId(
+  getPropertyHistoryByTenantId = async (
     tenant_id: string,
     property_id: string,
     queryParams: PropertyHistoryFilter,
-  ) {
+  ) => {
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -112,5 +117,5 @@ export class PropertyHistoryService {
         hasNextPage: page < totalPages,
       },
     };
-  }
+  };
 }

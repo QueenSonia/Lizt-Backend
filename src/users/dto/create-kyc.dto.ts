@@ -1,6 +1,6 @@
-// src/users/dto/create-kyc.dto.ts
 import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
+// Validates data for creating a KYC record for tenants
 export class CreateKycDto {
   // @IsString()
   // @IsNotEmpty()
@@ -85,4 +85,10 @@ export class CreateKycDto {
   @IsBoolean()
   @IsNotEmpty()
   accept_terms_and_condition: boolean;
+
+  // @IsString()
+  // @IsNotEmpty()
+  // status: string;
 }
+
+// Validation @IsString, @IsBoolean, @IsNotEmpty, ensures kyc data is not empty before saving

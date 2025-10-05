@@ -31,3 +31,5 @@ export class PaginationResponseDto {
   })
   pagination: PaginationMetadataDto;
 }
+
+// DTO used in endpoints like getAllUsers to return paginated results.

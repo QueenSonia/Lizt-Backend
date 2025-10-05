@@ -1,19 +1,26 @@
 import { BaseEntity } from 'src/base.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
 
 export enum MessageSender {
   TENANT = 'tenant',
   REP = 'rep',
   SYSTEM = 'system',
-  ADMIN = 'admin'
+  ADMIN = 'admin',
 }
 
 export enum MessageType {
   TEXT = 'text',
   FILE = 'file',
   IMAGE = 'image',
-  SYSTEM = 'system'
+  SYSTEM = 'system',
 }
 
 @Entity('chat_messages')
@@ -23,14 +30,14 @@ export class ChatMessage extends BaseEntity {
 
   @Column({
     type: 'enum',
-    enum: MessageSender
+    enum: MessageSender,
   })
   sender: MessageSender;
 
   @Column({
     type: 'enum',
     enum: MessageType,
-    default: MessageType.TEXT
+    default: MessageType.TEXT,
   })
   type: MessageType;
 
@@ -49,10 +56,16 @@ export class ChatMessage extends BaseEntity {
   @Column({ nullable: true })
   senderName: string;
 
-  @ManyToOne(() => ServiceRequest, serviceRequest => serviceRequest.messages, {
+  @ManyToOne(
+    () => ServiceRequest,
+    (serviceRequest) => serviceRequest.messages,
+    {
       onDelete: 'CASCADE',
+    },
+  )
+  @JoinColumn({
+    name: 'service_request_id',
+    referencedColumnName: 'request_id',
   })
-  @JoinColumn({ name: 'service_request_id', referencedColumnName: 'request_id' })
   serviceRequest: ServiceRequest;
-
 }

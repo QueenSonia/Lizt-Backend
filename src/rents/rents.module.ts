@@ -9,9 +9,11 @@ import { Property } from 'src/properties/entities/property.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Rent, RentIncrease, Property, PropertyTenant])],
+  imports: [
+    TypeOrmModule.forFeature([Rent, RentIncrease, Property, PropertyTenant]),
+  ],
   controllers: [RentsController],
   providers: [RentsService, FileUploadService],
-  exports: [RentsService, TypeOrmModule]
+  exports: [RentsService, TypeOrmModule],
 })
 export class RentsModule {}

@@ -14,6 +14,8 @@ import {
   UseInterceptors,
   UploadedFiles,
   Patch,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import {
@@ -31,7 +33,7 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { SkipAuth } from 'src/auth/auth.decorator';
 import {
   ApiBadRequestResponse,
@@ -55,6 +57,13 @@ import { CreateKycDto } from './dto/create-kyc.dto';
 import { KYC } from './entities/kyc.entity';
 import { UpdateKycDto } from './dto/update-kyc.dto';
 
+interface UserRequest extends Request {
+  user: {
+    id: string;
+    role: RolesEnum;
+  };
+}
+
 @ApiTags('Users')
 @Controller('users')
 export class UsersController {
@@ -70,26 +79,47 @@ export class UsersController {
   @Roles(ADMIN_ROLES.ADMIN)
   @Get('/waitlist')
   async getWaitlist() {
-    return this.usersService.getWaitlist();
+    try {
+      return this.usersService.getWaitlist();
+    } catch (error) {
+      throw new HttpException(
+        'Failed to get waitlist',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
   @Get('/landlord')
   async getLandlords() {
-    return this.usersService.getLandlords();
+    try {
+      return this.usersService.getLandlords();
+    } catch (error) {
+      throw new HttpException(
+        'Failed to get landlords',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   @Get('team-members')
-  async getTeamMembers(@Req() req: any) {
-    const team_id = req.user.id;
-    return this.usersService.getTeamMembers(team_id);
+  async getTeamMembers(@Req() req: UserRequest) {
+    try {
+      const team_id = req.user.id;
+      return this.usersService.getTeamMembers(team_id);
+    } catch (error) {
+      throw new HttpException(
+        'Failed to get team members',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   @Post()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  async addTenant(@Body() body: CreateTenantDto, @Req() req: any) {
+  async addTenant(@Body() body: CreateTenantDto, @Req() req: UserRequest) {
     try {
       const user_id = req?.user?.id;
       return this.usersService.addTenant(user_id, body);
@@ -97,17 +127,6 @@ export class UsersController {
       throw error;
     }
   }
-
-  // @Post()
-  // @UseGuards(RoleGuard)
-  // @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)// async createUser(@Body() body: CreateUserDto, @Req() req: any) {
-  //   try {
-  //     const user_id = req?.user?.id;
-  //     return this.usersService.createUser(body, user_id);
-  //   } catch (error) {
-  //     throw error;
-  //   }
-  // }
 
   @ApiOperation({ summary: 'Get All Users' })
   @ApiQuery({ name: 'page', required: false, type: Number })
@@ -137,10 +156,10 @@ export class UsersController {
   }
 
   @Get('/profile')
-  getProfile(@Req() req: any) {
+  async getProfile(@Query('user_id') userId: string, @Req() req: UserRequest) {
     try {
-      const userId = req.query.user_id || req?.user?.id;
-      return this.usersService.getAccountById(userId);
+      const id = userId || req?.user?.id;
+      return this.usersService.getAccountById(id);
     } catch (error) {
       throw error;
     }
@@ -164,9 +183,11 @@ export class UsersController {
   @Get('tenant-list')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
+  async getTenantsOfAnAdmin(
+    @Query() query: UserFilter,
+    @Req() req: UserRequest,
+  ) {
     try {
-      console.log();
       const creator_id = req?.user?.id;
 
       return this.usersService.getTenantsOfAnAdmin(creator_id, query);
@@ -178,11 +199,11 @@ export class UsersController {
   @Get('tenant-list/:tenant_id')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  getSingleTenantOfAnAdmin(@Req() req: any) {
+  async getSingleTenantOfAnAdmin(@Req() req: Request) {
     try {
       const tenant_id = req?.params.tenant_id;
 
-      return this.usersService.getSingleTenantOfAnAdmin(tenant_id);
+      return await this.usersService.getSingleTenantOfAnAdmin(tenant_id);
     } catch (error) {
       throw error;
     }
@@ -192,7 +213,7 @@ export class UsersController {
   @ApiOkResponse({ type: CreateUserDto })
   @ApiNotFoundResponse({ description: 'Tenant not found' })
   @Get('tenant-property')
-  getTenantAndPropertyInfo(@Req() req: any) {
+  async getTenantAndPropertyInfo(@Req() req: UserRequest) {
     try {
       return this.usersService.getTenantAndPropertyInfo(req.user.id);
     } catch (error) {
@@ -245,11 +266,18 @@ export class UsersController {
     @Param('user_id', new ParseUUIDPipe()) user_id: string,
     @Query('fields') fields: string[],
   ) {
-    if (!fields.length) {
-      throw new Error('Fields query parameter is required');
+    try {
+      if (!fields.length) {
+        throw new HttpException(
+          'Fields query parameter is required',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      return await this.usersService.getUserFields(user_id, fields);
+    } catch (error) {
+      throw error;
     }
-    console.log('fields', fields);
-    return this.usersService.getUserFields(user_id, fields);
   }
 
   @ApiOperation({ summary: 'Get All Users' })
@@ -271,9 +299,9 @@ export class UsersController {
   @Get()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-  getAllUsers(@Query() query: UserFilter) {
+  async getAllUsers(@Query() query: UserFilter) {
     try {
-      return this.usersService.getAllUsers(query);
+      return await this.usersService.getAllUsers(query);
     } catch (error) {
       throw error;
     }
@@ -285,12 +313,12 @@ export class UsersController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
-  updateUserById(
+  async updateUserById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: UpdateUserDto,
   ) {
     try {
-      return this.usersService.updateUserById(id, body);
+      return await this.usersService.updateUserById(id, body);
     } catch (error) {
       throw error;
     }
@@ -306,7 +334,7 @@ export class UsersController {
   @Post('login')
   async login(@Body() body: LoginDto, @Res() res: Response) {
     try {
-      return this.usersService.loginUser(body, res);
+      return await this.usersService.loginUser(body, res);
     } catch (error) {
       throw error;
     }
@@ -322,7 +350,7 @@ export class UsersController {
   @SkipAuth()
   async logout(@Res() res: Response) {
     try {
-      return this.usersService.logoutUser(res);
+      return await this.usersService.logoutUser(res);
     } catch (error) {
       throw error;
     }
@@ -338,9 +366,9 @@ export class UsersController {
   @Delete(':id')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  deleteUserById(@Param('id', new ParseUUIDPipe()) id: string) {
+  async deleteUserById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
-      return this.usersService.deleteUserById(id);
+      return await this.usersService.deleteUserById(id);
     } catch (error) {
       throw error;
     }
@@ -386,8 +414,11 @@ export class UsersController {
   @Post('reset-password')
   async resetPassword(@Body() body: ResetDto, @Res() res: Response) {
     const { token, newPassword } = body;
-    await this.usersService.resetPassword({ token, newPassword }, res);
-    return { message: 'Password reset successful' };
+    const result = await this.usersService.resetPassword(
+      { token, newPassword },
+      res,
+    );
+    return res.status(200).json(result);
   }
 
   @ApiOperation({ summary: 'Upload Admin Logos' })
@@ -402,7 +433,7 @@ export class UsersController {
   @UseInterceptors(FilesInterceptor('logos', 10))
   async uploadLogos(
     @UploadedFiles() files: Array<Express.Multer.File>,
-    @Req() req: any,
+    @Req() req: UserRequest,
   ) {
     try {
       const userId = req?.user?.id;
@@ -417,7 +448,11 @@ export class UsersController {
     @Param('userId') userId: string,
     @Body() createKycDto: CreateKycDto,
   ): Promise<KYC> {
-    return this.usersService.createUserKyc(userId, createKycDto);
+    try {
+      return await this.usersService.createUserKyc(userId, createKycDto);
+    } catch (error) {
+      throw error;
+    }
   }
 
   @SkipAuth()
@@ -426,37 +461,57 @@ export class UsersController {
     @Param('userId') userId: string,
     @Body() updateKycDto: UpdateKycDto,
   ): Promise<KYC> {
-    return this.usersService.update(userId, updateKycDto);
+    try {
+      return await this.usersService.update(userId, updateKycDto);
+    } catch (error) {
+      throw error;
+    }
   }
 
   @SkipAuth()
   @Post('admin')
   async createAdmin(@Body() createUserDto: CreateAdminDto) {
-    return this.usersService.createAdmin(createUserDto);
+    try {
+      return await this.usersService.createAdmin(createUserDto);
+    } catch (error) {
+      throw error;
+    }
   }
 
   @SkipAuth()
   @Post('landlord')
   async createLandlord(@Body() createUserDto: CreateLandlordDto) {
-    return this.usersService.createLandlord(createUserDto);
+    try {
+      return await this.usersService.createLandlord(createUserDto);
+    } catch (error) {
+      throw error;
+    }
   }
 
   @SkipAuth()
   @Post('rep')
   async createCustomerRep(@Body() createUserDto: CreateCustomerRepDto) {
-    return this.usersService.createCustomerRep(createUserDto);
+    try {
+      return await this.usersService.createCustomerRep(createUserDto);
+    } catch (error) {
+      throw error;
+    }
   }
 
   @Get('sub-accounts')
-  async getSubAccounts(@Req() req) {
-    const adminId = req.user.id;
-    return this.usersService.getSubAccounts(adminId);
+  async getSubAccounts(@Req() req: UserRequest) {
+    try {
+      const adminId = req.user.id;
+      return await this.usersService.getSubAccounts(adminId);
+    } catch (error) {
+      throw error;
+    }
   }
 
   @Get('switch-account/:id')
   async switchAccount(
     @Param('id') id: string,
-    @Req() req,
+    @Req() req: UserRequest,
     @Res() res: Response,
   ) {
     const currentAccount = req.user;
@@ -478,8 +533,15 @@ export class UsersController {
       last_name: string;
       phone_number: string;
     },
-    @Req() req: any,
+    @Req() req: UserRequest,
   ) {
-    return this.usersService.assignCollaboratorToTeam(req.user.id, team_member);
+    try {
+      return await this.usersService.assignCollaboratorToTeam(
+        req.user.id,
+        team_member,
+      );
+    } catch (error) {
+      throw error;
+    }
   }
 }

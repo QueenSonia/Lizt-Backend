@@ -18,7 +18,7 @@ export enum RentPaymentStatusEnum {
 
 export enum RentStatusEnum {
   ACTIVE = 'active',
-  INACTIVE = 'inactive'
+  INACTIVE = 'inactive',
 }
 
 export class CreateRentDto {
@@ -94,7 +94,7 @@ export class RentFilter {
   status?: string;
   start_date?: string;
   end_date?: string;
-  property?:{
+  property?: {
     owner_id?: string;
-  }
+  };
 }

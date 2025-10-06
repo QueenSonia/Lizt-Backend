@@ -1,3 +1,4 @@
+//rents.controller.ts
 import {
   Controller,
   Get,
@@ -123,7 +124,7 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('due')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   getDueRentsWithinSevenDays(@Query() query: RentFilter, @Req() req: any) {
     try {
       query.owner_id = req?.user?.id;
@@ -150,7 +151,7 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('overdue')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   getOverdueRents(@Query() query: RentFilter, @Req() req: any) {
     try {
       if (!query.property) {
@@ -172,7 +173,8 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('reminder/:id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)sendReminder(@Param('id', new ParseUUIDPipe()) id: string) {
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  sendReminder(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.rentsService.sendRentReminder(id);
     } catch (error) {
@@ -241,7 +243,7 @@ export class RentsController {
   @ApiNotFoundResponse({ description: 'You do not own this Property' })
   @Post('increase')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async saveOrUpdateRentIncrease(
     @Body() body: CreateRentIncreaseDto,
     @Req() req: any,
@@ -253,19 +255,17 @@ export class RentsController {
     }
   }
 
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @Put('/remove/:tenant_id')
   async removeTenant(
     @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,
-  @Body() body: {property_id:string}
+    @Body() body: { property_id: string },
   ) {
-    try{
-      const {property_id} = body
-      return this.rentsService.deactivateTenant({tenant_id, property_id})
+    try {
+      const { property_id } = body;
+      return this.rentsService.deactivateTenant({ tenant_id, property_id });
     } catch (error) {
       throw error;
     }
   }
-
-
 }

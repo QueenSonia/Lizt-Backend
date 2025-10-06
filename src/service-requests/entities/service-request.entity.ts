@@ -1,4 +1,11 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany, OneToOne } from 'typeorm';
+import {
+  Column,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  OneToMany,
+  OneToOne,
+} from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Users } from '../../users/entities/user.entity';
 import { Property } from '../../properties/entities/property.entity';
@@ -7,7 +14,6 @@ import { Account } from 'src/users/entities/account.entity';
 import { ChatMessage } from 'src/chat/chat-message.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
-
 
 @Entity({ name: 'service_requests' })
 export class ServiceRequest extends BaseEntity {
@@ -38,7 +44,7 @@ export class ServiceRequest extends BaseEntity {
   @Column({ nullable: true })
   resolvedAt: Date;
 
-    @Column('text', { nullable: true })
+  @Column('text', { nullable: true })
   notes: string;
 
   @Column({
@@ -65,15 +71,15 @@ export class ServiceRequest extends BaseEntity {
   tenant: Account;
 
   @ManyToOne(() => Property, (p) => p.service_requests, {
-  onDelete: 'CASCADE',
-})
+    onDelete: 'CASCADE',
+  })
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-    @OneToMany(() => ChatMessage, message => message.serviceRequest)
+  @OneToMany(() => ChatMessage, (message) => message.serviceRequest)
   messages: ChatMessage[];
 
- @OneToOne(() => Notification, (notification) => notification.serviceRequest)
+  @OneToOne(() => Notification, (notification) => notification.serviceRequest)
   notification: Notification;
 
   @Column({ nullable: true, type: 'uuid' })
@@ -82,6 +88,4 @@ export class ServiceRequest extends BaseEntity {
   @ManyToOne(() => TeamMember, (tm) => tm.account, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'assigned_to', referencedColumnName: 'id' })
   facilityManager: TeamMember;
-
-  
 }

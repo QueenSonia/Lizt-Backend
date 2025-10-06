@@ -16,7 +16,10 @@ import {
   RawBodyRequest,
   Headers as HeadersDecorator,
 } from '@nestjs/common';
-import { ServiceRequestsService, TawkWebhookPayload } from './service-requests.service';
+import {
+  ServiceRequestsService,
+  TawkWebhookPayload,
+} from './service-requests.service';
 import {
   CreateServiceRequestDto,
   ServiceRequestFilter,
@@ -94,14 +97,13 @@ export class ServiceRequestsController {
   @Get()
   getAllServiceRequests(@Query() query: ServiceRequestFilter, @Req() req: any) {
     try {
-      const user_id = req?.user?.id
+      const user_id = req?.user?.id;
 
       return this.serviceRequestsService.getAllServiceRequests(user_id, query);
     } catch (error) {
       throw error;
     }
   }
-
 
   @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
   @ApiQuery({ name: 'page', required: false, type: Number })
@@ -127,7 +129,7 @@ export class ServiceRequestsController {
     }
   }
 
-    @ApiOperation({ summary: 'Get One Service Request' })
+  @ApiOperation({ summary: 'Get One Service Request' })
   @ApiOkResponse({
     type: CreateServiceRequestDto,
     description: 'Service request successfully fetched',
@@ -136,12 +138,13 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('/tenant')
-  getServiceRequestByTenant(
-     @Req() req: any
-    ) {
+  getServiceRequestByTenant(@Req() req: any) {
     try {
       const status = req?.query?.status || '';
-      return this.serviceRequestsService.getServiceRequestByTenant(req?.user.id, status);
+      return this.serviceRequestsService.getServiceRequestByTenant(
+        req?.user.id,
+        status,
+      );
     } catch (error) {
       throw error;
     }
@@ -156,15 +159,13 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  getServiceRequestById(
-    @Param('id', new ParseUUIDPipe()) id: string) {
+  getServiceRequestById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.serviceRequestsService.getServiceRequestById(id);
     } catch (error) {
       throw error;
     }
   }
-
 
   @ApiOperation({ summary: 'Update Service Request' })
   @ApiConsumes('multipart/form-data')
@@ -207,7 +208,6 @@ export class ServiceRequestsController {
     }
   }
 
-
   private isSupportedEvent(event: string): boolean {
     return ['chat:start', 'chat:end', 'ticket:create'].includes(event);
   }
@@ -218,7 +218,7 @@ export class ServiceRequestsController {
     return {
       status: 'ok',
       service: 'tawk-webhook',
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
   }
 }

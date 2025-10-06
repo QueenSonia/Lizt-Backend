@@ -14,8 +14,7 @@ import { BaseEntity } from 'src/base.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 
 @Entity()
-export class Notification extends BaseEntity  {
-
+export class Notification extends BaseEntity {
   @Column()
   date: string;
 
@@ -34,7 +33,7 @@ export class Notification extends BaseEntity  {
   @Column({ type: 'uuid', nullable: false })
   user_id: string;
 
-   @Column({ type: 'uuid', nullable: true })
+  @Column({ type: 'uuid', nullable: true })
   service_request_id: string;
 
   @ManyToOne(() => Property, (property) => property.notification, {
@@ -47,7 +46,7 @@ export class Notification extends BaseEntity  {
   @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })
   user: Account; // <-- snake_case and UUID
 
-   @OneToOne(() => ServiceRequest, (request) => request.notification, {
+  @OneToOne(() => ServiceRequest, (request) => request.notification, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'service_request_id', referencedColumnName: 'id' })

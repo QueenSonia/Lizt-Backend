@@ -17,15 +17,23 @@ import { Account } from 'src/users/entities/account.entity';
 import { LandlordFlow } from './templates/landlord/landlordflow';
 import { Rent } from 'src/rents/entities/rent.entity';
 
-
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ServiceRequest, Users, PropertyTenant, TeamMember, Waitlist, Property, Account, Rent]), 
+    TypeOrmModule.forFeature([
+      ServiceRequest,
+      Users,
+      PropertyTenant,
+      TeamMember,
+      Waitlist,
+      Property,
+      Account,
+      Rent,
+    ]),
     ServiceRequestsModule,
-    forwardRef(() => UsersModule), 
+    forwardRef(() => UsersModule),
   ],
   controllers: [WhatsappBotController],
-  providers: [WhatsappBotService,   LandlordFlow,],
+  providers: [WhatsappBotService, LandlordFlow],
   exports: [WhatsappBotService],
 })
 export class WhatsappBotModule {}

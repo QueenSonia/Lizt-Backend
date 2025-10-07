@@ -18,11 +18,12 @@ console.log({ isProduction });
 
 export const config = {
   type: 'postgres',
-  host: PROD_DB_HOST!,
-  port: Number(PROD_PORT),
-  username: PROD_DB_USERNAME!,
-  password: PROD_DB_PASSWORD!,
-  database: PROD_DB_NAME!,
+  url: process.env.DATABASE_URL,
+  // host: PROD_DB_HOST!,
+  // port: Number(PROD_PORT),
+  // username: PROD_DB_USERNAME!,
+  // password: PROD_DB_PASSWORD!,
+  // database: PROD_DB_NAME!,
   entities: ['dist/**/*.entity{.ts,.js}'],
   // synchronize: isProduction ? false : true,
   migrations: ['dist/src/migrations/*{.ts,.js}'],

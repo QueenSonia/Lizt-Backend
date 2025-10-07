@@ -955,7 +955,10 @@ export class UsersService {
 
   async loginUser(data: LoginDto, res: Response) {
     const { email, password } = data;
-
+    const testLandlord = await this.accountRepository.find({
+      where: { email },
+    });
+    console.log('All accounts with this email:', testLandlord);
     // Fetch both accounts with the same email but different roles
 
     const [adminAccount, landlordAccount, tenantAccount, repAccount] =

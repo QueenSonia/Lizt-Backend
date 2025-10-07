@@ -8,7 +8,7 @@ export class Team extends BaseEntity {
   @Column({ nullable: false, type: 'varchar' })
   name: string;
 
-  @Column({ nullable:false, type: 'uuid' })
+  @Column({ nullable: false, type: 'uuid' })
   creatorId: string;
 
   @OneToOne(() => Account, (account) => account.team, { onDelete: 'CASCADE' })

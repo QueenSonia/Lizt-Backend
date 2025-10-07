@@ -1,5 +1,11 @@
 import { BaseEntity, RolesEnum } from 'src/base.entity';
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
 import { Account } from './account.entity';
 import { Team } from './team.entity';
 
@@ -8,7 +14,7 @@ export class TeamMember extends BaseEntity {
   @Column({ nullable: false, type: 'varchar' })
   email: string;
 
- @Column({ nullable: false, type: 'uuid' })
+  @Column({ nullable: false, type: 'uuid' })
   teamId: string;
 
   @ManyToOne(() => Team, (team) => team.members, { onDelete: 'CASCADE' })

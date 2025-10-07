@@ -16,8 +16,12 @@ import { CacheService } from './cache.service';
 
         const client = new Redis(redisUrl, {
           retryStrategy: (times) => {
+            // Stop retrying after 3 attempts
+            if (times > 3) {
+              logger.warn('Redis connection failed after 3 attempts. Running without Redis cache.');
+              return null; // Stop retrying
+            }
             const delay = Math.min(times * 100, 5000);
-
             return delay;
           },
 
@@ -26,14 +30,38 @@ import { CacheService } from './cache.service';
           maxRetriesPerRequest: 3,
 
           connectTimeout: 10000,
+
+          lazyConnect: true, // Don't connect immediately
+        });
+
+        // Add error handler to prevent unhandled errors
+        client.on('error', (err) => {
+          logger.warn('Redis connection error:', err.message);
         });
 
         try {
+          await client.connect();
           await client.ping();
           logger.log('Redis connection verified');
         } catch (e) {
-          logger.error('Redis connection failed', e.stack);
-          throw e;
+          logger.error('Redis connection failed - continuing without cache');
+          logger.warn('To use Redis caching, start Redis: npm run db:dev:up');
+          // Return a mock client that does nothing instead of throwing
+          return {
+            get: async () => null,
+            set: async () => 'OK',
+            del: async () => 1,
+            exists: async () => 0,
+            expire: async () => 1,
+            ttl: async () => -1,
+            keys: async () => [],
+            flushall: async () => 'OK',
+            ping: async () => 'PONG',
+            quit: async () => 'OK',
+            disconnect: () => {},
+            on: () => {},
+            off: () => {},
+          };
         }
 
         return client;

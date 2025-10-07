@@ -1011,7 +1011,7 @@ export class UsersService {
 
     for (const account of accounts) {
       if (account.password) {
-        // LOG 2: See which account is being checked
+        // LOG 2: See which account is being checked.
         console.log(`Attempting password validation for role: ${account.role}`);
 
         const isPasswordValid = await UtilService.validatePassword(

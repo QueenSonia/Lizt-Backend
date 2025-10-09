@@ -51,27 +51,53 @@ export class PropertiesService {
   ) {}
 
   async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
-    const createdProperty = await this.propertyRepository.save(data);
+    let createdProperty: Property;
 
-    // ✅ Emit event after property is created
-    this.eventEmitter.emit('property.created', {
-      property_id: createdProperty.id,
-      property_name: createdProperty.name, // assuming you have a name field
-      user_id: createdProperty.owner_id, // optional if applicable
-    });
+    try {
+      // create the property
+      createdProperty = await this.propertyRepository.save(data);
 
-    const property = await this.getPropertyById(createdProperty.id);
-    const admin_phone_number = UtilService.normalizePhoneNumber(
-      property.owner.user.phone_number,
-    );
+      // ✅ Emit event after property is created
+      this.eventEmitter.emit('property.created', {
+        property_id: createdProperty.id,
+        property_name: createdProperty.name,
+        user_id: createdProperty.owner_id,
+      });
 
-    await this.userService.sendPropertiesNotification({
-      phone_number: admin_phone_number,
-      name: 'Admin',
-      property_name: createdProperty.name,
-    });
+      // Get the full property with relations for notification
+      const property = await this.getPropertyById(createdProperty.id);
 
-    return createdProperty;
+      if (!property?.owner?.user?.phone_number) {
+        console.warn(
+          'Property owner or phone number not found for notification',
+        );
+      } else {
+        const admin_phone_number = UtilService.normalizePhoneNumber(
+          property.owner.user.phone_number,
+        );
+
+        await this.userService
+          .sendPropertiesNotification({
+            phone_number: admin_phone_number,
+            name: 'Admin',
+            property_name: createdProperty.name,
+          })
+          .catch((error) => {
+            // Log notification errors but don't fail the main operation
+            console.error('Failed to send properties notification:', error);
+          });
+      }
+      return createdProperty;
+    } catch (error) {
+      // Log the error for debugging
+      console.error('Error creating property:', error);
+
+      // Re-throw with a more descriptive message
+      if (error instanceof Error) {
+        throw new Error(`Failed to create property: ${error.message}`);
+      }
+      throw new Error('Failed to create property due to an unexpected error');
+    }
   }
 
   async getAllProperties(queryParams: PropertyFilter) {

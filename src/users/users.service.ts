@@ -955,10 +955,7 @@ export class UsersService {
 
   async loginUser(data: LoginDto, res: Response) {
     const { email, password } = data;
-    const testLandlord = await this.accountRepository.find({
-      where: { email },
-    });
-    console.log('All accounts with this email:', testLandlord);
+
     // Fetch both accounts with the same email but different roles
 
     const [adminAccount, landlordAccount, tenantAccount, repAccount] =
@@ -980,10 +977,6 @@ export class UsersService {
           relations: ['user'],
         }),
       ]);
-
-    // LOG 1: See which accounts were found initially
-    console.log('Found landlord account:', !!landlordAccount);
-    console.log('Found tenant account:', !!tenantAccount);
 
     // Check if any account exists
     if (!adminAccount && !tenantAccount && !landlordAccount && !repAccount) {
@@ -1011,16 +1004,10 @@ export class UsersService {
 
     for (const account of accounts) {
       if (account.password) {
-        // LOG 2: See which account is being checked.
-        console.log(`Attempting password validation for role: ${account.role}`);
-
         const isPasswordValid = await UtilService.validatePassword(
           password,
           account.password,
         );
-
-        // LOG 3: See the result of the password check
-        console.log(`Password valid for ${account.role}: ${isPasswordValid}`);
 
         if (isPasswordValid) {
           matchedAccount = account;

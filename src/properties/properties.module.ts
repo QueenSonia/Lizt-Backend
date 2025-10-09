@@ -14,10 +14,10 @@ import { UsersModule } from 'src/users/users.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([Property, PropertyTenant, PropertyGroup]),
-    RentsModule, 
-    UsersModule
+    RentsModule,
+    UsersModule,
   ],
   controllers: [PropertiesController],
-  providers: [PropertiesService, FileUploadService, RentsService]
+  providers: [PropertiesService, FileUploadService, RentsService],
 })
 export class PropertiesModule {}

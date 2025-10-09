@@ -57,7 +57,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   // @UseInterceptors(FilesInterceptor('property_images', 20))
   async createProperty(
     @Body() body: CreatePropertyDto,
@@ -120,11 +120,11 @@ export class PropertiesController {
   }
 
   @Get('/vacant')
-  getVacantProperty(@Query() query: {owner_id:string}, @Req() req: any){
-    try{
-         query.owner_id = req?.user?.id 
-      return this.propertiesService.getVacantProperty(query)
-    }catch (error) {
+  getVacantProperty(@Query() query: { owner_id: string }, @Req() req: any) {
+    try {
+      query.owner_id = req?.user?.id;
+      return this.propertiesService.getVacantProperty(query);
+    } catch (error) {
       throw error;
     }
   }
@@ -137,7 +137,8 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('property-groups')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)async getAllPropertyGroups(@Req() req: any) {
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async getAllPropertyGroups(@Req() req: any) {
     try {
       const owner_id = req?.user?.id;
       return this.propertiesService.getAllPropertyGroups(owner_id);
@@ -207,7 +208,7 @@ export class PropertiesController {
   // @UseInterceptors(FilesInterceptor('property_images', 20))
   async updatePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body:UpdatePropertyDto,
+    @Body() body: UpdatePropertyDto,
     // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
@@ -219,8 +220,6 @@ export class PropertiesController {
       //   );
       //   body.property_images = uploadedUrls.map((upload) => upload.secure_url);
       // }
-  
-
 
       return this.propertiesService.updatePropertyById(id, body);
     } catch (error) {
@@ -254,7 +253,7 @@ export class PropertiesController {
   })
   @Get('admin/dashboard')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async getAdminDashboardStats(@Req() req: any) {
     try {
       const user_id = req?.user?.id;
@@ -269,7 +268,7 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @Post('move-in')
   moveTenantIn(@Body() moveInData: MoveTenantInDto) {
     try {
@@ -285,7 +284,6 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-
   @Post('move-out')
   moveTenantOut(@Body() moveOutData: MoveTenantOutDto) {
     try {
@@ -302,7 +300,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('property-group')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async createPropertyGroup(
     @Body() body: CreatePropertyGroupDto,
     @Req() req: any,
@@ -321,7 +319,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('property-group/:id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async getPropertyGroupById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
@@ -333,13 +331,13 @@ export class PropertiesController {
       throw error;
     }
   }
- @Post('assign-tenant/:id')
-@UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Post('assign-tenant/:id')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async assignTenantToProperty(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() data:AssignTenantDto
-  ){
-    return this.propertiesService.assignTenant(id, data)
+    @Body() data: AssignTenantDto,
+  ) {
+    return this.propertiesService.assignTenant(id, data);
   }
 }

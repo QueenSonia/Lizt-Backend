@@ -33,6 +33,10 @@ export class NotificationService {
     });
   }
 
+  // Looks up all notifications connected to properties owned by a specific user.
+  // Loads related data (property, tenants, serviceRequest) in one query.
+  // Sorts them by date (newest first).
+  // Returns the full list as a Promise.
   async findByUserId(user_id: string): Promise<Notification[]> {
     console.log('Finding notifications for user_id:', user_id);
 
@@ -42,7 +46,12 @@ export class NotificationService {
           owner_id: user_id,
         },
       },
-      relations: ['property', 'serviceRequest'],
+      relations: [
+        'property',
+        'property.property_tenants',
+        'property.property_tenants.tenant',
+        'serviceRequest',
+      ],
       order: {
         date: 'DESC',
       },

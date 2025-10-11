@@ -9,14 +9,14 @@ export class UserAddedListener {
   constructor(private notificationService: NotificationService) {}
 
   @OnEvent('user.added')
-  handle(event: UserAddedToPropertyEvent) {
-    this.notificationService.create({
-        date: new Date().toISOString(),
-        type: NotificationType.USER_ADDED_TO_PROPERTY,
-        description: `${event.profile_name} was added to ${event.property_name} `,
-        status: 'Completed',
-        property_id: event.property_id,
-        user_id: event.user_id
+  async handle(event: UserAddedToPropertyEvent) {
+    await this.notificationService.create({
+      date: new Date().toISOString(),
+      type: NotificationType.USER_ADDED_TO_PROPERTY,
+      description: `${event.profile_name} was added to ${event.property_name} `,
+      status: 'Completed',
+      property_id: event.property_id,
+      user_id: event.user_id,
     });
   }
 }

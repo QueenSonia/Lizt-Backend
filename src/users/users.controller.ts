@@ -166,7 +166,6 @@ export class UsersController {
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
     try {
-      console.log();
       const creator_id = req?.user?.id;
 
       return this.usersService.getTenantsOfAnAdmin(creator_id, query);
@@ -180,9 +179,10 @@ export class UsersController {
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   getSingleTenantOfAnAdmin(@Req() req: any) {
     try {
+      const adminId = req?.user?.id;
       const tenant_id = req?.params.tenant_id;
 
-      return this.usersService.getSingleTenantOfAnAdmin(tenant_id);
+      return this.usersService.getSingleTenantOfAnAdmin(tenant_id, adminId);
     } catch (error) {
       throw error;
     }

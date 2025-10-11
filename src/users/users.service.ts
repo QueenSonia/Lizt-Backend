@@ -69,6 +69,7 @@ import { CacheService } from 'src/lib/cache';
 import { Waitlist } from './entities/waitlist.entity';
 import { TenantDetailDto } from 'src/users/dto/tenant-detail.dto';
 import { time } from 'node:console';
+import { TeamMemberDto } from 'src/users/dto/team-member.dto';
 
 @Injectable()
 export class UsersService {
@@ -2064,31 +2065,55 @@ export class UsersService {
     });
   }
 
-  async getTeamMembers(user_id: string): Promise<TeamMember[]> {
-    // 1. Get team by creatorId
-    const team = await this.teamRepository.findOne({
-      where: { creatorId: user_id },
+  /**
+   * Gets team members for the team owned by a landlord.
+   * If the landlord does not have a team, it creates one automatically.
+   * @param requester the authenticated account making the request
+   */
+  async getTeamMembers(requester: Account): Promise<TeamMemberDto[]> {
+    // 1. Ensure requester is a LANDLORD
+    if (requester.role !== RolesEnum.LANDLORD) {
+      throw new ForbiddenException('Only landlords can manage teams');
+    }
+
+    // 2. Get or create team with requester as creator
+    let team = await this.teamRepository.findOne({
+      where: { creatorId: requester.id },
     });
 
+    // If no team exists, create one
     if (!team) {
-      throw new HttpException('Team not found', HttpStatus.NOT_FOUND);
+      const teamName = requester.profile_name
+        ? `${requester.profile_name} Team`
+        : 'My Team';
+
+      const newTeam = this.teamRepository.create({
+        name: teamName,
+        creatorId: requester.id,
+      });
+      team = await this.teamRepository.save(newTeam);
+
+      // If a new team was created, return empty array as there are no members yet
+      return [];
     }
 
-    // 2. Ensure user really owns this team
-    if (team.creatorId !== user_id) {
-      throw new HttpException(
-        'Not authorized to view members of this team',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-
-    // 3. Get team members
+    // 3. Fetch team members for existing team
     const members = await this.teamMemberRepository.find({
       where: { teamId: team.id },
       relations: ['account', 'account.user'],
     });
 
-    return members;
+    // 4. Map the database entities to DTOs for response
+    return members.map((member) => ({
+      id: member.id,
+      name:
+        member.account?.profile_name ??
+        `${member.account?.user.first_name} ${member.account?.user.last_name}`,
+      email: member.email,
+      phone_number: member.account?.user.phone_number ?? 'N/A',
+      role: member.role,
+      date: member.created_at?.toString() || '',
+    }));
   }
 
   async getWhatsappText(from, message) {

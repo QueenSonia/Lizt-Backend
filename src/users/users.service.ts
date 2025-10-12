@@ -1468,11 +1468,14 @@ export class UsersService {
   ): Promise<TenantDetailDto> {
     const tenantAccount = await this.accountRepository
       .createQueryBuilder('account')
-      .leftJoinAndSelect('account.user', 'user')
-      .leftJoinAndSelect('account.kyc', 'kyc')
+      .innerJoinAndSelect('account.user', 'user')
+      .leftJoinAndSelect('user.kyc', 'kyc')
       .leftJoinAndSelect('account.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
       .leftJoinAndSelect('account.service_requests', 'service_requests')
+      .leftJoinAndSelect('account.property_histories', 'property_histories') // join past tenancies
+      .leftJoinAndSelect('property_histories.property', 'past_property') // Property for past tenancies
+      .leftJoinAndSelect('account.notice_agreements', 'notice_agreements')
       .where('account.id = :tenantId', { tenantId })
       .andWhere((qb) => {
         const subQuery = qb
@@ -1499,6 +1502,7 @@ export class UsersService {
 
   private formatTenantData(account: Account): TenantDetailDto {
     const user = account.user;
+    const kyc = user.kyc; // Get the joined KYC data
 
     // Find the most recent (or active) rent record for current details
     const activeRent = account.rents?.sort(
@@ -1507,6 +1511,17 @@ export class UsersService {
         new Date(a.lease_end_date).getTime(),
     )[0];
     const property = activeRent?.property;
+
+    // Aggregate documents from different sources if necessary
+    const documents = (account.notice_agreements || [])
+      .flatMap((na) => na.notice_documents)
+      .map((doc, index) => ({
+        id: `${account.id}-doc-${index}`, // Generate a stable ID
+        name: doc.name ?? 'Untitled Document',
+        url: doc.url,
+        type: doc.type ?? 'General',
+        uploadDate: new Date().toISOString(),
+      }));
 
     // Build the combined history timeline
     const paymentEvents = (account.rents || []).map((rent) => ({
@@ -1541,15 +1556,45 @@ export class UsersService {
 
     return {
       id: account.id,
+
+      // Personal info from User and KYC
       firstName: user.first_name,
       lastName: user.last_name,
-      email: account.email,
       phone: user.phone_number,
+      email: account.email,
+      dateOfBirth: user.date_of_birth?.toISOString() ?? null,
+      gender: user.gender ?? null,
+      stateOfOrigin: user.state_of_origin ?? kyc.state_of_origin ?? null,
+      lga: user.lga ?? kyc.lga_of_origin ?? null,
+      nationality: user.nationality ?? kyc.nationality ?? null,
+      maritalStatus: user.marital_status ?? kyc.marital_status ?? null,
+
+      // Employment Info from User and KYC
+      employmentStatus: user.employment_status ?? null,
+      employerName: user.employer_name ?? kyc.employers_name ?? null,
+      employerAddress: user.employer_address ?? kyc.employers_address ?? null,
+      jobTitle: user.job_title ?? null,
+      workEmail: user.work_email ?? null,
+      monthlyIncome:
+        user.monthly_income ?? (kyc ? parseFloat(kyc.monthly_income) : null),
+
+      // Residence info
+      currentAddress: kyc.former_house_address ?? null,
+
+      // Guarantor Info from KYC
+      guarantorName: kyc?.guarantor ?? null,
+      guarantorPhone: kyc.guarantor_phone_number ?? null,
+      guarantorEmail: null,
+      guarantorAddress: kyc.guarantor_address ?? null,
+      guarantorRelationship: null,
+
+      // current tenancy info
       property: property?.name || 'N/A',
       propertyId: property?.id || 'N/A',
       propertyAddress: property?.location || 'N/A',
       leaseStartDate: activeRent?.lease_start_date?.toISOString() || 'N/A',
       leaseEndDate: activeRent?.lease_end_date?.toISOString() || 'N/A',
+      tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
       rentStatus: activeRent?.payment_status || 'N/A',
       nextRentDue: activeRent?.expiry_date?.toISOString() || 'N/A',
@@ -1565,6 +1610,9 @@ export class UsersService {
         .sort(
           (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
         ),
+
+      // Aggregated Lists
+      documents: documents,
       maintenanceIssues: (account.service_requests || []).map((sr) => ({
         id: sr.id,
         title: sr.issue_category,
@@ -1576,6 +1624,17 @@ export class UsersService {
           : null,
         priority: sr.status === 'URGENT' ? 'High' : 'Medium',
       })),
+      tenancyHistory: (account.property_histories || []).map((ph) => ({
+        id: ph.id,
+        property: ph.property?.name ?? 'Unknown Property',
+        startDate: ph.move_in_date.toISOString(),
+        endDate: ph.move_out_date?.toISOString() ?? null,
+        status: ph.move_out_date ? 'Completed' : 'Active',
+      })),
+
+      // System Info
+      whatsAppConnected: false, // Add real logic
+
       history: history,
       kycInfo: {
         kycStatus: account.kyc ? 'Verified' : 'Not Submitted',

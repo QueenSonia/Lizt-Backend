@@ -864,32 +864,22 @@ export class WhatsappBotService {
           relations: ['property', 'property.rents'],
         });
 
-        // const properties = tenancy?.property_tenants;
-
         if (!properties?.length) {
           await this.sendText(from, 'No properties found.');
           return;
         }
 
-        // Sort properties by lease end date
-        properties.sort((a, b) => new Date(a.property.lease_end_date).getTime() - new Date(b.property.lease_end_date).getTime());
-
-        // Construct the message
-        let message = 'Your Occupied Properties (by lease end date):\n\n';
+        await this.sendText(from, 'Here are your properties:');
         for (const [i, item] of properties.entries()) {
           const rent = item.property.rents[0];
-          message += `${i + 1}. ${item.property.name}, ${item.property.address}\n`;
-          message += `   ₦${rent.rental_price.toLocaleString('en-NG')} | ${rent.payment_frequency}\n`;
-          message += `   Tenant: ${item.tenant_name}\n`;
-          message += `   Lease ends: ${new Date(item.property.lease_end_date).toLocaleDateString('en-GB', {
-            day: '2-digit',
-            month: 'short',
-            year: 'numeric',
-          })}\n\n`;
+          await this.sendText(
+            from,
+            `Property ${i + 1}: ${item.property.name}\n Amount: ${rent.rental_price.toLocaleString(
+              'en-NG',
+              { style: 'currency', currency: 'NGN' },
+            )}\n`,
+          );
         }
-
-        // Send the formatted message
-        await this.sendText(from, message);
 
         await this.cache.set(
           `service_request_state_${from}`,

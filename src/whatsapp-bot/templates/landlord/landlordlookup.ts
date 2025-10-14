@@ -679,9 +679,8 @@ async handleOccupiedProperties(from: string) {
     return;
   }
 
-  // Fetch properties with tenants and rents
   const properties = await this.propertyRepo.find({
-    where: { owner_id: ownerUser.accounts[0].id ,  property_status: PropertyStatusEnum.NOT_VACANT},
+    where: { owner_id: ownerUser.accounts[0].id, property_status: PropertyStatusEnum.NOT_VACANT },
     relations: [
       'property_tenants',
       'property_tenants.tenant',
@@ -691,51 +690,59 @@ async handleOccupiedProperties(from: string) {
   });
 
   if (!properties.length) {
-    await this.whatsappUtil.sendText(from, 'You don’t have any properties yet.');
+    await this.whatsappUtil.sendText(from, 'You don’t have any occupied properties.');
     return;
   }
 
-  // 🔹 Sort properties by ACTIVE rent lease_end_date
+  // Sort properties by active rent lease end date
   const sortedProperties = properties.sort((a, b) => {
     const aRent = a.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
     const bRent = b.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
-
     const aDate = aRent ? new Date(aRent.lease_end_date).getTime() : 0;
     const bDate = bRent ? new Date(bRent.lease_end_date).getTime() : 0;
-
-    return aDate - bDate; // earliest active lease ends first
+    return aDate - bDate;
   });
 
-  // Build message
-  let message = 'Here are your occupied properties (ordered by active lease end date):\n';
+  // Build WhatsApp-friendly message
+  let message = `🏘️ *Your Occupied Properties* (by lease end date):\n\n`;
   const propertyIds: string[] = [];
 
-  for (const [i, property] of sortedProperties.entries()) {
+  sortedProperties.forEach((property, i) => {
     const activeTenant = property.property_tenants?.find(
       (pt) => pt.status === TenantStatusEnum.ACTIVE,
     );
-
     const tenantName = activeTenant?.tenant?.user
       ? `${activeTenant.tenant.user.first_name} ${activeTenant.tenant.user.last_name}`
-      : null;
+      : 'Unknown tenant';
 
-    // Grab the ACTIVE rent
     const activeRent = property.rents?.find((r) => r.rent_status === RentStatusEnum.ACTIVE);
-    const leaseEnd = activeRent ? new Date(activeRent.lease_end_date).toLocaleDateString() : 'N/A';
+    const leaseEnd = activeRent
+      ? new Date(activeRent.lease_end_date).toLocaleDateString('en-NG', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        })
+      : 'N/A';
 
-    message += `${i + 1}. ${property.name} – ${
-      tenantName ? `Occupied (Tenant: ${tenantName}, Lease ends: ${leaseEnd})` : 'Vacant'
-    }\n`;
+    const rentPrice = activeRent?.rental_price
+      ? `₦${activeRent.rental_price.toLocaleString()}`
+      : 'N/A';
+
+    // ✅ Adjusted: Removed payment_frequency since it doesn’t exist on Rent
+    message += `*${i + 1}. ${property.name}*\n`;
+    message += `💰 ${rentPrice}\n`;
+    message += `👤 Tenant: ${tenantName}\n`;
+    message += `📅 Lease Ends: ${leaseEnd}\n`;
+    message += `──────────────────────\n`;
 
     propertyIds.push(property.id);
-  }
+  });
 
   await this.whatsappUtil.sendText(
     from,
     message + '\nReply with the number of the property you want to manage.',
   );
 
-  // Cache state
   await this.cache.set(
     `service_request_state_landlord_${from}`,
     JSON.stringify({
@@ -747,6 +754,8 @@ async handleOccupiedProperties(from: string) {
     300,
   );
 }
+
+
 
   async handleViewMaintenance(from: string) {
     const ownerUser = await this.usersRepo.findOne({
@@ -821,10 +830,4 @@ async handleOccupiedProperties(from: string) {
       300,
     );
   }
-
-
-
-
-
-
 }

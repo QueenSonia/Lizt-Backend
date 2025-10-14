@@ -1502,7 +1502,7 @@ export class UsersService {
 
   private formatTenantData(account: Account): TenantDetailDto {
     const user = account.user;
-    const kyc = user.kyc; // Get the joined KYC data
+    const kyc = user.kyc ?? {}; // Get the joined KYC data
 
     // Find the most recent (or active) rent record for current details
     const activeRent = account.rents?.sort(
@@ -1564,7 +1564,7 @@ export class UsersService {
       email: account.email,
       dateOfBirth: user.date_of_birth?.toISOString() ?? null,
       gender: user.gender ?? null,
-      stateOfOrigin: user.state_of_origin ?? kyc.state_of_origin ?? null,
+      stateOfOrigin: user.state_of_origin ?? kyc.state_of_origin ?? '',
       lga: user.lga ?? kyc.lga_of_origin ?? null,
       nationality: user.nationality ?? kyc.nationality ?? null,
       maritalStatus: user.marital_status ?? kyc.marital_status ?? null,

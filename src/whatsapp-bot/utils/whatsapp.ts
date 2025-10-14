@@ -1,10 +1,8 @@
-import { ConfigService } from "@nestjs/config";
+import { ConfigService } from '@nestjs/config';
 
-export class WhatsappUtils{
-    constructor(
-            private readonly config: ConfigService,
-    ){}
-      async sendText(to: string, text: string) {
+export class WhatsappUtils {
+  constructor(private readonly config: ConfigService) {}
+  async sendText(to: string, text: string) {
     const payload = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -47,7 +45,7 @@ export class WhatsappUtils{
     await this.sendToWhatsappAPI(payload);
   }
 
-   private async sendToWhatsappAPI(payload: object) {
+  private async sendToWhatsappAPI(payload: object) {
     try {
       const response = await fetch(
         'https://graph.facebook.com/v23.0/746591371864338/messages',

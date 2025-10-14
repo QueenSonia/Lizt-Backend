@@ -145,7 +145,7 @@ export class WhatsappBotController {
   @Post('/facility-message')
   async sendToFacilityManagerWithTemplate(@Req() req: Request) {
     try {
-      const { phone_number, name, team, role } = req.body as any;
+      const { phone_number, name, team, role } = req.body;
       const response =
         await this.whatsappBotService.sendToFacilityManagerWithTemplate({
           phone_number,
@@ -172,7 +172,7 @@ export class WhatsappBotController {
         tenant_name,
         tenant_phone_number,
         date_created,
-      } = req.body as any;
+      } = req.body;
       const response = await this.whatsappBotService.sendFacilityServiceRequest(
         {
           phone_number,

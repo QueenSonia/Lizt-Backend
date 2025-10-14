@@ -876,16 +876,20 @@ export class WhatsappBotService {
             from,
             `Property ${i + 1}: ${item.property.name}\n Amount: ${rent.rental_price.toLocaleString(
               'en-NG',
-              { style: 'currency', currency: 'NGN' },
-            )}\n`,
+              {
+                style: 'currency',
+                currency: 'NGN',
+              },
+            )}\n Due Date: ${new Date(rent.lease_end_date).toLocaleDateString()}`,
+          );
+
+          await this.cache.set(
+            `service_request_state_${from}`,
+            'other_options',
+            300,
           );
         }
 
-        await this.cache.set(
-          `service_request_state_${from}`,
-          'other_options',
-          300,
-        );
         await this.sendText(
           from,
           'Type "menu" to see other options or "done" to finish.',

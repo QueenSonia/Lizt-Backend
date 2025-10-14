@@ -56,7 +56,7 @@ export class Account extends BaseEntity {
   properties: Property[];
 
   @OneToMany(() => Rent, (r) => r.tenant)
-  rents: Rent;
+  rents: Rent[];
 
   @OneToMany(() => PropertyTenant, (pt) => pt.tenant, {
     onDelete: 'CASCADE',

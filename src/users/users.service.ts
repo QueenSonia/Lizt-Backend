@@ -67,6 +67,9 @@ import { TeamMember } from './entities/team-member.entity';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { CacheService } from 'src/lib/cache';
 import { Waitlist } from './entities/waitlist.entity';
+import { TenantDetailDto } from 'src/users/dto/tenant-detail.dto';
+import { time } from 'node:console';
+import { TeamMemberDto } from 'src/users/dto/team-member.dto';
 
 @Injectable()
 export class UsersService {
@@ -190,7 +193,7 @@ export class UsersService {
         // console.log(tenancy_start_date, tenancy_end_date);
         property.property_status = PropertyStatusEnum.NOT_VACANT;
 
-        manager.getRepository(Property).save(property);
+        await manager.getRepository(Property).save(property);
 
         // 4. create rent record
         const rent = manager.getRepository(Rent).create({
@@ -395,7 +398,7 @@ export class UsersService {
         // console.log(tenancy_start_date, tenancy_end_date);
         property.property_status = PropertyStatusEnum.NOT_VACANT;
 
-        manager.getRepository(Property).save(property);
+        await manager.getRepository(Property).save(property);
 
         // 4. create rent record
         const rent = manager.getRepository(Rent).create({
@@ -605,7 +608,7 @@ export class UsersService {
       ]);
 
       const token = await this.generatePasswordResetToken(
-        tenantAccount.id as string,
+        tenantAccount.id,
         queryRunner,
       );
 
@@ -642,7 +645,7 @@ export class UsersService {
         role: userRole,
       });
 
-      let result = {
+      const result = {
         ...tenantAccount,
         password_link: resetLink,
       };
@@ -1028,12 +1031,12 @@ export class UsersService {
 
     const account = matchedAccount as any;
 
-    let related_accounts = [] as any;
+    // let related_accounts = [] as any;
     let sub_access_token: string | null = null;
     let parent_access_token: string | null = null;
 
     if (account.role === RolesEnum.LANDLORD) {
-      let subAccount = (await this.accountRepository.findOne({
+      const subAccount = (await this.accountRepository.findOne({
         where: {
           id: Not(account.id),
           email: account.email,
@@ -1066,7 +1069,7 @@ export class UsersService {
       // });
       // userObject['property_id'] = findTenantProperty?.property_id;
 
-      let parentAccount = (await this.accountRepository.findOne({
+      const parentAccount = (await this.accountRepository.findOne({
         where: {
           id: Not(account.id),
           email: account.email,
@@ -1459,20 +1462,187 @@ export class UsersService {
     };
   }
 
-  async getSingleTenantOfAnAdmin(tenant_id: string) {
-    const tenant = this.accountRepository
-      .createQueryBuilder('accounts')
-      .leftJoinAndSelect('accounts.user', 'user')
-      .leftJoinAndSelect('accounts.rents', 'rents')
+  async getSingleTenantOfAnAdmin(
+    tenantId: string,
+    adminId: string,
+  ): Promise<TenantDetailDto> {
+    const tenantAccount = await this.accountRepository
+      .createQueryBuilder('account')
+      .innerJoinAndSelect('account.user', 'user')
+      .leftJoinAndSelect('user.kyc', 'kyc')
+      .leftJoinAndSelect('account.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
-      .where('accounts.id = :tenant_id', { tenant_id })
+      .leftJoinAndSelect('account.service_requests', 'service_requests')
+      .leftJoinAndSelect('account.property_histories', 'property_histories') // join past tenancies
+      .leftJoinAndSelect('property_histories.property', 'past_property') // Property for past tenancies
+      .leftJoinAndSelect('account.notice_agreements', 'notice_agreements')
+      .where('account.id = :tenantId', { tenantId })
+      .andWhere((qb) => {
+        const subQuery = qb
+          .subQuery()
+          .select('1')
+          .from(PropertyTenant, 'pt')
+          .innerJoin('pt.property', 'p')
+          .where('pt.tenant_id = account.id')
+          .andWhere('p.owner_id = :adminId')
+          .getQuery();
+        return `EXISTS ${subQuery}`;
+      })
+      .setParameters({ tenantId, adminId })
       .getOne();
 
-    if (!tenant) {
-      throw new NotFoundException('Tenant not found');
+    if (!tenantAccount?.id) {
+      throw new HttpException(
+        `Tenant with id: ${tenantId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
     }
+    return this.formatTenantData(tenantAccount);
+  }
 
-    return tenant;
+  private formatTenantData(account: Account): TenantDetailDto {
+    const user = account.user;
+    const kyc = user.kyc ?? {}; // Get the joined KYC data
+
+    // Find the most recent (or active) rent record for current details
+    const activeRent = account.rents?.sort(
+      (a, b) =>
+        new Date(b.lease_end_date).getTime() -
+        new Date(a.lease_end_date).getTime(),
+    )[0];
+    const property = activeRent?.property;
+
+    // Aggregate documents from different sources if necessary
+    const documents = (account.notice_agreements || [])
+      .flatMap((na) => na.notice_documents)
+      .map((doc, index) => ({
+        id: `${account.id}-doc-${index}`, // Generate a stable ID
+        name: doc.name ?? 'Untitled Document',
+        url: doc.url,
+        type: doc.type ?? 'General',
+        uploadDate: new Date().toISOString(),
+      }));
+
+    // Build the combined history timeline
+    const paymentEvents = (account.rents || []).map((rent) => ({
+      id: rent.id,
+      type: 'payment' as const,
+      title: 'Rent Payment Received',
+      description: `Rent payment of ${rent.amount_paid} for the period ${new Date(rent.lease_start_date).toLocaleDateString()}`,
+      date: new Date(rent.created_at!).toISOString(),
+      time: new Date(rent.created_at!).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      amount: rent.amount_paid,
+      status: rent.payment_status,
+    }));
+
+    const maintenanceEvents = (account.service_requests || []).map((sr) => ({
+      id: sr.id,
+      type: 'maintenance' as const,
+      title: `Maintenance Request Submitted`,
+      description: sr.issue_category,
+      date: new Date(sr.date_reported).toISOString(),
+      time: new Date(sr.date_reported).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    }));
+
+    const history = [...paymentEvents, ...maintenanceEvents].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+
+    return {
+      id: account.id,
+
+      // Personal info from User and KYC
+      firstName: user.first_name,
+      lastName: user.last_name,
+      phone: user.phone_number,
+      email: account.email,
+      dateOfBirth: user.date_of_birth?.toISOString() ?? null,
+      gender: user.gender ?? null,
+      stateOfOrigin: user.state_of_origin ?? kyc.state_of_origin ?? '',
+      lga: user.lga ?? kyc.lga_of_origin ?? null,
+      nationality: user.nationality ?? kyc.nationality ?? null,
+      maritalStatus: user.marital_status ?? kyc.marital_status ?? null,
+
+      // Employment Info from User and KYC
+      employmentStatus: user.employment_status ?? null,
+      employerName: user.employer_name ?? kyc.employers_name ?? null,
+      employerAddress: user.employer_address ?? kyc.employers_address ?? null,
+      jobTitle: user.job_title ?? null,
+      workEmail: user.work_email ?? null,
+      monthlyIncome:
+        user.monthly_income ?? (kyc ? parseFloat(kyc.monthly_income) : null),
+
+      // Residence info
+      currentAddress: kyc.former_house_address ?? null,
+
+      // Guarantor Info from KYC
+      guarantorName: kyc?.guarantor ?? null,
+      guarantorPhone: kyc.guarantor_phone_number ?? null,
+      guarantorEmail: null,
+      guarantorAddress: kyc.guarantor_address ?? null,
+      guarantorRelationship: null,
+
+      // current tenancy info
+      property: property?.name || 'N/A',
+      propertyId: property?.id || 'N/A',
+      propertyAddress: property?.location || 'N/A',
+      leaseStartDate: activeRent?.lease_start_date?.toISOString() || 'N/A',
+      leaseEndDate: activeRent?.lease_end_date?.toISOString() || 'N/A',
+      tenancyStatus: activeRent?.rent_status ?? 'Inactive',
+      rentAmount: activeRent?.rental_price || 0,
+      rentStatus: activeRent?.payment_status || 'N/A',
+      nextRentDue: activeRent?.expiry_date?.toISOString() || 'N/A',
+      outstandingBalance: 0, // Placeholder, calculate if needed
+      paymentHistory: (account.rents || [])
+        .map((rent) => ({
+          id: rent.id,
+          date: new Date(rent.created_at!).toISOString(),
+          amount: rent.amount_paid,
+          status: rent.payment_status,
+          reference: rent.rent_receipts?.[0] || null, // Assuming first receipt is a reference
+        }))
+        .sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+        ),
+
+      // Aggregated Lists
+      documents: documents,
+      maintenanceIssues: (account.service_requests || []).map((sr) => ({
+        id: sr.id,
+        title: sr.issue_category,
+        description: sr.description,
+        status: sr.status || 'N/A',
+        reportedDate: new Date(sr.date_reported).toISOString(),
+        resolvedDate: sr.resolution_date
+          ? new Date(sr.resolution_date).toISOString()
+          : null,
+        priority: sr.status === 'URGENT' ? 'High' : 'Medium',
+      })),
+      tenancyHistory: (account.property_histories || []).map((ph) => ({
+        id: ph.id,
+        property: ph.property?.name ?? 'Unknown Property',
+        startDate: ph.move_in_date.toISOString(),
+        endDate: ph.move_out_date?.toISOString() ?? null,
+        status: ph.move_out_date ? 'Completed' : 'Active',
+      })),
+
+      // System Info
+      whatsAppConnected: false, // Add real logic
+
+      history: history,
+      kycInfo: {
+        kycStatus: account.kyc ? 'Verified' : 'Not Submitted',
+        kycSubmittedDate: account.kyc
+          ? new Date(account.kyc.created_at!).toISOString()
+          : null,
+      },
+    };
   }
 
   async uploadLogos(
@@ -1574,7 +1744,7 @@ export class UsersService {
 
     if (existingAccount) {
       throw new BadRequestException(
-        'Admin Account with this email already exists',
+        'Landlord Account with this email already exists',
       );
     }
 
@@ -1595,8 +1765,6 @@ export class UsersService {
         is_verified: true,
         email: data.email,
       });
-
-      console.log('user', user);
     }
 
     const landlordAccount = this.accountRepository.create({
@@ -1956,31 +2124,55 @@ export class UsersService {
     });
   }
 
-  async getTeamMembers(user_id: string): Promise<TeamMember[]> {
-    // 1. Get team by creatorId
-    const team = await this.teamRepository.findOne({
-      where: { creatorId: user_id },
+  /**
+   * Gets team members for the team owned by a landlord.
+   * If the landlord does not have a team, it creates one automatically.
+   * @param requester the authenticated account making the request
+   */
+  async getTeamMembers(requester: Account): Promise<TeamMemberDto[]> {
+    // 1. Ensure requester is a LANDLORD
+    if (requester.role !== RolesEnum.LANDLORD) {
+      throw new ForbiddenException('Only landlords can manage teams');
+    }
+
+    // 2. Get or create team with requester as creator
+    let team = await this.teamRepository.findOne({
+      where: { creatorId: requester.id },
     });
 
+    // If no team exists, create one
     if (!team) {
-      throw new HttpException('Team not found', HttpStatus.NOT_FOUND);
+      const teamName = requester.profile_name
+        ? `${requester.profile_name} Team`
+        : 'My Team';
+
+      const newTeam = this.teamRepository.create({
+        name: teamName,
+        creatorId: requester.id,
+      });
+      team = await this.teamRepository.save(newTeam);
+
+      // If a new team was created, return empty array as there are no members yet
+      return [];
     }
 
-    // 2. Ensure user really owns this team
-    if (team.creatorId !== user_id) {
-      throw new HttpException(
-        'Not authorized to view members of this team',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-
-    // 3. Get team members
+    // 3. Fetch team members for existing team
     const members = await this.teamMemberRepository.find({
       where: { teamId: team.id },
       relations: ['account', 'account.user'],
     });
 
-    return members;
+    // 4. Map the database entities to DTOs for response
+    return members.map((member) => ({
+      id: member.id,
+      name:
+        member.account?.profile_name ??
+        `${member.account?.user.first_name} ${member.account?.user.last_name}`,
+      email: member.email,
+      phone_number: member.account?.user.phone_number ?? 'N/A',
+      role: member.role,
+      date: member.created_at?.toString() || '',
+    }));
   }
 
   async getWhatsappText(from, message) {

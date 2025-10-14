@@ -7,7 +7,7 @@ const config = new ConfigService();
 const prodOrigin = [
   'https://server.getpanda.co',
   'http://localhost:8000',
-  'http://localhost:3001',
+  'http://localhost:4000',
   'http://localhost:3000',
   'https://getpanda.co',
   'https://www.getpanda.co',

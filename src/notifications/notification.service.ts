@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import {Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Notification } from './entities/notification.entity';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 
@@ -25,23 +25,37 @@ export class NotificationService {
   }
 
   async findByPropertyId(property_id: string): Promise<Notification[]> {
-    return await this.notificationRepository.find({ 
-      where: { 
-      property_id
-    },
-    relations: ['property']
-  });
+    return await this.notificationRepository.find({
+      where: {
+        property_id,
+      },
+      relations: ['property'],
+    });
   }
 
+  // Looks up all notifications connected to properties owned by a specific user.
+  // Loads related data (property, tenants, serviceRequest) in one query.
+  // Sorts them by date (newest first).
+  // Returns the full list as a Promise.
   async findByUserId(user_id: string): Promise<Notification[]> {
-    return await this.notificationRepository.find({ 
-      where: { property:{
-        owner_id:user_id
-      }},  
-      relations: ['property', 'serviceRequest'],
-      order:{
-        date: "DESC"
-      }
+    console.log('Finding notifications for user_id:', user_id);
+
+    const notifications = await this.notificationRepository.find({
+      where: {
+        property: {
+          owner_id: user_id,
+        },
+      },
+      relations: [
+        'property',
+        'property.property_tenants',
+        'property.property_tenants.tenant',
+        'serviceRequest',
+      ],
+      order: {
+        date: 'DESC',
+      },
     });
+    return notifications;
   }
 }

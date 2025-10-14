@@ -3,7 +3,7 @@
 /node_modules
 /build
 
-# Logs
+## Logs
 logs
 *.log
 npm-debug.log*

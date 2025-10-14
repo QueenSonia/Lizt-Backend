@@ -115,8 +115,6 @@ export class WhatsappBotService {
     throw new Error('Unhandled endpoint request.');
   }
 
-
-
   async handleMessage(messages: IncomingMessage[]) {
     const message = messages[0];
     const from = message?.from;
@@ -178,7 +176,6 @@ export class WhatsappBotService {
         }
     }
   }
-
 
   async handleDefaultText(message: any, from: string) {
     const text = message.text?.body;
@@ -864,8 +861,6 @@ export class WhatsappBotService {
           relations: ['property', 'property.rents'],
         });
 
-        // const properties = tenancy?.property_tenants;
-
         if (!properties?.length) {
           await this.sendText(from, 'No properties found.');
           return;
@@ -1140,7 +1135,11 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-  async sendTenantWelcomeTemplate({ phone_number, tenant_name, landlord_name }) {
+  async sendTenantWelcomeTemplate({
+    phone_number,
+    tenant_name,
+    landlord_name,
+  }) {
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -1163,7 +1162,7 @@ export class WhatsappBotService {
                 type: 'text',
                 parameter_name: 'landlord_name',
                 text: landlord_name,
-              }
+              },
             ],
           },
         ],

@@ -18,20 +18,24 @@ console.log({ isProduction });
 
 export const config = {
   type: 'postgres',
+  // url: process.env.DATABASE_URL,
   host: PROD_DB_HOST!,
   port: Number(PROD_PORT),
   username: PROD_DB_USERNAME!,
   password: PROD_DB_PASSWORD!,
   database: PROD_DB_NAME!,
   entities: ['dist/**/*.entity{.ts,.js}'],
-  // synchronize: isProduction ? false : true,
+  synchronize: isProduction ? false : true,
   migrations: ['dist/src/migrations/*{.ts,.js}'],
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 
+  extra: {
+    sslmode: 'require',
+  },
   // ssl: {
   //   rejectUnauthorized: false,
   // },
-  synchronize: true,
+  schema: 'public',
 } as DataSourceOptions;
 
 export default registerAs('typeorm', () => config);

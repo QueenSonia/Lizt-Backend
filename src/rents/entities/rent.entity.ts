@@ -64,13 +64,9 @@ export class Rent extends BaseEntity {
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() => Account, (u) => u.rents,
-{
+  @ManyToOne(() => Account, (u) => u.rents, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
   tenant: Account;
-
-
-
 }

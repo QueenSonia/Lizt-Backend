@@ -54,6 +54,11 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { CreateKycDto } from './dto/create-kyc.dto';
 import { KYC } from './entities/kyc.entity';
 import { UpdateKycDto } from './dto/update-kyc.dto';
+import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
+import { CurrentUser } from 'src/auth/current-user.decorator';
+import { Account } from 'src/users/entities/account.entity';
+import { Team } from 'src/users/entities/team.entity';
+import { TeamMemberDto } from 'src/users/dto/team-member.dto';
 
 @ApiTags('Users')
 @Controller('users')
@@ -80,10 +85,12 @@ export class UsersController {
     return this.usersService.getLandlords();
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('team-members')
-  async getTeamMembers(@Req() req: any) {
-    const team_id = req.user.id;
-    return this.usersService.getTeamMembers(team_id);
+  async getTeamMembers(
+    @CurrentUser() requester: Account,
+  ): Promise<TeamMemberDto[]> {
+    return this.usersService.getTeamMembers(requester);
   }
 
   @Post()
@@ -166,7 +173,6 @@ export class UsersController {
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
     try {
-      console.log();
       const creator_id = req?.user?.id;
 
       return this.usersService.getTenantsOfAnAdmin(creator_id, query);
@@ -180,9 +186,10 @@ export class UsersController {
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   getSingleTenantOfAnAdmin(@Req() req: any) {
     try {
+      const adminId = req?.user?.id;
       const tenant_id = req?.params.tenant_id;
 
-      return this.usersService.getSingleTenantOfAnAdmin(tenant_id);
+      return this.usersService.getSingleTenantOfAnAdmin(tenant_id, adminId);
     } catch (error) {
       throw error;
     }

@@ -730,10 +730,10 @@ async handleOccupiedProperties(from: string) {
 
     // ✅ Adjusted: Removed payment_frequency since it doesn’t exist on Rent
     message += `*${i + 1}. ${property.name}*\n`;
-    message += `💰 ${rentPrice}\n`;
-    message += `👤 Tenant: ${tenantName}\n`;
-    message += `📅 Lease Ends: ${leaseEnd}\n`;
-    message += `──────────────────────\n`;
+    message += ` Tenant: ${tenantName}\n`;
+    message += ` ${rentPrice}\n`;
+    message += ` Lease Ends: ${leaseEnd}\n`;
+    message += `───────────────────\n`;
 
     propertyIds.push(property.id);
   });

@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -214,40 +215,62 @@ export class PropertiesService {
     return propertyAndRent;
   }
 
-  async updatePropertyById(id: string, data: UpdatePropertyDto) {
-    try {
-      const activeRent = (await this.rentService.findActiveRent({
-        property_id: id,
-      })) as any;
+  // async updatePropertyById(id: string, data: UpdatePropertyDto) {
+  //   try {
+  //     const activeRent = (await this.rentService.findActiveRent({
+  //       property_id: id,
+  //     })) as any;
 
-      if (!activeRent) {
-        return this.propertyRepository.update(id, {
-          name: data.name,
-          location: data.location,
-          no_of_bedrooms: data.no_of_bedrooms,
-        });
-      }
+  //     if (!activeRent) {
+  //       return this.propertyRepository.update(id, {
+  //         name: data.name,
+  //         location: data.location,
+  //         no_of_bedrooms: data.no_of_bedrooms,
+  //       });
+  //     }
 
-      await this.userService.updateUserById(activeRent.tenant_id, {
-        first_name: data.first_name,
-        last_name: data.last_name,
-        phone_number: data.phone_number,
-      });
-      await this.rentService.updateRentById(activeRent.id, {
-        lease_start_date: data.lease_end_date,
-        lease_end_date: data.lease_end_date,
-        rental_price: data.rental_price,
-        service_charge: data.service_charge,
-        security_deposit: data.security_deposit,
-      });
-      return this.propertyRepository.update(id, {
-        name: data.name,
-        location: data.location,
-        property_status: data.occupancy_status,
-      });
-    } catch (error) {
-      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+  //     await this.userService.updateUserById(activeRent.tenant_id, {
+  //       first_name: data.first_name,
+  //       last_name: data.last_name,
+  //       phone_number: data.phone_number,
+  //     });
+  //     await this.rentService.updateRentById(activeRent.id, {
+  //       lease_start_date: data.lease_end_date,
+  //       lease_end_date: data.lease_end_date,
+  //       rental_price: data.rental_price,
+  //       service_charge: data.service_charge,
+  //       security_deposit: data.security_deposit,
+  //     });
+  //     return this.propertyRepository.update(id, {
+  //       name: data.name,
+  //       location: data.location,
+  //       property_status: data.occupancy_status,
+  //     });
+  //   } catch (error) {
+  //     throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+  //   }
+  // }
+
+  async updatePropertyById(
+    id: string,
+    updatePropertyDto: UpdatePropertyDto,
+    requesterId: string,
+  ): Promise<Property> {
+    // findOneByOrFail
+    const property = await this.propertyRepository.findOneByOrFail({ id });
+
+    // Auth check: Ensure the requester owns the property
+    if (property.owner_id !== requesterId) {
+      throw new ForbiddenException(
+        'You are not authorized to update this property',
+      );
     }
+
+    // Merge new data from DTO into existing property entity
+    Object.assign(property, updatePropertyDto);
+
+    // Save the updated entity back to the db
+    return this.propertyRepository.save(property);
   }
 
   async deletePropertyById(id: string) {

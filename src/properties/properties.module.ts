@@ -10,10 +10,16 @@ import { RentsService } from 'src/rents/rents.service';
 import { RentsModule } from 'src/rents/rents.module';
 import { UsersService } from 'src/users/users.service';
 import { UsersModule } from 'src/users/users.module';
+import { Account } from 'src/users/entities/account.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Property, PropertyTenant, PropertyGroup]),
+    TypeOrmModule.forFeature([
+      Property,
+      PropertyTenant,
+      Account,
+      PropertyGroup,
+    ]),
     RentsModule,
     UsersModule,
   ],

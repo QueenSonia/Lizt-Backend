@@ -46,7 +46,7 @@ export class NoticeAgreement extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   notice_image?: string | null;
 
-    @Column({ type: 'jsonb', nullable: true, default: [] })
+  @Column({ type: 'jsonb', nullable: true, default: [] })
   notice_documents: {
     url: string;
     name?: string;

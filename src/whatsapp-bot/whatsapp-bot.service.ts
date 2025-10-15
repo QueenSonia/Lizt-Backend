@@ -861,8 +861,6 @@ export class WhatsappBotService {
           relations: ['property', 'property.rents'],
         });
 
-        // const properties = tenancy?.property_tenants;
-
         if (!properties?.length) {
           await this.sendText(from, 'No properties found.');
           return;

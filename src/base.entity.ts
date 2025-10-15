@@ -1,6 +1,7 @@
 import {
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
@@ -15,8 +16,8 @@ export class BaseEntity {
   @UpdateDateColumn()
   public updated_at?: Date | string;
 
-  @Column({ default: null, nullable: true })
-  public deleted_at?: Date;
+  @DeleteDateColumn()
+  public deleted_at?: Date | string;
 }
 
 export interface IPagination {

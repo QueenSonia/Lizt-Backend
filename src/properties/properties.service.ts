@@ -273,22 +273,40 @@ export class PropertiesService {
     return this.propertyRepository.save(property);
   }
 
-  async deletePropertyById(id: string) {
+  async deletePropertyById(propertyId: string, ownerId: string): Promise<void> {
     try {
-      const property = await this.propertyRepository.findOne({
-        where: { id },
+      // Ensure the property exists and belongs to the user making the request
+      const property = await this.propertyRepository.findOneBy({
+        id: propertyId,
+        owner_id: ownerId,
       });
 
-      if (property?.property_status === PropertyStatusEnum.NOT_VACANT) {
+      if (!property) {
+        // Property not found or does not belong to the owner
+        throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+      }
+
+      if (property.property_status === PropertyStatusEnum.OCCUPIED) {
         throw new HttpException(
           'Cannot delete property that is not vacant',
           HttpStatus.BAD_REQUEST,
         );
       }
-      return this.propertyRepository.delete(id);
+
+      // Soft delete sets the deleted_at timestamp
+      await this.propertyRepository.softDelete(propertyId);
     } catch (error) {
-      console.log(error);
-      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+      // Step 4: Handle known HttpExceptions separately
+      if (error instanceof HttpException) {
+        throw error; // rethrow custom errors without wrapping
+      }
+
+      // Step 5: Catch unexpected errors
+      console.error('Unexpected error while deleting property:', error);
+      throw new HttpException(
+        'Something went wrong while deleting the property',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
     }
   }
 
@@ -368,7 +386,7 @@ export class PropertiesService {
       });
 
       await queryRunner.manager.update(Property, property_id, {
-        property_status: PropertyStatusEnum.NOT_VACANT,
+        property_status: PropertyStatusEnum.OCCUPIED,
       });
 
       await queryRunner.manager.save(PropertyHistory, {
@@ -588,7 +606,7 @@ export class PropertiesService {
           status: TenantStatusEnum.ACTIVE,
         }),
         queryRunner.manager.update(Property, property.id, {
-          property_status: PropertyStatusEnum.NOT_VACANT,
+          property_status: PropertyStatusEnum.OCCUPIED,
         }),
         queryRunner.manager.save(PropertyHistory, {
           property_id: property.id,

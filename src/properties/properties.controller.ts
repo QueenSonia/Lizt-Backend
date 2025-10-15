@@ -237,9 +237,17 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Delete(':id')
-  deletePropertyById(@Param('id', new ParseUUIDPipe()) id: string) {
+  async deletePropertyById(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() requester: Account, // Get the logged-in user
+  ) {
     try {
-      return this.propertiesService.deletePropertyById(id);
+      await this.propertiesService.deletePropertyById(id, requester.id);
+
+      return {
+        statusCode: HttpStatus.OK,
+        message: 'Property deleted Successfully.',
+      };
     } catch (error) {
       throw error;
     }

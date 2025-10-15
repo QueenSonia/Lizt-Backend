@@ -4,7 +4,7 @@ import { IsNotEmpty, IsString, IsNumber, IsEnum } from 'class-validator';
 
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
-  NOT_VACANT = 'occupied',
+  OCCUPIED = 'occupied',
 }
 
 export class CreatePropertyDto {

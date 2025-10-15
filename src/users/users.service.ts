@@ -191,7 +191,7 @@ export class UsersService {
         await manager.getRepository(Account).save(userAccount);
 
         // console.log(tenancy_start_date, tenancy_end_date);
-        property.property_status = PropertyStatusEnum.NOT_VACANT;
+        property.property_status = PropertyStatusEnum.OCCUPIED;
 
         await manager.getRepository(Property).save(property);
 
@@ -396,7 +396,7 @@ export class UsersService {
         await manager.getRepository(Account).save(userAccount);
 
         // console.log(tenancy_start_date, tenancy_end_date);
-        property.property_status = PropertyStatusEnum.NOT_VACANT;
+        property.property_status = PropertyStatusEnum.OCCUPIED;
 
         await manager.getRepository(Property).save(property);
 
@@ -593,7 +593,7 @@ export class UsersService {
           status: TenantStatusEnum.ACTIVE,
         }),
         queryRunner.manager.update(Property, property.id, {
-          property_status: PropertyStatusEnum.NOT_VACANT,
+          property_status: PropertyStatusEnum.OCCUPIED,
         }),
         queryRunner.manager.save(PropertyHistory, {
           property_id: property.id,
@@ -750,7 +750,7 @@ export class UsersService {
       });
 
       await queryRunner.manager.update(Property, property.id, {
-        property_status: PropertyStatusEnum.NOT_VACANT,
+        property_status: PropertyStatusEnum.OCCUPIED,
       });
 
       await queryRunner.manager.save(PropertyHistory, {

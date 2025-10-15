@@ -41,6 +41,9 @@ import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
 import { AssignTenantDto } from './dto/assign-tenant.dto';
+import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
+import { Account } from 'src/users/entities/account.entity';
+import { CurrentUser } from 'src/auth/current-user.decorator';
 @ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
@@ -205,10 +208,12 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
+  @UseGuards(JwtAuthGuard) // only landlords
   // @UseInterceptors(FilesInterceptor('property_images', 20))
   async updatePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: UpdatePropertyDto,
+    @CurrentUser() requester: Account, // Get the authenticated user
     // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
@@ -221,7 +226,7 @@ export class PropertiesController {
       //   body.property_images = uploadedUrls.map((upload) => upload.secure_url);
       // }
 
-      return this.propertiesService.updatePropertyById(id, body);
+      return this.propertiesService.updatePropertyById(id, body, requester.id);
     } catch (error) {
       throw error;
     }

@@ -238,7 +238,7 @@ export class LandlordLookup {
           return;
         }
 
-        property.property_status = PropertyStatusEnum.NOT_VACANT;
+        property.property_status = PropertyStatusEnum.OCCUPIED;
 
         await this.propertyRepo.save(property);
 

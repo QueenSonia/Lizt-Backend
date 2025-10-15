@@ -704,7 +704,7 @@ async handleOccupiedProperties(from: string) {
   });
 
   // Build WhatsApp-friendly message
-  let message = `🏘️ *Your Occupied Properties* (by lease end date):\n\n`;
+  let message = `*Your Occupied Properties* (by lease end date):\n\n`;
   const propertyIds: string[] = [];
 
   sortedProperties.forEach((property, i) => {
@@ -728,7 +728,7 @@ async handleOccupiedProperties(from: string) {
       ? `₦${activeRent.rental_price.toLocaleString()}`
       : 'N/A';
 
-    // ✅ Adjusted: Removed payment_frequency since it doesn’t exist on Rent
+    // Adjusted: Removed payment_frequency since it doesn’t exist on Rent
     message += `*${i + 1}. ${property.name}*\n`;
     message += ` Tenant: ${tenantName}\n`;
     message += ` ${rentPrice}\n`;

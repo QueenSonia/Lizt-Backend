@@ -44,6 +44,8 @@ import { AssignTenantDto } from './dto/assign-tenant.dto';
 import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { Account } from 'src/users/entities/account.entity';
 import { CurrentUser } from 'src/auth/current-user.decorator';
+import { Property } from 'src/properties/entities/property.entity';
+
 @ApiTags('Properties')
 @Controller('properties')
 export class PropertiesController {
@@ -60,39 +62,13 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.LANDLORD)
   // @UseInterceptors(FilesInterceptor('property_images', 20))
   async createProperty(
     @Body() body: CreatePropertyDto,
-    // @UploadedFiles() files: Array<Express.Multer.File>,
-    @Req() req: any,
-  ) {
-    try {
-      // if (!files || files.length === 0) {
-      //   throw new HttpException(
-      //     'Property images are required',
-      //     HttpStatus.BAD_REQUEST,
-      //   );
-      // }
-
-      // const uploadedUrls = await Promise.all(
-      //   files.map((file) => this.fileUploadService.uploadFile(file)),
-      // );
-      const owner_id = req?.user?.id;
-      // const uploadedUrls = await Promise.all(
-      //   files.map((file) => this.fileUploadService.uploadFile(file)),
-      // );
-      // body.property_images = uploadedUrls.map((upload) => upload.secure_url);
-
-      const payload = {
-        owner_id,
-        ...body,
-      };
-
-      return this.propertiesService.createProperty(payload);
-    } catch (error) {
-      throw error;
-    }
+    @CurrentUser() requester: Account,
+  ): Promise<Property> {
+    return this.propertiesService.createProperty(body, requester.id);
   }
 
   @ApiOperation({ summary: 'Get All Properties' })
@@ -122,14 +98,10 @@ export class PropertiesController {
     }
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('/vacant')
-  getVacantProperty(@Query() query: { owner_id: string }, @Req() req: any) {
-    try {
-      query.owner_id = req?.user?.id;
-      return this.propertiesService.getVacantProperty(query);
-    } catch (error) {
-      throw error;
-    }
+  getVacantProperties(@CurrentUser() requester: Account): Promise<Property[]> {
+    return this.propertiesService.getVacantProperties(requester.id);
   }
 
   @ApiOperation({ summary: 'Get All Property Groups' })

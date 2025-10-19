@@ -52,17 +52,16 @@ export class CacheService {
   }
 
   async set(key: string, value: any, ttl?: number) {
-  const stringifiedValue = this.stringifyIfNeeded(value);
+    const stringifiedValue = this.stringifyIfNeeded(value);
 
-  const ttlInSeconds = millisecondsToSeconds(ttl ?? DEFAULT_TTL);
+    const ttlInSeconds = millisecondsToSeconds(ttl ?? DEFAULT_TTL);
 
-  if (ttlInSeconds > 0) {
-    return await this.cache.set(key, stringifiedValue, 'EX', ttlInSeconds);
-  } else {
-    return await this.cache.set(key, stringifiedValue);
+    if (ttlInSeconds > 0) {
+      return await this.cache.set(key, stringifiedValue, 'EX', ttlInSeconds);
+    } else {
+      return await this.cache.set(key, stringifiedValue);
+    }
   }
-}
-
 
   async delete(key: string) {
     return await this.cache.del(key);

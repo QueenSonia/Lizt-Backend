@@ -51,22 +51,29 @@ export class PropertiesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
-    let createdProperty: Property;
-
+  async createProperty(
+    propertyData: CreatePropertyDto,
+    ownerId: string,
+  ): Promise<Property> {
     try {
       // create the property
-      createdProperty = await this.propertyRepository.save(data);
+      const newProperty = this.propertyRepository.create({
+        ...propertyData,
+        owner_id: ownerId,
+      });
+
+      // save the single entity to the database
+      const savedProperty = await this.propertyRepository.save(newProperty);
 
       // ✅ Emit event after property is created
       this.eventEmitter.emit('property.created', {
-        property_id: createdProperty.id,
-        property_name: createdProperty.name,
-        user_id: createdProperty.owner_id,
+        property_id: savedProperty.id,
+        property_name: savedProperty.name,
+        user_id: savedProperty.owner_id,
       });
 
       // Get the full property with relations for notification
-      const property = await this.getPropertyById(createdProperty.id);
+      const property = await this.getPropertyById(savedProperty.id);
 
       if (!property?.owner?.user?.phone_number) {
         console.warn(
@@ -81,23 +88,18 @@ export class PropertiesService {
           .sendPropertiesNotification({
             phone_number: admin_phone_number,
             name: 'Admin',
-            property_name: createdProperty.name,
+            property_name: savedProperty.name,
           })
           .catch((error) => {
             // Log notification errors but don't fail the main operation
             console.error('Failed to send properties notification:', error);
           });
       }
-      return createdProperty;
+      return savedProperty;
     } catch (error) {
-      // Log the error for debugging
-      console.error('Error creating property:', error);
-
-      // Re-throw with a more descriptive message
-      if (error instanceof Error) {
-        throw new Error(`Failed to create property: ${error.message}`);
-      }
-      throw new Error('Failed to create property due to an unexpected error');
+      // Log the detailed error and throw a standardized exception
+      console.error('Error creating property in service:', error);
+      throw new Error(`Failed to create property: ${error.message}`);
     }
   }
 
@@ -156,14 +158,30 @@ export class PropertiesService {
     };
   }
 
-  async getVacantProperty(query: { owner_id: string }) {
-    return await this.propertyRepository.find({
-      where: {
-        property_status: PropertyStatusEnum.VACANT,
-        ...query,
-      },
-      relations: ['property_tenants', 'rents', 'rents.tenant'],
-    });
+  // async getVacantProperty(query: { owner_id: string }) {
+  //   return await this.propertyRepository.find({
+  //     where: {
+  //       property_status: PropertyStatusEnum.VACANT,
+  //       ...query,
+  //     },
+  //     relations: ['property_tenants', 'rents', 'rents.tenant'],
+  //   });
+  // }
+
+  async getVacantProperties(ownerId: string): Promise<Property[]> {
+    return this.propertyRepository
+      .createQueryBuilder('property')
+      .select([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+      ])
+      .where('property.owner_id = :ownerId', { ownerId })
+      .andWhere('property.property_status = :status', {
+        status: PropertyStatusEnum.VACANT,
+      })
+      .getMany();
   }
 
   async getPropertyById(id: string): Promise<any> {

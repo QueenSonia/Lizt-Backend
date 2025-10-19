@@ -11,7 +11,10 @@ import { Repository } from 'typeorm';
 import { LandlordLookup } from './landlordlookup';
 import { Account } from 'src/users/entities/account.entity';
 import { Property } from 'src/properties/entities/property.entity';
-import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import {
+  PropertyStatusEnum,
+  TenantStatusEnum,
+} from 'src/properties/dto/create-property.dto';
 import { UtilService } from 'src/utils/utility-service';
 import {
   RentPaymentStatusEnum,
@@ -53,7 +56,7 @@ export class LandlordFlow {
       serviceRequestRepo,
       usersRepo,
       rentRepo,
-      accountRepo
+      accountRepo,
     );
   }
 
@@ -68,7 +71,7 @@ export class LandlordFlow {
 
     const raw = await this.cache.get(`service_request_state_landlord_${from}`);
     if (!raw) {
-       await this.lookup.handleExitOrMenu(from, text);
+      await this.lookup.handleExitOrMenu(from, text);
       return;
     }
 
@@ -79,13 +82,13 @@ export class LandlordFlow {
     if (type === 'add_tenant') {
       await this.lookup.handleAddTenantText(from, text);
     } else if (['tenancy', 'maintenance', 'property_action'].includes(type)) {
-       await this.lookup.handleLookup(from, `${text}`);
+      await this.lookup.handleLookup(from, `${text}`);
     } else {
       // await this.whatsappUtil.sendText(
       //   from,
       //   'Invalid state. Please try again.',
       // );
-       await this.lookup.handleExitOrMenu(from, text);
+      await this.lookup.handleExitOrMenu(from, text);
     }
   }
 
@@ -107,11 +110,10 @@ export class LandlordFlow {
     const handler = handlers[buttonReply.id];
     if (handler) {
       await handler();
-    } 
+    }
   }
 
   // ------------------------
   // TEXT flow pieces
   // ------------------------
-
 }

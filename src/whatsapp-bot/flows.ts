@@ -94,4 +94,3 @@ export const SCREEN_RESPONSES: any = {
     },
   },
 };
-

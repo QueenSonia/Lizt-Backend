@@ -37,6 +37,9 @@ const MAIN_MENU_BUTTONS = [
 export class WhatsappBotService {
   private wa = new WhatsApp();
 
+  // ✅ Define timeout in milliseconds
+  private readonly SESSION_TIMEOUT_MS = 5 * 60 * 1000;
+
   constructor(
     @InjectRepository(Users)
     private usersRepo: Repository<Users>,
@@ -223,7 +226,7 @@ export class WhatsappBotService {
       await this.cache.set(
         `service_request_state_default_${from}`,
         `share_referral`,
-        300,
+        this.SESSION_TIMEOUT_MS, // now in ms,
       );
 
       return;
@@ -312,7 +315,7 @@ export class WhatsappBotService {
         await this.cache.set(
           `service_request_state_default_${from}`,
           `property_owner_options_${buttonReply.id}`,
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms,
         );
     }
   }
@@ -330,7 +333,7 @@ export class WhatsappBotService {
       await this.cache.set(
         `service_request_state_facility_${from}`,
         'acknowledged',
-        300,
+        this.SESSION_TIMEOUT_MS, // now in ms,
       );
       await this.sendText(from, 'Please provide the request ID to acknowledge');
     }
@@ -395,7 +398,7 @@ export class WhatsappBotService {
         await this.cache.set(
           `service_request_state_facility_${from}`,
           'awaiting_update',
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms,
         );
         await this.sendText(
           from,
@@ -406,7 +409,7 @@ export class WhatsappBotService {
         await this.cache.set(
           `service_request_state_facility_${from}`,
           'awaiting_resolution',
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms,
         );
         await this.sendText(
           from,
@@ -563,7 +566,7 @@ export class WhatsappBotService {
         await this.cache.set(
           `service_request_state_facility_${from}`,
           'resolve-or-update',
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms,
         );
 
         await this.sendText(
@@ -883,7 +886,7 @@ export class WhatsappBotService {
           await this.cache.set(
             `service_request_state_${from}`,
             'other_options',
-            300,
+            this.SESSION_TIMEOUT_MS, // now in ms,
           );
         }
 
@@ -927,7 +930,7 @@ export class WhatsappBotService {
         await this.cache.set(
           `service_request_state_${from}`,
           'view_single_service_request',
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms,
         );
         await this.sendText(
           from,
@@ -939,7 +942,7 @@ export class WhatsappBotService {
         await this.cache.set(
           `service_request_state_${from}`,
           'awaiting_description',
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms,
         );
         await this.sendText(from, 'Please describe the issue you are facing.');
         break;

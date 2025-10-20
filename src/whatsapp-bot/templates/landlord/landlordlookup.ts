@@ -22,6 +22,10 @@ import { Repository } from 'typeorm/repository/Repository';
 // --- landlordLookup.ts ---
 export class LandlordLookup {
   private whatsappUtil: WhatsappUtils;
+
+  // ✅ Define timeout in milliseconds
+  private readonly SESSION_TIMEOUT_MS = 5 * 60 * 1000;
+
   constructor(
     private cache: CacheService,
     private propertyTenantRepo: Repository<PropertyTenant>,
@@ -46,7 +50,7 @@ export class LandlordLookup {
     if (!stateRaw) {
       await this.whatsappUtil.sendText(
         from,
-        'No active tenant flow. Please try again.',
+        '⏱️ Your session has expired. Type "menu" to start over.',
       );
       return;
     }
@@ -64,7 +68,7 @@ export class LandlordLookup {
         await this.cache.set(
           `service_request_state_landlord_${from}`,
           JSON.stringify({ type: 'add_tenant', step: 'ask_phone', data }),
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms
         );
         break;
 
@@ -72,12 +76,12 @@ export class LandlordLookup {
         data.phone = text.trim();
         await this.whatsappUtil.sendText(
           from,
-          "✉️ What is your tenant's email",
+          "✉️ What is your tenant's email (or type 'skip')",
         );
         await this.cache.set(
           `service_request_state_landlord_${from}`,
           JSON.stringify({ type: 'add_tenant', step: 'ask_email', data }),
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms
         );
         break;
 
@@ -149,7 +153,7 @@ export class LandlordLookup {
             step: 'select_unit',
             data: { ...data, vacantUnits: vacantUnitsList },
           }),
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms
         );
         break;
 
@@ -180,7 +184,7 @@ export class LandlordLookup {
             step: 'ask_rent',
             data,
           }),
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms
         );
         break;
 
@@ -207,7 +211,7 @@ export class LandlordLookup {
             step: 'ask_duration',
             data,
           }),
-          300,
+          this.SESSION_TIMEOUT_MS, // now in ms
         );
         break;
 
@@ -441,7 +445,7 @@ export class LandlordLookup {
           occupied: false,
           step: 'awaiting_action',
         }),
-        300,
+        this.SESSION_TIMEOUT_MS, // now in ms
       );
     }
 
@@ -469,7 +473,7 @@ export class LandlordLookup {
           occupied: true,
           step: 'awaiting_action',
         }),
-        300,
+        this.SESSION_TIMEOUT_MS, // now in ms
       );
     }
   }
@@ -560,7 +564,7 @@ ${paymentHistory}
         ids: requests.map((r) => r.id),
         step: 'no_step',
       }),
-      300,
+      this.SESSION_TIMEOUT_MS, // now in ms
     );
   }
 
@@ -709,7 +713,7 @@ ${paymentHistory}
         ids: propertyIds,
         data: {},
       }),
-      300,
+      this.SESSION_TIMEOUT_MS, // now in ms,
     );
   }
 
@@ -808,7 +812,7 @@ ${paymentHistory}
         ids: propertyIds,
         data: {},
       }),
-      300,
+      this.SESSION_TIMEOUT_MS, // now in ms,
     );
   }
 
@@ -868,7 +872,7 @@ ${paymentHistory}
         step: 'no_step',
         data: {},
       }),
-      300,
+      this.SESSION_TIMEOUT_MS, // now in ms,
     );
   }
 
@@ -882,7 +886,7 @@ ${paymentHistory}
         step: 'ask_name',
         data: {},
       }),
-      300,
+      this.SESSION_TIMEOUT_MS, // now in ms,
     );
   }
 }

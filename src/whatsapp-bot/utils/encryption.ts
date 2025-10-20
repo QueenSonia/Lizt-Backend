@@ -8,7 +8,6 @@
 import crypto from 'crypto';
 const APP_SECRET = process.env.APP_SECRET;
 
-
 export const decryptRequest = (
   body: any,
   privatePem: string,
@@ -100,7 +99,6 @@ export const FlowEndpointException = class FlowEndpointException extends Error {
     this.statusCode = statusCode;
   }
 };
-
 
 // export const isRequestSignatureValid = (req)  =>{
 

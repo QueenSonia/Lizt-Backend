@@ -191,7 +191,7 @@ export class UsersService {
         await manager.getRepository(Account).save(userAccount);
 
         // console.log(tenancy_start_date, tenancy_end_date);
-        property.property_status = PropertyStatusEnum.NOT_VACANT;
+        property.property_status = PropertyStatusEnum.OCCUPIED;
 
         await manager.getRepository(Property).save(property);
 
@@ -396,7 +396,7 @@ export class UsersService {
         await manager.getRepository(Account).save(userAccount);
 
         // console.log(tenancy_start_date, tenancy_end_date);
-        property.property_status = PropertyStatusEnum.NOT_VACANT;
+        property.property_status = PropertyStatusEnum.OCCUPIED;
 
         await manager.getRepository(Property).save(property);
 
@@ -593,7 +593,7 @@ export class UsersService {
           status: TenantStatusEnum.ACTIVE,
         }),
         queryRunner.manager.update(Property, property.id, {
-          property_status: PropertyStatusEnum.NOT_VACANT,
+          property_status: PropertyStatusEnum.OCCUPIED,
         }),
         queryRunner.manager.save(PropertyHistory, {
           property_id: property.id,
@@ -750,7 +750,7 @@ export class UsersService {
       });
 
       await queryRunner.manager.update(Property, property.id, {
-        property_status: PropertyStatusEnum.NOT_VACANT,
+        property_status: PropertyStatusEnum.OCCUPIED,
       });
 
       await queryRunner.manager.save(PropertyHistory, {
@@ -957,35 +957,50 @@ export class UsersService {
   }
 
   async loginUser(data: LoginDto, res: Response) {
-    const { email, password } = data;
+    const { identifier, password } = data; // Changed from 'email' to 'identifier'
 
-    // Fetch both accounts with the same email but different roles
+    // Determine if identifier is email or phone
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
+    const isPhone = /^[+]?[\d\s\-()]{10,}$/.test(identifier.replace(/\s/g, ''));
 
+    if (!isEmail && !isPhone) {
+      throw new BadRequestException('Invalid email or phone number format');
+    }
+
+    // Build query conditions based on identifier type
+    const whereCondition = isEmail
+      ? { email: identifier.toLowerCase().trim() }
+      : { user: { phone_number: identifier.replace(/[\s\-()+]/g, '') } };
+
+    // Fetch accounts with the identifier but different roles
     const [adminAccount, landlordAccount, tenantAccount, repAccount] =
       await Promise.all([
         this.accountRepository.findOne({
-          where: { email, role: RolesEnum.ADMIN },
+          where: { ...whereCondition, role: RolesEnum.ADMIN },
           relations: ['user'],
         }),
         this.accountRepository.findOne({
-          where: { email, role: RolesEnum.LANDLORD },
+          where: { ...whereCondition, role: RolesEnum.LANDLORD },
           relations: ['user'],
         }),
         this.accountRepository.findOne({
-          where: { email, role: RolesEnum.TENANT },
+          where: { ...whereCondition, role: RolesEnum.TENANT },
           relations: ['user'],
         }),
         this.accountRepository.findOne({
-          where: { email, role: RolesEnum.REP },
+          where: { ...whereCondition, role: RolesEnum.REP },
           relations: ['user'],
         }),
       ]);
 
     // Check if any account exists
     if (!adminAccount && !tenantAccount && !landlordAccount && !repAccount) {
-      throw new NotFoundException(`User with email: ${email} not found`);
+      throw new NotFoundException(
+        `User with ${isEmail ? 'email' : 'phone number'}: ${identifier} not found`,
+      );
     }
 
+    // Check verification status
     if (
       !adminAccount?.is_verified &&
       !tenantAccount?.is_verified &&
@@ -1014,11 +1029,9 @@ export class UsersService {
 
         if (isPasswordValid) {
           matchedAccount = account;
-          // LOG 4: See which account was finally matched
           console.log(
             `SUCCESS: Matched account with role: ${account.role}. Breaking loop.`,
           );
-
           break;
         }
       }
@@ -1026,22 +1039,26 @@ export class UsersService {
 
     // Handle no password match
     if (!matchedAccount) {
-      throw new UnauthorizedException('Invalid password');
+      throw new UnauthorizedException('Incorrect password');
     }
 
     const account = matchedAccount as any;
 
-    // let related_accounts = [] as any;
     let sub_access_token: string | null = null;
     let parent_access_token: string | null = null;
 
+    // Handle LANDLORD with TENANT sub-account
     if (account.role === RolesEnum.LANDLORD) {
+      const subAccountWhere = isEmail
+        ? { id: Not(account.id), email: account.email, role: RolesEnum.TENANT }
+        : {
+            id: Not(account.id),
+            user: { phone_number: account.user.phone_number },
+            role: RolesEnum.TENANT,
+          };
+
       const subAccount = (await this.accountRepository.findOne({
-        where: {
-          id: Not(account.id),
-          email: account.email,
-          role: RolesEnum.TENANT,
-        },
+        where: subAccountWhere,
         relations: ['user', 'property_tenants'],
       })) as any;
 
@@ -1061,20 +1078,22 @@ export class UsersService {
       }
     }
 
-    // const userObject: Record<string, any> = {};
-
+    // Handle TENANT with LANDLORD parent account
     if (account.role === RolesEnum.TENANT) {
-      // const findTenantProperty = await this.propertyTenantRepository.findOne({
-      //   where: { tenant_id: account.id },
-      // });
-      // userObject['property_id'] = findTenantProperty?.property_id;
+      const parentAccountWhere = isEmail
+        ? {
+            id: Not(account.id),
+            email: account.email,
+            role: RolesEnum.LANDLORD,
+          }
+        : {
+            id: Not(account.id),
+            user: { phone_number: account.user.phone_number },
+            role: RolesEnum.LANDLORD,
+          };
 
       const parentAccount = (await this.accountRepository.findOne({
-        where: {
-          id: Not(account.id),
-          email: account.email,
-          role: RolesEnum.LANDLORD,
-        },
+        where: parentAccountWhere,
         relations: ['user', 'property_tenants'],
       })) as any;
 
@@ -1107,12 +1126,12 @@ export class UsersService {
 
     return res.status(HttpStatus.OK).json({
       user: {
-        // ...userObject,
         id: account.id,
         first_name: account.user.first_name,
         last_name: account.user.last_name,
         email: account.email,
         phone_number: account.user.phone_number,
+        profile_name: account.profile_name,
         role: account.role,
         is_verified: account.is_verified,
         logo_urls: account.user.logo_urls,
@@ -1123,85 +1142,82 @@ export class UsersService {
       access_token,
       sub_access_token,
       parent_access_token,
-      // related_accounts,
-      // parent_account_token,
-      // expires_at: moment().add(8, 'hours').format(),
     });
   }
 
-  async loginUserOld(data: LoginDto, res: Response) {
-    const { email, password } = data;
+  // async loginUserOld(data: LoginDto, res: Response) {
+  //   const { email, password } = data;
 
-    const account = await this.accountRepository.findOne({
-      where: { email },
-      relations: ['user'],
-    });
-    if (!account?.id) {
-      throw new NotFoundException(`User with email: ${data.email} not found`);
-    }
+  //   const account = await this.accountRepository.findOne({
+  //     where: { email },
+  //     relations: ['user'],
+  //   });
+  //   if (!account?.id) {
+  //     throw new NotFoundException(`User with email: ${data.email} not found`);
+  //   }
 
-    if (account?.password) {
-      const isPasswordValid = await UtilService.validatePassword(
-        password,
-        account?.password,
-      );
-      if (!isPasswordValid) {
-        throw new UnauthorizedException('Invalid password');
-      }
-    } else {
-      const hashedPassword = await UtilService.hashPassword(password);
-      await this.accountRepository.update(
-        { email },
-        { password: hashedPassword, is_verified: true },
-      );
-    }
+  //   if (account?.password) {
+  //     const isPasswordValid = await UtilService.validatePassword(
+  //       password,
+  //       account?.password,
+  //     );
+  //     if (!isPasswordValid) {
+  //       throw new UnauthorizedException('Invalid password');
+  //     }
+  //   } else {
+  //     const hashedPassword = await UtilService.hashPassword(password);
+  //     await this.accountRepository.update(
+  //       { email },
+  //       { password: hashedPassword, is_verified: true },
+  //     );
+  //   }
 
-    const userObject = {};
-    if (account?.role === RolesEnum.TENANT) {
-      const findTenantProperty = await this.propertyTenantRepository.findOne({
-        where: {
-          tenant_id: account.id,
-        },
-      });
-      userObject['property_id'] = findTenantProperty?.property_id;
-    }
-    const tokenData = {
-      id: account?.id,
-      first_name: account.user.first_name,
-      last_name: account.user.last_name,
-      email: account.email,
-      phone_number: account.user.phone_number,
-      role: account.role,
-    } as any;
+  //   const userObject = {};
+  //   if (account?.role === RolesEnum.TENANT) {
+  //     const findTenantProperty = await this.propertyTenantRepository.findOne({
+  //       where: {
+  //         tenant_id: account.id,
+  //       },
+  //     });
+  //     userObject['property_id'] = findTenantProperty?.property_id;
+  //   }
+  //   const tokenData = {
+  //     id: account?.id,
+  //     first_name: account.user.first_name,
+  //     last_name: account.user.last_name,
+  //     email: account.email,
+  //     phone_number: account.user.phone_number,
+  //     role: account.role,
+  //   } as any;
 
-    const access_token = await this.authService.generateToken(tokenData);
+  //   const access_token = await this.authService.generateToken(tokenData);
 
-    res.cookie('access_token', access_token, {
-      httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV') === 'production', // Set to true in production for HTTPS
-      expires: moment().add(8, 'hours').toDate(),
-      sameSite: 'none',
-    });
+  //   res.cookie('access_token', access_token, {
+  //     httpOnly: true,
+  //     secure: this.configService.get<string>('NODE_ENV') === 'production', // Set to true in production for HTTPS
+  //     expires: moment().add(8, 'hours').toDate(),
+  //     sameSite: 'none',
+  //   });
 
-    return res.status(HttpStatus.OK).json({
-      user: {
-        ...userObject,
-        id: account?.id,
-        first_name: account.user?.first_name,
-        last_name: account.user?.last_name,
-        email: account?.email,
-        phone_number: account.user?.phone_number,
-        role: account?.role,
-        is_verified: account?.is_verified,
-        logo_urls: account.user?.logo_urls,
-        creator_id: account.user?.creator_id,
-        created_at: account.user?.created_at,
-        updated_at: account.user?.updated_at,
-      },
-      access_token,
-      expires_at: moment().add(8, 'hours').format(),
-    });
-  }
+  //   return res.status(HttpStatus.OK).json({
+  //     user: {
+  //       ...userObject,
+  //       id: account?.id,
+  //       first_name: account.user?.first_name,
+  //       last_name: account.user?.last_name,
+  //       email: account?.email,
+  //       phone_number: account.user?.phone_number,
+  //       role: account?.role,
+  //       is_verified: account?.is_verified,
+  //       logo_urls: account.user?.logo_urls,
+  //       creator_id: account.user?.creator_id,
+  //       created_at: account.user?.created_at,
+  //       updated_at: account.user?.updated_at,
+  //     },
+  //     access_token,
+  //     expires_at: moment().add(8, 'hours').format(),
+  //   });
+  // }
 
   async logoutUser(res: Response) {
     res.clearCookie('access_token', {

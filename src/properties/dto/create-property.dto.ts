@@ -1,10 +1,16 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsNotEmpty, IsString, IsNumber, IsEnum } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsString,
+  IsNumber,
+  IsEnum,
+  IsOptional,
+} from 'class-validator';
 
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
-  NOT_VACANT = 'occupied',
+  OCCUPIED = 'occupied',
 }
 
 export class CreatePropertyDto {
@@ -19,9 +25,9 @@ export class CreatePropertyDto {
   location: string;
 
   @ApiProperty({ example: 'lagos', description: 'Description of the property' })
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  description: string;
+  description?: string;
 
   // @ApiProperty({ example: 'vacant', description: 'Status of the property' })
   // @IsNotEmpty()
@@ -47,6 +53,11 @@ export class CreatePropertyDto {
   @IsNumber()
   @Type(() => Number)
   no_of_bedrooms: number;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  tenant_id?: string;
 
   // @ApiProperty({
   //   example: 500000,

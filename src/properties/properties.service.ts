@@ -41,6 +41,8 @@ import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 @Injectable()
 export class PropertiesService {
   constructor(
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyGroup)
@@ -51,22 +53,44 @@ export class PropertiesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async createProperty(data: CreatePropertyDto): Promise<CreatePropertyDto> {
-    let createdProperty: Property;
-
+  async createProperty(
+    propertyData: CreatePropertyDto,
+    ownerId: string,
+  ): Promise<Property> {
     try {
       // create the property
-      createdProperty = await this.propertyRepository.save(data);
+      const newProperty = this.propertyRepository.create({
+        ...propertyData,
+        owner_id: ownerId,
+      });
+
+      // save the single entity to the database
+      const savedProperty = await this.propertyRepository.save(newProperty);
+
+      // If tenant_id is provided, create PropertyTenant relationship
+      if (propertyData.tenant_id) {
+        const propertyTenant = this.propertyTenantRepository.create({
+          property_id: savedProperty.id,
+          tenant_id: propertyData.tenant_id,
+          status: TenantStatusEnum.ACTIVE,
+        });
+
+        await this.propertyTenantRepository.save(propertyTenant);
+
+        // Update property status to NOT_VACANT
+        savedProperty.property_status = PropertyStatusEnum.OCCUPIED;
+        await this.propertyRepository.save(savedProperty);
+      }
 
       // ✅ Emit event after property is created
       this.eventEmitter.emit('property.created', {
-        property_id: createdProperty.id,
-        property_name: createdProperty.name,
-        user_id: createdProperty.owner_id,
+        property_id: savedProperty.id,
+        property_name: savedProperty.name,
+        user_id: savedProperty.owner_id,
       });
 
       // Get the full property with relations for notification
-      const property = await this.getPropertyById(createdProperty.id);
+      const property = await this.getPropertyById(savedProperty.id);
 
       if (!property?.owner?.user?.phone_number) {
         console.warn(
@@ -81,23 +105,18 @@ export class PropertiesService {
           .sendPropertiesNotification({
             phone_number: admin_phone_number,
             name: 'Admin',
-            property_name: createdProperty.name,
+            property_name: savedProperty.name,
           })
           .catch((error) => {
             // Log notification errors but don't fail the main operation
             console.error('Failed to send properties notification:', error);
           });
       }
-      return createdProperty;
+      return savedProperty;
     } catch (error) {
-      // Log the error for debugging
-      console.error('Error creating property:', error);
-
-      // Re-throw with a more descriptive message
-      if (error instanceof Error) {
-        throw new Error(`Failed to create property: ${error.message}`);
-      }
-      throw new Error('Failed to create property due to an unexpected error');
+      // Log the detailed error and throw a standardized exception
+      console.error('Error creating property in service:', error);
+      throw new Error(`Failed to create property: ${error.message}`);
     }
   }
 
@@ -156,14 +175,30 @@ export class PropertiesService {
     };
   }
 
-  async getVacantProperty(query: { owner_id: string }) {
-    return await this.propertyRepository.find({
-      where: {
-        property_status: PropertyStatusEnum.VACANT,
-        ...query,
-      },
-      relations: ['property_tenants', 'rents', 'rents.tenant'],
-    });
+  // async getVacantProperty(query: { owner_id: string }) {
+  //   return await this.propertyRepository.find({
+  //     where: {
+  //       property_status: PropertyStatusEnum.VACANT,
+  //       ...query,
+  //     },
+  //     relations: ['property_tenants', 'rents', 'rents.tenant'],
+  //   });
+  // }
+
+  async getVacantProperties(ownerId: string): Promise<Property[]> {
+    return this.propertyRepository
+      .createQueryBuilder('property')
+      .select([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+      ])
+      .where('property.owner_id = :ownerId', { ownerId })
+      .andWhere('property.property_status = :status', {
+        status: PropertyStatusEnum.VACANT,
+      })
+      .getMany();
   }
 
   async getPropertyById(id: string): Promise<any> {
@@ -171,9 +206,14 @@ export class PropertiesService {
       where: { id },
       relations: [
         'rents',
+        'rents.tenant',
+        'rents.tenant.user',
         'property_tenants',
         'property_tenants.tenant',
         'property_tenants.tenant.user',
+        'service_requests',
+        'service_requests.tenant',
+        'service_requests.tenant.user',
         'owner',
         'owner.user',
       ],
@@ -184,7 +224,63 @@ export class PropertiesService {
         HttpStatus.NOT_FOUND,
       );
     }
-    return property;
+
+    const activeTenantRelation = property.property_tenants.find(
+      (pt) => pt.status === 'active',
+    );
+    const activeRent = property.rents.find((r) => r.rent_status === 'active');
+
+    let activeTenantInfo: any | null = null;
+    if (activeTenantRelation && activeRent) {
+      const tenantUser = activeTenantRelation.tenant.user;
+      activeTenantInfo = {
+        id: activeTenantRelation.tenant.id,
+        name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+        email: tenantUser.email,
+        phone: tenantUser.phone_number,
+        rentAmount: activeRent.rental_price,
+        leaseStartDate: activeRent.lease_start_date.toISOString(),
+        rentExpiryDate: activeRent.lease_end_date.toISOString(),
+      };
+    }
+
+    // 2. Format Rent Payments
+    const rentPayments = property.rents.map((rent) => ({
+      id: rent.id,
+      paymentDate: rent.created_at,
+      amountPaid: rent.amount_paid,
+      status: rent.payment_status,
+    }));
+
+    // 3. Format Service Requests
+    const serviceRequests = property.service_requests.map((sr) => ({
+      id: sr.id,
+      tenantName: `${sr.tenant.user.first_name} ${sr.tenant.user.last_name}`,
+      propertyName: property.name,
+      messagePreview: sr.description.substring(0, 100) + '...',
+      dateReported: sr.date_reported.toISOString(),
+      status: sr.status,
+    }));
+
+    // 4. Computed Description
+    const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1 ? 'studio' : `${property.no_of_bedrooms}`}-bedroom ${property.property_type?.toLowerCase()} located in ${property.location}`;
+
+    // 5. Build the final DTO
+    return {
+      id: property.id,
+      name: property.name,
+      address: property.location,
+      description: property.description || computedDescription,
+      status: property.property_status.toUpperCase() as 'VACANT' | 'OCCUPIED', // Normalize to uppercase for frontend type consistency
+      propertyType: property.property_type,
+      bedrooms: property.no_of_bedrooms,
+      // bathrooms: property.no_of_bathrooms, // Add missing field to repository
+      // size: property.size, //add field to repository
+      // yearBuilt: property.year_built, // Add to property repository
+      tenant: activeTenantInfo,
+      rentPayments: rentPayments,
+      serviceRequests: serviceRequests,
+    };
   }
 
   async getRentsOfAProperty(id: string): Promise<CreatePropertyDto> {
@@ -273,22 +369,40 @@ export class PropertiesService {
     return this.propertyRepository.save(property);
   }
 
-  async deletePropertyById(id: string) {
+  async deletePropertyById(propertyId: string, ownerId: string): Promise<void> {
     try {
-      const property = await this.propertyRepository.findOne({
-        where: { id },
+      // Ensure the property exists and belongs to the user making the request
+      const property = await this.propertyRepository.findOneBy({
+        id: propertyId,
+        owner_id: ownerId,
       });
 
-      if (property?.property_status === PropertyStatusEnum.NOT_VACANT) {
+      if (!property) {
+        // Property not found or does not belong to the owner
+        throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+      }
+
+      if (property.property_status === PropertyStatusEnum.OCCUPIED) {
         throw new HttpException(
           'Cannot delete property that is not vacant',
           HttpStatus.BAD_REQUEST,
         );
       }
-      return this.propertyRepository.delete(id);
+
+      // Soft delete sets the deleted_at timestamp
+      await this.propertyRepository.softDelete(propertyId);
     } catch (error) {
-      console.log(error);
-      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+      // Step 4: Handle known HttpExceptions separately
+      if (error instanceof HttpException) {
+        throw error; // rethrow custom errors without wrapping
+      }
+
+      // Step 5: Catch unexpected errors
+      console.error('Unexpected error while deleting property:', error);
+      throw new HttpException(
+        'Something went wrong while deleting the property',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
     }
   }
 
@@ -368,7 +482,7 @@ export class PropertiesService {
       });
 
       await queryRunner.manager.update(Property, property_id, {
-        property_status: PropertyStatusEnum.NOT_VACANT,
+        property_status: PropertyStatusEnum.OCCUPIED,
       });
 
       await queryRunner.manager.save(PropertyHistory, {
@@ -588,7 +702,7 @@ export class PropertiesService {
           status: TenantStatusEnum.ACTIVE,
         }),
         queryRunner.manager.update(Property, property.id, {
-          property_status: PropertyStatusEnum.NOT_VACANT,
+          property_status: PropertyStatusEnum.OCCUPIED,
         }),
         queryRunner.manager.save(PropertyHistory, {
           property_id: property.id,

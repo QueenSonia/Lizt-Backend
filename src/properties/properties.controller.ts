@@ -132,11 +132,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get(':id')
   getPropertyById(@Param('id', new ParseUUIDPipe()) id: string) {
-    try {
-      return this.propertiesService.getPropertyById(id);
-    } catch (error) {
-      throw error;
-    }
+    return this.propertiesService.getPropertyById(id);
   }
 
   @ApiOperation({ summary: 'Get Rents Of A Property' })

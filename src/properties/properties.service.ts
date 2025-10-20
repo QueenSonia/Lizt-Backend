@@ -41,6 +41,8 @@ import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 @Injectable()
 export class PropertiesService {
   constructor(
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyGroup)
@@ -64,6 +66,21 @@ export class PropertiesService {
 
       // save the single entity to the database
       const savedProperty = await this.propertyRepository.save(newProperty);
+
+      // If tenant_id is provided, create PropertyTenant relationship
+      if (propertyData.tenant_id) {
+        const propertyTenant = this.propertyTenantRepository.create({
+          property_id: savedProperty.id,
+          tenant_id: propertyData.tenant_id,
+          status: TenantStatusEnum.ACTIVE,
+        });
+
+        await this.propertyTenantRepository.save(propertyTenant);
+
+        // Update property status to NOT_VACANT
+        savedProperty.property_status = PropertyStatusEnum.OCCUPIED;
+        await this.propertyRepository.save(savedProperty);
+      }
 
       // ✅ Emit event after property is created
       this.eventEmitter.emit('property.created', {
@@ -189,9 +206,14 @@ export class PropertiesService {
       where: { id },
       relations: [
         'rents',
+        'rents.tenant',
+        'rents.tenant.user',
         'property_tenants',
         'property_tenants.tenant',
         'property_tenants.tenant.user',
+        'service_requests',
+        'service_requests.tenant',
+        'service_requests.tenant.user',
         'owner',
         'owner.user',
       ],
@@ -202,7 +224,63 @@ export class PropertiesService {
         HttpStatus.NOT_FOUND,
       );
     }
-    return property;
+
+    const activeTenantRelation = property.property_tenants.find(
+      (pt) => pt.status === 'active',
+    );
+    const activeRent = property.rents.find((r) => r.rent_status === 'active');
+
+    let activeTenantInfo: any | null = null;
+    if (activeTenantRelation && activeRent) {
+      const tenantUser = activeTenantRelation.tenant.user;
+      activeTenantInfo = {
+        id: activeTenantRelation.tenant.id,
+        name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+        email: tenantUser.email,
+        phone: tenantUser.phone_number,
+        rentAmount: activeRent.rental_price,
+        leaseStartDate: activeRent.lease_start_date.toISOString(),
+        rentExpiryDate: activeRent.lease_end_date.toISOString(),
+      };
+    }
+
+    // 2. Format Rent Payments
+    const rentPayments = property.rents.map((rent) => ({
+      id: rent.id,
+      paymentDate: rent.created_at,
+      amountPaid: rent.amount_paid,
+      status: rent.payment_status,
+    }));
+
+    // 3. Format Service Requests
+    const serviceRequests = property.service_requests.map((sr) => ({
+      id: sr.id,
+      tenantName: `${sr.tenant.user.first_name} ${sr.tenant.user.last_name}`,
+      propertyName: property.name,
+      messagePreview: sr.description.substring(0, 100) + '...',
+      dateReported: sr.date_reported.toISOString(),
+      status: sr.status,
+    }));
+
+    // 4. Computed Description
+    const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1 ? 'studio' : `${property.no_of_bedrooms}`}-bedroom ${property.property_type?.toLowerCase()} located in ${property.location}`;
+
+    // 5. Build the final DTO
+    return {
+      id: property.id,
+      name: property.name,
+      address: property.location,
+      description: property.description || computedDescription,
+      status: property.property_status.toUpperCase() as 'VACANT' | 'OCCUPIED', // Normalize to uppercase for frontend type consistency
+      propertyType: property.property_type,
+      bedrooms: property.no_of_bedrooms,
+      // bathrooms: property.no_of_bathrooms, // Add missing field to repository
+      // size: property.size, //add field to repository
+      // yearBuilt: property.year_built, // Add to property repository
+      tenant: activeTenantInfo,
+      rentPayments: rentPayments,
+      serviceRequests: serviceRequests,
+    };
   }
 
   async getRentsOfAProperty(id: string): Promise<CreatePropertyDto> {

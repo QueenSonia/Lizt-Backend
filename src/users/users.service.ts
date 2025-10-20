@@ -1131,6 +1131,7 @@ export class UsersService {
         last_name: account.user.last_name,
         email: account.email,
         phone_number: account.user.phone_number,
+        profile_name: account.profile_name,
         role: account.role,
         is_verified: account.is_verified,
         logo_urls: account.user.logo_urls,

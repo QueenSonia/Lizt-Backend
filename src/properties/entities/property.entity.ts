@@ -42,6 +42,9 @@ export class Property extends BaseEntity {
   @Column({ nullable: false, type: 'int' })
   no_of_bedrooms: number;
 
+  @Column({ nullable: false, type: 'int' })
+  no_of_bathrooms: number;
+
   @Column({ type: 'int', nullable: true })
   rental_price: number;
 

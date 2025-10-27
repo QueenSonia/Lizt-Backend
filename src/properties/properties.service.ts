@@ -67,20 +67,21 @@ export class PropertiesService {
       // save the single entity to the database
       const savedProperty = await this.propertyRepository.save(newProperty);
 
+      //// Tenant assignment-on-property-creation option removed from frontend form
       // If tenant_id is provided, create PropertyTenant relationship
-      if (propertyData.tenant_id) {
-        const propertyTenant = this.propertyTenantRepository.create({
-          property_id: savedProperty.id,
-          tenant_id: propertyData.tenant_id,
-          status: TenantStatusEnum.ACTIVE,
-        });
+      // if (propertyData.tenant_id) {
+      //   const propertyTenant = this.propertyTenantRepository.create({
+      //     property_id: savedProperty.id,
+      //     tenant_id: propertyData.tenant_id,
+      //     status: TenantStatusEnum.ACTIVE,
+      //   });
 
-        await this.propertyTenantRepository.save(propertyTenant);
+      //   await this.propertyTenantRepository.save(propertyTenant);
 
-        // Update property status to NOT_VACANT
-        savedProperty.property_status = PropertyStatusEnum.OCCUPIED;
-        await this.propertyRepository.save(savedProperty);
-      }
+      //   // Update property status to NOT_VACANT
+      //   savedProperty.property_status = PropertyStatusEnum.OCCUPIED;
+      //   await this.propertyRepository.save(savedProperty);
+      // }
 
       // ✅ Emit event after property is created
       this.eventEmitter.emit('property.created', {
@@ -269,12 +270,12 @@ export class PropertiesService {
     return {
       id: property.id,
       name: property.name,
-      address: property.location,
+      location: property.location,
       description: property.description || computedDescription,
       status: property.property_status.toUpperCase() as 'VACANT' | 'OCCUPIED', // Normalize to uppercase for frontend type consistency
       propertyType: property.property_type,
       bedrooms: property.no_of_bedrooms,
-      // bathrooms: property.no_of_bathrooms, // Add missing field to repository
+      bathrooms: property.no_of_bathrooms,
       // size: property.size, //add field to repository
       // yearBuilt: property.year_built, // Add to property repository
       tenant: activeTenantInfo,
@@ -364,6 +365,7 @@ export class PropertiesService {
 
     // Merge new data from DTO into existing property entity
     Object.assign(property, updatePropertyDto);
+    console.log(property);
 
     // Save the updated entity back to the db
     return this.propertyRepository.save(property);

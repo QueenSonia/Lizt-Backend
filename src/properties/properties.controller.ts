@@ -193,6 +193,7 @@ export class PropertiesController {
       //   );
       //   body.property_images = uploadedUrls.map((upload) => upload.secure_url);
       // }
+      console.log(body);
 
       return this.propertiesService.updatePropertyById(id, body, requester.id);
     } catch (error) {

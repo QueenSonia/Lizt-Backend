@@ -9,6 +9,7 @@ const prodOrigin = [
   'http://localhost:8000',
   'http://localhost:4000',
   'http://localhost:3000',
+  'http://localhost:3001',
   'https://getpanda.co',
   'https://www.getpanda.co',
   'https://lizt.co',
@@ -20,6 +21,7 @@ const prodOrigin = [
 const devOrigin = [
   `http://localhost:${config.get('PORT', 8000)}`,
   'http://localhost:3000',
+  'http://localhost:3001',
   'http://localhost:8000',
   'http://localhost:3001',
   'http://localhost:5173',

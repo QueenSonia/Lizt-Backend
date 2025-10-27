@@ -54,6 +54,16 @@ export class CreatePropertyDto {
   @Type(() => Number)
   no_of_bedrooms: number;
 
+  @ApiProperty({
+    example: 3,
+    description: 'No of bathrooms in the property',
+    type: 'integer',
+  })
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  no_of_bathrooms: number;
+
   @ApiProperty({ required: false })
   @IsString()
   @IsOptional()

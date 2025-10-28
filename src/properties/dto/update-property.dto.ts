@@ -184,13 +184,6 @@ export class UpdatePropertyResponseDto {
   rental_price: number;
 
   @ApiProperty({
-    example: 'monthly',
-    description: 'Frequency of payment for the property',
-    required: false,
-  })
-  payment_frequency: string;
-
-  @ApiProperty({
     example: 20000,
     description: 'Security payment',
     required: false,

@@ -1,7 +1,6 @@
 import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { PropertyStatusEnum } from '../dto/create-property.dto';
-import { Users } from 'src/users/entities/user.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { PropertyTenant } from './property-tenants.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
@@ -47,9 +46,6 @@ export class Property extends BaseEntity {
 
   @Column({ type: 'int', nullable: true })
   rental_price: number;
-
-  @Column({ nullable: true, type: 'varchar' })
-  payment_frequency: string;
 
   @Column({ type: 'int', nullable: true })
   security_deposit: number;

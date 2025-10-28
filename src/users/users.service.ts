@@ -106,10 +106,14 @@ export class UsersService {
     const {
       phone_number,
       full_name,
-      rent_amount,
-      due_date,
+      rental_price,
+      lease_start_date,
+      lease_end_date,
       email,
       property_id,
+      security_deposit,
+      service_charge,
+      payment_frequency,
     } = dto;
 
     const admin = (await this.accountRepository.findOne({
@@ -199,10 +203,14 @@ export class UsersService {
         const rent = manager.getRepository(Rent).create({
           property_id,
           tenant_id: userAccount.id,
-          amount_paid: rent_amount,
-          rental_price: rent_amount,
-          lease_start_date: new Date().toISOString(),
-          lease_end_date: due_date,
+          amount_paid: rental_price,
+          rental_price: rental_price,
+          lease_start_date: lease_start_date,
+          lease_end_date: lease_end_date,
+          security_deposit: security_deposit || 0,
+          service_charge: service_charge || 0,
+          payment_frequency: payment_frequency || 'Monthly',
+          payment_status: RentPaymentStatusEnum.PAID,
           rent_status: RentStatusEnum.ACTIVE,
         });
 

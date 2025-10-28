@@ -322,4 +322,14 @@ export class PropertiesController {
   ) {
     return this.propertiesService.assignTenant(id, data);
   }
+
+  @ApiOperation({ summary: 'Sync Property Statuses with Actual Tenancy State' })
+  @ApiOkResponse({ description: 'Property statuses synchronized successfully' })
+  @ApiSecurity('access_token')
+  @Post('sync-statuses')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async syncPropertyStatuses() {
+    return this.propertiesService.syncPropertyStatuses();
+  }
 }

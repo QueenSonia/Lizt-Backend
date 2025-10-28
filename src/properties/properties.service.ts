@@ -130,12 +130,13 @@ export class PropertiesService {
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
-    const { query, order } = await buildPropertyFilter(queryParams);
+    const { query } = await buildPropertyFilter(queryParams);
 
     const qb = this.propertyRepository
       .createQueryBuilder('property')
       .leftJoinAndSelect('property.rents', 'rents')
       .leftJoinAndSelect('rents.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'user')
       .leftJoinAndSelect('property.property_tenants', 'property_tenants')
       .where(query);
 
@@ -543,11 +544,26 @@ export class PropertiesService {
         );
       }
 
+      // Deactivate the rent record
+      await queryRunner.manager.update(
+        Rent,
+        {
+          property_id,
+          tenant_id,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+        {
+          rent_status: RentStatusEnum.INACTIVE,
+        },
+      );
+
+      // Remove property-tenant relationship
       await queryRunner.manager.delete(PropertyTenant, {
         property_id,
         tenant_id,
       });
 
+      // Update property status to vacant
       await queryRunner.manager.update(Property, property_id, {
         property_status: PropertyStatusEnum.VACANT,
       });
@@ -664,6 +680,33 @@ export class PropertiesService {
     };
   }
 
+  async syncPropertyStatuses() {
+    // Method to fix data inconsistencies - sync property status with actual tenancy state
+    const properties = await this.propertyRepository.find({
+      relations: ['rents'],
+    });
+
+    for (const property of properties) {
+      const hasActiveRent = property.rents.some(
+        (rent) => rent.rent_status === RentStatusEnum.ACTIVE,
+      );
+
+      const correctStatus = hasActiveRent
+        ? PropertyStatusEnum.OCCUPIED
+        : PropertyStatusEnum.VACANT;
+
+      if (property.property_status !== correctStatus) {
+        console.log(
+          `Fixing property ${property.name}: ${property.property_status} -> ${correctStatus}`,
+        );
+        property.property_status = correctStatus;
+        await this.propertyRepository.save(property);
+      }
+    }
+
+    return { message: 'Property statuses synchronized successfully' };
+  }
+
   async assignTenant(id: string, data: AssignTenantDto) {
     const queryRunner = this.dataSource.createQueryRunner();
 
@@ -693,6 +736,7 @@ export class PropertiesService {
         rental_price: data.rental_price,
         security_deposit: data.security_deposit,
         service_charge: data.service_charge,
+        payment_frequency: data.payment_frequency || 'Monthly',
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
       });

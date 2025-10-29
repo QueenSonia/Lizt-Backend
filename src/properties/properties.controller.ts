@@ -135,6 +135,18 @@ export class PropertiesController {
     return this.propertiesService.getPropertyById(id);
   }
 
+  @ApiOperation({ summary: 'Get Property Details with History' })
+  @ApiOkResponse({
+    description: 'Property details with history successfully fetched',
+  })
+  @ApiNotFoundResponse({ description: 'Property not found' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Get(':id/details')
+  getPropertyDetails(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.propertiesService.getPropertyDetails(id);
+  }
+
   @ApiOperation({ summary: 'Get Rents Of A Property' })
   @ApiOkResponse({
     type: CreatePropertyDto,
@@ -206,6 +218,8 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Delete(':id')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
   async deletePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() requester: Account, // Get the logged-in user
@@ -265,11 +279,14 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @Post('move-out')
-  moveTenantOut(@Body() moveOutData: MoveTenantOutDto) {
+  moveTenantOut(
+    @Body() moveOutData: MoveTenantOutDto,
+    @CurrentUser() requester: Account,
+  ) {
     try {
-      return this.propertiesService.moveTenantOut(moveOutData);
+      return this.propertiesService.moveTenantOut(moveOutData, requester.id);
     } catch (error) {
       throw error;
     }
@@ -323,8 +340,20 @@ export class PropertiesController {
     return this.propertiesService.assignTenant(id, data);
   }
 
-  @ApiOperation({ summary: 'Sync Property Statuses with Actual Tenancy State' })
-  @ApiOkResponse({ description: 'Property statuses synchronized successfully' })
+  @ApiOperation({
+    summary: 'Sync Property Statuses and Fix Missing History Records',
+  })
+  @ApiOkResponse({
+    description:
+      'Property statuses synchronized and missing history records created',
+    schema: {
+      properties: {
+        message: { type: 'string' },
+        statusUpdates: { type: 'number' },
+        historyRecordsCreated: { type: 'number' },
+      },
+    },
+  })
   @ApiSecurity('access_token')
   @Post('sync-statuses')
   @UseGuards(RoleGuard)

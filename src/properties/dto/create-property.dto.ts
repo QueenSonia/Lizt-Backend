@@ -11,6 +11,7 @@ import {
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
   OCCUPIED = 'occupied',
+  INACTIVE = 'inactive',
 }
 
 export class CreatePropertyDto {

@@ -47,6 +47,8 @@ export class PropertiesService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyGroup)
     private readonly propertyGroupRepository: Repository<PropertyGroup>,
+    @InjectRepository(PropertyHistory)
+    private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
@@ -273,7 +275,10 @@ export class PropertiesService {
       name: property.name,
       location: property.location,
       description: property.description || computedDescription,
-      status: property.property_status.toUpperCase() as 'VACANT' | 'OCCUPIED', // Normalize to uppercase for frontend type consistency
+      status: property.property_status.toUpperCase() as
+        | 'VACANT'
+        | 'OCCUPIED'
+        | 'INACTIVE', // Normalize to uppercase for frontend type consistency
       propertyType: property.property_type,
       bedrooms: property.no_of_bedrooms,
       bathrooms: property.no_of_bathrooms,
@@ -282,6 +287,121 @@ export class PropertiesService {
       tenant: activeTenantInfo,
       rentPayments: rentPayments,
       serviceRequests: serviceRequests,
+    };
+  }
+
+  async getPropertyDetails(id: string): Promise<any> {
+    const property = await this.propertyRepository.findOne({
+      where: { id },
+      relations: [
+        'rents',
+        'rents.tenant',
+        'rents.tenant.user',
+        'property_tenants',
+        'property_tenants.tenant',
+        'property_tenants.tenant.user',
+        'service_requests',
+        'service_requests.tenant',
+        'service_requests.tenant.user',
+        'property_histories',
+        'property_histories.tenant',
+        'property_histories.tenant.user',
+        'owner',
+        'owner.user',
+      ],
+    });
+
+    if (!property?.id) {
+      throw new HttpException(
+        `Property with id: ${id} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const activeTenantRelation = property.property_tenants.find(
+      (pt) => pt.status === 'active',
+    );
+    const activeRent = property.rents.find((r) => r.rent_status === 'active');
+
+    // Current tenant information
+    let currentTenant: any | null = null;
+    if (activeTenantRelation && activeRent) {
+      const tenantUser = activeTenantRelation.tenant.user;
+      currentTenant = {
+        id: activeTenantRelation.tenant.id,
+        name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+        email: tenantUser.email,
+        phone: tenantUser.phone_number,
+        tenancyStartDate: activeRent.lease_start_date
+          .toISOString()
+          .split('T')[0],
+        paymentCycle: activeRent.payment_frequency || 'Monthly',
+      };
+    }
+
+    // Property history from property_histories table
+    const history = property.property_histories
+      .sort((a, b) => {
+        const dateA = a.move_out_date || a.move_in_date;
+        const dateB = b.move_out_date || b.move_in_date;
+        return new Date(dateB).getTime() - new Date(dateA).getTime();
+      })
+      .map((hist, index) => {
+        const tenantUser = hist.tenant.user;
+        const tenantName = `${tenantUser.first_name} ${tenantUser.last_name}`;
+
+        if (hist.move_out_date) {
+          // Tenant moved out
+          return {
+            id: index + 1,
+            date: hist.move_out_date.toISOString().split('T')[0],
+            eventType: 'tenant_moved_out',
+            title: 'Tenant Moved Out',
+            description: `${tenantName} ended tenancy.`,
+            details: hist.move_out_reason
+              ? `Reason: ${hist.move_out_reason.replace('_', ' ')}`
+              : null,
+          };
+        } else {
+          // Tenant moved in
+          return {
+            id: index + 1,
+            date: hist.move_in_date.toISOString().split('T')[0],
+            eventType: 'tenant_moved_in',
+            title: 'Tenant Moved In',
+            description: `${tenantName} started tenancy.`,
+            details: `Monthly rent: ₦${hist.monthly_rent?.toLocaleString()}`,
+          };
+        }
+      });
+
+    // Computed description
+    const computedDescription = `${property.name} is a ${
+      property.no_of_bedrooms === -1
+        ? 'studio'
+        : `${property.no_of_bedrooms}-bedroom`
+    } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
+
+    // Build the comprehensive response
+    return {
+      id: property.id,
+      name: property.name,
+      address: property.location,
+      type: property.property_type,
+      bedrooms: property.no_of_bedrooms,
+      bathrooms: property.no_of_bathrooms,
+      status:
+        property.property_status === 'occupied'
+          ? 'Occupied'
+          : property.property_status === 'inactive'
+            ? 'Inactive'
+            : 'Vacant',
+      rent: activeRent?.rental_price || null,
+      rentExpiryDate:
+        activeRent?.lease_end_date?.toISOString().split('T')[0] || null,
+      description: property.description || computedDescription,
+      currentTenant,
+      history,
     };
   }
 
@@ -385,22 +505,42 @@ export class PropertiesService {
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
 
+      // Requirement 7.4: Cannot delete occupied or deactivated properties
       if (property.property_status === PropertyStatusEnum.OCCUPIED) {
         throw new HttpException(
-          'Cannot delete property that is not vacant',
+          'Cannot delete property that is currently occupied. Please end the tenancy first.',
           HttpStatus.BAD_REQUEST,
         );
       }
 
-      // Soft delete sets the deleted_at timestamp
+      if (property.property_status === PropertyStatusEnum.INACTIVE) {
+        throw new HttpException(
+          'Cannot delete property that is deactivated. Please reactivate the property first.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // Requirement 7.2 & 7.3: Check if property has any tenancy history records
+      const historyCount = await this.propertyHistoryRepository.count({
+        where: { property_id: propertyId },
+      });
+
+      if (historyCount > 0) {
+        throw new HttpException(
+          'Cannot delete property with existing tenancy history. Properties that have been inhabited cannot be deleted.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // Only vacant properties with no history can be deleted
       await this.propertyRepository.softDelete(propertyId);
     } catch (error) {
-      // Step 4: Handle known HttpExceptions separately
+      // Handle known HttpExceptions separately
       if (error instanceof HttpException) {
         throw error; // rethrow custom errors without wrapping
       }
 
-      // Step 5: Catch unexpected errors
+      // Catch unexpected errors
       console.error('Unexpected error while deleting property:', error);
       throw new HttpException(
         'Something went wrong while deleting the property',
@@ -513,13 +653,29 @@ export class PropertiesService {
     }
   }
 
-  async moveTenantOut(moveOutData: MoveTenantOutDto) {
+  async moveTenantOut(moveOutData: MoveTenantOutDto, requesterId?: string) {
     const { property_id, tenant_id, move_out_date } = moveOutData;
     if (!DateService.isValidFormat_YYYY_MM_DD(move_out_date)) {
       throw new HttpException(
         'Invalid date format. Use YYYY-MM-DD',
         HttpStatus.BAD_REQUEST,
       );
+    }
+
+    // If requesterId is provided (for landlords), validate ownership
+    if (requesterId) {
+      const property = await this.propertyRepository.findOneBy({
+        id: property_id,
+      });
+      if (!property) {
+        throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+      }
+
+      if (property.owner_id !== requesterId) {
+        throw new ForbiddenException(
+          'You are not authorized to end tenancy for this property',
+        );
+      }
     }
 
     const queryRunner = connectionSource.createQueryRunner();
@@ -568,23 +724,53 @@ export class PropertiesService {
         property_status: PropertyStatusEnum.VACANT,
       });
 
-      const propertyHistory = await queryRunner.manager.findOne(
-        PropertyHistory,
-        {
+      // Try to find existing PropertyHistory record for this tenant
+      let propertyHistory = await queryRunner.manager.findOne(PropertyHistory, {
+        where: {
+          property_id,
+          tenant_id,
+          move_out_date: IsNull(),
+        },
+        order: { created_at: 'DESC' },
+      });
+
+      // If no PropertyHistory record exists, create one based on the current tenancy
+      if (!propertyHistory) {
+        console.log(
+          `No PropertyHistory record found for tenant ${tenant_id} in property ${property_id}. Creating one...`,
+        );
+
+        // Get the active rent record to determine move-in date and rent amount
+        const activeRent = await queryRunner.manager.findOne(Rent, {
           where: {
             property_id,
             tenant_id,
-            move_out_date: IsNull(),
+            rent_status: RentStatusEnum.ACTIVE,
           },
-          order: { created_at: 'DESC' },
-        },
-      );
+        });
 
-      if (!propertyHistory) {
-        throw new HttpException(
-          'Property history record not found',
-          HttpStatus.NOT_FOUND,
-        );
+        if (!activeRent) {
+          throw new HttpException(
+            'No active rent record found for this tenant and property',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        // Create the missing PropertyHistory record
+        propertyHistory = await queryRunner.manager.save(PropertyHistory, {
+          property_id,
+          tenant_id,
+          move_in_date:
+            activeRent.lease_start_date ||
+            DateService.getStartOfTheDay(new Date()),
+          monthly_rent: activeRent.rental_price,
+          owner_comment: null,
+          tenant_comment: null,
+          move_out_date: null,
+          move_out_reason: null,
+        });
+
+        console.log('Created PropertyHistory record:', propertyHistory.id);
       }
 
       const updatedHistory = await queryRunner.manager.save(PropertyHistory, {
@@ -686,7 +872,15 @@ export class PropertiesService {
       relations: ['rents'],
     });
 
+    let statusUpdates = 0;
+    let historyRecordsCreated = 0;
+
     for (const property of properties) {
+      // Skip INACTIVE properties as they are manually set and should not be auto-synced
+      if (property.property_status === PropertyStatusEnum.INACTIVE) {
+        continue;
+      }
+
       const hasActiveRent = property.rents.some(
         (rent) => rent.rent_status === RentStatusEnum.ACTIVE,
       );
@@ -701,10 +895,53 @@ export class PropertiesService {
         );
         property.property_status = correctStatus;
         await this.propertyRepository.save(property);
+        statusUpdates++;
+      }
+
+      // Also ensure PropertyHistory records exist for all active rents
+      if (hasActiveRent) {
+        const activeRents = property.rents.filter(
+          (rent) => rent.rent_status === RentStatusEnum.ACTIVE,
+        );
+
+        for (const rent of activeRents) {
+          const existingHistory = await this.propertyHistoryRepository.findOne({
+            where: {
+              property_id: property.id,
+              tenant_id: rent.tenant_id,
+              move_out_date: IsNull(),
+            },
+          });
+
+          if (!existingHistory) {
+            console.log(
+              `Creating missing PropertyHistory record for tenant ${rent.tenant_id} in property ${property.name}`,
+            );
+
+            await this.propertyHistoryRepository.save({
+              property_id: property.id,
+              tenant_id: rent.tenant_id,
+              move_in_date:
+                rent.lease_start_date ||
+                DateService.getStartOfTheDay(new Date()),
+              monthly_rent: rent.rental_price,
+              owner_comment: 'Auto-created during sync',
+              tenant_comment: null,
+              move_out_date: null,
+              move_out_reason: null,
+            });
+
+            historyRecordsCreated++;
+          }
+        }
       }
     }
 
-    return { message: 'Property statuses synchronized successfully' };
+    return {
+      message: 'Property statuses synchronized successfully',
+      statusUpdates,
+      historyRecordsCreated,
+    };
   }
 
   async assignTenant(id: string, data: AssignTenantDto) {

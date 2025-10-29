@@ -24,7 +24,11 @@ export class Property extends BaseEntity {
   @Column({
     nullable: false,
     type: 'enum',
-    enum: [PropertyStatusEnum.OCCUPIED, PropertyStatusEnum.VACANT],
+    enum: [
+      PropertyStatusEnum.OCCUPIED,
+      PropertyStatusEnum.VACANT,
+      PropertyStatusEnum.INACTIVE,
+    ],
     default: PropertyStatusEnum.VACANT,
   })
   property_status: string;

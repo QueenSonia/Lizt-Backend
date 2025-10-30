@@ -18,7 +18,6 @@ import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 import { DateService } from 'src/utils/date.helper';
-import { connectionSource } from 'ormconfig';
 import { PropertyTenant } from './entities/property-tenants.entity';
 import { config } from 'src/config';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
@@ -37,6 +36,7 @@ import {
 } from 'src/rents/dto/create-rent.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
+import { PerformanceMonitor } from 'src/utils/performance-monitor';
 
 @Injectable()
 export class PropertiesService {
@@ -136,10 +136,20 @@ export class PropertiesService {
 
     const qb = this.propertyRepository
       .createQueryBuilder('property')
-      .leftJoinAndSelect('property.rents', 'rents')
+      .leftJoinAndSelect(
+        'property.rents',
+        'rents',
+        'rents.rent_status = :activeStatus',
+        { activeStatus: RentStatusEnum.ACTIVE },
+      )
       .leftJoinAndSelect('rents.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
-      .leftJoinAndSelect('property.property_tenants', 'property_tenants')
+      .leftJoinAndSelect(
+        'property.property_tenants',
+        'property_tenants',
+        'property_tenants.status = :tenantStatus',
+        { tenantStatus: TenantStatusEnum.ACTIVE },
+      )
       .where(query);
 
     // Apply sorting (rent requires custom logic)
@@ -206,22 +216,22 @@ export class PropertiesService {
   }
 
   async getPropertyById(id: string): Promise<any> {
-    const property = await this.propertyRepository.findOne({
-      where: { id },
-      relations: [
-        'rents',
-        'rents.tenant',
-        'rents.tenant.user',
-        'property_tenants',
-        'property_tenants.tenant',
-        'property_tenants.tenant.user',
-        'service_requests',
-        'service_requests.tenant',
-        'service_requests.tenant.user',
-        'owner',
-        'owner.user',
-      ],
-    });
+    // Use query builder for better performance - only load active relationships
+    const property = await this.propertyRepository
+      .createQueryBuilder('property')
+      .leftJoinAndSelect('property.rents', 'rent')
+      .leftJoinAndSelect('rent.tenant', 'rentTenant')
+      .leftJoinAndSelect('rentTenant.user', 'rentTenantUser')
+      .leftJoinAndSelect('property.property_tenants', 'propertyTenant')
+      .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'tenantUser')
+      .leftJoinAndSelect('property.service_requests', 'serviceRequest')
+      .leftJoinAndSelect('serviceRequest.tenant', 'srTenant')
+      .leftJoinAndSelect('srTenant.user', 'srTenantUser')
+      .leftJoinAndSelect('property.owner', 'owner')
+      .leftJoinAndSelect('owner.user', 'ownerUser')
+      .where('property.id = :id', { id })
+      .getOne();
     if (!property?.id) {
       throw new HttpException(
         `Property with id: ${id} not found`,
@@ -290,26 +300,32 @@ export class PropertiesService {
     };
   }
 
+  @PerformanceMonitor.MonitorPerformance(2000) // Alert if takes more than 2 seconds
   async getPropertyDetails(id: string): Promise<any> {
-    const property = await this.propertyRepository.findOne({
-      where: { id },
-      relations: [
-        'rents',
-        'rents.tenant',
-        'rents.tenant.user',
-        'property_tenants',
-        'property_tenants.tenant',
-        'property_tenants.tenant.user',
-        'service_requests',
-        'service_requests.tenant',
-        'service_requests.tenant.user',
-        'property_histories',
-        'property_histories.tenant',
-        'property_histories.tenant.user',
-        'owner',
-        'owner.user',
-      ],
-    });
+    // Use query builder for better performance and selective loading
+    const property = await this.propertyRepository
+      .createQueryBuilder('property')
+      .leftJoinAndSelect(
+        'property.rents',
+        'rent',
+        'rent.rent_status = :activeStatus',
+        { activeStatus: 'active' },
+      )
+      .leftJoinAndSelect('rent.tenant', 'rentTenant')
+      .leftJoinAndSelect('rentTenant.user', 'rentTenantUser')
+      .leftJoinAndSelect(
+        'property.property_tenants',
+        'propertyTenant',
+        'propertyTenant.status = :tenantStatus',
+        { tenantStatus: 'active' },
+      )
+      .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'tenantUser')
+      .leftJoinAndSelect('property.property_histories', 'history')
+      .leftJoinAndSelect('history.tenant', 'historyTenant')
+      .leftJoinAndSelect('historyTenant.user', 'historyTenantUser')
+      .where('property.id = :id', { id })
+      .getOne();
 
     if (!property?.id) {
       throw new HttpException(
@@ -322,11 +338,14 @@ export class PropertiesService {
       (pt) => pt.status === 'active',
     );
     const activeRent = property.rents.find((r) => r.rent_status === 'active');
+    console.log('activeTenantRelation:', activeTenantRelation);
+    console.log('activeRent:', activeRent);
 
     // Current tenant information
     let currentTenant: any | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
+      console.log('Tenant:', tenantUser);
       currentTenant = {
         id: activeTenantRelation.tenant.id,
         name: `${tenantUser.first_name} ${tenantUser.last_name}`,
@@ -590,10 +609,9 @@ export class PropertiesService {
       );
     }
 
-    const queryRunner = connectionSource.createQueryRunner();
+    const queryRunner = this.dataSource.createQueryRunner();
 
     try {
-      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -649,7 +667,6 @@ export class PropertiesService {
       );
     } finally {
       await queryRunner.release();
-      await connectionSource.destroy();
     }
   }
 
@@ -678,10 +695,9 @@ export class PropertiesService {
       }
     }
 
-    const queryRunner = connectionSource.createQueryRunner();
+    const queryRunner = this.dataSource.createQueryRunner();
 
     try {
-      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -791,7 +807,6 @@ export class PropertiesService {
       );
     } finally {
       await queryRunner.release();
-      await connectionSource.destroy();
     }
   }
   async createPropertyGroup(data: CreatePropertyGroupDto, owner_id: string) {
@@ -866,25 +881,32 @@ export class PropertiesService {
     };
   }
 
+  @PerformanceMonitor.MonitorPerformance(5000) // Alert if takes more than 5 seconds
   async syncPropertyStatuses() {
     // Method to fix data inconsistencies - sync property status with actual tenancy state
-    const properties = await this.propertyRepository.find({
-      relations: ['rents'],
-    });
+    // Use query builder for better performance
+    const properties = await this.propertyRepository
+      .createQueryBuilder('property')
+      .leftJoinAndSelect(
+        'property.rents',
+        'rent',
+        'rent.rent_status = :activeStatus',
+        { activeStatus: RentStatusEnum.ACTIVE },
+      )
+      .where('property.property_status != :inactiveStatus', {
+        inactiveStatus: PropertyStatusEnum.INACTIVE,
+      })
+      .getMany();
 
     let statusUpdates = 0;
     let historyRecordsCreated = 0;
 
+    // Batch operations for better performance
+    const propertiesToUpdate: Property[] = [];
+    const historyRecordsToCreate: any[] = [];
+
     for (const property of properties) {
-      // Skip INACTIVE properties as they are manually set and should not be auto-synced
-      if (property.property_status === PropertyStatusEnum.INACTIVE) {
-        continue;
-      }
-
-      const hasActiveRent = property.rents.some(
-        (rent) => rent.rent_status === RentStatusEnum.ACTIVE,
-      );
-
+      const hasActiveRent = property.rents && property.rents.length > 0;
       const correctStatus = hasActiveRent
         ? PropertyStatusEnum.OCCUPIED
         : PropertyStatusEnum.VACANT;
@@ -894,17 +916,14 @@ export class PropertiesService {
           `Fixing property ${property.name}: ${property.property_status} -> ${correctStatus}`,
         );
         property.property_status = correctStatus;
-        await this.propertyRepository.save(property);
+        propertiesToUpdate.push(property);
         statusUpdates++;
       }
 
-      // Also ensure PropertyHistory records exist for all active rents
+      // Check for missing history records for active rents
       if (hasActiveRent) {
-        const activeRents = property.rents.filter(
-          (rent) => rent.rent_status === RentStatusEnum.ACTIVE,
-        );
-
-        for (const rent of activeRents) {
+        for (const rent of property.rents) {
+          // Check if history record exists (batch query would be better but this is simpler for now)
           const existingHistory = await this.propertyHistoryRepository.findOne({
             where: {
               property_id: property.id,
@@ -918,7 +937,7 @@ export class PropertiesService {
               `Creating missing PropertyHistory record for tenant ${rent.tenant_id} in property ${property.name}`,
             );
 
-            await this.propertyHistoryRepository.save({
+            historyRecordsToCreate.push({
               property_id: property.id,
               tenant_id: rent.tenant_id,
               move_in_date:
@@ -935,6 +954,15 @@ export class PropertiesService {
           }
         }
       }
+    }
+
+    // Batch save operations
+    if (propertiesToUpdate.length > 0) {
+      await this.propertyRepository.save(propertiesToUpdate);
+    }
+
+    if (historyRecordsToCreate.length > 0) {
+      await this.propertyHistoryRepository.save(historyRecordsToCreate);
     }
 
     return {
@@ -958,6 +986,14 @@ export class PropertiesService {
         throw new HttpException(
           `Property with id: ${id} not found`,
           HttpStatus.NOT_FOUND,
+        );
+      }
+
+      // Prevent tenant assignment to inactive properties
+      if (property.property_status === PropertyStatusEnum.INACTIVE) {
+        throw new HttpException(
+          'Cannot assign tenant to inactive property. Please reactivate the property first.',
+          HttpStatus.BAD_REQUEST,
         );
       }
 

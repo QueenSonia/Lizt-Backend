@@ -171,4 +171,95 @@ describe('PropertiesService', () => {
       expect(propertyRepository.softDelete).toHaveBeenCalledWith(propertyId);
     });
   });
+
+  describe('assignTenant', () => {
+    const propertyId = 'test-property-id';
+    const assignTenantDto = {
+      tenant_id: 'test-tenant-id',
+      lease_start_date: '2024-01-01',
+      lease_end_date: '2024-12-31',
+      rental_price: 100000,
+      security_deposit: 50000,
+      service_charge: 10000,
+      payment_frequency: 'Monthly',
+    };
+
+    const mockQueryRunner = {
+      connect: jest.fn(),
+      startTransaction: jest.fn(),
+      commitTransaction: jest.fn(),
+      rollbackTransaction: jest.fn(),
+      release: jest.fn(),
+      manager: {
+        findOne: jest.fn(),
+        save: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+
+    const mockDataSource = {
+      createQueryRunner: jest.fn(() => mockQueryRunner),
+    };
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      // Update the service to use the mock data source
+      (service as any).dataSource = mockDataSource;
+      (service as any).userService = {
+        getAccountById: jest.fn().mockResolvedValue({ id: 'test-tenant-id' }),
+      };
+    });
+
+    it('should throw NOT_FOUND when property does not exist', async () => {
+      mockQueryRunner.manager.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.assignTenant(propertyId, assignTenantDto),
+      ).rejects.toThrow(
+        new HttpException(
+          `Property with id: ${propertyId} not found`,
+          HttpStatus.NOT_FOUND,
+        ),
+      );
+
+      expect(mockQueryRunner.rollbackTransaction).toHaveBeenCalled();
+      expect(mockQueryRunner.release).toHaveBeenCalled();
+    });
+
+    it('should throw BAD_REQUEST when property is inactive', async () => {
+      const inactiveProperty = {
+        id: propertyId,
+        property_status: PropertyStatusEnum.INACTIVE,
+      };
+      mockQueryRunner.manager.findOne.mockResolvedValue(inactiveProperty);
+
+      await expect(
+        service.assignTenant(propertyId, assignTenantDto),
+      ).rejects.toThrow(
+        new HttpException(
+          'Cannot assign tenant to inactive property. Please reactivate the property first.',
+          HttpStatus.BAD_REQUEST,
+        ),
+      );
+
+      expect(mockQueryRunner.rollbackTransaction).toHaveBeenCalled();
+      expect(mockQueryRunner.release).toHaveBeenCalled();
+    });
+
+    it('should successfully assign tenant to vacant property', async () => {
+      const vacantProperty = {
+        id: propertyId,
+        property_status: PropertyStatusEnum.VACANT,
+      };
+      mockQueryRunner.manager.findOne.mockResolvedValue(vacantProperty);
+      mockQueryRunner.manager.save.mockResolvedValue({});
+      mockQueryRunner.manager.update.mockResolvedValue({});
+
+      const result = await service.assignTenant(propertyId, assignTenantDto);
+
+      expect(result).toEqual({ message: 'Tenant Added Successfully' });
+      expect(mockQueryRunner.commitTransaction).toHaveBeenCalled();
+      expect(mockQueryRunner.release).toHaveBeenCalled();
+    });
+  });
 });

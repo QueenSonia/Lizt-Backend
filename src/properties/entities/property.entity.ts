@@ -9,6 +9,8 @@ import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
+import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
+import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -84,4 +86,10 @@ export class Property extends BaseEntity {
 
   @OneToMany(() => Notification, (no) => no.property)
   notification: Notification[];
+
+  @OneToMany(() => KYCLink, (kycLink) => kycLink.property)
+  kyc_links: KYCLink[];
+
+  @OneToMany(() => KYCApplication, (kycApplication) => kycApplication.property)
+  kyc_applications: KYCApplication[];
 }

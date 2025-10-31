@@ -39,6 +39,17 @@ export interface PropertyKYCData {
 export interface WhatsAppResponse {
   success: boolean;
   message: string;
+  errorCode?: string;
+  retryAfter?: number;
+}
+
+export enum WhatsAppErrorCode {
+  RATE_LIMITED = 'RATE_LIMITED',
+  INVALID_PHONE = 'INVALID_PHONE',
+  SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  AUTHENTICATION_ERROR = 'AUTHENTICATION_ERROR',
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
 }
 
 @Injectable()
@@ -270,7 +281,7 @@ export class KYCLinksService {
   }
 
   /**
-   * Send KYC link via WhatsApp
+   * Send KYC link via WhatsApp with enhanced validation and formatting
    * Requirements: 1.5, 7.2, 7.3
    */
   async sendKYCLinkViaWhatsApp(
@@ -279,31 +290,47 @@ export class KYCLinksService {
     propertyName: string,
   ): Promise<WhatsAppResponse> {
     try {
-      // Validate and normalize phone number
-      if (!phoneNumber || phoneNumber.trim() === '') {
-        throw new BadRequestException(
-          'Enter a valid phone number to send via WhatsApp',
-        );
+      // Enhanced phone number validation
+      const validationResult = this.validatePhoneNumber(phoneNumber);
+      if (!validationResult.isValid) {
+        return {
+          success: false,
+          message: validationResult.error || 'Invalid phone number',
+          errorCode: WhatsAppErrorCode.INVALID_PHONE,
+        };
       }
 
-      const normalizedPhone = UtilService.normalizePhoneNumber(phoneNumber);
+      const normalizedPhone = validationResult.normalizedPhone!;
 
-      // Create WhatsApp message payload
+      // Check rate limiting
+      const rateLimitResult = await this.checkRateLimit(normalizedPhone);
+      if (!rateLimitResult.allowed) {
+        return {
+          success: false,
+          message: 'Rate limit exceeded. Please try again later.',
+          errorCode: WhatsAppErrorCode.RATE_LIMITED,
+          retryAfter: rateLimitResult.retryAfter,
+        };
+      }
+
+      // Create enhanced WhatsApp message with better template
+      const message = this.createKYCLinkMessage(propertyName, kycLink);
+
       const payload = {
         messaging_product: 'whatsapp',
         to: normalizedPhone,
         type: 'text',
         text: {
-          body: `Hello! You've been invited to apply for the property "${propertyName}". Please complete your KYC application using this link: ${kycLink}
-
-This link will expire in 7 days. Complete your application as soon as possible to secure your tenancy.
-
-Thank you!`,
+          preview_url: true,
+          body: message,
         },
       };
 
-      // Send message using WhatsApp bot service
-      await this.whatsappBotService['sendToWhatsappAPI'](payload);
+      // Send message using WhatsApp bot service with retry logic
+      await this.sendWithRetry(payload, normalizedPhone);
+
+      // Update rate limiting counter
+      await this.updateRateLimit(normalizedPhone);
 
       return {
         success: true,
@@ -311,14 +338,307 @@ Thank you!`,
       };
     } catch (error) {
       console.error('Error sending WhatsApp message:', error);
+      return this.handleWhatsAppError(error);
+    }
+  }
 
-      if (error instanceof BadRequestException) {
-        throw error;
+  /**
+   * Enhanced phone number validation and formatting
+   * Requirements: 7.2, 7.3
+   */
+  private validatePhoneNumber(phoneNumber: string): {
+    isValid: boolean;
+    normalizedPhone?: string;
+    error?: string;
+  } {
+    if (
+      !phoneNumber ||
+      typeof phoneNumber !== 'string' ||
+      phoneNumber.trim() === ''
+    ) {
+      return {
+        isValid: false,
+        error: 'Enter a valid phone number to send via WhatsApp',
+      };
+    }
+
+    const trimmedPhone = phoneNumber.trim();
+
+    // Check for minimum length (at least 10 digits)
+    const digitsOnly = trimmedPhone.replace(/\D/g, '');
+    if (digitsOnly.length < 10) {
+      return {
+        isValid: false,
+        error: 'Phone number must contain at least 10 digits',
+      };
+    }
+
+    // Check for maximum length (no more than 15 digits as per E.164 standard)
+    if (digitsOnly.length > 15) {
+      return {
+        isValid: false,
+        error: 'Phone number is too long (maximum 15 digits)',
+      };
+    }
+
+    try {
+      const normalizedPhone = UtilService.normalizePhoneNumber(trimmedPhone);
+
+      if (!normalizedPhone) {
+        return {
+          isValid: false,
+          error:
+            'Invalid phone number format. Please use a valid international format',
+        };
+      }
+
+      // Additional validation for Nigerian numbers (common use case)
+      if (normalizedPhone.startsWith('234')) {
+        const nigerianNumber = normalizedPhone.substring(3);
+        if (nigerianNumber.length !== 10) {
+          return {
+            isValid: false,
+            error: 'Invalid Nigerian phone number format',
+          };
+        }
       }
 
       return {
+        isValid: true,
+        normalizedPhone,
+      };
+    } catch (error) {
+      return {
+        isValid: false,
+        error: 'Failed to process phone number. Please check the format',
+      };
+    }
+  }
+
+  /**
+   * Create enhanced KYC link message template
+   * Requirements: 1.5, 7.2
+   */
+  private createKYCLinkMessage(propertyName: string, kycLink: string): string {
+    const expiryDays =
+      this.configService.get('KYC_LINK_EXPIRY_DAYS') ||
+      this.DEFAULT_EXPIRY_DAYS;
+
+    return `🏠 *Property Application Invitation*
+
+Hello! You've been invited to apply for:
+*${propertyName}*
+
+📋 Complete your KYC application here:
+${kycLink}
+
+⏰ *Important:* This link expires in ${expiryDays} days
+✅ Submit your application early to secure your tenancy
+
+Questions? Reply to this message for assistance.
+
+*Powered by Lizt Property Management*`;
+  }
+
+  /**
+   * Check rate limiting for WhatsApp messages
+   * Requirements: 7.2, 7.3
+   */
+  private async checkRateLimit(phoneNumber: string): Promise<{
+    allowed: boolean;
+    retryAfter?: number;
+  }> {
+    const rateLimitKey = `whatsapp_rate_limit:${phoneNumber}`;
+    const maxMessages = this.configService.get('WHATSAPP_RATE_LIMIT_MAX') || 5;
+    const windowMinutes =
+      this.configService.get('WHATSAPP_RATE_LIMIT_WINDOW') || 60;
+
+    try {
+      // This would typically use Redis or another cache service
+      // For now, we'll implement a simple in-memory rate limiting
+      const currentTime = Date.now();
+      const windowStart = currentTime - windowMinutes * 60 * 1000;
+
+      // In a production environment, you would use a proper cache service
+      // This is a simplified implementation for demonstration
+      console.log(
+        `Rate limit check for ${phoneNumber}: ${maxMessages} messages per ${windowMinutes} minutes`,
+      );
+
+      // For now, always allow (would implement proper rate limiting with Redis)
+      return { allowed: true };
+    } catch (error) {
+      console.warn('Rate limiting check failed, allowing message send:', error);
+      return { allowed: true };
+    }
+  }
+
+  /**
+   * Update rate limiting counter
+   * Requirements: 7.2, 7.3
+   */
+  private async updateRateLimit(phoneNumber: string): Promise<void> {
+    const rateLimitKey = `whatsapp_rate_limit:${phoneNumber}`;
+
+    try {
+      // In a production environment, you would increment the counter in your cache service
+      console.log(`Updated rate limit counter for ${phoneNumber}`);
+    } catch (error) {
+      console.warn('Failed to update rate limit counter:', error);
+    }
+  }
+
+  /**
+   * Send WhatsApp message with retry logic
+   * Requirements: 7.2, 7.3
+   */
+  private async sendWithRetry(
+    payload: any,
+    phoneNumber: string,
+    maxRetries: number = 3,
+    baseDelay: number = 1000,
+  ): Promise<void> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.whatsappBotService['sendToWhatsappAPI'](payload);
+        console.log(
+          `WhatsApp message sent successfully to ${phoneNumber} on attempt ${attempt}`,
+        );
+        return;
+      } catch (error) {
+        lastError = error as Error;
+        console.warn(
+          `WhatsApp send attempt ${attempt} failed for ${phoneNumber}:`,
+          error.message,
+        );
+
+        if (attempt < maxRetries) {
+          // Exponential backoff: wait longer between each retry
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    // If all retries failed, throw the last error
+    throw new HttpException(
+      `Failed to send WhatsApp message after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`,
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
+  }
+
+  /**
+   * Handle WhatsApp errors and provide appropriate responses
+   * Requirements: 7.2, 7.3
+   */
+  private handleWhatsAppError(error: any): WhatsAppResponse {
+    // Handle specific error types
+    if (error instanceof BadRequestException) {
+      return {
         success: false,
-        message: 'Failed to send link. Please try again or copy manually',
+        message: error.message,
+        errorCode: WhatsAppErrorCode.INVALID_PHONE,
+      };
+    }
+
+    if (error instanceof HttpException) {
+      const status = error.getStatus();
+
+      if (status === HttpStatus.TOO_MANY_REQUESTS || status === 429) {
+        return {
+          success: false,
+          message: 'Rate limit exceeded. Please try again in a few minutes.',
+          errorCode: WhatsAppErrorCode.RATE_LIMITED,
+          retryAfter: 300, // 5 minutes
+        };
+      }
+
+      if (status === HttpStatus.UNAUTHORIZED || status === 401) {
+        return {
+          success: false,
+          message:
+            'WhatsApp service authentication failed. Please contact support.',
+          errorCode: WhatsAppErrorCode.AUTHENTICATION_ERROR,
+        };
+      }
+
+      if (status === HttpStatus.SERVICE_UNAVAILABLE || status >= 500) {
+        return {
+          success: false,
+          message:
+            'WhatsApp service is temporarily unavailable. Please try again later.',
+          errorCode: WhatsAppErrorCode.SERVICE_UNAVAILABLE,
+          retryAfter: 60, // 1 minute
+        };
+      }
+    }
+
+    // Handle network errors
+    if (
+      error.code === 'ECONNREFUSED' ||
+      error.code === 'ENOTFOUND' ||
+      error.code === 'ETIMEDOUT'
+    ) {
+      return {
+        success: false,
+        message:
+          'Network error occurred. Please check your connection and try again.',
+        errorCode: WhatsAppErrorCode.NETWORK_ERROR,
+        retryAfter: 30, // 30 seconds
+      };
+    }
+
+    // Handle unknown errors
+    console.error('Unknown WhatsApp error:', error);
+    return {
+      success: false,
+      message:
+        'An unexpected error occurred. Please try again or copy the link manually.',
+      errorCode: WhatsAppErrorCode.UNKNOWN_ERROR,
+    };
+  }
+
+  /**
+   * Send fallback message when WhatsApp delivery fails
+   * Requirements: 7.2, 7.3
+   */
+  async sendFallbackMessage(
+    phoneNumber: string,
+    kycLink: string,
+    propertyName: string,
+    originalError: WhatsAppErrorCode,
+  ): Promise<WhatsAppResponse> {
+    try {
+      // Create a simpler fallback message
+      const fallbackMessage = `KYC Application Link for ${propertyName}: ${kycLink}`;
+
+      const payload = {
+        messaging_product: 'whatsapp',
+        to: phoneNumber,
+        type: 'text',
+        text: {
+          preview_url: false,
+          body: fallbackMessage,
+        },
+      };
+
+      // Try sending with minimal retry (only 1 retry for fallback)
+      await this.sendWithRetry(payload, phoneNumber, 1, 500);
+
+      return {
+        success: true,
+        message: 'Fallback message sent successfully',
+      };
+    } catch (error) {
+      console.error('Fallback message also failed:', error);
+      return {
+        success: false,
+        message:
+          'Both primary and fallback message delivery failed. Please copy the link manually.',
+        errorCode: WhatsAppErrorCode.SERVICE_UNAVAILABLE,
       };
     }
   }

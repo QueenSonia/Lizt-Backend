@@ -391,7 +391,16 @@ describe('KYCLinksService', () => {
     const kycLink = 'http://localhost:3000/kyc/token-123';
     const propertyName = 'Test Property';
 
-    it('should send KYC link via WhatsApp successfully', async () => {
+    beforeEach(() => {
+      mockConfigService.get.mockImplementation((key) => {
+        if (key === 'KYC_LINK_EXPIRY_DAYS') return 7;
+        if (key === 'WHATSAPP_RATE_LIMIT_MAX') return 5;
+        if (key === 'WHATSAPP_RATE_LIMIT_WINDOW') return 60;
+        return null;
+      });
+    });
+
+    it('should send KYC link via WhatsApp successfully with enhanced template', async () => {
       // Arrange
       mockWhatsappBotService.sendToWhatsappAPI.mockResolvedValue(undefined);
 
@@ -408,7 +417,8 @@ describe('KYCLinksService', () => {
         to: phoneNumber,
         type: 'text',
         text: {
-          body: expect.stringContaining(propertyName),
+          preview_url: true,
+          body: expect.stringContaining('🏠 *Property Application Invitation*'),
         },
       });
       expect(result).toEqual({
@@ -417,17 +427,80 @@ describe('KYCLinksService', () => {
       });
     });
 
-    it('should throw BadRequestException for empty phone number', async () => {
-      // Act & Assert
-      await expect(
-        service.sendKYCLinkViaWhatsApp('', kycLink, propertyName),
-      ).rejects.toThrow(BadRequestException);
+    it('should return error response for invalid phone number format', async () => {
+      // Act
+      const result = await service.sendKYCLinkViaWhatsApp(
+        '',
+        kycLink,
+        propertyName,
+      );
+
+      // Assert
+      expect(result).toEqual({
+        success: false,
+        message: 'Enter a valid phone number to send via WhatsApp',
+        errorCode: 'INVALID_PHONE',
+      });
     });
 
-    it('should return failure response when WhatsApp API fails', async () => {
+    it('should return error response for phone number too short', async () => {
+      // Act
+      const result = await service.sendKYCLinkViaWhatsApp(
+        '123456789',
+        kycLink,
+        propertyName,
+      );
+
+      // Assert
+      expect(result).toEqual({
+        success: false,
+        message: 'Phone number must contain at least 10 digits',
+        errorCode: 'INVALID_PHONE',
+      });
+    });
+
+    it('should return error response for phone number too long', async () => {
+      // Act
+      const result = await service.sendKYCLinkViaWhatsApp(
+        '1234567890123456', // 16 digits
+        kycLink,
+        propertyName,
+      );
+
+      // Assert
+      expect(result).toEqual({
+        success: false,
+        message: 'Phone number is too long (maximum 15 digits)',
+        errorCode: 'INVALID_PHONE',
+      });
+    });
+
+    it('should retry on failure and succeed on second attempt', async () => {
       // Arrange
+      mockWhatsappBotService.sendToWhatsappAPI
+        .mockRejectedValueOnce(new Error('Network error'))
+        .mockResolvedValueOnce(undefined);
+
+      // Act
+      const result = await service.sendKYCLinkViaWhatsApp(
+        phoneNumber,
+        kycLink,
+        propertyName,
+      );
+
+      // Assert
+      expect(mockWhatsappBotService.sendToWhatsappAPI).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({
+        success: true,
+        message: 'KYC link sent successfully via WhatsApp',
+      });
+    });
+
+    it('should handle rate limiting error', async () => {
+      // Arrange
+      const rateLimitError = new HttpException('Too Many Requests', 429);
       mockWhatsappBotService.sendToWhatsappAPI.mockRejectedValue(
-        new Error('WhatsApp API error'),
+        rateLimitError,
       );
 
       // Act
@@ -440,7 +513,174 @@ describe('KYCLinksService', () => {
       // Assert
       expect(result).toEqual({
         success: false,
-        message: 'Failed to send link. Please try again or copy manually',
+        message: 'Rate limit exceeded. Please try again in a few minutes.',
+        errorCode: 'RATE_LIMITED',
+        retryAfter: 300,
+      });
+    });
+
+    it('should handle authentication error', async () => {
+      // Arrange
+      const authError = new HttpException('Unauthorized', 401);
+      mockWhatsappBotService.sendToWhatsappAPI.mockRejectedValue(authError);
+
+      // Act
+      const result = await service.sendKYCLinkViaWhatsApp(
+        phoneNumber,
+        kycLink,
+        propertyName,
+      );
+
+      // Assert
+      expect(result).toEqual({
+        success: false,
+        message:
+          'WhatsApp service authentication failed. Please contact support.',
+        errorCode: 'AUTHENTICATION_ERROR',
+      });
+    });
+
+    it('should handle service unavailable error', async () => {
+      // Arrange
+      const serviceError = new HttpException('Service Unavailable', 503);
+      mockWhatsappBotService.sendToWhatsappAPI.mockRejectedValue(serviceError);
+
+      // Act
+      const result = await service.sendKYCLinkViaWhatsApp(
+        phoneNumber,
+        kycLink,
+        propertyName,
+      );
+
+      // Assert
+      expect(result).toEqual({
+        success: false,
+        message:
+          'WhatsApp service is temporarily unavailable. Please try again later.',
+        errorCode: 'SERVICE_UNAVAILABLE',
+        retryAfter: 60,
+      });
+    });
+
+    it('should handle network errors', async () => {
+      // Arrange
+      const networkError = new Error('Network error') as any;
+      networkError.code = 'ECONNREFUSED';
+      mockWhatsappBotService.sendToWhatsappAPI.mockRejectedValue(networkError);
+
+      // Act
+      const result = await service.sendKYCLinkViaWhatsApp(
+        phoneNumber,
+        kycLink,
+        propertyName,
+      );
+
+      // Assert
+      expect(result).toEqual({
+        success: false,
+        message:
+          'Network error occurred. Please check your connection and try again.',
+        errorCode: 'NETWORK_ERROR',
+        retryAfter: 30,
+      });
+    });
+
+    it('should fail after maximum retry attempts', async () => {
+      // Arrange
+      mockWhatsappBotService.sendToWhatsappAPI.mockRejectedValue(
+        new Error('Persistent error'),
+      );
+
+      // Act
+      const result = await service.sendKYCLinkViaWhatsApp(
+        phoneNumber,
+        kycLink,
+        propertyName,
+      );
+
+      // Assert
+      expect(mockWhatsappBotService.sendToWhatsappAPI).toHaveBeenCalledTimes(3); // Initial + 2 retries
+      expect(result).toEqual({
+        success: false,
+        message:
+          'An unexpected error occurred. Please try again or copy the link manually.',
+        errorCode: 'UNKNOWN_ERROR',
+      });
+    });
+
+    it('should create enhanced message template with property name and expiry', async () => {
+      // Arrange
+      mockWhatsappBotService.sendToWhatsappAPI.mockResolvedValue(undefined);
+
+      // Act
+      await service.sendKYCLinkViaWhatsApp(phoneNumber, kycLink, propertyName);
+
+      // Assert
+      const callArgs =
+        mockWhatsappBotService.sendToWhatsappAPI.mock.calls[0][0];
+      const messageBody = callArgs.text.body;
+
+      expect(messageBody).toContain('🏠 *Property Application Invitation*');
+      expect(messageBody).toContain(`*${propertyName}*`);
+      expect(messageBody).toContain(kycLink);
+      expect(messageBody).toContain('expires in 7 days');
+      expect(messageBody).toContain('*Powered by Lizt Property Management*');
+    });
+  });
+
+  describe('sendFallbackMessage', () => {
+    const phoneNumber = '+2348012345678';
+    const kycLink = 'http://localhost:3000/kyc/token-123';
+    const propertyName = 'Test Property';
+
+    it('should send fallback message successfully', async () => {
+      // Arrange
+      mockWhatsappBotService.sendToWhatsappAPI.mockResolvedValue(undefined);
+
+      // Act
+      const result = await service.sendFallbackMessage(
+        phoneNumber,
+        kycLink,
+        propertyName,
+        'NETWORK_ERROR' as any,
+      );
+
+      // Assert
+      expect(mockWhatsappBotService.sendToWhatsappAPI).toHaveBeenCalledWith({
+        messaging_product: 'whatsapp',
+        to: phoneNumber,
+        type: 'text',
+        text: {
+          preview_url: false,
+          body: `KYC Application Link for ${propertyName}: ${kycLink}`,
+        },
+      });
+      expect(result).toEqual({
+        success: true,
+        message: 'Fallback message sent successfully',
+      });
+    });
+
+    it('should return failure when fallback also fails', async () => {
+      // Arrange
+      mockWhatsappBotService.sendToWhatsappAPI.mockRejectedValue(
+        new Error('Fallback failed'),
+      );
+
+      // Act
+      const result = await service.sendFallbackMessage(
+        phoneNumber,
+        kycLink,
+        propertyName,
+        'NETWORK_ERROR' as any,
+      );
+
+      // Assert
+      expect(result).toEqual({
+        success: false,
+        message:
+          'Both primary and fallback message delivery failed. Please copy the link manually.',
+        errorCode: 'SERVICE_UNAVAILABLE',
       });
     });
   });

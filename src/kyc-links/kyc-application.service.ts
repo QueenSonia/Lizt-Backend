@@ -106,7 +106,7 @@ export class KYCApplicationService {
   async getApplicationsByProperty(
     propertyId: string,
     landlordId: string,
-  ): Promise<KYCApplication[]> {
+  ): Promise<any[]> {
     // Validate property ownership
     await this.validatePropertyOwnership(propertyId, landlordId);
 
@@ -120,7 +120,7 @@ export class KYCApplicationService {
       },
     });
 
-    return applications;
+    return applications.map((app) => this.transformApplicationForFrontend(app));
   }
 
   /**
@@ -135,7 +135,7 @@ export class KYCApplicationService {
       sortBy?: 'created_at' | 'first_name' | 'status';
       sortOrder?: 'ASC' | 'DESC';
     },
-  ): Promise<KYCApplication[]> {
+  ): Promise<any[]> {
     // Validate property ownership
     await this.validatePropertyOwnership(propertyId, landlordId);
 
@@ -163,7 +163,66 @@ export class KYCApplicationService {
       queryBuilder.addOrderBy('application.created_at', 'DESC');
     }
 
-    return await queryBuilder.getMany();
+    const applications = await queryBuilder.getMany();
+    return applications.map((app) => this.transformApplicationForFrontend(app));
+  }
+
+  /**
+   * Transform KYC application entity to frontend-compatible format
+   * Converts snake_case to camelCase and structures references properly
+   */
+  private transformApplicationForFrontend(application: KYCApplication): any {
+    return {
+      id: application.id,
+      propertyId: application.property_id,
+      status: application.status,
+      firstName: application.first_name,
+      lastName: application.last_name,
+      email: application.email,
+      phoneNumber: application.phone_number,
+      dateOfBirth: application.date_of_birth
+        ? application.date_of_birth instanceof Date
+          ? application.date_of_birth.toISOString().split('T')[0]
+          : new Date(application.date_of_birth).toISOString().split('T')[0]
+        : null, // Format as YYYY-MM-DD
+      gender: application.gender,
+      nationality: application.nationality,
+      stateOfOrigin: application.state_of_origin,
+      localGovernmentArea: application.local_government_area,
+      maritalStatus: application.marital_status,
+      employmentStatus: application.employment_status,
+      occupation: application.occupation,
+      jobTitle: application.job_title,
+      employerName: application.employer_name,
+      employerAddress: application.employer_address,
+      monthlyNetIncome: application.monthly_net_income,
+      reference1: {
+        name: application.reference1_name,
+        relationship: application.reference1_relationship,
+        phoneNumber: application.reference1_phone_number,
+        email: null, // Not stored in current schema
+      },
+      reference2: application.reference2_name
+        ? {
+            name: application.reference2_name,
+            relationship: application.reference2_relationship,
+            phoneNumber: application.reference2_phone_number,
+            email: null, // Not stored in current schema
+          }
+        : null,
+      submissionDate:
+        application.created_at instanceof Date
+          ? application.created_at.toISOString()
+          : application.created_at,
+      createdAt:
+        application.created_at instanceof Date
+          ? application.created_at.toISOString()
+          : application.created_at,
+      updatedAt:
+        application.updated_at instanceof Date
+          ? application.updated_at.toISOString()
+          : application.updated_at,
+    };
   }
 
   /**
@@ -173,7 +232,7 @@ export class KYCApplicationService {
   async getApplicationById(
     applicationId: string,
     landlordId: string,
-  ): Promise<KYCApplication> {
+  ): Promise<any> {
     const application = await this.kycApplicationRepository.findOne({
       where: { id: applicationId },
       relations: ['property', 'kyc_link', 'tenant'],
@@ -186,7 +245,7 @@ export class KYCApplicationService {
     // Validate that the landlord owns the property
     await this.validatePropertyOwnership(application.property_id, landlordId);
 
-    return application;
+    return this.transformApplicationForFrontend(application);
   }
 
   /**
@@ -284,7 +343,7 @@ export class KYCApplicationService {
   async getApplicationsByTenant(
     tenantId: string,
     landlordId: string,
-  ): Promise<KYCApplication[]> {
+  ): Promise<any[]> {
     // Get all applications for the tenant
     const applications = await this.kycApplicationRepository.find({
       where: { tenant_id: tenantId },
@@ -299,7 +358,7 @@ export class KYCApplicationService {
       await this.validatePropertyOwnership(application.property_id, landlordId);
     }
 
-    return applications;
+    return applications.map((app) => this.transformApplicationForFrontend(app));
   }
 
   /**

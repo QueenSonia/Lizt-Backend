@@ -71,7 +71,7 @@ export class KYCApplicationController {
     @Query('sortOrder') sortOrder?: 'ASC' | 'DESC',
   ): Promise<{
     success: boolean;
-    applications: KYCApplication[];
+    applications: any[];
     statistics: {
       total: number;
       pending: number;
@@ -114,7 +114,7 @@ export class KYCApplicationController {
     @CurrentUser() user: Account,
   ): Promise<{
     success: boolean;
-    application: KYCApplication;
+    application: any;
   }> {
     const application = await this.kycApplicationService.getApplicationById(
       applicationId,
@@ -172,7 +172,7 @@ export class KYCApplicationController {
     @CurrentUser() user: Account,
   ): Promise<{
     success: boolean;
-    applications: KYCApplication[];
+    applications: any[];
   }> {
     const applications =
       await this.kycApplicationService.getApplicationsByTenant(

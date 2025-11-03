@@ -22,13 +22,16 @@ import {
 import { TenantAttachmentService } from './tenant-attachment.service';
 import { AttachTenantDto } from './dto/attach-tenant.dto';
 import { SendWhatsAppDto } from './dto/send-whatsapp.dto';
+import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { Account } from '../users/entities/account.entity';
+import { KYCApplicationService } from './kyc-application.service';
 
 @Controller('api')
 export class KYCLinksController {
   constructor(
     private readonly kycLinksService: KYCLinksService,
     private readonly tenantAttachmentService: TenantAttachmentService,
+    private readonly kycApplicationService: KYCApplicationService,
   ) {}
 
   /**
@@ -51,6 +54,8 @@ export class KYCLinksController {
       propertyId,
       user.id,
     );
+
+    console.log('Backend kycLinkResponse:', kycLinkResponse);
 
     return {
       success: true,
@@ -135,6 +140,166 @@ export class KYCLinksController {
       success: true,
       message: 'KYC token is valid',
       data: validationResult,
+    };
+  }
+
+  /**
+   * Submit KYC application (public endpoint)
+   * POST /api/kyc/:token/submit
+   * Requirements: 3.1, 3.2, 3.4
+   */
+  @Public()
+  @Post('kyc/:token/submit')
+  async submitKYCApplication(
+    @Param('token') token: string,
+    @Body(ValidationPipe) kycData: CreateKYCApplicationDto,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    data?: {
+      applicationId: string;
+      status: string;
+    };
+  }> {
+    try {
+      const application = await this.kycApplicationService.submitKYCApplication(
+        token,
+        kycData,
+      );
+
+      return {
+        success: true,
+        message: 'KYC application submitted successfully',
+        data: {
+          applicationId: application.id,
+          status: application.status,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Failed to submit KYC application',
+      };
+    }
+  }
+
+  /**
+   * Get KYC applications for a property (landlord only)
+   * GET /api/properties/:propertyId/kyc-applications
+   * Requirements: 4.1, 4.2, 4.3
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('properties/:propertyId/kyc-applications')
+  async getKYCApplicationsByProperty(
+    @Param('propertyId', ParseUUIDPipe) propertyId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    applications: any[];
+  }> {
+    const applications =
+      await this.kycApplicationService.getApplicationsByProperty(
+        propertyId,
+        user.id,
+      );
+
+    return {
+      success: true,
+      message: 'KYC applications retrieved successfully',
+      applications,
+    };
+  }
+
+  /**
+   * Get KYC application statistics for a property (landlord only)
+   * GET /api/properties/:propertyId/kyc-applications/statistics
+   * Requirements: 4.1, 4.2
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('properties/:propertyId/kyc-applications/statistics')
+  async getKYCApplicationStatistics(
+    @Param('propertyId', ParseUUIDPipe) propertyId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    data: {
+      total: number;
+      pending: number;
+      approved: number;
+      rejected: number;
+    };
+  }> {
+    const statistics =
+      await this.kycApplicationService.getApplicationStatistics(
+        propertyId,
+        user.id,
+      );
+
+    return {
+      success: true,
+      message: 'KYC application statistics retrieved successfully',
+      data: statistics,
+    };
+  }
+
+  /**
+   * Get a specific KYC application by ID (landlord only)
+   * GET /api/kyc-applications/:applicationId
+   * Requirements: 4.1, 4.2, 4.3
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('kyc-applications/:applicationId')
+  async getKYCApplicationById(
+    @Param('applicationId', ParseUUIDPipe) applicationId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    data: any;
+  }> {
+    const application = await this.kycApplicationService.getApplicationById(
+      applicationId,
+      user.id,
+    );
+
+    return {
+      success: true,
+      message: 'KYC application retrieved successfully',
+      data: application,
+    };
+  }
+
+  /**
+   * Get KYC applications by tenant ID (landlord only)
+   * GET /api/tenants/:tenantId/kyc-applications
+   * Requirements: 4.5, 6.4
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('tenants/:tenantId/kyc-applications')
+  async getKYCApplicationsByTenant(
+    @Param('tenantId', ParseUUIDPipe) tenantId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    applications: any[];
+  }> {
+    const applications =
+      await this.kycApplicationService.getApplicationsByTenant(
+        tenantId,
+        user.id,
+      );
+
+    return {
+      success: true,
+      message: 'Tenant KYC applications retrieved successfully',
+      applications,
     };
   }
 

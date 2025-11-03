@@ -278,6 +278,31 @@ export class KYCApplicationService {
   }
 
   /**
+   * Get KYC applications by tenant ID (landlord access only)
+   * Requirements: 4.5, 6.4
+   */
+  async getApplicationsByTenant(
+    tenantId: string,
+    landlordId: string,
+  ): Promise<KYCApplication[]> {
+    // Get all applications for the tenant
+    const applications = await this.kycApplicationRepository.find({
+      where: { tenant_id: tenantId },
+      relations: ['property', 'kyc_link', 'tenant'],
+      order: {
+        created_at: 'DESC', // Most recent applications first
+      },
+    });
+
+    // Validate that the landlord owns all properties associated with these applications
+    for (const application of applications) {
+      await this.validatePropertyOwnership(application.property_id, landlordId);
+    }
+
+    return applications;
+  }
+
+  /**
    * Validate KYC token and return the associated KYC link
    * Private helper method
    */

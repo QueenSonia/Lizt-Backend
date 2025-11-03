@@ -12,6 +12,7 @@ import { RentsModule } from 'src/rents/rents.module';
 import { UsersService } from 'src/users/users.service';
 import { UsersModule } from 'src/users/users.module';
 import { Account } from 'src/users/entities/account.entity';
+import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { Account } from 'src/users/entities/account.entity';
     ]),
     RentsModule,
     UsersModule,
+    KYCLinksModule,
   ],
   controllers: [PropertiesController],
   providers: [PropertiesService, FileUploadService, RentsService],

@@ -27,6 +27,7 @@ describe('KYCApplicationController', () => {
     getApplicationsByPropertyWithFilters: jest.fn(),
     getApplicationStatistics: jest.fn(),
     getApplicationById: jest.fn(),
+    getApplicationsByTenant: jest.fn(),
   };
 
   const mockUser: Account = {
@@ -90,12 +91,12 @@ describe('KYCApplicationController', () => {
   describe('submitKYCApplication', () => {
     const token = 'valid-token-123';
 
-    const mockSubmittedApplication: KYCApplication = {
+    const mockSubmittedApplication = {
       id: 'application-123',
       kyc_link_id: 'kyc-link-123',
       property_id: 'property-123',
       status: ApplicationStatus.PENDING,
-      tenant_id: null,
+      tenant_id: undefined,
       first_name: mockKycApplicationDto.first_name,
       last_name: mockKycApplicationDto.last_name,
       email: mockKycApplicationDto.email,
@@ -525,6 +526,71 @@ describe('KYCApplicationController', () => {
       expect(result).toHaveProperty('statistics');
       expect(Array.isArray(result.applications)).toBe(true);
       expect(typeof result.statistics).toBe('object');
+    });
+  });
+
+  describe('getApplicationsByTenant', () => {
+    const tenantId = 'tenant-123';
+
+    const mockTenantApplications = [
+      {
+        id: 'app-1',
+        property_id: 'property-123',
+        tenant_id: tenantId,
+        status: ApplicationStatus.APPROVED,
+        first_name: 'John',
+        last_name: 'Doe',
+        email: 'john@example.com',
+        created_at: new Date(),
+      } as KYCApplication,
+    ];
+
+    it('should return applications for tenant', async () => {
+      // Arrange
+      mockKycApplicationService.getApplicationsByTenant.mockResolvedValue(
+        mockTenantApplications,
+      );
+
+      // Act
+      const result = await controller.getApplicationsByTenant(
+        tenantId,
+        mockUser,
+      );
+
+      // Assert
+      expect(
+        mockKycApplicationService.getApplicationsByTenant,
+      ).toHaveBeenCalledWith(tenantId, mockUser.id);
+      expect(result).toEqual({
+        success: true,
+        applications: mockTenantApplications,
+      });
+    });
+
+    it('should handle tenant not found error', async () => {
+      // Arrange
+      mockKycApplicationService.getApplicationsByTenant.mockRejectedValue(
+        new NotFoundException('Tenant not found'),
+      );
+
+      // Act & Assert
+      await expect(
+        controller.getApplicationsByTenant(tenantId, mockUser),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should handle unauthorized access error', async () => {
+      // Arrange
+      mockKycApplicationService.getApplicationsByTenant.mockRejectedValue(
+        new BadRequestException(
+          'You are not authorized to access applications for this tenant',
+        ),
+      );
+
+      // Act & Assert
+      await expect(
+        controller.getApplicationsByTenant(tenantId, mockUser),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

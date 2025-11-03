@@ -158,4 +158,31 @@ export class KYCApplicationController {
       statistics,
     };
   }
+
+  /**
+   * Get KYC applications by tenant ID (landlord only)
+   * GET /api/tenants/:tenantId/kyc-applications
+   * Requirements: 4.5, 6.4
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('tenants/:tenantId/kyc-applications')
+  async getApplicationsByTenant(
+    @Param('tenantId', ParseUUIDPipe) tenantId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    applications: KYCApplication[];
+  }> {
+    const applications =
+      await this.kycApplicationService.getApplicationsByTenant(
+        tenantId,
+        user.id,
+      );
+
+    return {
+      success: true,
+      applications,
+    };
+  }
 }

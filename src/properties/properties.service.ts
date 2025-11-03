@@ -37,6 +37,8 @@ import {
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { PerformanceMonitor } from 'src/utils/performance-monitor';
+import { KYCApplicationService } from 'src/kyc-links/kyc-application.service';
+import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 
 @Injectable()
 export class PropertiesService {
@@ -53,6 +55,7 @@ export class PropertiesService {
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly dataSource: DataSource,
+    private readonly kycApplicationService: KYCApplicationService,
   ) {}
 
   async createProperty(
@@ -230,6 +233,18 @@ export class PropertiesService {
       .leftJoinAndSelect('srTenant.user', 'srTenantUser')
       .leftJoinAndSelect('property.owner', 'owner')
       .leftJoinAndSelect('owner.user', 'ownerUser')
+      .leftJoinAndSelect(
+        'property.kyc_applications',
+        'kycApplication',
+        'kycApplication.status = :pendingStatus',
+        { pendingStatus: 'pending' },
+      )
+      .leftJoinAndSelect(
+        'property.kyc_links',
+        'kycLink',
+        'kycLink.is_active = :isActive',
+        { isActive: true },
+      )
       .where('property.id = :id', { id })
       .getOne();
     if (!property?.id) {
@@ -279,7 +294,25 @@ export class PropertiesService {
     // 4. Computed Description
     const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1 ? 'studio' : `${property.no_of_bedrooms}`}-bedroom ${property.property_type?.toLowerCase()} located in ${property.location}`;
 
-    // 5. Build the final DTO
+    // 5. Format KYC Applications
+    const kycApplications =
+      property.kyc_applications?.map((app) => ({
+        id: app.id,
+        status: app.status,
+        applicantName: `${app.first_name} ${app.last_name}`,
+        email: app.email,
+        phoneNumber: app.phone_number,
+        submissionDate: app.created_at
+          ? new Date(app.created_at).toISOString()
+          : new Date().toISOString(),
+      })) || [];
+
+    // 6. KYC Link Status
+    const hasActiveKYCLink =
+      property.kyc_links?.some((link) => link.is_active) || false;
+    const kycApplicationCount = kycApplications.length;
+
+    // 7. Build the final DTO
     return {
       id: property.id,
       name: property.name,
@@ -297,6 +330,9 @@ export class PropertiesService {
       tenant: activeTenantInfo,
       rentPayments: rentPayments,
       serviceRequests: serviceRequests,
+      kycApplications: kycApplications,
+      kycApplicationCount: kycApplicationCount,
+      hasActiveKYCLink: hasActiveKYCLink,
     };
   }
 
@@ -324,6 +360,13 @@ export class PropertiesService {
       .leftJoinAndSelect('property.property_histories', 'history')
       .leftJoinAndSelect('history.tenant', 'historyTenant')
       .leftJoinAndSelect('historyTenant.user', 'historyTenantUser')
+      .leftJoinAndSelect('property.kyc_applications', 'kycApplication')
+      .leftJoinAndSelect(
+        'property.kyc_links',
+        'kycLink',
+        'kycLink.is_active = :isActive',
+        { isActive: true },
+      )
       .where('property.id = :id', { id })
       .getOne();
 
@@ -401,6 +444,29 @@ export class PropertiesService {
         : `${property.no_of_bedrooms}-bedroom`
     } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
 
+    // KYC Applications data
+    const kycApplications =
+      property.kyc_applications?.map((app) => ({
+        id: app.id,
+        status: app.status,
+        applicantName: `${app.first_name} ${app.last_name}`,
+        email: app.email,
+        phoneNumber: app.phone_number,
+        submissionDate: app.created_at
+          ? new Date(app.created_at).toISOString()
+          : new Date().toISOString(),
+        employmentStatus: app.employment_status,
+        monthlyIncome: app.monthly_net_income,
+      })) || [];
+
+    // KYC Link Status
+    const hasActiveKYCLink =
+      property.kyc_links?.some((link) => link.is_active) || false;
+    const kycApplicationCount = kycApplications.length;
+    const pendingApplicationsCount = kycApplications.filter(
+      (app) => app.status === 'pending',
+    ).length;
+
     // Build the comprehensive response
     return {
       id: property.id,
@@ -421,6 +487,10 @@ export class PropertiesService {
       description: property.description || computedDescription,
       currentTenant,
       history,
+      kycApplications,
+      kycApplicationCount,
+      pendingApplicationsCount,
+      hasActiveKYCLink,
     };
   }
 
@@ -740,6 +810,9 @@ export class PropertiesService {
         property_status: PropertyStatusEnum.VACANT,
       });
 
+      // Note: KYC links are not automatically reactivated when tenant moves out
+      // Landlord needs to generate new KYC links if they want to find new tenants
+
       // Try to find existing PropertyHistory record for this tenant
       let propertyHistory = await queryRunner.manager.findOne(PropertyHistory, {
         where: {
@@ -1033,6 +1106,8 @@ export class PropertiesService {
           move_out_date: null,
           move_out_reason: null,
         }),
+        // Deactivate any active KYC links for this property
+        this.deactivateKYCLinksForProperty(queryRunner, property.id),
       ]);
 
       await queryRunner.commitTransaction();
@@ -1051,5 +1126,20 @@ export class PropertiesService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  /**
+   * Deactivate KYC links when property becomes occupied
+   * Requirements: 2.4, 2.5, 6.4
+   */
+  private async deactivateKYCLinksForProperty(
+    queryRunner: any,
+    propertyId: string,
+  ): Promise<void> {
+    await queryRunner.manager.update(
+      'kyc_links',
+      { property_id: propertyId, is_active: true },
+      { is_active: false },
+    );
   }
 }

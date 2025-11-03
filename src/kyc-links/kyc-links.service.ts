@@ -94,7 +94,7 @@ export class KYCLinksService {
       },
     });
 
-    if (existingLink) {
+    if (existingLink && existingLink.token) {
       // Return existing active link
       const baseUrl =
         this.configService.get('FRONTEND_URL') || 'http://localhost:3000';

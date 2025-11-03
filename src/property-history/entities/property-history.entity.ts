@@ -43,9 +43,9 @@ export class PropertyHistory extends BaseEntity {
   @Column({ type: 'int', nullable: false })
   monthly_rent: number;
 
-  @ManyToOne(() => Property, (p) => p.property_histories,{
-  onDelete: 'CASCADE',
-})
+  @ManyToOne(() => Property, (p) => p.property_histories, {
+    onDelete: 'CASCADE',
+  })
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 

@@ -15,7 +15,7 @@ import { corsOptions } from './utils/options.cors';
 async function bootstrap(): Promise<NestExpressApplication> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
-  const PORT = +(process.env.PORT ?? configService.get('PORT') ?? 3050);
+  const PORT = +(process.env.PORT ?? configService.get('PORT') ?? 3150);
 
   // // ===== CORS config =====
   // app.enableCors({

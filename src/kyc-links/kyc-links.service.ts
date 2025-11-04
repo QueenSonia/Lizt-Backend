@@ -7,10 +7,11 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan } from 'typeorm';
+import { Repository, LessThan, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { KYCLink } from './entities/kyc-link.entity';
+import { KYCOtp } from './entities/kyc-otp.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyStatusEnum } from '../properties/dto/create-property.dto';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
@@ -61,6 +62,8 @@ export class KYCLinksService {
     private readonly kycLinkRepository: Repository<KYCLink>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(KYCOtp)
+    private readonly kycOtpRepository: Repository<KYCOtp>,
     private readonly configService: ConfigService,
     private readonly whatsappBotService: WhatsappBotService,
   ) {}
@@ -640,6 +643,242 @@ Questions? Reply to this message for assistance.
           'Both primary and fallback message delivery failed. Please copy the link manually.',
         errorCode: WhatsAppErrorCode.SERVICE_UNAVAILABLE,
       };
+    }
+  }
+
+  /**
+   * Send OTP to phone number for KYC verification
+   * Requirements: Phone verification for KYC applications
+   */
+  async sendOTPForKYC(
+    kycToken: string,
+    phoneNumber: string,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    expiresAt?: Date;
+  }> {
+    try {
+      // Validate KYC token first
+      const tokenValidation = await this.validateKYCToken(kycToken);
+      if (!tokenValidation.valid) {
+        throw new BadRequestException(
+          tokenValidation.error || 'Invalid KYC token',
+        );
+      }
+
+      // Validate phone number
+      const phoneValidation = this.validatePhoneNumber(phoneNumber);
+      if (!phoneValidation.isValid) {
+        throw new BadRequestException(
+          phoneValidation.error || 'Invalid phone number',
+        );
+      }
+
+      const normalizedPhone = phoneValidation.normalizedPhone!;
+
+      // Check for existing active OTP
+      const existingOtp = await this.kycOtpRepository.findOne({
+        where: {
+          phone_number: normalizedPhone,
+          kyc_token: kycToken,
+          is_active: true,
+          expires_at: MoreThan(new Date()),
+        },
+      });
+
+      // If there's a recent OTP (less than 1 minute old), prevent spam
+      if (existingOtp) {
+        const timeDiff = Date.now() - existingOtp.created_at.getTime();
+        if (timeDiff < 60000) {
+          // 1 minute
+          throw new BadRequestException(
+            'OTP already sent recently. Please wait before requesting again.',
+          );
+        }
+      }
+
+      // Deactivate any existing OTPs for this phone and token
+      await this.kycOtpRepository.update(
+        {
+          phone_number: normalizedPhone,
+          kyc_token: kycToken,
+          is_active: true,
+        },
+        {
+          is_active: false,
+        },
+      );
+
+      // Generate new OTP
+      const otpCode = UtilService.generateOTP(6);
+      const expiresAt = new Date();
+      expiresAt.setMinutes(expiresAt.getMinutes() + 10); // 10 minutes expiry
+
+      // Save OTP to database
+      const kycOtp = this.kycOtpRepository.create({
+        phone_number: normalizedPhone,
+        otp_code: otpCode,
+        kyc_token: kycToken,
+        expires_at: expiresAt,
+        is_active: true,
+        is_verified: false,
+      });
+
+      await this.kycOtpRepository.save(kycOtp);
+      console.log(otpCode);
+
+      // Send OTP via WhatsApp
+      const message = `🔐 Your KYC verification code is: ${otpCode}\n\nThis code expires in 10 minutes.\n\n*Do not share this code with anyone.*\n\nPowered by Lizt Property Management`;
+
+      const payload = {
+        messaging_product: 'whatsapp',
+        to: normalizedPhone,
+        type: 'text',
+        text: {
+          preview_url: false,
+          body: message,
+        },
+      };
+
+      try {
+        await this.whatsappBotService['sendToWhatsappAPI'](payload);
+      } catch (error) {
+        console.error('Failed to send OTP via WhatsApp:', error);
+        // Don't fail the entire operation if WhatsApp fails
+        // The OTP is still saved and can be used
+      }
+
+      return {
+        success: true,
+        message: 'OTP sent successfully to your phone number',
+        expiresAt,
+      };
+    } catch (error) {
+      console.error('Error sending OTP:', error);
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new HttpException(
+        'Failed to send OTP. Please try again.',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Verify OTP code for KYC
+   * Requirements: Phone verification for KYC applications
+   */
+  async verifyOTPForKYC(
+    kycToken: string,
+    phoneNumber: string,
+    otpCode: string,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    verified?: boolean;
+  }> {
+    try {
+      // Validate KYC token first
+      const tokenValidation = await this.validateKYCToken(kycToken);
+      if (!tokenValidation.valid) {
+        throw new BadRequestException(
+          tokenValidation.error || 'Invalid KYC token',
+        );
+      }
+
+      // Validate phone number
+      const phoneValidation = this.validatePhoneNumber(phoneNumber);
+      if (!phoneValidation.isValid) {
+        throw new BadRequestException(
+          phoneValidation.error || 'Invalid phone number',
+        );
+      }
+
+      const normalizedPhone = phoneValidation.normalizedPhone!;
+
+      // Find the OTP record
+      const otpRecord = await this.kycOtpRepository.findOne({
+        where: {
+          phone_number: normalizedPhone,
+          kyc_token: kycToken,
+          otp_code: otpCode,
+          is_active: true,
+        },
+      });
+
+      if (!otpRecord) {
+        throw new BadRequestException('Invalid OTP code');
+      }
+
+      // Check if OTP has expired
+      if (new Date() > otpRecord.expires_at) {
+        // Deactivate expired OTP
+        await this.kycOtpRepository.update(otpRecord.id, {
+          is_active: false,
+        });
+        throw new BadRequestException(
+          'OTP has expired. Please request a new one.',
+        );
+      }
+
+      // Check if already verified
+      if (otpRecord.is_verified) {
+        throw new BadRequestException('OTP has already been used');
+      }
+
+      // Mark OTP as verified and inactive
+      await this.kycOtpRepository.update(otpRecord.id, {
+        is_verified: true,
+        is_active: false,
+      });
+
+      return {
+        success: true,
+        message: 'Phone number verified successfully',
+        verified: true,
+      };
+    } catch (error) {
+      console.error('Error verifying OTP:', error);
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new HttpException(
+        'Failed to verify OTP. Please try again.',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Check if phone number is verified for a KYC token
+   * Requirements: Phone verification status check
+   */
+  async isPhoneVerifiedForKYC(
+    kycToken: string,
+    phoneNumber: string,
+  ): Promise<boolean> {
+    try {
+      const phoneValidation = this.validatePhoneNumber(phoneNumber);
+      if (!phoneValidation.isValid) {
+        return false;
+      }
+
+      const normalizedPhone = phoneValidation.normalizedPhone!;
+
+      const verifiedOtp = await this.kycOtpRepository.findOne({
+        where: {
+          phone_number: normalizedPhone,
+          kyc_token: kycToken,
+          is_verified: true,
+        },
+      });
+
+      return !!verifiedOtp;
+    } catch (error) {
+      console.error('Error checking phone verification status:', error);
+      return false;
     }
   }
 

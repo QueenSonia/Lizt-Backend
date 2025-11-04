@@ -23,6 +23,8 @@ import { TenantAttachmentService } from './tenant-attachment.service';
 import { AttachTenantDto } from './dto/attach-tenant.dto';
 import { SendWhatsAppDto } from './dto/send-whatsapp.dto';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
+import { SendOTPDto } from './dto/send-otp.dto';
+import { VerifyOTPDto } from './dto/verify-otp.dto';
 import { Account } from '../users/entities/account.entity';
 import { KYCApplicationService } from './kyc-application.service';
 
@@ -141,6 +143,67 @@ export class KYCLinksController {
       message: 'KYC token is valid',
       data: validationResult,
     };
+  }
+
+  /**
+   * Send OTP to phone number for KYC verification (public endpoint)
+   * POST /api/kyc/:token/send-otp
+   * Requirements: Phone verification for KYC applications
+   */
+  @Public()
+  @Post('kyc/:token/send-otp')
+  async sendOTPForKYC(
+    @Param('token') token: string,
+    @Body(ValidationPipe) sendOTPDto: SendOTPDto,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    expiresAt?: Date;
+  }> {
+    try {
+      const result = await this.kycLinksService.sendOTPForKYC(
+        token,
+        sendOTPDto.phoneNumber,
+      );
+
+      return result;
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Failed to send OTP',
+      };
+    }
+  }
+
+  /**
+   * Verify OTP code for KYC (public endpoint)
+   * POST /api/kyc/:token/verify-otp
+   * Requirements: Phone verification for KYC applications
+   */
+  @Public()
+  @Post('kyc/:token/verify-otp')
+  async verifyOTPForKYC(
+    @Param('token') token: string,
+    @Body(ValidationPipe) verifyOTPDto: VerifyOTPDto,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    verified?: boolean;
+  }> {
+    try {
+      const result = await this.kycLinksService.verifyOTPForKYC(
+        token,
+        verifyOTPDto.phoneNumber,
+        verifyOTPDto.otpCode,
+      );
+
+      return result;
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Failed to verify OTP',
+      };
+    }
   }
 
   /**

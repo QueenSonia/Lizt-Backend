@@ -1428,16 +1428,16 @@ export class UsersService {
 
     const extraFilters = await buildUserFilter(queryParams);
 
-    //   const qb = this.accountRepository
-    // .createQueryBuilder('account')
-    // .leftJoinAndSelect('account.user', 'user')
-    // .leftJoinAndSelect('account.rents', 'rents', 'rents.rent_status = :status', { status: 'active' })
-    // .leftJoinAndSelect('rents.property', 'property')
-    // .where('account.creator_id = :creator_id', { creator_id });
+    // Only return tenants who have active rents (currently assigned to properties)
     const qb = this.accountRepository
       .createQueryBuilder('accounts')
       .leftJoinAndSelect('accounts.user', 'user')
-      .leftJoinAndSelect('accounts.rents', 'rents')
+      .innerJoinAndSelect(
+        'accounts.rents',
+        'rents',
+        'rents.rent_status = :activeStatus',
+        { activeStatus: 'active' },
+      )
       .leftJoinAndSelect('rents.property', 'property')
       .where('accounts.creator_id = :creator_id', { creator_id });
     //   .leftJoinAndSelect('tenant.user', 'user')

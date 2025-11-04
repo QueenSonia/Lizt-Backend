@@ -53,7 +53,7 @@ export class MoveTenantOutDto {
 
   @ApiProperty({
     example: '2024-03-21',
-    description: 'Date tenant moved out',
+    description: 'Date tenant moved out or will move out',
     required: true,
   })
   @IsNotEmpty()

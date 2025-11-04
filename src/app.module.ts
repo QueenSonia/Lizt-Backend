@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { config } from 'dotenv-flow';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
 
 import typeorm from '../ormconfig';
 import { AppController } from './app.controller';
@@ -19,6 +20,7 @@ import { ChatModule } from './chat/chat.module';
 import { DatabaseService } from './database.service';
 import { TenantKycModule } from './tenant-kyc/tenant-kyc.module';
 import { WhatsappBotModule } from './whatsapp-bot/whatsapp-bot.module';
+import { KYCLinksModule } from './kyc-links/kyc-links.module';
 import { AppCacheModule } from './lib/cache';
 
 config({ default_node_env: 'production' });
@@ -53,8 +55,10 @@ config({ default_node_env: 'production' });
     NotificationModule,
     ChatModule,
     EventEmitterModule.forRoot(),
+    ScheduleModule.forRoot(),
     TenantKycModule,
     WhatsappBotModule,
+    KYCLinksModule,
   ],
   controllers: [AppController],
   providers: [AppService, DatabaseService],

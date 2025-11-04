@@ -23,6 +23,7 @@ import { config } from 'src/config';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { PropertyGroup } from './entities/property-group.entity';
+import { ScheduledMoveOut } from './entities/scheduled-move-out.entity';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -51,6 +52,8 @@ export class PropertiesService {
     private readonly propertyGroupRepository: Repository<PropertyGroup>,
     @InjectRepository(PropertyHistory)
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
+    @InjectRepository(ScheduledMoveOut)
+    private readonly scheduledMoveOutRepository: Repository<ScheduledMoveOut>,
     private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
@@ -765,6 +768,93 @@ export class PropertiesService {
       }
     }
 
+    // Check if the move-out date is in the future
+    const moveOutDate = new Date(move_out_date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    moveOutDate.setHours(0, 0, 0, 0);
+
+    if (moveOutDate > today) {
+      // Schedule the move-out for the future
+      return this.scheduleMoveTenantOut(moveOutData, requesterId);
+    }
+
+    // Process immediate move-out
+    return this.processMoveTenantOut(moveOutData, requesterId);
+  }
+
+  private async scheduleMoveTenantOut(
+    moveOutData: MoveTenantOutDto,
+    requesterId?: string,
+  ) {
+    const { property_id, tenant_id, move_out_date } = moveOutData;
+
+    // Validate that tenant is currently assigned to the property
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: {
+        property_id,
+        tenant_id,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!propertyTenant?.id) {
+      throw new HttpException(
+        'Tenant is not currently assigned to this property',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Check if there's already a scheduled move-out for this tenant/property
+    const existingScheduled = await this.scheduledMoveOutRepository.findOne({
+      where: {
+        property_id,
+        tenant_id,
+        processed: false,
+      },
+    });
+
+    if (existingScheduled) {
+      // Update the existing scheduled move-out
+      await this.scheduledMoveOutRepository.update(existingScheduled.id, {
+        effective_date: DateService.getStartOfTheDay(move_out_date),
+        move_out_reason: moveOutData?.move_out_reason || null,
+        owner_comment: moveOutData?.owner_comment || null,
+        tenant_comment: moveOutData?.tenant_comment || null,
+      });
+
+      return {
+        message: 'Move-out date updated successfully',
+        scheduled: true,
+        effective_date: move_out_date,
+      };
+    } else {
+      // Create new scheduled move-out
+      const scheduledMoveOut = await this.scheduledMoveOutRepository.save({
+        property_id,
+        tenant_id,
+        effective_date: DateService.getStartOfTheDay(move_out_date),
+        move_out_reason: moveOutData?.move_out_reason || null,
+        owner_comment: moveOutData?.owner_comment || null,
+        tenant_comment: moveOutData?.tenant_comment || null,
+        processed: false,
+      });
+
+      return {
+        message: 'Move-out scheduled successfully',
+        scheduled: true,
+        effective_date: move_out_date,
+        id: scheduledMoveOut.id,
+      };
+    }
+  }
+
+  private async processMoveTenantOut(
+    moveOutData: MoveTenantOutDto,
+    requesterId?: string,
+  ) {
+    const { property_id, tenant_id, move_out_date } = moveOutData;
+
     const queryRunner = this.dataSource.createQueryRunner();
 
     try {
@@ -882,6 +972,107 @@ export class PropertiesService {
       await queryRunner.release();
     }
   }
+
+  async processScheduledMoveOuts() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Find all scheduled move-outs that are due today or overdue
+    const scheduledMoveOuts = await this.scheduledMoveOutRepository.find({
+      where: {
+        processed: false,
+      },
+    });
+
+    const dueScheduledMoveOuts = scheduledMoveOuts.filter((scheduled) => {
+      const effectiveDate = new Date(scheduled.effective_date);
+      effectiveDate.setHours(0, 0, 0, 0);
+      return effectiveDate <= today;
+    });
+
+    console.log(
+      `Processing ${dueScheduledMoveOuts.length} scheduled move-outs`,
+    );
+
+    for (const scheduled of dueScheduledMoveOuts) {
+      try {
+        // Process the move-out
+        await this.processMoveTenantOut({
+          property_id: scheduled.property_id,
+          tenant_id: scheduled.tenant_id,
+          move_out_date: scheduled.effective_date.toISOString().split('T')[0],
+          move_out_reason: scheduled.move_out_reason || undefined,
+          owner_comment: scheduled.owner_comment || undefined,
+          tenant_comment: scheduled.tenant_comment || undefined,
+        });
+
+        // Mark as processed
+        await this.scheduledMoveOutRepository.update(scheduled.id, {
+          processed: true,
+          processed_at: new Date(),
+        });
+
+        console.log(
+          `Processed scheduled move-out for tenant ${scheduled.tenant_id} from property ${scheduled.property_id}`,
+        );
+      } catch (error) {
+        console.error(
+          `Failed to process scheduled move-out ${scheduled.id}:`,
+          error,
+        );
+        // Continue processing other scheduled move-outs even if one fails
+      }
+    }
+
+    return {
+      processed: dueScheduledMoveOuts.length,
+      total: scheduledMoveOuts.length,
+    };
+  }
+
+  async getScheduledMoveOuts(ownerId?: string) {
+    const queryBuilder = this.scheduledMoveOutRepository
+      .createQueryBuilder('smo')
+      .leftJoinAndSelect('smo.property_id', 'property')
+      .leftJoinAndSelect('smo.tenant_id', 'tenant')
+      .where('smo.processed = :processed', { processed: false });
+
+    if (ownerId) {
+      queryBuilder.andWhere('property.owner_id = :ownerId', { ownerId });
+    }
+
+    return queryBuilder.getMany();
+  }
+
+  async cancelScheduledMoveOut(scheduleId: string, ownerId?: string) {
+    const scheduled = await this.scheduledMoveOutRepository.findOne({
+      where: { id: scheduleId, processed: false },
+      relations: ['property'],
+    });
+
+    if (!scheduled) {
+      throw new HttpException(
+        'Scheduled move-out not found or already processed',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    // If ownerId is provided, validate ownership
+    if (ownerId) {
+      const property = await this.propertyRepository.findOneBy({
+        id: scheduled.property_id,
+      });
+      if (!property || property.owner_id !== ownerId) {
+        throw new ForbiddenException(
+          'You are not authorized to cancel this scheduled move-out',
+        );
+      }
+    }
+
+    await this.scheduledMoveOutRepository.delete(scheduleId);
+    return { message: 'Scheduled move-out cancelled successfully' };
+  }
+
   async createPropertyGroup(data: CreatePropertyGroupDto, owner_id: string) {
     const properties = await this.propertyRepository.find({
       where: {

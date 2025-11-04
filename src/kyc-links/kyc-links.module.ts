@@ -8,6 +8,7 @@ import { KYCApplicationController } from './kyc-application.controller';
 import { KYCLinksController } from './kyc-links.controller';
 import { KYCLink } from './entities/kyc-link.entity';
 import { KYCApplication } from './entities/kyc-application.entity';
+import { KYCOtp } from './entities/kyc-otp.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
@@ -21,6 +22,7 @@ import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
     TypeOrmModule.forFeature([
       KYCLink,
       KYCApplication,
+      KYCOtp,
       Property,
       PropertyTenant,
       PropertyHistory,

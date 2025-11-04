@@ -292,6 +292,51 @@ export class PropertiesController {
     }
   }
 
+  @ApiOperation({ summary: 'Get scheduled move-outs' })
+  @ApiSecurity('access_token')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Get('scheduled-move-outs')
+  getScheduledMoveOuts(@CurrentUser() requester: Account) {
+    try {
+      return this.propertiesService.getScheduledMoveOuts(requester.id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Cancel scheduled move-out' })
+  @ApiSecurity('access_token')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Delete('scheduled-move-outs/:id')
+  cancelScheduledMoveOut(
+    @Param('id') scheduleId: string,
+    @CurrentUser() requester: Account,
+  ) {
+    try {
+      return this.propertiesService.cancelScheduledMoveOut(
+        scheduleId,
+        requester.id,
+      );
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Process scheduled move-outs (Admin only)' })
+  @ApiSecurity('access_token')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  @Post('process-scheduled-move-outs')
+  processScheduledMoveOuts() {
+    try {
+      return this.propertiesService.processScheduledMoveOuts();
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Create Property Group' })
   @ApiBody({ type: CreatePropertyGroupDto })
   @ApiCreatedResponse({ type: CreatePropertyGroupDto })

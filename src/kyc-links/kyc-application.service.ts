@@ -52,35 +52,58 @@ export class KYCApplicationService {
     }
 
     // Create new KYC application with automatic pending status
-    const kycApplication = this.kycApplicationRepository.create({
+    // Handle optional fields properly to avoid undefined errors (relaxed validation)
+    const applicationData: Partial<KYCApplication> = {
       kyc_link_id: kycLink.id,
       property_id: kycLink.property_id,
       status: ApplicationStatus.PENDING,
+      // Required fields
       first_name: kycData.first_name,
       last_name: kycData.last_name,
-      email: kycData.email,
       phone_number: kycData.phone_number,
-      date_of_birth: new Date(kycData.date_of_birth),
-      gender: kycData.gender,
-      nationality: kycData.nationality,
-      state_of_origin: kycData.state_of_origin,
-      local_government_area: kycData.local_government_area,
-      marital_status: kycData.marital_status,
-      employment_status: kycData.employment_status,
-      occupation: kycData.occupation,
-      job_title: kycData.job_title,
-      employer_name: kycData.employer_name,
-      employer_address: kycData.employer_address,
-      monthly_net_income: kycData.monthly_net_income,
-      reference1_name: kycData.reference1_name,
-      reference1_address: kycData.reference1_address,
-      reference1_relationship: kycData.reference1_relationship,
-      reference1_phone_number: kycData.reference1_phone_number,
-      reference2_name: kycData.reference2_name,
-      reference2_address: kycData.reference2_address,
-      reference2_relationship: kycData.reference2_relationship,
-      reference2_phone_number: kycData.reference2_phone_number,
-    });
+    };
+
+    // Add optional fields only if they exist
+    if (kycData.email) applicationData.email = kycData.email;
+    if (kycData.date_of_birth)
+      applicationData.date_of_birth = new Date(kycData.date_of_birth);
+    if (kycData.gender) applicationData.gender = kycData.gender;
+    if (kycData.nationality) applicationData.nationality = kycData.nationality;
+    if (kycData.state_of_origin)
+      applicationData.state_of_origin = kycData.state_of_origin;
+    if (kycData.local_government_area)
+      applicationData.local_government_area = kycData.local_government_area;
+    if (kycData.marital_status)
+      applicationData.marital_status = kycData.marital_status;
+    if (kycData.employment_status)
+      applicationData.employment_status = kycData.employment_status;
+    if (kycData.occupation) applicationData.occupation = kycData.occupation;
+    if (kycData.job_title) applicationData.job_title = kycData.job_title;
+    if (kycData.employer_name)
+      applicationData.employer_name = kycData.employer_name;
+    if (kycData.employer_address)
+      applicationData.employer_address = kycData.employer_address;
+    if (kycData.monthly_net_income)
+      applicationData.monthly_net_income = kycData.monthly_net_income;
+    if (kycData.reference1_name)
+      applicationData.reference1_name = kycData.reference1_name;
+    if (kycData.reference1_address)
+      applicationData.reference1_address = kycData.reference1_address;
+    if (kycData.reference1_relationship)
+      applicationData.reference1_relationship = kycData.reference1_relationship;
+    if (kycData.reference1_phone_number)
+      applicationData.reference1_phone_number = kycData.reference1_phone_number;
+    if (kycData.reference2_name)
+      applicationData.reference2_name = kycData.reference2_name;
+    if (kycData.reference2_address)
+      applicationData.reference2_address = kycData.reference2_address;
+    if (kycData.reference2_relationship)
+      applicationData.reference2_relationship = kycData.reference2_relationship;
+    if (kycData.reference2_phone_number)
+      applicationData.reference2_phone_number = kycData.reference2_phone_number;
+
+    const kycApplication =
+      this.kycApplicationRepository.create(applicationData);
 
     const savedApplication =
       await this.kycApplicationRepository.save(kycApplication);

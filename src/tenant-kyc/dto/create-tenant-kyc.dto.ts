@@ -66,10 +66,12 @@ export class CreateTenantKycDto {
   current_residence?: string;
 
   @IsString()
-  state_of_origin: string;
+  @IsOptional()
+  state_of_origin?: string;
 
   @IsString()
-  local_government_area: string;
+  @IsOptional()
+  local_government_area?: string;
 
   /**
    * Can either be: "single", "married", "divorced", or "widowed".
@@ -94,7 +96,8 @@ export class CreateTenantKycDto {
   employment_status: `${EmploymentStatus}`;
 
   @IsString()
-  occupation: string;
+  @IsOptional()
+  occupation?: string;
 
   /** Only required when `employment_status` is `employed` */
   @ValidateIf((o) => o.employment_status === 'employed')
@@ -121,19 +124,24 @@ export class CreateTenantKycDto {
   employer_phone_number?: string;
 
   @IsNumberString()
-  monthly_net_income: string;
+  @IsOptional()
+  monthly_net_income?: string;
 
   @IsString()
-  reference1_name: string;
+  @IsOptional()
+  reference1_name?: string;
 
   @IsString()
-  reference1_address: string;
+  @IsOptional()
+  reference1_address?: string;
 
   @IsString()
-  reference1_relationship: string;
+  @IsOptional()
+  reference1_relationship?: string;
 
   @IsPhoneNumber('NG')
-  reference1_phone_number: string;
+  @IsOptional()
+  reference1_phone_number?: string;
 
   @IsOptional()
   @IsString()

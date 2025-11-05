@@ -69,6 +69,12 @@ export class TenantAttachmentService {
     propertyId: string;
     message: string;
   }> {
+    console.log('Attaching tenant with data:', {
+      applicationId,
+      tenancyDetails,
+      landlordId,
+    });
+
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -78,6 +84,19 @@ export class TenantAttachmentService {
       const application = await queryRunner.manager.findOne(KYCApplication, {
         where: { id: applicationId },
         relations: ['property', 'kyc_link'],
+      });
+
+      console.log('Found KYC application:', {
+        id: application?.id,
+        first_name: application?.first_name,
+        last_name: application?.last_name,
+        email: application?.email,
+        phone_number: application?.phone_number,
+        date_of_birth: application?.date_of_birth,
+        gender: application?.gender,
+        nationality: application?.nationality,
+        marital_status: application?.marital_status,
+        employment_status: application?.employment_status,
       });
 
       if (!application) {
@@ -202,6 +221,15 @@ export class TenantAttachmentService {
       };
     } catch (error) {
       await queryRunner.rollbackTransaction();
+      console.error('Tenant attachment error:', error);
+      console.error('Error details:', {
+        message: error.message,
+        code: error.code,
+        detail: error.detail,
+        constraint: error.constraint,
+        table: error.table,
+        column: error.column,
+      });
       throw error;
     } finally {
       await queryRunner.release();
@@ -258,6 +286,21 @@ export class TenantAttachmentService {
       relations: ['user'],
     });
 
+    // Also check if user exists with this phone number
+    if (!tenantAccount && application.phone_number) {
+      const existingUser = await manager.findOne(Users, {
+        where: { phone_number: application.phone_number },
+      });
+
+      if (existingUser) {
+        // Find account for this user
+        tenantAccount = await manager.findOne(Account, {
+          where: { userId: existingUser.id },
+          relations: ['user'],
+        });
+      }
+    }
+
     if (!tenantAccount) {
       // Create new user and account from KYC data
       const newUser = manager.create(Users, {
@@ -275,7 +318,15 @@ export class TenantAttachmentService {
         is_verified: false,
       });
 
+      console.log('Creating new user with data:', {
+        first_name: application.first_name,
+        last_name: application.last_name,
+        email: application.email,
+        phone_number: application.phone_number,
+      });
+
       const savedUser = await manager.save(newUser);
+      console.log('User created successfully:', savedUser.id);
 
       tenantAccount = manager.create(Account, {
         email: application.email,
@@ -285,41 +336,52 @@ export class TenantAttachmentService {
         password: null, // Tenant will set password when they first log in
       });
 
+      console.log('Creating account for user:', savedUser.id);
       tenantAccount = await manager.save(tenantAccount);
+      console.log('Account created successfully:', tenantAccount.id);
       tenantAccount.user = savedUser;
 
       // Create TenantKyc record with the same data for consistency
-      const tenantKyc = manager.create(TenantKyc, {
-        first_name: application.first_name,
-        last_name: application.last_name,
-        email: application.email,
-        phone_number: application.phone_number,
-        date_of_birth: application.date_of_birth,
-        gender: application.gender,
-        nationality: application.nationality,
-        current_residence: '', // KYC application doesn't have this field
-        state_of_origin: application.state_of_origin,
-        local_government_area: application.local_government_area,
-        marital_status: application.marital_status,
-        employment_status: application.employment_status,
-        occupation: application.occupation || 'Not specified',
-        job_title: application.job_title || 'Not specified',
-        employer_name: application.employer_name,
-        employer_address: application.employer_address,
-        monthly_net_income: application.monthly_net_income || '0',
-        reference1_name: '', // These would need to be added to KYC application if needed
-        reference1_address: '',
-        reference1_relationship: '',
-        reference1_phone_number: '',
-        user_id: savedUser.id,
-        admin_id: application.property.owner_id,
-        identity_hash:
-          `${application.first_name}_${application.last_name}_${application.date_of_birth}_${application.email}_${application.phone_number}`
-            .toLowerCase()
-            .replace(/\s+/g, '_'),
+      const identityHash =
+        `${application.first_name}_${application.last_name}_${application.date_of_birth || '1990-01-01'}_${application.email}_${application.phone_number}`
+          .toLowerCase()
+          .replace(/\s+/g, '_');
+
+      // Check if TenantKyc record already exists with this identity hash
+      const existingTenantKycByHash = await manager.findOne(TenantKyc, {
+        where: { identity_hash: identityHash },
       });
 
-      await manager.save(tenantKyc);
+      if (!existingTenantKycByHash) {
+        const tenantKyc = manager.create(TenantKyc, {
+          first_name: application.first_name,
+          last_name: application.last_name,
+          email: application.email,
+          phone_number: application.phone_number,
+          date_of_birth: application.date_of_birth || new Date('1990-01-01'), // Default date if null
+          gender: application.gender || 'other', // Default gender if null
+          nationality: application.nationality || 'Nigerian', // Default nationality if null
+          current_residence: '', // KYC application doesn't have this field
+          state_of_origin: application.state_of_origin,
+          local_government_area: application.local_government_area,
+          marital_status: application.marital_status || 'single', // Default marital status if null
+          employment_status: application.employment_status || 'employed', // Default employment status if null
+          occupation: application.occupation || 'Not specified',
+          job_title: application.job_title || 'Not specified',
+          employer_name: application.employer_name,
+          employer_address: application.employer_address,
+          monthly_net_income: application.monthly_net_income || '0',
+          reference1_name: '', // These would need to be added to KYC application if needed
+          reference1_address: '',
+          reference1_relationship: '',
+          reference1_phone_number: '',
+          user_id: savedUser.id,
+          admin_id: application.property.owner_id,
+          identity_hash: identityHash,
+        });
+
+        await manager.save(tenantKyc);
+      }
     } else {
       // If account exists, check if TenantKyc record exists and create/update it
       const existingTenantKyc = await manager.findOne(TenantKyc, {
@@ -328,37 +390,46 @@ export class TenantAttachmentService {
 
       if (!existingTenantKyc) {
         // Create TenantKyc record for existing user
-        const tenantKyc = manager.create(TenantKyc, {
-          first_name: application.first_name,
-          last_name: application.last_name,
-          email: application.email,
-          phone_number: application.phone_number,
-          date_of_birth: application.date_of_birth,
-          gender: application.gender,
-          nationality: application.nationality,
-          current_residence: '',
-          state_of_origin: application.state_of_origin,
-          local_government_area: application.local_government_area,
-          marital_status: application.marital_status,
-          employment_status: application.employment_status,
-          occupation: application.occupation || 'Not specified',
-          job_title: application.job_title || 'Not specified',
-          employer_name: application.employer_name,
-          employer_address: application.employer_address,
-          monthly_net_income: application.monthly_net_income || '0',
-          reference1_name: '',
-          reference1_address: '',
-          reference1_relationship: '',
-          reference1_phone_number: '',
-          user_id: tenantAccount.user.id,
-          admin_id: application.property.owner_id,
-          identity_hash:
-            `${application.first_name}_${application.last_name}_${application.date_of_birth}_${application.email}_${application.phone_number}`
-              .toLowerCase()
-              .replace(/\s+/g, '_'),
+        const identityHash =
+          `${application.first_name}_${application.last_name}_${application.date_of_birth || '1990-01-01'}_${application.email}_${application.phone_number}`
+            .toLowerCase()
+            .replace(/\s+/g, '_');
+
+        // Check if TenantKyc record already exists with this identity hash
+        const existingTenantKycByHash = await manager.findOne(TenantKyc, {
+          where: { identity_hash: identityHash },
         });
 
-        await manager.save(tenantKyc);
+        if (!existingTenantKycByHash) {
+          const tenantKyc = manager.create(TenantKyc, {
+            first_name: application.first_name,
+            last_name: application.last_name,
+            email: application.email,
+            phone_number: application.phone_number,
+            date_of_birth: application.date_of_birth || new Date('1990-01-01'), // Default date if null
+            gender: application.gender || 'other', // Default gender if null
+            nationality: application.nationality || 'Nigerian', // Default nationality if null
+            current_residence: '',
+            state_of_origin: application.state_of_origin,
+            local_government_area: application.local_government_area,
+            marital_status: application.marital_status || 'single', // Default marital status if null
+            employment_status: application.employment_status || 'employed', // Default employment status if null
+            occupation: application.occupation || 'Not specified',
+            job_title: application.job_title || 'Not specified',
+            employer_name: application.employer_name,
+            employer_address: application.employer_address,
+            monthly_net_income: application.monthly_net_income || '0',
+            reference1_name: '',
+            reference1_address: '',
+            reference1_relationship: '',
+            reference1_phone_number: '',
+            user_id: tenantAccount.user.id,
+            admin_id: application.property.owner_id,
+            identity_hash: identityHash,
+          });
+
+          await manager.save(tenantKyc);
+        }
       } else {
         // Update existing TenantKyc record with latest KYC application data
         await manager.update(TenantKyc, existingTenantKyc.id, {
@@ -366,13 +437,25 @@ export class TenantAttachmentService {
           last_name: application.last_name,
           email: application.email,
           phone_number: application.phone_number,
-          date_of_birth: application.date_of_birth,
-          gender: application.gender,
-          nationality: application.nationality,
+          date_of_birth:
+            application.date_of_birth ||
+            existingTenantKyc.date_of_birth ||
+            new Date('1990-01-01'),
+          gender: application.gender || existingTenantKyc.gender || 'other',
+          nationality:
+            application.nationality ||
+            existingTenantKyc.nationality ||
+            'Nigerian',
           state_of_origin: application.state_of_origin,
           local_government_area: application.local_government_area,
-          marital_status: application.marital_status,
-          employment_status: application.employment_status,
+          marital_status:
+            application.marital_status ||
+            existingTenantKyc.marital_status ||
+            'single',
+          employment_status:
+            application.employment_status ||
+            existingTenantKyc.employment_status ||
+            'employed',
           occupation: application.occupation || existingTenantKyc.occupation,
           job_title: application.job_title || existingTenantKyc.job_title,
           employer_name:

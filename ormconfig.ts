@@ -28,7 +28,7 @@ export const config = {
   password: PROD_DB_PASSWORD!,
   database: PROD_DB_NAME!,
   entities: ['dist/**/*.entity{.ts,.js}'],
-  synchronize: isProduction ? false : true,
+  synchronize: true,
   migrations: ['dist/src/migrations/*{.ts,.js}'],
   ssl: { rejectUnauthorized: false },
 

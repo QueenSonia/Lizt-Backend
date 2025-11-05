@@ -45,6 +45,26 @@ export class TenantKycController {
   }
 
   /**
+   * Create KYC for existing tenant (landlord only)
+   * @remarks This endpoint allows landlords to create KYC information for existing tenants
+   * @throws {401} `Unauthorized`
+   * @throws {403} `Forbidden` - Access denied due to insufficient role permissions
+   * @throws {422} `Unprocessable Entity` - Failed payload validation
+   * @throws {500} `Internal Server Error`
+   */
+  @ApiOkResponse({ description: 'Operation successful' })
+  @ApiBearerAuth()
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  @Post('existing-tenant')
+  createForExistingTenant(
+    @Body() createTenantKycDto: Omit<CreateTenantKycDto, 'landlord_id'>,
+    @CurrentUser('id') landlord_id: string,
+  ) {
+    return this.tenantKycService.create({ ...createTenantKycDto, landlord_id });
+  }
+
+  /**
    * Get all new tenant kyc data.
    * @remarks Only accessible by admins/land-lords
    * @throws {401} `Unauthorized`

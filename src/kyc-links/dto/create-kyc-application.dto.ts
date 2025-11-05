@@ -16,8 +16,14 @@ import {
   MaritalStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
 
+/**
+ * DTO for KYC Application submission
+ *
+ * NOTE: Validation has been relaxed - only names and phone number are required.
+ * Most fields have been made optional and can be re-enabled later by removing @IsOptional decorators.
+ */
 export class CreateKYCApplicationDto {
-  // Personal Information
+  // Personal Information - Only names and phone are required for relaxed validation
   @IsString()
   @IsNotEmpty()
   first_name: string;
@@ -26,9 +32,9 @@ export class CreateKYCApplicationDto {
   @IsNotEmpty()
   last_name: string;
 
+  @IsOptional()
   @IsEmail()
-  @IsNotEmpty()
-  email: string;
+  email?: string;
 
   @IsPhoneNumber('NG')
   @IsNotEmpty()
@@ -37,84 +43,84 @@ export class CreateKYCApplicationDto {
   /**
    * @example 1996-04-22T11:03:13.157Z
    */
+  @IsOptional()
   @IsDateString()
-  @IsNotEmpty()
-  date_of_birth: string;
+  date_of_birth?: string;
 
   /**
    * Can either be: "male", "female", or "other".
    * @example male
    */
+  @IsOptional()
   @IsIn(Object.values(Gender))
-  gender: Gender;
+  gender?: Gender;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  nationality: string;
+  nationality?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  state_of_origin: string;
+  state_of_origin?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  local_government_area: string;
+  local_government_area?: string;
 
   /**
    * Can either be: "single", "married", "divorced", or "widowed".
    * @example single
    */
+  @IsOptional()
   @IsIn(Object.values(MaritalStatus))
-  marital_status: MaritalStatus;
+  marital_status?: MaritalStatus;
 
-  // Employment Information
+  // Employment Information - All made optional for relaxed validation
   /**
    * Can either be: "employed", "self-employed", "unemployed", or "student".
    * @example employed
    */
-  @IsIn(Object.values(EmploymentStatus))
-  employment_status: EmploymentStatus;
-
-  @IsString()
-  @IsNotEmpty()
-  occupation: string;
-
-  @IsString()
-  @IsNotEmpty()
-  job_title: string;
-
-  /** Only required when `employment_status` is `employed` */
-  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
-  @IsString()
   @IsOptional()
+  @IsIn(Object.values(EmploymentStatus))
+  employment_status?: EmploymentStatus;
+
+  @IsOptional()
+  @IsString()
+  occupation?: string;
+
+  @IsOptional()
+  @IsString()
+  job_title?: string;
+
+  // Employment Information - All made optional
+  @IsOptional()
+  @IsString()
   employer_name?: string;
 
-  /** Only required when `employment_status` is `employed` */
-  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
-  @IsString()
   @IsOptional()
+  @IsString()
   employer_address?: string;
 
+  @IsOptional()
   @IsNumberString()
-  @IsNotEmpty()
-  monthly_net_income: string;
+  monthly_net_income?: string;
 
-  // References
+  // References - All made optional for relaxed validation
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  reference1_name: string;
+  reference1_name?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  reference1_address: string;
+  reference1_address?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  reference1_relationship: string;
+  reference1_relationship?: string;
 
+  @IsOptional()
   @IsPhoneNumber('NG')
-  @IsNotEmpty()
-  reference1_phone_number: string;
+  reference1_phone_number?: string;
 
   @IsOptional()
   @IsString()

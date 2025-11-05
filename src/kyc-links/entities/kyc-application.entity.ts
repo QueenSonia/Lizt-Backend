@@ -15,6 +15,13 @@ export enum ApplicationStatus {
   REJECTED = 'rejected',
 }
 
+/**
+ * KYC Application Entity
+ *
+ * NOTE: Most fields have been made nullable for relaxed validation.
+ * Only first_name, last_name, and phone_number are required.
+ * Fields can be made required again by removing nullable: true and running a migration.
+ */
 @Entity({ name: 'kyc_applications' })
 export class KYCApplication extends BaseEntity {
   @Column({ type: 'uuid' })
@@ -33,46 +40,46 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'uuid', nullable: true })
   tenant_id?: string;
 
-  // Personal Information
+  // Personal Information - Only names and phone are required for relaxed validation
   @Column({ type: 'varchar' })
   first_name: string;
 
   @Column({ type: 'varchar' })
   last_name: string;
 
-  @Column({ type: 'varchar' })
-  email: string;
+  @Column({ type: 'varchar', nullable: true })
+  email?: string;
 
   @Column({ type: 'varchar' })
   phone_number: string;
 
-  @Column({ type: 'date' })
-  date_of_birth: Date;
+  @Column({ type: 'date', nullable: true })
+  date_of_birth?: Date;
 
-  @Column({ type: 'enum', enum: Gender })
-  gender: Gender;
+  @Column({ type: 'enum', enum: Gender, nullable: true })
+  gender?: Gender;
 
-  @Column({ type: 'varchar' })
-  nationality: string;
+  @Column({ type: 'varchar', nullable: true })
+  nationality?: string;
 
-  @Column({ type: 'varchar' })
-  state_of_origin: string;
+  @Column({ type: 'varchar', nullable: true })
+  state_of_origin?: string;
 
-  @Column({ type: 'varchar' })
-  local_government_area: string;
+  @Column({ type: 'varchar', nullable: true })
+  local_government_area?: string;
 
-  @Column({ type: 'enum', enum: MaritalStatus })
-  marital_status: MaritalStatus;
+  @Column({ type: 'enum', enum: MaritalStatus, nullable: true })
+  marital_status?: MaritalStatus;
 
-  // Employment Information
-  @Column({ type: 'enum', enum: EmploymentStatus })
-  employment_status: EmploymentStatus;
+  // Employment Information - All made optional for relaxed validation
+  @Column({ type: 'enum', enum: EmploymentStatus, nullable: true })
+  employment_status?: EmploymentStatus;
 
-  @Column({ type: 'varchar' })
-  occupation: string;
+  @Column({ type: 'varchar', nullable: true })
+  occupation?: string;
 
-  @Column({ type: 'varchar' })
-  job_title: string;
+  @Column({ type: 'varchar', nullable: true })
+  job_title?: string;
 
   @Column({ type: 'varchar', nullable: true })
   employer_name?: string;
@@ -80,21 +87,21 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   employer_address?: string;
 
-  @Column({ type: 'varchar' })
-  monthly_net_income: string;
+  @Column({ type: 'varchar', nullable: true })
+  monthly_net_income?: string;
 
-  // References
-  @Column({ type: 'varchar' })
-  reference1_name: string;
+  // References - All made optional for relaxed validation
+  @Column({ type: 'varchar', nullable: true })
+  reference1_name?: string;
 
-  @Column({ type: 'varchar' })
-  reference1_address: string;
+  @Column({ type: 'varchar', nullable: true })
+  reference1_address?: string;
 
-  @Column({ type: 'varchar' })
-  reference1_relationship: string;
+  @Column({ type: 'varchar', nullable: true })
+  reference1_relationship?: string;
 
-  @Column({ type: 'varchar' })
-  reference1_phone_number: string;
+  @Column({ type: 'varchar', nullable: true })
+  reference1_phone_number?: string;
 
   @Column({ type: 'varchar', nullable: true })
   reference2_name?: string;

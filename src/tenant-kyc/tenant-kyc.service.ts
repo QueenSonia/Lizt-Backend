@@ -29,7 +29,7 @@ export class TenantKycService {
   ) {}
 
   async create(dto: CreateTenantKycDto) {
-    const landlord= await this.accountRepo.findOneBy({
+    const landlord = await this.accountRepo.findOneBy({
       id: dto.landlord_id,
       role: RolesEnum.LANDLORD,
     });
@@ -109,7 +109,7 @@ export class TenantKycService {
     const fields = [
       dto.first_name.trim().toLowerCase(),
       dto.last_name.trim().toLowerCase(),
-      dto.date_of_birth,
+      dto.date_of_birth || '',
       dto.email?.toLowerCase() || '',
       dto.phone_number || '',
     ];

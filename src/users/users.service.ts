@@ -1494,6 +1494,7 @@ export class UsersService {
       .createQueryBuilder('account')
       .innerJoinAndSelect('account.user', 'user')
       .leftJoinAndSelect('user.kyc', 'kyc')
+      .leftJoinAndSelect('user.tenant_kyc', 'tenant_kyc') // Add TenantKyc join
       .leftJoinAndSelect('account.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
       .leftJoinAndSelect('account.service_requests', 'service_requests')
@@ -1526,7 +1527,8 @@ export class UsersService {
 
   private formatTenantData(account: Account): TenantDetailDto {
     const user = account.user;
-    const kyc = user.kyc ?? {}; // Get the joined KYC data
+    const kyc = user.kyc ?? {}; // Get the joined old KYC data
+    const tenantKyc = user.tenant_kyc; // Get the joined TenantKyc data (preferred)
 
     // Find the most recent (or active) rent record for current details
     const activeRent = account.rents?.sort(
@@ -1581,36 +1583,71 @@ export class UsersService {
     return {
       id: account.id,
 
-      // Personal info from User and KYC
-      firstName: user.first_name,
-      lastName: user.last_name,
-      phone: user.phone_number,
-      email: account.email,
-      dateOfBirth: user.date_of_birth?.toISOString() ?? null,
-      gender: user.gender ?? null,
-      stateOfOrigin: user.state_of_origin ?? kyc.state_of_origin ?? '',
-      lga: user.lga ?? kyc.lga_of_origin ?? null,
-      nationality: user.nationality ?? kyc.nationality ?? null,
-      maritalStatus: user.marital_status ?? kyc.marital_status ?? null,
+      // Personal info - prioritize TenantKyc over User and old KYC
+      firstName: tenantKyc?.first_name ?? user.first_name,
+      lastName: tenantKyc?.last_name ?? user.last_name,
+      phone: tenantKyc?.phone_number ?? user.phone_number,
+      email: tenantKyc?.email ?? account.email,
+      dateOfBirth:
+        tenantKyc?.date_of_birth?.toISOString() ??
+        user.date_of_birth?.toISOString() ??
+        null,
+      gender: tenantKyc?.gender ?? user.gender ?? null,
+      stateOfOrigin:
+        tenantKyc?.state_of_origin ??
+        user.state_of_origin ??
+        kyc.state_of_origin ??
+        '',
+      lga:
+        tenantKyc?.local_government_area ??
+        user.lga ??
+        kyc.lga_of_origin ??
+        null,
+      nationality:
+        tenantKyc?.nationality ?? user.nationality ?? kyc.nationality ?? null,
+      maritalStatus:
+        tenantKyc?.marital_status ??
+        user.marital_status ??
+        kyc.marital_status ??
+        null,
 
-      // Employment Info from User and KYC
-      employmentStatus: user.employment_status ?? null,
-      employerName: user.employer_name ?? kyc.employers_name ?? null,
-      employerAddress: user.employer_address ?? kyc.employers_address ?? null,
-      jobTitle: user.job_title ?? null,
+      // Employment Info - prioritize TenantKyc
+      employmentStatus:
+        tenantKyc?.employment_status ?? user.employment_status ?? null,
+      employerName:
+        tenantKyc?.employer_name ??
+        user.employer_name ??
+        kyc.employers_name ??
+        null,
+      employerAddress:
+        tenantKyc?.employer_address ??
+        user.employer_address ??
+        kyc.employers_address ??
+        null,
+      jobTitle: tenantKyc?.job_title ?? user.job_title ?? null,
       workEmail: user.work_email ?? null,
-      monthlyIncome:
-        user.monthly_income ?? (kyc ? parseFloat(kyc.monthly_income) : null),
+      monthlyIncome: tenantKyc?.monthly_net_income
+        ? parseFloat(tenantKyc.monthly_net_income)
+        : (user.monthly_income ??
+          (kyc ? parseFloat(kyc.monthly_income) : null)),
 
-      // Residence info
-      currentAddress: kyc.former_house_address ?? null,
+      // Residence info - prioritize TenantKyc
+      currentAddress:
+        tenantKyc?.current_residence ?? kyc.former_house_address ?? null,
 
-      // Guarantor Info from KYC
-      guarantorName: kyc?.guarantor ?? null,
-      guarantorPhone: kyc.guarantor_phone_number ?? null,
+      // Guarantor Info - prioritize TenantKyc reference1 fields
+      guarantorName: tenantKyc?.reference1_name ?? kyc?.guarantor ?? null,
+      guarantorPhone:
+        tenantKyc?.reference1_phone_number ??
+        kyc.guarantor_phone_number ??
+        null,
       guarantorEmail: null,
-      guarantorAddress: kyc.guarantor_address ?? null,
-      guarantorRelationship: null,
+      guarantorAddress:
+        tenantKyc?.reference1_address ?? kyc.guarantor_address ?? null,
+      guarantorRelationship: tenantKyc?.reference1_relationship ?? null,
+
+      // Include TenantKyc ID for frontend updates
+      tenantKycId: tenantKyc?.id ?? null,
 
       // current tenancy info
       property: property?.name || 'N/A',

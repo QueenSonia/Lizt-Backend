@@ -18,6 +18,7 @@ import { PropertyHistory } from '../property-history/entities/property-history.e
 import { Rent } from '../rents/entities/rent.entity';
 import { Account } from '../users/entities/account.entity';
 import { Users } from '../users/entities/user.entity';
+import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { AttachTenantDto, RentFrequency } from './dto/attach-tenant.dto';
 import {
   PropertyStatusEnum,
@@ -49,6 +50,8 @@ export class TenantAttachmentService {
     private readonly accountRepository: Repository<Account>,
     @InjectRepository(Users)
     private readonly usersRepository: Repository<Users>,
+    @InjectRepository(TenantKyc)
+    private readonly tenantKycRepository: Repository<TenantKyc>,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -284,6 +287,103 @@ export class TenantAttachmentService {
 
       tenantAccount = await manager.save(tenantAccount);
       tenantAccount.user = savedUser;
+
+      // Create TenantKyc record with the same data for consistency
+      const tenantKyc = manager.create(TenantKyc, {
+        first_name: application.first_name,
+        last_name: application.last_name,
+        email: application.email,
+        phone_number: application.phone_number,
+        date_of_birth: application.date_of_birth,
+        gender: application.gender,
+        nationality: application.nationality,
+        current_residence: '', // KYC application doesn't have this field
+        state_of_origin: application.state_of_origin,
+        local_government_area: application.local_government_area,
+        marital_status: application.marital_status,
+        employment_status: application.employment_status,
+        occupation: application.occupation || 'Not specified',
+        job_title: application.job_title || 'Not specified',
+        employer_name: application.employer_name,
+        employer_address: application.employer_address,
+        monthly_net_income: application.monthly_net_income || '0',
+        reference1_name: '', // These would need to be added to KYC application if needed
+        reference1_address: '',
+        reference1_relationship: '',
+        reference1_phone_number: '',
+        user_id: savedUser.id,
+        admin_id: application.property.owner_id,
+        identity_hash:
+          `${application.first_name}_${application.last_name}_${application.date_of_birth}_${application.email}_${application.phone_number}`
+            .toLowerCase()
+            .replace(/\s+/g, '_'),
+      });
+
+      await manager.save(tenantKyc);
+    } else {
+      // If account exists, check if TenantKyc record exists and create/update it
+      const existingTenantKyc = await manager.findOne(TenantKyc, {
+        where: { user_id: tenantAccount.user.id },
+      });
+
+      if (!existingTenantKyc) {
+        // Create TenantKyc record for existing user
+        const tenantKyc = manager.create(TenantKyc, {
+          first_name: application.first_name,
+          last_name: application.last_name,
+          email: application.email,
+          phone_number: application.phone_number,
+          date_of_birth: application.date_of_birth,
+          gender: application.gender,
+          nationality: application.nationality,
+          current_residence: '',
+          state_of_origin: application.state_of_origin,
+          local_government_area: application.local_government_area,
+          marital_status: application.marital_status,
+          employment_status: application.employment_status,
+          occupation: application.occupation || 'Not specified',
+          job_title: application.job_title || 'Not specified',
+          employer_name: application.employer_name,
+          employer_address: application.employer_address,
+          monthly_net_income: application.monthly_net_income || '0',
+          reference1_name: '',
+          reference1_address: '',
+          reference1_relationship: '',
+          reference1_phone_number: '',
+          user_id: tenantAccount.user.id,
+          admin_id: application.property.owner_id,
+          identity_hash:
+            `${application.first_name}_${application.last_name}_${application.date_of_birth}_${application.email}_${application.phone_number}`
+              .toLowerCase()
+              .replace(/\s+/g, '_'),
+        });
+
+        await manager.save(tenantKyc);
+      } else {
+        // Update existing TenantKyc record with latest KYC application data
+        await manager.update(TenantKyc, existingTenantKyc.id, {
+          first_name: application.first_name,
+          last_name: application.last_name,
+          email: application.email,
+          phone_number: application.phone_number,
+          date_of_birth: application.date_of_birth,
+          gender: application.gender,
+          nationality: application.nationality,
+          state_of_origin: application.state_of_origin,
+          local_government_area: application.local_government_area,
+          marital_status: application.marital_status,
+          employment_status: application.employment_status,
+          occupation: application.occupation || existingTenantKyc.occupation,
+          job_title: application.job_title || existingTenantKyc.job_title,
+          employer_name:
+            application.employer_name || existingTenantKyc.employer_name,
+          employer_address:
+            application.employer_address || existingTenantKyc.employer_address,
+          monthly_net_income:
+            application.monthly_net_income ||
+            existingTenantKyc.monthly_net_income,
+        });
+      }
     }
 
     return tenantAccount;

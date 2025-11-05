@@ -1,7 +1,230 @@
 import { ApiProperty, PartialType } from '@nestjs/swagger';
 import { CreateUserDto } from './create-user.dto';
+import {
+  IsOptional,
+  IsString,
+  IsEmail,
+  IsIn,
+  IsDateString,
+} from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  Gender,
+  MaritalStatus,
+  EmploymentStatus,
+} from '../../tenant-kyc/entities/tenant-kyc.entity';
 
-export class UpdateUserDto extends PartialType(CreateUserDto) {}
+export class UpdateUserDto {
+  @ApiProperty({
+    required: false,
+    example: 'John',
+    description: 'First name of the user',
+  })
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toLowerCase() : value,
+  )
+  first_name?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Doe',
+    description: 'Last name of the user',
+  })
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toLowerCase() : value,
+  )
+  last_name?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'user@example.com',
+    description: 'Email of the user',
+  })
+  @IsOptional()
+  @IsEmail()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toLowerCase() : value,
+  )
+  email?: string;
+
+  @ApiProperty({
+    required: false,
+    example: '+2348104467932',
+    description: 'Phone number of the user',
+  })
+  @IsOptional()
+  @IsString()
+  phone_number?: string;
+
+  @ApiProperty({
+    required: false,
+    example: '1990-01-01',
+    description: 'Date of Birth',
+  })
+  @IsOptional()
+  @IsDateString()
+  date_of_birth?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'male',
+    description: 'Gender',
+    enum: Gender,
+  })
+  @IsOptional()
+  @IsIn(Object.values(Gender))
+  gender?: `${Gender}`;
+
+  @ApiProperty({
+    required: false,
+    example: 'Lagos',
+    description: 'State of Origin',
+  })
+  @IsOptional()
+  @IsString()
+  state_of_origin?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Ikeja',
+    description: 'Local Government Area',
+  })
+  @IsOptional()
+  @IsString()
+  lga?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Nigerian',
+    description: 'Nationality',
+  })
+  @IsOptional()
+  @IsString()
+  nationality?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'employed',
+    description: 'Employment Status',
+    enum: EmploymentStatus,
+  })
+  @IsOptional()
+  @IsIn(Object.values(EmploymentStatus))
+  employment_status?: `${EmploymentStatus}`;
+
+  @ApiProperty({
+    required: false,
+    example: 'Company Ltd',
+    description: 'Employer Name',
+  })
+  @IsOptional()
+  @IsString()
+  employer_name?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Software Engineer',
+    description: 'Job Title',
+  })
+  @IsOptional()
+  @IsString()
+  job_title?: string;
+
+  @ApiProperty({
+    required: false,
+    example: '123 Main St',
+    description: 'Employer Address',
+  })
+  @IsOptional()
+  @IsString()
+  employer_address?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'single',
+    description: 'Marital Status',
+    enum: MaritalStatus,
+  })
+  @IsOptional()
+  @IsIn(Object.values(MaritalStatus))
+  marital_status?: `${MaritalStatus}`;
+
+  @ApiProperty({
+    required: false,
+    example: 'My Business',
+    description: 'Business Name',
+  })
+  @IsOptional()
+  @IsString()
+  business_name?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Trading',
+    description: 'Nature of Business',
+  })
+  @IsOptional()
+  @IsString()
+  nature_of_business?: string;
+
+  @ApiProperty({
+    required: false,
+    example: '123 Biz St',
+    description: 'Business Address',
+  })
+  @IsOptional()
+  @IsString()
+  business_address?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Jane Doe',
+    description: 'Spouse Full Name',
+  })
+  @IsOptional()
+  @IsString()
+  spouse_full_name?: string;
+
+  @ApiProperty({
+    required: false,
+    example: '+2348000000000',
+    description: 'Spouse Phone Number',
+  })
+  @IsOptional()
+  @IsString()
+  spouse_phone_number?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Engineer',
+    description: 'Spouse Occupation',
+  })
+  @IsOptional()
+  @IsString()
+  spouse_occupation?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'Company Ltd',
+    description: 'Spouse Employer',
+  })
+  @IsOptional()
+  @IsString()
+  spouse_employer?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'husband',
+    description: 'Source of Funds',
+  })
+  @IsOptional()
+  @IsString()
+  source_of_funds?: string;
+}
 
 export class UpdateUserResponseDto {
   @ApiProperty({

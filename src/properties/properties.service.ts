@@ -231,9 +231,11 @@ export class PropertiesService {
       .leftJoinAndSelect('property.property_tenants', 'propertyTenant')
       .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'tenantUser')
+      .leftJoinAndSelect('tenantUser.tenant_kyc', 'tenantKyc')
       .leftJoinAndSelect('property.service_requests', 'serviceRequest')
       .leftJoinAndSelect('serviceRequest.tenant', 'srTenant')
       .leftJoinAndSelect('srTenant.user', 'srTenantUser')
+      .leftJoinAndSelect('srTenantUser.tenant_kyc', 'srTenantKyc')
       .leftJoinAndSelect('property.owner', 'owner')
       .leftJoinAndSelect('owner.user', 'ownerUser')
       .leftJoinAndSelect(
@@ -265,11 +267,19 @@ export class PropertiesService {
     let activeTenantInfo: any | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
+      const tenantKyc = tenantUser.tenant_kyc; // Get TenantKyc data if available
+
+      // Prioritize TenantKyc data over User data for consistency
+      const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
+      const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+      const email = tenantKyc?.email ?? tenantUser.email;
+      const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
+
       activeTenantInfo = {
         id: activeTenantRelation.tenant.id,
-        name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-        email: tenantUser.email,
-        phone: tenantUser.phone_number,
+        name: `${firstName} ${lastName}`,
+        email: email,
+        phone: phone,
         rentAmount: activeRent.rental_price,
         leaseStartDate: activeRent.lease_start_date.toISOString(),
         rentExpiryDate: activeRent.lease_end_date.toISOString(),
@@ -285,14 +295,23 @@ export class PropertiesService {
     }));
 
     // 3. Format Service Requests
-    const serviceRequests = property.service_requests.map((sr) => ({
-      id: sr.id,
-      tenantName: `${sr.tenant.user.first_name} ${sr.tenant.user.last_name}`,
-      propertyName: property.name,
-      messagePreview: sr.description.substring(0, 100) + '...',
-      dateReported: sr.date_reported.toISOString(),
-      status: sr.status,
-    }));
+    const serviceRequests = property.service_requests.map((sr) => {
+      const tenantUser = sr.tenant.user;
+      const tenantKyc = tenantUser.tenant_kyc;
+
+      // Prioritize TenantKyc data for consistency
+      const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
+      const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+
+      return {
+        id: sr.id,
+        tenantName: `${firstName} ${lastName}`,
+        propertyName: property.name,
+        messagePreview: sr.description.substring(0, 100) + '...',
+        dateReported: sr.date_reported.toISOString(),
+        status: sr.status,
+      };
+    });
 
     // 4. Computed Description
     const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1 ? 'studio' : `${property.no_of_bedrooms}`}-bedroom ${property.property_type?.toLowerCase()} located in ${property.location}`;
@@ -360,9 +379,11 @@ export class PropertiesService {
       )
       .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'tenantUser')
+      .leftJoinAndSelect('tenantUser.tenant_kyc', 'tenantKyc')
       .leftJoinAndSelect('property.property_histories', 'history')
       .leftJoinAndSelect('history.tenant', 'historyTenant')
       .leftJoinAndSelect('historyTenant.user', 'historyTenantUser')
+      .leftJoinAndSelect('historyTenantUser.tenant_kyc', 'historyTenantKyc')
       .leftJoinAndSelect('property.kyc_applications', 'kycApplication')
       .leftJoinAndSelect(
         'property.kyc_links',
@@ -391,12 +412,20 @@ export class PropertiesService {
     let currentTenant: any | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
+      const tenantKyc = tenantUser.tenant_kyc; // Get TenantKyc data if available
+
+      // Prioritize TenantKyc data over User data for consistency
+      const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
+      const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+      const email = tenantKyc?.email ?? tenantUser.email;
+      const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
+
       console.log('Tenant:', tenantUser);
       currentTenant = {
         id: activeTenantRelation.tenant.id,
-        name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-        email: tenantUser.email,
-        phone: tenantUser.phone_number,
+        name: `${firstName} ${lastName}`,
+        email: email,
+        phone: phone,
         tenancyStartDate: activeRent.lease_start_date
           .toISOString()
           .split('T')[0],
@@ -413,7 +442,12 @@ export class PropertiesService {
       })
       .map((hist, index) => {
         const tenantUser = hist.tenant.user;
-        const tenantName = `${tenantUser.first_name} ${tenantUser.last_name}`;
+        const tenantKyc = tenantUser.tenant_kyc;
+
+        // Prioritize TenantKyc data for consistency
+        const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
+        const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+        const tenantName = `${firstName} ${lastName}`;
 
         if (hist.move_out_date) {
           // Tenant moved out

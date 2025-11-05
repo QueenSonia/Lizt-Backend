@@ -47,9 +47,9 @@ export class CreateTenantKycDto {
   /**
    * @example 1996-04-22T11:03:13.157Z
    */
+  @IsOptional()
   @IsDateString()
-  @IsNotEmpty()
-  date_of_birth: string;
+  date_of_birth?: string;
 
   /**
    * Can either be: "male", "female", or "other".

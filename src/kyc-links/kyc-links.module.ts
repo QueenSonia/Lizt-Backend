@@ -15,6 +15,7 @@ import { PropertyHistory } from '../property-history/entities/property-history.e
 import { Rent } from '../rents/entities/rent.entity';
 import { Account } from '../users/entities/account.entity';
 import { Users } from '../users/entities/user.entity';
+import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 
 @Module({
@@ -29,6 +30,7 @@ import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
       Rent,
       Account,
       Users,
+      TenantKyc,
     ]),
     ConfigModule,
     WhatsappBotModule,

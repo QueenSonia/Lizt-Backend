@@ -125,17 +125,29 @@ export class KYCApplicationService {
   /**
    * Get all KYC applications for a specific property (landlord access only)
    * Requirements: 4.1, 4.2, 4.3
+   * When property is vacant, only show pending applications
    */
   async getApplicationsByProperty(
     propertyId: string,
     landlordId: string,
   ): Promise<any[]> {
-    // Validate property ownership
-    await this.validatePropertyOwnership(propertyId, landlordId);
+    // Validate property ownership and get property details
+    const property = await this.validatePropertyOwnership(
+      propertyId,
+      landlordId,
+    );
 
-    // Get all applications for the property with sorting
+    // Determine which applications to show based on property status
+    let whereCondition: any = { property_id: propertyId };
+
+    // If property is vacant, only show pending applications
+    if (property.property_status === 'vacant') {
+      whereCondition.status = ApplicationStatus.PENDING;
+    }
+
+    // Get applications for the property with sorting
     const applications = await this.kycApplicationRepository.find({
-      where: { property_id: propertyId },
+      where: whereCondition,
       relations: ['property', 'kyc_link', 'tenant'],
       order: {
         created_at: 'DESC', // Most recent applications first
@@ -149,6 +161,7 @@ export class KYCApplicationService {
   /**
    * Get applications by property with filtering and sorting options
    * Requirements: 4.1, 4.2, 4.3
+   * When property is vacant, only show pending applications
    */
   async getApplicationsByPropertyWithFilters(
     propertyId: string,
@@ -159,8 +172,11 @@ export class KYCApplicationService {
       sortOrder?: 'ASC' | 'DESC';
     },
   ): Promise<any[]> {
-    // Validate property ownership
-    await this.validatePropertyOwnership(propertyId, landlordId);
+    // Validate property ownership and get property details
+    const property = await this.validatePropertyOwnership(
+      propertyId,
+      landlordId,
+    );
 
     const queryBuilder = this.kycApplicationRepository
       .createQueryBuilder('application')
@@ -169,8 +185,13 @@ export class KYCApplicationService {
       .leftJoinAndSelect('application.tenant', 'tenant')
       .where('application.property_id = :propertyId', { propertyId });
 
-    // Apply status filter if provided
-    if (filters?.status) {
+    // If property is vacant, only show pending applications (override any status filter)
+    if (property.property_status === 'vacant') {
+      queryBuilder.andWhere('application.status = :pendingStatus', {
+        pendingStatus: ApplicationStatus.PENDING,
+      });
+    } else if (filters?.status) {
+      // Apply status filter only if property is not vacant
       queryBuilder.andWhere('application.status = :status', {
         status: filters.status,
       });
@@ -328,6 +349,7 @@ export class KYCApplicationService {
   /**
    * Get application statistics for a property
    * Requirements: 4.1, 4.2
+   * When property is vacant, only count pending applications
    */
   async getApplicationStatistics(
     propertyId: string,
@@ -338,25 +360,49 @@ export class KYCApplicationService {
     approved: number;
     rejected: number;
   }> {
-    // Validate property ownership
-    await this.validatePropertyOwnership(propertyId, landlordId);
+    // Validate property ownership and get property details
+    const property = await this.validatePropertyOwnership(
+      propertyId,
+      landlordId,
+    );
 
-    const [total, pending, approved, rejected] = await Promise.all([
-      this.kycApplicationRepository.count({
-        where: { property_id: propertyId },
-      }),
-      this.kycApplicationRepository.count({
+    if (property.property_status === 'vacant') {
+      // For vacant properties, only show pending applications count
+      const pending = await this.kycApplicationRepository.count({
         where: { property_id: propertyId, status: ApplicationStatus.PENDING },
-      }),
-      this.kycApplicationRepository.count({
-        where: { property_id: propertyId, status: ApplicationStatus.APPROVED },
-      }),
-      this.kycApplicationRepository.count({
-        where: { property_id: propertyId, status: ApplicationStatus.REJECTED },
-      }),
-    ]);
+      });
 
-    return { total, pending, approved, rejected };
+      return {
+        total: pending,
+        pending,
+        approved: 0,
+        rejected: 0,
+      };
+    } else {
+      // For occupied properties, show all statistics
+      const [total, pending, approved, rejected] = await Promise.all([
+        this.kycApplicationRepository.count({
+          where: { property_id: propertyId },
+        }),
+        this.kycApplicationRepository.count({
+          where: { property_id: propertyId, status: ApplicationStatus.PENDING },
+        }),
+        this.kycApplicationRepository.count({
+          where: {
+            property_id: propertyId,
+            status: ApplicationStatus.APPROVED,
+          },
+        }),
+        this.kycApplicationRepository.count({
+          where: {
+            property_id: propertyId,
+            status: ApplicationStatus.REJECTED,
+          },
+        }),
+      ]);
+
+      return { total, pending, approved, rejected };
+    }
   }
 
   /**

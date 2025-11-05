@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
   OneToOne,
   Index,
+  JoinColumn,
 } from 'typeorm';
 
 import { Users } from 'src/users/entities/user.entity';
@@ -125,13 +126,17 @@ export class TenantKyc extends BaseEntity {
   @Column({ nullable: true, type: 'uuid' })
   user_id?: string;
 
-  @OneToOne(() => Users, (user) => user.tenant_kyc, { cascade: ['remove'] })
+  @OneToOne(() => Users, (user) => user.tenant_kyc, {
+    cascade: ['remove'],
+    createForeignKeyConstraints: false,
+  })
+  @JoinColumn({ name: 'user_id' })
   user?: Users;
 
   @Column({ type: 'uuid' })
   admin_id: string;
 
-  @OneToOne(() => Users, (user) => user.tenant_kyc)
+  @OneToOne(() => Users)
   admin?: Users;
 
   @Column({ unique: true, type: 'varchar', length: 64 })

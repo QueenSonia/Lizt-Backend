@@ -15,6 +15,8 @@ import { Team } from './entities/team.entity';
 import { TeamMember } from './entities/team-member.entity';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { Waitlist } from './entities/waitlist.entity';
+import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
+import { SyncTenantDataService } from './sync-tenant-data.service';
 
 @Global()
 @Module({
@@ -28,13 +30,14 @@ import { Waitlist } from './entities/waitlist.entity';
       Rent,
       Team,
       TeamMember,
-      Waitlist
+      Waitlist,
+      TenantKyc,
     ]),
     AuthModule,
-     forwardRef(() => WhatsappBotModule),
+    forwardRef(() => WhatsappBotModule),
   ],
   controllers: [UsersController],
-  providers: [UsersService, FileUploadService],
-  exports: [UsersService, FileUploadService],
+  providers: [UsersService, FileUploadService, SyncTenantDataService],
+  exports: [UsersService, FileUploadService, SyncTenantDataService],
 })
 export class UsersModule {}

@@ -1589,7 +1589,11 @@ export class UsersService {
       phone: tenantKyc?.phone_number ?? user.phone_number,
       email: tenantKyc?.email ?? account.email,
       dateOfBirth:
-        tenantKyc?.date_of_birth?.toISOString() ??
+        (tenantKyc?.date_of_birth
+          ? typeof tenantKyc.date_of_birth === 'string'
+            ? tenantKyc.date_of_birth
+            : tenantKyc.date_of_birth.toISOString()
+          : null) ??
         user.date_of_birth?.toISOString() ??
         null,
       gender: tenantKyc?.gender ?? user.gender ?? null,
@@ -1653,12 +1657,24 @@ export class UsersService {
       property: property?.name || 'N/A',
       propertyId: property?.id || 'N/A',
       propertyAddress: property?.location || 'N/A',
-      leaseStartDate: activeRent?.lease_start_date?.toISOString() || 'N/A',
-      leaseEndDate: activeRent?.lease_end_date?.toISOString() || 'N/A',
+      leaseStartDate: activeRent?.lease_start_date
+        ? typeof activeRent.lease_start_date === 'string'
+          ? activeRent.lease_start_date
+          : activeRent.lease_start_date.toISOString()
+        : 'N/A',
+      leaseEndDate: activeRent?.lease_end_date
+        ? typeof activeRent.lease_end_date === 'string'
+          ? activeRent.lease_end_date
+          : activeRent.lease_end_date.toISOString()
+        : 'N/A',
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
       rentStatus: activeRent?.payment_status || 'N/A',
-      nextRentDue: activeRent?.expiry_date?.toISOString() || 'N/A',
+      nextRentDue: activeRent?.expiry_date
+        ? typeof activeRent.expiry_date === 'string'
+          ? activeRent.expiry_date
+          : activeRent.expiry_date.toISOString()
+        : 'N/A',
       outstandingBalance: 0, // Placeholder, calculate if needed
       paymentHistory: (account.rents || [])
         .map((rent) => ({
@@ -1688,8 +1704,15 @@ export class UsersService {
       tenancyHistory: (account.property_histories || []).map((ph) => ({
         id: ph.id,
         property: ph.property?.name ?? 'Unknown Property',
-        startDate: ph.move_in_date.toISOString(),
-        endDate: ph.move_out_date?.toISOString() ?? null,
+        startDate:
+          typeof ph.move_in_date === 'string'
+            ? ph.move_in_date
+            : ph.move_in_date.toISOString(),
+        endDate: ph.move_out_date
+          ? typeof ph.move_out_date === 'string'
+            ? ph.move_out_date
+            : ph.move_out_date.toISOString()
+          : null,
         status: ph.move_out_date ? 'Completed' : 'Active',
       })),
 

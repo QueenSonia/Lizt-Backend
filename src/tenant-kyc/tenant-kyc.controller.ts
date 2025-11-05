@@ -58,10 +58,16 @@ export class TenantKycController {
   @Roles(RolesEnum.LANDLORD)
   @Post('existing-tenant')
   createForExistingTenant(
-    @Body() createTenantKycDto: Omit<CreateTenantKycDto, 'landlord_id'>,
+    @Body()
+    createTenantKycDto: Omit<CreateTenantKycDto, 'landlord_id'> & {
+      tenant_id?: string;
+    },
     @CurrentUser('id') landlord_id: string,
   ) {
-    return this.tenantKycService.create({ ...createTenantKycDto, landlord_id });
+    return this.tenantKycService.createForExistingTenant({
+      ...createTenantKycDto,
+      landlord_id,
+    });
   }
 
   /**
@@ -99,6 +105,23 @@ export class TenantKycController {
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser('id') admin_id: string) {
     return this.tenantKycService.findOne(admin_id, id);
+  }
+
+  /**
+   * Get KYC data by tenant user ID
+   * @remarks Only accessible by admins/landlords
+   * @throws {401} `Unauthorized`
+   * @throws {403} `Forbidden` - Access denied due to insufficient role permissions
+   * @throws {404} `NotFound`
+   * @throws {500} `Internal Server Error`
+   */
+  @ApiOkResponse({ description: 'Operation successful' })
+  @ApiBearerAuth()
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Get('user/:user_id')
+  findByUserId(@Param('user_id') user_id: string) {
+    return this.tenantKycService.findByUserId(user_id);
   }
 
   /**

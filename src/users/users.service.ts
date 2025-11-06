@@ -1656,33 +1656,33 @@ export class UsersService {
       tenantKycId: tenantKyc?.id ?? null,
 
       // current tenancy info
-      property: property?.name || 'N/A',
-      propertyId: property?.id || 'N/A',
-      propertyAddress: property?.location || 'N/A',
+      property: property?.name || '——',
+      propertyId: property?.id || '——',
+      propertyAddress: property?.location || '——',
       leaseStartDate: activeRent?.lease_start_date
         ? typeof activeRent.lease_start_date === 'string'
           ? activeRent.lease_start_date
           : activeRent.lease_start_date instanceof Date
             ? activeRent.lease_start_date.toISOString()
-            : 'N/A'
-        : 'N/A',
+            : '——'
+        : '——',
       leaseEndDate: activeRent?.lease_end_date
         ? typeof activeRent.lease_end_date === 'string'
           ? activeRent.lease_end_date
           : activeRent.lease_end_date instanceof Date
             ? activeRent.lease_end_date.toISOString()
-            : 'N/A'
-        : 'N/A',
+            : '——'
+        : '——',
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
-      rentStatus: activeRent?.payment_status || 'N/A',
+      rentStatus: activeRent?.payment_status || '——',
       nextRentDue: activeRent?.expiry_date
         ? typeof activeRent.expiry_date === 'string'
           ? activeRent.expiry_date
           : activeRent.expiry_date instanceof Date
             ? activeRent.expiry_date.toISOString()
-            : 'N/A'
-        : 'N/A',
+            : '——'
+        : '——',
       outstandingBalance: 0, // Placeholder, calculate if needed
       paymentHistory: (account.rents || [])
         .map((rent) => ({
@@ -1702,7 +1702,7 @@ export class UsersService {
         id: sr.id,
         title: sr.issue_category,
         description: sr.description,
-        status: sr.status || 'N/A',
+        status: sr.status || '——',
         reportedDate: new Date(sr.date_reported).toISOString(),
         resolvedDate: sr.resolution_date
           ? new Date(sr.resolution_date).toISOString()
@@ -1717,7 +1717,7 @@ export class UsersService {
             ? ph.move_in_date
             : ph.move_in_date instanceof Date
               ? ph.move_in_date.toISOString()
-              : 'N/A',
+              : '——',
         endDate: ph.move_out_date
           ? typeof ph.move_out_date === 'string'
             ? ph.move_out_date
@@ -2265,7 +2265,7 @@ export class UsersService {
         member.account?.profile_name ??
         `${member.account?.user.first_name} ${member.account?.user.last_name}`,
       email: member.email,
-      phone_number: member.account?.user.phone_number ?? 'N/A',
+      phone_number: member.account?.user.phone_number ?? '——',
       role: member.role,
       date: member.created_at?.toString() || '',
     }));

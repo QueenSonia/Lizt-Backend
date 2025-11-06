@@ -366,8 +366,8 @@ export class TenantAttachmentService {
           local_government_area: application.local_government_area,
           marital_status: application.marital_status || 'single', // Default marital status if null
           employment_status: application.employment_status || 'employed', // Default employment status if null
-          occupation: application.occupation || 'Not specified',
-          job_title: application.job_title || 'Not specified',
+          occupation: application.occupation || '——',
+          job_title: application.job_title || '——',
           employer_name: application.employer_name,
           employer_address: application.employer_address,
           monthly_net_income: application.monthly_net_income || '0',
@@ -414,8 +414,8 @@ export class TenantAttachmentService {
             local_government_area: application.local_government_area,
             marital_status: application.marital_status || 'single', // Default marital status if null
             employment_status: application.employment_status || 'employed', // Default employment status if null
-            occupation: application.occupation || 'Not specified',
-            job_title: application.job_title || 'Not specified',
+            occupation: application.occupation || '——',
+            job_title: application.job_title || '——',
             employer_name: application.employer_name,
             employer_address: application.employer_address,
             monthly_net_income: application.monthly_net_income || '0',

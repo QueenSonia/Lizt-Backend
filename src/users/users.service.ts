@@ -1592,7 +1592,9 @@ export class UsersService {
         (tenantKyc?.date_of_birth
           ? typeof tenantKyc.date_of_birth === 'string'
             ? tenantKyc.date_of_birth
-            : tenantKyc.date_of_birth.toISOString()
+            : tenantKyc.date_of_birth instanceof Date
+              ? tenantKyc.date_of_birth.toISOString()
+              : null
           : null) ??
         user.date_of_birth?.toISOString() ??
         null,
@@ -1660,12 +1662,16 @@ export class UsersService {
       leaseStartDate: activeRent?.lease_start_date
         ? typeof activeRent.lease_start_date === 'string'
           ? activeRent.lease_start_date
-          : activeRent.lease_start_date.toISOString()
+          : activeRent.lease_start_date instanceof Date
+            ? activeRent.lease_start_date.toISOString()
+            : 'N/A'
         : 'N/A',
       leaseEndDate: activeRent?.lease_end_date
         ? typeof activeRent.lease_end_date === 'string'
           ? activeRent.lease_end_date
-          : activeRent.lease_end_date.toISOString()
+          : activeRent.lease_end_date instanceof Date
+            ? activeRent.lease_end_date.toISOString()
+            : 'N/A'
         : 'N/A',
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
@@ -1673,7 +1679,9 @@ export class UsersService {
       nextRentDue: activeRent?.expiry_date
         ? typeof activeRent.expiry_date === 'string'
           ? activeRent.expiry_date
-          : activeRent.expiry_date.toISOString()
+          : activeRent.expiry_date instanceof Date
+            ? activeRent.expiry_date.toISOString()
+            : 'N/A'
         : 'N/A',
       outstandingBalance: 0, // Placeholder, calculate if needed
       paymentHistory: (account.rents || [])
@@ -1707,11 +1715,15 @@ export class UsersService {
         startDate:
           typeof ph.move_in_date === 'string'
             ? ph.move_in_date
-            : ph.move_in_date.toISOString(),
+            : ph.move_in_date instanceof Date
+              ? ph.move_in_date.toISOString()
+              : 'N/A',
         endDate: ph.move_out_date
           ? typeof ph.move_out_date === 'string'
             ? ph.move_out_date
-            : ph.move_out_date.toISOString()
+            : ph.move_out_date instanceof Date
+              ? ph.move_out_date.toISOString()
+              : null
           : null,
         status: ph.move_out_date ? 'Completed' : 'Active',
       })),

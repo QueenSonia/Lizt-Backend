@@ -68,8 +68,8 @@ export class SyncTenantDataService {
               local_government_area: account.user.lga || '',
               marital_status: account.user.marital_status || 'single',
               employment_status: account.user.employment_status || 'employed',
-              occupation: account.user.job_title || 'Not specified',
-              job_title: account.user.job_title || 'Not specified',
+              occupation: account.user.job_title || '——',
+              job_title: account.user.job_title || '——',
               employer_name: account.user.employer_name || '',
               employer_address: account.user.employer_address || '',
               monthly_net_income:

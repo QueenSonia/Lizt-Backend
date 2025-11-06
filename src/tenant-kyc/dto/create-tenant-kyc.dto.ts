@@ -27,7 +27,7 @@ export class CreateTenantKycDto {
   last_name: string;
 
   /**
-   * Email will be required when phone number is not provided
+   * Email will be required when phone number is ——
    * @example sewkito@gmail.com
    */
   @ValidateIf((o) => !o.phone_number?.trim())
@@ -36,7 +36,7 @@ export class CreateTenantKycDto {
   email?: string;
 
   /**
-   * Phone number will be required when email is not provided
+   * Phone number will be required when email is ——
    * @example +2348148696119
    */
   @ValidateIf((o) => !o.email?.trim())

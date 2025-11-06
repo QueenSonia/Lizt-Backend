@@ -785,7 +785,7 @@ export class WhatsappBotService {
 
       let response = 'Here are the matching service requests:\n';
       serviceRequests.forEach((req: any, i) => {
-        response += `${req.description} (${new Date(req.created_at).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || 'N/A'}\n\n`;
+        response += `${req.description} (${new Date(req.created_at).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'}\n\n`;
       });
 
       await this.sendText(from, response);

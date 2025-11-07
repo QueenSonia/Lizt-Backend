@@ -15,6 +15,9 @@ import { UsersModule } from 'src/users/users.module';
 import { Account } from 'src/users/entities/account.entity';
 import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
 import { MoveOutSchedulerService } from './tasks/move-out-scheduler.service';
+import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
+import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
+import { Users } from 'src/users/entities/user.entity';
 
 @Module({
   imports: [
@@ -25,6 +28,8 @@ import { MoveOutSchedulerService } from './tasks/move-out-scheduler.service';
       PropertyGroup,
       PropertyHistory,
       ScheduledMoveOut,
+      TenantKyc,
+      Users,
     ]),
     RentsModule,
     UsersModule,
@@ -36,6 +41,7 @@ import { MoveOutSchedulerService } from './tasks/move-out-scheduler.service';
     FileUploadService,
     RentsService,
     MoveOutSchedulerService,
+    FixEmptyLastnameService,
   ],
 })
 export class PropertiesModule {}

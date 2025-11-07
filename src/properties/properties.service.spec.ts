@@ -182,6 +182,7 @@ describe('PropertiesService', () => {
       security_deposit: 50000,
       service_charge: 10000,
       payment_frequency: 'Monthly',
+      rent_status: 'active',
     };
 
     const mockQueryRunner = {

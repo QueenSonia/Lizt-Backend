@@ -45,6 +45,7 @@ import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { Account } from 'src/users/entities/account.entity';
 import { CurrentUser } from 'src/auth/current-user.decorator';
 import { Property } from 'src/properties/entities/property.entity';
+import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
 
 @ApiTags('Properties')
 @Controller('properties')
@@ -52,6 +53,7 @@ export class PropertiesController {
   constructor(
     private readonly propertiesService: PropertiesService,
     private readonly fileUploadService: FileUploadService,
+    private readonly fixEmptyLastnameService: FixEmptyLastnameService,
   ) {}
 
   @ApiOperation({ summary: 'Create Property' })
@@ -120,6 +122,65 @@ export class PropertiesController {
     } catch (error) {
       throw error;
     }
+  }
+
+  @ApiOperation({
+    summary:
+      'Check if tenant data leakage fix is working (Landlord accessible)',
+  })
+  @ApiOkResponse({
+    description: 'Quick check of tenant data consistency',
+  })
+  @ApiSecurity('access_token')
+  @Get('check-tenant-data-fix')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async checkTenantDataFix(@CurrentUser() requester: Account) {
+    return this.propertiesService.checkTenantDataFix(requester.id);
+  }
+
+  @ApiOperation({
+    summary: 'Deep diagnostic for tenant data leakage issues',
+  })
+  @ApiOkResponse({
+    description: 'Detailed diagnostic of tenant data issues',
+  })
+  @ApiSecurity('access_token')
+  @Get('diagnose-tenant-data-leakage')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async diagnoseTenantDataLeakage(@CurrentUser() requester: Account) {
+    return this.propertiesService.diagnoseTenantDataLeakage(requester.id);
+  }
+
+  @ApiOperation({
+    summary: 'Clean up duplicate tenant assignments',
+  })
+  @ApiOkResponse({
+    description: 'Duplicate tenant assignments cleaned up',
+  })
+  @ApiSecurity('access_token')
+  @Post('cleanup-duplicate-tenants')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async cleanupDuplicateTenants(@CurrentUser() requester: Account) {
+    return this.propertiesService.cleanupDuplicateTenantAssignments(
+      requester.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Fix orphaned rent records',
+  })
+  @ApiOkResponse({
+    description: 'Orphaned rent records fixed',
+  })
+  @ApiSecurity('access_token')
+  @Post('fix-orphaned-rents')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async fixOrphanedRents(@CurrentUser() requester: Account) {
+    return this.propertiesService.fixOrphanedRentRecords(requester.id);
   }
 
   @ApiOperation({ summary: 'Get One Property' })
@@ -405,5 +466,61 @@ export class PropertiesController {
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async syncPropertyStatuses() {
     return this.propertiesService.syncPropertyStatuses();
+  }
+
+  @ApiOperation({
+    summary: 'Fix Tenant Data Leakage - Run Data Consistency Analysis',
+  })
+  @ApiOkResponse({
+    description: 'Data consistency analysis completed',
+    schema: {
+      properties: {
+        message: { type: 'string' },
+        fixed: { type: 'boolean' },
+        details: { type: 'object' },
+      },
+    },
+  })
+  @ApiSecurity('access_token')
+  @Post('fix-tenant-data-leakage')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async fixTenantDataLeakage(@CurrentUser() requester: Account) {
+    return this.propertiesService.fixTenantDataLeakage(requester.id);
+  }
+
+  @ApiOperation({
+    summary: 'Fix Empty Last Names - Clean up empty lastName fields',
+  })
+  @ApiOkResponse({
+    description: 'Empty lastName fields fixed',
+    schema: {
+      properties: {
+        message: { type: 'string' },
+        usersFixed: { type: 'number' },
+        kycFixed: { type: 'number' },
+        details: { type: 'object' },
+      },
+    },
+  })
+  @ApiSecurity('access_token')
+  @Post('fix-empty-lastnames')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async fixEmptyLastNames(@CurrentUser() requester: Account) {
+    const userResult = await this.fixEmptyLastnameService.fixEmptyLastNames(
+      requester.id,
+    );
+    const kycResult = await this.fixEmptyLastnameService.fixEmptyLastNamesInKyc(
+      requester.id,
+    );
+
+    return {
+      message: 'Empty lastName fix completed',
+      usersFixed: userResult.fixedUsers?.length || 0,
+      kycFixed: kycResult.fixedKyc?.length || 0,
+      userResult,
+      kycResult,
+    };
   }
 }

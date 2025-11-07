@@ -101,7 +101,9 @@ describe('KYCApplicationController', () => {
       last_name: mockKycApplicationDto.last_name,
       email: mockKycApplicationDto.email,
       phone_number: mockKycApplicationDto.phone_number,
-      date_of_birth: new Date(mockKycApplicationDto.date_of_birth),
+      date_of_birth: mockKycApplicationDto.date_of_birth
+        ? new Date(mockKycApplicationDto.date_of_birth)
+        : new Date(),
       gender: mockKycApplicationDto.gender,
       nationality: mockKycApplicationDto.nationality,
       state_of_origin: mockKycApplicationDto.state_of_origin,

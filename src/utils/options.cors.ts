@@ -47,6 +47,8 @@ export const corsOptions: CorsOptions = {
     'User-Agent',
     'Cookie',
     'Access-Control-Allow-Origin',
+    'X-Request-ID',
+    'X-Operation',
   ],
 
   credentials: true,

@@ -35,6 +35,6 @@ import { Account } from 'src/users/entities/account.entity';
       useClass: RoleGuard,
     },
   ],
-  exports: [AuthService, JwtModule],
+  exports: [AuthService, JwtModule, TypeOrmModule],
 })
 export class AuthModule {}

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
 import { KYCLinksService } from './kyc-links.service';
@@ -17,6 +17,7 @@ import { Account } from '../users/entities/account.entity';
 import { Users } from '../users/entities/user.entity';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
+import { EventsModule } from '../events/events.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
     ]),
     ConfigModule,
     WhatsappBotModule,
+    forwardRef(() => EventsModule),
   ],
   controllers: [KYCApplicationController, KYCLinksController],
   providers: [KYCLinksService, KYCApplicationService, TenantAttachmentService],

@@ -191,7 +191,9 @@ describe('KYCApplicationService', () => {
         last_name: mockKycData.last_name,
         email: mockKycData.email,
         phone_number: mockKycData.phone_number,
-        date_of_birth: new Date(mockKycData.date_of_birth),
+        date_of_birth: mockKycData.date_of_birth
+          ? new Date(mockKycData.date_of_birth)
+          : new Date(),
         gender: mockKycData.gender,
         nationality: mockKycData.nationality,
         state_of_origin: mockKycData.state_of_origin,

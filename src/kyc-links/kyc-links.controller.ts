@@ -401,4 +401,34 @@ export class KYCLinksController {
       },
     };
   }
+
+  /**
+   * Fix existing data inconsistencies - admin endpoint for cleaning up orphaned records
+   * This should be called once to clean up existing data issues
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('admin', 'landlord')
+  @Post('fix-data-inconsistencies')
+  async fixDataInconsistencies(@CurrentUser() user: Account): Promise<{
+    success: boolean;
+    message: string;
+    data: {
+      cleanedUpTenants: number;
+      cleanedUpProperties: number;
+    };
+  }> {
+    console.log(`Data cleanup requested by user: ${user.id} (${user.role})`);
+
+    const result =
+      await this.tenantAttachmentService.fixExistingDataInconsistencies();
+
+    return {
+      success: result.success,
+      message: result.message,
+      data: {
+        cleanedUpTenants: result.cleanedUpTenants,
+        cleanedUpProperties: result.cleanedUpProperties,
+      },
+    };
+  }
 }

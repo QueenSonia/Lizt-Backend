@@ -135,6 +135,13 @@ export class TenantAttachmentService {
         queryRunner.manager,
       );
 
+      // CRITICAL: Clean up any existing tenant assignments before creating new ones
+      // This prevents orphaned rent records and duplicate tenant assignments
+      await this.cleanupExistingTenantAssignments(
+        tenantAccount.id,
+        queryRunner.manager,
+      );
+
       // Calculate lease dates
       const tenancyStartDate = tenancyDetails.tenancyStartDate
         ? new Date(tenancyDetails.tenancyStartDate)
@@ -552,6 +559,255 @@ export class TenantAttachmentService {
         return 'Annually';
       default:
         return 'Monthly';
+    }
+  }
+
+  /**
+   * Clean up existing tenant assignments to prevent orphaned records
+   * This method ensures a tenant can only be assigned to one property at a time
+   * Requirements: Data integrity, prevent duplicate tenant assignments
+   */
+  private async cleanupExistingTenantAssignments(
+    tenantId: string,
+    manager: any,
+  ): Promise<void> {
+    console.log(`Cleaning up existing assignments for tenant: ${tenantId}`);
+
+    try {
+      // 1. Find all existing active rent records for this tenant
+      const existingRents = await manager.find(Rent, {
+        where: {
+          tenant_id: tenantId,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+        relations: ['property'],
+      });
+
+      console.log(
+        `Found ${existingRents.length} existing active rent records for tenant ${tenantId}`,
+      );
+
+      // 2. For each existing rent record, clean up the assignment
+      for (const rent of existingRents) {
+        console.log(
+          `Cleaning up rent record ${rent.id} for property ${rent.property_id}`,
+        );
+
+        // Deactivate the rent record
+        await manager.update(Rent, rent.id, {
+          rent_status: RentStatusEnum.INACTIVE,
+          payment_status: RentPaymentStatusEnum.OWING,
+        });
+
+        // Deactivate property-tenant relationship
+        await manager.update(
+          PropertyTenant,
+          {
+            tenant_id: tenantId,
+            property_id: rent.property_id,
+            status: TenantStatusEnum.ACTIVE,
+          },
+          { status: TenantStatusEnum.INACTIVE },
+        );
+
+        // Update property status back to VACANT if it was OCCUPIED
+        const property = await manager.findOne(Property, {
+          where: { id: rent.property_id },
+        });
+
+        if (
+          property &&
+          property.property_status === PropertyStatusEnum.OCCUPIED
+        ) {
+          await manager.update(Property, rent.property_id, {
+            property_status: PropertyStatusEnum.VACANT,
+          });
+
+          console.log(`Updated property ${rent.property_id} status to VACANT`);
+        }
+
+        // Create property history record for the move-out
+        const propertyHistory = manager.create(PropertyHistory, {
+          property_id: rent.property_id,
+          tenant_id: tenantId,
+          move_in_date: rent.lease_start_date,
+          move_out_date: DateService.getStartOfTheDay(new Date()),
+          move_out_reason: 'other',
+          monthly_rent: rent.rental_price,
+          owner_comment: 'Tenant reassigned to another property via KYC system',
+          tenant_comment: null,
+        });
+
+        await manager.save(propertyHistory);
+
+        console.log(
+          `Created move-out history record for property ${rent.property_id}`,
+        );
+      }
+
+      console.log(
+        `Successfully cleaned up ${existingRents.length} existing assignments for tenant ${tenantId}`,
+      );
+    } catch (error) {
+      console.error(
+        `Error cleaning up existing tenant assignments for tenant ${tenantId}:`,
+        error,
+      );
+      throw new Error(
+        `Failed to clean up existing tenant assignments: ${error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Fix existing data inconsistencies - can be called manually to clean up orphaned records
+   * This method should be run as a one-time cleanup for existing data
+   */
+  async fixExistingDataInconsistencies(): Promise<{
+    success: boolean;
+    message: string;
+    cleanedUpTenants: number;
+    cleanedUpProperties: number;
+  }> {
+    console.log('Starting cleanup of existing data inconsistencies...');
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      let cleanedUpTenants = 0;
+      let cleanedUpProperties = 0;
+
+      // Find all tenants with multiple active rent records
+      const duplicateTenants = await queryRunner.manager
+        .createQueryBuilder(Rent, 'rent')
+        .select('rent.tenant_id')
+        .addSelect('COUNT(*)', 'count')
+        .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
+        .groupBy('rent.tenant_id')
+        .having('COUNT(*) > 1')
+        .getRawMany();
+
+      console.log(
+        `Found ${duplicateTenants.length} tenants with multiple active rent records`,
+      );
+
+      // For each tenant with duplicates, keep only the most recent assignment
+      for (const duplicate of duplicateTenants) {
+        const tenantId = duplicate.rent_tenant_id;
+
+        // Get all active rent records for this tenant, ordered by creation date
+        const tenantRents = await queryRunner.manager.find(Rent, {
+          where: {
+            tenant_id: tenantId,
+            rent_status: RentStatusEnum.ACTIVE,
+          },
+          order: { created_at: 'DESC' },
+        });
+
+        if (tenantRents.length > 1) {
+          // Keep the most recent rent record, deactivate the rest
+          const [mostRecent, ...oldRents] = tenantRents;
+
+          console.log(
+            `Tenant ${tenantId}: Keeping rent ${mostRecent.id}, deactivating ${oldRents.length} old records`,
+          );
+
+          for (const oldRent of oldRents) {
+            // Deactivate old rent record
+            await queryRunner.manager.update(Rent, oldRent.id, {
+              rent_status: RentStatusEnum.INACTIVE,
+              payment_status: RentPaymentStatusEnum.OWING,
+            });
+
+            // Deactivate old property-tenant relationship
+            await queryRunner.manager.update(
+              PropertyTenant,
+              {
+                tenant_id: tenantId,
+                property_id: oldRent.property_id,
+                status: TenantStatusEnum.ACTIVE,
+              },
+              { status: TenantStatusEnum.INACTIVE },
+            );
+
+            // Update old property status to VACANT
+            await queryRunner.manager.update(Property, oldRent.property_id, {
+              property_status: PropertyStatusEnum.VACANT,
+            });
+
+            // Create move-out history record
+            const propertyHistory = queryRunner.manager.create(
+              PropertyHistory,
+              {
+                property_id: oldRent.property_id,
+                tenant_id: tenantId,
+                move_in_date: oldRent.lease_start_date,
+                move_out_date: DateService.getStartOfTheDay(new Date()),
+                move_out_reason: 'data_cleanup',
+                monthly_rent: oldRent.rental_price,
+                owner_comment:
+                  'Cleaned up duplicate tenant assignment during data consistency fix',
+                tenant_comment: null,
+              },
+            );
+
+            await queryRunner.manager.save(propertyHistory);
+            cleanedUpProperties++;
+          }
+
+          cleanedUpTenants++;
+        }
+      }
+
+      // Also check for properties marked as OCCUPIED but with no active rent records
+      const occupiedPropertiesWithoutRent = await queryRunner.manager
+        .createQueryBuilder(Property, 'property')
+        .leftJoin(
+          Rent,
+          'rent',
+          'rent.property_id = property.id AND rent.rent_status = :status',
+          { status: RentStatusEnum.ACTIVE },
+        )
+        .where('property.property_status = :occupied', {
+          occupied: PropertyStatusEnum.OCCUPIED,
+        })
+        .andWhere('rent.id IS NULL')
+        .getMany();
+
+      console.log(
+        `Found ${occupiedPropertiesWithoutRent.length} occupied properties without active rent records`,
+      );
+
+      // Fix these properties by setting them to VACANT
+      for (const property of occupiedPropertiesWithoutRent) {
+        await queryRunner.manager.update(Property, property.id, {
+          property_status: PropertyStatusEnum.VACANT,
+        });
+        console.log(
+          `Fixed property ${property.id}: changed from OCCUPIED to VACANT`,
+        );
+        cleanedUpProperties++;
+      }
+
+      await queryRunner.commitTransaction();
+
+      const message = `Data cleanup completed successfully. Cleaned up ${cleanedUpTenants} tenants with duplicate assignments and ${cleanedUpProperties} properties with inconsistent status.`;
+      console.log(message);
+
+      return {
+        success: true,
+        message,
+        cleanedUpTenants,
+        cleanedUpProperties,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('Error during data cleanup:', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
   }
 }

@@ -22,6 +22,7 @@ import { TenantKycModule } from './tenant-kyc/tenant-kyc.module';
 import { WhatsappBotModule } from './whatsapp-bot/whatsapp-bot.module';
 import { KYCLinksModule } from './kyc-links/kyc-links.module';
 import { AppCacheModule } from './lib/cache';
+import { TenanciesModule } from './tenancies/tenancies.module';
 
 config({ default_node_env: 'production' });
 
@@ -59,6 +60,7 @@ config({ default_node_env: 'production' });
     TenantKycModule,
     WhatsappBotModule,
     KYCLinksModule,
+    TenanciesModule,
   ],
   controllers: [AppController],
   providers: [AppService, DatabaseService],

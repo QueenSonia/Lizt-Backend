@@ -1596,7 +1596,13 @@ export class UsersService {
               ? tenantKyc.date_of_birth.toISOString()
               : null
           : null) ??
-        user.date_of_birth?.toISOString() ??
+        (user.date_of_birth
+          ? typeof user.date_of_birth === 'string'
+            ? user.date_of_birth
+            : user.date_of_birth instanceof Date
+              ? user.date_of_birth.toISOString()
+              : null
+          : null) ??
         null,
       gender: tenantKyc?.gender ?? user.gender ?? null,
       stateOfOrigin:

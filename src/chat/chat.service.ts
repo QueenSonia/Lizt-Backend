@@ -62,7 +62,7 @@ export class ChatService {
           property_id: propertyTenant.property_id,
           tenant_name: propertyTenant.tenant.profile_name,
           property_name: propertyTenant.property.name,
-          service_request_id: serviceRequest.id
+          service_request_id: serviceRequest.id,
         });
       }
     }
@@ -74,45 +74,46 @@ export class ChatService {
     });
 
     return this.chatMessageRepository.save(message);
-  
   }
 
-async getAllMessagesForUser(currentUser: 'admin' | 'tenant' | 'rep'): Promise<any[]> {
-  const normalizedUser = currentUser === 'rep' ? 'admin' : currentUser;
+  async getAllMessagesForUser(
+    currentUser: 'admin' | 'tenant' | 'rep',
+  ): Promise<any[]> {
+    const normalizedUser = currentUser === 'rep' ? 'admin' : currentUser;
 
-  return this.chatMessageRepository
-    .createQueryBuilder('message')
-    .select('message.service_request_id', 'requestId')
-    .addSelect('MAX(message.created_at)', 'lastMessageAt')
-    .addSelect('COUNT(*)', 'messageCount')
+    return (
+      this.chatMessageRepository
+        .createQueryBuilder('message')
+        .select('message.service_request_id', 'requestId')
+        .addSelect('MAX(message.created_at)', 'lastMessageAt')
+        .addSelect('COUNT(*)', 'messageCount')
 
-    // 🔥 Count unread messages not sent by the current user (i.e., incoming)
-    .addSelect(
-      `COUNT(CASE 
+        // 🔥 Count unread messages not sent by the current user (i.e., incoming)
+        .addSelect(
+          `COUNT(CASE 
          WHEN message.isRead = false 
          AND message.sender != :normalizedUser 
          THEN 1 
        END)`,
-      'unread'
-    )
+          'unread',
+        )
 
-    .leftJoin('message.serviceRequest', 'serviceRequest')
-    .addSelect('serviceRequest.tenant_name', 'tenant_name')
-    .addSelect('serviceRequest.issue_category', 'issue_category')
-    .addSelect('serviceRequest.description', 'description')
-    .addSelect('serviceRequest.status', 'status')
+        .leftJoin('message.serviceRequest', 'serviceRequest')
+        .addSelect('serviceRequest.tenant_name', 'tenant_name')
+        .addSelect('serviceRequest.issue_category', 'issue_category')
+        .addSelect('serviceRequest.description', 'description')
+        .addSelect('serviceRequest.status', 'status')
 
-    .groupBy('message.service_request_id')
-    .addGroupBy('serviceRequest.tenant_name')
-    .addGroupBy('serviceRequest.issue_category')
-    .addGroupBy('serviceRequest.description')
-    .addGroupBy('serviceRequest.status')
-    .orderBy('MAX(message.created_at)', 'DESC')
-    .setParameter('normalizedUser', normalizedUser)
-    .getRawMany();
-}
-
-
+        .groupBy('message.service_request_id')
+        .addGroupBy('serviceRequest.tenant_name')
+        .addGroupBy('serviceRequest.issue_category')
+        .addGroupBy('serviceRequest.description')
+        .addGroupBy('serviceRequest.status')
+        .orderBy('MAX(message.created_at)', 'DESC')
+        .setParameter('normalizedUser', normalizedUser)
+        .getRawMany()
+    );
+  }
 
   async getMessagesByRequestId(requestId: string): Promise<ChatMessage[]> {
     console.log('Fetching messages for requestId:', requestId);
@@ -137,14 +138,15 @@ async getAllMessagesForUser(currentUser: 'admin' | 'tenant' | 'rep'): Promise<an
     );
   }
 
-  async markAsResolved(requestId:string){
-     await this.serviceRequestRepo.update(
+  async markAsResolved(requestId: string) {
+    await this.serviceRequestRepo.update(
       {
-        request_id:requestId
-      },{
-        status: ServiceRequestStatusEnum.RESOLVED
-      }
-    )
+        request_id: requestId,
+      },
+      {
+        status: ServiceRequestStatusEnum.RESOLVED,
+      },
+    );
   }
 
   async createSystemMessage(data: {

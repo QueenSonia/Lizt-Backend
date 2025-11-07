@@ -18,6 +18,7 @@ import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement
 import { Notification } from 'src/notifications/entities/notification.entity';
 import { Team } from './team.entity';
 import { TeamMember } from './team-member.entity';
+import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 
 @Entity('accounts')
 export class Account extends BaseEntity {
@@ -84,4 +85,7 @@ export class Account extends BaseEntity {
 
   @OneToOne(() => Team, (team) => team.creatorId, { onDelete: 'CASCADE' })
   team: Team;
+
+  @OneToMany(() => KYCLink, (kycLink) => kycLink.landlord)
+  kyc_links: KYCLink[];
 }

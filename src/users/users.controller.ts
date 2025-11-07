@@ -16,6 +16,7 @@ import {
   Patch,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
+import { SyncTenantDataService } from './sync-tenant-data.service';
 import {
   CreateAdminDto,
   CreateCustomerRepDto,
@@ -63,7 +64,10 @@ import { TeamMemberDto } from 'src/users/dto/team-member.dto';
 @ApiTags('Users')
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly syncTenantDataService: SyncTenantDataService,
+  ) {}
 
   @SkipAuth()
   @Get('/test-dev')
@@ -488,5 +492,12 @@ export class UsersController {
     @Req() req: any,
   ) {
     return this.usersService.assignCollaboratorToTeam(req.user.id, team_member);
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN)
+  @Post('sync-tenant-data')
+  async syncTenantData() {
+    return this.syncTenantDataService.syncTenantNames();
   }
 }

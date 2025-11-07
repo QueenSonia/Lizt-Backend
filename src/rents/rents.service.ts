@@ -1,7 +1,11 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, LessThanOrEqual, Repository } from 'typeorm';
-import { CreateRentDto, RentFilter, RentStatusEnum } from './dto/create-rent.dto';
+import {
+  CreateRentDto,
+  RentFilter,
+  RentStatusEnum,
+} from './dto/create-rent.dto';
 import { UpdateRentDto } from './dto/update-rent.dto';
 import { Rent } from './entities/rent.entity';
 import { DateService } from 'src/utils/date.helper';
@@ -12,7 +16,10 @@ import { config } from 'src/config';
 import { RentIncrease } from './entities/rent-increase.entity';
 import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
 import { Property } from 'src/properties/entities/property.entity';
-import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import {
+  PropertyStatusEnum,
+  TenantStatusEnum,
+} from 'src/properties/dto/create-property.dto';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 
 @Injectable()
@@ -229,41 +236,45 @@ export class RentsService {
     });
   }
 
-  async findActiveRent(query){
+  async findActiveRent(query) {
     return this.rentRepository.findOne({
       where: {
         ...query,
-        rent_status:RentStatusEnum.ACTIVE
-      }
-    })
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
   }
 
+  async deactivateTenant(data: { tenant_id: string; property_id: string }) {
+    const { tenant_id, property_id } = data;
 
- async deactivateTenant(data:{tenant_id: string, property_id:string}) {
-  const {tenant_id, property_id} = data
-  const rent = await this.rentRepository.findOne({
-    where: {
-      tenant_id, 
-      property_id
-    }
-  })
+    // Find the active rent for this specific property and tenant
+    const rent = await this.rentRepository.findOne({
+      where: {
+        tenant_id,
+        property_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
 
-  if(rent){
-    await this.propertyRepository.update(
-      {id: rent.property_id},
-      {property_status: PropertyStatusEnum.VACANT}
-    )
+    if (rent) {
+      // Update property status to vacant
+      await this.propertyRepository.update(
+        { id: property_id },
+        { property_status: PropertyStatusEnum.VACANT },
+      );
+
+      // Deactivate property-tenant relationship for this specific property
       await this.propertyTenantRepository.update(
-      {tenant_id: rent.tenant_id},
-      {status: TenantStatusEnum.INACTIVE}
-    )
+        { tenant_id, property_id },
+        { status: TenantStatusEnum.INACTIVE },
+      );
 
+      // Deactivate the specific rent record
       await this.rentRepository.update(
-    { tenant_id }, // where condition
-    { rent_status: RentStatusEnum.INACTIVE } // update values
-  );
+        { tenant_id, property_id, rent_status: RentStatusEnum.ACTIVE }, // More specific where condition
+        { rent_status: RentStatusEnum.INACTIVE }, // update values
+      );
+    }
   }
-
-}
-
 }

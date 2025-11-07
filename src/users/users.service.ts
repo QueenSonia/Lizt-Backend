@@ -106,10 +106,14 @@ export class UsersService {
     const {
       phone_number,
       full_name,
-      rent_amount,
-      due_date,
+      rental_price,
+      lease_start_date,
+      lease_end_date,
       email,
       property_id,
+      security_deposit,
+      service_charge,
+      payment_frequency,
     } = dto;
 
     const admin = (await this.accountRepository.findOne({
@@ -199,10 +203,14 @@ export class UsersService {
         const rent = manager.getRepository(Rent).create({
           property_id,
           tenant_id: userAccount.id,
-          amount_paid: rent_amount,
-          rental_price: rent_amount,
-          lease_start_date: new Date().toISOString(),
-          lease_end_date: due_date,
+          amount_paid: rental_price,
+          rental_price: rental_price,
+          lease_start_date: lease_start_date,
+          lease_end_date: lease_end_date,
+          security_deposit: security_deposit || 0,
+          service_charge: service_charge || 0,
+          payment_frequency: payment_frequency || 'Monthly',
+          payment_status: RentPaymentStatusEnum.PAID,
           rent_status: RentStatusEnum.ACTIVE,
         });
 
@@ -1420,16 +1428,16 @@ export class UsersService {
 
     const extraFilters = await buildUserFilter(queryParams);
 
-    //   const qb = this.accountRepository
-    // .createQueryBuilder('account')
-    // .leftJoinAndSelect('account.user', 'user')
-    // .leftJoinAndSelect('account.rents', 'rents', 'rents.rent_status = :status', { status: 'active' })
-    // .leftJoinAndSelect('rents.property', 'property')
-    // .where('account.creator_id = :creator_id', { creator_id });
+    // Only return tenants who have active rents (currently assigned to properties)
     const qb = this.accountRepository
       .createQueryBuilder('accounts')
       .leftJoinAndSelect('accounts.user', 'user')
-      .leftJoinAndSelect('accounts.rents', 'rents')
+      .innerJoinAndSelect(
+        'accounts.rents',
+        'rents',
+        'rents.rent_status = :activeStatus',
+        { activeStatus: 'active' },
+      )
       .leftJoinAndSelect('rents.property', 'property')
       .where('accounts.creator_id = :creator_id', { creator_id });
     //   .leftJoinAndSelect('tenant.user', 'user')
@@ -1486,6 +1494,7 @@ export class UsersService {
       .createQueryBuilder('account')
       .innerJoinAndSelect('account.user', 'user')
       .leftJoinAndSelect('user.kyc', 'kyc')
+      .leftJoinAndSelect('user.tenant_kyc', 'tenant_kyc') // Add TenantKyc join
       .leftJoinAndSelect('account.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
       .leftJoinAndSelect('account.service_requests', 'service_requests')
@@ -1518,7 +1527,8 @@ export class UsersService {
 
   private formatTenantData(account: Account): TenantDetailDto {
     const user = account.user;
-    const kyc = user.kyc ?? {}; // Get the joined KYC data
+    const kyc = user.kyc ?? {}; // Get the joined old KYC data
+    const tenantKyc = user.tenant_kyc; // Get the joined TenantKyc data (preferred)
 
     // Find the most recent (or active) rent record for current details
     const activeRent = account.rents?.sort(
@@ -1573,47 +1583,112 @@ export class UsersService {
     return {
       id: account.id,
 
-      // Personal info from User and KYC
-      firstName: user.first_name,
-      lastName: user.last_name,
-      phone: user.phone_number,
-      email: account.email,
-      dateOfBirth: user.date_of_birth?.toISOString() ?? null,
-      gender: user.gender ?? null,
-      stateOfOrigin: user.state_of_origin ?? kyc.state_of_origin ?? '',
-      lga: user.lga ?? kyc.lga_of_origin ?? null,
-      nationality: user.nationality ?? kyc.nationality ?? null,
-      maritalStatus: user.marital_status ?? kyc.marital_status ?? null,
+      // Personal info - prioritize TenantKyc over User and old KYC
+      firstName: tenantKyc?.first_name ?? user.first_name,
+      lastName: tenantKyc?.last_name ?? user.last_name,
+      phone: tenantKyc?.phone_number ?? user.phone_number,
+      email: tenantKyc?.email ?? account.email,
+      dateOfBirth:
+        (tenantKyc?.date_of_birth
+          ? typeof tenantKyc.date_of_birth === 'string'
+            ? tenantKyc.date_of_birth
+            : tenantKyc.date_of_birth instanceof Date
+              ? tenantKyc.date_of_birth.toISOString()
+              : null
+          : null) ??
+        (user.date_of_birth
+          ? typeof user.date_of_birth === 'string'
+            ? user.date_of_birth
+            : user.date_of_birth instanceof Date
+              ? user.date_of_birth.toISOString()
+              : null
+          : null) ??
+        null,
+      gender: tenantKyc?.gender ?? user.gender ?? null,
+      stateOfOrigin:
+        tenantKyc?.state_of_origin ??
+        user.state_of_origin ??
+        kyc.state_of_origin ??
+        '',
+      lga:
+        tenantKyc?.local_government_area ??
+        user.lga ??
+        kyc.lga_of_origin ??
+        null,
+      nationality:
+        tenantKyc?.nationality ?? user.nationality ?? kyc.nationality ?? null,
+      maritalStatus:
+        tenantKyc?.marital_status ??
+        user.marital_status ??
+        kyc.marital_status ??
+        null,
 
-      // Employment Info from User and KYC
-      employmentStatus: user.employment_status ?? null,
-      employerName: user.employer_name ?? kyc.employers_name ?? null,
-      employerAddress: user.employer_address ?? kyc.employers_address ?? null,
-      jobTitle: user.job_title ?? null,
+      // Employment Info - prioritize TenantKyc
+      employmentStatus:
+        tenantKyc?.employment_status ?? user.employment_status ?? null,
+      employerName:
+        tenantKyc?.employer_name ??
+        user.employer_name ??
+        kyc.employers_name ??
+        null,
+      employerAddress:
+        tenantKyc?.employer_address ??
+        user.employer_address ??
+        kyc.employers_address ??
+        null,
+      jobTitle: tenantKyc?.job_title ?? user.job_title ?? null,
       workEmail: user.work_email ?? null,
-      monthlyIncome:
-        user.monthly_income ?? (kyc ? parseFloat(kyc.monthly_income) : null),
+      monthlyIncome: tenantKyc?.monthly_net_income
+        ? parseFloat(tenantKyc.monthly_net_income)
+        : (user.monthly_income ??
+          (kyc ? parseFloat(kyc.monthly_income) : null)),
 
-      // Residence info
-      currentAddress: kyc.former_house_address ?? null,
+      // Residence info - prioritize TenantKyc
+      currentAddress:
+        tenantKyc?.current_residence ?? kyc.former_house_address ?? null,
 
-      // Guarantor Info from KYC
-      guarantorName: kyc?.guarantor ?? null,
-      guarantorPhone: kyc.guarantor_phone_number ?? null,
+      // Guarantor Info - prioritize TenantKyc reference1 fields
+      guarantorName: tenantKyc?.reference1_name ?? kyc?.guarantor ?? null,
+      guarantorPhone:
+        tenantKyc?.reference1_phone_number ??
+        kyc.guarantor_phone_number ??
+        null,
       guarantorEmail: null,
-      guarantorAddress: kyc.guarantor_address ?? null,
-      guarantorRelationship: null,
+      guarantorAddress:
+        tenantKyc?.reference1_address ?? kyc.guarantor_address ?? null,
+      guarantorRelationship: tenantKyc?.reference1_relationship ?? null,
+
+      // Include TenantKyc ID for frontend updates
+      tenantKycId: tenantKyc?.id ?? null,
 
       // current tenancy info
-      property: property?.name || 'N/A',
-      propertyId: property?.id || 'N/A',
-      propertyAddress: property?.location || 'N/A',
-      leaseStartDate: activeRent?.lease_start_date?.toISOString() || 'N/A',
-      leaseEndDate: activeRent?.lease_end_date?.toISOString() || 'N/A',
+      property: property?.name || '——',
+      propertyId: property?.id || '——',
+      propertyAddress: property?.location || '——',
+      leaseStartDate: activeRent?.lease_start_date
+        ? typeof activeRent.lease_start_date === 'string'
+          ? activeRent.lease_start_date
+          : activeRent.lease_start_date instanceof Date
+            ? activeRent.lease_start_date.toISOString()
+            : '——'
+        : '——',
+      leaseEndDate: activeRent?.lease_end_date
+        ? typeof activeRent.lease_end_date === 'string'
+          ? activeRent.lease_end_date
+          : activeRent.lease_end_date instanceof Date
+            ? activeRent.lease_end_date.toISOString()
+            : '——'
+        : '——',
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
-      rentStatus: activeRent?.payment_status || 'N/A',
-      nextRentDue: activeRent?.expiry_date?.toISOString() || 'N/A',
+      rentStatus: activeRent?.payment_status || '——',
+      nextRentDue: activeRent?.expiry_date
+        ? typeof activeRent.expiry_date === 'string'
+          ? activeRent.expiry_date
+          : activeRent.expiry_date instanceof Date
+            ? activeRent.expiry_date.toISOString()
+            : '——'
+        : '——',
       outstandingBalance: 0, // Placeholder, calculate if needed
       paymentHistory: (account.rents || [])
         .map((rent) => ({
@@ -1633,7 +1708,7 @@ export class UsersService {
         id: sr.id,
         title: sr.issue_category,
         description: sr.description,
-        status: sr.status || 'N/A',
+        status: sr.status || '——',
         reportedDate: new Date(sr.date_reported).toISOString(),
         resolvedDate: sr.resolution_date
           ? new Date(sr.resolution_date).toISOString()
@@ -1643,8 +1718,19 @@ export class UsersService {
       tenancyHistory: (account.property_histories || []).map((ph) => ({
         id: ph.id,
         property: ph.property?.name ?? 'Unknown Property',
-        startDate: ph.move_in_date.toISOString(),
-        endDate: ph.move_out_date?.toISOString() ?? null,
+        startDate:
+          typeof ph.move_in_date === 'string'
+            ? ph.move_in_date
+            : ph.move_in_date instanceof Date
+              ? ph.move_in_date.toISOString()
+              : '——',
+        endDate: ph.move_out_date
+          ? typeof ph.move_out_date === 'string'
+            ? ph.move_out_date
+            : ph.move_out_date instanceof Date
+              ? ph.move_out_date.toISOString()
+              : null
+          : null,
         status: ph.move_out_date ? 'Completed' : 'Active',
       })),
 
@@ -2185,7 +2271,7 @@ export class UsersService {
         member.account?.profile_name ??
         `${member.account?.user.first_name} ${member.account?.user.last_name}`,
       email: member.email,
-      phone_number: member.account?.user.phone_number ?? 'N/A',
+      phone_number: member.account?.user.phone_number ?? '——',
       role: member.role,
       date: member.created_at?.toString() || '',
     }));

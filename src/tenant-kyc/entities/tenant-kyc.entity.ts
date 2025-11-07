@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
   OneToOne,
   Index,
+  JoinColumn,
 } from 'typeorm';
 
 import { Users } from 'src/users/entities/user.entity';
@@ -62,10 +63,10 @@ export class TenantKyc extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   current_residence: string;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   state_of_origin: string;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   local_government_area: string;
 
   @Column({ type: 'enum', enum: MaritalStatus })
@@ -80,10 +81,10 @@ export class TenantKyc extends BaseEntity {
   @Column({ type: 'enum', enum: EmploymentStatus })
   employment_status: `${EmploymentStatus}`;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   occupation: string;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   job_title: string;
 
   @Column({ type: 'varchar', nullable: true })
@@ -95,19 +96,19 @@ export class TenantKyc extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   employer_phone_number: string;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   monthly_net_income: string;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   reference1_name: string;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   reference1_address: string;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   reference1_relationship: string;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', nullable: true })
   reference1_phone_number: string;
 
   @Column({ type: 'varchar', nullable: true })
@@ -125,13 +126,17 @@ export class TenantKyc extends BaseEntity {
   @Column({ nullable: true, type: 'uuid' })
   user_id?: string;
 
-  @OneToOne(() => Users, (user) => user.tenant_kyc, { cascade: ['remove'] })
+  @OneToOne(() => Users, (user) => user.tenant_kyc, {
+    cascade: ['remove'],
+    createForeignKeyConstraints: false,
+  })
+  @JoinColumn({ name: 'user_id' })
   user?: Users;
 
   @Column({ type: 'uuid' })
   admin_id: string;
 
-  @OneToOne(() => Users, (user) => user.tenant_kyc)
+  @OneToOne(() => Users)
   admin?: Users;
 
   @Column({ unique: true, type: 'varchar', length: 64 })

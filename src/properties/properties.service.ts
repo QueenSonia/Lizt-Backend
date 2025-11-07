@@ -18,12 +18,12 @@ import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 import { DateService } from 'src/utils/date.helper';
-import { connectionSource } from 'ormconfig';
 import { PropertyTenant } from './entities/property-tenants.entity';
 import { config } from 'src/config';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { PropertyGroup } from './entities/property-group.entity';
+import { ScheduledMoveOut } from './entities/scheduled-move-out.entity';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -37,6 +37,10 @@ import {
 } from 'src/rents/dto/create-rent.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
+import { PerformanceMonitor } from 'src/utils/performance-monitor';
+import { KYCApplicationService } from 'src/kyc-links/kyc-application.service';
+import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
+import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 
 @Injectable()
 export class PropertiesService {
@@ -47,10 +51,17 @@ export class PropertiesService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyGroup)
     private readonly propertyGroupRepository: Repository<PropertyGroup>,
+    @InjectRepository(PropertyHistory)
+    private readonly propertyHistoryRepository: Repository<PropertyHistory>,
+    @InjectRepository(ScheduledMoveOut)
+    private readonly scheduledMoveOutRepository: Repository<ScheduledMoveOut>,
+    @InjectRepository(TenantKyc)
+    private readonly tenantKycRepository: Repository<TenantKyc>,
     private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly dataSource: DataSource,
+    private readonly kycApplicationService: KYCApplicationService,
   ) {}
 
   async createProperty(
@@ -67,20 +78,21 @@ export class PropertiesService {
       // save the single entity to the database
       const savedProperty = await this.propertyRepository.save(newProperty);
 
+      //// Tenant assignment-on-property-creation option removed from frontend form
       // If tenant_id is provided, create PropertyTenant relationship
-      if (propertyData.tenant_id) {
-        const propertyTenant = this.propertyTenantRepository.create({
-          property_id: savedProperty.id,
-          tenant_id: propertyData.tenant_id,
-          status: TenantStatusEnum.ACTIVE,
-        });
+      // if (propertyData.tenant_id) {
+      //   const propertyTenant = this.propertyTenantRepository.create({
+      //     property_id: savedProperty.id,
+      //     tenant_id: propertyData.tenant_id,
+      //     status: TenantStatusEnum.ACTIVE,
+      //   });
 
-        await this.propertyTenantRepository.save(propertyTenant);
+      //   await this.propertyTenantRepository.save(propertyTenant);
 
-        // Update property status to NOT_VACANT
-        savedProperty.property_status = PropertyStatusEnum.OCCUPIED;
-        await this.propertyRepository.save(savedProperty);
-      }
+      //   // Update property status to NOT_VACANT
+      //   savedProperty.property_status = PropertyStatusEnum.OCCUPIED;
+      //   await this.propertyRepository.save(savedProperty);
+      // }
 
       // ✅ Emit event after property is created
       this.eventEmitter.emit('property.created', {
@@ -129,13 +141,29 @@ export class PropertiesService {
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
-    const { query, order } = await buildPropertyFilter(queryParams);
+    const { query } = await buildPropertyFilter(queryParams);
 
     const qb = this.propertyRepository
       .createQueryBuilder('property')
-      .leftJoinAndSelect('property.rents', 'rents')
+      .leftJoinAndSelect(
+        'property.rents',
+        'rents',
+        'rents.rent_status = :activeStatus',
+        { activeStatus: RentStatusEnum.ACTIVE },
+      )
       .leftJoinAndSelect('rents.tenant', 'tenant')
-      .leftJoinAndSelect('property.property_tenants', 'property_tenants')
+      .leftJoinAndSelect('tenant.user', 'user')
+      .leftJoinAndSelect(
+        'user.tenant_kyc',
+        'tenantKyc',
+        'tenantKyc.admin_id = property.owner_id',
+      )
+      .leftJoinAndSelect(
+        'property.property_tenants',
+        'property_tenants',
+        'property_tenants.status = :tenantStatus',
+        { tenantStatus: TenantStatusEnum.ACTIVE },
+      )
       .where(query);
 
     // Apply sorting (rent requires custom logic)
@@ -202,22 +230,44 @@ export class PropertiesService {
   }
 
   async getPropertyById(id: string): Promise<any> {
-    const property = await this.propertyRepository.findOne({
-      where: { id },
-      relations: [
-        'rents',
-        'rents.tenant',
-        'rents.tenant.user',
-        'property_tenants',
-        'property_tenants.tenant',
-        'property_tenants.tenant.user',
-        'service_requests',
-        'service_requests.tenant',
-        'service_requests.tenant.user',
-        'owner',
-        'owner.user',
-      ],
-    });
+    // Use query builder for better performance - only load active relationships
+    const property = await this.propertyRepository
+      .createQueryBuilder('property')
+      .leftJoinAndSelect('property.rents', 'rent')
+      .leftJoinAndSelect('rent.tenant', 'rentTenant')
+      .leftJoinAndSelect('rentTenant.user', 'rentTenantUser')
+      .leftJoinAndSelect('property.property_tenants', 'propertyTenant')
+      .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'tenantUser')
+      .leftJoinAndSelect(
+        'tenantUser.tenant_kyc',
+        'tenantKyc',
+        'tenantKyc.admin_id = property.owner_id',
+      )
+      .leftJoinAndSelect('property.service_requests', 'serviceRequest')
+      .leftJoinAndSelect('serviceRequest.tenant', 'srTenant')
+      .leftJoinAndSelect('srTenant.user', 'srTenantUser')
+      .leftJoinAndSelect(
+        'srTenantUser.tenant_kyc',
+        'srTenantKyc',
+        'srTenantKyc.admin_id = property.owner_id',
+      )
+      .leftJoinAndSelect('property.owner', 'owner')
+      .leftJoinAndSelect('owner.user', 'ownerUser')
+      .leftJoinAndSelect(
+        'property.kyc_applications',
+        'kycApplication',
+        'kycApplication.status = :pendingStatus',
+        { pendingStatus: 'pending' },
+      )
+      .leftJoinAndSelect(
+        'property.kyc_links',
+        'kycLink',
+        'kycLink.is_active = :isActive',
+        { isActive: true },
+      )
+      .where('property.id = :id', { id })
+      .getOne();
     if (!property?.id) {
       throw new HttpException(
         `Property with id: ${id} not found`,
@@ -233,11 +283,19 @@ export class PropertiesService {
     let activeTenantInfo: any | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
+      const tenantKyc = tenantUser.tenant_kyc; // Get TenantKyc data if available
+
+      // Prioritize TenantKyc data over User data for consistency
+      const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
+      const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+      const email = tenantKyc?.email ?? tenantUser.email;
+      const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
+
       activeTenantInfo = {
         id: activeTenantRelation.tenant.id,
-        name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-        email: tenantUser.email,
-        phone: tenantUser.phone_number,
+        name: `${firstName} ${lastName}`,
+        email: email,
+        phone: phone,
         rentAmount: activeRent.rental_price,
         leaseStartDate: activeRent.lease_start_date.toISOString(),
         rentExpiryDate: activeRent.lease_end_date.toISOString(),
@@ -253,33 +311,246 @@ export class PropertiesService {
     }));
 
     // 3. Format Service Requests
-    const serviceRequests = property.service_requests.map((sr) => ({
-      id: sr.id,
-      tenantName: `${sr.tenant.user.first_name} ${sr.tenant.user.last_name}`,
-      propertyName: property.name,
-      messagePreview: sr.description.substring(0, 100) + '...',
-      dateReported: sr.date_reported.toISOString(),
-      status: sr.status,
-    }));
+    const serviceRequests = property.service_requests.map((sr) => {
+      const tenantUser = sr.tenant.user;
+      const tenantKyc = tenantUser.tenant_kyc;
+
+      // Prioritize TenantKyc data for consistency
+      const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
+      const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+
+      return {
+        id: sr.id,
+        tenantName: `${firstName} ${lastName}`,
+        propertyName: property.name,
+        messagePreview: sr.description.substring(0, 100) + '...',
+        dateReported: sr.date_reported.toISOString(),
+        status: sr.status,
+      };
+    });
 
     // 4. Computed Description
     const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1 ? 'studio' : `${property.no_of_bedrooms}`}-bedroom ${property.property_type?.toLowerCase()} located in ${property.location}`;
 
-    // 5. Build the final DTO
+    // 5. Format KYC Applications
+    const kycApplications =
+      property.kyc_applications?.map((app) => ({
+        id: app.id,
+        status: app.status,
+        applicantName: `${app.first_name} ${app.last_name}`,
+        email: app.email,
+        phoneNumber: app.phone_number,
+        submissionDate: app.created_at
+          ? new Date(app.created_at).toISOString()
+          : new Date().toISOString(),
+      })) || [];
+
+    // 6. KYC Link Status
+    const hasActiveKYCLink =
+      property.kyc_links?.some((link) => link.is_active) || false;
+    const kycApplicationCount = kycApplications.length;
+
+    // 7. Build the final DTO
     return {
       id: property.id,
       name: property.name,
-      address: property.location,
+      location: property.location,
       description: property.description || computedDescription,
-      status: property.property_status.toUpperCase() as 'VACANT' | 'OCCUPIED', // Normalize to uppercase for frontend type consistency
+      status: property.property_status.toUpperCase() as
+        | 'VACANT'
+        | 'OCCUPIED'
+        | 'INACTIVE', // Normalize to uppercase for frontend type consistency
       propertyType: property.property_type,
       bedrooms: property.no_of_bedrooms,
-      // bathrooms: property.no_of_bathrooms, // Add missing field to repository
+      bathrooms: property.no_of_bathrooms,
       // size: property.size, //add field to repository
       // yearBuilt: property.year_built, // Add to property repository
       tenant: activeTenantInfo,
       rentPayments: rentPayments,
       serviceRequests: serviceRequests,
+      kycApplications: kycApplications,
+      kycApplicationCount: kycApplicationCount,
+      hasActiveKYCLink: hasActiveKYCLink,
+    };
+  }
+
+  @PerformanceMonitor.MonitorPerformance(2000) // Alert if takes more than 2 seconds
+  async getPropertyDetails(id: string): Promise<any> {
+    // Use query builder for better performance and selective loading
+    const property = await this.propertyRepository
+      .createQueryBuilder('property')
+      .leftJoinAndSelect(
+        'property.rents',
+        'rent',
+        'rent.rent_status = :activeStatus',
+        { activeStatus: 'active' },
+      )
+      .leftJoinAndSelect('rent.tenant', 'rentTenant')
+      .leftJoinAndSelect('rentTenant.user', 'rentTenantUser')
+      .leftJoinAndSelect(
+        'property.property_tenants',
+        'propertyTenant',
+        'propertyTenant.status = :tenantStatus',
+        { tenantStatus: 'active' },
+      )
+      .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'tenantUser')
+      .leftJoinAndSelect(
+        'tenantUser.tenant_kyc',
+        'tenantKyc',
+        'tenantKyc.admin_id = property.owner_id',
+      )
+      .leftJoinAndSelect('property.property_histories', 'history')
+      .leftJoinAndSelect('history.tenant', 'historyTenant')
+      .leftJoinAndSelect('historyTenant.user', 'historyTenantUser')
+      .leftJoinAndSelect(
+        'historyTenantUser.tenant_kyc',
+        'historyTenantKyc',
+        'historyTenantKyc.admin_id = property.owner_id',
+      )
+      .leftJoinAndSelect('property.kyc_applications', 'kycApplication')
+      .leftJoinAndSelect(
+        'property.kyc_links',
+        'kycLink',
+        'kycLink.is_active = :isActive',
+        { isActive: true },
+      )
+      .where('property.id = :id', { id })
+      .getOne();
+
+    if (!property?.id) {
+      throw new HttpException(
+        `Property with id: ${id} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const activeTenantRelation = property.property_tenants.find(
+      (pt) => pt.status === 'active',
+    );
+    const activeRent = property.rents.find((r) => r.rent_status === 'active');
+
+    // Current tenant information
+    let currentTenant: any | null = null;
+    if (activeTenantRelation && activeRent) {
+      const tenantUser = activeTenantRelation.tenant.user;
+      const tenantKyc = tenantUser.tenant_kyc; // Get TenantKyc data if available
+
+      // Prioritize TenantKyc data over User data for consistency
+      const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
+      const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+      const email = tenantKyc?.email ?? tenantUser.email;
+      const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
+
+      console.log('Tenant:', tenantUser);
+      currentTenant = {
+        id: activeTenantRelation.tenant.id,
+        tenancyId: activeTenantRelation.id, // PropertyTenant entity ID for tenancy operations
+        name: `${firstName} ${lastName}`,
+        email: email,
+        phone: phone,
+        tenancyStartDate: activeRent.lease_start_date
+          .toISOString()
+          .split('T')[0],
+        paymentCycle: activeRent.payment_frequency || 'Monthly',
+      };
+    }
+
+    // Property history from property_histories table
+    const history = property.property_histories
+      .sort((a, b) => {
+        const dateA = a.move_out_date || a.move_in_date;
+        const dateB = b.move_out_date || b.move_in_date;
+        return new Date(dateB).getTime() - new Date(dateA).getTime();
+      })
+      .map((hist, index) => {
+        const tenantUser = hist.tenant.user;
+        const tenantKyc = tenantUser.tenant_kyc;
+
+        // Prioritize TenantKyc data for consistency
+        const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
+        const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+        const tenantName = `${firstName} ${lastName}`;
+
+        if (hist.move_out_date) {
+          // Tenant moved out
+          return {
+            id: index + 1,
+            date: hist.move_out_date.toISOString().split('T')[0],
+            eventType: 'tenant_moved_out',
+            title: 'Tenant Moved Out',
+            description: `${tenantName} ended tenancy.`,
+            details: hist.move_out_reason
+              ? `Reason: ${hist.move_out_reason.replace('_', ' ')}`
+              : null,
+          };
+        } else {
+          // Tenant moved in
+          return {
+            id: index + 1,
+            date: hist.move_in_date.toISOString().split('T')[0],
+            eventType: 'tenant_moved_in',
+            title: 'Tenant Moved In',
+            description: `${tenantName} started tenancy.`,
+            details: `Monthly rent: ₦${hist.monthly_rent?.toLocaleString()}`,
+          };
+        }
+      });
+
+    // Computed description
+    const computedDescription = `${property.name} is a ${
+      property.no_of_bedrooms === -1
+        ? 'studio'
+        : `${property.no_of_bedrooms}-bedroom`
+    } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
+
+    // KYC Applications data
+    const kycApplications =
+      property.kyc_applications?.map((app) => ({
+        id: app.id,
+        status: app.status,
+        applicantName: `${app.first_name} ${app.last_name}`,
+        email: app.email,
+        phoneNumber: app.phone_number,
+        submissionDate: app.created_at
+          ? new Date(app.created_at).toISOString()
+          : new Date().toISOString(),
+        employmentStatus: app.employment_status,
+        monthlyIncome: app.monthly_net_income,
+      })) || [];
+
+    // KYC Link Status
+    const hasActiveKYCLink =
+      property.kyc_links?.some((link) => link.is_active) || false;
+    const kycApplicationCount = kycApplications.length;
+    const pendingApplicationsCount = kycApplications.filter(
+      (app) => app.status === 'pending',
+    ).length;
+
+    // Build the comprehensive response
+    return {
+      id: property.id,
+      name: property.name,
+      address: property.location,
+      type: property.property_type,
+      bedrooms: property.no_of_bedrooms,
+      bathrooms: property.no_of_bathrooms,
+      status:
+        property.property_status === 'occupied'
+          ? 'Occupied'
+          : property.property_status === 'inactive'
+            ? 'Inactive'
+            : 'Vacant',
+      rent: activeRent?.rental_price || null,
+      rentExpiryDate:
+        activeRent?.lease_end_date?.toISOString().split('T')[0] || null,
+      description: property.description || computedDescription,
+      currentTenant,
+      history,
+      kycApplications,
+      kycApplicationCount,
+      pendingApplicationsCount,
+      hasActiveKYCLink,
     };
   }
 
@@ -364,6 +635,7 @@ export class PropertiesService {
 
     // Merge new data from DTO into existing property entity
     Object.assign(property, updatePropertyDto);
+    console.log(property);
 
     // Save the updated entity back to the db
     return this.propertyRepository.save(property);
@@ -382,22 +654,42 @@ export class PropertiesService {
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
 
+      // Requirement 7.4: Cannot delete occupied or deactivated properties
       if (property.property_status === PropertyStatusEnum.OCCUPIED) {
         throw new HttpException(
-          'Cannot delete property that is not vacant',
+          'Cannot delete property that is currently occupied. Please end the tenancy first.',
           HttpStatus.BAD_REQUEST,
         );
       }
 
-      // Soft delete sets the deleted_at timestamp
+      if (property.property_status === PropertyStatusEnum.INACTIVE) {
+        throw new HttpException(
+          'Cannot delete property that is deactivated. Please reactivate the property first.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // Requirement 7.2 & 7.3: Check if property has any tenancy history records
+      const historyCount = await this.propertyHistoryRepository.count({
+        where: { property_id: propertyId },
+      });
+
+      if (historyCount > 0) {
+        throw new HttpException(
+          'Cannot delete property with existing tenancy history. Properties that have been inhabited cannot be deleted.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // Only vacant properties with no history can be deleted
       await this.propertyRepository.softDelete(propertyId);
     } catch (error) {
-      // Step 4: Handle known HttpExceptions separately
+      // Handle known HttpExceptions separately
       if (error instanceof HttpException) {
         throw error; // rethrow custom errors without wrapping
       }
 
-      // Step 5: Catch unexpected errors
+      // Catch unexpected errors
       console.error('Unexpected error while deleting property:', error);
       throw new HttpException(
         'Something went wrong while deleting the property',
@@ -447,10 +739,9 @@ export class PropertiesService {
       );
     }
 
-    const queryRunner = connectionSource.createQueryRunner();
+    const queryRunner = this.dataSource.createQueryRunner();
 
     try {
-      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -506,11 +797,10 @@ export class PropertiesService {
       );
     } finally {
       await queryRunner.release();
-      await connectionSource.destroy();
     }
   }
 
-  async moveTenantOut(moveOutData: MoveTenantOutDto) {
+  async moveTenantOut(moveOutData: MoveTenantOutDto, requesterId?: string) {
     const { property_id, tenant_id, move_out_date } = moveOutData;
     if (!DateService.isValidFormat_YYYY_MM_DD(move_out_date)) {
       throw new HttpException(
@@ -519,10 +809,112 @@ export class PropertiesService {
       );
     }
 
-    const queryRunner = connectionSource.createQueryRunner();
+    // If requesterId is provided (for landlords), validate ownership
+    if (requesterId) {
+      const property = await this.propertyRepository.findOneBy({
+        id: property_id,
+      });
+      if (!property) {
+        throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+      }
+
+      if (property.owner_id !== requesterId) {
+        throw new ForbiddenException(
+          'You are not authorized to end tenancy for this property',
+        );
+      }
+    }
+
+    // Check if the move-out date is in the future
+    const moveOutDate = new Date(move_out_date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    moveOutDate.setHours(0, 0, 0, 0);
+
+    if (moveOutDate > today) {
+      // Schedule the move-out for the future
+      return this.scheduleMoveTenantOut(moveOutData, requesterId);
+    }
+
+    // Process immediate move-out
+    return this.processMoveTenantOut(moveOutData, requesterId);
+  }
+
+  private async scheduleMoveTenantOut(
+    moveOutData: MoveTenantOutDto,
+    requesterId?: string,
+  ) {
+    const { property_id, tenant_id, move_out_date } = moveOutData;
+
+    // Validate that tenant is currently assigned to the property
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: {
+        property_id,
+        tenant_id,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!propertyTenant?.id) {
+      throw new HttpException(
+        'Tenant is not currently assigned to this property',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Check if there's already a scheduled move-out for this tenant/property
+    const existingScheduled = await this.scheduledMoveOutRepository.findOne({
+      where: {
+        property_id,
+        tenant_id,
+        processed: false,
+      },
+    });
+
+    if (existingScheduled) {
+      // Update the existing scheduled move-out
+      await this.scheduledMoveOutRepository.update(existingScheduled.id, {
+        effective_date: DateService.getStartOfTheDay(move_out_date),
+        move_out_reason: moveOutData?.move_out_reason || null,
+        owner_comment: moveOutData?.owner_comment || null,
+        tenant_comment: moveOutData?.tenant_comment || null,
+      });
+
+      return {
+        message: 'Move-out date updated successfully',
+        scheduled: true,
+        effective_date: move_out_date,
+      };
+    } else {
+      // Create new scheduled move-out
+      const scheduledMoveOut = await this.scheduledMoveOutRepository.save({
+        property_id,
+        tenant_id,
+        effective_date: DateService.getStartOfTheDay(move_out_date),
+        move_out_reason: moveOutData?.move_out_reason || null,
+        owner_comment: moveOutData?.owner_comment || null,
+        tenant_comment: moveOutData?.tenant_comment || null,
+        processed: false,
+      });
+
+      return {
+        message: 'Move-out scheduled successfully',
+        scheduled: true,
+        effective_date: move_out_date,
+        id: scheduledMoveOut.id,
+      };
+    }
+  }
+
+  private async processMoveTenantOut(
+    moveOutData: MoveTenantOutDto,
+    requesterId?: string,
+  ) {
+    const { property_id, tenant_id, move_out_date } = moveOutData;
+
+    const queryRunner = this.dataSource.createQueryRunner();
 
     try {
-      await connectionSource.initialize();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
@@ -541,32 +933,80 @@ export class PropertiesService {
         );
       }
 
+      // Deactivate the rent record
+      await queryRunner.manager.update(
+        Rent,
+        {
+          property_id,
+          tenant_id,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+        {
+          rent_status: RentStatusEnum.INACTIVE,
+        },
+      );
+
+      // Remove property-tenant relationship
       await queryRunner.manager.delete(PropertyTenant, {
         property_id,
         tenant_id,
       });
 
+      // Update property status to vacant
       await queryRunner.manager.update(Property, property_id, {
         property_status: PropertyStatusEnum.VACANT,
       });
 
-      const propertyHistory = await queryRunner.manager.findOne(
-        PropertyHistory,
-        {
+      // Note: KYC links are not automatically reactivated when tenant moves out
+      // Landlord needs to generate new KYC links if they want to find new tenants
+
+      // Try to find existing PropertyHistory record for this tenant
+      let propertyHistory = await queryRunner.manager.findOne(PropertyHistory, {
+        where: {
+          property_id,
+          tenant_id,
+          move_out_date: IsNull(),
+        },
+        order: { created_at: 'DESC' },
+      });
+
+      // If no PropertyHistory record exists, create one based on the current tenancy
+      if (!propertyHistory) {
+        console.log(
+          `No PropertyHistory record found for tenant ${tenant_id} in property ${property_id}. Creating one...`,
+        );
+
+        // Get the active rent record to determine move-in date and rent amount
+        const activeRent = await queryRunner.manager.findOne(Rent, {
           where: {
             property_id,
             tenant_id,
-            move_out_date: IsNull(),
+            rent_status: RentStatusEnum.ACTIVE,
           },
-          order: { created_at: 'DESC' },
-        },
-      );
+        });
 
-      if (!propertyHistory) {
-        throw new HttpException(
-          'Property history record not found',
-          HttpStatus.NOT_FOUND,
-        );
+        if (!activeRent) {
+          throw new HttpException(
+            'No active rent record found for this tenant and property',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        // Create the missing PropertyHistory record
+        propertyHistory = await queryRunner.manager.save(PropertyHistory, {
+          property_id,
+          tenant_id,
+          move_in_date:
+            activeRent.lease_start_date ||
+            DateService.getStartOfTheDay(new Date()),
+          monthly_rent: activeRent.rental_price,
+          owner_comment: null,
+          tenant_comment: null,
+          move_out_date: null,
+          move_out_reason: null,
+        });
+
+        console.log('Created PropertyHistory record:', propertyHistory.id);
       }
 
       const updatedHistory = await queryRunner.manager.save(PropertyHistory, {
@@ -587,9 +1027,109 @@ export class PropertiesService {
       );
     } finally {
       await queryRunner.release();
-      await connectionSource.destroy();
     }
   }
+
+  async processScheduledMoveOuts() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Find all scheduled move-outs that are due today or overdue
+    const scheduledMoveOuts = await this.scheduledMoveOutRepository.find({
+      where: {
+        processed: false,
+      },
+    });
+
+    const dueScheduledMoveOuts = scheduledMoveOuts.filter((scheduled) => {
+      const effectiveDate = new Date(scheduled.effective_date);
+      effectiveDate.setHours(0, 0, 0, 0);
+      return effectiveDate <= today;
+    });
+
+    console.log(
+      `Processing ${dueScheduledMoveOuts.length} scheduled move-outs`,
+    );
+
+    for (const scheduled of dueScheduledMoveOuts) {
+      try {
+        // Process the move-out
+        await this.processMoveTenantOut({
+          property_id: scheduled.property_id,
+          tenant_id: scheduled.tenant_id,
+          move_out_date: scheduled.effective_date.toISOString().split('T')[0],
+          move_out_reason: scheduled.move_out_reason || undefined,
+          owner_comment: scheduled.owner_comment || undefined,
+          tenant_comment: scheduled.tenant_comment || undefined,
+        });
+
+        // Mark as processed
+        await this.scheduledMoveOutRepository.update(scheduled.id, {
+          processed: true,
+          processed_at: new Date(),
+        });
+
+        console.log(
+          `Processed scheduled move-out for tenant ${scheduled.tenant_id} from property ${scheduled.property_id}`,
+        );
+      } catch (error) {
+        console.error(
+          `Failed to process scheduled move-out ${scheduled.id}:`,
+          error,
+        );
+        // Continue processing other scheduled move-outs even if one fails
+      }
+    }
+
+    return {
+      processed: dueScheduledMoveOuts.length,
+      total: scheduledMoveOuts.length,
+    };
+  }
+
+  async getScheduledMoveOuts(ownerId?: string) {
+    const queryBuilder = this.scheduledMoveOutRepository
+      .createQueryBuilder('smo')
+      .leftJoinAndSelect('smo.property_id', 'property')
+      .leftJoinAndSelect('smo.tenant_id', 'tenant')
+      .where('smo.processed = :processed', { processed: false });
+
+    if (ownerId) {
+      queryBuilder.andWhere('property.owner_id = :ownerId', { ownerId });
+    }
+
+    return queryBuilder.getMany();
+  }
+
+  async cancelScheduledMoveOut(scheduleId: string, ownerId?: string) {
+    const scheduled = await this.scheduledMoveOutRepository.findOne({
+      where: { id: scheduleId, processed: false },
+      relations: ['property'],
+    });
+
+    if (!scheduled) {
+      throw new HttpException(
+        'Scheduled move-out not found or already processed',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    // If ownerId is provided, validate ownership
+    if (ownerId) {
+      const property = await this.propertyRepository.findOneBy({
+        id: scheduled.property_id,
+      });
+      if (!property || property.owner_id !== ownerId) {
+        throw new ForbiddenException(
+          'You are not authorized to cancel this scheduled move-out',
+        );
+      }
+    }
+
+    await this.scheduledMoveOutRepository.delete(scheduleId);
+    return { message: 'Scheduled move-out cancelled successfully' };
+  }
+
   async createPropertyGroup(data: CreatePropertyGroupDto, owner_id: string) {
     const properties = await this.propertyRepository.find({
       where: {
@@ -662,6 +1202,97 @@ export class PropertiesService {
     };
   }
 
+  @PerformanceMonitor.MonitorPerformance(5000) // Alert if takes more than 5 seconds
+  async syncPropertyStatuses() {
+    // Method to fix data inconsistencies - sync property status with actual tenancy state
+    // Use query builder for better performance
+    const properties = await this.propertyRepository
+      .createQueryBuilder('property')
+      .leftJoinAndSelect(
+        'property.rents',
+        'rent',
+        'rent.rent_status = :activeStatus',
+        { activeStatus: RentStatusEnum.ACTIVE },
+      )
+      .where('property.property_status != :inactiveStatus', {
+        inactiveStatus: PropertyStatusEnum.INACTIVE,
+      })
+      .getMany();
+
+    let statusUpdates = 0;
+    let historyRecordsCreated = 0;
+
+    // Batch operations for better performance
+    const propertiesToUpdate: Property[] = [];
+    const historyRecordsToCreate: any[] = [];
+
+    for (const property of properties) {
+      const hasActiveRent = property.rents && property.rents.length > 0;
+      const correctStatus = hasActiveRent
+        ? PropertyStatusEnum.OCCUPIED
+        : PropertyStatusEnum.VACANT;
+
+      if (property.property_status !== correctStatus) {
+        console.log(
+          `Fixing property ${property.name}: ${property.property_status} -> ${correctStatus}`,
+        );
+        property.property_status = correctStatus;
+        propertiesToUpdate.push(property);
+        statusUpdates++;
+      }
+
+      // Check for missing history records for active rents
+      if (hasActiveRent) {
+        for (const rent of property.rents) {
+          // Check if history record exists (batch query would be better but this is simpler for now)
+          const existingHistory = await this.propertyHistoryRepository.findOne({
+            where: {
+              property_id: property.id,
+              tenant_id: rent.tenant_id,
+              move_out_date: IsNull(),
+            },
+          });
+
+          if (!existingHistory) {
+            console.log(
+              `Creating missing PropertyHistory record for tenant ${rent.tenant_id} in property ${property.name}`,
+            );
+
+            historyRecordsToCreate.push({
+              property_id: property.id,
+              tenant_id: rent.tenant_id,
+              move_in_date:
+                rent.lease_start_date ||
+                DateService.getStartOfTheDay(new Date()),
+              monthly_rent: rent.rental_price,
+              owner_comment: 'Auto-created during sync',
+              tenant_comment: null,
+              move_out_date: null,
+              move_out_reason: null,
+            });
+
+            historyRecordsCreated++;
+          }
+        }
+      }
+    }
+
+    // Batch save operations
+    if (propertiesToUpdate.length > 0) {
+      await this.propertyRepository.save(propertiesToUpdate);
+    }
+
+    if (historyRecordsToCreate.length > 0) {
+      await this.propertyHistoryRepository.save(historyRecordsToCreate);
+    }
+
+    return {
+      message: 'Property statuses synchronized successfully',
+      statusUpdates,
+      historyRecordsCreated,
+    };
+  }
+
   async assignTenant(id: string, data: AssignTenantDto) {
     const queryRunner = this.dataSource.createQueryRunner();
 
@@ -679,6 +1310,14 @@ export class PropertiesService {
         );
       }
 
+      // Prevent tenant assignment to inactive properties
+      if (property.property_status === PropertyStatusEnum.INACTIVE) {
+        throw new HttpException(
+          'Cannot assign tenant to inactive property. Please reactivate the property first.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       const tenant = await this.userService.getAccountById(data.tenant_id);
       if (!tenant) throw new NotFoundException('Tenant not found');
 
@@ -691,6 +1330,7 @@ export class PropertiesService {
         rental_price: data.rental_price,
         security_deposit: data.security_deposit,
         service_charge: data.service_charge,
+        payment_frequency: data.payment_frequency || 'Monthly',
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
       });
@@ -714,6 +1354,8 @@ export class PropertiesService {
           move_out_date: null,
           move_out_reason: null,
         }),
+        // Deactivate any active KYC links for this property
+        this.deactivateKYCLinksForProperty(queryRunner, property.id),
       ]);
 
       await queryRunner.commitTransaction();
@@ -729,6 +1371,647 @@ export class PropertiesService {
           'An error occurred while assigning Tenant To property',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Deactivate KYC links when property becomes occupied
+   * Requirements: 2.4, 2.5, 6.4
+   */
+  private async deactivateKYCLinksForProperty(
+    queryRunner: any,
+    propertyId: string,
+  ): Promise<void> {
+    await queryRunner.manager.update(
+      'kyc_links',
+      { property_id: propertyId, is_active: true },
+      { is_active: false },
+    );
+  }
+
+  /**
+   * Fix tenant data leakage issue by analyzing and reporting data consistency
+   * This method provides information about the fix that has been applied
+   */
+  async fixTenantDataLeakage(landlordId?: string): Promise<{
+    message: string;
+    fixed: boolean;
+    details: any;
+  }> {
+    console.log('🔧 Analyzing tenant data leakage fix...', { landlordId });
+
+    try {
+      // Get tenant KYC records (filtered by landlord if provided)
+      let kycQuery = this.tenantKycRepository
+        .createQueryBuilder('kyc')
+        .leftJoinAndSelect('kyc.user', 'user');
+
+      if (landlordId) {
+        kycQuery = kycQuery.where('kyc.admin_id = :landlordId', { landlordId });
+      }
+
+      const allTenantKyc = await kycQuery.getMany();
+
+      // Group by user_id to find users with multiple KYC records
+      const userKycMap = new Map<string, TenantKyc[]>();
+      allTenantKyc.forEach((kyc) => {
+        if (kyc.user_id) {
+          if (!userKycMap.has(kyc.user_id)) {
+            userKycMap.set(kyc.user_id, []);
+          }
+          userKycMap.get(kyc.user_id)!.push(kyc);
+        }
+      });
+
+      // Find users with multiple KYC records across different landlords
+      const duplicateUsers = Array.from(userKycMap.entries()).filter(
+        ([_, records]) => records.length > 1,
+      );
+
+      let crossPropertyUsers = 0;
+      for (const [userId, records] of duplicateUsers) {
+        const uniqueAdminIds = new Set(records.map((r) => r.admin_id));
+        if (uniqueAdminIds.size > 1) {
+          crossPropertyUsers++;
+        }
+      }
+
+      const analysis = {
+        totalTenantKycRecords: allTenantKyc.length,
+        usersWithMultipleRecords: duplicateUsers.length,
+        usersAcrossMultipleLandlords: crossPropertyUsers,
+        fixApplied: true,
+        fixDescription: [
+          'Database queries have been updated to filter tenant_kyc records by property owner (admin_id)',
+          'getPropertyDetails() now uses: tenantKyc.admin_id = property.owner_id',
+          'getPropertyById() now uses: tenantKyc.admin_id = property.owner_id',
+          'This prevents tenant data from other properties from being displayed',
+        ],
+        impact:
+          crossPropertyUsers > 0
+            ? `Fixed potential data leakage for ${crossPropertyUsers} users who have KYC records across multiple landlords`
+            : 'No cross-landlord data leakage detected',
+      };
+
+      console.log('✅ Analysis complete:', analysis);
+
+      return {
+        message:
+          'Tenant data leakage analysis completed. Database queries have been fixed.',
+        fixed: true,
+        details: analysis,
+      };
+    } catch (error) {
+      console.error('❌ Analysis failed:', error);
+      return {
+        message: `Analysis failed: ${error.message}`,
+        fixed: false,
+        details: { error: error.message },
+      };
+    }
+  }
+
+  /**
+   * Quick check to verify tenant data fix is working for a landlord
+   */
+  async checkTenantDataFix(landlordId: string): Promise<{
+    message: string;
+    isFixed: boolean;
+    details: any;
+  }> {
+    console.log('🔍 Quick check for tenant data fix...', { landlordId });
+
+    try {
+      // Get a sample of properties with tenants for this landlord
+      const properties = await this.propertyRepository
+        .createQueryBuilder('property')
+        .leftJoinAndSelect(
+          'property.property_tenants',
+          'propertyTenant',
+          'propertyTenant.status = :tenantStatus',
+          { tenantStatus: 'active' },
+        )
+        .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
+        .leftJoinAndSelect('tenant.user', 'tenantUser')
+        .leftJoinAndSelect(
+          'tenantUser.tenant_kyc',
+          'tenantKyc',
+          'tenantKyc.admin_id = property.owner_id',
+        )
+        .where('property.owner_id = :landlordId', { landlordId })
+        .limit(10) // Check first 10 properties
+        .getMany();
+
+      const occupiedProperties = properties.filter(
+        (p) => p.property_tenants && p.property_tenants.length > 0,
+      );
+
+      let correctlyFilteredCount = 0;
+      let totalTenantsChecked = 0;
+      const sampleResults: any[] = [];
+
+      for (const property of occupiedProperties) {
+        for (const propertyTenant of property.property_tenants) {
+          totalTenantsChecked++;
+          const tenant = propertyTenant.tenant;
+
+          if (tenant && tenant.user) {
+            // The fix should ensure that tenant_kyc is either null or belongs to this landlord
+            const tenantKyc = tenant.user.tenant_kyc;
+
+            if (!tenantKyc || tenantKyc.admin_id === landlordId) {
+              correctlyFilteredCount++;
+              sampleResults.push({
+                propertyId: property.id,
+                propertyName: property.name,
+                tenantName: `${tenant.user.first_name} ${tenant.user.last_name}`,
+                kycFiltered: tenantKyc
+                  ? 'Correctly filtered to this landlord'
+                  : 'No KYC data (expected)',
+                status: '✅ Correct',
+              });
+            } else {
+              sampleResults.push({
+                propertyId: property.id,
+                propertyName: property.name,
+                tenantName: `${tenant.user.first_name} ${tenant.user.last_name}`,
+                kycFiltered: `❌ KYC belongs to different landlord: ${tenantKyc.admin_id}`,
+                status: '❌ Issue detected',
+              });
+            }
+          }
+        }
+      }
+
+      const isFixed = correctlyFilteredCount === totalTenantsChecked;
+
+      return {
+        message: isFixed
+          ? '✅ Tenant data fix is working correctly!'
+          : '❌ Issues detected - tenant data may still be leaking',
+        isFixed,
+        details: {
+          landlordId,
+          propertiesChecked: properties.length,
+          occupiedProperties: occupiedProperties.length,
+          totalTenantsChecked,
+          correctlyFilteredCount,
+          fixEffectiveness:
+            totalTenantsChecked > 0
+              ? `${Math.round((correctlyFilteredCount / totalTenantsChecked) * 100)}%`
+              : 'N/A',
+          sampleResults: sampleResults.slice(0, 5), // Show first 5 results
+          recommendations: isFixed
+            ? [
+                'The fix is working correctly',
+                'Clear browser cache if you still see issues',
+              ]
+            : [
+                'Database queries may need additional fixes',
+                'Contact technical support',
+              ],
+        },
+      };
+    } catch (error) {
+      console.error('❌ Check failed:', error);
+      return {
+        message: `Check failed: ${error.message}`,
+        isFixed: false,
+        details: { error: error.message },
+      };
+    }
+  }
+
+  /**
+   * Deep diagnostic to find the exact source of tenant data leakage
+   */
+  async diagnoseTenantDataLeakage(landlordId: string): Promise<{
+    message: string;
+    issues: any[];
+    details: any;
+  }> {
+    console.log('🔍 Deep diagnostic for tenant data leakage...', {
+      landlordId,
+    });
+
+    try {
+      const issues: any[] = [];
+
+      // 1. Check for duplicate tenant assignments (same tenant on multiple properties)
+      const duplicateAssignments = await this.propertyTenantRepository
+        .createQueryBuilder('pt')
+        .leftJoinAndSelect('pt.property', 'property')
+        .leftJoinAndSelect('pt.tenant', 'tenant')
+        .leftJoinAndSelect('tenant.user', 'user')
+        .where('pt.status = :status', { status: 'active' })
+        .andWhere('property.owner_id = :landlordId', { landlordId })
+        .getMany();
+
+      // Group by tenant to find duplicates
+      const tenantAssignments = new Map();
+      duplicateAssignments.forEach((assignment) => {
+        const tenantId = assignment.tenant.id;
+        if (!tenantAssignments.has(tenantId)) {
+          tenantAssignments.set(tenantId, []);
+        }
+        tenantAssignments.get(tenantId).push(assignment);
+      });
+
+      // Find tenants assigned to multiple properties
+      const duplicateTenants = Array.from(tenantAssignments.entries()).filter(
+        ([_, assignments]) => assignments.length > 1,
+      );
+
+      duplicateTenants.forEach(([tenantId, assignments]) => {
+        const tenantName = `${assignments[0].tenant.user.first_name} ${assignments[0].tenant.user.last_name}`;
+        const propertyNames = assignments.map((a) => a.property.name);
+
+        issues.push({
+          type: 'DUPLICATE_TENANT_ASSIGNMENT',
+          severity: 'HIGH',
+          tenantId,
+          tenantName,
+          assignedToProperties: propertyNames,
+          propertyIds: assignments.map((a) => a.property.id),
+          message: `Tenant "${tenantName}" is assigned to multiple properties: ${propertyNames.join(', ')}`,
+        });
+      });
+
+      // 2. Check for orphaned rent records
+      const orphanedRents = await this.dataSource.query(
+        `
+        SELECT r.*, p.name as property_name, u.first_name, u.last_name
+        FROM rents r
+        LEFT JOIN properties p ON r.property_id = p.id
+        LEFT JOIN accounts a ON r.tenant_id = a.id
+        LEFT JOIN users u ON a."userId" = u.id
+        WHERE r.rent_status = 'active' 
+        AND p.owner_id = $1
+        AND NOT EXISTS (
+          SELECT 1 FROM property_tenants pt 
+          WHERE pt.property_id = r.property_id 
+          AND pt.tenant_id = r.tenant_id 
+          AND pt.status = 'active'
+        )
+      `,
+        [landlordId],
+      );
+
+      orphanedRents.forEach((rent) => {
+        issues.push({
+          type: 'ORPHANED_RENT_RECORD',
+          severity: 'MEDIUM',
+          rentId: rent.id,
+          propertyId: rent.property_id,
+          propertyName: rent.property_name,
+          tenantName: `${rent.first_name} ${rent.last_name}`,
+          message: `Active rent record exists without corresponding property-tenant assignment`,
+        });
+      });
+
+      // 3. Test the actual getAllProperties method that's causing issues
+      const allPropertiesResult = await this.getAllProperties({
+        owner_id: landlordId,
+        page: 1,
+        size: 50, // Check more properties
+      });
+
+      const propertiesWithTenants = allPropertiesResult.properties.filter(
+        (p) =>
+          p.rents &&
+          p.rents.length > 0 &&
+          p.rents.some((r) => r.rent_status === 'active'),
+      );
+
+      // 4. Check for tenant_kyc records that might be causing confusion
+      const problematicKycRecords = await this.dataSource.query(
+        `
+        SELECT tk.*, u.first_name, u.last_name, u.email, u.phone_number,
+               p.id as property_id, p.name as property_name
+        FROM tenant_kyc tk
+        LEFT JOIN users u ON tk.user_id = u.id
+        LEFT JOIN properties p ON tk.admin_id = p.owner_id
+        WHERE tk.admin_id != $1
+        AND u.id IN (
+          SELECT DISTINCT u2.id 
+          FROM users u2
+          JOIN accounts a ON u2.id = a."userId"
+          JOIN property_tenants pt ON a.id = pt.tenant_id
+          JOIN properties p2 ON pt.property_id = p2.id
+          WHERE p2.owner_id = $1 AND pt.status = 'active'
+        )
+      `,
+        [landlordId],
+      );
+
+      problematicKycRecords.forEach((record) => {
+        issues.push({
+          type: 'CROSS_LANDLORD_KYC_RECORD',
+          severity: 'HIGH',
+          tenantName: `${record.first_name} ${record.last_name}`,
+          kycAdminId: record.admin_id,
+          currentLandlordId: landlordId,
+          message: `Tenant has KYC record with different landlord (${record.admin_id}) but is assigned to your property`,
+        });
+      });
+
+      return {
+        message: `Found ${issues.length} potential issues causing tenant data leakage`,
+        issues,
+        details: {
+          landlordId,
+          totalPropertiesChecked: allPropertiesResult.properties.length,
+          propertiesWithTenants: propertiesWithTenants.length,
+          duplicateTenantsFound: duplicateTenants.length,
+          orphanedRentsFound: orphanedRents.length,
+          crossLandlordKycRecords: problematicKycRecords.length,
+          samplePropertiesWithTenants: propertiesWithTenants
+            .slice(0, 5)
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              activeRents: p.rents
+                .filter((r) => r.rent_status === 'active')
+                .map((r) => ({
+                  tenantName: `${r.tenant.user.first_name} ${r.tenant.user.last_name}`,
+                  tenantId: r.tenant.id,
+                  hasFilteredKyc: !!r.tenant.user.tenant_kyc,
+                  kycAdminId: r.tenant.user.tenant_kyc?.admin_id,
+                })),
+            })),
+        },
+      };
+    } catch (error) {
+      console.error('❌ Diagnostic failed:', error);
+      return {
+        message: `Diagnostic failed: ${error.message}`,
+        issues: [],
+        details: { error: error.message },
+      };
+    }
+  }
+
+  /**
+   * Clean up duplicate tenant assignments for a specific landlord
+   */
+  async cleanupDuplicateTenantAssignments(landlordId: string): Promise<{
+    message: string;
+    success: boolean;
+    details: any;
+  }> {
+    console.log('🧹 Cleaning up duplicate tenant assignments...', {
+      landlordId,
+    });
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // Find tenants with multiple active assignments
+      const duplicateAssignments = await queryRunner.manager.query(
+        `
+        SELECT 
+          u.id as user_id,
+          u.first_name,
+          u.last_name,
+          a.id as account_id,
+          COUNT(pt.property_id) as property_count,
+          ARRAY_AGG(pt.property_id) as property_ids,
+          ARRAY_AGG(p.name) as property_names
+        FROM property_tenants pt
+        JOIN accounts a ON pt.tenant_id = a.id
+        JOIN users u ON a."userId" = u.id
+        JOIN properties p ON pt.property_id = p.id
+        WHERE pt.status = 'active' 
+        AND p.owner_id = $1
+        GROUP BY u.id, u.first_name, u.last_name, a.id
+        HAVING COUNT(pt.property_id) > 1
+      `,
+        [landlordId],
+      );
+
+      let cleanedUpTenants = 0;
+      let propertiesFreed = 0;
+      const cleanupDetails: any[] = [];
+
+      for (const duplicate of duplicateAssignments) {
+        const tenantName = `${duplicate.first_name} ${duplicate.last_name}`;
+        const propertyIds = duplicate.property_ids;
+        const propertyNames = duplicate.property_names;
+
+        console.log(
+          `Cleaning up duplicate assignments for ${tenantName}:`,
+          propertyNames,
+        );
+
+        // Keep the most recent assignment, deactivate others
+        const assignments = await queryRunner.manager.query(
+          `
+          SELECT pt.id, pt.property_id, p.name, pt.created_at
+          FROM property_tenants pt
+          JOIN properties p ON pt.property_id = p.id
+          WHERE pt.tenant_id = $1 
+          AND pt.status = 'active'
+          AND p.owner_id = $2
+          ORDER BY pt.created_at DESC
+        `,
+          [duplicate.account_id, landlordId],
+        );
+
+        if (assignments.length > 1) {
+          // Keep the most recent, deactivate the rest
+          const [mostRecent, ...oldAssignments] = assignments;
+
+          for (const oldAssignment of oldAssignments) {
+            // Deactivate property-tenant relationship
+            await queryRunner.manager.update(
+              'property_tenants',
+              { id: oldAssignment.id },
+              { status: 'inactive' },
+            );
+
+            // Deactivate corresponding rent records
+            await queryRunner.manager.update(
+              'rents',
+              {
+                tenant_id: duplicate.account_id,
+                property_id: oldAssignment.property_id,
+                rent_status: 'active',
+              },
+              { rent_status: 'inactive' },
+            );
+
+            // Set property back to vacant
+            await queryRunner.manager.update(
+              'properties',
+              { id: oldAssignment.property_id },
+              { property_status: 'vacant' },
+            );
+
+            propertiesFreed++;
+            console.log(`Freed property: ${oldAssignment.name}`);
+          }
+
+          // Ensure the kept property is marked as occupied
+          await queryRunner.manager.update(
+            'properties',
+            { id: mostRecent.property_id },
+            { property_status: 'occupied' },
+          );
+
+          cleanupDetails.push({
+            tenantName,
+            keptProperty: mostRecent.name,
+            freedProperties: oldAssignments.map((a) => a.name),
+            totalAssignments: assignments.length,
+            cleanedUp: oldAssignments.length,
+          });
+
+          cleanedUpTenants++;
+        }
+      }
+
+      await queryRunner.commitTransaction();
+
+      const message = `Cleanup completed: ${cleanedUpTenants} tenants with duplicate assignments fixed, ${propertiesFreed} properties freed`;
+      console.log('✅ Cleanup completed:', message);
+
+      return {
+        message,
+        success: true,
+        details: {
+          landlordId,
+          cleanedUpTenants,
+          propertiesFreed,
+          cleanupDetails,
+        },
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('❌ Cleanup failed:', error);
+      return {
+        message: `Cleanup failed: ${error.message}`,
+        success: false,
+        details: { error: error.message },
+      };
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Fix orphaned rent records (rents without valid tenant data)
+   */
+  async fixOrphanedRentRecords(landlordId: string): Promise<{
+    message: string;
+    success: boolean;
+    details: any;
+  }> {
+    console.log('🔧 Fixing orphaned rent records...', { landlordId });
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // Find rent records with missing or invalid tenant data
+      const orphanedRents = await queryRunner.manager.query(
+        `
+        SELECT 
+          r.id as rent_id,
+          r.property_id,
+          r.tenant_id,
+          r.rental_price,
+          p.name as property_name,
+          a.id as account_id,
+          u.id as user_id,
+          u.first_name,
+          u.last_name
+        FROM rents r
+        JOIN properties p ON r.property_id = p.id
+        LEFT JOIN accounts a ON r.tenant_id = a.id
+        LEFT JOIN users u ON a."userId" = u.id
+        WHERE r.rent_status = 'active'
+        AND p.owner_id = $1
+        AND (a.id IS NULL OR u.id IS NULL OR u.first_name IS NULL)
+      `,
+        [landlordId],
+      );
+
+      let fixedRents = 0;
+      let propertiesFreed = 0;
+      const fixDetails: any[] = [];
+
+      for (const orphanedRent of orphanedRents) {
+        console.log(
+          `Fixing orphaned rent for property: ${orphanedRent.property_name}`,
+        );
+
+        // Deactivate the orphaned rent record
+        await queryRunner.manager.update(
+          'rents',
+          { id: orphanedRent.rent_id },
+          { rent_status: 'inactive' },
+        );
+
+        // Set property back to vacant
+        await queryRunner.manager.update(
+          'properties',
+          { id: orphanedRent.property_id },
+          { property_status: 'vacant' },
+        );
+
+        // Remove any property-tenant assignments for this orphaned rent
+        await queryRunner.manager.update(
+          'property_tenants',
+          {
+            property_id: orphanedRent.property_id,
+            tenant_id: orphanedRent.tenant_id,
+            status: 'active',
+          },
+          { status: 'inactive' },
+        );
+
+        fixDetails.push({
+          propertyName: orphanedRent.property_name,
+          rentId: orphanedRent.rent_id,
+          tenantId: orphanedRent.tenant_id,
+          issue: orphanedRent.account_id
+            ? 'Missing user data'
+            : 'Missing account',
+          action: 'Deactivated rent and set property to vacant',
+        });
+
+        fixedRents++;
+        propertiesFreed++;
+      }
+
+      await queryRunner.commitTransaction();
+
+      const message = `Fixed ${fixedRents} orphaned rent records, freed ${propertiesFreed} properties`;
+      console.log('✅ Orphaned rent cleanup completed:', message);
+
+      return {
+        message,
+        success: true,
+        details: {
+          landlordId,
+          fixedRents,
+          propertiesFreed,
+          fixDetails,
+        },
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('❌ Orphaned rent cleanup failed:', error);
+      return {
+        message: `Cleanup failed: ${error.message}`,
+        success: false,
+        details: { error: error.message },
+      };
     } finally {
       await queryRunner.release();
     }

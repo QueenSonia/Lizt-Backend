@@ -1,7 +1,6 @@
 import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { PropertyStatusEnum } from '../dto/create-property.dto';
-import { Users } from 'src/users/entities/user.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { PropertyTenant } from './property-tenants.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
@@ -10,6 +9,8 @@ import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
+import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
+import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -25,7 +26,11 @@ export class Property extends BaseEntity {
   @Column({
     nullable: false,
     type: 'enum',
-    enum: [PropertyStatusEnum.OCCUPIED, PropertyStatusEnum.VACANT],
+    enum: [
+      PropertyStatusEnum.OCCUPIED,
+      PropertyStatusEnum.VACANT,
+      PropertyStatusEnum.INACTIVE,
+    ],
     default: PropertyStatusEnum.VACANT,
   })
   property_status: string;
@@ -42,11 +47,11 @@ export class Property extends BaseEntity {
   @Column({ nullable: false, type: 'int' })
   no_of_bedrooms: number;
 
+  @Column({ nullable: false, type: 'int' })
+  no_of_bathrooms: number;
+
   @Column({ type: 'int', nullable: true })
   rental_price: number;
-
-  @Column({ nullable: true, type: 'varchar' })
-  payment_frequency: string;
 
   @Column({ type: 'int', nullable: true })
   security_deposit: number;
@@ -81,4 +86,10 @@ export class Property extends BaseEntity {
 
   @OneToMany(() => Notification, (no) => no.property)
   notification: Notification[];
+
+  @OneToMany(() => KYCLink, (kycLink) => kycLink.property)
+  kyc_links: KYCLink[];
+
+  @OneToMany(() => KYCApplication, (kycApplication) => kycApplication.property)
+  kyc_applications: KYCApplication[];
 }

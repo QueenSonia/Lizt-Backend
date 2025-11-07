@@ -16,7 +16,16 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
 import { PartialType } from '@nestjs/mapped-types';
 
-export class UpdatePropertyDto extends PartialType(CreatePropertyDto) {}
+export class UpdatePropertyDto extends PartialType(CreatePropertyDto) {
+  @ApiPropertyOptional({
+    example: 'vacant',
+    description: 'Status of the property',
+    enum: PropertyStatusEnum,
+  })
+  @IsOptional()
+  @IsEnum(PropertyStatusEnum)
+  property_status?: PropertyStatusEnum;
+}
 
 // export class UpdatePropertyDto {
 //   @ApiPropertyOptional({ format: 'uuid' })
@@ -182,13 +191,6 @@ export class UpdatePropertyResponseDto {
     required: false,
   })
   rental_price: number;
-
-  @ApiProperty({
-    example: 'monthly',
-    description: 'Frequency of payment for the property',
-    required: false,
-  })
-  payment_frequency: string;
 
   @ApiProperty({
     example: 20000,

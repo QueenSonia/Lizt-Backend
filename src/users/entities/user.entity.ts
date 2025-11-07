@@ -1,6 +1,7 @@
 import {
   Column,
   Entity,
+  JoinColumn,
   ManyToOne,
   OneToMany,
   OneToOne,
@@ -155,5 +156,5 @@ export class Users extends BaseEntity {
   kyc: KYC;
 
   @OneToOne(() => TenantKyc, (tenant_kyc) => tenant_kyc.user)
-  tenant_kyc?: Users;
+  tenant_kyc?: TenantKyc;
 }

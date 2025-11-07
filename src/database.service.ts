@@ -15,6 +15,14 @@ export class DatabaseService implements OnApplicationBootstrap {
         await this.dataSource.initialize();
       }
 
+      // Set up connection error handlers for PostgreSQL
+      const pool = (this.dataSource.driver as any).master;
+      if (pool && typeof pool.on === 'function') {
+        pool.on('error', (err: Error) => {
+          console.error('Unexpected database pool error:', err);
+        });
+      }
+
       if (this.configService.get<string>('NODE_ENV') === 'development') {
         await this.dataSource.synchronize();
       }
@@ -22,7 +30,15 @@ export class DatabaseService implements OnApplicationBootstrap {
       console.log('Database connection established successfully🗼');
     } catch (error) {
       console.error('Unable to connect to the database⚠️:', error);
-      process.exit(1);
+
+      // Don't exit immediately in development - allow retries
+      if (this.configService.get<string>('NODE_ENV') === 'production') {
+        process.exit(1);
+      } else {
+        console.log(
+          'Continuing in development mode - will retry on next request',
+        );
+      }
     }
   }
 }

@@ -643,7 +643,7 @@ export class WhatsappBotService {
     }
 
     //handle redis cache
-    this.cachedResponse(from, text);
+    void this.cachedResponse(from, text);
   }
 
   async cachedResponse(from, text) {
@@ -785,7 +785,7 @@ export class WhatsappBotService {
 
       let response = 'Here are the matching service requests:\n';
       serviceRequests.forEach((req: any, i) => {
-        response += `${req.description} (${new Date(req.created_at).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || 'N/A'}\n\n`;
+        response += `${req.description} (${new Date(req.created_at).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'}\n\n`;
       });
 
       await this.sendText(from, response);
@@ -1334,8 +1334,17 @@ export class WhatsappBotService {
 
       const data = await response.json();
       console.log('Response from WhatsApp API:', data);
+      console.log('Response status:', response.status);
+
+      if (!response.ok) {
+        console.error('WhatsApp API Error:', data);
+        throw new Error(`WhatsApp API Error: ${JSON.stringify(data)}`);
+      }
+
+      return data;
     } catch (error) {
       console.error('Error sending to WhatsApp API:', error);
+      throw error;
     }
   }
 }

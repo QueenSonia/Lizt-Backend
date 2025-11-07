@@ -605,7 +605,7 @@ ${paymentHistory}
 📅 Reported: ${reportedDate}
 📂 Category: ${maintenance.issue_category}
 📌 Status: ${maintenance.status}
-🔧 Facility Manager: ${maintenance.facilityManager?.account.profile_name || 'N/A'}
+🔧 Facility Manager: ${maintenance.facilityManager?.account.profile_name || '——'}
     `;
 
     await this.whatsappUtil.sendText(from, details);
@@ -783,11 +783,11 @@ ${paymentHistory}
             month: 'short',
             day: 'numeric',
           })
-        : 'N/A';
+        : '——';
 
       const rentPrice = activeRent?.rental_price
         ? `₦${activeRent.rental_price.toLocaleString()}`
-        : 'N/A';
+        : '——';
 
       // Adjusted: Removed payment_frequency since it doesn’t exist on Rent
       message += `*${i + 1}. ${property.name}*\n`;

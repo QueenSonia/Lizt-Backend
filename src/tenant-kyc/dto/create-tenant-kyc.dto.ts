@@ -27,7 +27,7 @@ export class CreateTenantKycDto {
   last_name: string;
 
   /**
-   * Email will be required when phone number is not provided
+   * Email will be required when phone number is ——
    * @example sewkito@gmail.com
    */
   @ValidateIf((o) => !o.phone_number?.trim())
@@ -36,7 +36,7 @@ export class CreateTenantKycDto {
   email?: string;
 
   /**
-   * Phone number will be required when email is not provided
+   * Phone number will be required when email is ——
    * @example +2348148696119
    */
   @ValidateIf((o) => !o.email?.trim())
@@ -47,9 +47,9 @@ export class CreateTenantKycDto {
   /**
    * @example 1996-04-22T11:03:13.157Z
    */
+  @IsOptional()
   @IsDateString()
-  @IsNotEmpty()
-  date_of_birth: string;
+  date_of_birth?: string;
 
   /**
    * Can either be: "male", "female", or "other".
@@ -66,10 +66,12 @@ export class CreateTenantKycDto {
   current_residence?: string;
 
   @IsString()
-  state_of_origin: string;
+  @IsOptional()
+  state_of_origin?: string;
 
   @IsString()
-  local_government_area: string;
+  @IsOptional()
+  local_government_area?: string;
 
   /**
    * Can either be: "single", "married", "divorced", or "widowed".
@@ -94,7 +96,8 @@ export class CreateTenantKycDto {
   employment_status: `${EmploymentStatus}`;
 
   @IsString()
-  occupation: string;
+  @IsOptional()
+  occupation?: string;
 
   /** Only required when `employment_status` is `employed` */
   @ValidateIf((o) => o.employment_status === 'employed')
@@ -121,19 +124,24 @@ export class CreateTenantKycDto {
   employer_phone_number?: string;
 
   @IsNumberString()
-  monthly_net_income: string;
+  @IsOptional()
+  monthly_net_income?: string;
 
   @IsString()
-  reference1_name: string;
+  @IsOptional()
+  reference1_name?: string;
 
   @IsString()
-  reference1_address: string;
+  @IsOptional()
+  reference1_address?: string;
 
   @IsString()
-  reference1_relationship: string;
+  @IsOptional()
+  reference1_relationship?: string;
 
   @IsPhoneNumber('NG')
-  reference1_phone_number: string;
+  @IsOptional()
+  reference1_phone_number?: string;
 
   @IsOptional()
   @IsString()

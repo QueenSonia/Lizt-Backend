@@ -38,18 +38,32 @@ export class CreateTenantDto {
   property_id: string;
 
   // Rent details
-  // @IsNotEmpty()
-  // @IsDateString()
-  // tenancy_start_date: Date;
+  @IsNotEmpty()
+  @IsDateString()
+  lease_start_date: Date;
 
   @IsNotEmpty()
   @IsDateString()
-  due_date: Date;
+  lease_end_date: Date;
 
   @IsNotEmpty()
   @IsNumber()
   @Type(() => Number)
-  rent_amount: number;
+  rental_price: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  security_deposit?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  service_charge?: number;
+
+  @IsOptional()
+  @IsString()
+  payment_frequency?: string;
 }
 
 export class CreateTenantKycDto {

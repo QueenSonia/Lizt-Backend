@@ -81,6 +81,9 @@ export class TenantDetailDto {
   guarantorAddress: string | null;
   guarantorRelationship: string | null;
 
+  // TenantKyc ID for updates
+  tenantKycId: string | null;
+
   // Current Tenancy (from Rent/Property)
   property: string;
   propertyId: string;

@@ -20,6 +20,7 @@ describe('NotificationService', () => {
       description: 'You signed rental agreement.',
       status: 'Completed',
       property_id: '',
+      user_id: '',
     });
 
     expect(notification).toHaveProperty('id');

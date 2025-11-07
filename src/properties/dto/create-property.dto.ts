@@ -11,6 +11,7 @@ import {
 export enum PropertyStatusEnum {
   VACANT = 'vacant',
   OCCUPIED = 'occupied',
+  INACTIVE = 'inactive',
 }
 
 export class CreatePropertyDto {
@@ -53,6 +54,16 @@ export class CreatePropertyDto {
   @IsNumber()
   @Type(() => Number)
   no_of_bedrooms: number;
+
+  @ApiProperty({
+    example: 3,
+    description: 'No of bathrooms in the property',
+    type: 'integer',
+  })
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  no_of_bathrooms: number;
 
   @ApiProperty({ required: false })
   @IsString()

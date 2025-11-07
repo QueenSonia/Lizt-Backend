@@ -45,6 +45,32 @@ export class TenantKycController {
   }
 
   /**
+   * Create KYC for existing tenant (landlord only)
+   * @remarks This endpoint allows landlords to create KYC information for existing tenants
+   * @throws {401} `Unauthorized`
+   * @throws {403} `Forbidden` - Access denied due to insufficient role permissions
+   * @throws {422} `Unprocessable Entity` - Failed payload validation
+   * @throws {500} `Internal Server Error`
+   */
+  @ApiOkResponse({ description: 'Operation successful' })
+  @ApiBearerAuth()
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  @Post('existing-tenant')
+  createForExistingTenant(
+    @Body()
+    createTenantKycDto: Omit<CreateTenantKycDto, 'landlord_id'> & {
+      tenant_id?: string;
+    },
+    @CurrentUser('id') landlord_id: string,
+  ) {
+    return this.tenantKycService.createForExistingTenant({
+      ...createTenantKycDto,
+      landlord_id,
+    });
+  }
+
+  /**
    * Get all new tenant kyc data.
    * @remarks Only accessible by admins/land-lords
    * @throws {401} `Unauthorized`
@@ -55,7 +81,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @Get()
   findAll(
     @Query() query: ParseTenantKycQueryDto,
@@ -76,11 +102,26 @@ export class TenantKycController {
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
-
-   
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser('id') admin_id: string) {
     return this.tenantKycService.findOne(admin_id, id);
+  }
+
+  /**
+   * Get KYC data by tenant user ID
+   * @remarks Only accessible by admins/landlords
+   * @throws {401} `Unauthorized`
+   * @throws {403} `Forbidden` - Access denied due to insufficient role permissions
+   * @throws {404} `NotFound`
+   * @throws {500} `Internal Server Error`
+   */
+  @ApiOkResponse({ description: 'Operation successful' })
+  @ApiBearerAuth()
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Get('user/:user_id')
+  findByUserId(@Param('user_id') user_id: string) {
+    return this.tenantKycService.findByUserId(user_id);
   }
 
   /**
@@ -94,7 +135,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @Patch(':id')
   update(
     @Param('id') id: string,
@@ -115,7 +156,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @Delete(':id')
   deleteOne(@Param('id') id: string, @CurrentUser('id') admin_id: string) {
     return this.tenantKycService.deleteOne(admin_id, id);
@@ -131,7 +172,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @Delete('bulk')
   deleteMany(
     @Body() bulkDeleteTenantKycDto: BulkDeleteTenantKycDto,
@@ -150,7 +191,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD) 
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   @Delete()
   deleteAll(@CurrentUser('id') admin_id: string) {
     return this.tenantKycService.deleteAll(admin_id);

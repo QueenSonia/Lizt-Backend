@@ -75,7 +75,7 @@ export class LandlordInteractive {
             style: 'currency',
             currency: 'NGN',
           })
-        : 'N/A';
+        : '——';
 
       const dueDate = latestRent?.lease_end_date
         ? new Date(latestRent.lease_end_date).toLocaleDateString('en-NG', {
@@ -83,7 +83,7 @@ export class LandlordInteractive {
             month: 'short',
             day: 'numeric',
           })
-        : 'N/A';
+        : '——';
 
       tenancyMessage += `${i + 1}. ${pt.property.name}\n${tenantName}\n${rentAmount}/yr\nNext rent due: ${dueDate}\n\n`;
     }

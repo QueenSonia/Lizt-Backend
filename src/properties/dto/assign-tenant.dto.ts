@@ -24,5 +24,9 @@ export class AssignTenantDto {
   lease_end_date: string;
 
   @IsString()
+  @IsOptional()
+  payment_frequency?: string;
+
+  @IsString()
   rent_status: string;
 }

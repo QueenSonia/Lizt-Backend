@@ -4,6 +4,9 @@ import {
   BadRequestException,
   ForbiddenException,
   ConflictException,
+  Inject,
+  forwardRef,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -14,6 +17,7 @@ import {
 import { KYCLink } from './entities/kyc-link.entity';
 import { Property } from '../properties/entities/property.entity';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
+import { EventsGateway } from '../events/events.gateway';
 
 @Injectable()
 export class KYCApplicationService {
@@ -24,6 +28,9 @@ export class KYCApplicationService {
     private readonly kycLinkRepository: Repository<KYCLink>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    @Optional()
+    @Inject(forwardRef(() => EventsGateway))
+    private readonly eventsGateway?: EventsGateway,
   ) {}
 
   /**
@@ -119,6 +126,26 @@ export class KYCApplicationService {
       throw new Error('Failed to retrieve saved KYC application');
     }
 
+    // Emit WebSocket event to notify landlord of new KYC submission
+    try {
+      if (this.eventsGateway && applicationWithRelations.property) {
+        this.eventsGateway.emitKYCSubmission(
+          kycLink.property_id,
+          applicationWithRelations.property.owner_id,
+          {
+            id: savedApplication.id,
+            firstName: kycData.first_name,
+            lastName: kycData.last_name,
+            email: kycData.email,
+            phoneNumber: kycData.phone_number,
+          },
+        );
+      }
+    } catch (error) {
+      // Log error but don't fail the request if WebSocket emission fails
+      console.error('Failed to emit KYC submission event:', error);
+    }
+
     return applicationWithRelations;
   }
 
@@ -138,7 +165,7 @@ export class KYCApplicationService {
     );
 
     // Determine which applications to show based on property status
-    let whereCondition: any = { property_id: propertyId };
+    const whereCondition: any = { property_id: propertyId };
 
     // If property is vacant, only show pending applications
     if (property.property_status === 'vacant') {

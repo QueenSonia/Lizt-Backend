@@ -493,7 +493,11 @@ export class TenantAttachmentService {
     }
 
     if (tenancyDetails.tenancyStartDate) {
-      const startDate = new Date(tenancyDetails.tenancyStartDate);
+      // Parse the date string (YYYY-MM-DD) and compare only the date parts
+      const [year, month, day] = tenancyDetails.tenancyStartDate
+        .split('-')
+        .map(Number);
+      const startDate = new Date(year, month - 1, day); // month is 0-indexed
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 

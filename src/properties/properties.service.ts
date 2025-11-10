@@ -288,8 +288,21 @@ export class PropertiesService {
       // Prioritize TenantKyc data over User data for consistency
       const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
       const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
-      const email = tenantKyc?.email ?? tenantUser.email;
       const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
+
+      // For email, check if it's a placeholder and handle accordingly
+      let email: string | null = tenantKyc?.email ?? tenantUser.email;
+      if (
+        email &&
+        (email.includes('@placeholder.lizt.app') ||
+          email.includes('@placeholder.com'))
+      ) {
+        email = null; // Don't show placeholder emails to frontend
+      }
+      // Also check if email is empty string
+      if (email === '') {
+        email = null;
+      }
 
       activeTenantInfo = {
         id: activeTenantRelation.tenant.id,

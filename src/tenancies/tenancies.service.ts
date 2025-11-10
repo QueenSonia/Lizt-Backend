@@ -11,6 +11,10 @@ import { Property } from 'src/properties/entities/property.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { RenewTenancyDto } from './dto/renew-tenancy.dto';
 import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import {
+  KYCApplication,
+} from '../kyc-links/entities/kyc-application.entity';
+import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 
 @Injectable()
 export class TenanciesService {
@@ -25,6 +29,22 @@ export class TenanciesService {
     private propertyHistoryRepository: Repository<PropertyHistory>,
     private dataSource: DataSource,
   ) {}
+
+  async createTenancyFromKYC(
+    kycApplication: KYCApplication,
+    tenantId: string,
+  ): Promise<PropertyTenant> {
+    const { property_id } = kycApplication;
+
+    // Create a new PropertyTenant record
+    const newPropertyTenant = this.propertyTenantRepository.create({
+      property_id,
+      tenant_id: tenantId,
+      status: TenantStatusEnum.ACTIVE,
+    });
+
+    return this.propertyTenantRepository.save(newPropertyTenant);
+  }
 
   async renewTenancy(
     propertyTenantId: string,

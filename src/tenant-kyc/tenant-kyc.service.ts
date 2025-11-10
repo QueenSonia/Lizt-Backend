@@ -18,6 +18,8 @@ import {
 import { Account } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { RolesEnum } from 'src/base.entity';
+import { TenanciesService } from 'src/tenancies/tenancies.service';
+import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 
 @Injectable()
 export class TenantKycService {
@@ -30,6 +32,11 @@ export class TenantKycService {
 
     @InjectRepository(Users)
     private usersRepo: Repository<Users>,
+
+    @InjectRepository(KYCApplication)
+    private kycApplicationRepo: Repository<KYCApplication>,
+
+    private readonly tenanciesService: TenanciesService,
   ) {}
 
   async create(dto: CreateTenantKycDto) {
@@ -59,7 +66,7 @@ export class TenantKycService {
   }
 
   async createForExistingTenant(
-    dto: CreateTenantKycDto & { tenant_id?: string },
+    dto: CreateTenantKycDto & { tenant_id?: string; property_id?: string },
   ) {
     const landlord = await this.accountRepo.findOneBy({
       id: dto.landlord_id,
@@ -73,26 +80,18 @@ export class TenantKycService {
 
     // If tenant_id is provided, find the existing tenant
     let tenant: Users | null = null;
-    let tenantAccount: Account | null = null;
     if (dto.tenant_id) {
-      // First, try to find the tenant account by ID
-      tenantAccount = await this.accountRepo.findOne({
+      const tenantAccount = await this.accountRepo.findOne({
         where: { id: dto.tenant_id, role: RolesEnum.TENANT },
-        relations: ['user', 'user.tenant_kyc'],
+        relations: ['user'],
       });
 
-      if (!tenantAccount) {
+      if (!tenantAccount || !tenantAccount.user) {
         throw new BadRequestException(
           `Invalid or non-existent tenant with id: ${dto.tenant_id}`,
         );
       }
-
       tenant = tenantAccount.user;
-
-      // Check if tenant already has KYC
-      if (tenant.tenant_kyc) {
-        throw new ConflictException('Tenant already has KYC information');
-      }
     }
 
     const identity_hash = this.generateIdentityHash(dto);
@@ -102,41 +101,29 @@ export class TenantKycService {
       throw new ConflictException('Duplicate KYC request; awaiting review.');
 
     // Map landlord_id to admin_id for the entity
-    const { landlord_id, tenant_id, ...kycData } = dto;
+    const { landlord_id, tenant_id, property_id, ...kycData } = dto;
 
     // Create the KYC record
     const kycEntity = this.tenantKycRepo.create({
       ...kycData,
       admin_id: landlord_id,
-      user_id: tenant?.id || undefined, // Use the actual User ID, not Account ID
+      user_id: tenant?.id,
       identity_hash,
     });
 
     const createdKyc = await this.tenantKycRepo.save(kycEntity);
 
-    // If we have an existing tenant, update their basic info from KYC
-    if (tenant) {
-      await this.usersRepo.update(tenant.id, {
-        first_name: dto.first_name,
-        last_name: dto.last_name,
-        email: dto.email || tenant.email,
-        phone_number: dto.phone_number || tenant.phone_number,
-        date_of_birth: dto.date_of_birth
-          ? new Date(dto.date_of_birth)
-          : tenant.date_of_birth,
-        gender: dto.gender,
-        nationality: dto.nationality,
-        state_of_origin: dto.state_of_origin,
-        lga: dto.local_government_area,
-        marital_status: dto.marital_status,
-        employment_status: dto.employment_status,
-        employer_name: dto.employer_name,
-        job_title: dto.job_title,
-        employer_address: dto.employer_address,
-        monthly_income: dto.monthly_net_income
-          ? parseFloat(dto.monthly_net_income)
-          : tenant.monthly_income,
+    if (tenant && property_id) {
+      const kycApplication = await this.kycApplicationRepo.findOne({
+        where: { property_id, email: tenant.email },
       });
+
+      if (kycApplication) {
+        await this.tenanciesService.createTenancyFromKYC(
+          kycApplication,
+          tenant.id,
+        );
+      }
     }
 
     return {
@@ -144,7 +131,7 @@ export class TenantKycService {
       message: 'KYC information saved successfully',
       data: {
         kycId: createdKyc.id,
-        tenantId: tenantAccount?.id || tenant_id, // Return the Account ID that the frontend expects
+        tenantId: tenant_id,
       },
     };
   }

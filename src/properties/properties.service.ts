@@ -442,7 +442,6 @@ export class PropertiesService {
       const email = tenantKyc?.email ?? tenantUser.email;
       const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
 
-      console.log('Tenant:', tenantUser);
       currentTenant = {
         id: activeTenantRelation.tenant.id,
         tenancyId: activeTenantRelation.id, // PropertyTenant entity ID for tenancy operations

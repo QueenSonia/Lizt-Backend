@@ -291,26 +291,45 @@ export class KYCApplicationService {
       stateOfOrigin: application.state_of_origin,
       localGovernmentArea: application.local_government_area,
       maritalStatus: application.marital_status,
+      religion: application.religion,
       employmentStatus: application.employment_status,
       occupation: application.occupation,
       jobTitle: application.job_title,
       employerName: application.employer_name,
       employerAddress: application.employer_address,
+      employerPhoneNumber: application.employer_phone_number,
+      lengthOfEmployment: application.length_of_employment,
+      businessDuration: application.business_duration,
       monthlyNetIncome: application.monthly_net_income,
       reference1: {
         name: application.reference1_name,
+        address: application.reference1_address,
         relationship: application.reference1_relationship,
         phoneNumber: application.reference1_phone_number,
-        email: null, // Not stored in current schema
+        email: application.reference1_email,
       },
       reference2: application.reference2_name
         ? {
             name: application.reference2_name,
+            address: application.reference2_address,
             relationship: application.reference2_relationship,
             phoneNumber: application.reference2_phone_number,
-            email: null, // Not stored in current schema
+            email: null, // reference2_email not in schema
           }
         : null,
+      tenantOffer: {
+        proposedRentAmount: application.proposed_rent_amount,
+        rentPaymentFrequency: application.rent_payment_frequency,
+        intendedUse: application.intended_use_of_property,
+        numberOfOccupants: application.number_of_occupants,
+        parkingRequirements: application.parking_needs,
+        additionalNotes: application.additional_notes,
+      },
+      documents: {
+        passportPhoto: application.passport_photo_url,
+        idDocument: application.id_document_url,
+        employmentProof: application.employment_proof_url,
+      },
       submissionDate:
         application.created_at instanceof Date
           ? application.created_at.toISOString()

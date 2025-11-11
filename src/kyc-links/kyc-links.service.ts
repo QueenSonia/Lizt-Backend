@@ -316,21 +316,15 @@ export class KYCLinksService {
         };
       }
 
-      // Create enhanced WhatsApp message with better template
-      const message = this.createKYCLinkMessage(propertyName, kycLink);
-
-      const payload = {
-        messaging_product: 'whatsapp',
-        to: normalizedPhone,
-        type: 'text',
-        text: {
-          preview_url: true,
-          body: message,
-        },
-      };
-
-      // Send message using WhatsApp bot service with retry logic
-      await this.sendWithRetry(payload, normalizedPhone);
+      // Send message using a pre-approved template
+      await this.whatsappBotService.sendWhatsappMessageWithTemplate({
+        phone_number: normalizedPhone,
+        template_name: 'kyc_link_invitation', // **IMPORTANT: This template must be created in your WhatsApp Business Manager**
+        template_parameters: [
+          { type: 'text', text: propertyName },
+          { type: 'text', text: kycLink },
+        ],
+      });
 
       // Update rate limiting counter
       await this.updateRateLimit(normalizedPhone);
@@ -418,30 +412,7 @@ export class KYCLinksService {
     }
   }
 
-  /**
-   * Create enhanced KYC link message template
-   * Requirements: 1.5, 7.2
-   */
-  private createKYCLinkMessage(propertyName: string, kycLink: string): string {
-    const expiryDays =
-      this.configService.get('KYC_LINK_EXPIRY_DAYS') ||
-      this.DEFAULT_EXPIRY_DAYS;
 
-    return `🏠 *Property Application Invitation*
-
-Hello! You've been invited to apply for:
-*${propertyName}*
-
-📋 Complete your KYC application here:
-${kycLink}
-
-⏰ *Important:* This link expires in ${expiryDays} days
-✅ Submit your application early to secure your tenancy
-
-Questions? Reply to this message for assistance.
-
-*Powered by Lizt Property Management*`;
-  }
 
   /**
    * Check rate limiting for WhatsApp messages
@@ -491,47 +462,7 @@ Questions? Reply to this message for assistance.
     }
   }
 
-  /**
-   * Send WhatsApp message with retry logic
-   * Requirements: 7.2, 7.3
-   */
-  private async sendWithRetry(
-    payload: any,
-    phoneNumber: string,
-    maxRetries: number = 3,
-    baseDelay: number = 1000,
-  ): Promise<void> {
-    let lastError: Error | null = null;
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        await this.whatsappBotService['sendToWhatsappAPI'](payload);
-        console.log(
-          `WhatsApp message sent successfully to ${phoneNumber} on attempt ${attempt}`,
-        );
-        return;
-      } catch (error) {
-        lastError = error as Error;
-        console.warn(
-          `WhatsApp send attempt ${attempt} failed for ${phoneNumber}:`,
-          error.message,
-        );
-
-        if (attempt < maxRetries) {
-          // Exponential backoff: wait longer between each retry
-          const delay = baseDelay * Math.pow(2, attempt - 1);
-          console.log(`Retrying in ${delay}ms...`);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-      }
-    }
-
-    // If all retries failed, throw the last error
-    throw new HttpException(
-      `Failed to send WhatsApp message after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`,
-      HttpStatus.SERVICE_UNAVAILABLE,
-    );
-  }
 
   /**
    * Handle WhatsApp errors and provide appropriate responses
@@ -604,47 +535,7 @@ Questions? Reply to this message for assistance.
     };
   }
 
-  /**
-   * Send fallback message when WhatsApp delivery fails
-   * Requirements: 7.2, 7.3
-   */
-  async sendFallbackMessage(
-    phoneNumber: string,
-    kycLink: string,
-    propertyName: string,
-    originalError: WhatsAppErrorCode,
-  ): Promise<WhatsAppResponse> {
-    try {
-      // Create a simpler fallback message
-      const fallbackMessage = `KYC Application Link for ${propertyName}: ${kycLink}`;
 
-      const payload = {
-        messaging_product: 'whatsapp',
-        to: phoneNumber,
-        type: 'text',
-        text: {
-          preview_url: false,
-          body: fallbackMessage,
-        },
-      };
-
-      // Try sending with minimal retry (only 1 retry for fallback)
-      await this.sendWithRetry(payload, phoneNumber, 1, 500);
-
-      return {
-        success: true,
-        message: 'Fallback message sent successfully',
-      };
-    } catch (error) {
-      console.error('Fallback message also failed:', error);
-      return {
-        success: false,
-        message:
-          'Both primary and fallback message delivery failed. Please copy the link manually.',
-        errorCode: WhatsAppErrorCode.SERVICE_UNAVAILABLE,
-      };
-    }
-  }
 
   /**
    * Send OTP to phone number for KYC verification
@@ -742,7 +633,7 @@ Questions? Reply to this message for assistance.
       };
 
       try {
-        await this.whatsappBotService['sendToWhatsappAPI'](payload);
+        await this.whatsappBotService.sendToWhatsappAPI(payload);
       } catch (error) {
         console.error('Failed to send OTP via WhatsApp:', error);
         // Don't fail the entire operation if WhatsApp fails

@@ -137,4 +137,65 @@ export class CreateKYCApplicationDto {
   @IsOptional()
   @IsPhoneNumber('NG')
   reference2_phone_number?: string;
+
+  // Additional Personal Information
+  @IsOptional()
+  @IsString()
+  religion?: string;
+
+  // Additional Reference Information
+  @IsOptional()
+  @IsEmail()
+  reference1_email?: string;
+
+  // Additional Employment Information
+  @IsOptional()
+  @IsPhoneNumber('NG')
+  employer_phone_number?: string;
+
+  @IsOptional()
+  @IsString()
+  length_of_employment?: string;
+
+  @IsOptional()
+  @IsString()
+  business_duration?: string;
+
+  // Tenancy Information
+  @IsOptional()
+  @IsString()
+  intended_use_of_property?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  number_of_occupants?: string;
+
+  @IsOptional()
+  @IsString()
+  parking_needs?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  proposed_rent_amount?: string;
+
+  @IsOptional()
+  @IsString()
+  rent_payment_frequency?: string;
+
+  @IsOptional()
+  @IsString()
+  additional_notes?: string;
+
+  // Document URLs (from Cloudinary)
+  @IsOptional()
+  @IsString()
+  passport_photo_url?: string;
+
+  @IsOptional()
+  @IsString()
+  id_document_url?: string;
+
+  @IsOptional()
+  @IsString()
+  employment_proof_url?: string;
 }

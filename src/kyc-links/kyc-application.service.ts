@@ -44,17 +44,17 @@ export class KYCApplicationService {
     // Validate the KYC token and get the associated link
     const kycLink = await this.validateKYCToken(token);
 
-    // Check if user has already submitted an application for this property
+    // Check if user has already submitted an application for this property using phone number
     const existingApplication = await this.kycApplicationRepository.findOne({
       where: {
         kyc_link_id: kycLink.id,
-        email: kycData.email,
+        phone_number: kycData.phone_number,
       },
     });
 
     if (existingApplication) {
       throw new ConflictException(
-        'You have already submitted an application for this property',
+        `User with phone number ${kycData.phone_number} has already applied for this property`,
       );
     }
 

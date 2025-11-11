@@ -109,6 +109,36 @@ export class KYCApplicationService {
     if (kycData.reference2_phone_number)
       applicationData.reference2_phone_number = kycData.reference2_phone_number;
 
+    // Add new fields
+    if (kycData.religion) applicationData.religion = kycData.religion;
+    if (kycData.reference1_email)
+      applicationData.reference1_email = kycData.reference1_email;
+    if (kycData.employer_phone_number)
+      applicationData.employer_phone_number = kycData.employer_phone_number;
+    if (kycData.length_of_employment)
+      applicationData.length_of_employment = kycData.length_of_employment;
+    if (kycData.business_duration)
+      applicationData.business_duration = kycData.business_duration;
+    if (kycData.intended_use_of_property)
+      applicationData.intended_use_of_property =
+        kycData.intended_use_of_property;
+    if (kycData.number_of_occupants)
+      applicationData.number_of_occupants = kycData.number_of_occupants;
+    if (kycData.parking_needs)
+      applicationData.parking_needs = kycData.parking_needs;
+    if (kycData.proposed_rent_amount)
+      applicationData.proposed_rent_amount = kycData.proposed_rent_amount;
+    if (kycData.rent_payment_frequency)
+      applicationData.rent_payment_frequency = kycData.rent_payment_frequency;
+    if (kycData.additional_notes)
+      applicationData.additional_notes = kycData.additional_notes;
+    if (kycData.passport_photo_url)
+      applicationData.passport_photo_url = kycData.passport_photo_url;
+    if (kycData.id_document_url)
+      applicationData.id_document_url = kycData.id_document_url;
+    if (kycData.employment_proof_url)
+      applicationData.employment_proof_url = kycData.employment_proof_url;
+
     const kycApplication =
       this.kycApplicationRepository.create(applicationData);
 

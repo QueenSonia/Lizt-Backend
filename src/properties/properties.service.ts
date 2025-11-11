@@ -710,6 +710,109 @@ export class PropertiesService {
     }
   }
 
+  async getAllPropertiesNoAuth(): Promise<Property[]> {
+    return this.propertyRepository.find({
+      order: { created_at: 'DESC' },
+    });
+  }
+
+  async forceDeleteProperty(propertyId: string): Promise<void> {
+    const queryRunner = this.dataSource.createQueryRunner();
+
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // Check if property exists
+      const property = await queryRunner.manager.findOne(Property, {
+        where: { id: propertyId },
+      });
+
+      if (!property) {
+        throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+      }
+
+      // Delete all associated records in order (respecting foreign key constraints)
+
+      // 1. Delete scheduled move-outs
+      await queryRunner.manager.delete('scheduled_move_outs', {
+        property_id: propertyId,
+      });
+
+      // 2. Delete notice agreements
+      await queryRunner.manager.delete('notice_agreement', {
+        property_id: propertyId,
+      });
+
+      // 3. Delete property history
+      await queryRunner.manager.delete(PropertyHistory, {
+        property_id: propertyId,
+      });
+
+      // 4. Delete property tenants
+      await queryRunner.manager.delete(PropertyTenant, {
+        property_id: propertyId,
+      });
+
+      // 5. Delete rents
+      await queryRunner.manager.delete('rents', {
+        property_id: propertyId,
+      });
+
+      // 6. Delete service requests
+      await queryRunner.manager.delete('service_requests', {
+        property_id: propertyId,
+      });
+
+      // 7. Delete KYC applications
+      await queryRunner.manager.delete('kyc_applications', {
+        property_id: propertyId,
+      });
+
+      // 8. Delete KYC links
+      await queryRunner.manager.delete('kyc_links', {
+        property_id: propertyId,
+      });
+
+      // 9. Remove property from property groups
+      const propertyGroups = await queryRunner.manager.find(PropertyGroup, {
+        where: {},
+      });
+
+      for (const group of propertyGroups) {
+        if (group.property_ids.includes(propertyId)) {
+          group.property_ids = group.property_ids.filter(
+            (id) => id !== propertyId,
+          );
+          await queryRunner.manager.save(PropertyGroup, group);
+        }
+      }
+
+      // 10. Finally, delete the property itself (hard delete)
+      await queryRunner.manager.delete(Property, { id: propertyId });
+
+      await queryRunner.commitTransaction();
+
+      console.log(
+        `✅ Force deleted property ${propertyId} and all associated records`,
+      );
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('❌ Force delete failed:', error);
+
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      throw new HttpException(
+        `Failed to force delete property: ${error.message}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
   async getAdminDashboardStats(user_id: string) {
     const stats = await this.propertyRepository
       .createQueryBuilder('property')
@@ -945,18 +1048,33 @@ export class PropertiesService {
         );
       }
 
-      // Deactivate the rent record
-      await queryRunner.manager.update(
-        Rent,
-        {
+      // Get the active rent record BEFORE deactivating (needed for PropertyHistory creation)
+      const activeRent = await queryRunner.manager.findOne(Rent, {
+        where: {
           property_id,
           tenant_id,
           rent_status: RentStatusEnum.ACTIVE,
         },
-        {
-          rent_status: RentStatusEnum.INACTIVE,
-        },
-      );
+      });
+
+      // If no active rent exists, we still need to clean up the PropertyTenant relationship
+      // This handles cases where data is inconsistent (PropertyTenant exists but no Rent)
+      const hasActiveRent = !!activeRent;
+
+      // Deactivate the rent record (if it exists)
+      if (hasActiveRent) {
+        await queryRunner.manager.update(
+          Rent,
+          {
+            property_id,
+            tenant_id,
+            rent_status: RentStatusEnum.ACTIVE,
+          },
+          {
+            rent_status: RentStatusEnum.INACTIVE,
+          },
+        );
+      }
 
       // Remove property-tenant relationship
       await queryRunner.manager.delete(PropertyTenant, {
@@ -988,35 +1106,39 @@ export class PropertiesService {
           `No PropertyHistory record found for tenant ${tenant_id} in property ${property_id}. Creating one...`,
         );
 
-        // Get the active rent record to determine move-in date and rent amount
-        const activeRent = await queryRunner.manager.findOne(Rent, {
-          where: {
+        if (!hasActiveRent) {
+          // No rent record exists - this is a data inconsistency
+          // Create a minimal PropertyHistory record with placeholder data
+          console.warn(
+            `No active rent found for tenant ${tenant_id} in property ${property_id}. Creating PropertyHistory with default values.`,
+          );
+
+          propertyHistory = await queryRunner.manager.save(PropertyHistory, {
             property_id,
             tenant_id,
-            rent_status: RentStatusEnum.ACTIVE,
-          },
-        });
-
-        if (!activeRent) {
-          throw new HttpException(
-            'No active rent record found for this tenant and property',
-            HttpStatus.BAD_REQUEST,
-          );
+            move_in_date: DateService.getStartOfTheDay(new Date()),
+            monthly_rent: 0, // No rent data available
+            owner_comment: 'Auto-generated: No rent record found',
+            tenant_comment: null,
+            move_out_date: null,
+            move_out_reason: null,
+          });
+        } else {
+          // Use the activeRent we already fetched earlier
+          // Create the missing PropertyHistory record
+          propertyHistory = await queryRunner.manager.save(PropertyHistory, {
+            property_id,
+            tenant_id,
+            move_in_date:
+              activeRent.lease_start_date ||
+              DateService.getStartOfTheDay(new Date()),
+            monthly_rent: activeRent.rental_price,
+            owner_comment: null,
+            tenant_comment: null,
+            move_out_date: null,
+            move_out_reason: null,
+          });
         }
-
-        // Create the missing PropertyHistory record
-        propertyHistory = await queryRunner.manager.save(PropertyHistory, {
-          property_id,
-          tenant_id,
-          move_in_date:
-            activeRent.lease_start_date ||
-            DateService.getStartOfTheDay(new Date()),
-          monthly_rent: activeRent.rental_price,
-          owner_comment: null,
-          tenant_comment: null,
-          move_out_date: null,
-          move_out_reason: null,
-        });
 
         console.log('Created PropertyHistory record:', propertyHistory.id);
       }

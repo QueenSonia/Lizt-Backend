@@ -111,7 +111,8 @@ export class UsersController {
 
   // @Post()
   // @UseGuards(RoleGuard)
-  // @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)// async createUser(@Body() body: CreateUserDto, @Req() req: any) {
+  // @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  // async createUser(@Body() body: CreateUserDto, @Req() req: any) {
   //   try {
   //     const user_id = req?.user?.id;
   //     return this.usersService.createUser(body, user_id);

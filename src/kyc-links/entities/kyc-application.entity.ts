@@ -115,6 +115,53 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   reference2_phone_number?: string;
 
+  // Additional Personal Information
+  @Column({ type: 'varchar', nullable: true })
+  religion?: string;
+
+  // Additional Reference Information
+  @Column({ type: 'varchar', nullable: true })
+  reference1_email?: string;
+
+  // Additional Employment Information
+  @Column({ type: 'varchar', nullable: true })
+  employer_phone_number?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  length_of_employment?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  business_duration?: string;
+
+  // Tenancy Information
+  @Column({ type: 'varchar', nullable: true })
+  intended_use_of_property?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  number_of_occupants?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  parking_needs?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  proposed_rent_amount?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  rent_payment_frequency?: string;
+
+  @Column({ type: 'text', nullable: true })
+  additional_notes?: string;
+
+  // Document URLs (from Cloudinary)
+  @Column({ type: 'varchar', nullable: true })
+  passport_photo_url?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  id_document_url?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  employment_proof_url?: string;
+
   @ManyToOne(() => KYCLink, (kycLink) => kycLink.applications)
   @JoinColumn({ name: 'kyc_link_id' })
   kyc_link: KYCLink;

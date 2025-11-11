@@ -46,6 +46,7 @@ import { Account } from 'src/users/entities/account.entity';
 import { CurrentUser } from 'src/auth/current-user.decorator';
 import { Property } from 'src/properties/entities/property.entity';
 import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
+import { SkipAuth } from 'src/auth/auth.decorator';
 
 @ApiTags('Properties')
 @Controller('properties')
@@ -181,6 +182,69 @@ export class PropertiesController {
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async fixOrphanedRents(@CurrentUser() requester: Account) {
     return this.propertiesService.fixOrphanedRentRecords(requester.id);
+  }
+
+  @ApiOperation({
+    summary: 'List All Properties (No Auth - Dev/Testing Only)',
+    description:
+      'Get all properties with their IDs. No authentication required.',
+  })
+  @ApiOkResponse({
+    description: 'List of all properties',
+  })
+  @SkipAuth()
+  @Get('dev/list-all')
+  async listAllPropertiesNoAuth() {
+    try {
+      const properties = await this.propertiesService.getAllPropertiesNoAuth();
+      return {
+        statusCode: HttpStatus.OK,
+        count: properties.length,
+        properties: properties.map((p) => ({
+          id: p.id,
+          name: p.name,
+          location: p.location,
+          status: p.property_status,
+          owner_id: p.owner_id,
+          created_at: p.created_at,
+        })),
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({
+    summary: 'Force Delete Property (No Auth - Dev/Testing Only)',
+    description:
+      'Permanently deletes a property and ALL associated records including tenants, rents, history, service requests, KYC data, etc. No authentication required. USE WITH CAUTION!',
+  })
+  @ApiOkResponse({
+    description: 'Property and all associated records permanently deleted',
+    schema: {
+      properties: {
+        statusCode: { type: 'number', example: 200 },
+        message: {
+          type: 'string',
+          example: 'Property and all associated records permanently deleted',
+        },
+      },
+    },
+  })
+  @ApiNotFoundResponse({ description: 'Property not found' })
+  @SkipAuth()
+  @Delete('dev/force-delete/:id')
+  async forceDeleteProperty(@Param('id', new ParseUUIDPipe()) id: string) {
+    try {
+      await this.propertiesService.forceDeleteProperty(id);
+
+      return {
+        statusCode: HttpStatus.OK,
+        message: 'Property and all associated records permanently deleted',
+      };
+    } catch (error) {
+      throw error;
+    }
   }
 
   @ApiOperation({ summary: 'Get One Property' })

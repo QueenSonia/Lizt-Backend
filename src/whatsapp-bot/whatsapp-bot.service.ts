@@ -355,7 +355,7 @@ export class WhatsappBotService {
     }
 
     //handle redis cache
-    this.cachedFacilityResponse(from, text);
+    void this.cachedFacilityResponse(from, text);
   }
 
   async cachedFacilityResponse(from, text) {
@@ -618,7 +618,7 @@ export class WhatsappBotService {
     const text = message.text?.body;
 
     if (text?.toLowerCase() === 'start flow') {
-      this.sendFlow(from); // Call the send flow logic
+      void this.sendFlow(from); // Call the send flow logic
     }
 
     console.log(text, 'tenant');
@@ -1142,6 +1142,12 @@ export class WhatsappBotService {
     phone_number,
     tenant_name,
     landlord_name,
+    property_name,
+  }: {
+    phone_number: string;
+    tenant_name: string;
+    landlord_name: string;
+    property_name?: string;
   }) {
     const payload = {
       messaging_product: 'whatsapp',
@@ -1166,6 +1172,11 @@ export class WhatsappBotService {
                 parameter_name: 'landlord_name',
                 text: landlord_name,
               },
+              {
+                type: 'text',
+                parameter_name: 'property_name',
+                text: property_name || 'your property',
+              },
             ],
           },
         ],
@@ -1173,6 +1184,31 @@ export class WhatsappBotService {
     };
 
     await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send tenant attachment confirmation via WhatsApp
+   * Notifies tenant when they've been successfully attached to a property
+   * Uses existing 'tenant_welcome' template
+   */
+  async sendTenantAttachmentNotification({
+    phone_number,
+    tenant_name,
+    landlord_name,
+    property_name,
+  }: {
+    phone_number: string;
+    tenant_name: string;
+    landlord_name: string;
+    property_name: string;
+  }) {
+    // Use the existing tenant welcome template
+    await this.sendTenantWelcomeTemplate({
+      phone_number,
+      tenant_name,
+      landlord_name,
+      property_name,
+    });
   }
 
   async sendFacilityServiceRequest({

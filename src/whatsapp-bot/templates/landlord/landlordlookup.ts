@@ -34,6 +34,7 @@ export class LandlordLookup {
     private readonly usersRepo: Repository<Users>,
     private readonly rentRepo: Repository<Rent>,
     private readonly accountRepo: Repository<Account>,
+    private readonly utilService: UtilService,
   ) {
     const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config);
@@ -247,9 +248,9 @@ export class LandlordLookup {
         await this.propertyRepo.save(property);
 
         const newUser = this.usersRepo.create({
-          first_name: UtilService.toSentenceCase(first_name),
-          last_name: UtilService.toSentenceCase(last_name),
-          phone_number: UtilService.normalizePhoneNumber(data.phone),
+          first_name: this.utilService.toSentenceCase(first_name),
+          last_name: this.utilService.toSentenceCase(last_name),
+          phone_number: this.utilService.normalizePhoneNumber(data.phone),
           email: data.email || null,
           is_verified: true,
         });
@@ -261,7 +262,7 @@ export class LandlordLookup {
           user: newUser,
           userId: newUser.id,
           is_verified: true,
-          password: await UtilService.generatePassword(),
+          password: await this.utilService.generatePassword(),
         });
         await this.accountRepo.save(newAccount);
 

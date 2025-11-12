@@ -65,6 +65,7 @@ export class ServiceRequestsService {
      @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
      private readonly eventEmitter: EventEmitter2,
+     private readonly utilService: UtilService,
 
   ) {}
 
@@ -130,14 +131,14 @@ export class ServiceRequestsService {
   // const randomIndex = Math.floor(Math.random() * facilityManagers.length);
   const selected_managers = facilityManagers.map((manager) => {
     return{ 
-      phone_number:UtilService.normalizePhoneNumber(manager.account.user.phone_number),
-      name:UtilService.toSentenceCase(manager.account.user.first_name)
+      phone_number:this.utilService.normalizePhoneNumber(manager.account.user.phone_number),
+      name:this.utilService.toSentenceCase(manager.account.user.first_name)
     }
   })
 
   console.log('Selected', selected_managers)
 
-  const requestId = UtilService.generateServiceRequestId();
+  const requestId = this.utilService.generateServiceRequestId();
 
   // 3. Save the service request with the selected manager
   // const serviceRequest = await this.serviceRequestRepository.save({

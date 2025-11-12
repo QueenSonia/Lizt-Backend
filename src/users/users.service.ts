@@ -99,6 +99,7 @@ export class UsersService {
     private readonly waitlistRepository: Repository<Waitlist>,
     private readonly cache: CacheService,
 
+    private readonly utilService: UtilService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -133,13 +134,13 @@ export class UsersService {
         // 1. Check existing user
         let tenantUser = await manager.getRepository(Users).findOne({
           where: {
-            phone_number: UtilService.normalizePhoneNumber(phone_number),
+            phone_number: this.utilService.normalizePhoneNumber(phone_number),
           },
         });
 
         if (tenantUser) {
           throw new HttpException(
-            `Account with phone: ${UtilService.normalizePhoneNumber(phone_number)} already exists`,
+            `Account with phone: ${this.utilService.normalizePhoneNumber(phone_number)} already exists`,
             HttpStatus.UNPROCESSABLE_ENTITY,
           );
         }
@@ -169,10 +170,10 @@ export class UsersService {
         const [first_name, last_name] = full_name.split(' ');
         // 2. Create tenant user
         tenantUser = manager.getRepository(Users).create({
-          first_name: UtilService.toSentenceCase(first_name),
-          last_name: UtilService.toSentenceCase(last_name),
+          first_name: this.utilService.toSentenceCase(first_name),
+          last_name: this.utilService.toSentenceCase(last_name),
           email,
-          phone_number: UtilService.normalizePhoneNumber(phone_number),
+          phone_number: this.utilService.normalizePhoneNumber(phone_number),
           role: RolesEnum.TENANT,
           is_verified: true,
         });
@@ -180,7 +181,7 @@ export class UsersService {
         await manager.getRepository(Users).save(tenantUser);
 
         // 3. Create tenant account
-        const generatedPassword = await UtilService.generatePassword();
+        const generatedPassword = await this.utilService.generatePassword();
 
         const userAccount = manager.getRepository(Account).create({
           user: tenantUser,
@@ -227,7 +228,7 @@ export class UsersService {
 
         // 5. Notify tenant
         // await this.whatsappBotService.sendToUserWithTemplate(
-        //   UtilService.normalizePhoneNumber(tenantUser.phone_number),
+        //   this.utilService.normalizePhoneNumber(tenantUser.phone_number),
         //   `${tenantUser.first_name} ${tenantUser.last_name}`,
         // );
 
@@ -239,13 +240,13 @@ export class UsersService {
           role: RolesEnum.TENANT,
         });
 
-        const admin_phone_number = UtilService.normalizePhoneNumber(
+        const admin_phone_number = this.utilService.normalizePhoneNumber(
           admin.user.phone_number,
         );
 
         await this.whatsappBotService.sendTenantWelcomeTemplate({
-          phone_number: UtilService.normalizePhoneNumber(phone_number),
-          tenant_name: `${UtilService.toSentenceCase(first_name)} ${UtilService.toSentenceCase(last_name)}`,
+          phone_number: this.utilService.normalizePhoneNumber(phone_number),
+          tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
           landlord_name: admin.profile_name,
         });
 
@@ -320,13 +321,13 @@ export class UsersService {
         // 1. Check existing user
         let tenantUser = await manager.getRepository(Users).findOne({
           where: {
-            phone_number: UtilService.normalizePhoneNumber(phone_number),
+            phone_number: this.utilService.normalizePhoneNumber(phone_number),
           },
         });
 
         if (tenantUser) {
           throw new HttpException(
-            `Account with phone: ${UtilService.normalizePhoneNumber(phone_number)} already exists`,
+            `Account with phone: ${this.utilService.normalizePhoneNumber(phone_number)} already exists`,
             HttpStatus.UNPROCESSABLE_ENTITY,
           );
         }
@@ -355,10 +356,10 @@ export class UsersService {
 
         // 2. Create tenant user
         tenantUser = manager.getRepository(Users).create({
-          first_name: UtilService.toSentenceCase(first_name),
-          last_name: UtilService.toSentenceCase(last_name),
+          first_name: this.utilService.toSentenceCase(first_name),
+          last_name: this.utilService.toSentenceCase(last_name),
           email,
-          phone_number: UtilService.normalizePhoneNumber(phone_number),
+          phone_number: this.utilService.normalizePhoneNumber(phone_number),
           date_of_birth,
           gender,
           state_of_origin,
@@ -389,7 +390,7 @@ export class UsersService {
         await manager.getRepository(Users).save(tenantUser);
 
         // 3. Create tenant account
-        const generatedPassword = await UtilService.generatePassword();
+        const generatedPassword = await this.utilService.generatePassword();
 
         const userAccount = manager.getRepository(Account).create({
           user: tenantUser,
@@ -432,7 +433,7 @@ export class UsersService {
 
         // 5. Notify tenant
         await this.whatsappBotService.sendToUserWithTemplate(
-          UtilService.normalizePhoneNumber(tenantUser.phone_number),
+          this.utilService.normalizePhoneNumber(tenantUser.phone_number),
           `${tenantUser.first_name} ${tenantUser.last_name}`,
         );
 
@@ -444,13 +445,13 @@ export class UsersService {
           role: RolesEnum.TENANT,
         });
 
-        const admin_phone_number = UtilService.normalizePhoneNumber(
+        const admin_phone_number = this.utilService.normalizePhoneNumber(
           admin.user.phone_number,
         );
 
         await this.whatsappBotService.sendTenantWelcomeTemplate({
-          phone_number: UtilService.normalizePhoneNumber(phone_number),
-          tenant_name: `${UtilService.toSentenceCase(first_name)} ${UtilService.toSentenceCase(last_name)}`,
+          phone_number: this.utilService.normalizePhoneNumber(phone_number),
+          tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
           landlord_name: admin.profile_name,
         });
 
@@ -575,7 +576,7 @@ export class UsersService {
         creator_id: creatorId,
         email,
         role: userRole,
-        profile_name: `${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
+        profile_name: `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`,
         is_verified: false,
       });
 
@@ -634,8 +635,12 @@ export class UsersService {
 
       // Critical: this can throw — must stay *inside* transaction
       await Promise.all([
-        UtilService.sendEmail(email, EmailSubject.WELCOME_EMAIL, emailContent),
-        UtilService.sendEmail(
+        this.utilService.sendEmail(
+          email,
+          EmailSubject.WELCOME_EMAIL,
+          emailContent,
+        ),
+        this.utilService.sendEmail(
           pandaEmail,
           EmailSubject.WELCOME_EMAIL,
           emailContent,
@@ -781,7 +786,7 @@ export class UsersService {
       //   `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`,
       // );
 
-      // await UtilService.sendEmail(
+      // await this.utilService.sendEmail(
       //   email,
       //   EmailSubject.WELCOME_EMAIL,
       //   emailContent,
@@ -1030,7 +1035,7 @@ export class UsersService {
 
     for (const account of accounts) {
       if (account.password) {
-        const isPasswordValid = await UtilService.validatePassword(
+        const isPasswordValid = await this.utilService.validatePassword(
           password,
           account.password,
         );
@@ -1270,7 +1275,7 @@ export class UsersService {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
       }
 
-      const otp = UtilService.generateOTP(6);
+      const otp = this.utilService.generateOTP(6);
       const token = uuidv4();
       const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 min
 
@@ -1283,7 +1288,7 @@ export class UsersService {
 
       const emailContent = clientForgotPasswordTemplate(otp);
 
-      await UtilService.sendEmail(
+      await this.utilService.sendEmail(
         email,
         EmailSubject.WELCOME_EMAIL,
         emailContent,
@@ -1349,7 +1354,7 @@ export class UsersService {
     await this.passwordResetRepository.delete({ id: resetEntry.id });
 
     // Generate new OTP and token
-    const newOtp = UtilService.generateOTP(6);
+    const newOtp = this.utilService.generateOTP(6);
     const newToken = uuidv4();
     const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 15 minutes
 
@@ -1361,7 +1366,7 @@ export class UsersService {
     });
 
     const emailContent = clientForgotPasswordTemplate(newOtp);
-    await UtilService.sendEmail(
+    await this.utilService.sendEmail(
       user.email,
       EmailSubject.RESEND_OTP,
       emailContent,
@@ -1399,7 +1404,7 @@ export class UsersService {
     }
 
     // Hash and update the password
-    user.password = await UtilService.hashPassword(newPassword);
+    user.password = await this.utilService.hashPassword(newPassword);
     if (!user.is_verified) {
       user.is_verified = true;
       this.eventEmitter.emit('user.signup', {
@@ -1872,7 +1877,7 @@ export class UsersService {
     const landlordAccount = this.accountRepository.create({
       user,
       email: data.email,
-      password: await UtilService.hashPassword(data.password),
+      password: await this.utilService.hashPassword(data.password),
       role: RolesEnum.LANDLORD,
       profile_name: data.agency_name,
       is_verified: true,
@@ -1919,7 +1924,7 @@ export class UsersService {
     const adminAccount = this.accountRepository.create({
       user,
       email: data.email,
-      password: await UtilService.hashPassword(data.password),
+      password: await this.utilService.hashPassword(data.password),
       role: RolesEnum.ADMIN,
       profile_name: `${user.first_name}'s Admin Account`,
       is_verified: true,
@@ -1944,7 +1949,7 @@ export class UsersService {
       throw new BadRequestException('Password is required');
     }
 
-    const hashedPassword = await UtilService.hashPassword(data.password);
+    const hashedPassword = await this.utilService.hashPassword(data.password);
 
     const user = this.usersRepository.create({
       ...data,
@@ -2004,7 +2009,7 @@ export class UsersService {
       user,
       email: data.email,
       password: data.password
-        ? await UtilService.hashPassword(data.password)
+        ? await this.utilService.hashPassword(data.password)
         : '',
       role: RolesEnum.REP,
       profile_name: `${data.first_name} ${data.last_name}`,
@@ -2021,7 +2026,7 @@ export class UsersService {
     const resetLink = `${this.configService.get<string>('FRONTEND_URL')}/reset-password?token=${token}`;
     const emailContent = clientSignUpEmailTemplate(data.first_name, resetLink);
 
-    await UtilService.sendEmail(
+    await this.utilService.sendEmail(
       data.email,
       EmailSubject.WELCOME_EMAIL,
       emailContent,
@@ -2183,7 +2188,7 @@ export class UsersService {
         });
 
         if (!userAccount) {
-          const generatedPassword = await UtilService.generatePassword(); // Await the promise
+          const generatedPassword = await this.utilService.generatePassword(); // Await the promise
           userAccount = manager.getRepository(Account).create({
             user,
             email: team_member.email,
@@ -2209,7 +2214,7 @@ export class UsersService {
 
         await this.whatsappBotService.sendToFacilityManagerWithTemplate({
           phone_number: normalized_phone_number,
-          name: UtilService.toSentenceCase(team_member.first_name),
+          name: this.utilService.toSentenceCase(team_member.first_name),
           team: team.name,
           role: 'Facility Manager',
         });

@@ -62,6 +62,7 @@ export class PropertiesService {
     private readonly eventEmitter: EventEmitter2,
     private readonly dataSource: DataSource,
     private readonly kycApplicationService: KYCApplicationService,
+    private readonly utilService: UtilService,
   ) {}
 
   async createProperty(
@@ -109,7 +110,7 @@ export class PropertiesService {
           'Property owner or phone number not found for notification',
         );
       } else {
-        const admin_phone_number = UtilService.normalizePhoneNumber(
+        const admin_phone_number = this.utilService.normalizePhoneNumber(
           property.owner.user.phone_number,
         );
 

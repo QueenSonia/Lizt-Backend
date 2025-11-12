@@ -124,15 +124,43 @@ export class WhatsappBotService {
     const from = message?.from;
     if (!from || !message) return;
 
+    console.log('📱 Incoming WhatsApp message from:', from);
+
+    // CRITICAL FIX: Try both phone number formats
+    // WhatsApp sends international format (2348184350211)
+    // But DB might have local format (08184350211)
+    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+
+    console.log('🔍 Phone number formats:', {
+      original: from,
+      normalized: normalizedPhone,
+      local: localPhone,
+    });
+
+    // Try to find user with either format
     const user = await this.usersRepo.findOne({
-      where: {
-        phone_number: `${from}`,
-        // accounts: { role: RolesEnum.FACILITY_MANAGER },
-      },
+      where: [
+        { phone_number: from },
+        { phone_number: normalizedPhone },
+        { phone_number: localPhone },
+      ],
       relations: ['accounts'],
     });
 
-    console.log({ user });
+    console.log('👤 User lookup result:', {
+      found: !!user,
+      userId: user?.id,
+      userName: user ? `${user.first_name} ${user.last_name}` : 'N/A',
+      phoneNumber: user?.phone_number,
+      userTableRole: user?.role,
+      accountsCount: user?.accounts?.length || 0,
+      accounts: user?.accounts?.map((acc) => ({
+        id: acc.id,
+        role: acc.role,
+        email: acc.email,
+      })),
+    });
 
     // FIXED: Check account role instead of user role
     // Users can have multiple accounts with different roles
@@ -165,7 +193,17 @@ export class WhatsappBotService {
       }
     }
 
-    console.log({ role, accountsCount: user?.accounts?.length });
+    console.log('🎭 Role detection result:', {
+      detectedRole: role,
+      accountsCount: user?.accounts?.length,
+      willRouteToDefault:
+        !role ||
+        ![
+          RolesEnum.TENANT,
+          RolesEnum.LANDLORD,
+          RolesEnum.FACILITY_MANAGER,
+        ].includes(role as any),
+    });
 
     switch (role) {
       case RolesEnum.FACILITY_MANAGER:
@@ -202,6 +240,11 @@ export class WhatsappBotService {
 
         break;
       default:
+        console.log('⚠️ Routing to DEFAULT handler (unrecognized role):', {
+          role,
+          messageType: message.type,
+          from,
+        });
         if (message.type === 'interactive') {
           this.handleDefaultInteractive(message, from);
         }
@@ -221,7 +264,7 @@ export class WhatsappBotService {
       await this.sendText(from, 'Thank you!  Your session has ended.');
       return;
     }
-    this.handleDefaultCachedResponse(from, text);
+    void this.handleDefaultCachedResponse(from, text);
   }
 
   async handleDefaultCachedResponse(from, text) {

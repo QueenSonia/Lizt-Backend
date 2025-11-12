@@ -216,7 +216,7 @@ export class LandlordLookup {
         );
         break;
 
-      case 'ask_duration':
+      case 'ask_duration': {
         const duration = parseInt(text.trim(), 10);
         if (isNaN(duration) || duration <= 0) {
           await this.whatsappUtil.sendText(
@@ -297,6 +297,7 @@ export class LandlordLookup {
 
         await this.cache.delete(`service_request_state_landlord_${from}`);
         break;
+      }
     }
   }
 

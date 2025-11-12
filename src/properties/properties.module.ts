@@ -18,6 +18,7 @@ import { MoveOutSchedulerService } from './tasks/move-out-scheduler.service';
 import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
 import { Users } from 'src/users/entities/user.entity';
+import { UtilsModule } from 'src/utils/utils.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { Users } from 'src/users/entities/user.entity';
     RentsModule,
     UsersModule,
     KYCLinksModule,
+    UtilsModule,
   ],
   controllers: [PropertiesController],
   providers: [

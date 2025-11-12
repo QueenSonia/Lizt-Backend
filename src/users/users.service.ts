@@ -1535,13 +1535,41 @@ export class UsersService {
     const kyc = user.kyc ?? {}; // Get the joined old KYC data
     const tenantKyc = user.tenant_kyc; // Get the joined TenantKyc data (preferred)
 
-    // Find the most recent (or active) rent record for current details
-    const activeRent = account.rents?.sort(
-      (a, b) =>
-        new Date(b.lease_end_date).getTime() -
-        new Date(a.lease_end_date).getTime(),
-    )[0];
+    // Debug logging
+    console.log('Formatting tenant data for account:', account.id);
+    console.log('Total rents loaded:', account.rents?.length || 0);
+    if (account.rents && account.rents.length > 0) {
+      console.log(
+        'Rent records:',
+        account.rents.map((r) => ({
+          id: r.id,
+          rent_status: r.rent_status,
+          property_id: r.property_id,
+          has_property: !!r.property,
+        })),
+      );
+    }
+
+    // Find the most recent ACTIVE rent record for current details
+    const activeRent = account.rents
+      ?.filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
+      .sort(
+        (a, b) =>
+          new Date(b.lease_end_date).getTime() -
+          new Date(a.lease_end_date).getTime(),
+      )[0];
     const property = activeRent?.property;
+
+    console.log('Active rent found:', !!activeRent);
+    console.log('Property found:', !!property);
+    if (activeRent) {
+      console.log('Active rent details:', {
+        id: activeRent.id,
+        rent_status: activeRent.rent_status,
+        property_id: activeRent.property_id,
+        property_name: property?.name,
+      });
+    }
 
     // Aggregate documents from different sources if necessary
     const documents = (account.notice_agreements || [])

@@ -30,6 +30,8 @@ import {
 } from '../rents/dto/create-rent.dto';
 import { DateService } from '../utils/date.helper';
 import { RolesEnum } from '../base.entity';
+import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
+import { UtilService } from '../utils/utility-service';
 
 @Injectable()
 export class TenantAttachmentService {
@@ -53,6 +55,7 @@ export class TenantAttachmentService {
     @InjectRepository(TenantKyc)
     private readonly tenantKycRepository: Repository<TenantKyc>,
     private readonly dataSource: DataSource,
+    private readonly whatsappBotService: WhatsappBotService,
   ) {}
 
   /**
@@ -304,6 +307,23 @@ export class TenantAttachmentService {
         propertyId: application.property_id,
         applicationId: applicationId,
       });
+
+      // Send WhatsApp notification to tenant after successful attachment
+      try {
+        await this.sendTenantAttachmentWhatsAppNotification(
+          tenantAccount,
+          application,
+          tenancyDetails,
+          tenancyStartDate,
+        );
+      } catch (whatsappError) {
+        // Log WhatsApp error but don't fail the entire operation
+        console.error(
+          'Failed to send WhatsApp notification to tenant:',
+          whatsappError,
+        );
+        // Continue with success response even if WhatsApp fails
+      }
 
       return {
         success: true,
@@ -620,10 +640,21 @@ export class TenantAttachmentService {
         `Creating new TenantKyc record for user ${userId} and landlord ${application.property.owner_id}`,
       );
 
-      const identityHash =
-        `${application.first_name}_${application.last_name}_${application.date_of_birth || '1990-01-01'}_${emailToUse || application.phone_number}_${application.phone_number}`
-          .toLowerCase()
-          .replace(/\s+/g, '_');
+      // Generate a shorter identity hash
+      // Format: first 20 chars of name + last 10 of phone + date (max 64 chars total)
+      const nameHash = `${application.first_name}_${application.last_name}`
+        .toLowerCase()
+        .replace(/\s+/g, '_')
+        .substring(0, 20); // Limit name to 20 chars
+      const phoneHash = application.phone_number.slice(-10); // Last 10 digits
+      const dateStr = application.date_of_birth
+        ? application.date_of_birth.toString()
+        : '1990-01-01';
+      const dateHash = dateStr.replace(/-/g, ''); // YYYYMMDD format
+      const identityHash = `${nameHash}_${phoneHash}_${dateHash}`.substring(
+        0,
+        64,
+      ); // Ensure max 64 chars
 
       const tenantKyc = manager.create(TenantKyc, {
         ...tenantKycData,
@@ -955,6 +986,100 @@ export class TenantAttachmentService {
       throw error;
     } finally {
       await queryRunner.release();
+    }
+  }
+
+  /**
+   * Send WhatsApp notification to tenant after successful attachment
+   * Uses existing 'tenant_welcome' WhatsApp template
+   */
+  private async sendTenantAttachmentWhatsAppNotification(
+    tenantAccount: Account,
+    application: KYCApplication,
+    tenancyDetails: AttachTenantDto,
+    tenancyStartDate: Date,
+  ): Promise<void> {
+    try {
+      // Validate phone number
+      const phoneNumber = tenantAccount.user.phone_number;
+      if (!phoneNumber) {
+        console.warn(
+          `No phone number found for tenant ${tenantAccount.id}, skipping WhatsApp notification`,
+        );
+        return;
+      }
+
+      // Normalize phone number to international format
+      const normalizedPhone = UtilService.normalizePhoneNumber(phoneNumber);
+      if (!normalizedPhone) {
+        console.warn(
+          `Invalid phone number format for tenant ${tenantAccount.id}: ${phoneNumber}`,
+        );
+        return;
+      }
+
+      // Get landlord/agency information
+      const landlord = await this.accountRepository.findOne({
+        where: { id: application.property.owner_id },
+        relations: ['user'],
+      });
+
+      // Use agency name (profile_name) if available, otherwise fallback to personal name
+      const agencyName = landlord?.profile_name
+        ? landlord.profile_name
+        : landlord?.user
+          ? `${UtilService.toSentenceCase(landlord.user.first_name)} ${UtilService.toSentenceCase(landlord.user.last_name)}`
+          : 'Your Landlord';
+
+      // Format tenant name
+      const tenantName = `${UtilService.toSentenceCase(tenantAccount.user.first_name)} ${UtilService.toSentenceCase(tenantAccount.user.last_name)}`;
+
+      // Property name
+      const propertyName = application.property.name;
+
+      console.log('Sending tenant attachment WhatsApp notification:', {
+        phoneNumber: normalizedPhone,
+        tenantName,
+        propertyName,
+        agencyName,
+      });
+
+      // Send WhatsApp notification using existing tenant_welcome template
+      await this.whatsappBotService.sendTenantAttachmentNotification({
+        phone_number: normalizedPhone,
+        tenant_name: tenantName,
+        landlord_name: agencyName,
+        property_name: propertyName,
+      });
+
+      console.log(
+        `WhatsApp notification sent successfully to tenant ${tenantAccount.id} at ${normalizedPhone}`,
+      );
+    } catch (error) {
+      console.error('Error sending tenant attachment WhatsApp notification:', {
+        error: error.message,
+        stack: error.stack,
+        tenantId: tenantAccount.id,
+      });
+      // Don't throw - we don't want to fail the entire operation if WhatsApp fails
+    }
+  }
+
+  /**
+   * Format rent frequency for user-friendly display
+   */
+  private formatRentFrequencyForDisplay(frequency: RentFrequency): string {
+    switch (frequency) {
+      case RentFrequency.MONTHLY:
+        return 'Monthly';
+      case RentFrequency.QUARTERLY:
+        return 'Quarterly';
+      case RentFrequency.BI_ANNUALLY:
+        return 'Bi-Annually';
+      case RentFrequency.ANNUALLY:
+        return 'Annually';
+      default:
+        return 'Monthly';
     }
   }
 }

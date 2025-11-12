@@ -67,6 +67,7 @@ export class WhatsappBotService {
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly cache: CacheService,
     private readonly config: ConfigService,
+    private readonly utilService: UtilService,
   ) {}
 
   async getNextScreen(decryptedBody) {
@@ -202,7 +203,7 @@ export class WhatsappBotService {
 
       let waitlist = this.waitlistRepo.create({
         full_name: text,
-        phone_number: UtilService.normalizePhoneNumber(from),
+        phone_number: this.utilService.normalizePhoneNumber(from),
         option,
       });
 
@@ -250,7 +251,7 @@ export class WhatsappBotService {
         return;
       }
 
-      const normalizedPhone = UtilService.normalizePhoneNumber(
+      const normalizedPhone = this.utilService.normalizePhoneNumber(
         referral_phone_number,
       );
       if (!normalizedPhone) {
@@ -355,7 +356,7 @@ export class WhatsappBotService {
     }
 
     //handle redis cache
-    this.cachedFacilityResponse(from, text);
+    void this.cachedFacilityResponse(from, text);
   }
 
   async cachedFacilityResponse(from, text) {
@@ -387,10 +388,12 @@ export class WhatsappBotService {
         `You have acknowledged service request ID: ${text}`,
       );
       await this.sendText(
-        UtilService.normalizePhoneNumber(
+        this.utilService.normalizePhoneNumber(
           serviceRequest.tenant.user.phone_number,
         ),
-        `Your service request with ID: ${text} is being processed by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`,
+        `Your service request with ID: ${text} is being processed by ${this.utilService.toSentenceCase(
+          serviceRequest.facilityManager.account.profile_name,
+        )}.`,
       );
       await this.cache.delete(`service_request_state_facility_${from}`);
     } else if (facilityState === 'resolve-or-update') {
@@ -459,7 +462,7 @@ export class WhatsappBotService {
         `You have updated service request ID: ${requestId.trim()}`,
       );
       await this.sendText(
-        UtilService.normalizePhoneNumber(
+        this.utilService.normalizePhoneNumber(
           serviceRequest.tenant.user.phone_number,
         ),
         `Update on your service request with ID: ${requestId.trim()} - ${feedback}`,
@@ -497,10 +500,12 @@ export class WhatsappBotService {
         `You have resolved service request ID: ${requestId}`,
       );
       await this.sendText(
-        UtilService.normalizePhoneNumber(
+        this.utilService.normalizePhoneNumber(
           serviceRequest.tenant.user.phone_number,
         ),
-        `Your service request with ID: ${requestId} has been resolved by ${UtilService.toSentenceCase(serviceRequest.facilityManager.account.profile_name)}.`,
+        `Your service request with ID: ${requestId} has been resolved by ${this.utilService.toSentenceCase(
+          serviceRequest.facilityManager.account.profile_name,
+        )}.`,
       );
       await this.cache.delete(`service_request_state_facility_${from}`);
       return;
@@ -518,7 +523,9 @@ export class WhatsappBotService {
       } else {
         await this.sendButtons(
           from,
-          `Hello Manager ${UtilService.toSentenceCase(user.first_name)} Welcome to Property Kraft! What would you like to do today?`,
+          `Hello Manager ${this.utilService.toSentenceCase(
+            user.first_name,
+          )} Welcome to Property Kraft! What would you like to do today?`,
           [
             { id: 'service_request', title: 'Resolve request' },
             { id: 'view_account_info', title: 'View Account Info' },
@@ -558,7 +565,9 @@ export class WhatsappBotService {
 
         let response = 'Here are the service requests:\n';
         serviceRequests.forEach((req: any, i) => {
-          response += `- Request Id ${req.request_id} - \n Description: ${req.description}\n - Status: ${req.status}\n\n`;
+          response += `- Request Id ${req.request_id} - \n Description: ${
+            req.description
+          }\n - Status: ${req.status}\n\n`;
         });
 
         await this.sendText(from, response);
@@ -590,10 +599,14 @@ export class WhatsappBotService {
 
         await this.sendText(
           from,
-          `Account Info for ${UtilService.toSentenceCase(teamMemberAccountInfo.account.profile_name)}:\n\n` +
+          `Account Info for ${this.utilService.toSentenceCase(
+            teamMemberAccountInfo.account.profile_name,
+          )}:\n\n` +
             `- Email: ${teamMemberAccountInfo.account.email}\n` +
             `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-            `- Role: ${UtilService.toSentenceCase(teamMemberAccountInfo.account.role)}`,
+            `- Role: ${this.utilService.toSentenceCase(
+              teamMemberAccountInfo.account.role,
+            )}`,
         );
 
         await this.sendText(
@@ -618,7 +631,7 @@ export class WhatsappBotService {
     const text = message.text?.body;
 
     if (text?.toLowerCase() === 'start flow') {
-      this.sendFlow(from); // Call the send flow logic
+      void this.sendFlow(from); // Call the send flow logic
     }
 
     console.log(text, 'tenant');
@@ -693,7 +706,9 @@ export class WhatsappBotService {
               property_name: property_name,
               property_location: property_location,
               service_request: text,
-              tenant_name: `${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
+              tenant_name: `${this.utilService.toSentenceCase(
+                user.first_name,
+              )} ${this.utilService.toSentenceCase(user.last_name)}`,
               tenant_phone_number: user.phone_number,
               date_created: new Date(created_at).toLocaleString('en-US', {
                 year: 'numeric',
@@ -729,19 +744,21 @@ export class WhatsappBotService {
           });
 
           if (property_tenant) {
-            const admin_phone_number = UtilService.normalizePhoneNumber(
+            const admin_phone_number = this.utilService.normalizePhoneNumber(
               property_tenant?.property.owner.user.phone_number,
             );
 
             await this.sendFacilityServiceRequest({
               phone_number: admin_phone_number,
-              manager_name: UtilService.toSentenceCase(
+              manager_name: this.utilService.toSentenceCase(
                 property_tenant.property.owner.user.first_name,
               ),
               property_name: property_name,
               property_location: property_location,
               service_request: text,
-              tenant_name: `${UtilService.toSentenceCase(user.first_name)} ${UtilService.toSentenceCase(user.last_name)}`,
+              tenant_name: `${this.utilService.toSentenceCase(
+                user.first_name,
+              )} ${this.utilService.toSentenceCase(user.last_name)}`,
               tenant_phone_number: user.phone_number,
               date_created: new Date(created_at).toLocaleString('en-US', {
                 year: 'numeric',
@@ -785,7 +802,13 @@ export class WhatsappBotService {
 
       let response = 'Here are the matching service requests:\n';
       serviceRequests.forEach((req: any, i) => {
-        response += `${req.description} (${new Date(req.created_at).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'}\n\n`;
+        response += `${
+          req.description
+        } (${new Date(
+          req.created_at,
+        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
+          req.notes || '——'
+        }\n\n`;
       });
 
       await this.sendText(from, response);
@@ -813,7 +836,9 @@ export class WhatsappBotService {
       } else {
         await this.sendButtons(
           from,
-          `Hello ${UtilService.toSentenceCase(user.first_name)} Welcome to Lizt by Property Kraft! What would you like to do today?`,
+          `Hello ${this.utilService.toSentenceCase(
+            user.first_name,
+          )} Welcome to Lizt by Property Kraft! What would you like to do today?`,
           [
             { id: 'service_request', title: 'Make service request' },
             { id: 'view_tenancy', title: 'View tenancy details' },
@@ -1142,6 +1167,12 @@ export class WhatsappBotService {
     phone_number,
     tenant_name,
     landlord_name,
+    property_name,
+  }: {
+    phone_number: string;
+    tenant_name: string;
+    landlord_name: string;
+    property_name?: string;
   }) {
     const payload = {
       messaging_product: 'whatsapp',
@@ -1166,6 +1197,11 @@ export class WhatsappBotService {
                 parameter_name: 'landlord_name',
                 text: landlord_name,
               },
+              {
+                type: 'text',
+                parameter_name: 'property_name',
+                text: property_name || 'your property',
+              },
             ],
           },
         ],
@@ -1173,6 +1209,31 @@ export class WhatsappBotService {
     };
 
     await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send tenant attachment confirmation via WhatsApp
+   * Notifies tenant when they've been successfully attached to a property
+   * Uses existing 'tenant_welcome' template
+   */
+  async sendTenantAttachmentNotification({
+    phone_number,
+    tenant_name,
+    landlord_name,
+    property_name,
+  }: {
+    phone_number: string;
+    tenant_name: string;
+    landlord_name: string;
+    property_name: string;
+  }) {
+    // Use the existing tenant welcome template
+    await this.sendTenantWelcomeTemplate({
+      phone_number,
+      tenant_name,
+      landlord_name,
+      property_name,
+    });
   }
 
   async sendFacilityServiceRequest({

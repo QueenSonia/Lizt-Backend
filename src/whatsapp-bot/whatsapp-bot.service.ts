@@ -134,7 +134,38 @@ export class WhatsappBotService {
 
     console.log({ user });
 
-    const role = user?.role;
+    // FIXED: Check account role instead of user role
+    // Users can have multiple accounts with different roles
+    // Priority: LANDLORD > FACILITY_MANAGER > TENANT
+    let role = user?.role; // Fallback to user.role if no accounts
+
+    if (user?.accounts && user.accounts.length > 0) {
+      // Check for landlord account first
+      const landlordAccount = user.accounts.find(
+        (acc) => acc.role === RolesEnum.LANDLORD,
+      );
+      if (landlordAccount) {
+        role = RolesEnum.LANDLORD;
+      } else {
+        // Check for facility manager account
+        const facilityAccount = user.accounts.find(
+          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
+        );
+        if (facilityAccount) {
+          role = RolesEnum.FACILITY_MANAGER;
+        } else {
+          // Check for tenant account
+          const tenantAccount = user.accounts.find(
+            (acc) => acc.role === RolesEnum.TENANT,
+          );
+          if (tenantAccount) {
+            role = RolesEnum.TENANT;
+          }
+        }
+      }
+    }
+
+    console.log({ role, accountsCount: user?.accounts?.length });
 
     switch (role) {
       case RolesEnum.FACILITY_MANAGER:
@@ -327,7 +358,7 @@ export class WhatsappBotService {
     console.log(text, 'facility');
 
     if (text?.toLowerCase() === 'start flow') {
-      this.sendFlow(from); // Call the send flow logic
+      void this.sendFlow(from); // Call the send flow logic
     }
 
     if (text?.toLowerCase() === 'acknowledge request') {
@@ -802,9 +833,7 @@ export class WhatsappBotService {
 
       let response = 'Here are the matching service requests:\n';
       serviceRequests.forEach((req: any, i) => {
-        response += `${
-          req.description
-        } (${new Date(
+        response += `${req.description} (${new Date(
           req.created_at,
         ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
           req.notes || '——'

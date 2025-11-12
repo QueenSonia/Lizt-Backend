@@ -16,6 +16,7 @@ import { Property } from 'src/properties/entities/property.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { LandlordFlow } from './templates/landlord/landlordflow';
 import { Rent } from 'src/rents/entities/rent.entity';
+import { UtilsModule } from 'src/utils/utils.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { Rent } from 'src/rents/entities/rent.entity';
     ]),
     ServiceRequestsModule,
     forwardRef(() => UsersModule),
+    UtilsModule,
   ],
   controllers: [WhatsappBotController],
   providers: [WhatsappBotService, LandlordFlow],

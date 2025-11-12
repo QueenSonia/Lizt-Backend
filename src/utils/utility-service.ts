@@ -1,3 +1,4 @@
+import { Injectable } from '@nestjs/common';
 import { transporter } from './nodemailer-config';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
@@ -9,7 +10,8 @@ dotenv.config();
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
-class UtilityService {
+@Injectable()
+export class UtilService {
   //  sendEmail = async (email: string, subject: string, htmlContent: string) => {
   //   console.log(process.env.SENDGRID_API_KEY)
   //   try {
@@ -111,5 +113,3 @@ class UtilityService {
     return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
   }
 }
-
-export const UtilService = new UtilityService();

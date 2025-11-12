@@ -66,6 +66,7 @@ export class KYCLinksService {
     private readonly kycOtpRepository: Repository<KYCOtp>,
     private readonly configService: ConfigService,
     private readonly whatsappBotService: WhatsappBotService,
+    private readonly utilService: UtilService,
   ) {}
 
   /**
@@ -379,7 +380,7 @@ export class KYCLinksService {
     }
 
     try {
-      const normalizedPhone = UtilService.normalizePhoneNumber(trimmedPhone);
+      const normalizedPhone = this.utilService.normalizePhoneNumber(trimmedPhone);
 
       if (!normalizedPhone) {
         return {
@@ -602,7 +603,7 @@ export class KYCLinksService {
       );
 
       // Generate new OTP
-      const otpCode = UtilService.generateOTP(6);
+      const otpCode = this.utilService.generateOTP(6);
       const expiresAt = new Date();
       expiresAt.setMinutes(expiresAt.getMinutes() + 10); // 10 minutes expiry
 

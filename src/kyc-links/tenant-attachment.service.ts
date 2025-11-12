@@ -56,6 +56,7 @@ export class TenantAttachmentService {
     private readonly tenantKycRepository: Repository<TenantKyc>,
     private readonly dataSource: DataSource,
     private readonly whatsappBotService: WhatsappBotService,
+    private readonly utilService: UtilService,
   ) {}
 
   /**
@@ -1010,7 +1011,8 @@ export class TenantAttachmentService {
       }
 
       // Normalize phone number to international format
-      const normalizedPhone = UtilService.normalizePhoneNumber(phoneNumber);
+      const normalizedPhone =
+        this.utilService.normalizePhoneNumber(phoneNumber);
       if (!normalizedPhone) {
         console.warn(
           `Invalid phone number format for tenant ${tenantAccount.id}: ${phoneNumber}`,
@@ -1028,11 +1030,11 @@ export class TenantAttachmentService {
       const agencyName = landlord?.profile_name
         ? landlord.profile_name
         : landlord?.user
-          ? `${UtilService.toSentenceCase(landlord.user.first_name)} ${UtilService.toSentenceCase(landlord.user.last_name)}`
+          ? `${this.utilService.toSentenceCase(landlord.user.first_name)} ${this.utilService.toSentenceCase(landlord.user.last_name)}`
           : 'Your Landlord';
 
       // Format tenant name
-      const tenantName = `${UtilService.toSentenceCase(tenantAccount.user.first_name)} ${UtilService.toSentenceCase(tenantAccount.user.last_name)}`;
+      const tenantName = `${this.utilService.toSentenceCase(tenantAccount.user.first_name)} ${this.utilService.toSentenceCase(tenantAccount.user.last_name)}`;
 
       // Property name
       const propertyName = application.property.name;

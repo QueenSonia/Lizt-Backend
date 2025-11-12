@@ -6,7 +6,7 @@ import { UtilService } from 'src/utils/utility-service';
 
 @Controller('chats')
 export class ChatController {
-  constructor(private readonly chatService: ChatService) {}
+  constructor(private readonly chatService: ChatService, private readonly utilService: UtilService) {}
 
 
 @Get()
@@ -28,7 +28,7 @@ async getAllConversations(@Req() req) {
   ) {
     const email = req.user?.email ;
     const {  message } = body;
-    return UtilService.sendEmail(email, "Customer Contact", message);
+    return this.utilService.sendEmail(email, "Customer Contact", message);
   }
 
   @Post('mark-as-resolved/:requestId')

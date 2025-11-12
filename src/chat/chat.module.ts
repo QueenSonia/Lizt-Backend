@@ -7,10 +7,12 @@ import { ServiceRequest } from 'src/service-requests/entities/service-request.en
 import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
 import { ChatController } from './chat.controller.';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { UtilsModule } from 'src/utils/utils.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([ChatMessage, ServiceRequest, PropertyTenant]),
+    UtilsModule,
   ],
   providers: [ChatGateway, ChatService],
   controllers: [ChatController],

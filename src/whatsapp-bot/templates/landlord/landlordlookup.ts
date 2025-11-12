@@ -34,6 +34,7 @@ export class LandlordLookup {
     private readonly usersRepo: Repository<Users>,
     private readonly rentRepo: Repository<Rent>,
     private readonly accountRepo: Repository<Account>,
+    private readonly utilService: UtilService,
   ) {
     const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config);
@@ -215,7 +216,7 @@ export class LandlordLookup {
         );
         break;
 
-      case 'ask_duration':
+      case 'ask_duration': {
         const duration = parseInt(text.trim(), 10);
         if (isNaN(duration) || duration <= 0) {
           await this.whatsappUtil.sendText(
@@ -247,9 +248,9 @@ export class LandlordLookup {
         await this.propertyRepo.save(property);
 
         const newUser = this.usersRepo.create({
-          first_name: UtilService.toSentenceCase(first_name),
-          last_name: UtilService.toSentenceCase(last_name),
-          phone_number: UtilService.normalizePhoneNumber(data.phone),
+          first_name: this.utilService.toSentenceCase(first_name),
+          last_name: this.utilService.toSentenceCase(last_name),
+          phone_number: this.utilService.normalizePhoneNumber(data.phone),
           email: data.email || null,
           is_verified: true,
         });
@@ -261,7 +262,7 @@ export class LandlordLookup {
           user: newUser,
           userId: newUser.id,
           is_verified: true,
-          password: await UtilService.generatePassword(),
+          password: await this.utilService.generatePassword(),
         });
         await this.accountRepo.save(newAccount);
 
@@ -296,6 +297,7 @@ export class LandlordLookup {
 
         await this.cache.delete(`service_request_state_landlord_${from}`);
         break;
+      }
     }
   }
 

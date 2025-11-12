@@ -24,6 +24,7 @@ import { KYCLinksModule } from './kyc-links/kyc-links.module';
 import { AppCacheModule } from './lib/cache';
 import { TenanciesModule } from './tenancies/tenancies.module';
 import { EventsModule } from './events/events.module';
+import { UtilService } from 'src/utils/utility-service';
 
 config({ default_node_env: 'production' });
 
@@ -65,6 +66,6 @@ config({ default_node_env: 'production' });
     EventsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, DatabaseService],
+  providers: [AppService, DatabaseService, UtilService],
 })
 export class AppModule {}

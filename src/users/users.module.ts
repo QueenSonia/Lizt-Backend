@@ -17,6 +17,7 @@ import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { Waitlist } from './entities/waitlist.entity';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { SyncTenantDataService } from './sync-tenant-data.service';
+import { UtilsModule } from 'src/utils/utils.module';
 
 @Global()
 @Module({
@@ -35,6 +36,7 @@ import { SyncTenantDataService } from './sync-tenant-data.service';
     ]),
     AuthModule,
     forwardRef(() => WhatsappBotModule),
+    UtilsModule,
   ],
   controllers: [UsersController],
   providers: [UsersService, FileUploadService, SyncTenantDataService],

@@ -46,6 +46,7 @@ export class LandlordFlow {
     private readonly rentRepo: Repository<Rent>,
 
     private readonly cache: CacheService,
+    private readonly utilService: UtilService,
   ) {
     const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config);
@@ -57,6 +58,7 @@ export class LandlordFlow {
       usersRepo,
       rentRepo,
       accountRepo,
+      utilService,
     );
   }
 

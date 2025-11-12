@@ -33,6 +33,7 @@ export class RentsService {
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(RentIncrease)
     private readonly rentIncreaseRepository: Repository<RentIncrease>,
+    private readonly utilService: UtilService,
   ) {}
 
   async payRent(data: any): Promise<Rent> {
@@ -176,7 +177,7 @@ export class RentsService {
       DateService.getDateNormalFormat(rent?.expiry_date),
     );
 
-    await UtilService.sendEmail(
+    await this.utilService.sendEmail(
       rent?.tenant?.email,
       `Rent Reminder for ${rent.property.name}`,
       emailContent,

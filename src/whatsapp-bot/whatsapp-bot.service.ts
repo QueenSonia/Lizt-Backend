@@ -1318,10 +1318,14 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
-  private async sendToWhatsappAPI(payload: object) {
+  async sendToWhatsappAPI(payload: object) {
     try {
+      const phoneNumberId = this.config.get('WA_PHONE_NUMBER_ID');
+      if (!phoneNumberId) {
+        throw new Error('WhatsApp phone number ID is not configured.');
+      }
       const response = await fetch(
-        'https://graph.facebook.com/v23.0/746591371864338/messages',
+        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
         {
           method: 'POST',
           headers: {

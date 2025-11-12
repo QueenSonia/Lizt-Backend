@@ -11,6 +11,9 @@ import { Property } from 'src/properties/entities/property.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { RenewTenancyDto } from './dto/renew-tenancy.dto';
 import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
+import { Users } from 'src/users/entities/user.entity';
+import { UtilService } from 'src/utils/utility-service';
 import {
   KYCApplication,
 } from '../kyc-links/entities/kyc-application.entity';
@@ -27,6 +30,10 @@ export class TenanciesService {
     private propertyRepository: Repository<Property>,
     @InjectRepository(PropertyHistory)
     private propertyHistoryRepository: Repository<PropertyHistory>,
+    @InjectRepository(Users)
+    private usersRepository: Repository<Users>,
+    private readonly whatsappBotService: WhatsappBotService,
+    private readonly utilService: UtilService,
     private dataSource: DataSource,
   ) {}
 
@@ -43,7 +50,43 @@ export class TenanciesService {
       status: TenantStatusEnum.ACTIVE,
     });
 
-    return this.propertyTenantRepository.save(newPropertyTenant);
+    const savedTenant = await this.propertyTenantRepository.save(
+      newPropertyTenant,
+    );
+
+    try {
+      console.log('Attempting to send tenant attachment notification...');
+      const tenantUser = await this.usersRepository.findOne({
+        where: { accounts: { id: tenantId } },
+      });
+      const property = await this.propertyRepository.findOne({
+        where: { id: property_id },
+        relations: ['owner', 'owner.user'],
+      });
+
+      if (tenantUser && property && property.owner) {
+        await this.whatsappBotService.sendTenantAttachmentNotification({
+          phone_number: this.utilService.normalizePhoneNumber(
+            tenantUser.phone_number,
+          ),
+          tenant_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          landlord_name: property.owner.user.first_name,
+          property_name: property.name,
+        });
+        console.log(
+          'Successfully sent tenant attachment notification to:',
+          tenantUser.phone_number,
+        );
+      } else {
+        console.log(
+          'Could not send notification. Missing tenant, property, or owner information.',
+        );
+      }
+    } catch (error) {
+      console.error('Error sending tenant attachment notification:', error);
+    }
+
+    return savedTenant;
   }
 
   async renewTenancy(

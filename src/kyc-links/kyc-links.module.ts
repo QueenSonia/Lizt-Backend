@@ -18,6 +18,7 @@ import { Users } from '../users/entities/user.entity';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { EventsModule } from '../events/events.module';
+import { UtilsModule } from 'src/utils/utils.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { EventsModule } from '../events/events.module';
     ConfigModule,
     WhatsappBotModule,
     forwardRef(() => EventsModule),
+    UtilsModule,
   ],
   controllers: [KYCApplicationController, KYCLinksController],
   providers: [KYCLinksService, KYCApplicationService, TenantAttachmentService],

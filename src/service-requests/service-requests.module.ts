@@ -7,12 +7,20 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
 import { FileUploadService } from 'src/utils/cloudinary';
 import { AutoServiceRequest } from './entities/auto-service-request.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
-
+import { UtilsModule } from 'src/utils/utils.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([ServiceRequest, AutoServiceRequest, PropertyTenant, TeamMember])],
+  imports: [
+    TypeOrmModule.forFeature([
+      ServiceRequest,
+      AutoServiceRequest,
+      PropertyTenant,
+      TeamMember,
+    ]),
+    UtilsModule,
+  ],
   controllers: [ServiceRequestsController],
   providers: [ServiceRequestsService, FileUploadService],
-  exports: [ServiceRequestsService]
+  exports: [ServiceRequestsService],
 })
 export class ServiceRequestsModule {}

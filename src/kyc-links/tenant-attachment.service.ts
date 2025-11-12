@@ -1018,15 +1018,18 @@ export class TenantAttachmentService {
         return;
       }
 
-      // Get landlord information
+      // Get landlord/agency information
       const landlord = await this.accountRepository.findOne({
         where: { id: application.property.owner_id },
         relations: ['user'],
       });
 
-      const landlordName = landlord?.user
-        ? `${UtilService.toSentenceCase(landlord.user.first_name)} ${UtilService.toSentenceCase(landlord.user.last_name)}`
-        : 'Your Landlord';
+      // Use agency name (profile_name) if available, otherwise fallback to personal name
+      const agencyName = landlord?.profile_name
+        ? landlord.profile_name
+        : landlord?.user
+          ? `${UtilService.toSentenceCase(landlord.user.first_name)} ${UtilService.toSentenceCase(landlord.user.last_name)}`
+          : 'Your Landlord';
 
       // Format tenant name
       const tenantName = `${UtilService.toSentenceCase(tenantAccount.user.first_name)} ${UtilService.toSentenceCase(tenantAccount.user.last_name)}`;
@@ -1038,14 +1041,14 @@ export class TenantAttachmentService {
         phoneNumber: normalizedPhone,
         tenantName,
         propertyName,
-        landlordName,
+        agencyName,
       });
 
       // Send WhatsApp notification using existing tenant_welcome template
       await this.whatsappBotService.sendTenantAttachmentNotification({
         phone_number: normalizedPhone,
         tenant_name: tenantName,
-        landlord_name: landlordName,
+        landlord_name: agencyName,
         property_name: propertyName,
       });
 

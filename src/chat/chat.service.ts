@@ -60,9 +60,12 @@ export class ChatService {
         this.eventEmitter.emit('service.created', {
           user_id: userId,
           property_id: propertyTenant.property_id,
+          landlord_id: propertyTenant.property?.owner_id,
           tenant_name: propertyTenant.tenant.profile_name,
           property_name: propertyTenant.property.name,
           service_request_id: serviceRequest.id,
+          description: sendMessageDto.content,
+          created_at: serviceRequest.created_at,
         });
       }
     }

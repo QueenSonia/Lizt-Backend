@@ -19,7 +19,7 @@ export class PropertyHistoryService {
 
   async createPropertyHistory(
     data: CreatePropertyHistoryDto,
-  ): Promise<CreatePropertyHistoryDto> {
+  ): Promise<PropertyHistory> {
     return this.propertyHistoryRepository.save(data);
   }
 
@@ -55,7 +55,7 @@ export class PropertyHistoryService {
     };
   }
 
-  async getPropertyHistoryById(id: string): Promise<CreatePropertyHistoryDto> {
+  async getPropertyHistoryById(id: string): Promise<PropertyHistory> {
     const propertyHistory = await this.propertyHistoryRepository.findOne({
       where: { id },
       relations: ['property', 'tenant'],

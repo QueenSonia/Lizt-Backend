@@ -148,21 +148,21 @@ export class WhatsappBotService {
       relations: ['accounts'],
     });
 
-    console.log('👤 User lookup result:', {
-      found: !!user,
-      userId: user?.id,
-      userName: user ? `${user.first_name} ${user.last_name}` : 'N/A',
-      phoneNumber: user?.phone_number,
-      userTableRole: user?.role,
-      accountsCount: user?.accounts?.length || 0,
-      accountsIsArray: Array.isArray(user?.accounts),
-      accountsRaw: user?.accounts,
-      accounts: user?.accounts?.map((acc) => ({
-        id: acc.id,
-        role: acc.role,
-        email: acc.email,
-      })),
-    });
+    // console.log('👤 User lookup result:', {
+    //   found: !!user,
+    //   userId: user?.id,
+    //   userName: user ? `${user.first_name} ${user.last_name}` : 'N/A',
+    //   phoneNumber: user?.phone_number,
+    //   userTableRole: user?.role,
+    //   accountsCount: user?.accounts?.length || 0,
+    //   accountsIsArray: Array.isArray(user?.accounts),
+    //   accountsRaw: user?.accounts,
+    //   accounts: user?.accounts?.map((acc) => ({
+    //     id: acc.id,
+    //     role: acc.role,
+    //     email: acc.email,
+    //   })),
+    // });
 
     // CRITICAL: If accounts array is empty or undefined, the user might not have been properly set up
     if (!user) {
@@ -255,17 +255,17 @@ export class WhatsappBotService {
       case RolesEnum.TENANT:
         console.log('In tenant');
         if (message.type === 'interactive') {
-          this.handleInteractive(message, from);
+          void this.handleInteractive(message, from);
         }
 
         if (message.type === 'text') {
-          this.handleText(message, from);
+          void this.handleText(message, from);
         }
         break;
       case RolesEnum.LANDLORD:
         console.log('In Landlord');
         if (message.type === 'interactive') {
-          this.flow.handleInteractive(message, from);
+          void this.flow.handleInteractive(message, from);
         }
 
         if (message.type === 'text') {
@@ -742,18 +742,23 @@ export class WhatsappBotService {
       void this.sendFlow(from); // Call the send flow logic
     }
 
-    console.log(text, 'tenant');
+    console.log('tenant sends:', text);
 
     if (text?.toLowerCase() === 'menu') {
-      await this.sendButtons(from, 'Menu Options', [
-        { id: 'service_request', title: 'Make service request' },
-        { id: 'view_tenancy', title: 'View tenancy details' },
-        // {
-        //   id: 'view_notices_and_documents',
-        //   title: 'See notices and documents',
-        // },
-        { id: 'visit_site', title: 'Visit our website' },
-      ]);
+      await this.sendButtons(
+        from,
+        'Menu Options',
+        [
+          { id: 'service_request', title: 'Make service request' },
+          { id: 'view_tenancy', title: 'View tenancy details' },
+          // {
+          //   id: 'view_notices_and_documents',
+          //   title: 'See notices and documents',
+          // },
+          { id: 'visit_site', title: 'Visit our website' },
+        ],
+        'Tap on any option to continue.',
+      );
       return;
     }
 
@@ -812,7 +817,17 @@ export class WhatsappBotService {
             request_id,
             property_id,
           } = new_service_request as any;
-          await this.sendText(from, '✅ Your service request has been logged.');
+          await this.sendText(
+            from,
+            "Got it, thanks for sharing that\nI've noted your request — I'll have someone take a look and reach out once it's being handled.",
+          );
+
+          // Send navigation options after completing request
+          await this.sendButtons(from, 'What would you like to do next?', [
+            { id: 'new_service_request', title: 'Log a new request' },
+            { id: 'main_menu', title: 'Go back to main menu' },
+          ]);
+
           await this.cache.delete(`service_request_state_${from}`);
 
           for (const manager of facility_managers) {
@@ -978,7 +993,7 @@ export class WhatsappBotService {
           from,
           `Hello ${this.utilService.toSentenceCase(
             user.first_name,
-          )} Welcome to Lizt by Property Kraft! What would you like to do today?`,
+          )} What would you like to do?`,
           [
             { id: 'service_request', title: 'Make service request' },
             { id: 'view_tenancy', title: 'View tenancy details' },
@@ -988,6 +1003,7 @@ export class WhatsappBotService {
             // },
             { id: 'visit_site', title: 'Visit our website' },
           ],
+          'Tap on any option to continue.',
         );
       }
     }
@@ -1096,11 +1112,11 @@ export class WhatsappBotService {
         await this.sendButtons(from, 'What would you like to do?', [
           {
             id: 'new_service_request',
-            title: 'New Request',
+            title: 'Make a new maintenance request',
           },
           {
             id: 'view_service_request',
-            title: 'Previous Requests',
+            title: 'View Previous Requests',
           },
         ]);
         break;
@@ -1120,6 +1136,7 @@ export class WhatsappBotService {
             { tenant: { user: { phone_number: localPhoneViewService } } },
           ],
           relations: ['tenant'],
+          order: { created_at: 'DESC' },
         });
 
         if (!serviceRequests.length) {
@@ -1128,21 +1145,28 @@ export class WhatsappBotService {
         }
 
         let response = 'Here are your recent maintenance requests:\n';
-        serviceRequests.forEach((req: any, i) => {
-          response += `${new Date(req.created_at).toLocaleDateString()} - \n Description: ${req.description}\n`;
+        serviceRequests.forEach((req: any) => {
+          const date = new Date(req.created_at);
+          const formattedDate = date.toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          });
+          const formattedTime = date.toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+          });
+          response += `• ${formattedDate}, ${formattedTime} – ${req.description}\n`;
         });
 
         await this.sendText(from, response);
 
-        await this.cache.set(
-          `service_request_state_${from}`,
-          'view_single_service_request',
-          this.SESSION_TIMEOUT_MS, // now in ms,
-        );
-        await this.sendText(
-          from,
-          'Type your service request description to view more info on service request or "done" to finish.',
-        );
+        // Send navigation options after viewing requests
+        await this.sendButtons(from, 'What would you like to do next?', [
+          { id: 'new_service_request', title: 'Log a new request' },
+          { id: 'main_menu', title: 'Go back to main menu' },
+        ]);
         break;
 
       case 'new_service_request':
@@ -1151,8 +1175,51 @@ export class WhatsappBotService {
           'awaiting_description',
           this.SESSION_TIMEOUT_MS, // now in ms,
         );
-        await this.sendText(from, 'Please describe the issue you are facing.');
+        await this.sendText(from, "Please tell us what's wrong.");
         break;
+
+      case 'main_menu': {
+        // Clear any cached state and return to main menu
+        await this.cache.delete(`service_request_state_${from}`);
+
+        // FIXED: Use multi-format phone lookup
+        const normalizedPhoneMainMenu =
+          this.utilService.normalizePhoneNumber(from);
+        const localPhoneMainMenu = from.startsWith('234')
+          ? '0' + from.slice(3)
+          : from;
+
+        const userMainMenu = await this.usersRepo.findOne({
+          where: [
+            { phone_number: from, accounts: { role: RolesEnum.TENANT } },
+            {
+              phone_number: normalizedPhoneMainMenu,
+              accounts: { role: RolesEnum.TENANT },
+            },
+            {
+              phone_number: localPhoneMainMenu,
+              accounts: { role: RolesEnum.TENANT },
+            },
+          ],
+          relations: ['accounts'],
+        });
+
+        if (!userMainMenu) {
+          await this.sendToAgentWithTemplate(from);
+        } else {
+          await this.sendButtons(
+            from,
+            `Hello ${this.utilService.toSentenceCase(userMainMenu.first_name)} What would you like to do?`,
+            [
+              { id: 'service_request', title: 'Make service request' },
+              { id: 'view_tenancy', title: 'View tenancy details' },
+              { id: 'visit_site', title: 'Visit our website' },
+            ],
+            'Tap on any option to continue.',
+          );
+        }
+        break;
+      }
 
       default:
         await this.sendText(from, '❓ Unknown option selected.');
@@ -1504,6 +1571,7 @@ export class WhatsappBotService {
     to: string,
     text: string = 'Hello, welcome to Property Kraft',
     buttons: { id: string; title: string }[],
+    footer?: string,
   ) {
     const payload = {
       messaging_product: 'whatsapp',
@@ -1513,6 +1581,7 @@ export class WhatsappBotService {
       interactive: {
         type: 'button',
         body: { text },
+        ...(footer && { footer: { text: footer } }),
         action: {
           buttons: buttons.map((btn) => ({
             type: 'reply',

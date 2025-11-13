@@ -130,6 +130,16 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   length_of_employment?: string;
 
+  // Self-Employed Specific Fields
+  @Column({ type: 'varchar', nullable: true })
+  nature_of_business?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  business_name?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  business_address?: string;
+
   @Column({ type: 'varchar', nullable: true })
   business_duration?: string;
 

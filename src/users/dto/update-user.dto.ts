@@ -13,6 +13,7 @@ import {
   MaritalStatus,
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
+import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 
 export class UpdateUserDto {
   @ApiProperty({
@@ -58,6 +59,7 @@ export class UpdateUserDto {
   })
   @IsOptional()
   @IsString()
+  @NormalizePhoneNumber()
   phone_number?: string;
 
   @ApiProperty({

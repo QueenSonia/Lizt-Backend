@@ -70,6 +70,33 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
+  // Emit service request event to landlords watching a specific property
+  emitServiceRequestCreated(
+    propertyId: string,
+    landlordId: string | undefined,
+    serviceRequestData: any,
+  ) {
+    this.logger.log(
+      `Emitting service request created for property ${propertyId}`,
+    );
+
+    // Emit to property-specific room for anyone viewing that property
+    this.server.to(`property:${propertyId}`).emit('service_request:created', {
+      propertyId,
+      serviceRequestData,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Also emit to landlord-specific room if landlordId is available
+    if (landlordId) {
+      this.server.to(`landlord:${landlordId}`).emit('service_request:created', {
+        propertyId,
+        serviceRequestData,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
   // Allow clients to join property-specific rooms
   async joinPropertyRoom(client: Socket, propertyId: string) {
     await client.join(`property:${propertyId}`);

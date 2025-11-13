@@ -155,6 +155,8 @@ export class WhatsappBotService {
       phoneNumber: user?.phone_number,
       userTableRole: user?.role,
       accountsCount: user?.accounts?.length || 0,
+      accountsIsArray: Array.isArray(user?.accounts),
+      accountsRaw: user?.accounts,
       accounts: user?.accounts?.map((acc) => ({
         id: acc.id,
         role: acc.role,
@@ -162,17 +164,40 @@ export class WhatsappBotService {
       })),
     });
 
+    // CRITICAL: If accounts array is empty or undefined, the user might not have been properly set up
+    if (!user) {
+      console.log('❌ User not found - will route to default handler');
+    } else if (!user.accounts || user.accounts.length === 0) {
+      console.log(
+        '⚠️ WARNING: User found but has NO accounts! This is a data integrity issue.',
+      );
+      console.log(
+        '   User will be treated as unrecognized. Check database setup.',
+      );
+    }
+
     // FIXED: Check account role instead of user role
     // Users can have multiple accounts with different roles
     // Priority: LANDLORD > FACILITY_MANAGER > TENANT
     let role = user?.role; // Fallback to user.role if no accounts
 
     if (user?.accounts && user.accounts.length > 0) {
+      console.log('🔍 Checking accounts for role...', {
+        totalAccounts: user.accounts.length,
+        accountRoles: user.accounts.map((acc) => acc.role),
+        lookingFor: {
+          landlord: RolesEnum.LANDLORD,
+          facilityManager: RolesEnum.FACILITY_MANAGER,
+          tenant: RolesEnum.TENANT,
+        },
+      });
+
       // Check for landlord account first
       const landlordAccount = user.accounts.find(
         (acc) => acc.role === RolesEnum.LANDLORD,
       );
       if (landlordAccount) {
+        console.log('✅ Found LANDLORD account:', landlordAccount.id);
         role = RolesEnum.LANDLORD;
       } else {
         // Check for facility manager account
@@ -180,6 +205,7 @@ export class WhatsappBotService {
           (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
         );
         if (facilityAccount) {
+          console.log('✅ Found FACILITY_MANAGER account:', facilityAccount.id);
           role = RolesEnum.FACILITY_MANAGER;
         } else {
           // Check for tenant account
@@ -187,7 +213,15 @@ export class WhatsappBotService {
             (acc) => acc.role === RolesEnum.TENANT,
           );
           if (tenantAccount) {
+            console.log('✅ Found TENANT account:', tenantAccount.id);
             role = RolesEnum.TENANT;
+          } else {
+            console.log('❌ No matching account role found!', {
+              accountRoles: user.accounts.map((acc) => ({
+                role: acc.role,
+                typeOf: typeof acc.role,
+              })),
+            });
           }
         }
       }
@@ -250,7 +284,7 @@ export class WhatsappBotService {
         }
 
         if (message.type === 'text') {
-          this.handleDefaultText(message, from);
+          void this.handleDefaultText(message, from);
         }
     }
   }

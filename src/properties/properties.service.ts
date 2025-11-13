@@ -1426,6 +1426,7 @@ export class PropertiesService {
             historyRecordsToCreate.push({
               property_id: property.id,
               tenant_id: rent.tenant_id,
+              event_type: 'tenancy_record',
               move_in_date:
                 rent.lease_start_date ||
                 DateService.getStartOfTheDay(new Date()),

@@ -269,7 +269,7 @@ export class WhatsappBotService {
         }
 
         if (message.type === 'text') {
-          this.flow.handleText(from, message.text?.body as any);
+          void this.flow.handleText(from, message.text?.body as any);
         }
 
         break;
@@ -1035,15 +1035,32 @@ export class WhatsappBotService {
         }
 
         const accountId = user.accounts[0].id;
-        // const tenancy =
-        //   await this.userService.getTenantAndPropertyInfo(accountId);
+        console.log('🏠 Looking for properties for account:', accountId);
 
         const properties = await this.propertyTenantRepo.find({
           where: { tenant_id: accountId },
           relations: ['property', 'property.rents'],
         });
 
+        console.log('🏠 Properties found:', {
+          count: properties?.length || 0,
+          properties: properties?.map((pt) => ({
+            id: pt.id,
+            propertyId: pt.property_id,
+            propertyName: pt.property?.name,
+            status: pt.status,
+            rentsCount: pt.property?.rents?.length || 0,
+          })),
+        });
+
         if (!properties?.length) {
+          console.log('⚠️ No properties found for tenant account:', accountId);
+          console.log(
+            '   This means no property_tenants record exists for this account.',
+          );
+          console.log(
+            '   Tenant may not have been properly attached to a property.',
+          );
           await this.sendText(from, 'No properties found.');
           return;
         }

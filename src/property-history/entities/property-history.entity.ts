@@ -21,8 +21,26 @@ export class PropertyHistory extends BaseEntity {
   @Column({ nullable: false, type: 'uuid' })
   tenant_id: string;
 
-  @Column({ nullable: false, type: 'timestamp' })
-  move_in_date: Date;
+  // New fields for event type support
+  @Column({
+    nullable: false,
+    type: 'varchar',
+    default: 'tenancy_record',
+  })
+  event_type: string;
+
+  @Column({ nullable: true, type: 'text' })
+  event_description?: string | null;
+
+  @Column({ nullable: true, type: 'uuid' })
+  related_entity_id?: string | null;
+
+  @Column({ nullable: true, type: 'varchar' })
+  related_entity_type?: string | null;
+
+  // Tenancy-specific fields (now nullable for non-tenancy events)
+  @Column({ nullable: true, type: 'timestamp' })
+  move_in_date?: Date | null;
 
   @Column({ nullable: true, type: 'timestamp' })
   move_out_date?: Date | null;
@@ -40,8 +58,8 @@ export class PropertyHistory extends BaseEntity {
   @Column({ nullable: true, type: 'text' })
   tenant_comment?: string | null;
 
-  @Column({ type: 'int', nullable: false })
-  monthly_rent: number;
+  @Column({ type: 'int', nullable: true })
+  monthly_rent?: number | null;
 
   @ManyToOne(() => Property, (p) => p.property_histories, {
     onDelete: 'CASCADE',

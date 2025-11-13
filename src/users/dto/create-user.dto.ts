@@ -21,10 +21,12 @@ import {
   MaritalStatus,
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
+import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 
 export class CreateTenantDto {
   @IsString()
   @IsNotEmpty()
+  @NormalizePhoneNumber()
   phone_number: string;
 
   @IsString()
@@ -69,6 +71,7 @@ export class CreateTenantDto {
 export class CreateTenantKycDto {
   @IsString()
   @IsNotEmpty()
+  @NormalizePhoneNumber()
   phone_number: string;
 
   @IsString()
@@ -233,6 +236,7 @@ export class CreateUserDto {
   @IsNotEmpty()
   @IsPhoneNumber()
   @MinLength(10)
+  @NormalizePhoneNumber()
   phone_number: string;
 
   @ApiProperty({
@@ -617,6 +621,7 @@ export class CreateAdminDto {
   @IsNotEmpty()
   @IsString()
   @MinLength(10)
+  @NormalizePhoneNumber()
   phone_number: string;
 
   @ApiProperty({
@@ -690,6 +695,7 @@ export class CreateLandlordDto {
   @IsNotEmpty()
   @IsString()
   @MinLength(10)
+  @NormalizePhoneNumber()
   phone_number: string;
 
   @ApiProperty({
@@ -757,6 +763,7 @@ export class CreateCustomerRepDto {
   @IsNotEmpty()
   @IsString()
   @MinLength(10)
+  @NormalizePhoneNumber()
   phone_number: string;
 
   @ApiProperty({

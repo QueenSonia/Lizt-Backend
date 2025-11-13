@@ -472,9 +472,10 @@ export class PropertiesService {
     // Property history from property_histories table
     const history = property.property_histories
       .sort((a, b) => {
-        const dateA = a.move_out_date || a.move_in_date;
-        const dateB = b.move_out_date || b.move_in_date;
-        return new Date(dateB).getTime() - new Date(dateA).getTime();
+        // Sort by created_at for all event types
+        const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return dateB - dateA;
       })
       .map((hist, index) => {
         const tenantUser = hist.tenant.user;
@@ -485,11 +486,26 @@ export class PropertiesService {
         const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
         const tenantName = `${firstName} ${lastName}`;
 
-        if (hist.move_out_date) {
+        // Handle different event types
+        if (hist.event_type === 'service_request') {
+          // Service request event
+          const eventDate = hist.created_at
+            ? new Date(hist.created_at).toISOString().split('T')[0]
+            : new Date().toISOString().split('T')[0];
+
+          return {
+            id: index + 1,
+            date: eventDate,
+            eventType: 'service_request_created',
+            title: 'Service Request Created',
+            description: hist.event_description || 'Service request reported',
+            details: `Reported by: ${tenantName}`,
+          };
+        } else if (hist.move_out_date) {
           // Tenant moved out
           return {
             id: index + 1,
-            date: hist.move_out_date.toISOString().split('T')[0],
+            date: new Date(hist.move_out_date).toISOString().split('T')[0],
             eventType: 'tenant_moved_out',
             title: 'Tenant Moved Out',
             description: `${tenantName} ended tenancy.`,
@@ -497,15 +513,29 @@ export class PropertiesService {
               ? `Reason: ${hist.move_out_reason.replace('_', ' ')}`
               : null,
           };
-        } else {
+        } else if (hist.move_in_date) {
           // Tenant moved in
           return {
             id: index + 1,
-            date: hist.move_in_date.toISOString().split('T')[0],
+            date: new Date(hist.move_in_date).toISOString().split('T')[0],
             eventType: 'tenant_moved_in',
             title: 'Tenant Moved In',
             description: `${tenantName} started tenancy.`,
             details: `Monthly rent: ₦${hist.monthly_rent?.toLocaleString()}`,
+          };
+        } else {
+          // Fallback for any other event type
+          const eventDate = hist.created_at
+            ? new Date(hist.created_at).toISOString().split('T')[0]
+            : new Date().toISOString().split('T')[0];
+
+          return {
+            id: index + 1,
+            date: eventDate,
+            eventType: hist.event_type || 'unknown',
+            title: hist.event_type || 'Event',
+            description: hist.event_description || 'Event occurred',
+            details: null,
           };
         }
       });

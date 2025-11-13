@@ -1914,7 +1914,7 @@ export class UsersService {
     await this.accountRepository.save(landlordAccount);
 
     const { password, ...result } = user;
-    return result;
+    return result as Omit<Users, 'password'>;
   }
 
   async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
@@ -1961,7 +1961,7 @@ export class UsersService {
     await this.accountRepository.save(adminAccount);
 
     const { password, ...result } = user;
-    return result;
+    return result as Omit<Users, 'password'>;
   }
   //create user that are admin
   async createAdminOld(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
@@ -1995,7 +1995,7 @@ export class UsersService {
     });
 
     const { password, ...result } = savedUser;
-    return result;
+    return result as Omit<Users, 'password'>;
   }
 
   async createCustomerRep(
@@ -2060,7 +2060,7 @@ export class UsersService {
       emailContent,
     );
     const { password, ...result } = user;
-    return result;
+    return result as Omit<Users, 'password'>;
   }
 
   async getSubAccounts(adminId: string): Promise<Account[]> {

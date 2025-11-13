@@ -15,6 +15,7 @@ import {
   Gender,
   MaritalStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
+import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 
 /**
  * DTO for KYC Application submission
@@ -38,6 +39,7 @@ export class CreateKYCApplicationDto {
 
   @IsPhoneNumber('NG')
   @IsNotEmpty()
+  @NormalizePhoneNumber()
   phone_number: string;
 
   /**
@@ -120,6 +122,7 @@ export class CreateKYCApplicationDto {
 
   @IsOptional()
   @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
   reference1_phone_number?: string;
 
   @IsOptional()
@@ -136,6 +139,7 @@ export class CreateKYCApplicationDto {
 
   @IsOptional()
   @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
   reference2_phone_number?: string;
 
   // Additional Personal Information
@@ -151,11 +155,25 @@ export class CreateKYCApplicationDto {
   // Additional Employment Information
   @IsOptional()
   @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
   employer_phone_number?: string;
 
   @IsOptional()
   @IsString()
   length_of_employment?: string;
+
+  // Self-Employed Specific Fields
+  @IsOptional()
+  @IsString()
+  nature_of_business?: string;
+
+  @IsOptional()
+  @IsString()
+  business_name?: string;
+
+  @IsOptional()
+  @IsString()
+  business_address?: string;
 
   @IsOptional()
   @IsString()

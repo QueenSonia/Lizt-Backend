@@ -38,7 +38,7 @@ export class PropertyHistoryController {
 
   @ApiOperation({ summary: 'Create Property History' })
   @ApiBody({ type: CreatePropertyHistoryDto })
-  @ApiCreatedResponse({ type: CreatePropertyHistoryDto })
+  @ApiCreatedResponse({ description: 'Property history created successfully' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
@@ -74,7 +74,6 @@ export class PropertyHistoryController {
 
   @ApiOperation({ summary: 'Get One Property History' })
   @ApiOkResponse({
-    type: CreatePropertyHistoryDto,
     description: 'Property history successfully fetched',
   })
   @ApiNotFoundResponse({ description: 'Property history not found' })

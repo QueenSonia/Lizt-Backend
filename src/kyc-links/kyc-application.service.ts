@@ -117,6 +117,14 @@ export class KYCApplicationService {
       applicationData.employer_phone_number = kycData.employer_phone_number;
     if (kycData.length_of_employment)
       applicationData.length_of_employment = kycData.length_of_employment;
+
+    // Self-employed specific fields
+    if (kycData.nature_of_business)
+      applicationData.nature_of_business = kycData.nature_of_business;
+    if (kycData.business_name)
+      applicationData.business_name = kycData.business_name;
+    if (kycData.business_address)
+      applicationData.business_address = kycData.business_address;
     if (kycData.business_duration)
       applicationData.business_duration = kycData.business_duration;
     if (kycData.intended_use_of_property)
@@ -299,8 +307,12 @@ export class KYCApplicationService {
       employerAddress: application.employer_address,
       employerPhoneNumber: application.employer_phone_number,
       lengthOfEmployment: application.length_of_employment,
-      businessDuration: application.business_duration,
       monthlyNetIncome: application.monthly_net_income,
+      // Self-employed specific fields
+      natureOfBusiness: application.nature_of_business,
+      businessName: application.business_name,
+      businessAddress: application.business_address,
+      businessDuration: application.business_duration,
       reference1: {
         name: application.reference1_name,
         address: application.reference1_address,

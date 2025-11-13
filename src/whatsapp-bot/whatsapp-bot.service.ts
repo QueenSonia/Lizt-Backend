@@ -280,7 +280,7 @@ export class WhatsappBotService {
           from,
         });
         if (message.type === 'interactive') {
-          this.handleDefaultInteractive(message, from);
+          void this.handleDefaultInteractive(message, from);
         }
 
         if (message.type === 'text') {
@@ -771,11 +771,19 @@ export class WhatsappBotService {
     const userState = await this.cache.get(`service_request_state_${from}`);
 
     if (userState === 'awaiting_description') {
+      // FIXED: Use multi-format phone lookup
+      const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+      const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+
       const user = await this.usersRepo.findOne({
-        where: {
-          phone_number: `${from}`,
-          accounts: { role: RolesEnum.TENANT },
-        },
+        where: [
+          { phone_number: from, accounts: { role: RolesEnum.TENANT } },
+          {
+            phone_number: normalizedPhone,
+            accounts: { role: RolesEnum.TENANT },
+          },
+          { phone_number: localPhone, accounts: { role: RolesEnum.TENANT } },
+        ],
         relations: ['accounts'],
       });
 
@@ -891,11 +899,25 @@ export class WhatsappBotService {
 
       return;
     } else if (userState === 'view_single_service_request') {
+      // FIXED: Use multi-format phone lookup
+      const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+      const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+
       const serviceRequests = await this.serviceRequestRepo.find({
-        where: {
-          tenant: { user: { phone_number: `${from}` } },
-          description: ILike(`%${text}%`),
-        },
+        where: [
+          {
+            tenant: { user: { phone_number: from } },
+            description: ILike(`%${text}%`),
+          },
+          {
+            tenant: { user: { phone_number: normalizedPhone } },
+            description: ILike(`%${text}%`),
+          },
+          {
+            tenant: { user: { phone_number: localPhone } },
+            description: ILike(`%${text}%`),
+          },
+        ],
         relations: ['tenant'],
       });
 
@@ -929,17 +951,29 @@ export class WhatsappBotService {
 
       return;
     } else {
+      // FIXED: Use multi-format phone lookup like in handleMessage
+      const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+      const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+
       const user = await this.usersRepo.findOne({
-        where: {
-          phone_number: `${from}`,
-          accounts: { role: RolesEnum.TENANT },
-        },
+        where: [
+          { phone_number: from, accounts: { role: RolesEnum.TENANT } },
+          {
+            phone_number: normalizedPhone,
+            accounts: { role: RolesEnum.TENANT },
+          },
+          { phone_number: localPhone, accounts: { role: RolesEnum.TENANT } },
+        ],
         relations: ['accounts'],
       });
 
       if (!user) {
+        console.log(
+          '⚠️ Tenant not found in cachedResponse, sending agent template',
+        );
         await this.sendToAgentWithTemplate(from);
       } else {
+        console.log('✅ Sending tenant menu to:', user.first_name);
         await this.sendButtons(
           from,
           `Hello ${this.utilService.toSentenceCase(
@@ -973,11 +1007,25 @@ export class WhatsappBotService {
         break;
 
       case 'view_tenancy':
+        // FIXED: Use multi-format phone lookup
+        const normalizedPhoneViewTenancy =
+          this.utilService.normalizePhoneNumber(from);
+        const localPhoneViewTenancy = from.startsWith('234')
+          ? '0' + from.slice(3)
+          : from;
+
         const user = await this.usersRepo.findOne({
-          where: {
-            phone_number: `${from}`,
-            accounts: { role: RolesEnum.TENANT },
-          },
+          where: [
+            { phone_number: from, accounts: { role: RolesEnum.TENANT } },
+            {
+              phone_number: normalizedPhoneViewTenancy,
+              accounts: { role: RolesEnum.TENANT },
+            },
+            {
+              phone_number: localPhoneViewTenancy,
+              accounts: { role: RolesEnum.TENANT },
+            },
+          ],
           relations: ['accounts'],
         });
 
@@ -1041,8 +1089,19 @@ export class WhatsappBotService {
         break;
 
       case 'view_service_request':
+        // FIXED: Use multi-format phone lookup
+        const normalizedPhoneViewService =
+          this.utilService.normalizePhoneNumber(from);
+        const localPhoneViewService = from.startsWith('234')
+          ? '0' + from.slice(3)
+          : from;
+
         const serviceRequests = await this.serviceRequestRepo.find({
-          where: { tenant: { user: { phone_number: `${from}` } } },
+          where: [
+            { tenant: { user: { phone_number: from } } },
+            { tenant: { user: { phone_number: normalizedPhoneViewService } } },
+            { tenant: { user: { phone_number: localPhoneViewService } } },
+          ],
           relations: ['tenant'],
         });
 

@@ -84,6 +84,9 @@ export class TenantDetailDto {
   // TenantKyc ID for updates
   tenantKycId: string | null;
 
+  // Passport Photo URL (from KYC Application)
+  passportPhotoUrl: string | null;
+
   // Current Tenancy (from Rent/Property)
   property: string;
   propertyId: string;

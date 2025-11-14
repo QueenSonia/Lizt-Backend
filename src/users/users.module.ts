@@ -18,6 +18,7 @@ import { Waitlist } from './entities/waitlist.entity';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { SyncTenantDataService } from './sync-tenant-data.service';
 import { UtilsModule } from 'src/utils/utils.module';
+import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 
 @Global()
 @Module({
@@ -33,6 +34,7 @@ import { UtilsModule } from 'src/utils/utils.module';
       TeamMember,
       Waitlist,
       TenantKyc,
+      KYCApplication,
     ]),
     AuthModule,
     forwardRef(() => WhatsappBotModule),

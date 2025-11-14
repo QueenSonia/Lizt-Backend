@@ -20,6 +20,9 @@ import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { EventsGateway } from '../events/events.gateway';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
+import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
+import { UtilService } from '../utils/utility-service';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class KYCApplicationService {
@@ -30,12 +33,17 @@ export class KYCApplicationService {
     private readonly kycLinkRepository: Repository<KYCLink>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    private readonly utilService: UtilService,
+    private readonly configService: ConfigService,
     @Optional()
     @Inject(forwardRef(() => EventsGateway))
     private readonly eventsGateway?: EventsGateway,
     @Optional()
     @Inject(forwardRef(() => NotificationService))
     private readonly notificationService?: NotificationService,
+    @Optional()
+    @Inject(forwardRef(() => WhatsappBotService))
+    private readonly whatsappBotService?: WhatsappBotService,
   ) {}
 
   /**
@@ -206,6 +214,43 @@ export class KYCApplicationService {
     } catch (error) {
       // Log error but don't fail the request if WebSocket emission fails
       console.error('Failed to emit KYC submission event:', error);
+    }
+
+    // Send WhatsApp notification to landlord
+    try {
+      if (this.whatsappBotService && applicationWithRelations.property) {
+        const property = applicationWithRelations.property;
+
+        // Get landlord details
+        const landlord = await this.propertyRepository
+          .createQueryBuilder('property')
+          .leftJoinAndSelect('property.owner', 'owner')
+          .leftJoinAndSelect('owner.user', 'user')
+          .where('property.id = :propertyId', { propertyId: property.id })
+          .getOne();
+
+        if (landlord?.owner?.user?.phone_number) {
+          const landlordPhone = this.utilService.normalizePhoneNumber(
+            landlord.owner.user.phone_number,
+          );
+          const landlordName =
+            landlord.owner.profile_name ||
+            `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
+          const frontendUrl =
+            this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
+
+          await this.whatsappBotService.sendKYCApplicationNotification({
+            phone_number: landlordPhone,
+            landlord_name: landlordName,
+            property_name: property.name,
+            application_id: savedApplication.id,
+            frontend_url: frontendUrl,
+          });
+        }
+      }
+    } catch (error) {
+      // Log error but don't fail the request if WhatsApp notification fails
+      console.error('Failed to send WhatsApp KYC notification:', error);
     }
 
     return applicationWithRelations;

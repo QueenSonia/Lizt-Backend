@@ -1388,7 +1388,8 @@ export class PropertiesService {
     let historyRecordsCreated = 0;
 
     // Batch operations for better performance
-    const propertiesToUpdate: Property[] = [];
+    const propertyIdsToUpdate: { id: string; status: PropertyStatusEnum }[] =
+      [];
     const historyRecordsToCreate: any[] = [];
 
     for (const property of properties) {
@@ -1401,8 +1402,7 @@ export class PropertiesService {
         console.log(
           `Fixing property ${property.name}: ${property.property_status} -> ${correctStatus}`,
         );
-        property.property_status = correctStatus;
-        propertiesToUpdate.push(property);
+        propertyIdsToUpdate.push({ id: property.id, status: correctStatus });
         statusUpdates++;
       }
 
@@ -1443,9 +1443,11 @@ export class PropertiesService {
       }
     }
 
-    // Batch save operations
-    if (propertiesToUpdate.length > 0) {
-      await this.propertyRepository.save(propertiesToUpdate);
+    // Batch update operations using query builder to avoid cascading to relations
+    if (propertyIdsToUpdate.length > 0) {
+      for (const { id, status } of propertyIdsToUpdate) {
+        await this.propertyRepository.update(id, { property_status: status });
+      }
     }
 
     if (historyRecordsToCreate.length > 0) {

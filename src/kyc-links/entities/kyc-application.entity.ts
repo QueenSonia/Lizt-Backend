@@ -172,6 +172,9 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   employment_proof_url?: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  business_proof_url?: string;
+
   @ManyToOne(() => KYCLink, (kycLink) => kycLink.applications)
   @JoinColumn({ name: 'kyc_link_id' })
   kyc_link: KYCLink;

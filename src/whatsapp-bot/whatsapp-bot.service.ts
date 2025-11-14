@@ -1215,7 +1215,6 @@ export class WhatsappBotService {
               { id: 'view_tenancy', title: 'View tenancy details' },
               { id: 'visit_site', title: 'Visit our website' },
             ],
-            'Tap on any option to continue.',
           );
         }
         break;

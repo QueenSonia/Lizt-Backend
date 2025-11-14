@@ -33,6 +33,7 @@ export interface PropertyKYCData {
     propertyType: string;
     bedrooms: number;
     bathrooms: number;
+    landlordId?: string;
   };
   error?: string;
 }
@@ -212,6 +213,7 @@ export class KYCLinksService {
           propertyType: kycLink.property.property_type,
           bedrooms: kycLink.property.no_of_bedrooms,
           bathrooms: kycLink.property.no_of_bathrooms,
+          landlordId: kycLink.landlord_id,
         },
       };
     } catch (error) {
@@ -380,7 +382,8 @@ export class KYCLinksService {
     }
 
     try {
-      const normalizedPhone = this.utilService.normalizePhoneNumber(trimmedPhone);
+      const normalizedPhone =
+        this.utilService.normalizePhoneNumber(trimmedPhone);
 
       if (!normalizedPhone) {
         return {
@@ -412,8 +415,6 @@ export class KYCLinksService {
       };
     }
   }
-
-
 
   /**
    * Check rate limiting for WhatsApp messages
@@ -462,8 +463,6 @@ export class KYCLinksService {
       console.warn('Failed to update rate limit counter:', error);
     }
   }
-
-
 
   /**
    * Handle WhatsApp errors and provide appropriate responses
@@ -535,8 +534,6 @@ export class KYCLinksService {
       errorCode: WhatsAppErrorCode.UNKNOWN_ERROR,
     };
   }
-
-
 
   /**
    * Send OTP to phone number for KYC verification

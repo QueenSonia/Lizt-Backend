@@ -25,6 +25,7 @@ import { AppCacheModule } from './lib/cache';
 import { TenanciesModule } from './tenancies/tenancies.module';
 import { EventsModule } from './events/events.module';
 import { UtilService } from 'src/utils/utility-service';
+import { KycFeedbackModule } from './kyc-feedback/kyc-feedback.module';
 
 config({ default_node_env: 'production' });
 
@@ -64,6 +65,7 @@ config({ default_node_env: 'production' });
     KYCLinksModule,
     TenanciesModule,
     EventsModule,
+    KycFeedbackModule,
   ],
   controllers: [AppController],
   providers: [AppService, DatabaseService, UtilService],

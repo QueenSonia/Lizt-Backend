@@ -62,14 +62,11 @@ export class ServiceRequestsService {
     private readonly serviceRequestRepository: Repository<ServiceRequest>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
-     @InjectRepository(TeamMember)
+    @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
-     private readonly eventEmitter: EventEmitter2,
-     private readonly utilService: UtilService,
-
+    private readonly eventEmitter: EventEmitter2,
+    private readonly utilService: UtilService,
   ) {}
-
-
 
   private generateTitle(payload: TawkWebhookPayload): string {
     const eventType =
@@ -92,92 +89,102 @@ export class ServiceRequestsService {
     return description;
   }
 
- async createServiceRequest(
-  data: CreateServiceRequestDto,
-): Promise<any> {
-  const tenantExistInProperty = await this.propertyTenantRepository.findOne({
-    where: {
-      tenant_id: data.tenant_id,
-      // property_id: data.property_id,
-      // status: TenantStatusEnum.ACTIVE,
-    },
-    relations: ['tenant', 'property'],
-  });
+  async createServiceRequest(data: CreateServiceRequestDto): Promise<any> {
+    const tenantExistInProperty = await this.propertyTenantRepository.findOne({
+      where: {
+        tenant_id: data.tenant_id,
+        // property_id: data.property_id,
+        // status: TenantStatusEnum.ACTIVE,
+      },
+      relations: ['tenant', 'property'],
+    });
 
-  if (!tenantExistInProperty?.id) {
-    throw new HttpException(
-      'You are not currently renting this property',
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
-  }
-
-  // 1. Find all facility managers for the property's team
-  const facilityManagers = await this.teamMemberRepository.find({
-    where: {
-      team: { creatorId: tenantExistInProperty.property.owner_id },
-      role: RolesEnum.FACILITY_MANAGER,
-    },
-    relations: ['team',  'account', 'account.user'],
-  });
-
-  if (!facilityManagers.length) {
-    throw new HttpException(
-      'No facility manager assigned to this property yet',
-      HttpStatus.BAD_REQUEST,
-    );
-  }
-
-  // 2. Pick a random facility manager
-  // const randomIndex = Math.floor(Math.random() * facilityManagers.length);
-  const selected_managers = facilityManagers.map((manager) => {
-    return{ 
-      phone_number:this.utilService.normalizePhoneNumber(manager.account.user.phone_number),
-      name:this.utilService.toSentenceCase(manager.account.user.first_name)
+    if (!tenantExistInProperty?.id) {
+      throw new HttpException(
+        'You are not currently renting this property',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
     }
-  })
 
-  console.log('Selected', selected_managers)
+    // 1. Find all facility managers for the property's team
+    const facilityManagers = await this.teamMemberRepository.find({
+      where: {
+        team: { creatorId: tenantExistInProperty.property.owner_id },
+        role: RolesEnum.FACILITY_MANAGER,
+      },
+      relations: ['team', 'account', 'account.user'],
+    });
 
-  const requestId = this.utilService.generateServiceRequestId();
+    if (!facilityManagers.length) {
+      throw new HttpException(
+        'No facility manager assigned to this property yet',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
-  // 3. Save the service request with the selected manager
-  // const serviceRequest = await this.serviceRequestRepository.save({
-  //   ...data,
-  //   issue_images: data?.issue_images || null,
-  //   status: data?.status || ServiceRequestStatusEnum.PENDING,
-  //   request_id: requestId,
-  //   assigned_to: selectedManager.id, // 👈 store assigned manager
-  // });
-   const request = this.serviceRequestRepository.create({
-        request_id: requestId,
-        tenant_id: tenantExistInProperty.tenant.id,
+    // 2. Pick a random facility manager
+    // const randomIndex = Math.floor(Math.random() * facilityManagers.length);
+    const selected_managers = facilityManagers.map((manager) => {
+      return {
+        phone_number: this.utilService.normalizePhoneNumber(
+          manager.account.user.phone_number,
+        ),
+        name: this.utilService.toSentenceCase(manager.account.user.first_name),
+      };
+    });
+
+    console.log('Selected', selected_managers);
+
+    const requestId = this.utilService.generateServiceRequestId();
+
+    // 3. Save the service request with the selected manager
+    // const serviceRequest = await this.serviceRequestRepository.save({
+    //   ...data,
+    //   issue_images: data?.issue_images || null,
+    //   status: data?.status || ServiceRequestStatusEnum.PENDING,
+    //   request_id: requestId,
+    //   assigned_to: selectedManager.id, // 👈 store assigned manager
+    // });
+    const request = this.serviceRequestRepository.create({
+      request_id: requestId,
+      tenant_id: tenantExistInProperty.tenant.id,
+      property_id: tenantExistInProperty.property?.id,
+      tenant_name: tenantExistInProperty.tenant.profile_name,
+      property_name: tenantExistInProperty.property?.name,
+      issue_category: 'service',
+      date_reported: new Date(),
+      description: data.text,
+      status: ServiceRequestStatusEnum.PENDING,
+    });
+
+    const savedRequest = await this.serviceRequestRepository.save(request);
+
+    // Emit event after successful database commit with complete payload
+    try {
+      this.eventEmitter.emit('service.created', {
+        user_id: tenantExistInProperty.tenant.id,
         property_id: tenantExistInProperty.property?.id,
+        landlord_id: tenantExistInProperty.property?.owner_id,
         tenant_name: tenantExistInProperty.tenant.profile_name,
-        property_name: tenantExistInProperty.property?.name,
-        issue_category: 'service',
-        date_reported: new Date(),
+        property_name: tenantExistInProperty.property.name,
+        service_request_id: savedRequest.id,
         description: data.text,
-        status: ServiceRequestStatusEnum.PENDING,
+        created_at: savedRequest.created_at,
       });
+    } catch (error) {
+      // Log error but don't fail the request creation
+      console.error('Failed to emit service.created event:', error);
+    }
 
-      await this.serviceRequestRepository.save(request);
+    const result = {
+      ...savedRequest,
+      property_name: tenantExistInProperty.property?.name,
+      property_location: tenantExistInProperty.property?.location,
+      facility_managers: selected_managers,
+    };
 
-  this.eventEmitter.emit('service.created', {
-    user_id: tenantExistInProperty.tenant.id,
-    property_id: tenantExistInProperty.property?.id,
-    tenant_name: tenantExistInProperty.tenant.profile_name,
-    property_name: tenantExistInProperty.property.name,
-  });
-
-  let result = {
-    ...request,
-    property_name: tenantExistInProperty.property?.name,
-    property_location: tenantExistInProperty.property?.location,
-    facility_managers: selected_managers
+    return result;
   }
-
-  return result;
-}
 
   async getAllServiceRequests(
     user_id: string,

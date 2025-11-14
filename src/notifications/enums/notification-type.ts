@@ -6,4 +6,5 @@ export enum NotificationType {
   USER_SIGNED_UP = 'User Signed Up',
   LEASE_SIGNED = 'Lease Signed',
   PROPERTY_CREATED = 'Property Created',
+  KYC_SUBMITTED = 'KYC Submitted',
 }

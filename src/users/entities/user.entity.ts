@@ -1,4 +1,6 @@
 import {
+  BeforeInsert,
+  BeforeUpdate,
   Column,
   Entity,
   JoinColumn,
@@ -22,6 +24,7 @@ import {
   MaritalStatus,
   EmploymentStatus,
 } from 'src/tenant-kyc/entities/tenant-kyc.entity';
+import { normalizePhoneNumber } from '../../utils/phone-number.transformer';
 
 @Unique(['email'])
 @Unique(['phone_number'])
@@ -157,4 +160,15 @@ export class Users extends BaseEntity {
 
   @OneToOne(() => TenantKyc, (tenant_kyc) => tenant_kyc.user)
   tenant_kyc?: TenantKyc;
+
+  @BeforeInsert()
+  @BeforeUpdate()
+  normalizePhone() {
+    if (this.phone_number) {
+      this.phone_number = normalizePhoneNumber(this.phone_number);
+    }
+    if (this.spouse_phone_number) {
+      this.spouse_phone_number = normalizePhoneNumber(this.spouse_phone_number);
+    }
+  }
 }

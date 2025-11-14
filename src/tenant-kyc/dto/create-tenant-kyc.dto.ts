@@ -16,6 +16,7 @@ import {
   Gender,
   MaritalStatus,
 } from '../entities/tenant-kyc.entity';
+import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 
 export class CreateTenantKycDto {
   @IsString()
@@ -42,6 +43,7 @@ export class CreateTenantKycDto {
   @ValidateIf((o) => !o.email?.trim())
   @IsPhoneNumber('NG')
   @IsOptional()
+  @NormalizePhoneNumber()
   phone_number?: string;
 
   /**
@@ -121,6 +123,7 @@ export class CreateTenantKycDto {
   @ValidateIf((o) => o.employment_status === 'employed')
   @IsOptional()
   @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
   employer_phone_number?: string;
 
   @IsNumberString()
@@ -141,6 +144,7 @@ export class CreateTenantKycDto {
 
   @IsPhoneNumber('NG')
   @IsOptional()
+  @NormalizePhoneNumber()
   reference1_phone_number?: string;
 
   @IsOptional()
@@ -157,6 +161,7 @@ export class CreateTenantKycDto {
 
   @IsOptional()
   // @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
   reference2_phone_number?: string;
 
   @IsUUID()

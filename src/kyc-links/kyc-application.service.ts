@@ -435,17 +435,35 @@ export class KYCApplicationService {
     applicationId: string,
     landlordId: string,
   ): Promise<any> {
+    console.log('🔍 Fetching KYC application:', {
+      applicationId,
+      landlordId,
+    });
+
     const application = await this.kycApplicationRepository.findOne({
       where: { id: applicationId },
       relations: ['property', 'kyc_link', 'tenant'],
     });
 
     if (!application) {
+      console.log('❌ KYC application not found:', applicationId);
       throw new NotFoundException('KYC application not found');
     }
 
+    console.log('✅ Found application:', {
+      id: application.id,
+      propertyId: application.property_id,
+      status: application.status,
+    });
+
     // Validate that the landlord owns the property
-    await this.validatePropertyOwnership(application.property_id, landlordId);
+    try {
+      await this.validatePropertyOwnership(application.property_id, landlordId);
+      console.log('✅ Landlord ownership validated');
+    } catch (error) {
+      console.log('❌ Landlord ownership validation failed:', error.message);
+      throw error;
+    }
 
     return this.transformApplicationForFrontend(application);
   }

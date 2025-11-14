@@ -18,6 +18,8 @@ import { KYCLink } from './entities/kyc-link.entity';
 import { Property } from '../properties/entities/property.entity';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { EventsGateway } from '../events/events.gateway';
+import { NotificationService } from '../notifications/notification.service';
+import { NotificationType } from '../notifications/enums/notification-type';
 
 @Injectable()
 export class KYCApplicationService {
@@ -31,6 +33,9 @@ export class KYCApplicationService {
     @Optional()
     @Inject(forwardRef(() => EventsGateway))
     private readonly eventsGateway?: EventsGateway,
+    @Optional()
+    @Inject(forwardRef(() => NotificationService))
+    private readonly notificationService?: NotificationService,
   ) {}
 
   /**
@@ -146,6 +151,8 @@ export class KYCApplicationService {
       applicationData.id_document_url = kycData.id_document_url;
     if (kycData.employment_proof_url)
       applicationData.employment_proof_url = kycData.employment_proof_url;
+    if (kycData.business_proof_url)
+      applicationData.business_proof_url = kycData.business_proof_url;
 
     const kycApplication =
       this.kycApplicationRepository.create(applicationData);
@@ -162,6 +169,23 @@ export class KYCApplicationService {
 
     if (!applicationWithRelations) {
       throw new Error('Failed to retrieve saved KYC application');
+    }
+
+    // Create notification for KYC submission
+    try {
+      if (this.notificationService && applicationWithRelations.property) {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.KYC_SUBMITTED,
+          description: `${kycData.first_name} ${kycData.last_name} submitted a KYC application for ${applicationWithRelations.property.name}`,
+          status: 'Pending',
+          property_id: kycLink.property_id,
+          user_id: applicationWithRelations.property.owner_id,
+        });
+      }
+    } catch (error) {
+      // Log error but don't fail the request if notification creation fails
+      console.error('Failed to create KYC submission notification:', error);
     }
 
     // Emit WebSocket event to notify landlord of new KYC submission
@@ -341,6 +365,7 @@ export class KYCApplicationService {
         passportPhoto: application.passport_photo_url,
         idDocument: application.id_document_url,
         employmentProof: application.employment_proof_url,
+        businessProof: application.business_proof_url,
       },
       submissionDate:
         application.created_at instanceof Date

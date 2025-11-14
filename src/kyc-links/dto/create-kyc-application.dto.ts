@@ -216,4 +216,8 @@ export class CreateKYCApplicationDto {
   @IsOptional()
   @IsString()
   employment_proof_url?: string;
+
+  @IsOptional()
+  @IsString()
+  business_proof_url?: string;
 }

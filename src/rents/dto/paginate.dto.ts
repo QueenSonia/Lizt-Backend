@@ -1,8 +1,7 @@
-
 import { ApiProperty } from '@nestjs/swagger';
 import { Rent } from '../entities/rent.entity';
 
-class PaginationDto {
+class RentPaginationMetadataDto {
   @ApiProperty()
   totalRows: number;
 
@@ -19,10 +18,10 @@ class PaginationDto {
   hasNextPage: boolean;
 }
 
-export class PaginationResponseDto {
+export class RentPaginationResponseDto {
   @ApiProperty({ type: [Rent] })
   rents: Rent[];
 
-  @ApiProperty({ type: PaginationDto })
-  pagination: PaginationDto;
+  @ApiProperty({ type: RentPaginationMetadataDto })
+  pagination: RentPaginationMetadataDto;
 }

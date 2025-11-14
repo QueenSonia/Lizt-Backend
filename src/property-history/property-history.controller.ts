@@ -27,7 +27,7 @@ import {
   PropertyHistoryFilter,
 } from './dto/create-property-history.dto';
 import { UpdatePropertyHistoryDto } from './dto/update-property-history.dto';
-import { PaginationResponseDto } from './dto/paginate.dto';
+import { PropertyHistoryPaginationResponseDto } from './dto/paginate.dto';
 
 @ApiTags('Property-History')
 @Controller('property-history')
@@ -58,7 +58,7 @@ export class PropertyHistoryController {
   @ApiQuery({ name: 'move_in_date', required: false, type: String })
   @ApiQuery({ name: 'move_out_date', required: false, type: String })
   @ApiOkResponse({
-    type: PaginationResponseDto,
+    type: PropertyHistoryPaginationResponseDto,
     description: 'Paginated list of property histories',
   })
   @ApiBadRequestResponse()
@@ -122,7 +122,7 @@ export class PropertyHistoryController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
   @ApiOkResponse({
-    type: PaginationResponseDto,
+    type: PropertyHistoryPaginationResponseDto,
     description: 'Property histories for tenant successfully fetched',
   })
   @ApiBadRequestResponse()

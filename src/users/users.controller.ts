@@ -50,7 +50,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
-import { PaginationResponseDto } from './dto/paginate.dto';
+import { UserPaginationResponseDto } from './dto/paginate.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { CreateKycDto } from './dto/create-kyc.dto';
 import { KYC } from './entities/kyc.entity';
@@ -132,7 +132,7 @@ export class UsersController {
   @ApiQuery({ name: 'start_date', required: false, type: String })
   @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiOkResponse({
-    type: PaginationResponseDto,
+    type: UserPaginationResponseDto,
     description: 'Paginated list of users',
   })
   @ApiBadRequestResponse()
@@ -168,7 +168,7 @@ export class UsersController {
   @ApiQuery({ name: 'start_date', required: false, type: String })
   @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiOkResponse({
-    type: PaginationResponseDto,
+    type: UserPaginationResponseDto,
     description: 'Paginated list of users',
   })
   @ApiBadRequestResponse()
@@ -275,7 +275,7 @@ export class UsersController {
   @ApiQuery({ name: 'start_date', required: false, type: String })
   @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiOkResponse({
-    type: PaginationResponseDto,
+    type: UserPaginationResponseDto,
     description: 'Paginated list of users',
   })
   @ApiBadRequestResponse()

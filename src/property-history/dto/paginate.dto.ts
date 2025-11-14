@@ -2,7 +2,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { PropertyHistory } from '../entities/property-history.entity';
 
-export class PaginationMetadataDto {
+export class PropertyHistoryPaginationMetadataDto {
   @ApiProperty({
     example: 100,
     description: 'The total number of property histories',
@@ -28,7 +28,7 @@ export class PaginationMetadataDto {
   hasNextPage: boolean;
 }
 
-export class PaginationResponseDto {
+export class PropertyHistoryPaginationResponseDto {
   @ApiProperty({
     type: [PropertyHistory],
     description: 'Array of property history objects',
@@ -36,8 +36,8 @@ export class PaginationResponseDto {
   property_histories: PropertyHistory[];
 
   @ApiProperty({
-    type: PaginationMetadataDto,
+    type: PropertyHistoryPaginationMetadataDto,
     description: 'Pagination metadata',
   })
-  pagination: PaginationMetadataDto;
+  pagination: PropertyHistoryPaginationMetadataDto;
 }

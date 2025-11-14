@@ -31,7 +31,7 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { PaginationResponseDto } from './dto/paginate.dto';
+import { PropertyPaginationResponseDto } from './dto/paginate.dto';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
@@ -86,7 +86,7 @@ export class PropertiesController {
   @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiQuery({ name: 'search', required: false, type: String })
   @ApiOkResponse({
-    type: PaginationResponseDto,
+    type: PropertyPaginationResponseDto,
     description: 'Paginated list of properties',
   })
   @ApiBadRequestResponse()

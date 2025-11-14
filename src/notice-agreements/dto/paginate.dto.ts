@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { CreateNoticeAgreementDto } from './create-notice-agreement.dto';
 
-export class PaginationMetadataDto {
+export class NoticeAgreementPaginationMetadataDto {
   @ApiProperty({
     example: 100,
     description: 'The total number of notice agreements',
@@ -27,7 +27,7 @@ export class PaginationMetadataDto {
   hasNextPage: boolean;
 }
 
-export class PaginationResponseDto {
+export class NoticeAgreementPaginationResponseDto {
   @ApiProperty({
     type: [CreateNoticeAgreementDto],
     description: 'Array of notice agreement objects',
@@ -35,8 +35,8 @@ export class PaginationResponseDto {
   notice_agreements: CreateNoticeAgreementDto[];
 
   @ApiProperty({
-    type: PaginationMetadataDto,
+    type: NoticeAgreementPaginationMetadataDto,
     description: 'Pagination metadata',
   })
-  pagination: PaginationMetadataDto;
+  pagination: NoticeAgreementPaginationMetadataDto;
 }

@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { ServiceRequest } from '../entities/service-request.entity';
 
-export class PaginationMetadataDto {
+export class ServiceRequestPaginationMetadataDto {
   @ApiProperty({
     example: 100,
     description: 'The total number of service requests',
@@ -27,7 +27,7 @@ export class PaginationMetadataDto {
   hasNextPage: boolean;
 }
 
-export class PaginationResponseDto {
+export class ServiceRequestPaginationResponseDto {
   @ApiProperty({
     type: [ServiceRequest],
     description: 'Array of service request objects',
@@ -35,8 +35,8 @@ export class PaginationResponseDto {
   service_requests: ServiceRequest[];
 
   @ApiProperty({
-    type: PaginationMetadataDto,
+    type: ServiceRequestPaginationMetadataDto,
     description: 'Pagination metadata',
   })
-  pagination: PaginationMetadataDto;
+  pagination: ServiceRequestPaginationMetadataDto;
 }

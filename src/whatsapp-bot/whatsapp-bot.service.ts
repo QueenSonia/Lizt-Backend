@@ -1112,11 +1112,11 @@ export class WhatsappBotService {
         await this.sendButtons(from, 'What would you like to do?', [
           {
             id: 'new_service_request',
-            title: 'Make a new maintenance request',
+            title: 'Make a New Request',
           },
           {
             id: 'view_service_request',
-            title: 'View Previous Requests',
+            title: 'View Requests',
           },
         ]);
         break;
@@ -1215,7 +1215,6 @@ export class WhatsappBotService {
               { id: 'view_tenancy', title: 'View tenancy details' },
               { id: 'visit_site', title: 'Visit our website' },
             ],
-            'Tap on any option to continue.',
           );
         }
         break;

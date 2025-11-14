@@ -70,6 +70,7 @@ import { Waitlist } from './entities/waitlist.entity';
 import { TenantDetailDto } from 'src/users/dto/tenant-detail.dto';
 import { time } from 'node:console';
 import { TeamMemberDto } from 'src/users/dto/team-member.dto';
+import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 
 @Injectable()
 export class UsersService {
@@ -97,6 +98,8 @@ export class UsersService {
     private readonly whatsappBotService: WhatsappBotService,
     @InjectRepository(Waitlist)
     private readonly waitlistRepository: Repository<Waitlist>,
+    @InjectRepository(KYCApplication)
+    private readonly kycApplicationRepository: Repository<KYCApplication>,
     private readonly cache: CacheService,
 
     private readonly utilService: UtilService,
@@ -1527,16 +1530,26 @@ export class UsersService {
         HttpStatus.NOT_FOUND,
       );
     }
-    return this.formatTenantData(tenantAccount);
+
+    // Query KYC application separately to get passport photo
+    const kycApplication = await this.kycApplicationRepository.findOne({
+      where: { tenant_id: tenantId },
+      order: { created_at: 'DESC' }, // Get the most recent application
+      select: ['id', 'passport_photo_url', 'status', 'created_at'],
+    });
+
+    return this.formatTenantData(tenantAccount, kycApplication);
   }
 
-  private formatTenantData(account: Account): TenantDetailDto {
+  private formatTenantData(
+    account: Account,
+    kycApplication?: KYCApplication | null,
+  ): TenantDetailDto {
     const user = account.user;
     const kyc = user.kyc ?? {}; // Get the joined old KYC data
     const tenantKyc = user.tenant_kyc; // Get the joined TenantKyc data (preferred)
 
     // Debug logging
-    console.log('Formatting tenant data for account:', account.id);
     console.log('Total rents loaded:', account.rents?.length || 0);
     if (account.rents && account.rents.length > 0) {
       console.log(
@@ -1693,6 +1706,9 @@ export class UsersService {
 
       // Include TenantKyc ID for frontend updates
       tenantKycId: tenantKyc?.id ?? null,
+
+      // Passport Photo URL from KYC Application
+      passportPhotoUrl: kycApplication?.passport_photo_url ?? null,
 
       // current tenancy info
       property: property?.name || '——',

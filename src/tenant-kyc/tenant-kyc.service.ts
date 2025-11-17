@@ -197,7 +197,6 @@ export class TenantKycService {
       if (dto.gender) updateData.gender = dto.gender;
       if (dto.nationality) updateData.nationality = dto.nationality;
       if (dto.state_of_origin) updateData.state_of_origin = dto.state_of_origin;
-      if (dto.local_government_area) updateData.lga = dto.local_government_area;
       if (dto.marital_status) updateData.marital_status = dto.marital_status;
       if (dto.employment_status)
         updateData.employment_status = dto.employment_status;

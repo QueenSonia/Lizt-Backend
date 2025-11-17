@@ -187,7 +187,6 @@ describe('TenantAttachmentService', () => {
       gender: Gender.MALE,
       nationality: 'Nigerian',
       state_of_origin: 'Lagos',
-      local_government_area: 'Ikeja',
       marital_status: MaritalStatus.SINGLE,
       property: {
         id: propertyId,
@@ -550,7 +549,6 @@ describe('TenantAttachmentService', () => {
           gender: mockApplication.gender,
           nationality: mockApplication.nationality,
           state_of_origin: mockApplication.state_of_origin,
-          lga: mockApplication.local_government_area,
           marital_status: mockApplication.marital_status,
           role: RolesEnum.TENANT,
           is_verified: false,

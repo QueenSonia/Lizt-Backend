@@ -611,7 +611,6 @@ export class TenantAttachmentService {
       nationality: application.nationality || 'Nigerian',
       current_residence: '',
       state_of_origin: application.state_of_origin || '',
-      local_government_area: '', // LGA not collected in new KYC form
       marital_status: application.marital_status || 'single',
       employment_status: application.employment_status || 'employed',
       occupation: application.occupation || '——',

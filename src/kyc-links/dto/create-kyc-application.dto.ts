@@ -69,10 +69,6 @@ export class CreateKYCApplicationDto {
   @IsString()
   state_of_origin?: string;
 
-  @IsOptional()
-  @IsString()
-  local_government_area?: string;
-
   /**
    * Can either be: "single", "married", "divorced", or "widowed".
    * @example single

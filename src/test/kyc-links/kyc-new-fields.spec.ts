@@ -102,7 +102,6 @@ describe('KYC Application Service - New Fields', () => {
         gender: 'male' as any,
         nationality: 'Nigeria',
         state_of_origin: 'Lagos',
-        local_government_area: 'Ikeja',
         marital_status: 'single' as any,
 
         // NEW: Religion

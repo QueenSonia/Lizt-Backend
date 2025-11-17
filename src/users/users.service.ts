@@ -1175,6 +1175,7 @@ export class UsersService {
       secure: isProduction,
       maxAge: 15 * 60 * 1000, // 15 minutes in milliseconds
       sameSite: isProduction ? 'none' : 'lax',
+      path: '/', // Available to all paths
     });
 
     // Set refresh token cookie (7 days)
@@ -1192,6 +1193,7 @@ export class UsersService {
         secure: isProduction,
         maxAge: 15 * 60 * 1000, // 15 minutes
         sameSite: isProduction ? 'none' : 'lax',
+        path: '/', // Available to all paths
       });
     }
 
@@ -1201,6 +1203,7 @@ export class UsersService {
         secure: isProduction,
         maxAge: 15 * 60 * 1000, // 15 minutes
         sameSite: isProduction ? 'none' : 'lax',
+        path: '/', // Available to all paths
       });
     }
 
@@ -1311,6 +1314,7 @@ export class UsersService {
       httpOnly: true,
       secure: isProduction,
       sameSite: isProduction ? 'none' : 'lax',
+      path: '/',
     });
 
     res.clearCookie('refresh_token', {
@@ -1324,12 +1328,14 @@ export class UsersService {
       httpOnly: true,
       secure: isProduction,
       sameSite: isProduction ? 'none' : 'lax',
+      path: '/',
     });
 
     res.clearCookie('parent_access_token', {
       httpOnly: true,
       secure: isProduction,
       sameSite: isProduction ? 'none' : 'lax',
+      path: '/',
     });
 
     return res.status(HttpStatus.OK).json({

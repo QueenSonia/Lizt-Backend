@@ -60,12 +60,15 @@ export class AuthController {
     const newAccessToken =
       await this.authService.generateAccessToken(tokenPayload);
 
+    const isProduction = process.env.NODE_ENV === 'production';
+
     // Set new access token cookie
     res.cookie('access_token', newAccessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: isProduction,
       maxAge: 15 * 60 * 1000, // 15 minutes
-      sameSite: 'lax',
+      sameSite: isProduction ? 'none' : 'lax',
+      path: '/', // Available to all paths
     });
 
     return res.json({ message: 'Token refreshed successfully' });
@@ -79,8 +82,20 @@ export class AuthController {
       await this.authService.revokeRefreshToken(refreshToken);
     }
 
-    res.clearCookie('access_token');
-    res.clearCookie('refresh_token');
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    res.clearCookie('access_token', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+      path: '/',
+    });
+    res.clearCookie('refresh_token', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+      path: '/',
+    });
 
     return res.json({ message: 'Token revoked successfully' });
   }

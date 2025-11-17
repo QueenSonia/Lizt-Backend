@@ -972,8 +972,19 @@ export class UsersService {
     return this.usersRepository.delete(id);
   }
 
-  async loginUser(data: LoginDto, res: Response) {
+  async loginUser(data: LoginDto, res: Response, req?: any) {
     const { identifier, password } = data; // Changed from 'email' to 'identifier'
+
+    // Simple rate limiting check
+    const rateLimitKey = `login_attempts:${identifier}`;
+    const attempts = await this.cache.get(rateLimitKey);
+
+    if (attempts && parseInt(attempts) >= 5) {
+      throw new HttpException(
+        'Too many login attempts. Please try again in 15 minutes.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
 
     // Determine if identifier is email or phone
     const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
@@ -1055,8 +1066,16 @@ export class UsersService {
 
     // Handle no password match
     if (!matchedAccount) {
+      // Increment failed login attempts
+      const currentAttempts = await this.cache.get(rateLimitKey);
+      const newAttempts = currentAttempts ? parseInt(currentAttempts) + 1 : 1;
+      await this.cache.set(rateLimitKey, newAttempts.toString(), 15 * 60); // 15 minutes TTL
+
       throw new UnauthorizedException('Incorrect password');
     }
+
+    // Clear rate limit on successful login
+    await this.cache.delete(rateLimitKey);
 
     const account = matchedAccount as any;
 
@@ -1090,7 +1109,7 @@ export class UsersService {
         } as any;
 
         sub_access_token =
-          await this.authService.generateToken(subTokenPayload);
+          await this.authService.generateAccessToken(subTokenPayload);
       }
     }
 
@@ -1125,7 +1144,7 @@ export class UsersService {
         } as any;
 
         parent_access_token =
-          await this.authService.generateToken(subTokenPayload);
+          await this.authService.generateAccessToken(subTokenPayload);
       }
     }
 
@@ -1138,7 +1157,52 @@ export class UsersService {
       role: account.role,
     };
 
-    const access_token = await this.authService.generateToken(tokenPayload);
+    // Generate access token (15 minutes) and refresh token (7 days)
+    const access_token =
+      await this.authService.generateAccessToken(tokenPayload);
+    const refresh_token = await this.authService.generateRefreshToken(
+      account.id,
+      data.identifier, // user agent placeholder
+      'unknown', // IP address placeholder
+    );
+
+    const isProduction =
+      this.configService.get<string>('NODE_ENV') === 'production';
+
+    // Set access token cookie (15 minutes)
+    res.cookie('access_token', access_token, {
+      httpOnly: true,
+      secure: isProduction,
+      maxAge: 15 * 60 * 1000, // 15 minutes in milliseconds
+      sameSite: isProduction ? 'none' : 'lax',
+    });
+
+    // Set refresh token cookie (7 days)
+    res.cookie('refresh_token', refresh_token, {
+      httpOnly: true,
+      secure: isProduction,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
+      sameSite: isProduction ? 'none' : 'lax',
+      path: '/', // Available to all paths
+    });
+
+    if (sub_access_token) {
+      res.cookie('sub_access_token', sub_access_token, {
+        httpOnly: true,
+        secure: isProduction,
+        maxAge: 15 * 60 * 1000, // 15 minutes
+        sameSite: isProduction ? 'none' : 'lax',
+      });
+    }
+
+    if (parent_access_token) {
+      res.cookie('parent_access_token', parent_access_token, {
+        httpOnly: true,
+        secure: isProduction,
+        maxAge: 15 * 60 * 1000, // 15 minutes
+        sameSite: isProduction ? 'none' : 'lax',
+      });
+    }
 
     return res.status(HttpStatus.OK).json({
       user: {
@@ -1155,9 +1219,6 @@ export class UsersService {
         created_at: account.user.created_at,
         updated_at: account.user.updated_at,
       },
-      access_token,
-      sub_access_token,
-      parent_access_token,
     });
   }
 
@@ -1236,10 +1297,39 @@ export class UsersService {
   // }
 
   async logoutUser(res: Response) {
+    const refreshToken = res.req.cookies['refresh_token'];
+
+    // Revoke refresh token if it exists
+    if (refreshToken) {
+      await this.authService.revokeRefreshToken(refreshToken);
+    }
+
+    const isProduction =
+      this.configService.get<string>('NODE_ENV') === 'production';
+
     res.clearCookie('access_token', {
       httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV') === 'production',
-      sameSite: 'strict',
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+    });
+
+    res.clearCookie('refresh_token', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+      path: '/',
+    });
+
+    res.clearCookie('sub_access_token', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+    });
+
+    res.clearCookie('parent_access_token', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
     });
 
     return res.status(HttpStatus.OK).json({

@@ -307,9 +307,9 @@ export class WhatsappBotService {
     );
 
     if (default_state && default_state.includes('property_owner_options')) {
-      let option = default_state.split('property_owner_options')[1].slice(1);
+      const option = default_state.split('property_owner_options')[1].slice(1);
 
-      let waitlist = this.waitlistRepo.create({
+      const waitlist = this.waitlistRepo.create({
         full_name: text,
         phone_number: this.utilService.normalizePhoneNumber(from),
         option,
@@ -340,7 +340,7 @@ export class WhatsappBotService {
 
       return;
     } else if (default_state === 'share_referral') {
-      let [referral_name, referral_phone_number] = text.trim().split(':');
+      const [referral_name, referral_phone_number] = text.trim().split(':');
 
       if (!referral_name || !referral_phone_number) {
         await this.sendText(
@@ -650,7 +650,7 @@ export class WhatsappBotService {
 
     switch (buttonReply.id) {
       case 'service_request':
-        let teamMemberInfo = await this.teamMemberRepo.findOne({
+        const teamMemberInfo = await this.teamMemberRepo.findOne({
           where: {
             account: { user: { phone_number: `${from}` } },
           },
@@ -693,7 +693,7 @@ export class WhatsappBotService {
         break;
 
       case 'view_account_info':
-        let teamMemberAccountInfo = await this.teamMemberRepo.findOne({
+        const teamMemberAccountInfo = await this.teamMemberRepo.findOne({
           where: {
             account: { user: { phone_number: `${from}` } },
           },
@@ -816,7 +816,7 @@ export class WhatsappBotService {
             property_location,
             request_id,
             property_id,
-          } = new_service_request as any;
+          } = new_service_request;
           await this.sendText(
             from,
             "Got it, thanks for sharing that\nI've noted your request — I'll have someone take a look and reach out once it's being handled.",

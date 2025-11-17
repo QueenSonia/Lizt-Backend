@@ -1,7 +1,5 @@
-
 import { IsString, IsEnum, IsOptional, IsNumber } from 'class-validator';
 import { MessageSender, MessageType } from 'src/chat/chat-message.entity';
-
 
 export class SendMessageDto {
   @IsNumber()

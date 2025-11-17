@@ -316,9 +316,9 @@ export class UsersController {
   @ApiCookieAuth('access_token')
   @SkipAuth()
   @Post('login')
-  async login(@Body() body: LoginDto, @Res() res: Response) {
+  async login(@Body() body: LoginDto, @Res() res: Response, @Req() req: any) {
     try {
-      return this.usersService.loginUser(body, res);
+      return this.usersService.loginUser(body, res, req);
     } catch (error) {
       throw error;
     }

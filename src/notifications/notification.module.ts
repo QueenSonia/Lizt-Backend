@@ -10,9 +10,7 @@ import { ServiceRequestListener } from './listeners/service-request.listener';
 import { UserSignUpListener } from './listeners/user-signup.listener';
 
 @Module({
-   imports: [
-        TypeOrmModule.forFeature([Notification]),
-   ],
+  imports: [TypeOrmModule.forFeature([Notification])],
   controllers: [NotificationController],
   providers: [
     NotificationService,
@@ -20,7 +18,7 @@ import { UserSignUpListener } from './listeners/user-signup.listener';
     UserAddedListener,
     UserSignUpListener,
     PropertyListener,
-    ServiceRequestListener
+    ServiceRequestListener,
   ],
   exports: [NotificationService],
 })

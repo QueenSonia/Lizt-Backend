@@ -18,7 +18,9 @@ import { CacheService } from './cache.service';
           retryStrategy: (times) => {
             // Stop retrying after 3 attempts
             if (times > 3) {
-              logger.warn('Redis connection failed after 3 attempts. Running without Redis cache.');
+              logger.warn(
+                'Redis connection failed after 3 attempts. Running without Redis cache.',
+              );
               return null; // Stop retrying
             }
             const delay = Math.min(times * 100, 5000);

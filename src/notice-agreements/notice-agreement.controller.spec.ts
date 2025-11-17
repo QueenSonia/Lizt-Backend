@@ -11,7 +11,9 @@ describe('NoticeAgreementController', () => {
       providers: [NoticeAgreementService],
     }).compile();
 
-    controller = module.get<NoticeAgreementController>(NoticeAgreementController);
+    controller = module.get<NoticeAgreementController>(
+      NoticeAgreementController,
+    );
   });
 
   it('should be defined', () => {

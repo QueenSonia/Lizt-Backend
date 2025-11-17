@@ -18,7 +18,6 @@ export class CacheService {
   private parseIfNeeded<T = any>(value: any): T {
     try {
       return JSON.parse(value);
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (e) {
       return value as unknown as T;
     }

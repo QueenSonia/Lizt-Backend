@@ -50,6 +50,9 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   email?: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  contact_address?: string;
+
   @Column({ type: 'varchar' })
   phone_number: string;
 
@@ -149,9 +152,6 @@ export class KYCApplication extends BaseEntity {
 
   @Column({ type: 'varchar', nullable: true })
   number_of_occupants?: string;
-
-  @Column({ type: 'varchar', nullable: true })
-  parking_needs?: string;
 
   @Column({ type: 'varchar', nullable: true })
   proposed_rent_amount?: string;

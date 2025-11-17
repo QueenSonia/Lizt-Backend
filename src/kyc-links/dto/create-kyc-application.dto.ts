@@ -37,6 +37,10 @@ export class CreateKYCApplicationDto {
   @IsEmail()
   email?: string;
 
+  @IsOptional()
+  @IsString()
+  contact_address?: string;
+
   @IsPhoneNumber('NG')
   @IsNotEmpty()
   @NormalizePhoneNumber()
@@ -187,10 +191,6 @@ export class CreateKYCApplicationDto {
   @IsOptional()
   @IsNumberString()
   number_of_occupants?: string;
-
-  @IsOptional()
-  @IsString()
-  parking_needs?: string;
 
   @IsOptional()
   @IsNumberString()

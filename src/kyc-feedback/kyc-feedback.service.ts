@@ -58,4 +58,34 @@ export class KycFeedbackService {
       recentFeedbacks,
     };
   }
+
+  async getAdminStatistics() {
+    // Get ALL feedbacks regardless of landlord
+    const feedbacks = await this.feedbackRepo.find({
+      order: { submitted_at: 'DESC' },
+    });
+
+    const totalFeedbacks = feedbacks.length;
+    const averageRating =
+      totalFeedbacks > 0
+        ? feedbacks.reduce((sum, f) => sum + f.rating, 0) / totalFeedbacks
+        : 0;
+
+    const ratingDistribution = {
+      1: feedbacks.filter((f) => f.rating === 1).length,
+      2: feedbacks.filter((f) => f.rating === 2).length,
+      3: feedbacks.filter((f) => f.rating === 3).length,
+      4: feedbacks.filter((f) => f.rating === 4).length,
+      5: feedbacks.filter((f) => f.rating === 5).length,
+    };
+
+    const recentFeedbacks = feedbacks.slice(0, 50); // Show more for admin
+
+    return {
+      totalFeedbacks,
+      averageRating: parseFloat(averageRating.toFixed(2)),
+      ratingDistribution,
+      recentFeedbacks,
+    };
+  }
 }

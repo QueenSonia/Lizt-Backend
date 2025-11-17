@@ -97,6 +97,7 @@ describe('KYC Application Service - New Fields', () => {
 
         // Optional personal fields
         email: 'john@example.com',
+        contact_address: '123 Main Street, Lagos, Nigeria',
         date_of_birth: '1990-01-01',
         gender: 'male' as any,
         nationality: 'Nigeria',
@@ -131,7 +132,6 @@ describe('KYC Application Service - New Fields', () => {
         // NEW: Tenancy information
         intended_use_of_property: 'Residential',
         number_of_occupants: '3',
-        parking_needs: '2 car spaces',
         proposed_rent_amount: '1000000',
         rent_payment_frequency: 'Annually',
         additional_notes: 'Prefer ground floor unit',
@@ -179,7 +179,6 @@ describe('KYC Application Service - New Fields', () => {
           length_of_employment: '3 years',
           intended_use_of_property: 'Residential',
           number_of_occupants: '3',
-          parking_needs: '2 car spaces',
           proposed_rent_amount: '1000000',
           rent_payment_frequency: 'Annually',
           additional_notes: 'Prefer ground floor unit',

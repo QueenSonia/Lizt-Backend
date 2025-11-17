@@ -65,4 +65,17 @@ export class KycFeedbackController {
   getStatistics(@CurrentUser('id') landlord_id: string) {
     return this.feedbackService.getStatistics(landlord_id);
   }
+
+  /**
+   * Get all feedback statistics (admin)
+   * @remarks No authentication required - password protected on frontend
+   * @throws {500} `Internal Server Error`
+   */
+  @SkipAuth()
+  @ApiOkResponse({ description: 'Operation successful' })
+  @HttpCode(HttpStatus.OK)
+  @Get('admin/statistics')
+  getAdminStatistics() {
+    return this.feedbackService.getAdminStatistics();
+  }
 }

@@ -31,6 +31,11 @@ export class UtilService {
   normalizePhoneNumber = (phone_number: string): string => {
     if (!phone_number) return '';
 
+    // 0. If number starts with '+', remove it
+    if (phone_number.startsWith('+')) {
+      phone_number = phone_number.slice(1);
+    }
+
     // 1. Keep digits only
     let normalized = phone_number.replace(/\D/g, '');
 

@@ -68,9 +68,6 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   state_of_origin?: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  local_government_area?: string;
-
   @Column({ type: 'enum', enum: MaritalStatus, nullable: true })
   marital_status?: MaritalStatus;
 

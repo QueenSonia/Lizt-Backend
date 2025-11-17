@@ -93,8 +93,6 @@ export class KYCApplicationService {
     if (kycData.nationality) applicationData.nationality = kycData.nationality;
     if (kycData.state_of_origin)
       applicationData.state_of_origin = kycData.state_of_origin;
-    if (kycData.local_government_area)
-      applicationData.local_government_area = kycData.local_government_area;
     if (kycData.marital_status)
       applicationData.marital_status = kycData.marital_status;
     if (kycData.employment_status)
@@ -367,7 +365,6 @@ export class KYCApplicationService {
       gender: application.gender,
       nationality: application.nationality,
       stateOfOrigin: application.state_of_origin,
-      localGovernmentArea: application.local_government_area,
       maritalStatus: application.marital_status,
       religion: application.religion,
       employmentStatus: application.employment_status,

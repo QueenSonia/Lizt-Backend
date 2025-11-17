@@ -18,10 +18,10 @@ export enum ServiceRequestStatusEnum {
 
 export class CreateServiceRequestDto {
   @IsNotEmpty()
- text:string
+  text: string;
 
- @IsUUID()
- tenant_id: string;
+  @IsUUID()
+  tenant_id: string;
 }
 
 export class ServiceRequestFilter {

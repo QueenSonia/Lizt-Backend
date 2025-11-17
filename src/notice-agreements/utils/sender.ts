@@ -49,7 +49,10 @@ export const sendEmailWithAttachment = async (
     await sgMail.send(msg);
     console.log(`✅ Email sent to ${recipient}`);
   } catch (error: any) {
-    console.error('❌ Failed to send email with attachment:', error.response?.body || error.message);
+    console.error(
+      '❌ Failed to send email with attachment:',
+      error.response?.body || error.message,
+    );
     throw error;
   }
 };
@@ -82,9 +85,14 @@ export const sendEmailWithMultipleAttachments = async (
     };
 
     await sgMail.send(msg);
-    console.log(`✅ Email sent to ${recipient} with ${attachments.length} attachment(s)`);
+    console.log(
+      `✅ Email sent to ${recipient} with ${attachments.length} attachment(s)`,
+    );
   } catch (error: any) {
-    console.error('❌ Failed to send email with attachments:', error.response?.body || error.message);
+    console.error(
+      '❌ Failed to send email with attachments:',
+      error.response?.body || error.message,
+    );
     throw error;
   }
 };

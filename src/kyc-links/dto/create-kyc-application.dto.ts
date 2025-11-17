@@ -37,6 +37,10 @@ export class CreateKYCApplicationDto {
   @IsEmail()
   email?: string;
 
+  @IsOptional()
+  @IsString()
+  contact_address?: string;
+
   @IsPhoneNumber('NG')
   @IsNotEmpty()
   @NormalizePhoneNumber()
@@ -64,10 +68,6 @@ export class CreateKYCApplicationDto {
   @IsOptional()
   @IsString()
   state_of_origin?: string;
-
-  @IsOptional()
-  @IsString()
-  local_government_area?: string;
 
   /**
    * Can either be: "single", "married", "divorced", or "widowed".
@@ -187,10 +187,6 @@ export class CreateKYCApplicationDto {
   @IsOptional()
   @IsNumberString()
   number_of_occupants?: string;
-
-  @IsOptional()
-  @IsString()
-  parking_needs?: string;
 
   @IsOptional()
   @IsNumberString()

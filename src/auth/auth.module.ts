@@ -9,15 +9,17 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 import { RoleGuard } from './role.guard';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Account } from 'src/users/entities/account.entity';
+import { RefreshToken } from './entities/refresh-token.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Account]),
+    TypeOrmModule.forFeature([Account, RefreshToken]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         secret: configService.get('JWT_SECRET'),
-        signOptions: { expiresIn: configService.get('JWT_EXPIRY') },
+        // signOptions: { expiresIn: '15m' }, // Access token: 15 minutes
+        signOptions: { expiresIn: configService.get('JWT_ACCESS_EXPIRY') },
       }),
       inject: [ConfigService],
     }),

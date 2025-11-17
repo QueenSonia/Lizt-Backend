@@ -119,7 +119,7 @@ export class LandlordLookup {
         }
 
         let propertyList = '🏘️ Which unit will this tenant occupy?\n';
-        let vacantUnitsList: any[] = [];
+        const vacantUnitsList: any[] = [];
 
         for (const property of properties) {
           // 🔍 Check if any tenant has ACTIVE status

@@ -50,6 +50,9 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   email?: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  contact_address?: string;
+
   @Column({ type: 'varchar' })
   phone_number: string;
 
@@ -64,9 +67,6 @@ export class KYCApplication extends BaseEntity {
 
   @Column({ type: 'varchar', nullable: true })
   state_of_origin?: string;
-
-  @Column({ type: 'varchar', nullable: true })
-  local_government_area?: string;
 
   @Column({ type: 'enum', enum: MaritalStatus, nullable: true })
   marital_status?: MaritalStatus;
@@ -149,9 +149,6 @@ export class KYCApplication extends BaseEntity {
 
   @Column({ type: 'varchar', nullable: true })
   number_of_occupants?: string;
-
-  @Column({ type: 'varchar', nullable: true })
-  parking_needs?: string;
 
   @Column({ type: 'varchar', nullable: true })
   proposed_rent_amount?: string;

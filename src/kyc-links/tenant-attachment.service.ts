@@ -483,7 +483,7 @@ export class TenantAttachmentService {
         nationality: application.nationality || existingUser.nationality,
         state_of_origin:
           application.state_of_origin || existingUser.state_of_origin,
-        lga: application.local_government_area || existingUser.lga,
+        lga: existingUser.lga, // Keep existing LGA, not collected in new KYC form
         marital_status:
           application.marital_status || existingUser.marital_status,
       });
@@ -542,7 +542,7 @@ export class TenantAttachmentService {
       gender: application.gender,
       nationality: application.nationality,
       state_of_origin: application.state_of_origin,
-      lga: application.local_government_area,
+      lga: '', // LGA not collected in new KYC form
       marital_status: application.marital_status,
       role: RolesEnum.TENANT,
       is_verified: false,
@@ -611,7 +611,6 @@ export class TenantAttachmentService {
       nationality: application.nationality || 'Nigerian',
       current_residence: '',
       state_of_origin: application.state_of_origin || '',
-      local_government_area: application.local_government_area || '',
       marital_status: application.marital_status || 'single',
       employment_status: application.employment_status || 'employed',
       occupation: application.occupation || '——',

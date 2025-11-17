@@ -85,14 +85,14 @@ export class KYCApplicationService {
 
     // Add optional fields only if they exist
     if (kycData.email) applicationData.email = kycData.email;
+    if (kycData.contact_address)
+      applicationData.contact_address = kycData.contact_address;
     if (kycData.date_of_birth)
       applicationData.date_of_birth = new Date(kycData.date_of_birth);
     if (kycData.gender) applicationData.gender = kycData.gender;
     if (kycData.nationality) applicationData.nationality = kycData.nationality;
     if (kycData.state_of_origin)
       applicationData.state_of_origin = kycData.state_of_origin;
-    if (kycData.local_government_area)
-      applicationData.local_government_area = kycData.local_government_area;
     if (kycData.marital_status)
       applicationData.marital_status = kycData.marital_status;
     if (kycData.employment_status)
@@ -145,8 +145,6 @@ export class KYCApplicationService {
         kycData.intended_use_of_property;
     if (kycData.number_of_occupants)
       applicationData.number_of_occupants = kycData.number_of_occupants;
-    if (kycData.parking_needs)
-      applicationData.parking_needs = kycData.parking_needs;
     if (kycData.proposed_rent_amount)
       applicationData.proposed_rent_amount = kycData.proposed_rent_amount;
     if (kycData.rent_payment_frequency)
@@ -357,6 +355,7 @@ export class KYCApplicationService {
       firstName: application.first_name,
       lastName: application.last_name,
       email: application.email,
+      contactAddress: application.contact_address,
       phoneNumber: application.phone_number,
       dateOfBirth: application.date_of_birth
         ? application.date_of_birth instanceof Date
@@ -366,7 +365,6 @@ export class KYCApplicationService {
       gender: application.gender,
       nationality: application.nationality,
       stateOfOrigin: application.state_of_origin,
-      localGovernmentArea: application.local_government_area,
       maritalStatus: application.marital_status,
       religion: application.religion,
       employmentStatus: application.employment_status,
@@ -403,7 +401,6 @@ export class KYCApplicationService {
         rentPaymentFrequency: application.rent_payment_frequency,
         intendedUse: application.intended_use_of_property,
         numberOfOccupants: application.number_of_occupants,
-        parkingRequirements: application.parking_needs,
         additionalNotes: application.additional_notes,
       },
       documents: {

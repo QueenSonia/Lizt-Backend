@@ -71,10 +71,6 @@ export class CreateTenantKycDto {
   @IsOptional()
   state_of_origin?: string;
 
-  @IsString()
-  @IsOptional()
-  local_government_area?: string;
-
   /**
    * Can either be: "single", "married", "divorced", or "widowed".
    * @example single

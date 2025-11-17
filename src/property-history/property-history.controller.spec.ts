@@ -11,7 +11,9 @@ describe('PropertyHistoryController', () => {
       providers: [PropertyHistoryService],
     }).compile();
 
-    controller = module.get<PropertyHistoryController>(PropertyHistoryController);
+    controller = module.get<PropertyHistoryController>(
+      PropertyHistoryController,
+    );
   });
 
   it('should be defined', () => {

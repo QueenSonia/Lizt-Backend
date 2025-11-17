@@ -14,9 +14,7 @@ import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { Users } from 'src/users/entities/user.entity';
 import { UtilService } from 'src/utils/utility-service';
-import {
-  KYCApplication,
-} from '../kyc-links/entities/kyc-application.entity';
+import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 
 @Injectable()
@@ -50,9 +48,8 @@ export class TenanciesService {
       status: TenantStatusEnum.ACTIVE,
     });
 
-    const savedTenant = await this.propertyTenantRepository.save(
-      newPropertyTenant,
-    );
+    const savedTenant =
+      await this.propertyTenantRepository.save(newPropertyTenant);
 
     try {
       console.log('Attempting to send tenant attachment notification...');

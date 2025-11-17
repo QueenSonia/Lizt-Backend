@@ -16,7 +16,6 @@ dotenv.config();
 //   },
 // });
 
-
 export const transporter = nodemailer.createTransport({
   host: 'smtp.sendgrid.net',
   port: 587,
@@ -27,15 +26,15 @@ export const transporter = nodemailer.createTransport({
   },
 });
 
-  // export const transporter = nodemailer.createTransport({
-  //   host: 'wghp11.wghservers.com',
-  //   port: 465,
-  //   secure: true,
-  //   auth: {
-  //     user: process.env.SMTP_USER,
-  //     pass: process.env.SMTP_PASSWORD,
-  //   },
-  //   tls: {
-  //     rejectUnauthorized: false,
-  //   },
-  // });
+// export const transporter = nodemailer.createTransport({
+//   host: 'wghp11.wghservers.com',
+//   port: 465,
+//   secure: true,
+//   auth: {
+//     user: process.env.SMTP_USER,
+//     pass: process.env.SMTP_PASSWORD,
+//   },
+//   tls: {
+//     rejectUnauthorized: false,
+//   },
+// });

@@ -1752,11 +1752,7 @@ export class UsersService {
         user.state_of_origin ??
         kyc.state_of_origin ??
         '',
-      lga:
-        tenantKyc?.local_government_area ??
-        user.lga ??
-        kyc.lga_of_origin ??
-        null,
+      lga: user.lga ?? kyc.lga_of_origin ?? null,
       nationality:
         tenantKyc?.nationality ?? user.nationality ?? kyc.nationality ?? null,
       maritalStatus:

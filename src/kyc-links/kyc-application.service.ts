@@ -234,12 +234,14 @@ export class KYCApplicationService {
           const landlordName =
             landlord.owner.profile_name ||
             `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
+          const tenantName = `${kycData.first_name} ${kycData.last_name}`;
           const frontendUrl =
             this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
 
           await this.whatsappBotService.sendKYCApplicationNotification({
             phone_number: landlordPhone,
             landlord_name: landlordName,
+            tenant_name: tenantName,
             property_name: property.name,
             application_id: savedApplication.id,
             frontend_url: frontendUrl,

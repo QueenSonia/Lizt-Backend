@@ -45,6 +45,7 @@ interface TimeLineEvent {
 interface KycInfo {
   kycStatus: 'Verified' | 'Pending' | 'Rejected' | 'Not Submitted';
   kycSubmittedDate: string | null;
+  kycDocuments?: DocumentItem[];
 }
 
 // main DTO interface

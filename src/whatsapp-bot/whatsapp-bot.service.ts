@@ -692,7 +692,7 @@ export class WhatsappBotService {
         );
         break;
 
-      case 'view_account_info':
+      case 'view_account_info': {
         const teamMemberAccountInfo = await this.teamMemberRepo.findOne({
           where: {
             account: { user: { phone_number: `${from}` } },
@@ -722,6 +722,7 @@ export class WhatsappBotService {
           'Type "menu" to see other options or "done" to finish.',
         );
         break;
+      }
       case 'visit_site':
         await this.sendText(
           from,
@@ -1022,7 +1023,7 @@ export class WhatsappBotService {
         );
         break;
 
-      case 'view_tenancy':
+      case 'view_tenancy': {
         // FIXED: Use multi-format phone lookup
         const normalizedPhoneViewTenancy =
           this.utilService.normalizePhoneNumber(from);
@@ -1107,6 +1108,7 @@ export class WhatsappBotService {
           'Type "menu" to see other options or "done" to finish.',
         );
         break;
+      }
 
       case 'service_request':
         await this.sendButtons(from, 'What would you like to do?', [
@@ -1121,7 +1123,7 @@ export class WhatsappBotService {
         ]);
         break;
 
-      case 'view_service_request':
+      case 'view_service_request': {
         // FIXED: Use multi-format phone lookup
         const normalizedPhoneViewService =
           this.utilService.normalizePhoneNumber(from);
@@ -1168,6 +1170,7 @@ export class WhatsappBotService {
           { id: 'main_menu', title: 'Go back to main menu' },
         ]);
         break;
+      }
 
       case 'new_service_request':
         await this.cache.set(
@@ -1487,20 +1490,26 @@ export class WhatsappBotService {
   /**
    * Send KYC application notification to landlord via WhatsApp
    * Notifies landlord when a tenant submits a KYC application
-   * Uses 'kyc_application_notification' template with one URL button:
+   * Uses 'tenant_application_notification' template with one URL button:
    * - View Application - Opens application details page with download option
    *
-   * Template body: "Hello {{1}}, A new KYC application has been submitted for your property {{2}}."
+   * Template body: "{{1}}, a KYC application was submitted by {{2}} for the property {{3}}. Use the link below to view the application."
+   * Variables:
+   * {{1}} = landlord_name
+   * {{2}} = tenant_name
+   * {{3}} = property_name
    */
   async sendKYCApplicationNotification({
     phone_number,
     landlord_name,
+    tenant_name,
     property_name,
     application_id,
     frontend_url,
   }: {
     phone_number: string;
     landlord_name: string;
+    tenant_name: string;
     property_name: string;
     application_id: string;
     frontend_url: string;
@@ -1510,7 +1519,7 @@ export class WhatsappBotService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'kyc_application_notification',
+        name: 'tenant_application_notification',
         language: {
           code: 'en',
         },
@@ -1524,7 +1533,11 @@ export class WhatsappBotService {
               },
               {
                 type: 'text',
-                text: property_name, // {{2}}
+                text: tenant_name, // {{2}}
+              },
+              {
+                type: 'text',
+                text: property_name, // {{3}}
               },
             ],
           },

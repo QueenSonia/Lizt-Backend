@@ -29,6 +29,7 @@ export class UtilService {
   // };
 
   normalizePhoneNumber = (phone_number: string): string => {
+    console.log(`Original phone number: ${phone_number}`);
     if (!phone_number) return '';
 
     // 0. If number starts with '+', remove it
@@ -41,12 +42,14 @@ export class UtilService {
 
     // 2. If number already starts with '234' (Nigeria country code), leave it
     if (normalized.startsWith('234')) {
+      console.log(`Normalized phone number: ${normalized}`);
       return normalized;
     }
 
     // 3. If number starts with '0', strip it and prepend '234'
     if (normalized.startsWith('0')) {
       normalized = '234' + normalized.slice(1);
+      console.log(`Normalized phone number: ${normalized}`);
       return normalized;
     }
 
@@ -54,7 +57,8 @@ export class UtilService {
     if (/^[7-9]\d{9}$/.test(normalized)) {
       normalized = '234' + normalized;
     }
-
+    
+    console.log(`Normalized phone number: ${normalized}`);
     return normalized;
   };
 

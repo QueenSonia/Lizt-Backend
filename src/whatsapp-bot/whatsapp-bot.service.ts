@@ -692,7 +692,7 @@ export class WhatsappBotService {
         );
         break;
 
-      case 'view_account_info':
+      case 'view_account_info': {
         const teamMemberAccountInfo = await this.teamMemberRepo.findOne({
           where: {
             account: { user: { phone_number: `${from}` } },
@@ -722,6 +722,7 @@ export class WhatsappBotService {
           'Type "menu" to see other options or "done" to finish.',
         );
         break;
+      }
       case 'visit_site':
         await this.sendText(
           from,
@@ -1022,7 +1023,7 @@ export class WhatsappBotService {
         );
         break;
 
-      case 'view_tenancy':
+      case 'view_tenancy': {
         // FIXED: Use multi-format phone lookup
         const normalizedPhoneViewTenancy =
           this.utilService.normalizePhoneNumber(from);
@@ -1107,6 +1108,7 @@ export class WhatsappBotService {
           'Type "menu" to see other options or "done" to finish.',
         );
         break;
+      }
 
       case 'service_request':
         await this.sendButtons(from, 'What would you like to do?', [
@@ -1121,8 +1123,8 @@ export class WhatsappBotService {
         ]);
         break;
 
-      case 'view_service_request': // FIXED: Use multi-format phone lookup
-      {
+      case 'view_service_request': {
+        // FIXED: Use multi-format phone lookup
         const normalizedPhoneViewService =
           this.utilService.normalizePhoneNumber(from);
         const localPhoneViewService = from.startsWith('234')

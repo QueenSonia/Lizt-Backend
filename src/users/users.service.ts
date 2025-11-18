@@ -1880,10 +1880,28 @@ export class UsersService {
 
       history: history,
       kycInfo: {
-        kycStatus: account.kyc ? 'Verified' : 'Not Submitted',
-        kycSubmittedDate: account.kyc
-          ? new Date(account.kyc.created_at!).toISOString()
-          : null,
+        kycStatus: kycApplication
+          ? 'Verified'
+          : account.kyc
+            ? 'Verified'
+            : 'Not Submitted',
+        kycSubmittedDate: kycApplication?.created_at
+          ? new Date(kycApplication.created_at).toISOString()
+          : account.kyc?.created_at
+            ? new Date(account.kyc.created_at).toISOString()
+            : null,
+        kycDocuments:
+          kycApplication?.passport_photo_url && kycApplication?.created_at
+            ? [
+                {
+                  id: `kyc-passport-${kycApplication.id}`,
+                  name: 'Passport Photo',
+                  type: 'Passport',
+                  url: kycApplication.passport_photo_url,
+                  uploadDate: new Date(kycApplication.created_at).toISOString(),
+                },
+              ]
+            : [],
       },
     };
   }

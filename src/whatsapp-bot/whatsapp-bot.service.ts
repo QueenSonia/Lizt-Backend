@@ -1121,8 +1121,8 @@ export class WhatsappBotService {
         ]);
         break;
 
-      case 'view_service_request':
-        // FIXED: Use multi-format phone lookup
+      case 'view_service_request': // FIXED: Use multi-format phone lookup
+      {
         const normalizedPhoneViewService =
           this.utilService.normalizePhoneNumber(from);
         const localPhoneViewService = from.startsWith('234')
@@ -1168,6 +1168,7 @@ export class WhatsappBotService {
           { id: 'main_menu', title: 'Go back to main menu' },
         ]);
         break;
+      }
 
       case 'new_service_request':
         await this.cache.set(
@@ -1487,10 +1488,7 @@ export class WhatsappBotService {
   /**
    * Send KYC application notification to landlord via WhatsApp
    * Notifies landlord when a tenant submits a KYC application
-   * Uses 'kyc_application_notification' template with one URL button:
-   * - View Application - Opens application details page with download option
-   *
-   * Template body: "Hello {{1}}, A new KYC application has been submitted for your property {{2}}."
+   * Sends as a utility message (regular text) with application link
    */
   async sendKYCApplicationNotification({
     phone_number,
@@ -1505,45 +1503,9 @@ export class WhatsappBotService {
     application_id: string;
     frontend_url: string;
   }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'kyc_application_notification',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: landlord_name, // {{1}}
-              },
-              {
-                type: 'text',
-                text: property_name, // {{2}}
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'url',
-            index: '0',
-            parameters: [
-              {
-                type: 'text',
-                text: application_id, // {{1}} in button URL
-              },
-            ],
-          },
-        ],
-      },
-    };
+    const message = `Hello ${landlord_name}, A new KYC application has been submitted for your property ${property_name}. You can access the application details using the link below.\n\n${frontend_url}/kyc-feedback?applicationId=${application_id}`;
 
-    await this.sendToWhatsappAPI(payload);
+    await this.sendText(phone_number, message);
   }
 
   async sendFacilityServiceRequest({

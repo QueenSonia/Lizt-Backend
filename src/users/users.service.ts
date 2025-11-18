@@ -1627,11 +1627,10 @@ export class UsersService {
       );
     }
 
-    // Query KYC application separately to get passport photo
+    // Query KYC application separately to get all data and document URLs
     const kycApplication = await this.kycApplicationRepository.findOne({
       where: { tenant_id: tenantId },
       order: { created_at: 'DESC' }, // Get the most recent application
-      select: ['id', 'passport_photo_url', 'status', 'created_at'],
     });
 
     return this.formatTenantData(tenantAccount, kycApplication);
@@ -1725,11 +1724,16 @@ export class UsersService {
     return {
       id: account.id,
 
-      // Personal info - prioritize TenantKyc over User and old KYC
-      firstName: tenantKyc?.first_name ?? user.first_name,
-      lastName: tenantKyc?.last_name ?? user.last_name,
-      phone: tenantKyc?.phone_number ?? user.phone_number,
-      email: tenantKyc?.email ?? account.email,
+      // Personal info - prioritize KYC Application, then TenantKyc, then User
+      firstName:
+        kycApplication?.first_name ?? tenantKyc?.first_name ?? user.first_name,
+      lastName:
+        kycApplication?.last_name ?? tenantKyc?.last_name ?? user.last_name,
+      phone:
+        kycApplication?.phone_number ??
+        tenantKyc?.phone_number ??
+        user.phone_number,
+      email: kycApplication?.email ?? tenantKyc?.email ?? account.email,
       dateOfBirth:
         (tenantKyc?.date_of_birth
           ? typeof tenantKyc.date_of_birth === 'string'
@@ -1746,55 +1750,120 @@ export class UsersService {
               : null
           : null) ??
         null,
-      gender: tenantKyc?.gender ?? user.gender ?? null,
+      gender:
+        kycApplication?.gender ?? tenantKyc?.gender ?? user.gender ?? null,
       stateOfOrigin:
+        kycApplication?.state_of_origin ??
         tenantKyc?.state_of_origin ??
         user.state_of_origin ??
         kyc.state_of_origin ??
         '',
       lga: user.lga ?? kyc.lga_of_origin ?? null,
       nationality:
-        tenantKyc?.nationality ?? user.nationality ?? kyc.nationality ?? null,
+        kycApplication?.nationality ??
+        tenantKyc?.nationality ??
+        user.nationality ??
+        kyc.nationality ??
+        null,
       maritalStatus:
+        kycApplication?.marital_status ??
         tenantKyc?.marital_status ??
         user.marital_status ??
         kyc.marital_status ??
         null,
+      religion: kycApplication?.religion ?? tenantKyc?.religion ?? null,
 
-      // Employment Info - prioritize TenantKyc
+      // Employment Info - prioritize KYC Application
       employmentStatus:
-        tenantKyc?.employment_status ?? user.employment_status ?? null,
+        kycApplication?.employment_status ??
+        tenantKyc?.employment_status ??
+        user.employment_status ??
+        null,
       employerName:
+        kycApplication?.employer_name ??
         tenantKyc?.employer_name ??
         user.employer_name ??
         kyc.employers_name ??
         null,
       employerAddress:
+        kycApplication?.employer_address ??
         tenantKyc?.employer_address ??
         user.employer_address ??
         kyc.employers_address ??
         null,
-      jobTitle: tenantKyc?.job_title ?? user.job_title ?? null,
+      jobTitle:
+        kycApplication?.job_title ??
+        tenantKyc?.job_title ??
+        user.job_title ??
+        null,
       workEmail: user.work_email ?? null,
-      monthlyIncome: tenantKyc?.monthly_net_income
-        ? parseFloat(tenantKyc.monthly_net_income)
-        : (user.monthly_income ??
-          (kyc ? parseFloat(kyc.monthly_income) : null)),
+      monthlyIncome: kycApplication?.monthly_net_income
+        ? parseFloat(kycApplication.monthly_net_income)
+        : tenantKyc?.monthly_net_income
+          ? parseFloat(tenantKyc.monthly_net_income)
+          : (user.monthly_income ??
+            (kyc ? parseFloat(kyc.monthly_income) : null)),
+      employerPhoneNumber:
+        kycApplication?.employer_phone_number ??
+        tenantKyc?.employer_phone_number ??
+        null,
+      lengthOfEmployment: kycApplication?.length_of_employment ?? null,
 
-      // Residence info - prioritize TenantKyc
+      // Residence info - prioritize KYC Application
       currentAddress:
-        tenantKyc?.current_residence ?? kyc.former_house_address ?? null,
+        kycApplication?.contact_address ??
+        tenantKyc?.current_residence ??
+        kyc.former_house_address ??
+        null,
 
-      // Guarantor Info - prioritize TenantKyc reference1 fields
-      guarantorName: tenantKyc?.reference1_name ?? kyc?.guarantor ?? null,
-      guarantorPhone:
+      // Next of Kin Info - prioritize KYC Application reference1 fields
+      nokName:
+        kycApplication?.reference1_name ?? tenantKyc?.reference1_name ?? null,
+      nokRelationship:
+        kycApplication?.reference1_relationship ??
+        tenantKyc?.reference1_relationship ??
+        null,
+      nokPhone:
+        kycApplication?.reference1_phone_number ??
         tenantKyc?.reference1_phone_number ??
+        null,
+      nokEmail: kycApplication?.reference1_email ?? null,
+      nokAddress:
+        kycApplication?.reference1_address ??
+        tenantKyc?.reference1_address ??
+        null,
+
+      // Guarantor Info - prioritize KYC Application reference2 fields
+      guarantorName:
+        kycApplication?.reference2_name ??
+        tenantKyc?.reference2_name ??
+        kyc?.guarantor ??
+        null,
+      guarantorPhone:
+        kycApplication?.reference2_phone_number ??
+        tenantKyc?.reference2_phone_number ??
         kyc.guarantor_phone_number ??
         null,
-      guarantorEmail: null,
+      guarantorEmail: null, // Not in KYC application
       guarantorAddress:
-        tenantKyc?.reference1_address ?? kyc.guarantor_address ?? null,
-      guarantorRelationship: tenantKyc?.reference1_relationship ?? null,
+        kycApplication?.reference2_address ??
+        tenantKyc?.reference2_address ??
+        kyc.guarantor_address ??
+        null,
+      guarantorRelationship:
+        kycApplication?.reference2_relationship ??
+        tenantKyc?.reference2_relationship ??
+        null,
+      guarantorOccupation:
+        kycApplication?.occupation ?? tenantKyc?.occupation ?? null,
+
+      // Tenancy Proposal Information (from KYC Application)
+      intendedUseOfProperty: kycApplication?.intended_use_of_property ?? null,
+      numberOfOccupants: kycApplication?.number_of_occupants ?? null,
+      numberOfCarsOwned: kycApplication?.number_of_cars_owned ?? null,
+      proposedRentAmount: kycApplication?.proposed_rent_amount ?? null,
+      rentPaymentFrequency: kycApplication?.rent_payment_frequency ?? null,
+      additionalNotes: kycApplication?.additional_notes ?? null,
 
       // Include TenantKyc ID for frontend updates
       tenantKycId: tenantKyc?.id ?? null,
@@ -1890,18 +1959,62 @@ export class UsersService {
           : account.kyc?.created_at
             ? new Date(account.kyc.created_at).toISOString()
             : null,
-        kycDocuments:
-          kycApplication?.passport_photo_url && kycApplication?.created_at
-            ? [
-                {
-                  id: `kyc-passport-${kycApplication.id}`,
-                  name: 'Passport Photo',
-                  type: 'Passport',
-                  url: kycApplication.passport_photo_url,
-                  uploadDate: new Date(kycApplication.created_at).toISOString(),
-                },
-              ]
-            : [],
+        kycDocuments: kycApplication
+          ? [
+              ...(kycApplication.passport_photo_url
+                ? [
+                    {
+                      id: `kyc-passport-${kycApplication.id}`,
+                      name: 'Passport Photo',
+                      type: 'Passport',
+                      url: kycApplication.passport_photo_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.id_document_url
+                ? [
+                    {
+                      id: `kyc-id-${kycApplication.id}`,
+                      name: 'ID Document',
+                      type: 'ID',
+                      url: kycApplication.id_document_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.employment_proof_url
+                ? [
+                    {
+                      id: `kyc-employment-${kycApplication.id}`,
+                      name: 'Employment Proof',
+                      type: 'Employment',
+                      url: kycApplication.employment_proof_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.business_proof_url
+                ? [
+                    {
+                      id: `kyc-business-${kycApplication.id}`,
+                      name: 'Business Proof',
+                      type: 'Business',
+                      url: kycApplication.business_proof_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+            ]
+          : [],
       },
     };
   }

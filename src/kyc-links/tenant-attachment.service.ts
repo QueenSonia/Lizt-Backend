@@ -601,7 +601,9 @@ export class TenantAttachmentService {
         ? application.email
         : '';
 
+    // Prepare all KYC data from application - matching current KYC form fields
     const tenantKycData = {
+      // Personal Information
       first_name: application.first_name,
       last_name: application.last_name,
       email: emailToUse,
@@ -609,15 +611,25 @@ export class TenantAttachmentService {
       date_of_birth: application.date_of_birth || new Date('1990-01-01'),
       gender: application.gender || 'other',
       nationality: application.nationality || 'Nigerian',
-      current_residence: '',
       state_of_origin: application.state_of_origin || '',
       marital_status: application.marital_status || 'single',
+      religion: application.religion || '',
+      current_residence: application.contact_address || '',
+      spouse_name_and_contact: '', // Not collected in current form
+
+      // Employment Information
       employment_status: application.employment_status || 'employed',
-      occupation: application.occupation || '——',
-      job_title: application.job_title || '——',
-      employer_name: application.employer_name || '',
-      employer_address: application.employer_address || '',
+      occupation:
+        application.occupation || application.nature_of_business || '',
+      job_title: application.job_title || '',
+      employer_name:
+        application.employer_name || application.business_name || '',
+      employer_address:
+        application.employer_address || application.business_address || '',
+      employer_phone_number: application.employer_phone_number || '',
       monthly_net_income: application.monthly_net_income || '0',
+
+      // References (Next of Kin and Guarantor)
       reference1_name: application.reference1_name || '',
       reference1_address: application.reference1_address || '',
       reference1_relationship: application.reference1_relationship || '',

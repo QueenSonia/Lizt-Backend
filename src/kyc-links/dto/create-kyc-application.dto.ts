@@ -190,6 +190,10 @@ export class CreateKYCApplicationDto {
 
   @IsOptional()
   @IsNumberString()
+  number_of_cars_owned?: string;
+
+  @IsOptional()
+  @IsNumberString()
   proposed_rent_amount?: string;
 
   @IsOptional()

@@ -45,6 +45,7 @@ interface TimeLineEvent {
 interface KycInfo {
   kycStatus: 'Verified' | 'Pending' | 'Rejected' | 'Not Submitted';
   kycSubmittedDate: string | null;
+  kycDocuments?: DocumentItem[];
 }
 
 // main DTO interface
@@ -62,6 +63,7 @@ export class TenantDetailDto {
   lga: string | null;
   nationality: string | null;
   maritalStatus: string | null;
+  religion: string | null;
 
   // Employment Information
   employmentStatus: string | null;
@@ -70,22 +72,40 @@ export class TenantDetailDto {
   jobTitle: string | null;
   workEmail: string | null;
   monthlyIncome: number | null;
+  employerPhoneNumber: string | null;
+  lengthOfEmployment: string | null;
 
   // Residence information (from KYC)
   currentAddress: string | null;
 
-  // Guarantor Information (from KYC)
+  // Next of Kin Information (from KYC reference1)
+  nokName: string | null;
+  nokRelationship: string | null;
+  nokPhone: string | null;
+  nokEmail: string | null;
+  nokAddress: string | null;
+
+  // Guarantor Information (from KYC reference2)
   guarantorName: string | null;
   guarantorPhone: string | null;
   guarantorEmail: string | null;
   guarantorAddress: string | null;
   guarantorRelationship: string | null;
+  guarantorOccupation: string | null;
 
   // TenantKyc ID for updates
   tenantKycId: string | null;
 
   // Passport Photo URL (from KYC Application)
   passportPhotoUrl: string | null;
+
+  // Tenancy Proposal Information (from KYC Application)
+  intendedUseOfProperty: string | null;
+  numberOfOccupants: string | null;
+  numberOfCarsOwned: string | null;
+  proposedRentAmount: string | null;
+  rentPaymentFrequency: string | null;
+  additionalNotes: string | null;
 
   // Current Tenancy (from Rent/Property)
   property: string;

@@ -151,6 +151,9 @@ export class KYCApplication extends BaseEntity {
   number_of_occupants?: string;
 
   @Column({ type: 'varchar', nullable: true })
+  number_of_cars_owned?: string;
+
+  @Column({ type: 'varchar', nullable: true })
   proposed_rent_amount?: string;
 
   @Column({ type: 'varchar', nullable: true })

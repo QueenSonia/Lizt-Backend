@@ -1880,15 +1880,15 @@ export class UsersService {
           ? activeRent.lease_start_date
           : activeRent.lease_start_date instanceof Date
             ? activeRent.lease_start_date.toISOString()
-            : '——'
-        : '——',
+            : null
+        : null,
       leaseEndDate: activeRent?.lease_end_date
         ? typeof activeRent.lease_end_date === 'string'
           ? activeRent.lease_end_date
           : activeRent.lease_end_date instanceof Date
             ? activeRent.lease_end_date.toISOString()
-            : '——'
-        : '——',
+            : null
+        : null,
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
       rentStatus: activeRent?.payment_status || '——',
@@ -1897,8 +1897,8 @@ export class UsersService {
           ? activeRent.expiry_date
           : activeRent.expiry_date instanceof Date
             ? activeRent.expiry_date.toISOString()
-            : '——'
-        : '——',
+            : null
+        : null,
       outstandingBalance: 0, // Placeholder, calculate if needed
       paymentHistory: (account.rents || [])
         .map((rent) => ({

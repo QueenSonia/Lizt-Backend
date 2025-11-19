@@ -116,14 +116,14 @@ export class TenantDetailDto {
   whatsAppConnected: boolean; // Placeholder logic
 
   // Tenancy Details
-  leaseStartDate: string;
-  leaseEndDate: string;
+  leaseStartDate: string | null;
+  leaseEndDate: string | null;
   tenancyStatus: string;
 
   // Rent Information
   rentAmount: number;
   rentStatus: string;
-  nextRentDue: string;
+  nextRentDue: string | null;
   outstandingBalance: number;
 
   // Aggregated Data

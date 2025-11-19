@@ -57,7 +57,7 @@ export class TenantAttachmentService {
     private readonly dataSource: DataSource,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   /**
    * Attach tenant to property with tenancy details
@@ -171,6 +171,11 @@ export class TenantAttachmentService {
         rent_status: RentStatusEnum.ACTIVE,
         payment_status: RentPaymentStatusEnum.PENDING,
         amount_paid: 0,
+        expiry_date: this.calculateNextRentDate(
+          tenancyStartDate,
+          tenancyDetails.rentDueDate,
+          tenancyDetails.rentFrequency,
+        ),
       });
 
       await queryRunner.manager.save(rent);
@@ -731,6 +736,50 @@ export class TenantAttachmentService {
     }
 
     return endDate;
+  }
+
+  /**
+   * Calculate next rent due date based on start date, due day, and frequency
+   * Requirements: 5.1, 5.2
+   */
+  private calculateNextRentDate(
+    startDate: Date,
+    dueDay: number,
+    frequency: RentFrequency,
+  ): Date {
+    const nextDate = new Date(startDate);
+
+    // Add frequency duration to get to the next period
+    switch (frequency) {
+      case RentFrequency.MONTHLY:
+        nextDate.setMonth(nextDate.getMonth() + 1);
+        break;
+      case RentFrequency.QUARTERLY:
+        nextDate.setMonth(nextDate.getMonth() + 3);
+        break;
+      case RentFrequency.BI_ANNUALLY:
+        nextDate.setMonth(nextDate.getMonth() + 6);
+        break;
+      case RentFrequency.ANNUALLY:
+        nextDate.setFullYear(nextDate.getFullYear() + 1);
+        break;
+      default:
+        nextDate.setMonth(nextDate.getMonth() + 1);
+    }
+
+    // Set the specific due day
+    // We need to handle cases where the due day doesn't exist in the target month
+    // (e.g. due day 31 in February)
+    const targetMonth = nextDate.getMonth();
+    nextDate.setDate(dueDay);
+
+    // If setting the day pushed us to the next month (e.g. Feb 31 -> Mar 3),
+    // backtrack to the last day of the previous month (Feb 28/29)
+    if (nextDate.getMonth() !== targetMonth) {
+      nextDate.setDate(0);
+    }
+
+    return nextDate;
   }
 
   /**

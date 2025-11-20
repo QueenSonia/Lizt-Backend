@@ -111,6 +111,7 @@ export class TenantDetailDto {
   property: string;
   propertyId: string;
   propertyAddress: string;
+  propertyStatus: string;
 
   // System Info
   whatsAppConnected: boolean; // Placeholder logic

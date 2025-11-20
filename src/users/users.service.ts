@@ -1875,6 +1875,7 @@ export class UsersService {
       property: property?.name || '——',
       propertyId: property?.id || '——',
       propertyAddress: property?.location || '——',
+      propertyStatus: property?.property_status || 'Vacant',
       leaseStartDate: activeRent?.lease_start_date
         ? typeof activeRent.lease_start_date === 'string'
           ? activeRent.lease_start_date

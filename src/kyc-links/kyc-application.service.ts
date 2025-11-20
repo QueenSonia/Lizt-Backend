@@ -352,6 +352,7 @@ export class KYCApplicationService {
   private transformApplicationForFrontend(application: KYCApplication): any {
     return {
       id: application.id,
+      tenantId: application.tenant_id,
       propertyId: application.property_id,
       status: application.status,
       firstName: application.first_name,
@@ -411,6 +412,14 @@ export class KYCApplicationService {
         employmentProof: application.employment_proof_url,
         businessProof: application.business_proof_url,
       },
+      // Include property information if the relation is loaded
+      property: application.property
+        ? {
+            name: application.property.name,
+            address: application.property.location,
+            status: application.property.property_status,
+          }
+        : undefined,
       submissionDate:
         application.created_at instanceof Date
           ? application.created_at.toISOString()
@@ -578,6 +587,22 @@ export class KYCApplicationService {
 
       return { total, pending, approved, rejected };
     }
+  }
+
+  /**
+   * Get all KYC applications for a landlord (across all properties)
+   */
+  async getAllApplications(landlordId: string): Promise<any[]> {
+    const applications = await this.kycApplicationRepository
+      .createQueryBuilder('application')
+      .leftJoinAndSelect('application.property', 'property')
+      .leftJoinAndSelect('application.kyc_link', 'kyc_link')
+      .leftJoinAndSelect('application.tenant', 'tenant')
+      .where('property.owner_id = :landlordId', { landlordId })
+      .orderBy('application.created_at', 'DESC')
+      .getMany();
+
+    return applications.map((app) => this.transformApplicationForFrontend(app));
   }
 
   /**

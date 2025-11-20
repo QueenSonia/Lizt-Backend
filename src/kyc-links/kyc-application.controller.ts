@@ -24,7 +24,7 @@ import { Account } from '../users/entities/account.entity';
 
 @Controller('api')
 export class KYCApplicationController {
-  constructor(private readonly kycApplicationService: KYCApplicationService) {}
+  constructor(private readonly kycApplicationService: KYCApplicationService) { }
 
   /**
    * Submit KYC application (public endpoint - no authentication required)
@@ -156,6 +156,29 @@ export class KYCApplicationController {
     return {
       success: true,
       statistics,
+    };
+  }
+
+  /**
+   * Get all KYC applications for the logged-in landlord
+   * GET /api/kyc-applications
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('kyc-applications')
+  async getAllApplications(
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    applications: any[];
+  }> {
+    const applications = await this.kycApplicationService.getAllApplications(
+      user.id,
+    );
+
+    return {
+      success: true,
+      applications,
     };
   }
 

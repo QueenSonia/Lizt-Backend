@@ -11,8 +11,11 @@ import {
 
 export enum ServiceRequestStatusEnum {
   PENDING = 'pending',
+  OPEN = 'open',
   IN_PROGRESS = 'in_progress',
   RESOLVED = 'resolved',
+  CLOSED = 'closed',
+  REOPENED = 'reopened',
   URGENT = 'urgent',
 }
 

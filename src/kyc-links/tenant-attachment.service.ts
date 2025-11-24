@@ -57,7 +57,7 @@ export class TenantAttachmentService {
     private readonly dataSource: DataSource,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   /**
    * Attach tenant to property with tenancy details
@@ -393,6 +393,7 @@ export class TenantAttachmentService {
   /**
    * Create or get tenant account from KYC application data
    * FIXED: Always update existing accounts with latest KYC data
+   * FIXED: Normalize phone number before searching to match database format
    * Requirements: 5.1, 5.2
    */
   private async createOrGetTenantAccount(
@@ -401,6 +402,17 @@ export class TenantAttachmentService {
   ): Promise<Account> {
     let tenantAccount: Account | null = null;
     let existingUser: Users | null = null;
+
+    // Normalize phone number to match database format (e.g., 07062639647 -> 2347062639647)
+    const normalizedPhone = application.phone_number
+      ? this.utilService.normalizePhoneNumber(application.phone_number)
+      : null;
+
+    console.log('Searching for existing user with:', {
+      email: application.email,
+      originalPhone: application.phone_number,
+      normalizedPhone: normalizedPhone,
+    });
 
     // Strategy 1: Try to find TENANT account by email (only if email was provided and not empty)
     // IMPORTANT: We specifically look for TENANT role since users can have multiple accounts with different roles
@@ -419,14 +431,14 @@ export class TenantAttachmentService {
     }
 
     // Strategy 2: Try to find by phone number (if not found by email)
-    if (!tenantAccount && application.phone_number) {
+    if (!tenantAccount && normalizedPhone) {
       existingUser = await manager.findOne(Users, {
-        where: { phone_number: application.phone_number },
+        where: { phone_number: normalizedPhone },
       });
 
       if (existingUser) {
         console.log(
-          `Found existing user by phone: ${application.phone_number}`,
+          `Found existing user by phone: ${normalizedPhone} (original: ${application.phone_number})`,
         );
 
         // CRITICAL: Find or create TENANT account for this user
@@ -482,7 +494,7 @@ export class TenantAttachmentService {
         first_name: application.first_name,
         last_name: application.last_name,
         email: emailToUse,
-        phone_number: application.phone_number,
+        phone_number: normalizedPhone || application.phone_number,
         date_of_birth: application.date_of_birth || existingUser.date_of_birth,
         gender: application.gender || existingUser.gender,
         nationality: application.nationality || existingUser.nationality,
@@ -498,7 +510,8 @@ export class TenantAttachmentService {
         first_name: application.first_name,
         last_name: application.last_name,
         email: emailToUse,
-        phone_number: application.phone_number,
+        phone_number: normalizedPhone || application.phone_number,
+        originalPhone: application.phone_number,
       });
 
       // Update Account table if email changed
@@ -536,13 +549,13 @@ export class TenantAttachmentService {
     const emailToUse =
       application.email && application.email.trim() !== ''
         ? application.email
-        : `tenant_${application.phone_number}@placeholder.lizt.app`;
+        : `tenant_${normalizedPhone || application.phone_number}@placeholder.lizt.app`;
 
     const newUser = manager.create(Users, {
       first_name: application.first_name,
       last_name: application.last_name,
       email: emailToUse,
-      phone_number: application.phone_number,
+      phone_number: normalizedPhone || application.phone_number,
       date_of_birth: application.date_of_birth,
       gender: application.gender,
       nationality: application.nationality,
@@ -557,7 +570,8 @@ export class TenantAttachmentService {
       first_name: application.first_name,
       last_name: application.last_name,
       email: emailToUse,
-      phone_number: application.phone_number,
+      phone_number: normalizedPhone || application.phone_number,
+      originalPhone: application.phone_number,
       isPlaceholderEmail: !application.email || application.email.trim() === '',
     });
 

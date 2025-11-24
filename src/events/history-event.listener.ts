@@ -27,7 +27,7 @@ export class HistoryEventListener {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     @Inject(forwardRef(() => EventsGateway))
     private readonly eventsGateway: EventsGateway,
-  ) {}
+  ) { }
 
   @OnEvent('service.created')
   async handleServiceRequestCreated(
@@ -38,6 +38,48 @@ export class HistoryEventListener {
     );
 
     await this.createHistoryEntryWithRetry(payload);
+  }
+
+  @OnEvent('service.updated')
+  async handleServiceRequestUpdated(payload: any): Promise<void> {
+    this.logger.log(
+      `Received service.updated event for request ${payload.request_id}`,
+    );
+
+    try {
+      // Create history entry
+      const historyEntry = this.propertyHistoryRepository.create({
+        property_id: payload.property_id,
+        tenant_id: payload.tenant_id,
+        event_type: 'service_request',
+        event_description: `Service request updated to ${payload.status}: ${payload.description}`,
+        related_entity_id: payload.request_id,
+        related_entity_type: 'service_request',
+        created_at: payload.updated_at || new Date(),
+      });
+
+      await this.propertyHistoryRepository.save(historyEntry);
+
+      // Emit WebSocket event to notify property viewers and landlord
+      if (this.eventsGateway) {
+        this.eventsGateway.emitServiceRequestCreated(
+          payload.property_id,
+          payload.landlord_id,
+          {
+            serviceRequestId: payload.request_id,
+            description: payload.description,
+            tenantName: payload.tenant_name,
+            propertyName: payload.property_name,
+            // status: payload.status, // Ideally update gateway to accept status
+          },
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to create history entry for update: ${error.message}`,
+        error.stack,
+      );
+    }
   }
 
   private async createHistoryEntryWithRetry(

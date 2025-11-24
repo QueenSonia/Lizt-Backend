@@ -600,21 +600,27 @@ export class WhatsappBotService {
         await this.cache.delete(`service_request_state_facility_${from}`);
         return;
       }
-      serviceRequest.status = ServiceRequestStatusEnum.RESOLVED;
-      serviceRequest.resolution_date = new Date();
-      await this.serviceRequestRepo.save(serviceRequest);
+      await this.serviceRequestService.updateStatus(
+        serviceRequest.id,
+        ServiceRequestStatusEnum.RESOLVED,
+      );
       await this.sendText(
         from,
-        `You have resolved service request ID: ${requestId}`,
+        `You have resolved service request ID: ${requestId}. Waiting for tenant confirmation.`,
       );
-      await this.sendText(
-        this.utilService.normalizePhoneNumber(
+
+      // Trigger Tenant Confirmation
+      await this.sendTenantConfirmationTemplate({
+        phone_number: this.utilService.normalizePhoneNumber(
           serviceRequest.tenant.user.phone_number,
         ),
-        `Your service request with ID: ${requestId} has been resolved by ${this.utilService.toSentenceCase(
-          serviceRequest.facilityManager.account.profile_name,
-        )}.`,
-      );
+        tenant_name: this.utilService.toSentenceCase(
+          serviceRequest.tenant.user.first_name,
+        ),
+        request_description: serviceRequest.description,
+        request_id: serviceRequest.request_id,
+      });
+
       await this.cache.delete(`service_request_state_facility_${from}`);
       return;
     } else {
@@ -1223,6 +1229,118 @@ export class WhatsappBotService {
         break;
       }
 
+      case 'confirm_resolution_yes': {
+        // Handle Yes, it's fixed
+        // We need to find the request associated with this interaction.
+        // Since buttons don't carry payload in standard interactive messages easily without context,
+        // we might need to rely on the last resolved request or parse context if available.
+        // However, for simplicity and robustness, we can try to find the latest RESOLVED request for this tenant.
+
+        const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+        const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+
+        const latestResolvedRequest = await this.serviceRequestRepo.findOne({
+          where: [
+            {
+              tenant: { user: { phone_number: from } },
+              status: ServiceRequestStatusEnum.RESOLVED,
+            },
+            {
+              tenant: { user: { phone_number: normalizedPhone } },
+              status: ServiceRequestStatusEnum.RESOLVED,
+            },
+            {
+              tenant: { user: { phone_number: localPhone } },
+              status: ServiceRequestStatusEnum.RESOLVED,
+            },
+          ],
+          relations: ['tenant', 'facilityManager', 'facilityManager.account'],
+          order: { resolution_date: 'DESC' },
+        });
+
+        if (latestResolvedRequest) {
+          await this.serviceRequestService.updateStatus(
+            latestResolvedRequest.id,
+            ServiceRequestStatusEnum.CLOSED,
+          );
+
+          await this.sendText(from, "Fantastic! Glad that's sorted 😊");
+
+          // Notify FM
+          if (
+            latestResolvedRequest.facilityManager?.account?.user?.phone_number
+          ) {
+            await this.sendText(
+              this.utilService.normalizePhoneNumber(
+                latestResolvedRequest.facilityManager.account.user.phone_number,
+              ),
+              `✅ Tenant confirmed request ${latestResolvedRequest.request_id} is fixed. Status: Closed.`,
+            );
+          }
+        } else {
+          await this.sendText(
+            from,
+            "I couldn't find a pending resolution to confirm.",
+          );
+        }
+        break;
+      }
+
+      case 'confirm_resolution_no': {
+        // Handle No, not yet
+        const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+        const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+
+        const latestResolvedRequest = await this.serviceRequestRepo.findOne({
+          where: [
+            {
+              tenant: { user: { phone_number: from } },
+              status: ServiceRequestStatusEnum.RESOLVED,
+            },
+            {
+              tenant: { user: { phone_number: normalizedPhone } },
+              status: ServiceRequestStatusEnum.RESOLVED,
+            },
+            {
+              tenant: { user: { phone_number: localPhone } },
+              status: ServiceRequestStatusEnum.RESOLVED,
+            },
+          ],
+          relations: ['tenant', 'facilityManager', 'facilityManager.account'],
+          order: { resolution_date: 'DESC' },
+        });
+
+        if (latestResolvedRequest) {
+          await this.serviceRequestService.updateStatus(
+            latestResolvedRequest.id,
+            ServiceRequestStatusEnum.REOPENED,
+          );
+
+          await this.sendText(
+            from,
+            "Thanks for letting me know. I'll reopen the request and notify maintenance to check again.",
+          );
+
+          // Notify FM
+          if (
+            latestResolvedRequest.facilityManager?.account?.user?.phone_number
+          ) {
+            await this.sendText(
+              this.utilService.normalizePhoneNumber(
+                latestResolvedRequest.facilityManager.account.user.phone_number,
+              ),
+              `⚠️ Tenant says request ${latestResolvedRequest.request_id} is NOT resolved. Status: Reopened.`,
+            );
+          }
+        } else {
+          await this.sendText(
+            from,
+            "I couldn't find a pending resolution to confirm.",
+          );
+        }
+        break;
+      }
+
       default:
         await this.sendText(from, '❓ Unknown option selected.');
     }
@@ -1452,6 +1570,71 @@ export class WhatsappBotService {
                 type: 'text',
                 parameter_name: 'property_name',
                 text: property_name || 'your property',
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  async sendTenantConfirmationTemplate({
+    phone_number,
+    tenant_name,
+    request_description,
+    request_id,
+  }: {
+    phone_number: string;
+    tenant_name: string;
+    request_description: string;
+    request_id: string;
+  }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'service_request_confirmation', // Template name
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                parameter_name: 'tenant_name',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                parameter_name: 'request_description',
+                text: request_description,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `confirm_resolution_yes:${request_id}`,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `confirm_resolution_no:${request_id}`,
               },
             ],
           },

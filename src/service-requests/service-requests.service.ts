@@ -66,7 +66,7 @@ export class ServiceRequestsService {
     private readonly teamMemberRepository: Repository<TeamMember>,
     private readonly eventEmitter: EventEmitter2,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   private generateTitle(payload: TawkWebhookPayload): string {
     const eventType =
@@ -360,5 +360,42 @@ export class ServiceRequestsService {
     }
 
     return request;
+  }
+
+  async updateStatus(
+    id: string,
+    status: ServiceRequestStatusEnum,
+    notes?: string,
+    actor?: { id?: string; role?: string; name?: string },
+  ) {
+    const request = await this.serviceRequestRepository.findOne({
+      where: { id },
+      relations: ['tenant', 'property'],
+    });
+    if (!request) throw new NotFoundException('Request not found');
+
+    request.status = status;
+    if (notes) request.notes = notes;
+    if (status === ServiceRequestStatusEnum.RESOLVED)
+      request.resolution_date = new Date();
+    if (status === ServiceRequestStatusEnum.REOPENED)
+      request.reopened_at = new Date();
+
+    const savedRequest = await this.serviceRequestRepository.save(request);
+
+    this.eventEmitter.emit('service.updated', {
+      request_id: savedRequest.id,
+      status: savedRequest.status,
+      tenant_name: request.tenant_name,
+      property_name: request.property_name,
+      property_id: request.property_id,
+      landlord_id: request.property?.owner_id,
+      tenant_id: request.tenant_id,
+      description: request.description,
+      updated_at: new Date(),
+      actor,
+    });
+
+    return savedRequest;
   }
 }

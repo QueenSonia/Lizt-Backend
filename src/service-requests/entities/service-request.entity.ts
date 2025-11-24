@@ -44,6 +44,9 @@ export class ServiceRequest extends BaseEntity {
   @Column({ nullable: true })
   resolvedAt: Date;
 
+  @Column({ nullable: true, type: 'timestamp' })
+  reopened_at?: Date | null;
+
   @Column('text', { nullable: true })
   notes: string;
 
@@ -52,8 +55,11 @@ export class ServiceRequest extends BaseEntity {
     type: 'enum',
     enum: [
       ServiceRequestStatusEnum.PENDING,
+      ServiceRequestStatusEnum.OPEN,
       ServiceRequestStatusEnum.IN_PROGRESS,
       ServiceRequestStatusEnum.RESOLVED,
+      ServiceRequestStatusEnum.CLOSED,
+      ServiceRequestStatusEnum.REOPENED,
       ServiceRequestStatusEnum.URGENT,
     ],
     default: ServiceRequestStatusEnum.PENDING,

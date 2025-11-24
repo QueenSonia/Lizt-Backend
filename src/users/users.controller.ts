@@ -67,7 +67,7 @@ export class UsersController {
   constructor(
     private readonly usersService: UsersService,
     private readonly syncTenantDataService: SyncTenantDataService,
-  ) {}
+  ) { }
 
   @SkipAuth()
   @Get('/test-dev')
@@ -95,6 +95,25 @@ export class UsersController {
     @CurrentUser() requester: Account,
   ): Promise<TeamMemberDto[]> {
     return this.usersService.getTeamMembers(requester);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('team-members/:id')
+  async updateTeamMember(
+    @Param('id') id: string,
+    @Body() body: { name: string; phone: string },
+    @CurrentUser() requester: Account,
+  ) {
+    return this.usersService.updateTeamMember(id, body, requester);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('team-members/:id')
+  async deleteTeamMember(
+    @Param('id') id: string,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.usersService.deleteTeamMember(id, requester);
   }
 
   @Post()

@@ -1598,7 +1598,7 @@ export class UsersService {
       .createQueryBuilder('account')
       .innerJoinAndSelect('account.user', 'user')
       .leftJoinAndSelect('user.kyc', 'kyc')
-      .leftJoinAndSelect('user.tenant_kyc', 'tenant_kyc') // Add TenantKyc join
+      .leftJoinAndSelect('user.tenant_kycs', 'tenant_kyc') // Add TenantKyc join (now array)
       .leftJoinAndSelect('account.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
       .leftJoinAndSelect('account.service_requests', 'service_requests')
@@ -1642,7 +1642,7 @@ export class UsersService {
   ): TenantDetailDto {
     const user = account.user;
     const kyc = user.kyc ?? {}; // Get the joined old KYC data
-    const tenantKyc = user.tenant_kyc; // Get the joined TenantKyc data (preferred)
+    const tenantKyc = user.tenant_kycs?.[0]; // Get the joined TenantKyc data (preferred, filtered by admin_id)
 
     // Debug logging
     console.log('Total rents loaded:', account.rents?.length || 0);
@@ -2425,11 +2425,7 @@ export class UsersService {
           );
         }
 
-        // 4. Get or create user
-        let user = await manager.getRepository(Users).findOne({
-          where: { email: team_member.email },
-        });
-
+        // 4. Normalize phone number
         let normalized_phone_number = team_member.phone_number.replace(
           /\D/g,
           '',
@@ -2439,7 +2435,13 @@ export class UsersService {
             '234' + normalized_phone_number.replace(/^0+/, ''); // Remove leading 0s
         }
 
+        // 5. Get or create user - check by phone number first to avoid duplicates
+        let user = await manager.getRepository(Users).findOne({
+          where: { phone_number: normalized_phone_number },
+        });
+
         if (!user) {
+          // Create new user if doesn't exist
           user = await manager.getRepository(Users).save({
             phone_number: normalized_phone_number,
             first_name: team_member.first_name,
@@ -2450,17 +2452,21 @@ export class UsersService {
           });
         }
 
-        // 5. Get or create account
+        // 6. Check if user already has a facility_manager account
         let userAccount = await manager.getRepository(Account).findOne({
-          where: { email: team_member.email },
+          where: {
+            user: { id: user.id },
+            role: team_member.role,
+          },
         });
 
         if (!userAccount) {
-          const generatedPassword = await this.utilService.generatePassword(); // Await the promise
+          // Create facility_manager account for this user
+          const generatedPassword = await this.utilService.generatePassword();
           userAccount = manager.getRepository(Account).create({
             user,
             email: team_member.email,
-            password: generatedPassword, // assign the awaited value
+            password: generatedPassword,
             role: team_member.role,
             profile_name: `${team_member.first_name} ${team_member.last_name}`,
             is_verified: true,
@@ -2469,7 +2475,7 @@ export class UsersService {
           await manager.getRepository(Account).save(userAccount);
         }
 
-        // 6. Add collaborator to team
+        // 7. Add collaborator to team
         const newTeamMember = manager.getRepository(TeamMember).create({
           email: team_member.email,
           permissions: team_member.permissions,
@@ -2548,6 +2554,91 @@ export class UsersService {
       role: member.role,
       date: member.created_at?.toString() || '',
     }));
+  }
+
+  /**
+   * Updates a team member's details (name and phone).
+   * @param id team member ID
+   * @param data updated name and phone
+   * @param requester the authenticated account making the request
+   */
+  async updateTeamMember(
+    id: string,
+    data: { name: string; phone: string },
+    requester: Account,
+  ) {
+    // 1. Ensure requester is a LANDLORD
+    if (requester.role !== RolesEnum.LANDLORD) {
+      throw new ForbiddenException('Only landlords can manage teams');
+    }
+
+    // 2. Find the team member
+    const teamMember = await this.teamMemberRepository.findOne({
+      where: { id },
+      relations: ['team', 'account', 'account.user'],
+    });
+
+    if (!teamMember) {
+      throw new NotFoundException('Team member not found');
+    }
+
+    // 3. Ensure requester owns the team
+    if (teamMember.team.creatorId !== requester.id) {
+      throw new ForbiddenException('You cannot update this team member');
+    }
+
+    // 4. Update user details
+    const [first_name, last_name] = data.name.split(' ');
+    if (teamMember.account?.user) {
+      teamMember.account.user.first_name = this.utilService.toSentenceCase(
+        first_name || data.name,
+      );
+      teamMember.account.user.last_name = last_name
+        ? this.utilService.toSentenceCase(last_name)
+        : '';
+      teamMember.account.user.phone_number =
+        this.utilService.normalizePhoneNumber(data.phone);
+
+      await this.usersRepository.save(teamMember.account.user);
+
+      // Update account profile name
+      teamMember.account.profile_name = data.name;
+      await this.accountRepository.save(teamMember.account);
+    }
+
+    return { success: true, message: 'Team member updated successfully' };
+  }
+
+  /**
+   * Deletes a team member.
+   * @param id team member ID
+   * @param requester the authenticated account making the request
+   */
+  async deleteTeamMember(id: string, requester: Account) {
+    // 1. Ensure requester is a LANDLORD
+    if (requester.role !== RolesEnum.LANDLORD) {
+      throw new ForbiddenException('Only landlords can manage teams');
+    }
+
+    // 2. Find the team member
+    const teamMember = await this.teamMemberRepository.findOne({
+      where: { id },
+      relations: ['team'],
+    });
+
+    if (!teamMember) {
+      throw new NotFoundException('Team member not found');
+    }
+
+    // 3. Ensure requester owns the team
+    if (teamMember.team.creatorId !== requester.id) {
+      throw new ForbiddenException('You cannot delete this team member');
+    }
+
+    // 4. Delete the team member
+    await this.teamMemberRepository.remove(teamMember);
+
+    return { success: true, message: 'Team member deleted successfully' };
   }
 
   async getWhatsappText(from, message) {

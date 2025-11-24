@@ -66,7 +66,7 @@ export class ServiceRequestsService {
     private readonly teamMemberRepository: Repository<TeamMember>,
     private readonly eventEmitter: EventEmitter2,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   private generateTitle(payload: TawkWebhookPayload): string {
     const eventType =
@@ -90,12 +90,19 @@ export class ServiceRequestsService {
   }
 
   async createServiceRequest(data: CreateServiceRequestDto): Promise<any> {
+    // Build where clause based on whether property_id is provided
+    const whereClause: any = {
+      tenant_id: data.tenant_id,
+      status: TenantStatusEnum.ACTIVE,
+    };
+
+    // If property_id is provided, use it to find the specific property
+    if (data.property_id) {
+      whereClause.property_id = data.property_id;
+    }
+
     const tenantExistInProperty = await this.propertyTenantRepository.findOne({
-      where: {
-        tenant_id: data.tenant_id,
-        // property_id: data.property_id,
-        // status: TenantStatusEnum.ACTIVE,
-      },
+      where: whereClause,
       relations: ['tenant', 'property'],
     });
 

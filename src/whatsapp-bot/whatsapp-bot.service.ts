@@ -472,6 +472,126 @@ export class WhatsappBotService {
       `service_request_state_facility_${from}`,
     );
 
+    // Handle viewing specific request by number
+    if (facilityState && facilityState.startsWith('view_request_list:')) {
+      const requestIds = JSON.parse(
+        facilityState.split('view_request_list:')[1],
+      );
+      const selectedIndex = parseInt(text.trim()) - 1;
+
+      if (
+        isNaN(selectedIndex) ||
+        selectedIndex < 0 ||
+        selectedIndex >= requestIds.length
+      ) {
+        await this.sendText(
+          from,
+          "I couldn't find that request. Please try again with a valid number.",
+        );
+        return;
+      }
+
+      const requestId = requestIds[selectedIndex];
+      const serviceRequest = await this.serviceRequestRepo.findOne({
+        where: { id: requestId },
+        relations: ['tenant', 'tenant.user', 'property'],
+      });
+
+      if (!serviceRequest) {
+        await this.sendText(
+          from,
+          "I couldn't find that request. Please try again.",
+        );
+        return;
+      }
+
+      const statusLabel =
+        serviceRequest.status === ServiceRequestStatusEnum.OPEN
+          ? 'Open'
+          : serviceRequest.status === ServiceRequestStatusEnum.RESOLVED
+            ? 'Resolved'
+            : serviceRequest.status === ServiceRequestStatusEnum.REOPENED
+              ? 'Reopened'
+              : serviceRequest.status === ServiceRequestStatusEnum.IN_PROGRESS
+                ? 'In Progress'
+                : serviceRequest.status;
+
+      await this.sendText(
+        from,
+        `${serviceRequest.description}\n\nTenant: ${this.utilService.toSentenceCase(serviceRequest.tenant.user.first_name)} ${this.utilService.toSentenceCase(serviceRequest.tenant.user.last_name)}\nProperty: ${serviceRequest.property.name}\nStatus: ${statusLabel}\n\nReply "Resolved" to mark it as fixed.\nReply "Back" to go to the list.`,
+      );
+
+      await this.cache.set(
+        `service_request_state_facility_${from}`,
+        `viewing_request:${serviceRequest.id}`,
+        this.SESSION_TIMEOUT_MS,
+      );
+      return;
+    }
+
+    // Handle marking request as resolved
+    if (facilityState && facilityState.startsWith('viewing_request:')) {
+      const requestId = facilityState.split('viewing_request:')[1];
+
+      if (text.toLowerCase() === 'resolved') {
+        const serviceRequest = await this.serviceRequestRepo.findOne({
+          where: { id: requestId },
+          relations: ['tenant', 'tenant.user', 'facilityManager'],
+        });
+
+        if (!serviceRequest) {
+          await this.sendText(from, "I couldn't find that request.");
+          await this.cache.delete(`service_request_state_facility_${from}`);
+          return;
+        }
+
+        if (serviceRequest.status === ServiceRequestStatusEnum.CLOSED) {
+          await this.sendText(from, 'This request has already been closed.');
+          await this.cache.delete(`service_request_state_facility_${from}`);
+          return;
+        }
+
+        await this.serviceRequestService.updateStatus(
+          serviceRequest.id,
+          ServiceRequestStatusEnum.RESOLVED,
+        );
+
+        await this.sendText(
+          from,
+          "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
+        );
+
+        // Trigger Tenant Confirmation
+        await this.sendTenantConfirmationTemplate({
+          phone_number: this.utilService.normalizePhoneNumber(
+            serviceRequest.tenant.user.phone_number,
+          ),
+          tenant_name: this.utilService.toSentenceCase(
+            serviceRequest.tenant.user.first_name,
+          ),
+          request_description: serviceRequest.description,
+          request_id: serviceRequest.request_id,
+        });
+
+        await this.cache.delete(`service_request_state_facility_${from}`);
+        return;
+      } else if (text.toLowerCase() === 'back') {
+        // Go back to list
+        await this.sendButtons(from, 'What would you like to do?', [
+          { id: 'service_request', title: 'View all requests' },
+          { id: 'view_account_info', title: 'View Account Info' },
+        ]);
+        await this.cache.delete(`service_request_state_facility_${from}`);
+        return;
+      } else {
+        await this.sendText(
+          from,
+          'Please reply "Resolved" to mark as fixed, or "Back" to return to the list.',
+        );
+        return;
+      }
+    }
+
     if (facilityState === 'acknowledged') {
       const serviceRequest = await this.serviceRequestRepo.findOne({
         where: {
@@ -641,7 +761,7 @@ export class WhatsappBotService {
             user.first_name,
           )} Welcome to Property Kraft! What would you like to do today?`,
           [
-            { id: 'service_request', title: 'Resolve request' },
+            { id: 'service_request', title: 'View all service requests' },
             { id: 'view_account_info', title: 'View Account Info' },
             { id: 'visit_site', title: 'Visit our website' },
           ],
@@ -655,7 +775,8 @@ export class WhatsappBotService {
     if (!buttonReply) return;
 
     switch (buttonReply.id) {
-      case 'service_request':
+      case 'view_all_service_requests':
+      case 'service_request': {
         const teamMemberInfo = await this.teamMemberRepo.findOne({
           where: {
             account: { user: { phone_number: `${from}` } },
@@ -673,30 +794,42 @@ export class WhatsappBotService {
             property: {
               owner_id: teamMemberInfo.team.creatorId,
             },
-            status: Not(ServiceRequestStatusEnum.RESOLVED),
+            status: Not(ServiceRequestStatusEnum.CLOSED),
           },
+          relations: ['tenant', 'tenant.user', 'property'],
         });
 
-        let response = 'Here are the service requests:\n';
+        if (!serviceRequests.length) {
+          await this.sendText(from, 'No service requests found.');
+          return;
+        }
+
+        let response = 'Here are all service requests:\n\n';
         serviceRequests.forEach((req: any, i) => {
-          response += `- Request Id ${req.request_id} - \n Description: ${
-            req.description
-          }\n - Status: ${req.status}\n\n`;
+          const statusLabel =
+            req.status === ServiceRequestStatusEnum.OPEN
+              ? 'Open'
+              : req.status === ServiceRequestStatusEnum.RESOLVED
+                ? 'Resolved'
+                : req.status === ServiceRequestStatusEnum.REOPENED
+                  ? 'Reopened'
+                  : req.status === ServiceRequestStatusEnum.IN_PROGRESS
+                    ? 'In Progress'
+                    : req.status;
+          response += `${i + 1}. ${req.description} — ${statusLabel}\n`;
         });
+
+        response += '\nReply with a number to view details.';
 
         await this.sendText(from, response);
 
         await this.cache.set(
           `service_request_state_facility_${from}`,
-          'resolve-or-update',
-          this.SESSION_TIMEOUT_MS, // now in ms,
-        );
-
-        await this.sendText(
-          from,
-          'Please type "update" to give update on the tenant request or "resolve" to resolve a request.',
+          `view_request_list:${JSON.stringify(serviceRequests.map((r) => r.id))}`,
+          this.SESSION_TIMEOUT_MS,
         );
         break;
+      }
 
       case 'view_account_info': {
         const teamMemberAccountInfo = await this.teamMemberRepo.findOne({
@@ -782,7 +915,46 @@ export class WhatsappBotService {
   async cachedResponse(from, text) {
     const userState = await this.cache.get(`service_request_state_${from}`);
 
-    if (userState === 'awaiting_description') {
+    // Handle property selection for multi-property tenants
+    if (userState && userState.startsWith('select_property:')) {
+      const propertyIds = JSON.parse(userState.split('select_property:')[1]);
+      const selectedIndex = parseInt(text.trim()) - 1;
+
+      if (
+        isNaN(selectedIndex) ||
+        selectedIndex < 0 ||
+        selectedIndex >= propertyIds.length
+      ) {
+        await this.sendText(
+          from,
+          'Invalid selection. Please reply with a valid number.',
+        );
+        return;
+      }
+
+      const selectedPropertyId = propertyIds[selectedIndex];
+
+      // Store selected property and move to awaiting description
+      await this.cache.set(
+        `service_request_state_${from}`,
+        `awaiting_description:${selectedPropertyId}`,
+        this.SESSION_TIMEOUT_MS,
+      );
+
+      await this.sendText(from, 'Sure! Please tell me what needs to be fixed.');
+      return;
+    }
+
+    if (
+      userState === 'awaiting_description' ||
+      userState?.startsWith('awaiting_description:')
+    ) {
+      // Extract property_id if it was stored
+      let selectedPropertyId: string | undefined = undefined;
+      if (userState.startsWith('awaiting_description:')) {
+        selectedPropertyId = userState.split('awaiting_description:')[1];
+      }
+
       // FIXED: Use multi-format phone lookup
       const normalizedPhone = this.utilService.normalizePhoneNumber(from);
       const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
@@ -812,6 +984,7 @@ export class WhatsappBotService {
         const new_service_request =
           await this.serviceRequestService.createServiceRequest({
             tenant_id: user.accounts[0].id,
+            property_id: selectedPropertyId,
             text,
           });
 
@@ -826,12 +999,12 @@ export class WhatsappBotService {
           } = new_service_request;
           await this.sendText(
             from,
-            "Got it, thanks for sharing that\nI've noted your request — I'll have someone take a look and reach out once it's being handled.",
+            "Got it. I've noted your request — someone will take a look and reach out once it's being handled.",
           );
 
           // Send navigation options after completing request
-          await this.sendButtons(from, 'What would you like to do next?', [
-            { id: 'new_service_request', title: 'Log a new request' },
+          await this.sendButtons(from, 'Want to do something else?', [
+            { id: 'new_service_request', title: 'Request a service' },
             { id: 'main_menu', title: 'Go back to main menu' },
           ]);
 
@@ -1120,11 +1293,11 @@ export class WhatsappBotService {
         await this.sendButtons(from, 'What would you like to do?', [
           {
             id: 'new_service_request',
-            title: 'Make a New Request',
+            title: 'Request a service',
           },
           {
             id: 'view_service_request',
-            title: 'View Requests',
+            title: 'View previous requests',
           },
         ]);
         break;
@@ -1148,11 +1321,11 @@ export class WhatsappBotService {
         });
 
         if (!serviceRequests.length) {
-          await this.sendText(from, 'You have no service requests.');
+          await this.sendText(from, "You don't have any service requests yet.");
           return;
         }
 
-        let response = 'Here are your recent maintenance requests:\n';
+        let response = 'Here are your recent service requests:\n';
         serviceRequests.forEach((req: any) => {
           const date = new Date(req.created_at);
           const formattedDate = date.toLocaleDateString('en-GB', {
@@ -1165,27 +1338,104 @@ export class WhatsappBotService {
             minute: '2-digit',
             hour12: true,
           });
-          response += `• ${formattedDate}, ${formattedTime} – ${req.description}\n`;
+          const statusEmoji =
+            req.status === ServiceRequestStatusEnum.OPEN
+              ? '(Open)'
+              : req.status === ServiceRequestStatusEnum.RESOLVED
+                ? '(Resolved)'
+                : req.status === ServiceRequestStatusEnum.CLOSED
+                  ? '(Closed)'
+                  : req.status === ServiceRequestStatusEnum.REOPENED
+                    ? '(Reopened)'
+                    : '';
+          response += `• ${formattedDate}, ${formattedTime} – ${req.description} ${statusEmoji}\n`;
         });
 
         await this.sendText(from, response);
 
         // Send navigation options after viewing requests
-        await this.sendButtons(from, 'What would you like to do next?', [
-          { id: 'new_service_request', title: 'Log a new request' },
+        await this.sendButtons(from, 'Want to do something else?', [
+          { id: 'new_service_request', title: 'Request a service' },
           { id: 'main_menu', title: 'Go back to main menu' },
         ]);
         break;
       }
 
-      case 'new_service_request':
-        await this.cache.set(
-          `service_request_state_${from}`,
-          'awaiting_description',
-          this.SESSION_TIMEOUT_MS, // now in ms,
-        );
-        await this.sendText(from, "Please tell us what's wrong.");
+      case 'new_service_request': {
+        // Check if tenant has multiple properties
+        const normalizedPhoneNewRequest =
+          this.utilService.normalizePhoneNumber(from);
+        const localPhoneNewRequest = from.startsWith('234')
+          ? '0' + from.slice(3)
+          : from;
+
+        const userNewRequest = await this.usersRepo.findOne({
+          where: [
+            { phone_number: from, accounts: { role: RolesEnum.TENANT } },
+            {
+              phone_number: normalizedPhoneNewRequest,
+              accounts: { role: RolesEnum.TENANT },
+            },
+            {
+              phone_number: localPhoneNewRequest,
+              accounts: { role: RolesEnum.TENANT },
+            },
+          ],
+          relations: ['accounts'],
+        });
+
+        if (!userNewRequest?.accounts?.length) {
+          await this.sendText(from, 'No tenancy info available.');
+          return;
+        }
+
+        const accountId = userNewRequest.accounts[0].id;
+        const properties = await this.propertyTenantRepo.find({
+          where: {
+            tenant_id: accountId,
+            status: TenantStatusEnum.ACTIVE,
+          },
+          relations: ['property'],
+        });
+
+        if (!properties?.length) {
+          await this.sendText(
+            from,
+            'No active properties found for your account.',
+          );
+          return;
+        }
+
+        // If tenant has multiple properties, ask them to select
+        if (properties.length > 1) {
+          let propertyList = 'Which property is this request for?\n\n';
+          properties.forEach((pt, index) => {
+            propertyList += `${index + 1}. ${pt.property.name}\n`;
+          });
+          propertyList += '\nReply with the number of the property.';
+
+          await this.sendText(from, propertyList);
+
+          // Store property IDs in cache
+          await this.cache.set(
+            `service_request_state_${from}`,
+            `select_property:${JSON.stringify(properties.map((p) => p.property_id))}`,
+            this.SESSION_TIMEOUT_MS,
+          );
+        } else {
+          // Single property - proceed directly to description
+          await this.cache.set(
+            `service_request_state_${from}`,
+            `awaiting_description:${properties[0].property_id}`,
+            this.SESSION_TIMEOUT_MS,
+          );
+          await this.sendText(
+            from,
+            'Sure! Please tell me what needs to be fixed.',
+          );
+        }
         break;
+      }
 
       case 'main_menu': {
         // Clear any cached state and return to main menu
@@ -1266,7 +1516,7 @@ export class WhatsappBotService {
 
           await this.sendText(from, "Fantastic! Glad that's sorted 😊");
 
-          // Notify FM
+          // Notify FM and Landlord
           if (
             latestResolvedRequest.facilityManager?.account?.user?.phone_number
           ) {
@@ -1274,7 +1524,24 @@ export class WhatsappBotService {
               this.utilService.normalizePhoneNumber(
                 latestResolvedRequest.facilityManager.account.user.phone_number,
               ),
-              `✅ Tenant confirmed request ${latestResolvedRequest.request_id} is fixed. Status: Closed.`,
+              `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`,
+            );
+          }
+
+          // Notify landlord
+          const property_tenant = await this.propertyTenantRepo.findOne({
+            where: {
+              property_id: latestResolvedRequest.property_id,
+            },
+            relations: ['property', 'property.owner', 'property.owner.user'],
+          });
+
+          if (property_tenant?.property?.owner?.user?.phone_number) {
+            await this.sendText(
+              this.utilService.normalizePhoneNumber(
+                property_tenant.property.owner.user.phone_number,
+              ),
+              `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`,
             );
           }
         } else {
@@ -1321,7 +1588,7 @@ export class WhatsappBotService {
             "Thanks for letting me know. I'll reopen the request and notify maintenance to check again.",
           );
 
-          // Notify FM
+          // Notify FM and Landlord
           if (
             latestResolvedRequest.facilityManager?.account?.user?.phone_number
           ) {
@@ -1329,7 +1596,24 @@ export class WhatsappBotService {
               this.utilService.normalizePhoneNumber(
                 latestResolvedRequest.facilityManager.account.user.phone_number,
               ),
-              `⚠️ Tenant says request ${latestResolvedRequest.request_id} is NOT resolved. Status: Reopened.`,
+              `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`,
+            );
+          }
+
+          // Notify landlord
+          const property_tenant = await this.propertyTenantRepo.findOne({
+            where: {
+              property_id: latestResolvedRequest.property_id,
+            },
+            relations: ['property', 'property.owner', 'property.owner.user'],
+          });
+
+          if (property_tenant?.property?.owner?.user?.phone_number) {
+            await this.sendText(
+              this.utilService.normalizePhoneNumber(
+                property_tenant.property.owner.user.phone_number,
+              ),
+              `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`,
             );
           }
         } else {
@@ -1757,9 +2041,9 @@ export class WhatsappBotService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'facility_service_request', // Your template name
+        name: 'fm_service_request_notification', // Template name
         language: {
-          code: 'en', // must match the language you set in WhatsApp template
+          code: 'en',
         },
         components: [
           {
@@ -1767,38 +2051,30 @@ export class WhatsappBotService {
             parameters: [
               {
                 type: 'text',
-                parameter_name: 'manager_name',
-                text: manager_name,
+                text: tenant_name, // {{1}}
               },
               {
                 type: 'text',
-                parameter_name: 'property_name',
-                text: property_name,
+                text: property_name, // {{2}}
               },
               {
                 type: 'text',
-                parameter_name: 'property_location',
-                text: property_location,
+                text: service_request, // {{3}}
               },
               {
                 type: 'text',
-                parameter_name: 'service_request',
-                text: service_request,
+                text: date_created, // {{4}}
               },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
               {
-                type: 'text',
-                parameter_name: 'tenant_name',
-                text: tenant_name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'tenant_phone_number',
-                text: tenant_phone_number,
-              },
-              {
-                type: 'text',
-                parameter_name: 'date_created',
-                text: date_created,
+                type: 'payload',
+                payload: 'view_all_service_requests',
               },
             ],
           },

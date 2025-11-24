@@ -155,7 +155,7 @@ export class PropertiesService {
       .leftJoinAndSelect('rents.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
       .leftJoinAndSelect(
-        'user.tenant_kyc',
+        'user.tenant_kycs',
         'tenantKyc',
         'tenantKyc.admin_id = property.owner_id',
       )
@@ -241,7 +241,7 @@ export class PropertiesService {
       .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'tenantUser')
       .leftJoinAndSelect(
-        'tenantUser.tenant_kyc',
+        'tenantUser.tenant_kycs',
         'tenantKyc',
         'tenantKyc.admin_id = property.owner_id',
       )
@@ -249,7 +249,7 @@ export class PropertiesService {
       .leftJoinAndSelect('serviceRequest.tenant', 'srTenant')
       .leftJoinAndSelect('srTenant.user', 'srTenantUser')
       .leftJoinAndSelect(
-        'srTenantUser.tenant_kyc',
+        'srTenantUser.tenant_kycs',
         'srTenantKyc',
         'srTenantKyc.admin_id = property.owner_id',
       )
@@ -284,7 +284,7 @@ export class PropertiesService {
     let activeTenantInfo: any | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
-      const tenantKyc = tenantUser.tenant_kyc; // Get TenantKyc data if available
+      const tenantKyc = tenantUser.tenant_kycs?.[0]; // Get TenantKyc data if available (filtered by admin_id)
 
       // Prioritize TenantKyc data over User data for consistency
       const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
@@ -327,7 +327,7 @@ export class PropertiesService {
     // 3. Format Service Requests
     const serviceRequests = property.service_requests.map((sr) => {
       const tenantUser = sr.tenant.user;
-      const tenantKyc = tenantUser.tenant_kyc;
+      const tenantKyc = tenantUser.tenant_kycs?.[0]; // Filtered by admin_id in query
 
       // Prioritize TenantKyc data for consistency
       const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
@@ -410,7 +410,7 @@ export class PropertiesService {
       .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'tenantUser')
       .leftJoinAndSelect(
-        'tenantUser.tenant_kyc',
+        'tenantUser.tenant_kycs',
         'tenantKyc',
         'tenantKyc.admin_id = property.owner_id',
       )
@@ -418,7 +418,7 @@ export class PropertiesService {
       .leftJoinAndSelect('history.tenant', 'historyTenant')
       .leftJoinAndSelect('historyTenant.user', 'historyTenantUser')
       .leftJoinAndSelect(
-        'historyTenantUser.tenant_kyc',
+        'historyTenantUser.tenant_kycs',
         'historyTenantKyc',
         'historyTenantKyc.admin_id = property.owner_id',
       )
@@ -448,7 +448,7 @@ export class PropertiesService {
     let currentTenant: any | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
-      const tenantKyc = tenantUser.tenant_kyc; // Get TenantKyc data if available
+      const tenantKyc = tenantUser.tenant_kycs?.[0]; // Get TenantKyc data if available (filtered by admin_id)
 
       // Prioritize TenantKyc data over User data for consistency
       const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
@@ -479,7 +479,7 @@ export class PropertiesService {
       })
       .map((hist, index) => {
         const tenantUser = hist.tenant.user;
-        const tenantKyc = tenantUser.tenant_kyc;
+        const tenantKyc = tenantUser.tenant_kycs?.[0]; // Filtered by admin_id in query
 
         // Prioritize TenantKyc data for consistency
         const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
@@ -1664,7 +1664,7 @@ export class PropertiesService {
         .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
         .leftJoinAndSelect('tenant.user', 'tenantUser')
         .leftJoinAndSelect(
-          'tenantUser.tenant_kyc',
+          'tenantUser.tenant_kycs',
           'tenantKyc',
           'tenantKyc.admin_id = property.owner_id',
         )
@@ -1686,8 +1686,8 @@ export class PropertiesService {
           const tenant = propertyTenant.tenant;
 
           if (tenant && tenant.user) {
-            // The fix should ensure that tenant_kyc is either null or belongs to this landlord
-            const tenantKyc = tenant.user.tenant_kyc;
+            // The fix should ensure that tenant_kycs is either empty or belongs to this landlord
+            const tenantKyc = tenant.user.tenant_kycs?.[0];
 
             if (!tenantKyc || tenantKyc.admin_id === landlordId) {
               correctlyFilteredCount++;
@@ -1905,8 +1905,8 @@ export class PropertiesService {
                 .map((r) => ({
                   tenantName: `${r.tenant.user.first_name} ${r.tenant.user.last_name}`,
                   tenantId: r.tenant.id,
-                  hasFilteredKyc: !!r.tenant.user.tenant_kyc,
-                  kycAdminId: r.tenant.user.tenant_kyc?.admin_id,
+                  hasFilteredKyc: !!r.tenant.user.tenant_kycs?.[0],
+                  kycAdminId: r.tenant.user.tenant_kycs?.[0]?.admin_id,
                 })),
             })),
         },

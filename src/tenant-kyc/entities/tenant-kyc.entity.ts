@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToOne,
+  ManyToOne,
   Index,
   JoinColumn,
 } from 'typeorm';
@@ -123,7 +124,7 @@ export class TenantKyc extends BaseEntity {
   @Column({ nullable: true, type: 'uuid' })
   user_id?: string;
 
-  @OneToOne(() => Users, (user) => user.tenant_kyc, {
+  @ManyToOne(() => Users, (user) => user.tenant_kycs, {
     cascade: ['remove'],
     createForeignKeyConstraints: false,
   })

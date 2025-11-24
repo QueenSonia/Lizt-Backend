@@ -158,8 +158,8 @@ export class Users extends BaseEntity {
   @OneToOne(() => KYC, (kyc) => kyc.user)
   kyc: KYC;
 
-  @OneToOne(() => TenantKyc, (tenant_kyc) => tenant_kyc.user)
-  tenant_kyc?: TenantKyc;
+  @OneToMany(() => TenantKyc, (tenant_kyc) => tenant_kyc.user)
+  tenant_kycs?: TenantKyc[]; // Changed to array to support multiple landlords
 
   @BeforeInsert()
   @BeforeUpdate()

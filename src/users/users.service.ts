@@ -104,7 +104,7 @@ export class UsersService {
 
     private readonly utilService: UtilService,
     private readonly dataSource: DataSource,
-  ) { }
+  ) {}
 
   async addTenant(user_id: string, dto: CreateTenantDto) {
     const {
@@ -1087,10 +1087,10 @@ export class UsersService {
       const subAccountWhere = isEmail
         ? { id: Not(account.id), email: account.email, role: RolesEnum.TENANT }
         : {
-          id: Not(account.id),
-          user: { phone_number: account.user.phone_number },
-          role: RolesEnum.TENANT,
-        };
+            id: Not(account.id),
+            user: { phone_number: account.user.phone_number },
+            role: RolesEnum.TENANT,
+          };
 
       const subAccount = (await this.accountRepository.findOne({
         where: subAccountWhere,
@@ -1117,15 +1117,15 @@ export class UsersService {
     if (account.role === RolesEnum.TENANT) {
       const parentAccountWhere = isEmail
         ? {
-          id: Not(account.id),
-          email: account.email,
-          role: RolesEnum.LANDLORD,
-        }
+            id: Not(account.id),
+            email: account.email,
+            role: RolesEnum.LANDLORD,
+          }
         : {
-          id: Not(account.id),
-          user: { phone_number: account.user.phone_number },
-          role: RolesEnum.LANDLORD,
-        };
+            id: Not(account.id),
+            user: { phone_number: account.user.phone_number },
+            role: RolesEnum.LANDLORD,
+          };
 
       const parentAccount = (await this.accountRepository.findOne({
         where: parentAccountWhere,
@@ -1598,7 +1598,11 @@ export class UsersService {
       .createQueryBuilder('account')
       .innerJoinAndSelect('account.user', 'user')
       .leftJoinAndSelect('user.kyc', 'kyc')
-      .leftJoinAndSelect('user.tenant_kyc', 'tenant_kyc') // Add TenantKyc join
+      .leftJoinAndSelect(
+        'user.tenant_kycs',
+        'tenant_kyc',
+        'tenant_kyc.admin_id = :adminId',
+      ) // Filter TenantKyc by landlord
       .leftJoinAndSelect('account.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
       .leftJoinAndSelect('account.service_requests', 'service_requests')
@@ -1642,7 +1646,7 @@ export class UsersService {
   ): TenantDetailDto {
     const user = account.user;
     const kyc = user.kyc ?? {}; // Get the joined old KYC data
-    const tenantKyc = user.tenant_kyc; // Get the joined TenantKyc data (preferred)
+    const tenantKyc = user.tenant_kycs?.[0]; // Get the joined TenantKyc data (preferred, filtered by admin_id)
 
     // Debug logging
     console.log('Total rents loaded:', account.rents?.length || 0);
@@ -1962,59 +1966,59 @@ export class UsersService {
             : null,
         kycDocuments: kycApplication
           ? [
-            ...(kycApplication.passport_photo_url
-              ? [
-                {
-                  id: `kyc-passport-${kycApplication.id}`,
-                  name: 'Passport Photo',
-                  type: 'Passport',
-                  url: kycApplication.passport_photo_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.id_document_url
-              ? [
-                {
-                  id: `kyc-id-${kycApplication.id}`,
-                  name: 'ID Document',
-                  type: 'ID',
-                  url: kycApplication.id_document_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.employment_proof_url
-              ? [
-                {
-                  id: `kyc-employment-${kycApplication.id}`,
-                  name: 'Employment Proof',
-                  type: 'Employment',
-                  url: kycApplication.employment_proof_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.business_proof_url
-              ? [
-                {
-                  id: `kyc-business-${kycApplication.id}`,
-                  name: 'Business Proof',
-                  type: 'Business',
-                  url: kycApplication.business_proof_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-          ]
+              ...(kycApplication.passport_photo_url
+                ? [
+                    {
+                      id: `kyc-passport-${kycApplication.id}`,
+                      name: 'Passport Photo',
+                      type: 'Passport',
+                      url: kycApplication.passport_photo_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.id_document_url
+                ? [
+                    {
+                      id: `kyc-id-${kycApplication.id}`,
+                      name: 'ID Document',
+                      type: 'ID',
+                      url: kycApplication.id_document_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.employment_proof_url
+                ? [
+                    {
+                      id: `kyc-employment-${kycApplication.id}`,
+                      name: 'Employment Proof',
+                      type: 'Employment',
+                      url: kycApplication.employment_proof_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.business_proof_url
+                ? [
+                    {
+                      id: `kyc-business-${kycApplication.id}`,
+                      name: 'Business Proof',
+                      type: 'Business',
+                      url: kycApplication.business_proof_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+            ]
           : [],
       },
     };
@@ -2456,7 +2460,7 @@ export class UsersService {
         let userAccount = await manager.getRepository(Account).findOne({
           where: {
             user: { id: user.id },
-            role: team_member.role
+            role: team_member.role,
           },
         });
 

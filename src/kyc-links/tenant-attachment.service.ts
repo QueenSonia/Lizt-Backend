@@ -139,12 +139,9 @@ export class TenantAttachmentService {
         queryRunner.manager,
       );
 
-      // CRITICAL: Clean up any existing tenant assignments before creating new ones
-      // This prevents orphaned rent records and duplicate tenant assignments
-      await this.cleanupExistingTenantAssignments(
-        tenantAccount.id,
-        queryRunner.manager,
-      );
+      // NOTE: Cleanup logic removed to support multi-landlord tenancy
+      // A tenant can now be active in multiple properties across different landlords
+      // Each landlord sees only their own tenant assignments via property ownership filtering
 
       // Calculate lease dates
       const tenancyStartDate = tenancyDetails.tenancyStartDate

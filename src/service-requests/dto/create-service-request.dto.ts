@@ -25,6 +25,10 @@ export class CreateServiceRequestDto {
 
   @IsUUID()
   tenant_id: string;
+
+  @IsOptional()
+  @IsUUID()
+  property_id?: string;
 }
 
 export class ServiceRequestFilter {

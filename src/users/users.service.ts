@@ -1598,7 +1598,11 @@ export class UsersService {
       .createQueryBuilder('account')
       .innerJoinAndSelect('account.user', 'user')
       .leftJoinAndSelect('user.kyc', 'kyc')
-      .leftJoinAndSelect('user.tenant_kycs', 'tenant_kyc') // Add TenantKyc join (now array)
+      .leftJoinAndSelect(
+        'user.tenant_kycs',
+        'tenant_kyc',
+        'tenant_kyc.admin_id = :adminId',
+      ) // Filter TenantKyc by landlord
       .leftJoinAndSelect('account.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
       .leftJoinAndSelect('account.service_requests', 'service_requests')

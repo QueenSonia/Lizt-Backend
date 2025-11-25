@@ -177,9 +177,8 @@ export class WhatsappBotService {
       );
     }
 
-    // FIXED: Check account role instead of user role
-    // Users can have multiple accounts with different roles
-    // Priority: LANDLORD > FACILITY_MANAGER > TENANT
+    // FIXED: Check account role based on notification context
+    // For users with multiple roles, check which role the notification was sent to
     let role = user?.role; // Fallback to user.role if no accounts
 
     if (user?.accounts && user.accounts.length > 0) {
@@ -193,15 +192,28 @@ export class WhatsappBotService {
         },
       });
 
-      // Check for landlord account first
-      const landlordAccount = user.accounts.find(
-        (acc) => acc.role === RolesEnum.LANDLORD,
+      // Check if this message is a response to a notification we sent
+      const notificationRole = await this.cache.get(
+        `notification_role_${from}`,
       );
-      if (landlordAccount) {
-        console.log('✅ Found LANDLORD account:', landlordAccount.id);
-        role = RolesEnum.LANDLORD;
-      } else {
-        // Check for facility manager account
+
+      if (notificationRole) {
+        console.log('📬 Found notification context:', notificationRole);
+        // Use the role from the notification context
+        const contextAccount = user.accounts.find(
+          (acc) => acc.role === notificationRole,
+        );
+        if (contextAccount) {
+          console.log('✅ Using notification context role:', notificationRole);
+          role = notificationRole as RolesEnum;
+        }
+      }
+
+      // If no notification context, use priority: FACILITY_MANAGER > LANDLORD > TENANT
+      if (!notificationRole) {
+        console.log('📝 No notification context, using priority order');
+
+        // Check for facility manager account first
         const facilityAccount = user.accounts.find(
           (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
         );
@@ -209,20 +221,29 @@ export class WhatsappBotService {
           console.log('✅ Found FACILITY_MANAGER account:', facilityAccount.id);
           role = RolesEnum.FACILITY_MANAGER;
         } else {
-          // Check for tenant account
-          const tenantAccount = user.accounts.find(
-            (acc) => acc.role === RolesEnum.TENANT,
+          // Check for landlord account
+          const landlordAccount = user.accounts.find(
+            (acc) => acc.role === RolesEnum.LANDLORD,
           );
-          if (tenantAccount) {
-            console.log('✅ Found TENANT account:', tenantAccount.id);
-            role = RolesEnum.TENANT;
+          if (landlordAccount) {
+            console.log('✅ Found LANDLORD account:', landlordAccount.id);
+            role = RolesEnum.LANDLORD;
           } else {
-            console.log('❌ No matching account role found!', {
-              accountRoles: user.accounts.map((acc) => ({
-                role: acc.role,
-                typeOf: typeof acc.role,
-              })),
-            });
+            // Check for tenant account
+            const tenantAccount = user.accounts.find(
+              (acc) => acc.role === RolesEnum.TENANT,
+            );
+            if (tenantAccount) {
+              console.log('✅ Found TENANT account:', tenantAccount.id);
+              role = RolesEnum.TENANT;
+            } else {
+              console.log('❌ No matching account role found!', {
+                accountRoles: user.accounts.map((acc) => ({
+                  role: acc.role,
+                  typeOf: typeof acc.role,
+                })),
+              });
+            }
           }
         }
       }
@@ -1047,6 +1068,13 @@ export class WhatsappBotService {
               }),
             });
 
+            // Store context: this notification was sent to a facility manager
+            await this.cache.set(
+              `notification_role_${manager.phone_number}`,
+              'FACILITY_MANAGER',
+              24 * 60 * 60 * 1000, // 24 hours
+            );
+
             // await this.sendButtons(
             //   manager.phone_number,
             //   `Confirm request for request_id: ${request_id}`,
@@ -1096,6 +1124,13 @@ export class WhatsappBotService {
                 timeZone: 'Africa/Lagos',
               }),
             });
+
+            // Store context: this notification was sent to a landlord
+            await this.cache.set(
+              `notification_role_${admin_phone_number}`,
+              'LANDLORD',
+              24 * 60 * 60 * 1000, // 24 hours
+            );
           }
         }
         await this.cache.delete(`service_request_state_${from}`);

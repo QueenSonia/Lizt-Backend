@@ -679,16 +679,25 @@ export class WhatsappBotService {
         );
 
         // Trigger Tenant Confirmation
-        await this.sendTenantConfirmationTemplate({
-          phone_number: this.utilService.normalizePhoneNumber(
-            serviceRequest.tenant.user.phone_number,
-          ),
-          tenant_name: this.utilService.toSentenceCase(
-            serviceRequest.tenant.user.first_name,
-          ),
-          request_description: serviceRequest.description,
-          request_id: serviceRequest.request_id,
-        });
+        console.log(
+          'Sending tenant confirmation to:',
+          serviceRequest.tenant.user.phone_number,
+        );
+        try {
+          await this.sendTenantConfirmationTemplate({
+            phone_number: this.utilService.normalizePhoneNumber(
+              serviceRequest.tenant.user.phone_number,
+            ),
+            tenant_name: this.utilService.toSentenceCase(
+              serviceRequest.tenant.user.first_name,
+            ),
+            request_description: serviceRequest.description,
+            request_id: serviceRequest.request_id,
+          });
+          console.log('Tenant confirmation sent successfully');
+        } catch (error) {
+          console.error('Failed to send tenant confirmation:', error);
+        }
 
         await this.cache.delete(`service_request_state_facility_${from}`);
         return;
@@ -1718,7 +1727,14 @@ export class WhatsappBotService {
               status: ServiceRequestStatusEnum.RESOLVED,
             },
           ],
-          relations: ['tenant', 'facilityManager', 'facilityManager.account'],
+          relations: [
+            'tenant',
+            'tenant.user',
+            'facilityManager',
+            'facilityManager.account',
+            'facilityManager.account.user',
+            'property',
+          ],
           order: { resolution_date: 'DESC' },
         });
 
@@ -1787,7 +1803,14 @@ export class WhatsappBotService {
               status: ServiceRequestStatusEnum.RESOLVED,
             },
           ],
-          relations: ['tenant', 'facilityManager', 'facilityManager.account'],
+          relations: [
+            'tenant',
+            'tenant.user',
+            'facilityManager',
+            'facilityManager.account',
+            'facilityManager.account.user',
+            'property',
+          ],
           order: { resolution_date: 'DESC' },
         });
 

@@ -85,8 +85,8 @@ export class ServiceRequest extends BaseEntity {
   @OneToMany(() => ChatMessage, (message) => message.serviceRequest)
   messages: ChatMessage[];
 
-  @OneToOne(() => Notification, (notification) => notification.serviceRequest)
-  notification: Notification;
+  @OneToMany(() => Notification, (notification) => notification.serviceRequest)
+  notifications: Notification[];
 
   @Column({ nullable: true, type: 'uuid' })
   assigned_to: string;

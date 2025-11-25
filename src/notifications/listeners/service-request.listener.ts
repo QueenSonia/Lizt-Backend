@@ -7,7 +7,7 @@ import { ServiceRequestCreatedEvent } from '../events/service-request.event';
 
 @Injectable()
 export class ServiceRequestListener {
-  constructor(private notificationService: NotificationService) { }
+  constructor(private notificationService: NotificationService) {}
 
   @OnEvent('service.created')
   async handle(event: ServiceRequestCreatedEvent) {
@@ -43,7 +43,10 @@ export class ServiceRequestListener {
       });
       console.log('Service request update notification created:', notification);
     } catch (error) {
-      console.error('Failed to create service request update notification:', error);
+      console.error(
+        'Failed to create service request update notification:',
+        error,
+      );
     }
   }
 }

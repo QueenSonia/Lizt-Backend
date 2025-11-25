@@ -46,7 +46,7 @@ export class Notification extends BaseEntity {
   @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })
   user: Account; // <-- snake_case and UUID
 
-  @OneToOne(() => ServiceRequest, (request) => request.notification, {
+  @ManyToOne(() => ServiceRequest, (request) => request.notifications, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'service_request_id', referencedColumnName: 'id' })

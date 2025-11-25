@@ -58,4 +58,24 @@ export class NotificationService {
     });
     return notifications;
   }
+
+  async findByServiceRequestId(
+    service_request_id: string,
+  ): Promise<Notification | null> {
+    return await this.notificationRepository.findOne({
+      where: { service_request_id },
+    });
+  }
+
+  async update(
+    id: string,
+    updateData: Partial<Notification>,
+  ): Promise<Notification> {
+    await this.notificationRepository.update(id, updateData);
+    const updated = await this.findOne(id);
+    if (!updated) {
+      throw new Error(`Notification with id ${id} not found`);
+    }
+    return updated;
+  }
 }

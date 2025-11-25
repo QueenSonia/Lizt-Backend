@@ -27,7 +27,7 @@ export class HistoryEventListener {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     @Inject(forwardRef(() => EventsGateway))
     private readonly eventsGateway: EventsGateway,
-  ) { }
+  ) {}
 
   @OnEvent('service.created')
   async handleServiceRequestCreated(
@@ -48,11 +48,12 @@ export class HistoryEventListener {
 
     try {
       // Create history entry
+      // Store status and description separately using a delimiter
       const historyEntry = this.propertyHistoryRepository.create({
         property_id: payload.property_id,
         tenant_id: payload.tenant_id,
-        event_type: 'service_request',
-        event_description: `Service request updated to ${payload.status}: ${payload.description}`,
+        event_type: 'service_request_updated',
+        event_description: `${payload.status}|||${payload.description}`, // Use delimiter to separate status and description
         related_entity_id: payload.request_id,
         related_entity_type: 'service_request',
         created_at: payload.updated_at || new Date(),
@@ -96,11 +97,11 @@ export class HistoryEventListener {
         created_at,
       } = payload;
 
-      // Create property history entry with event_type 'service_request'
+      // Create property history entry with event_type 'service_request_created'
       const historyEntry = this.propertyHistoryRepository.create({
         property_id,
         tenant_id: user_id,
-        event_type: 'service_request',
+        event_type: 'service_request_created',
         event_description: description || 'Service request created',
         related_entity_id: service_request_id,
         related_entity_type: 'service_request',

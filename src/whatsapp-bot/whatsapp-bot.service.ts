@@ -182,7 +182,7 @@ export class WhatsappBotService {
             `Hello ${this.utilService.toSentenceCase(user?.first_name || '')}, What do you want to do today?`,
             [
               { id: 'view_properties', title: 'View properties' },
-              { id: 'view_maintenance', title: 'Maintenance' },
+              { id: 'view_maintenance', title: 'Maintenance requests' },
               { id: 'new_tenant', title: 'Add tenant' },
             ],
           );

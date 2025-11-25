@@ -103,7 +103,7 @@ export class ServiceRequestsService {
 
     const tenantExistInProperty = await this.propertyTenantRepository.findOne({
       where: whereClause,
-      relations: ['tenant', 'property'],
+      relations: ['tenant', 'tenant.user', 'property'],
     });
 
     if (!tenantExistInProperty?.id) {
@@ -152,11 +152,15 @@ export class ServiceRequestsService {
     //   request_id: requestId,
     //   assigned_to: selectedManager.id, // 👈 store assigned manager
     // });
+    // Get tenant name from user's first and last name
+    const tenantName =
+      `${tenantExistInProperty.tenant.user.first_name} ${tenantExistInProperty.tenant.user.last_name}`.trim();
+
     const request = this.serviceRequestRepository.create({
       request_id: requestId,
       tenant_id: tenantExistInProperty.tenant.id,
       property_id: tenantExistInProperty.property?.id,
-      tenant_name: tenantExistInProperty.tenant.profile_name,
+      tenant_name: tenantName,
       property_name: tenantExistInProperty.property?.name,
       issue_category: 'service',
       date_reported: new Date(),
@@ -172,7 +176,7 @@ export class ServiceRequestsService {
         user_id: tenantExistInProperty.tenant.id,
         property_id: tenantExistInProperty.property?.id,
         landlord_id: tenantExistInProperty.property?.owner_id,
-        tenant_name: tenantExistInProperty.tenant.profile_name,
+        tenant_name: tenantName,
         property_name: tenantExistInProperty.property.name,
         service_request_id: savedRequest.id,
         description: data.text,

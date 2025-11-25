@@ -106,6 +106,7 @@ export class LandlordFlow {
       view_vacant: () => this.lookup.handleVacantProperties(from),
       view_occupied: () => this.lookup.handleOccupiedProperties(from),
       view_maintenance: () => this.lookup.handleViewMaintenance(from),
+      view_all_service_requests: () => this.lookup.handleViewMaintenance(from),
       new_tenant: () => this.lookup.startAddTenantFlow(from),
     };
 

@@ -1027,8 +1027,8 @@ export class WhatsappBotService {
                 day: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
-                second: '2-digit',
                 hour12: true,
+                timeZone: 'Africa/Lagos',
               }),
             });
 
@@ -1077,8 +1077,8 @@ export class WhatsappBotService {
                 day: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
-                second: '2-digit',
                 hour12: true,
+                timeZone: 'Africa/Lagos',
               }),
             });
           }

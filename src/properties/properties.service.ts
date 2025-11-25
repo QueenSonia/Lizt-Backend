@@ -487,8 +487,11 @@ export class PropertiesService {
         const tenantName = `${firstName} ${lastName}`;
 
         // Handle different event types
-        if (hist.event_type === 'service_request') {
-          // Service request event
+        if (
+          hist.event_type === 'service_request' ||
+          hist.event_type === 'service_request_created'
+        ) {
+          // Service request created event
           const eventDate = hist.created_at
             ? new Date(hist.created_at).toISOString().split('T')[0]
             : new Date().toISOString().split('T')[0];
@@ -497,9 +500,34 @@ export class PropertiesService {
             id: index + 1,
             date: eventDate,
             eventType: 'service_request_created',
-            title: 'Service Request Created',
-            description: hist.event_description || 'Service request reported',
+            title: hist.event_description || 'Service request reported',
+            description: 'Service request created',
             details: `Reported by: ${tenantName}`,
+          };
+        } else if (hist.event_type === 'service_request_updated') {
+          // Service request updated event
+          const eventDate = hist.created_at
+            ? new Date(hist.created_at).toISOString().split('T')[0]
+            : new Date().toISOString().split('T')[0];
+
+          // Parse status and description from event_description
+          const parts = hist.event_description?.split('|||') || [];
+          const status = parts[0] || 'updated';
+          const description = parts[1] || 'Service request updated';
+
+          // Format status label (e.g., "in_progress" -> "In Progress")
+          const statusLabel = status
+            .split('_')
+            .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
+
+          return {
+            id: index + 1,
+            date: eventDate,
+            eventType: 'service_request_updated',
+            title: description,
+            description: `Service request ${statusLabel.toLowerCase()}`,
+            details: null,
           };
         } else if (hist.move_out_date) {
           // Tenant moved out

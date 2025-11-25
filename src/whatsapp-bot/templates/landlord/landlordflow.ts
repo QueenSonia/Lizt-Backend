@@ -66,6 +66,19 @@ export class LandlordFlow {
    * Handle landlord TEXT input
    */
   async handleText(from: string, text: string) {
+    // Handle "switch role" command for multi-role users
+    if (
+      text?.toLowerCase() === 'switch role' ||
+      text?.toLowerCase() === 'switch'
+    ) {
+      await this.cache.delete(`selected_role_${from}`);
+      await this.whatsappUtil.sendText(
+        from,
+        'Role cleared. Send any message to select a new role.',
+      );
+      return;
+    }
+
     if (['done', 'menu'].includes(text?.toLowerCase())) {
       await this.lookup.handleExitOrMenu(from, text);
       return;
@@ -98,20 +111,43 @@ export class LandlordFlow {
    * Handle landlord INTERACTIVE button clicks
    */
   async handleInteractive(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply;
-    if (!buttonReply) return;
+    // Handle both interactive button_reply and direct button formats
+    const buttonReply = message.interactive?.button_reply || message.button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
+
+    console.log('🔘 Landlord Button clicked:', {
+      messageType: message.type,
+      buttonReply,
+      buttonId,
+      from,
+    });
+
+    if (!buttonReply || !buttonId) {
+      console.log('❌ No button reply found in message');
+      return;
+    }
 
     const handlers: Record<string, () => Promise<void>> = {
       view_properties: () => this.lookup.handleViewProperties(from),
       view_vacant: () => this.lookup.handleVacantProperties(from),
       view_occupied: () => this.lookup.handleOccupiedProperties(from),
       view_maintenance: () => this.lookup.handleViewMaintenance(from),
+      view_all_service_requests: () => this.lookup.handleViewMaintenance(from),
       new_tenant: () => this.lookup.startAddTenantFlow(from),
     };
 
-    const handler = handlers[buttonReply.id];
+    const handler = handlers[buttonId];
+    console.log('🔍 Handler lookup:', {
+      buttonId: buttonId,
+      handlerFound: !!handler,
+      availableHandlers: Object.keys(handlers),
+    });
+
     if (handler) {
+      console.log('✅ Executing handler for:', buttonId);
       await handler();
+    } else {
+      console.log('❌ No handler found for button:', buttonId);
     }
   }
 

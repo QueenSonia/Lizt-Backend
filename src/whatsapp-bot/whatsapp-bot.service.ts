@@ -28,7 +28,7 @@ import { LandlordInteractive } from './templates/landlord/landinteractive';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
-  { id: 'service_request', title: 'Make service request' },
+  { id: 'service_request', title: 'Service request' },
   { id: 'view_tenancy', title: 'View tenancy details' },
   { id: 'visit_site', title: 'Visit our website' },
 ];
@@ -125,6 +125,71 @@ export class WhatsappBotService {
     if (!from || !message) return;
 
     console.log('📱 Incoming WhatsApp message from:', from);
+    console.log('📨 Full message object:', JSON.stringify(message, null, 2));
+
+    // CRITICAL: Check if this is a role selection button click BEFORE role detection
+    const buttonReply =
+      message.interactive?.button_reply || (message as any).button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
+
+    if (buttonId === 'select_role_fm' || buttonId === 'select_role_landlord') {
+      console.log('🎯 Role selection button detected, handling directly');
+      // Handle role selection in the appropriate handler based on message type
+      if (message.type === 'interactive' || message.type === 'button') {
+        // This will be handled by handleInteractive/handleFacilityInteractive
+        // But we need to route it there without going through role detection
+        const selectedRole =
+          buttonId === 'select_role_fm'
+            ? RolesEnum.FACILITY_MANAGER
+            : RolesEnum.LANDLORD;
+
+        console.log('✅ User selected role:', selectedRole);
+        console.log(
+          '💾 Storing in cache:',
+          `selected_role_${from}`,
+          '=',
+          selectedRole,
+        );
+
+        await this.cache.set(
+          `selected_role_${from}`,
+          selectedRole,
+          24 * 60 * 60 * 1000,
+        );
+
+        const verify = await this.cache.get(`selected_role_${from}`);
+        console.log('✅ Verified cache storage:', verify);
+
+        // Now show the appropriate menu
+        const user = await this.usersRepo.findOne({
+          where: { phone_number: from },
+          relations: ['accounts'],
+        });
+
+        if (selectedRole === RolesEnum.FACILITY_MANAGER) {
+          await this.sendButtons(
+            from,
+            `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
+            [
+              { id: 'service_request', title: 'View requests' },
+              { id: 'view_account_info', title: 'Account Info' },
+              { id: 'visit_site', title: 'Visit website' },
+            ],
+          );
+        } else {
+          await this.sendButtons(
+            from,
+            `Hello ${this.utilService.toSentenceCase(user?.first_name || '')}, What do you want to do today?`,
+            [
+              { id: 'view_properties', title: 'View properties' },
+              { id: 'view_maintenance', title: 'Maintenance requests' },
+              { id: 'new_tenant', title: 'Add tenant' },
+            ],
+          );
+        }
+        return; // Don't continue with role detection
+      }
+    }
 
     // CRITICAL FIX: Try both phone number formats
     // WhatsApp sends international format (2348184350211)
@@ -176,31 +241,68 @@ export class WhatsappBotService {
       );
     }
 
-    // FIXED: Check account role instead of user role
-    // Users can have multiple accounts with different roles
-    // Priority: LANDLORD > FACILITY_MANAGER > TENANT
+    // FIXED: Check account role with role selection for multi-role users
     let role = user?.role; // Fallback to user.role if no accounts
 
     if (user?.accounts && user.accounts.length > 0) {
       console.log('🔍 Checking accounts for role...', {
         totalAccounts: user.accounts.length,
         accountRoles: user.accounts.map((acc) => acc.role),
-        lookingFor: {
-          landlord: RolesEnum.LANDLORD,
-          facilityManager: RolesEnum.FACILITY_MANAGER,
-          tenant: RolesEnum.TENANT,
-        },
       });
 
-      // Check for landlord account first
-      const landlordAccount = user.accounts.find(
-        (acc) => acc.role === RolesEnum.LANDLORD,
-      );
-      if (landlordAccount) {
-        console.log('✅ Found LANDLORD account:', landlordAccount.id);
-        role = RolesEnum.LANDLORD;
+      // Check if user has selected a role (from role selection menu)
+      const selectedRole = await this.cache.get(`selected_role_${from}`);
+
+      if (selectedRole) {
+        console.log('✅ Using previously selected role:', selectedRole);
+        console.log(
+          '🔍 Selected role type:',
+          typeof selectedRole,
+          selectedRole,
+        );
+        console.log('🔍 Enum values:', {
+          FM: RolesEnum.FACILITY_MANAGER,
+          LANDLORD: RolesEnum.LANDLORD,
+        });
+        role = selectedRole as RolesEnum;
       } else {
-        // Check for facility manager account
+        // Check if user has multiple roles (FM + Landlord, or any combination)
+        const hasMultipleRoles = user.accounts.length > 1;
+        const hasFM = user.accounts.some(
+          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
+        );
+        const hasLandlord = user.accounts.some(
+          (acc) => acc.role === RolesEnum.LANDLORD,
+        );
+
+        if (hasMultipleRoles && (hasFM || hasLandlord)) {
+          console.log(
+            '👥 User has multiple roles, showing role selection menu',
+          );
+
+          // Build role selection buttons
+          const roleButtons: { id: string; title: string }[] = [];
+          if (hasFM) {
+            roleButtons.push({
+              id: 'select_role_fm',
+              title: 'Facility Manager',
+            });
+          }
+          if (hasLandlord) {
+            roleButtons.push({ id: 'select_role_landlord', title: 'Landlord' });
+          }
+
+          await this.sendButtons(
+            from,
+            'You have multiple roles. Which would you like to use?',
+            roleButtons,
+          );
+
+          // Don't route yet, wait for role selection
+          return;
+        }
+
+        // Single role - use priority order
         const facilityAccount = user.accounts.find(
           (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
         );
@@ -208,20 +310,22 @@ export class WhatsappBotService {
           console.log('✅ Found FACILITY_MANAGER account:', facilityAccount.id);
           role = RolesEnum.FACILITY_MANAGER;
         } else {
-          // Check for tenant account
-          const tenantAccount = user.accounts.find(
-            (acc) => acc.role === RolesEnum.TENANT,
+          const landlordAccount = user.accounts.find(
+            (acc) => acc.role === RolesEnum.LANDLORD,
           );
-          if (tenantAccount) {
-            console.log('✅ Found TENANT account:', tenantAccount.id);
-            role = RolesEnum.TENANT;
+          if (landlordAccount) {
+            console.log('✅ Found LANDLORD account:', landlordAccount.id);
+            role = RolesEnum.LANDLORD;
           } else {
-            console.log('❌ No matching account role found!', {
-              accountRoles: user.accounts.map((acc) => ({
-                role: acc.role,
-                typeOf: typeof acc.role,
-              })),
-            });
+            const tenantAccount = user.accounts.find(
+              (acc) => acc.role === RolesEnum.TENANT,
+            );
+            if (tenantAccount) {
+              console.log('✅ Found TENANT account:', tenantAccount.id);
+              role = RolesEnum.TENANT;
+            } else {
+              console.log('❌ No matching account role found!');
+            }
           }
         }
       }
@@ -242,7 +346,7 @@ export class WhatsappBotService {
     switch (role) {
       case RolesEnum.FACILITY_MANAGER:
         console.log('Facility Manager Message');
-        if (message.type === 'interactive') {
+        if (message.type === 'interactive' || message.type === 'button') {
           void this.handleFacilityInteractive(message, from);
         }
 
@@ -254,7 +358,7 @@ export class WhatsappBotService {
         break;
       case RolesEnum.TENANT:
         console.log('In tenant');
-        if (message.type === 'interactive') {
+        if (message.type === 'interactive' || message.type === 'button') {
           void this.handleInteractive(message, from);
         }
 
@@ -264,7 +368,7 @@ export class WhatsappBotService {
         break;
       case RolesEnum.LANDLORD:
         console.log('In Landlord');
-        if (message.type === 'interactive') {
+        if (message.type === 'interactive' || message.type === 'button') {
           void this.flow.handleInteractive(message, from);
         }
 
@@ -434,6 +538,19 @@ export class WhatsappBotService {
 
     console.log(text, 'facility');
 
+    // Handle "switch role" command for multi-role users
+    if (
+      text?.toLowerCase() === 'switch role' ||
+      text?.toLowerCase() === 'switch'
+    ) {
+      await this.cache.delete(`selected_role_${from}`);
+      await this.sendText(
+        from,
+        'Role cleared. Send any message to select a new role.',
+      );
+      return;
+    }
+
     if (text?.toLowerCase() === 'start flow') {
       void this.sendFlow(from); // Call the send flow logic
     }
@@ -518,8 +635,13 @@ export class WhatsappBotService {
 
       await this.sendText(
         from,
-        `${serviceRequest.description}\n\nTenant: ${this.utilService.toSentenceCase(serviceRequest.tenant.user.first_name)} ${this.utilService.toSentenceCase(serviceRequest.tenant.user.last_name)}\nProperty: ${serviceRequest.property.name}\nStatus: ${statusLabel}\n\nReply "Resolved" to mark it as fixed.\nReply "Back" to go to the list.`,
+        `*${serviceRequest.description}*\n\nTenant: ${this.utilService.toSentenceCase(serviceRequest.tenant.user.first_name)} ${this.utilService.toSentenceCase(serviceRequest.tenant.user.last_name)}\nProperty: ${serviceRequest.property.name}\nStatus: ${statusLabel}`,
       );
+
+      await this.sendButtons(from, 'What would you like to do?', [
+        { id: `mark_resolved:${serviceRequest.id}`, title: 'Mark as Resolved' },
+        { id: 'back_to_list', title: 'Back to List' },
+      ]);
 
       await this.cache.set(
         `service_request_state_facility_${from}`,
@@ -529,67 +651,14 @@ export class WhatsappBotService {
       return;
     }
 
-    // Handle marking request as resolved
+    // Handle marking request as resolved (kept for backward compatibility with text input)
     if (facilityState && facilityState.startsWith('viewing_request:')) {
-      const requestId = facilityState.split('viewing_request:')[1];
-
-      if (text.toLowerCase() === 'resolved') {
-        const serviceRequest = await this.serviceRequestRepo.findOne({
-          where: { id: requestId },
-          relations: ['tenant', 'tenant.user', 'facilityManager'],
-        });
-
-        if (!serviceRequest) {
-          await this.sendText(from, "I couldn't find that request.");
-          await this.cache.delete(`service_request_state_facility_${from}`);
-          return;
-        }
-
-        if (serviceRequest.status === ServiceRequestStatusEnum.CLOSED) {
-          await this.sendText(from, 'This request has already been closed.');
-          await this.cache.delete(`service_request_state_facility_${from}`);
-          return;
-        }
-
-        await this.serviceRequestService.updateStatus(
-          serviceRequest.id,
-          ServiceRequestStatusEnum.RESOLVED,
-        );
-
-        await this.sendText(
-          from,
-          "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
-        );
-
-        // Trigger Tenant Confirmation
-        await this.sendTenantConfirmationTemplate({
-          phone_number: this.utilService.normalizePhoneNumber(
-            serviceRequest.tenant.user.phone_number,
-          ),
-          tenant_name: this.utilService.toSentenceCase(
-            serviceRequest.tenant.user.first_name,
-          ),
-          request_description: serviceRequest.description,
-          request_id: serviceRequest.request_id,
-        });
-
-        await this.cache.delete(`service_request_state_facility_${from}`);
-        return;
-      } else if (text.toLowerCase() === 'back') {
-        // Go back to list
-        await this.sendButtons(from, 'What would you like to do?', [
-          { id: 'service_request', title: 'View all requests' },
-          { id: 'view_account_info', title: 'View Account Info' },
-        ]);
-        await this.cache.delete(`service_request_state_facility_${from}`);
-        return;
-      } else {
-        await this.sendText(
-          from,
-          'Please reply "Resolved" to mark as fixed, or "Back" to return to the list.',
-        );
-        return;
-      }
+      // User is viewing a request but typed text instead of using buttons
+      await this.sendText(
+        from,
+        'Please use the buttons above to mark as resolved or go back to the list.',
+      );
+      return;
     }
 
     if (facilityState === 'acknowledged') {
@@ -761,9 +830,9 @@ export class WhatsappBotService {
             user.first_name,
           )} Welcome to Property Kraft! What would you like to do today?`,
           [
-            { id: 'service_request', title: 'View all service requests' },
-            { id: 'view_account_info', title: 'View Account Info' },
-            { id: 'visit_site', title: 'Visit our website' },
+            { id: 'service_request', title: 'Service Requests' },
+            { id: 'view_account_info', title: 'Account Info' },
+            { id: 'visit_site', title: 'Visit Website' },
           ],
         );
       }
@@ -771,12 +840,26 @@ export class WhatsappBotService {
   }
 
   async handleFacilityInteractive(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply;
-    if (!buttonReply) return;
+    // Handle both interactive button_reply and direct button formats
+    const buttonReply = message.interactive?.button_reply || message.button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
 
-    switch (buttonReply.id) {
+    console.log('🔘 FM Button clicked:', {
+      messageType: message.type,
+      buttonReply,
+      buttonId,
+      from,
+    });
+
+    if (!buttonReply || !buttonId) {
+      console.log('❌ No button reply found in message');
+      return;
+    }
+
+    switch (buttonId) {
       case 'view_all_service_requests':
       case 'service_request': {
+        console.log('✅ Matched view_all_service_requests or service_request');
         const teamMemberInfo = await this.teamMemberRepo.findOne({
           where: {
             account: { user: { phone_number: `${from}` } },
@@ -806,20 +889,10 @@ export class WhatsappBotService {
 
         let response = 'Here are all service requests:\n\n';
         serviceRequests.forEach((req: any, i) => {
-          const statusLabel =
-            req.status === ServiceRequestStatusEnum.OPEN
-              ? 'Open'
-              : req.status === ServiceRequestStatusEnum.RESOLVED
-                ? 'Resolved'
-                : req.status === ServiceRequestStatusEnum.REOPENED
-                  ? 'Reopened'
-                  : req.status === ServiceRequestStatusEnum.IN_PROGRESS
-                    ? 'In Progress'
-                    : req.status;
-          response += `${i + 1}. ${req.description} — ${statusLabel}\n`;
+          response += `${i + 1}. ${req.description} (${req.property.name})\n\n`;
         });
 
-        response += '\nReply with a number to view details.';
+        response += 'Reply with a number to view details.';
 
         await this.sendText(from, response);
 
@@ -869,7 +942,71 @@ export class WhatsappBotService {
         );
         break;
 
+      case 'back_to_list':
+        await this.sendButtons(from, 'What would you like to do?', [
+          { id: 'service_request', title: 'View all requests' },
+          { id: 'view_account_info', title: 'View Account Info' },
+        ]);
+        await this.cache.delete(`service_request_state_facility_${from}`);
+        break;
+
       default:
+        // Handle dynamic button IDs like "mark_resolved:requestId"
+        if (buttonId.startsWith('mark_resolved:')) {
+          const requestId = buttonId.split('mark_resolved:')[1];
+
+          const serviceRequest = await this.serviceRequestRepo.findOne({
+            where: { id: requestId },
+            relations: ['tenant', 'tenant.user', 'facilityManager'],
+          });
+
+          if (!serviceRequest) {
+            await this.sendText(from, "I couldn't find that request.");
+            await this.cache.delete(`service_request_state_facility_${from}`);
+            return;
+          }
+
+          if (serviceRequest.status === ServiceRequestStatusEnum.CLOSED) {
+            await this.sendText(from, 'This request has already been closed.');
+            await this.cache.delete(`service_request_state_facility_${from}`);
+            return;
+          }
+
+          await this.serviceRequestService.updateStatus(
+            serviceRequest.id,
+            ServiceRequestStatusEnum.RESOLVED,
+          );
+
+          await this.sendText(
+            from,
+            "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
+          );
+
+          // Trigger Tenant Confirmation
+          console.log(
+            'Sending tenant confirmation to:',
+            serviceRequest.tenant.user.phone_number,
+          );
+          try {
+            await this.sendTenantConfirmationTemplate({
+              phone_number: this.utilService.normalizePhoneNumber(
+                serviceRequest.tenant.user.phone_number,
+              ),
+              tenant_name: this.utilService.toSentenceCase(
+                serviceRequest.tenant.user.first_name,
+              ),
+              request_description: serviceRequest.description,
+              request_id: serviceRequest.request_id,
+            });
+            console.log('Tenant confirmation sent successfully');
+          } catch (error) {
+            console.error('Failed to send tenant confirmation:', error);
+          }
+
+          await this.cache.delete(`service_request_state_facility_${from}`);
+          break;
+        }
+
         await this.sendText(from, '❓ Unknown option selected.');
     }
   }
@@ -884,12 +1021,25 @@ export class WhatsappBotService {
 
     console.log('tenant sends:', text);
 
+    // Handle "switch role" command for multi-role users
+    if (
+      text?.toLowerCase() === 'switch role' ||
+      text?.toLowerCase() === 'switch'
+    ) {
+      await this.cache.delete(`selected_role_${from}`);
+      await this.sendText(
+        from,
+        'Role cleared. Send any message to select a new role.',
+      );
+      return;
+    }
+
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(
         from,
         'Menu Options',
         [
-          { id: 'service_request', title: 'Make service request' },
+          { id: 'service_request', title: 'Service request' },
           { id: 'view_tenancy', title: 'View tenancy details' },
           // {
           //   id: 'view_notices_and_documents',
@@ -1027,8 +1177,8 @@ export class WhatsappBotService {
                 day: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
-                second: '2-digit',
                 hour12: true,
+                timeZone: 'Africa/Lagos',
               }),
             });
 
@@ -1077,10 +1227,17 @@ export class WhatsappBotService {
                 day: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
-                second: '2-digit',
                 hour12: true,
+                timeZone: 'Africa/Lagos',
               }),
             });
+
+            // Store context: this notification was sent to a landlord
+            await this.cache.set(
+              `notification_role_${admin_phone_number}`,
+              'LANDLORD',
+              24 * 60 * 60 * 1000, // 24 hours
+            );
           }
         }
         await this.cache.delete(`service_request_state_${from}`);
@@ -1175,7 +1332,7 @@ export class WhatsappBotService {
             user.first_name,
           )} What would you like to do?`,
           [
-            { id: 'service_request', title: 'Make service request' },
+            { id: 'service_request', title: 'Service request' },
             { id: 'view_tenancy', title: 'View tenancy details' },
             // {
             //   id: 'view_notices_and_documents',
@@ -1190,11 +1347,87 @@ export class WhatsappBotService {
   }
 
   async handleInteractive(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply;
-    if (!buttonReply) return;
-    console.log(buttonReply.id, 'bID');
+    const buttonReply = message.interactive?.button_reply || message.button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
 
-    switch (buttonReply.id) {
+    if (!buttonReply) return;
+    console.log(buttonId, 'bID');
+
+    // Handle role selection buttons
+    if (buttonId === 'select_role_fm' || buttonId === 'select_role_landlord') {
+      const selectedRole =
+        buttonId === 'select_role_fm'
+          ? RolesEnum.FACILITY_MANAGER
+          : RolesEnum.LANDLORD;
+
+      console.log('✅ User selected role:', selectedRole);
+      console.log(
+        '💾 Storing in cache:',
+        `selected_role_${from}`,
+        '=',
+        selectedRole,
+      );
+
+      // Store selected role in cache (valid for 24 hours)
+      await this.cache.set(
+        `selected_role_${from}`,
+        selectedRole,
+        24 * 60 * 60 * 1000,
+      );
+
+      // Verify it was stored
+      const verify = await this.cache.get(`selected_role_${from}`);
+      console.log('✅ Verified cache storage:', verify);
+
+      // Route to appropriate handler based on selected role
+      if (selectedRole === RolesEnum.FACILITY_MANAGER) {
+        const user = await this.usersRepo.findOne({
+          where: { phone_number: from },
+          relations: ['accounts'],
+        });
+
+        await this.sendButtons(
+          from,
+          `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
+          [
+            { id: 'service_request', title: 'Service Requests' },
+            { id: 'view_account_info', title: 'Account Info' },
+            { id: 'visit_site', title: 'Visit Website' },
+          ],
+        );
+      } else {
+        const user = await this.usersRepo.findOne({
+          where: { phone_number: from },
+          relations: ['accounts'],
+        });
+
+        await this.sendButtons(
+          from,
+          `Hello ${this.utilService.toSentenceCase(user?.first_name || '')}, What do you want to do today?`,
+          [
+            { id: 'view_properties', title: 'View properties' },
+            { id: 'view_maintenance', title: 'maintenance requests' },
+            { id: 'new_tenant', title: 'Add new tenant' },
+          ],
+        );
+      }
+      return;
+    }
+
+    // Handle button IDs with payloads (e.g., "confirm_resolution_yes:request_id")
+    let cleanButtonId = buttonId;
+    if (buttonId?.includes(':')) {
+      const [action] = buttonId.split(':');
+      if (
+        action === 'confirm_resolution_yes' ||
+        action === 'confirm_resolution_no'
+      ) {
+        // Route to the appropriate case by using the action part
+        cleanButtonId = action;
+      }
+    }
+
+    switch (cleanButtonId) {
       case 'visit_site':
         await this.sendText(
           from,
@@ -1312,9 +1545,18 @@ export class WhatsappBotService {
 
         const serviceRequests = await this.serviceRequestRepo.find({
           where: [
-            { tenant: { user: { phone_number: from } } },
-            { tenant: { user: { phone_number: normalizedPhoneViewService } } },
-            { tenant: { user: { phone_number: localPhoneViewService } } },
+            {
+              tenant: { user: { phone_number: from } },
+              status: Not(ServiceRequestStatusEnum.CLOSED),
+            },
+            {
+              tenant: { user: { phone_number: normalizedPhoneViewService } },
+              status: Not(ServiceRequestStatusEnum.CLOSED),
+            },
+            {
+              tenant: { user: { phone_number: localPhoneViewService } },
+              status: Not(ServiceRequestStatusEnum.CLOSED),
+            },
           ],
           relations: ['tenant'],
           order: { created_at: 'DESC' },
@@ -1325,7 +1567,7 @@ export class WhatsappBotService {
           return;
         }
 
-        let response = 'Here are your recent service requests:\n';
+        let response = 'Here are your recent service requests:\n\n';
         serviceRequests.forEach((req: any) => {
           const date = new Date(req.created_at);
           const formattedDate = date.toLocaleDateString('en-GB', {
@@ -1338,17 +1580,7 @@ export class WhatsappBotService {
             minute: '2-digit',
             hour12: true,
           });
-          const statusEmoji =
-            req.status === ServiceRequestStatusEnum.OPEN
-              ? '(Open)'
-              : req.status === ServiceRequestStatusEnum.RESOLVED
-                ? '(Resolved)'
-                : req.status === ServiceRequestStatusEnum.CLOSED
-                  ? '(Closed)'
-                  : req.status === ServiceRequestStatusEnum.REOPENED
-                    ? '(Reopened)'
-                    : '';
-          response += `• ${formattedDate}, ${formattedTime} – ${req.description} ${statusEmoji}\n`;
+          response += `• ${formattedDate}, ${formattedTime} – ${req.description}\n\n`;
         });
 
         await this.sendText(from, response);
@@ -1470,7 +1702,7 @@ export class WhatsappBotService {
             from,
             `Hello ${this.utilService.toSentenceCase(userMainMenu.first_name)} What would you like to do?`,
             [
-              { id: 'service_request', title: 'Make service request' },
+              { id: 'service_request', title: 'Service request' },
               { id: 'view_tenancy', title: 'View tenancy details' },
               { id: 'visit_site', title: 'Visit our website' },
             ],
@@ -1504,7 +1736,14 @@ export class WhatsappBotService {
               status: ServiceRequestStatusEnum.RESOLVED,
             },
           ],
-          relations: ['tenant', 'facilityManager', 'facilityManager.account'],
+          relations: [
+            'tenant',
+            'tenant.user',
+            'facilityManager',
+            'facilityManager.account',
+            'facilityManager.account.user',
+            'property',
+          ],
           order: { resolution_date: 'DESC' },
         });
 
@@ -1573,7 +1812,14 @@ export class WhatsappBotService {
               status: ServiceRequestStatusEnum.RESOLVED,
             },
           ],
-          relations: ['tenant', 'facilityManager', 'facilityManager.account'],
+          relations: [
+            'tenant',
+            'tenant.user',
+            'facilityManager',
+            'facilityManager.account',
+            'facilityManager.account.user',
+            'property',
+          ],
           order: { resolution_date: 'DESC' },
         });
 

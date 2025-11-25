@@ -831,13 +831,7 @@ ${paymentHistory}
 
     const serviceRequests = await this.serviceRequestRepo.find({
       where: { property: { owner_id: ownerUser.accounts[0].id } },
-      relations: [
-        'property',
-        'tenant',
-        'tenant.user',
-        'facilityManager',
-        'notification',
-      ],
+      relations: ['property', 'tenant', 'tenant.user', 'facilityManager'],
       order: { date_reported: 'DESC' },
     });
 

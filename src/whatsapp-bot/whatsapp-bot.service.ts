@@ -243,7 +243,7 @@ export class WhatsappBotService {
     switch (role) {
       case RolesEnum.FACILITY_MANAGER:
         console.log('Facility Manager Message');
-        if (message.type === 'interactive') {
+        if (message.type === 'interactive' || message.type === 'button') {
           void this.handleFacilityInteractive(message, from);
         }
 
@@ -265,7 +265,7 @@ export class WhatsappBotService {
         break;
       case RolesEnum.LANDLORD:
         console.log('In Landlord');
-        if (message.type === 'interactive') {
+        if (message.type === 'interactive' || message.type === 'button') {
           void this.flow.handleInteractive(message, from);
         }
 
@@ -772,19 +772,23 @@ export class WhatsappBotService {
   }
 
   async handleFacilityInteractive(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply;
+    // Handle both interactive button_reply and direct button formats
+    const buttonReply = message.interactive?.button_reply || message.button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
+
     console.log('🔘 FM Button clicked:', {
+      messageType: message.type,
       buttonReply,
-      buttonId: buttonReply?.id,
+      buttonId,
       from,
     });
 
-    if (!buttonReply) {
+    if (!buttonReply || !buttonId) {
       console.log('❌ No button reply found in message');
       return;
     }
 
-    switch (buttonReply.id) {
+    switch (buttonId) {
       case 'view_all_service_requests':
       case 'service_request': {
         console.log('✅ Matched view_all_service_requests or service_request');

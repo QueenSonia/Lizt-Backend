@@ -177,43 +177,59 @@ export class WhatsappBotService {
       );
     }
 
-    // FIXED: Check account role based on notification context
-    // For users with multiple roles, check which role the notification was sent to
+    // FIXED: Check account role with role selection for multi-role users
     let role = user?.role; // Fallback to user.role if no accounts
 
     if (user?.accounts && user.accounts.length > 0) {
       console.log('🔍 Checking accounts for role...', {
         totalAccounts: user.accounts.length,
         accountRoles: user.accounts.map((acc) => acc.role),
-        lookingFor: {
-          landlord: RolesEnum.LANDLORD,
-          facilityManager: RolesEnum.FACILITY_MANAGER,
-          tenant: RolesEnum.TENANT,
-        },
       });
 
-      // Check if this message is a response to a notification we sent
-      const notificationRole = await this.cache.get(
-        `notification_role_${from}`,
-      );
+      // Check if user has selected a role (from role selection menu)
+      const selectedRole = await this.cache.get(`selected_role_${from}`);
 
-      if (notificationRole) {
-        console.log('📬 Found notification context:', notificationRole);
-        // Use the role from the notification context
-        const contextAccount = user.accounts.find(
-          (acc) => acc.role === notificationRole,
+      if (selectedRole) {
+        console.log('✅ Using previously selected role:', selectedRole);
+        role = selectedRole as RolesEnum;
+      } else {
+        // Check if user has multiple roles (FM + Landlord, or any combination)
+        const hasMultipleRoles = user.accounts.length > 1;
+        const hasFM = user.accounts.some(
+          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
         );
-        if (contextAccount) {
-          console.log('✅ Using notification context role:', notificationRole);
-          role = notificationRole as RolesEnum;
+        const hasLandlord = user.accounts.some(
+          (acc) => acc.role === RolesEnum.LANDLORD,
+        );
+
+        if (hasMultipleRoles && (hasFM || hasLandlord)) {
+          console.log(
+            '👥 User has multiple roles, showing role selection menu',
+          );
+
+          // Build role selection buttons
+          const roleButtons: { id: string; title: string }[] = [];
+          if (hasFM) {
+            roleButtons.push({
+              id: 'select_role_fm',
+              title: 'Facility Manager',
+            });
+          }
+          if (hasLandlord) {
+            roleButtons.push({ id: 'select_role_landlord', title: 'Landlord' });
+          }
+
+          await this.sendButtons(
+            from,
+            'You have multiple roles. Which would you like to use?',
+            roleButtons,
+          );
+
+          // Don't route yet, wait for role selection
+          return;
         }
-      }
 
-      // If no notification context, use priority: FACILITY_MANAGER > LANDLORD > TENANT
-      if (!notificationRole) {
-        console.log('📝 No notification context, using priority order');
-
-        // Check for facility manager account first
+        // Single role - use priority order
         const facilityAccount = user.accounts.find(
           (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
         );
@@ -221,7 +237,6 @@ export class WhatsappBotService {
           console.log('✅ Found FACILITY_MANAGER account:', facilityAccount.id);
           role = RolesEnum.FACILITY_MANAGER;
         } else {
-          // Check for landlord account
           const landlordAccount = user.accounts.find(
             (acc) => acc.role === RolesEnum.LANDLORD,
           );
@@ -229,7 +244,6 @@ export class WhatsappBotService {
             console.log('✅ Found LANDLORD account:', landlordAccount.id);
             role = RolesEnum.LANDLORD;
           } else {
-            // Check for tenant account
             const tenantAccount = user.accounts.find(
               (acc) => acc.role === RolesEnum.TENANT,
             );
@@ -237,12 +251,7 @@ export class WhatsappBotService {
               console.log('✅ Found TENANT account:', tenantAccount.id);
               role = RolesEnum.TENANT;
             } else {
-              console.log('❌ No matching account role found!', {
-                accountRoles: user.accounts.map((acc) => ({
-                  role: acc.role,
-                  typeOf: typeof acc.role,
-                })),
-              });
+              console.log('❌ No matching account role found!');
             }
           }
         }
@@ -455,6 +464,19 @@ export class WhatsappBotService {
     const text = message.text?.body;
 
     console.log(text, 'facility');
+
+    // Handle "switch role" command for multi-role users
+    if (
+      text?.toLowerCase() === 'switch role' ||
+      text?.toLowerCase() === 'switch'
+    ) {
+      await this.cache.delete(`selected_role_${from}`);
+      await this.sendText(
+        from,
+        'Role cleared. Send any message to select a new role.',
+      );
+      return;
+    }
 
     if (text?.toLowerCase() === 'start flow') {
       void this.sendFlow(from); // Call the send flow logic
@@ -920,6 +942,19 @@ export class WhatsappBotService {
 
     console.log('tenant sends:', text);
 
+    // Handle "switch role" command for multi-role users
+    if (
+      text?.toLowerCase() === 'switch role' ||
+      text?.toLowerCase() === 'switch'
+    ) {
+      await this.cache.delete(`selected_role_${from}`);
+      await this.sendText(
+        from,
+        'Role cleared. Send any message to select a new role.',
+      );
+      return;
+    }
+
     if (text?.toLowerCase() === 'menu') {
       await this.sendButtons(
         from,
@@ -1067,13 +1102,6 @@ export class WhatsappBotService {
                 timeZone: 'Africa/Lagos',
               }),
             });
-
-            // Store context: this notification was sent to a facility manager
-            await this.cache.set(
-              `notification_role_${manager.phone_number}`,
-              'FACILITY_MANAGER',
-              24 * 60 * 60 * 1000, // 24 hours
-            );
 
             // await this.sendButtons(
             //   manager.phone_number,
@@ -1240,11 +1268,64 @@ export class WhatsappBotService {
   }
 
   async handleInteractive(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply;
-    if (!buttonReply) return;
-    console.log(buttonReply.id, 'bID');
+    const buttonReply = message.interactive?.button_reply || message.button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
 
-    switch (buttonReply.id) {
+    if (!buttonReply) return;
+    console.log(buttonId, 'bID');
+
+    // Handle role selection buttons
+    if (buttonId === 'select_role_fm' || buttonId === 'select_role_landlord') {
+      const selectedRole =
+        buttonId === 'select_role_fm'
+          ? RolesEnum.FACILITY_MANAGER
+          : RolesEnum.LANDLORD;
+
+      console.log('✅ User selected role:', selectedRole);
+
+      // Store selected role in cache (valid for 24 hours)
+      await this.cache.set(
+        `selected_role_${from}`,
+        selectedRole,
+        24 * 60 * 60 * 1000,
+      );
+
+      // Route to appropriate handler based on selected role
+      if (selectedRole === RolesEnum.FACILITY_MANAGER) {
+        const user = await this.usersRepo.findOne({
+          where: { phone_number: from },
+          relations: ['accounts'],
+        });
+
+        await this.sendButtons(
+          from,
+          `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
+          [
+            { id: 'service_request', title: 'View all service requests' },
+            { id: 'view_account_info', title: 'View Account Info' },
+            { id: 'visit_site', title: 'Visit our website' },
+          ],
+        );
+      } else {
+        const user = await this.usersRepo.findOne({
+          where: { phone_number: from },
+          relations: ['accounts'],
+        });
+
+        await this.sendButtons(
+          from,
+          `Hello ${this.utilService.toSentenceCase(user?.first_name || '')}, What do you want to do today?`,
+          [
+            { id: 'view_properties', title: 'View properties' },
+            { id: 'view_maintenance', title: 'maintenance requests' },
+            { id: 'new_tenant', title: 'Add new tenant' },
+          ],
+        );
+      }
+      return;
+    }
+
+    switch (buttonId) {
       case 'visit_site':
         await this.sendText(
           from,

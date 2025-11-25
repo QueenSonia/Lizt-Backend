@@ -66,6 +66,19 @@ export class LandlordFlow {
    * Handle landlord TEXT input
    */
   async handleText(from: string, text: string) {
+    // Handle "switch role" command for multi-role users
+    if (
+      text?.toLowerCase() === 'switch role' ||
+      text?.toLowerCase() === 'switch'
+    ) {
+      await this.cache.delete(`selected_role_${from}`);
+      await this.whatsappUtil.sendText(
+        from,
+        'Role cleared. Send any message to select a new role.',
+      );
+      return;
+    }
+
     if (['done', 'menu'].includes(text?.toLowerCase())) {
       await this.lookup.handleExitOrMenu(from, text);
       return;

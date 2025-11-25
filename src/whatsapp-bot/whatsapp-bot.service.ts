@@ -28,7 +28,7 @@ import { LandlordInteractive } from './templates/landlord/landinteractive';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
-  { id: 'service_request', title: 'Make service request' },
+  { id: 'service_request', title: 'Service request' },
   { id: 'view_tenancy', title: 'View tenancy details' },
   { id: 'visit_site', title: 'Visit our website' },
 ];
@@ -635,8 +635,13 @@ export class WhatsappBotService {
 
       await this.sendText(
         from,
-        `${serviceRequest.description}\n\nTenant: ${this.utilService.toSentenceCase(serviceRequest.tenant.user.first_name)} ${this.utilService.toSentenceCase(serviceRequest.tenant.user.last_name)}\nProperty: ${serviceRequest.property.name}\nStatus: ${statusLabel}\n\nReply "Resolved" to mark it as fixed.\nReply "Back" to go to the list.`,
+        `*${serviceRequest.description}*\n\nTenant: ${this.utilService.toSentenceCase(serviceRequest.tenant.user.first_name)} ${this.utilService.toSentenceCase(serviceRequest.tenant.user.last_name)}\nProperty: ${serviceRequest.property.name}\nStatus: ${statusLabel}`,
       );
+
+      await this.sendButtons(from, 'What would you like to do?', [
+        { id: `mark_resolved:${serviceRequest.id}`, title: 'Mark as Resolved' },
+        { id: 'back_to_list', title: 'Back to List' },
+      ]);
 
       await this.cache.set(
         `service_request_state_facility_${from}`,
@@ -646,76 +651,14 @@ export class WhatsappBotService {
       return;
     }
 
-    // Handle marking request as resolved
+    // Handle marking request as resolved (kept for backward compatibility with text input)
     if (facilityState && facilityState.startsWith('viewing_request:')) {
-      const requestId = facilityState.split('viewing_request:')[1];
-
-      if (text.toLowerCase() === 'resolved') {
-        const serviceRequest = await this.serviceRequestRepo.findOne({
-          where: { id: requestId },
-          relations: ['tenant', 'tenant.user', 'facilityManager'],
-        });
-
-        if (!serviceRequest) {
-          await this.sendText(from, "I couldn't find that request.");
-          await this.cache.delete(`service_request_state_facility_${from}`);
-          return;
-        }
-
-        if (serviceRequest.status === ServiceRequestStatusEnum.CLOSED) {
-          await this.sendText(from, 'This request has already been closed.');
-          await this.cache.delete(`service_request_state_facility_${from}`);
-          return;
-        }
-
-        await this.serviceRequestService.updateStatus(
-          serviceRequest.id,
-          ServiceRequestStatusEnum.RESOLVED,
-        );
-
-        await this.sendText(
-          from,
-          "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
-        );
-
-        // Trigger Tenant Confirmation
-        console.log(
-          'Sending tenant confirmation to:',
-          serviceRequest.tenant.user.phone_number,
-        );
-        try {
-          await this.sendTenantConfirmationTemplate({
-            phone_number: this.utilService.normalizePhoneNumber(
-              serviceRequest.tenant.user.phone_number,
-            ),
-            tenant_name: this.utilService.toSentenceCase(
-              serviceRequest.tenant.user.first_name,
-            ),
-            request_description: serviceRequest.description,
-            request_id: serviceRequest.request_id,
-          });
-          console.log('Tenant confirmation sent successfully');
-        } catch (error) {
-          console.error('Failed to send tenant confirmation:', error);
-        }
-
-        await this.cache.delete(`service_request_state_facility_${from}`);
-        return;
-      } else if (text.toLowerCase() === 'back') {
-        // Go back to list
-        await this.sendButtons(from, 'What would you like to do?', [
-          { id: 'service_request', title: 'View all requests' },
-          { id: 'view_account_info', title: 'View Account Info' },
-        ]);
-        await this.cache.delete(`service_request_state_facility_${from}`);
-        return;
-      } else {
-        await this.sendText(
-          from,
-          'Please reply "Resolved" to mark as fixed, or "Back" to return to the list.',
-        );
-        return;
-      }
+      // User is viewing a request but typed text instead of using buttons
+      await this.sendText(
+        from,
+        'Please use the buttons above to mark as resolved or go back to the list.',
+      );
+      return;
     }
 
     if (facilityState === 'acknowledged') {
@@ -946,20 +889,10 @@ export class WhatsappBotService {
 
         let response = 'Here are all service requests:\n\n';
         serviceRequests.forEach((req: any, i) => {
-          const statusLabel =
-            req.status === ServiceRequestStatusEnum.OPEN
-              ? 'Open'
-              : req.status === ServiceRequestStatusEnum.RESOLVED
-                ? 'Resolved'
-                : req.status === ServiceRequestStatusEnum.REOPENED
-                  ? 'Reopened'
-                  : req.status === ServiceRequestStatusEnum.IN_PROGRESS
-                    ? 'In Progress'
-                    : req.status;
-          response += `${i + 1}. ${req.description} — ${statusLabel}\n`;
+          response += `${i + 1}. ${req.description} (${req.property.name})\n\n`;
         });
 
-        response += '\nReply with a number to view details.';
+        response += 'Reply with a number to view details.';
 
         await this.sendText(from, response);
 
@@ -1009,7 +942,71 @@ export class WhatsappBotService {
         );
         break;
 
+      case 'back_to_list':
+        await this.sendButtons(from, 'What would you like to do?', [
+          { id: 'service_request', title: 'View all requests' },
+          { id: 'view_account_info', title: 'View Account Info' },
+        ]);
+        await this.cache.delete(`service_request_state_facility_${from}`);
+        break;
+
       default:
+        // Handle dynamic button IDs like "mark_resolved:requestId"
+        if (buttonId.startsWith('mark_resolved:')) {
+          const requestId = buttonId.split('mark_resolved:')[1];
+
+          const serviceRequest = await this.serviceRequestRepo.findOne({
+            where: { id: requestId },
+            relations: ['tenant', 'tenant.user', 'facilityManager'],
+          });
+
+          if (!serviceRequest) {
+            await this.sendText(from, "I couldn't find that request.");
+            await this.cache.delete(`service_request_state_facility_${from}`);
+            return;
+          }
+
+          if (serviceRequest.status === ServiceRequestStatusEnum.CLOSED) {
+            await this.sendText(from, 'This request has already been closed.');
+            await this.cache.delete(`service_request_state_facility_${from}`);
+            return;
+          }
+
+          await this.serviceRequestService.updateStatus(
+            serviceRequest.id,
+            ServiceRequestStatusEnum.RESOLVED,
+          );
+
+          await this.sendText(
+            from,
+            "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
+          );
+
+          // Trigger Tenant Confirmation
+          console.log(
+            'Sending tenant confirmation to:',
+            serviceRequest.tenant.user.phone_number,
+          );
+          try {
+            await this.sendTenantConfirmationTemplate({
+              phone_number: this.utilService.normalizePhoneNumber(
+                serviceRequest.tenant.user.phone_number,
+              ),
+              tenant_name: this.utilService.toSentenceCase(
+                serviceRequest.tenant.user.first_name,
+              ),
+              request_description: serviceRequest.description,
+              request_id: serviceRequest.request_id,
+            });
+            console.log('Tenant confirmation sent successfully');
+          } catch (error) {
+            console.error('Failed to send tenant confirmation:', error);
+          }
+
+          await this.cache.delete(`service_request_state_facility_${from}`);
+          break;
+        }
+
         await this.sendText(from, '❓ Unknown option selected.');
     }
   }
@@ -1042,7 +1039,7 @@ export class WhatsappBotService {
         from,
         'Menu Options',
         [
-          { id: 'service_request', title: 'Make service request' },
+          { id: 'service_request', title: 'Service request' },
           { id: 'view_tenancy', title: 'View tenancy details' },
           // {
           //   id: 'view_notices_and_documents',
@@ -1335,7 +1332,7 @@ export class WhatsappBotService {
             user.first_name,
           )} What would you like to do?`,
           [
-            { id: 'service_request', title: 'Make service request' },
+            { id: 'service_request', title: 'Service request' },
             { id: 'view_tenancy', title: 'View tenancy details' },
             // {
             //   id: 'view_notices_and_documents',
@@ -1548,9 +1545,18 @@ export class WhatsappBotService {
 
         const serviceRequests = await this.serviceRequestRepo.find({
           where: [
-            { tenant: { user: { phone_number: from } } },
-            { tenant: { user: { phone_number: normalizedPhoneViewService } } },
-            { tenant: { user: { phone_number: localPhoneViewService } } },
+            {
+              tenant: { user: { phone_number: from } },
+              status: Not(ServiceRequestStatusEnum.CLOSED),
+            },
+            {
+              tenant: { user: { phone_number: normalizedPhoneViewService } },
+              status: Not(ServiceRequestStatusEnum.CLOSED),
+            },
+            {
+              tenant: { user: { phone_number: localPhoneViewService } },
+              status: Not(ServiceRequestStatusEnum.CLOSED),
+            },
           ],
           relations: ['tenant'],
           order: { created_at: 'DESC' },
@@ -1561,7 +1567,7 @@ export class WhatsappBotService {
           return;
         }
 
-        let response = 'Here are your recent service requests:\n';
+        let response = 'Here are your recent service requests:\n\n';
         serviceRequests.forEach((req: any) => {
           const date = new Date(req.created_at);
           const formattedDate = date.toLocaleDateString('en-GB', {
@@ -1574,17 +1580,7 @@ export class WhatsappBotService {
             minute: '2-digit',
             hour12: true,
           });
-          const statusEmoji =
-            req.status === ServiceRequestStatusEnum.OPEN
-              ? '(Open)'
-              : req.status === ServiceRequestStatusEnum.RESOLVED
-                ? '(Resolved)'
-                : req.status === ServiceRequestStatusEnum.CLOSED
-                  ? '(Closed)'
-                  : req.status === ServiceRequestStatusEnum.REOPENED
-                    ? '(Reopened)'
-                    : '';
-          response += `• ${formattedDate}, ${formattedTime} – ${req.description} ${statusEmoji}\n`;
+          response += `• ${formattedDate}, ${formattedTime} – ${req.description}\n\n`;
         });
 
         await this.sendText(from, response);
@@ -1706,7 +1702,7 @@ export class WhatsappBotService {
             from,
             `Hello ${this.utilService.toSentenceCase(userMainMenu.first_name)} What would you like to do?`,
             [
-              { id: 'service_request', title: 'Make service request' },
+              { id: 'service_request', title: 'Service request' },
               { id: 'view_tenancy', title: 'View tenancy details' },
               { id: 'visit_site', title: 'Visit our website' },
             ],

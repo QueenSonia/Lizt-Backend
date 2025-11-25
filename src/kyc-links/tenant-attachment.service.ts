@@ -481,10 +481,24 @@ export class TenantAttachmentService {
       );
 
       // Prepare email value - use new email if provided, otherwise keep existing
-      const emailToUse =
-        application.email && application.email.trim() !== ''
-          ? application.email
-          : existingUser.email;
+      let emailToUse = existingUser.email; // Default to existing email
+
+      if (application.email && application.email.trim() !== '') {
+        // Only update email if it's different and not already taken by another user
+        if (application.email !== existingUser.email) {
+          const emailConflict = await manager.findOne(Users, {
+            where: { email: application.email },
+          });
+
+          if (!emailConflict) {
+            emailToUse = application.email;
+          } else if (emailConflict.id !== existingUser.id) {
+            console.warn(
+              `Cannot update email to ${application.email} - already taken by user ${emailConflict.id}. Keeping existing email ${existingUser.email}`,
+            );
+          }
+        }
+      }
 
       // Update Users table with latest KYC data
       await manager.update(Users, existingUser.id, {

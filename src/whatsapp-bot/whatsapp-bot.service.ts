@@ -191,6 +191,15 @@ export class WhatsappBotService {
 
       if (selectedRole) {
         console.log('✅ Using previously selected role:', selectedRole);
+        console.log(
+          '🔍 Selected role type:',
+          typeof selectedRole,
+          selectedRole,
+        );
+        console.log('🔍 Enum values:', {
+          FM: RolesEnum.FACILITY_MANAGER,
+          LANDLORD: RolesEnum.LANDLORD,
+        });
         role = selectedRole as RolesEnum;
       } else {
         // Check if user has multiple roles (FM + Landlord, or any combination)
@@ -1282,6 +1291,12 @@ export class WhatsappBotService {
           : RolesEnum.LANDLORD;
 
       console.log('✅ User selected role:', selectedRole);
+      console.log(
+        '💾 Storing in cache:',
+        `selected_role_${from}`,
+        '=',
+        selectedRole,
+      );
 
       // Store selected role in cache (valid for 24 hours)
       await this.cache.set(
@@ -1289,6 +1304,10 @@ export class WhatsappBotService {
         selectedRole,
         24 * 60 * 60 * 1000,
       );
+
+      // Verify it was stored
+      const verify = await this.cache.get(`selected_role_${from}`);
+      console.log('✅ Verified cache storage:', verify);
 
       // Route to appropriate handler based on selected role
       if (selectedRole === RolesEnum.FACILITY_MANAGER) {

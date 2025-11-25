@@ -127,6 +127,70 @@ export class WhatsappBotService {
     console.log('📱 Incoming WhatsApp message from:', from);
     console.log('📨 Full message object:', JSON.stringify(message, null, 2));
 
+    // CRITICAL: Check if this is a role selection button click BEFORE role detection
+    const buttonReply =
+      message.interactive?.button_reply || (message as any).button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
+
+    if (buttonId === 'select_role_fm' || buttonId === 'select_role_landlord') {
+      console.log('🎯 Role selection button detected, handling directly');
+      // Handle role selection in the appropriate handler based on message type
+      if (message.type === 'interactive' || message.type === 'button') {
+        // This will be handled by handleInteractive/handleFacilityInteractive
+        // But we need to route it there without going through role detection
+        const selectedRole =
+          buttonId === 'select_role_fm'
+            ? RolesEnum.FACILITY_MANAGER
+            : RolesEnum.LANDLORD;
+
+        console.log('✅ User selected role:', selectedRole);
+        console.log(
+          '💾 Storing in cache:',
+          `selected_role_${from}`,
+          '=',
+          selectedRole,
+        );
+
+        await this.cache.set(
+          `selected_role_${from}`,
+          selectedRole,
+          24 * 60 * 60 * 1000,
+        );
+
+        const verify = await this.cache.get(`selected_role_${from}`);
+        console.log('✅ Verified cache storage:', verify);
+
+        // Now show the appropriate menu
+        const user = await this.usersRepo.findOne({
+          where: { phone_number: from },
+          relations: ['accounts'],
+        });
+
+        if (selectedRole === RolesEnum.FACILITY_MANAGER) {
+          await this.sendButtons(
+            from,
+            `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
+            [
+              { id: 'service_request', title: 'View all service requests' },
+              { id: 'view_account_info', title: 'View Account Info' },
+              { id: 'visit_site', title: 'Visit our website' },
+            ],
+          );
+        } else {
+          await this.sendButtons(
+            from,
+            `Hello ${this.utilService.toSentenceCase(user?.first_name || '')}, What do you want to do today?`,
+            [
+              { id: 'view_properties', title: 'View properties' },
+              { id: 'view_maintenance', title: 'maintenance requests' },
+              { id: 'new_tenant', title: 'Add new tenant' },
+            ],
+          );
+        }
+        return; // Don't continue with role detection
+      }
+    }
+
     // CRITICAL FIX: Try both phone number formats
     // WhatsApp sends international format (2348184350211)
     // But DB might have local format (08184350211)

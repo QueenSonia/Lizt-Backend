@@ -125,6 +125,7 @@ export class WhatsappBotService {
     if (!from || !message) return;
 
     console.log('📱 Incoming WhatsApp message from:', from);
+    console.log('📨 Full message object:', JSON.stringify(message, null, 2));
 
     // CRITICAL FIX: Try both phone number formats
     // WhatsApp sends international format (2348184350211)
@@ -772,11 +773,21 @@ export class WhatsappBotService {
 
   async handleFacilityInteractive(message: any, from: string) {
     const buttonReply = message.interactive?.button_reply;
-    if (!buttonReply) return;
+    console.log('🔘 FM Button clicked:', {
+      buttonReply,
+      buttonId: buttonReply?.id,
+      from,
+    });
+
+    if (!buttonReply) {
+      console.log('❌ No button reply found in message');
+      return;
+    }
 
     switch (buttonReply.id) {
       case 'view_all_service_requests':
       case 'service_request': {
+        console.log('✅ Matched view_all_service_requests or service_request');
         const teamMemberInfo = await this.teamMemberRepo.findOne({
           where: {
             account: { user: { phone_number: `${from}` } },

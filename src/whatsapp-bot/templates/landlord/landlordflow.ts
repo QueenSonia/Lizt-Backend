@@ -99,7 +99,16 @@ export class LandlordFlow {
    */
   async handleInteractive(message: any, from: string) {
     const buttonReply = message.interactive?.button_reply;
-    if (!buttonReply) return;
+    console.log('🔘 Landlord Button clicked:', {
+      buttonReply,
+      buttonId: buttonReply?.id,
+      from,
+    });
+
+    if (!buttonReply) {
+      console.log('❌ No button reply found in message');
+      return;
+    }
 
     const handlers: Record<string, () => Promise<void>> = {
       view_properties: () => this.lookup.handleViewProperties(from),
@@ -111,8 +120,17 @@ export class LandlordFlow {
     };
 
     const handler = handlers[buttonReply.id];
+    console.log('🔍 Handler lookup:', {
+      buttonId: buttonReply.id,
+      handlerFound: !!handler,
+      availableHandlers: Object.keys(handlers),
+    });
+
     if (handler) {
+      console.log('✅ Executing handler for:', buttonReply.id);
       await handler();
+    } else {
+      console.log('❌ No handler found for button:', buttonReply.id);
     }
   }
 

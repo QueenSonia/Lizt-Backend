@@ -98,14 +98,18 @@ export class LandlordFlow {
    * Handle landlord INTERACTIVE button clicks
    */
   async handleInteractive(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply;
+    // Handle both interactive button_reply and direct button formats
+    const buttonReply = message.interactive?.button_reply || message.button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
+
     console.log('🔘 Landlord Button clicked:', {
+      messageType: message.type,
       buttonReply,
-      buttonId: buttonReply?.id,
+      buttonId,
       from,
     });
 
-    if (!buttonReply) {
+    if (!buttonReply || !buttonId) {
       console.log('❌ No button reply found in message');
       return;
     }
@@ -119,18 +123,18 @@ export class LandlordFlow {
       new_tenant: () => this.lookup.startAddTenantFlow(from),
     };
 
-    const handler = handlers[buttonReply.id];
+    const handler = handlers[buttonId];
     console.log('🔍 Handler lookup:', {
-      buttonId: buttonReply.id,
+      buttonId: buttonId,
       handlerFound: !!handler,
       availableHandlers: Object.keys(handlers),
     });
 
     if (handler) {
-      console.log('✅ Executing handler for:', buttonReply.id);
+      console.log('✅ Executing handler for:', buttonId);
       await handler();
     } else {
-      console.log('❌ No handler found for button:', buttonReply.id);
+      console.log('❌ No handler found for button:', buttonId);
     }
   }
 

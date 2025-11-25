@@ -358,7 +358,7 @@ export class WhatsappBotService {
         break;
       case RolesEnum.TENANT:
         console.log('In tenant');
-        if (message.type === 'interactive') {
+        if (message.type === 'interactive' || message.type === 'button') {
           void this.handleInteractive(message, from);
         }
 
@@ -1417,7 +1417,20 @@ export class WhatsappBotService {
       return;
     }
 
-    switch (buttonId) {
+    // Handle button IDs with payloads (e.g., "confirm_resolution_yes:request_id")
+    let cleanButtonId = buttonId;
+    if (buttonId?.includes(':')) {
+      const [action] = buttonId.split(':');
+      if (
+        action === 'confirm_resolution_yes' ||
+        action === 'confirm_resolution_no'
+      ) {
+        // Route to the appropriate case by using the action part
+        cleanButtonId = action;
+      }
+    }
+
+    switch (cleanButtonId) {
       case 'visit_site':
         await this.sendText(
           from,

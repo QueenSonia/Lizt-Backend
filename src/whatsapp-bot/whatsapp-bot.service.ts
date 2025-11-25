@@ -1297,7 +1297,7 @@ export class WhatsappBotService {
           },
           {
             id: 'view_service_request',
-            title: 'View previous requests',
+            title: 'View all requests',
           },
         ]);
         break;

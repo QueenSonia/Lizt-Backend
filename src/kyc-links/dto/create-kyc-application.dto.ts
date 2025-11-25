@@ -204,20 +204,24 @@ export class CreateKYCApplicationDto {
   @IsString()
   additional_notes?: string;
 
-  // Document URLs (from Cloudinary)
-  @IsOptional()
+  // Document URLs (from Cloudinary) - Required documents
   @IsString()
-  passport_photo_url?: string;
+  @IsNotEmpty()
+  passport_photo_url: string;
 
-  @IsOptional()
   @IsString()
-  id_document_url?: string;
+  @IsNotEmpty()
+  id_document_url: string;
 
-  @IsOptional()
+  // Employment proof is required if employment_status is "employed"
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsString()
+  @IsNotEmpty()
   employment_proof_url?: string;
 
-  @IsOptional()
+  // Business proof is required if employment_status is "self-employed"
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
   @IsString()
+  @IsNotEmpty()
   business_proof_url?: string;
 }

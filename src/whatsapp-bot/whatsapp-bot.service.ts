@@ -887,9 +887,9 @@ export class WhatsappBotService {
             user.first_name,
           )} Welcome to Property Kraft! What would you like to do today?`,
           [
-            { id: 'service_request', title: 'View all service requests' },
-            { id: 'view_account_info', title: 'View Account Info' },
-            { id: 'visit_site', title: 'Visit our website' },
+            { id: 'service_request', title: 'Service Requests' },
+            { id: 'view_account_info', title: 'Account Info' },
+            { id: 'visit_site', title: 'Visit Website' },
           ],
         );
       }
@@ -1393,9 +1393,9 @@ export class WhatsappBotService {
           from,
           `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
           [
-            { id: 'service_request', title: 'View all service requests' },
-            { id: 'view_account_info', title: 'View Account Info' },
-            { id: 'visit_site', title: 'Visit our website' },
+            { id: 'service_request', title: 'Service Requests' },
+            { id: 'view_account_info', title: 'Account Info' },
+            { id: 'visit_site', title: 'Visit Website' },
           ],
         );
       } else {

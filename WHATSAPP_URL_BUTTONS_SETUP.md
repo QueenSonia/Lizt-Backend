@@ -39,7 +39,7 @@ WhatsApp has two types of buttons:
 #### Template Name
 
 ```
-landlord_main_menu
+landlord_account_menu
 ```
 
 #### Category
@@ -148,7 +148,7 @@ async sendLandlordMainMenu(to: string, landlordName: string) {
     to,
     type: 'template',
     template: {
-      name: 'landlord_main_menu',
+      name: 'landlord_account_menu',
       language: {
         code: 'en',
       },
@@ -271,7 +271,7 @@ async sendLandlordMenuList(to: string, landlordName: string) {
 
 ### For Production (Best UX)
 
-1. Create and get approval for `landlord_main_menu` template
+1. Create and get approval for `landlord_account_menu` template
 2. Use URL buttons for "View Properties" and "Maintenance"
 3. Use quick reply button for "Generate KYC Link"
 
@@ -316,7 +316,7 @@ curl -X POST "https://graph.facebook.com/v18.0/YOUR_PHONE_ID/messages" \
     "to": "YOUR_TEST_NUMBER",
     "type": "template",
     "template": {
-      "name": "landlord_main_menu",
+      "name": "landlord_account_menu",
       "language": { "code": "en" },
       "components": [
         {

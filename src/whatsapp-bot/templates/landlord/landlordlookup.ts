@@ -77,7 +77,7 @@ export class LandlordLookup {
           return;
         }
 
-        // Generate KYC link
+        // Generate or retrieve existing KYC link
         const kycLinkResponse = await this.kycLinksService.generateKYCLink(
           selectedProperty.id,
           ownerUser.accounts[0].id,
@@ -86,18 +86,45 @@ export class LandlordLookup {
         const baseUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
         const kycLink = `${baseUrl}/kyc/${kycLinkResponse.token}`;
 
+        // Format expiry date
+        const expiryDate = new Date(kycLinkResponse.expiresAt);
+        const formattedExpiry = expiryDate.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        });
+
         await this.whatsappUtil.sendText(
           from,
-          `✅ KYC link generated for *${selectedProperty.name}*\n\n🔗 ${kycLink}\n\nShare this link with potential tenants to complete their application.`,
+          `✅ KYC link for *${selectedProperty.name}*\n\n🔗 ${kycLink}\n\n📅 Expires: ${formattedExpiry}\n\nShare this link with potential tenants to complete their application.`,
         );
 
         await this.cache.delete(`service_request_state_landlord_${from}`);
       } catch (error) {
         console.error('Error generating KYC link:', error);
-        await this.whatsappUtil.sendText(
-          from,
-          'Failed to generate KYC link. Please try again or contact support.',
-        );
+
+        // Extract meaningful error message
+        let errorMessage =
+          'Failed to generate KYC link. Please try again or contact support.';
+
+        if (error.response?.message) {
+          // Handle NestJS HttpException errors
+          const message = error.response.message;
+          if (message.includes('already has an active tenant')) {
+            errorMessage = `❌ Cannot generate KYC link for *${selectedProperty.name}*\n\nThis property already has an active tenant. KYC links can only be generated for vacant properties.`;
+          } else if (message.includes('not found')) {
+            errorMessage = `❌ Property not found. Please try again.`;
+          } else if (message.includes('not authorized')) {
+            errorMessage = `❌ You are not authorized to generate a KYC link for this property.`;
+          } else {
+            errorMessage = `❌ ${message}`;
+          }
+        } else if (error.message) {
+          // Handle generic errors
+          errorMessage = `❌ ${error.message}`;
+        }
+
+        await this.whatsappUtil.sendText(from, errorMessage);
         await this.cache.delete(`service_request_state_landlord_${from}`);
       }
     }

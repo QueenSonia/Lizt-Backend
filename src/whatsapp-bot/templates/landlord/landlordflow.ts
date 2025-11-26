@@ -21,6 +21,7 @@ import {
   RentStatusEnum,
 } from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
+import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
 
 @Injectable()
 export class LandlordFlow {
@@ -47,18 +48,17 @@ export class LandlordFlow {
 
     private readonly cache: CacheService,
     private readonly utilService: UtilService,
+    private readonly kycLinksService: KYCLinksService,
   ) {
     const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config);
     this.lookup = new LandlordLookup(
       cache,
-      propertyTenantRepo,
       propertyRepo,
-      serviceRequestRepo,
       usersRepo,
-      rentRepo,
       accountRepo,
       utilService,
+      kycLinksService,
     );
   }
 
@@ -94,15 +94,9 @@ export class LandlordFlow {
 
     console.log({ type });
 
-    if (type === 'add_tenant') {
-      await this.lookup.handleAddTenantText(from, text);
-    } else if (['tenancy', 'maintenance', 'property_action'].includes(type)) {
-      await this.lookup.handleLookup(from, `${text}`);
+    if (type === 'generate_kyc_link') {
+      await this.lookup.handleGenerateKYCLinkText(from, text);
     } else {
-      // await this.whatsappUtil.sendText(
-      //   from,
-      //   'Invalid state. Please try again.',
-      // );
       await this.lookup.handleExitOrMenu(from, text);
     }
   }
@@ -128,12 +122,22 @@ export class LandlordFlow {
     }
 
     const handlers: Record<string, () => Promise<void>> = {
-      view_properties: () => this.lookup.handleViewProperties(from),
-      view_vacant: () => this.lookup.handleVacantProperties(from),
-      view_occupied: () => this.lookup.handleOccupiedProperties(from),
-      view_maintenance: () => this.lookup.handleViewMaintenance(from),
-      view_all_service_requests: () => this.lookup.handleViewMaintenance(from),
-      new_tenant: () => this.lookup.startAddTenantFlow(from),
+      view_properties: () =>
+        this.whatsappUtil.sendText(
+          from,
+          '🏠 View your properties here: https://www.lizt.co/landlord/properties',
+        ),
+      view_maintenance: () =>
+        this.whatsappUtil.sendText(
+          from,
+          '🛠️ View maintenance requests here: https://www.lizt.co/landlord/service-requests',
+        ),
+      view_all_service_requests: () =>
+        this.whatsappUtil.sendText(
+          from,
+          '🛠️ View maintenance requests here: https://www.lizt.co/landlord/service-requests',
+        ),
+      generate_kyc_link: () => this.lookup.startGenerateKYCLinkFlow(from),
     };
 
     const handler = handlers[buttonId];

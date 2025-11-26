@@ -183,7 +183,7 @@ export class WhatsappBotService {
             [
               { id: 'view_properties', title: 'View properties' },
               { id: 'view_maintenance', title: 'Maintenance requests' },
-              { id: 'new_tenant', title: 'Add tenant' },
+              { id: 'generate_kyc_link', title: 'Generate KYC link' },
             ],
           );
         }
@@ -1406,8 +1406,8 @@ export class WhatsappBotService {
           `Hello ${this.utilService.toSentenceCase(user?.first_name || '')}, What do you want to do today?`,
           [
             { id: 'view_properties', title: 'View properties' },
-            { id: 'view_maintenance', title: 'maintenance requests' },
-            { id: 'new_tenant', title: 'Add new tenant' },
+            { id: 'view_maintenance', title: 'Maintenance requests' },
+            { id: 'generate_kyc_link', title: 'Generate KYC link' },
           ],
         );
       }
@@ -2282,6 +2282,27 @@ export class WhatsappBotService {
     tenant_phone_number,
     date_created,
   }) {
+    // Check if this is being sent to a landlord
+    const notificationRole = await this.cache.get(
+      `notification_role_${phone_number}`,
+    );
+
+    // For landlords, send a simple text message with a link
+    if (notificationRole === 'LANDLORD') {
+      const message = `🛠️ *New Service Request*
+
+Tenant: ${tenant_name}
+Property: ${property_name}
+Issue: ${service_request}
+Reported: ${date_created}
+
+View all requests: https://www.lizt.co/landlord/service-requests`;
+
+      await this.sendText(phone_number, message);
+      return;
+    }
+
+    // For facility managers, use the template with button
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,

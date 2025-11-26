@@ -17,6 +17,7 @@ import { Account } from 'src/users/entities/account.entity';
 import { LandlordFlow } from './templates/landlord/landlordflow';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { UtilsModule } from 'src/utils/utils.module';
+import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { UtilsModule } from 'src/utils/utils.module';
     ServiceRequestsModule,
     forwardRef(() => UsersModule),
     UtilsModule,
+    KYCLinksModule,
   ],
   controllers: [WhatsappBotController],
   providers: [WhatsappBotService, LandlordFlow],

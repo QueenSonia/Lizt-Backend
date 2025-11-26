@@ -123,21 +123,8 @@ export class LandlordFlow {
     }
 
     const handlers: Record<string, () => Promise<void>> = {
-      view_properties: () =>
-        this.whatsappUtil.sendText(
-          from,
-          '🏠 View your properties here: https://www.lizt.co/landlord/properties',
-        ),
-      view_maintenance: () =>
-        this.whatsappUtil.sendText(
-          from,
-          '🛠️ View maintenance requests here: https://www.lizt.co/landlord/service-requests',
-        ),
-      view_all_service_requests: () =>
-        this.whatsappUtil.sendText(
-          from,
-          '🛠️ View maintenance requests here: https://www.lizt.co/landlord/service-requests',
-        ),
+      // URL buttons (view_properties, view_maintenance) redirect automatically
+      // Only handle the quick reply button
       generate_kyc_link: () => this.lookup.startGenerateKYCLinkFlow(from),
     };
 

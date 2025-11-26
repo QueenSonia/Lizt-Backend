@@ -22,7 +22,7 @@ import { UtilService } from '../utils/utility-service';
 export interface KYCLinkResponse {
   token: string;
   link: string;
-  expiresAt: Date;
+  expiresAt: Date | null; // null means no expiration
   propertyId: string;
 }
 
@@ -58,8 +58,6 @@ export enum WhatsAppErrorCode {
 
 @Injectable()
 export class KYCLinksService {
-  private readonly DEFAULT_EXPIRY_DAYS = 7;
-
   constructor(
     @InjectRepository(KYCLink)
     private readonly kycLinkRepository: Repository<KYCLink>,
@@ -75,6 +73,7 @@ export class KYCLinksService {
 
   /**
    * Generate a unique KYC link for a property
+   * Links remain active until property becomes occupied, is manually deactivated, or property is deleted
    * Requirements: 1.1, 1.2, 2.1, 2.2
    */
   async generateKYCLink(
@@ -103,31 +102,41 @@ export class KYCLinksService {
     });
 
     if (existingLink && existingLink.token) {
-      // Return existing active link
+      // Return existing active link (no expiration check needed)
+      console.log('✅ Returning existing active KYC link:', {
+        token: existingLink.token.substring(0, 8) + '...',
+        propertyId,
+        createdAt:
+          existingLink.created_at instanceof Date
+            ? existingLink.created_at.toISOString()
+            : existingLink.created_at || 'unknown',
+      });
+
       const baseUrl =
         this.configService.get('FRONTEND_URL') || 'http://localhost:3000';
       return {
         token: existingLink.token,
         link: `${baseUrl}/kyc/${existingLink.token}`,
-        expiresAt: existingLink.expires_at,
+        expiresAt: null, // No expiration
         propertyId: existingLink.property_id,
       };
     }
 
-    // Generate new token and expiry date
+    // Generate new token (no expiration date needed)
     const token = uuidv4();
-    const expiryDays =
-      this.configService.get('KYC_LINK_EXPIRY_DAYS') ||
-      this.DEFAULT_EXPIRY_DAYS;
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + expiryDays);
 
-    // Create new KYC link
+    console.log('🔗 Generating new KYC link:', {
+      propertyId,
+      token: token.substring(0, 8) + '...',
+      noExpiration: true,
+    });
+
+    // Create new KYC link without expiration
     const kycLink = this.kycLinkRepository.create({
       token,
       property_id: propertyId,
       landlord_id: landlordId,
-      expires_at: expiresAt,
+      expires_at: undefined, // No expiration (use undefined instead of null for TypeORM)
       is_active: true,
     });
 
@@ -140,7 +149,7 @@ export class KYCLinksService {
     return {
       token,
       link,
-      expiresAt,
+      expiresAt: null, // No expiration
       propertyId,
     };
   }
@@ -178,14 +187,7 @@ export class KYCLinksService {
         };
       }
 
-      if (new Date() > kycLink.expires_at) {
-        // Deactivate expired token
-        await this.kycLinkRepository.update(kycLink.id, { is_active: false });
-        return {
-          valid: false,
-          error: 'This KYC form has expired',
-        };
-      }
+      // No expiration check needed - links remain active until property status changes
 
       // Check if property still exists and is accessible
       if (!kycLink.property) {
@@ -261,31 +263,6 @@ export class KYCLinksService {
         'Failed to deactivate KYC links',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
-    }
-  }
-
-  /**
-   * Deactivate expired KYC links (cleanup method)
-   * Can be called periodically to clean up expired links
-   */
-  async deactivateExpiredKYCLinks(): Promise<number> {
-    try {
-      const result = await this.kycLinkRepository.update(
-        {
-          is_active: true,
-          expires_at: LessThan(new Date()),
-        },
-        {
-          is_active: false,
-        },
-      );
-
-      const deactivatedCount = result.affected || 0;
-      console.log(`Deactivated ${deactivatedCount} expired KYC links`);
-      return deactivatedCount;
-    } catch (error) {
-      console.error('Error deactivating expired KYC links:', error);
-      return 0;
     }
   }
 

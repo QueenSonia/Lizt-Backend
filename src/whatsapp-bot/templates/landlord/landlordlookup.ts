@@ -87,17 +87,10 @@ export class LandlordLookup {
         const baseUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
         const kycLink = `${baseUrl}/kyc/${kycLinkResponse.token}`;
 
-        // Format expiry date
-        const expiryDate = new Date(kycLinkResponse.expiresAt);
-        const formattedExpiry = expiryDate.toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-        });
-
+        // No expiration date needed
         await this.whatsappUtil.sendText(
           from,
-          `✅ KYC link for *${selectedProperty.name}*\n\n🔗 ${kycLink}\n\n📅 Expires: ${formattedExpiry}\n\nShare this link with potential tenants to complete their application.`,
+          `✅ KYC link for *${selectedProperty.name}*\n\n🔗 ${kycLink}\n\n🔄 This link remains active until the property is rented\n\nShare this link with potential tenants to complete their application.`,
         );
 
         await this.cache.delete(`service_request_state_landlord_${from}`);

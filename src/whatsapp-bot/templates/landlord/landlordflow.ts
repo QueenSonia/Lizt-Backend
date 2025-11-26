@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RolesEnum } from 'src/base.entity';
@@ -48,6 +48,7 @@ export class LandlordFlow {
 
     private readonly cache: CacheService,
     private readonly utilService: UtilService,
+    @Inject(forwardRef(() => KYCLinksService))
     private readonly kycLinksService: KYCLinksService,
   ) {
     const config = new ConfigService();

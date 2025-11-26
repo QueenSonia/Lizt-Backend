@@ -34,7 +34,7 @@ import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
     ServiceRequestsModule,
     forwardRef(() => UsersModule),
     UtilsModule,
-    KYCLinksModule,
+    forwardRef(() => KYCLinksModule),
   ],
   controllers: [WhatsappBotController],
   providers: [WhatsappBotService, LandlordFlow],

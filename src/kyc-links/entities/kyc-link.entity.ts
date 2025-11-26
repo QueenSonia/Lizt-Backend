@@ -15,7 +15,7 @@ export class KYCLink extends BaseEntity {
   @Column({ type: 'uuid' })
   landlord_id: string;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: 'timestamp', nullable: true })
   expires_at: Date;
 
   @Column({ type: 'boolean', default: true })

@@ -40,8 +40,10 @@ ${event.description}`,
       const notification = await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.SERVICE_REQUEST,
-        description: `Service request for ${event.property_name} was updated to ${event.status}.
-${statusChangeText}`,
+        //         description: `Service request for ${event.property_name} was updated to ${event.status}.
+        // ${statusChangeText}`,
+        description: `Service request for ${event.property_name}.
+status ${statusChangeText}`,
         status: 'Pending',
         property_id: event.property_id,
         user_id: event.landlord_id,

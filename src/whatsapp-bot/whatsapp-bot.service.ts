@@ -177,15 +177,10 @@ export class WhatsappBotService {
             ],
           );
         } else {
-          await this.sendButtons(
-            from,
-            `Hello ${this.utilService.toSentenceCase(user?.first_name || '')}, What do you want to do today?`,
-            [
-              { id: 'view_properties', title: 'View properties' },
-              { id: 'view_maintenance', title: 'Maintenance requests' },
-              { id: 'generate_kyc_link', title: 'Generate KYC link' },
-            ],
+          const landlordName = this.utilService.toSentenceCase(
+            user?.first_name || 'there',
           );
+          await this.sendLandlordMainMenu(from, landlordName);
         }
         return; // Don't continue with role detection
       }
@@ -2287,18 +2282,44 @@ export class WhatsappBotService {
       `notification_role_${phone_number}`,
     );
 
-    // For landlords, send a simple text message with a link
+    // For landlords, use template with URL button for direct redirect
     if (notificationRole === 'LANDLORD') {
-      const message = `🛠️ *New Service Request*
+      const payload = {
+        messaging_product: 'whatsapp',
+        to: phone_number,
+        type: 'template',
+        template: {
+          name: 'landlord_service_request_notification',
+          language: {
+            code: 'en',
+          },
+          components: [
+            {
+              type: 'body',
+              parameters: [
+                {
+                  type: 'text',
+                  text: tenant_name, // {{1}}
+                },
+                {
+                  type: 'text',
+                  text: property_name, // {{2}}
+                },
+                {
+                  type: 'text',
+                  text: service_request, // {{3}}
+                },
+                {
+                  type: 'text',
+                  text: date_created, // {{4}}
+                },
+              ],
+            },
+          ],
+        },
+      };
 
-Tenant: ${tenant_name}
-Property: ${property_name}
-Issue: ${service_request}
-Reported: ${date_created}
-
-View all requests: https://www.lizt.co/landlord/service-requests`;
-
-      await this.sendText(phone_number, message);
+      await this.sendToWhatsappAPI(payload);
       return;
     }
 
@@ -2391,6 +2412,49 @@ View all requests: https://www.lizt.co/landlord/service-requests`;
             },
           })),
         },
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send landlord main menu with URL buttons (requires approved template)
+   * Template name: landlord_main_menu
+   * This uses a WhatsApp template with URL buttons that redirect directly
+   */
+  async sendLandlordMainMenu(to: string, landlordName: string) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: 'landlord_main_menu',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlordName,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 2, // Third button (Generate KYC Link)
+            parameters: [
+              {
+                type: 'payload',
+                payload: 'generate_kyc_link',
+              },
+            ],
+          },
+        ],
       },
     };
 

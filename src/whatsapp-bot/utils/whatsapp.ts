@@ -45,6 +45,49 @@ export class WhatsappUtils {
     await this.sendToWhatsappAPI(payload);
   }
 
+  /**
+   * Send landlord main menu with URL buttons (requires approved template)
+   * Template name: landlord_main_menu
+   * This uses a WhatsApp template with URL buttons that redirect directly
+   */
+  async sendLandlordMainMenu(to: string, landlordName: string) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: 'landlord_main_menu',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlordName,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 2, // Third button (Generate KYC Link)
+            parameters: [
+              {
+                type: 'payload',
+                payload: 'generate_kyc_link',
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   private async sendToWhatsappAPI(payload: object) {
     try {
       const response = await fetch(

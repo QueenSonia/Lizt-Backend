@@ -144,15 +144,13 @@ export class LandlordLookup {
         relations: ['accounts'],
       });
 
-      await this.whatsappUtil.sendButtons(
-        from,
-        `Hello ${ownerUser?.accounts[0]?.profile_name || 'there'}, What do you want to do today?`,
-        [
-          { id: 'view_properties', title: 'View properties' },
-          { id: 'view_maintenance', title: 'Maintenance requests' },
-          { id: 'generate_kyc_link', title: 'Generate KYC link' },
-        ],
-      );
+      const landlordName =
+        ownerUser?.accounts[0]?.profile_name ||
+        ownerUser?.first_name ||
+        'there';
+
+      // Use template with URL buttons for direct redirects
+      await this.whatsappUtil.sendLandlordMainMenu(from, landlordName);
       return;
     }
   }

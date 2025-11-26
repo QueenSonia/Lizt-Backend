@@ -5,6 +5,8 @@ import {
   BadRequestException,
   HttpException,
   HttpStatus,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan, MoreThan } from 'typeorm';
@@ -66,6 +68,7 @@ export class KYCLinksService {
     @InjectRepository(KYCOtp)
     private readonly kycOtpRepository: Repository<KYCOtp>,
     private readonly configService: ConfigService,
+    @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
   ) {}

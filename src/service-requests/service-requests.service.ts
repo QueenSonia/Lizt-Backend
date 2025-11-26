@@ -385,6 +385,7 @@ export class ServiceRequestsService {
     });
     if (!request) throw new NotFoundException('Request not found');
 
+    const previousStatus = request.status;
     request.status = status;
     if (notes) request.notes = notes;
     if (status === ServiceRequestStatusEnum.RESOLVED)
@@ -397,6 +398,7 @@ export class ServiceRequestsService {
     this.eventEmitter.emit('service.updated', {
       request_id: savedRequest.id,
       status: savedRequest.status,
+      previous_status: previousStatus,
       tenant_name: request.tenant_name,
       property_name: request.property_name,
       property_id: request.property_id,

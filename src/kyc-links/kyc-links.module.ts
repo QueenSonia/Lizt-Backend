@@ -36,7 +36,7 @@ import { NotificationModule } from '../notifications/notification.module';
       TenantKyc,
     ]),
     ConfigModule,
-    WhatsappBotModule,
+    forwardRef(() => WhatsappBotModule),
     forwardRef(() => EventsModule),
     forwardRef(() => NotificationModule),
     UtilsModule,

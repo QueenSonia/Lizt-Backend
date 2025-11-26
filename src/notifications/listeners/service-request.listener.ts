@@ -16,7 +16,8 @@ export class ServiceRequestListener {
       const notification = await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.SERVICE_REQUEST,
-        description: `${event.tenant_name} made a service request for ${event.property_name}.`,
+        description: `${event.tenant_name} made a service request for ${event.property_name}.
+${event.description}`,
         status: 'Pending',
         property_id: event.property_id,
         user_id: event.landlord_id, // Use landlord_id instead of user_id (tenant_id)
@@ -32,10 +33,15 @@ export class ServiceRequestListener {
   async handleUpdate(event: any) {
     console.log('Service request update listener triggered:', event);
     try {
+      const statusChangeText = event.previous_status
+        ? `changed from ${event.previous_status} to ${event.status}`
+        : `status: ${event.status}`;
+
       const notification = await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.SERVICE_REQUEST,
-        description: `Service request for ${event.property_name} was updated to ${event.status}.`,
+        description: `Service request for ${event.property_name} was updated to ${event.status}.
+${statusChangeText}`,
         status: 'Pending',
         property_id: event.property_id,
         user_id: event.landlord_id,

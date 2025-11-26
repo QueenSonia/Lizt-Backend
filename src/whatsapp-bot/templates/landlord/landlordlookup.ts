@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { RolesEnum } from 'src/base.entity';
 import { CacheService } from 'src/lib/cache';
 import { Property } from 'src/properties/entities/property.entity';
+import { PropertyStatusEnum } from 'src/properties/dto/create-property.dto';
 import { Account } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { UtilService } from 'src/utils/utility-service';
@@ -170,21 +171,24 @@ export class LandlordLookup {
       return;
     }
 
-    // Fetch all properties for this landlord
+    // Fetch only vacant properties for this landlord
     const properties = await this.propertyRepo.find({
-      where: { owner_id: ownerUser.accounts[0].id },
+      where: {
+        owner_id: ownerUser.accounts[0].id,
+        property_status: PropertyStatusEnum.VACANT,
+      },
     });
 
     if (!properties.length) {
       await this.whatsappUtil.sendText(
         from,
-        'You do not have any properties yet. Please add properties on the web app first.',
+        '🏠 You do not have any vacant properties at the moment.\n\nKYC links can only be generated for vacant properties. Once a property becomes vacant, you can generate a KYC link for it.',
       );
       return;
     }
 
     // Build property list message
-    let message = '🏘️ Select a property to generate KYC link:\n\n';
+    let message = '🏘️ Select a vacant property to generate KYC link:\n\n';
     const propertyList = properties.map((p, index) => ({
       id: p.id,
       name: p.name,

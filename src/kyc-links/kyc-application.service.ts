@@ -670,7 +670,8 @@ export class KYCApplicationService {
       throw new BadRequestException('This KYC form is no longer available');
     }
 
-    if (new Date() > kycLink.expires_at) {
+    // Check expiration only if expires_at is set (for backward compatibility with old links)
+    if (kycLink.expires_at && new Date() > kycLink.expires_at) {
       // Deactivate expired token
       await this.kycLinkRepository.update(kycLink.id, { is_active: false });
       throw new BadRequestException('This KYC form has expired');

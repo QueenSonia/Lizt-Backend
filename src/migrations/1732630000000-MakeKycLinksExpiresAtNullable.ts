@@ -18,6 +18,10 @@ export class MakeKycLinksExpiresAtNullable1732630000000
       SET "expires_at" = NULL 
       WHERE "is_active" = true
     `);
+
+    console.log(
+      '✅ Made kyc_links.expires_at nullable and cleared existing expiration dates',
+    );
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
@@ -33,5 +37,9 @@ export class MakeKycLinksExpiresAtNullable1732630000000
       ALTER TABLE "kyc_links" 
       ALTER COLUMN "expires_at" SET NOT NULL
     `);
+
+    console.log(
+      '⏪ Reverted kyc_links.expires_at to NOT NULL with default dates',
+    );
   }
 }

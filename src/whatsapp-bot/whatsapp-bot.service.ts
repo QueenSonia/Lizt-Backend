@@ -1155,6 +1155,7 @@ export class WhatsappBotService {
 
           await this.cache.delete(`service_request_state_${from}`);
 
+          // Send notifications to facility managers
           for (const manager of facility_managers) {
             await this.sendFacilityServiceRequest({
               phone_number: manager.phone_number,
@@ -1175,23 +1176,14 @@ export class WhatsappBotService {
                 hour12: true,
                 timeZone: 'Africa/Lagos',
               }),
+              is_landlord: false, // Explicitly mark as FM notification
             });
-
-            // await this.sendButtons(
-            //   manager.phone_number,
-            //   `Confirm request for request_id: ${request_id}`,
-            //   [
-            //     {
-            //       id: 'acknowledge_request',
-            //       title: 'Acknowledge',
-            //     },
-            //   ],
-            // );
 
             // Add delay (e.g., 2 seconds)
             await new Promise((resolve) => setTimeout(resolve, 2000));
           }
 
+          // Send notification to landlord
           const property_tenant = await this.propertyTenantRepo.findOne({
             where: {
               property_id,
@@ -1225,14 +1217,8 @@ export class WhatsappBotService {
                 hour12: true,
                 timeZone: 'Africa/Lagos',
               }),
+              is_landlord: true, // Explicitly mark as landlord notification
             });
-
-            // Store context: this notification was sent to a landlord
-            await this.cache.set(
-              `notification_role_${admin_phone_number}`,
-              'LANDLORD',
-              24 * 60 * 60 * 1000, // 24 hours
-            );
           }
         }
         await this.cache.delete(`service_request_state_${from}`);
@@ -2276,14 +2262,20 @@ export class WhatsappBotService {
     tenant_name,
     tenant_phone_number,
     date_created,
+    is_landlord = false,
+  }: {
+    phone_number: string;
+    manager_name: string;
+    property_name: string;
+    property_location: string;
+    service_request: string;
+    tenant_name: string;
+    tenant_phone_number: string;
+    date_created: string;
+    is_landlord?: boolean;
   }) {
-    // Check if this is being sent to a landlord
-    const notificationRole = await this.cache.get(
-      `notification_role_${phone_number}`,
-    );
-
     // For landlords, use template with URL button for direct redirect
-    if (notificationRole === 'LANDLORD') {
+    if (is_landlord) {
       const payload = {
         messaging_product: 'whatsapp',
         to: phone_number,
@@ -2323,7 +2315,7 @@ export class WhatsappBotService {
       return;
     }
 
-    // For facility managers, use the template with button
+    // For facility managers, use the template with quick reply button
     const payload = {
       messaging_product: 'whatsapp',
       to: phone_number,

@@ -253,6 +253,24 @@ export class KYCApplicationService {
       console.error('Failed to send WhatsApp KYC notification:', error);
     }
 
+    // Send WhatsApp confirmation to tenant
+    try {
+      if (this.whatsappBotService && kycData.phone_number) {
+        const tenantPhone = this.utilService.normalizePhoneNumber(
+          kycData.phone_number,
+        );
+        const tenantName = `${kycData.first_name} ${kycData.last_name}`;
+
+        await this.whatsappBotService.sendKYCSubmissionConfirmation({
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+        });
+      }
+    } catch (error) {
+      // Log error but don't fail the request if WhatsApp notification fails
+      console.error('Failed to send tenant KYC confirmation:', error);
+    }
+
     return applicationWithRelations;
   }
 

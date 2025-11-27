@@ -2253,6 +2253,50 @@ export class WhatsappBotService {
     await this.sendToWhatsappAPI(payload);
   }
 
+  /**
+   * Send KYC submission confirmation to tenant via WhatsApp
+   * Notifies tenant when they successfully submit a KYC application
+   * Uses 'kyc_submission_confirmation' template
+   *
+   * Template body: "Hello {{1}}, Your KYC form has been submitted. Your landlord is reviewing your details, and we'll keep you updated."
+   * Variables:
+   * {{1}} = tenant_name
+   *
+   * NOTE: You need to create this template in your WhatsApp Business Manager with the name 'kyc_submission_confirmation'
+   */
+  async sendKYCSubmissionConfirmation({
+    phone_number,
+    tenant_name,
+  }: {
+    phone_number: string;
+    tenant_name: string;
+  }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'kyc_submission_confirmation',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name, // {{1}}
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   async sendFacilityServiceRequest({
     phone_number,
     manager_name,
@@ -2344,6 +2388,10 @@ export class WhatsappBotService {
               {
                 type: 'text',
                 text: date_created, // {{4}}
+              },
+              {
+                type: 'text',
+                text: tenant_phone_number, // {{5}} - Tenant phone number
               },
             ],
           },

@@ -187,7 +187,22 @@ export class KYCLinksService {
         };
       }
 
-      // No expiration check needed - links remain active until property status changes
+      // Check expiration only if expires_at is set (for backward compatibility with old links)
+      if (kycLink.expires_at && new Date() > kycLink.expires_at) {
+        // Deactivate expired token
+        await this.kycLinkRepository.update(kycLink.id, { is_active: false });
+
+        console.log('🚫 KYC link expired (legacy link):', {
+          token: token.substring(0, 8) + '...',
+          expiresAt: kycLink.expires_at.toISOString(),
+          currentTime: new Date().toISOString(),
+        });
+
+        return {
+          valid: false,
+          error: 'This KYC form has expired',
+        };
+      }
 
       // Check if property still exists and is accessible
       if (!kycLink.property) {

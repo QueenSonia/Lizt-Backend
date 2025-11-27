@@ -179,6 +179,7 @@ export const buildServiceRequestFilter = async (
   const query = {};
   if (queryParams?.tenant_id) query['tenant_id'] = queryParams.tenant_id;
   if (queryParams?.property_id) query['property_id'] = queryParams.property_id;
+  if (queryParams?.status) query['status'] = queryParams.status.toLowerCase();
   //   query['property'] = { owner_id: queryParams.owner_id };
 
   if (queryParams?.start_date && queryParams?.end_date) {

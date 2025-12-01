@@ -2047,12 +2047,12 @@ export class WhatsappBotService {
     phone_number,
     tenant_name,
     landlord_name,
-    property_name,
+    apartment_name,
   }: {
     phone_number: string;
     tenant_name: string;
     landlord_name: string;
-    property_name?: string;
+    apartment_name?: string;
   }) {
     const payload = {
       messaging_product: 'whatsapp',
@@ -2079,8 +2079,8 @@ export class WhatsappBotService {
               },
               {
                 type: 'text',
-                parameter_name: 'property_name',
-                text: property_name || 'your property',
+                parameter_name: 'apartment_name',
+                text: apartment_name || 'your property',
               },
             ],
           },
@@ -2165,19 +2165,19 @@ export class WhatsappBotService {
     phone_number,
     tenant_name,
     landlord_name,
-    property_name,
+    apartment_name,
   }: {
     phone_number: string;
     tenant_name: string;
     landlord_name: string;
-    property_name: string;
+    apartment_name: string;
   }) {
     // Use the existing tenant welcome template
     await this.sendTenantWelcomeTemplate({
       phone_number,
       tenant_name,
       landlord_name,
-      property_name,
+      apartment_name,
     });
   }
 

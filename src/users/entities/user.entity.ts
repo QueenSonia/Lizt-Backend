@@ -134,6 +134,23 @@ export class Users extends BaseEntity {
   @Column({ nullable: true, type: 'float' })
   monthly_income_estimate?: number;
 
+  @Column({ nullable: true, type: 'jsonb' })
+  preferences?: {
+    enableLiveFeedSound?: boolean;
+    allowDuplicatePropertyNames?: boolean;
+  };
+
+  @Column({ nullable: true, type: 'jsonb' })
+  branding?: {
+    businessName?: string;
+    businessAddress?: string;
+    contactInfo?: string;
+    footerColor?: string;
+    letterhead?: string;
+    headingFont?: string;
+    bodyFont?: string;
+  };
+
   @OneToMany(() => Account, (account) => account.user)
   accounts: Account[];
 

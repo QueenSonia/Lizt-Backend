@@ -1136,7 +1136,7 @@ export class TenantAttachmentService {
         phone_number: normalizedPhone,
         tenant_name: tenantName,
         landlord_name: agencyName,
-        property_name: propertyName,
+        apartment_name: propertyName,
       });
 
       console.log(

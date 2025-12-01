@@ -226,6 +226,41 @@ export class UpdateUserDto {
   @IsOptional()
   @IsString()
   source_of_funds?: string;
+
+  @ApiProperty({
+    required: false,
+    example: { enableLiveFeedSound: true, allowDuplicatePropertyNames: false },
+    description: 'User preferences',
+  })
+  @IsOptional()
+  preferences?: {
+    enableLiveFeedSound?: boolean;
+    allowDuplicatePropertyNames?: boolean;
+  };
+
+  @ApiProperty({
+    required: false,
+    example: {
+      businessName: 'Property Kraft',
+      businessAddress: '17 Ayinde Akinmade Street, Lekki Phase 1, Lagos State',
+      contactInfo: 'contact@propertykraft.com | +234 901 234 5678',
+      footerColor: '#6B6B6B',
+      letterhead: null,
+      headingFont: 'Inter',
+      bodyFont: 'Inter',
+    },
+    description: 'Offer letter branding settings',
+  })
+  @IsOptional()
+  branding?: {
+    businessName?: string;
+    businessAddress?: string;
+    contactInfo?: string;
+    footerColor?: string;
+    letterhead?: string;
+    headingFont?: string;
+    bodyFont?: string;
+  };
 }
 
 export class UpdateUserResponseDto {

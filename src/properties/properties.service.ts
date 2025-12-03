@@ -261,12 +261,13 @@ export class PropertiesService {
         'kycApplication.status = :pendingStatus',
         { pendingStatus: 'pending' },
       )
-      .leftJoinAndSelect(
-        'property.kyc_links',
-        'kycLink',
-        'kycLink.is_active = :isActive',
-        { isActive: true },
-      )
+      // KYC links are now general per landlord, not property-specific
+      // .leftJoinAndSelect(
+      //   'property.kyc_links',
+      //   'kycLink',
+      //   'kycLink.is_active = :isActive',
+      //   { isActive: true },
+      // )
       .where('property.id = :id', { id })
       .getOne();
     if (!property?.id) {
@@ -359,9 +360,8 @@ export class PropertiesService {
           : new Date().toISOString(),
       })) || [];
 
-    // 6. KYC Link Status
-    const hasActiveKYCLink =
-      property.kyc_links?.some((link) => link.is_active) || false;
+    // 6. KYC Link Status - Now general per landlord, not property-specific
+    const hasActiveKYCLink = false; // Always false since links are now general
     const kycApplicationCount = kycApplications.length;
 
     // 7. Build the final DTO
@@ -423,12 +423,13 @@ export class PropertiesService {
         'historyTenantKyc.admin_id = property.owner_id',
       )
       .leftJoinAndSelect('property.kyc_applications', 'kycApplication')
-      .leftJoinAndSelect(
-        'property.kyc_links',
-        'kycLink',
-        'kycLink.is_active = :isActive',
-        { isActive: true },
-      )
+      // KYC links are now general per landlord, not property-specific
+      // .leftJoinAndSelect(
+      //   'property.kyc_links',
+      //   'kycLink',
+      //   'kycLink.is_active = :isActive',
+      //   { isActive: true },
+      // )
       .where('property.id = :id', { id })
       .getOne();
 
@@ -590,9 +591,8 @@ export class PropertiesService {
         monthlyIncome: app.monthly_net_income,
       })) || [];
 
-    // KYC Link Status
-    const hasActiveKYCLink =
-      property.kyc_links?.some((link) => link.is_active) || false;
+    // KYC Link Status - Now general per landlord, not property-specific
+    const hasActiveKYCLink = false; // Always false since links are now general
     const kycApplicationCount = kycApplications.length;
     const pendingApplicationsCount = kycApplications.filter(
       (app) => app.status === 'pending',
@@ -828,10 +828,11 @@ export class PropertiesService {
         property_id: propertyId,
       });
 
-      // 8. Delete KYC links
-      await queryRunner.manager.delete('kyc_links', {
-        property_id: propertyId,
-      });
+      // 8. KYC links are now general per landlord, not property-specific
+      // No need to delete KYC links when deleting a property
+      // await queryRunner.manager.delete('kyc_links', {
+      //   property_id: propertyId,
+      // });
 
       // 9. Remove property from property groups
       const propertyGroups = await queryRunner.manager.find(PropertyGroup, {
@@ -1550,8 +1551,8 @@ export class PropertiesService {
           move_out_date: null,
           move_out_reason: null,
         }),
-        // Deactivate any active KYC links for this property
-        this.deactivateKYCLinksForProperty(queryRunner, property.id),
+        // Note: KYC links are now general per landlord, not property-specific
+        // No need to deactivate KYC links when a single property becomes occupied
       ]);
 
       await queryRunner.commitTransaction();
@@ -1573,17 +1574,16 @@ export class PropertiesService {
   }
 
   /**
-   * Deactivate KYC links when property becomes occupied
-   * Requirements: 2.4, 2.5, 6.4
+   * Note: KYC links are now general per landlord, not property-specific
+   * This method is no longer needed but kept for backward compatibility
    */
   private async deactivateKYCLinksForProperty(
     queryRunner: any,
     propertyId: string,
   ): Promise<void> {
-    await queryRunner.manager.update(
-      'kyc_links',
-      { property_id: propertyId, is_active: true },
-      { is_active: false },
+    // No longer needed - KYC links are general per landlord
+    console.log(
+      `KYC links are now general per landlord, not deactivating for property ${propertyId}`,
     );
   }
 

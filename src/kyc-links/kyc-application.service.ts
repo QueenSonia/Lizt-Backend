@@ -57,10 +57,30 @@ export class KYCApplicationService {
     // Validate the KYC token and get the associated link
     const kycLink = await this.validateKYCToken(token);
 
-    // Check if user has already submitted an application for this property using phone number
+    // Validate the selected property belongs to the landlord and is vacant
+    const selectedProperty = await this.propertyRepository.findOne({
+      where: {
+        id: kycData.property_id,
+        owner_id: kycLink.landlord_id,
+      },
+    });
+
+    if (!selectedProperty) {
+      throw new BadRequestException(
+        'Selected property not found or does not belong to this landlord',
+      );
+    }
+
+    if (selectedProperty.property_status !== 'vacant') {
+      throw new BadRequestException(
+        'Selected property is no longer available for applications',
+      );
+    }
+
+    // Check if user has already submitted an application for this specific property using phone number
     const existingApplication = await this.kycApplicationRepository.findOne({
       where: {
-        kyc_link_id: kycLink.id,
+        property_id: kycData.property_id,
         phone_number: kycData.phone_number,
       },
     });
@@ -75,7 +95,7 @@ export class KYCApplicationService {
     // Handle optional fields properly to avoid undefined errors (relaxed validation)
     const applicationData: Partial<KYCApplication> = {
       kyc_link_id: kycLink.id,
-      property_id: kycLink.property_id,
+      property_id: kycData.property_id, // Use the selected property from form data
       status: ApplicationStatus.PENDING,
       // Required fields
       first_name: kycData.first_name,
@@ -145,6 +165,8 @@ export class KYCApplicationService {
         kycData.intended_use_of_property;
     if (kycData.number_of_occupants)
       applicationData.number_of_occupants = kycData.number_of_occupants;
+    if (kycData.number_of_cars_owned)
+      applicationData.number_of_cars_owned = kycData.number_of_cars_owned;
     if (kycData.proposed_rent_amount)
       applicationData.proposed_rent_amount = kycData.proposed_rent_amount;
     if (kycData.rent_payment_frequency)
@@ -185,7 +207,7 @@ export class KYCApplicationService {
           type: NotificationType.KYC_SUBMITTED,
           description: `${kycData.first_name} ${kycData.last_name} submitted a KYC application for ${applicationWithRelations.property.name}`,
           status: 'Pending',
-          property_id: kycLink.property_id,
+          property_id: kycData.property_id,
           user_id: applicationWithRelations.property.owner_id,
         });
       }
@@ -198,7 +220,7 @@ export class KYCApplicationService {
     try {
       if (this.eventsGateway && applicationWithRelations.property) {
         this.eventsGateway.emitKYCSubmission(
-          kycLink.property_id,
+          kycData.property_id,
           applicationWithRelations.property.owner_id,
           {
             id: savedApplication.id,
@@ -659,7 +681,7 @@ export class KYCApplicationService {
 
     const kycLink = await this.kycLinkRepository.findOne({
       where: { token: token.trim() },
-      relations: ['property'],
+      relations: ['landlord'],
     });
 
     if (!kycLink) {
@@ -675,14 +697,6 @@ export class KYCApplicationService {
       // Deactivate expired token
       await this.kycLinkRepository.update(kycLink.id, { is_active: false });
       throw new BadRequestException('This KYC form has expired');
-    }
-
-    // Check if property still exists and is vacant
-    if (!kycLink.property) {
-      await this.kycLinkRepository.update(kycLink.id, { is_active: false });
-      throw new BadRequestException(
-        'Property associated with this KYC form is no longer available',
-      );
     }
 
     return kycLink;

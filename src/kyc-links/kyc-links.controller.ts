@@ -52,10 +52,7 @@ export class KYCLinksController {
     message: string;
     data: KYCLinkResponse;
   }> {
-    const kycLinkResponse = await this.kycLinksService.generateKYCLink(
-      propertyId,
-      user.id,
-    );
+    const kycLinkResponse = await this.kycLinksService.generateKYCLink(user.id);
 
     console.log('Backend kycLinkResponse:', kycLinkResponse);
 
@@ -97,7 +94,8 @@ export class KYCLinksController {
     const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const kycLink = `${baseUrl}/kyc/${token}`;
 
-    const propertyName = tokenValidation.propertyInfo?.name || 'Property';
+    const propertyName =
+      tokenValidation.vacantProperties?.[0]?.name || 'Properties';
 
     const whatsAppResponse = await this.kycLinksService.sendKYCLinkViaWhatsApp(
       sendWhatsAppDto.phoneNumber,

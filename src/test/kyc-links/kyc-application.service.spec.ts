@@ -101,6 +101,7 @@ describe('KYCApplicationService', () => {
   describe('submitKYCApplication', () => {
     const token = 'valid-token';
     const mockKycData: CreateKYCApplicationDto = {
+      property_id: 'property-123', // Add property selection
       first_name: 'John',
       last_name: 'Doe',
       email: 'john.doe@example.com',
@@ -129,14 +130,9 @@ describe('KYCApplicationService', () => {
     const mockKycLink = {
       id: 'kyc-link-123',
       token,
-      property_id: 'property-123',
       landlord_id: 'landlord-123',
       expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
       is_active: true,
-      property: {
-        id: 'property-123',
-        property_status: PropertyStatusEnum.VACANT,
-      },
     };
 
     it('should submit KYC application successfully', async () => {
@@ -149,14 +145,17 @@ describe('KYCApplicationService', () => {
           id: 'application-123',
           status: ApplicationStatus.PENDING,
           ...mockKycData,
-          property: mockKycLink.property,
+          property: {
+            id: 'property-123',
+            property_status: PropertyStatusEnum.VACANT,
+          },
           kyc_link: mockKycLink,
         });
 
       const mockCreatedApplication = {
         id: 'application-123',
         kyc_link_id: mockKycLink.id,
-        property_id: mockKycLink.property_id,
+        property_id: mockKycData.property_id,
         status: ApplicationStatus.PENDING,
         ...mockKycData,
       };

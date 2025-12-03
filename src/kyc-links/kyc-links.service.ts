@@ -23,20 +23,21 @@ export interface KYCLinkResponse {
   token: string;
   link: string;
   expiresAt: Date | null; // null means no expiration
-  propertyId: string;
+  propertyId: string | null; // null for general landlord links
 }
 
 export interface PropertyKYCData {
   valid: boolean;
-  propertyInfo?: {
+  landlordId?: string;
+  vacantProperties?: Array<{
     id: string;
     name: string;
     location: string;
     propertyType: string;
     bedrooms: number;
     bathrooms: number;
-    landlordId?: string;
-  };
+    description?: string;
+  }>;
   error?: string;
 }
 
@@ -72,31 +73,15 @@ export class KYCLinksService {
   ) {}
 
   /**
-   * Generate a unique KYC link for a property
-   * Links remain active until property becomes occupied, is manually deactivated, or property is deleted
+   * Generate a unique KYC link for a landlord (general link for all properties)
+   * Links remain active permanently and never expire
    * Requirements: 1.1, 1.2, 2.1, 2.2
    */
-  async generateKYCLink(
-    propertyId: string,
-    landlordId: string,
-  ): Promise<KYCLinkResponse> {
-    // Validate property ownership
-    const property = await this.validatePropertyOwnership(
-      propertyId,
-      landlordId,
-    );
-
-    // Check if property is vacant
-    if (property.property_status !== PropertyStatusEnum.VACANT) {
-      throw new BadRequestException(
-        'Cannot generate link. Property already has an active tenant',
-      );
-    }
-
-    // Check if there's already an active KYC link for this property
+  async generateKYCLink(landlordId: string): Promise<KYCLinkResponse> {
+    // Check if there's already an active KYC link for this landlord
     const existingLink = await this.kycLinkRepository.findOne({
       where: {
-        property_id: propertyId,
+        landlord_id: landlordId,
         is_active: true,
       },
     });
@@ -105,7 +90,7 @@ export class KYCLinksService {
       // Return existing active link (no expiration check needed)
       console.log('✅ Returning existing active KYC link:', {
         token: existingLink.token.substring(0, 8) + '...',
-        propertyId,
+        landlordId,
         createdAt:
           existingLink.created_at instanceof Date
             ? existingLink.created_at.toISOString()
@@ -118,15 +103,15 @@ export class KYCLinksService {
         token: existingLink.token,
         link: `${baseUrl}/kyc/${existingLink.token}`,
         expiresAt: null, // No expiration
-        propertyId: existingLink.property_id,
+        propertyId: null, // No specific property
       };
     }
 
     // Generate new token (no expiration date needed)
     const token = uuidv4();
 
-    console.log('🔗 Generating new KYC link:', {
-      propertyId,
+    console.log('🔗 Generating new general KYC link:', {
+      landlordId,
       token: token.substring(0, 8) + '...',
       noExpiration: true,
     });
@@ -134,7 +119,6 @@ export class KYCLinksService {
     // Create new KYC link without expiration
     const kycLink = this.kycLinkRepository.create({
       token,
-      property_id: propertyId,
       landlord_id: landlordId,
       expires_at: undefined, // No expiration (use undefined instead of null for TypeORM)
       is_active: true,
@@ -150,15 +134,28 @@ export class KYCLinksService {
       token,
       link,
       expiresAt: null, // No expiration
-      propertyId,
+      propertyId: null, // No specific property
     };
   }
 
   /**
-   * Validate KYC token and return property information
+   * Validate KYC token and return landlord information with vacant properties
    * Requirements: 2.4, 2.5, 3.5
    */
-  async validateKYCToken(token: string): Promise<PropertyKYCData> {
+  async validateKYCToken(token: string): Promise<{
+    valid: boolean;
+    landlordId?: string;
+    vacantProperties?: Array<{
+      id: string;
+      name: string;
+      location: string;
+      propertyType: string;
+      bedrooms: number;
+      bathrooms: number;
+      description?: string;
+    }>;
+    error?: string;
+  }> {
     try {
       // Validate token format (should be UUID)
       if (!token || typeof token !== 'string' || token.trim() === '') {
@@ -170,7 +167,7 @@ export class KYCLinksService {
 
       const kycLink = await this.kycLinkRepository.findOne({
         where: { token: token.trim() },
-        relations: ['property'],
+        relations: ['landlord'],
       });
 
       if (!kycLink) {
@@ -204,37 +201,36 @@ export class KYCLinksService {
         };
       }
 
-      // Check if property still exists and is accessible
-      if (!kycLink.property) {
-        await this.kycLinkRepository.update(kycLink.id, { is_active: false });
-        return {
-          valid: false,
-          error:
-            'Property associated with this KYC form is no longer available',
-        };
-      }
+      // Get all vacant properties for this landlord
+      const vacantProperties = await this.propertyRepository.find({
+        where: {
+          owner_id: kycLink.landlord_id,
+          property_status: PropertyStatusEnum.VACANT,
+        },
+        order: {
+          created_at: 'DESC',
+        },
+      });
 
-      // Check if property is still vacant
-      if (kycLink.property.property_status !== PropertyStatusEnum.VACANT) {
-        // Deactivate link for occupied property
-        await this.kycLinkRepository.update(kycLink.id, { is_active: false });
+      if (vacantProperties.length === 0) {
         return {
           valid: false,
-          error: 'This property is no longer available',
+          error: 'No vacant properties available for application',
         };
       }
 
       return {
         valid: true,
-        propertyInfo: {
-          id: kycLink.property.id,
-          name: kycLink.property.name,
-          location: kycLink.property.location,
-          propertyType: kycLink.property.property_type,
-          bedrooms: kycLink.property.no_of_bedrooms,
-          bathrooms: kycLink.property.no_of_bathrooms,
-          landlordId: kycLink.landlord_id,
-        },
+        landlordId: kycLink.landlord_id,
+        vacantProperties: vacantProperties.map((property) => ({
+          id: property.id,
+          name: property.name,
+          location: property.location,
+          propertyType: property.property_type,
+          bedrooms: property.no_of_bedrooms,
+          bathrooms: property.no_of_bathrooms,
+          description: `${property.property_type} • ${property.no_of_bedrooms} bed, ${property.no_of_bathrooms} bath • ${property.location}`,
+        })),
       };
     } catch (error) {
       console.error('Error validating KYC token:', error);
@@ -246,22 +242,22 @@ export class KYCLinksService {
   }
 
   /**
-   * Deactivate KYC link when property status changes
+   * Deactivate KYC link for a landlord (manual deactivation only)
    * Requirements: 2.4, 2.5, 3.5
    */
-  async deactivateKYCLink(propertyId: string): Promise<void> {
+  async deactivateKYCLink(landlordId: string): Promise<void> {
     try {
       if (
-        !propertyId ||
-        typeof propertyId !== 'string' ||
-        propertyId.trim() === ''
+        !landlordId ||
+        typeof landlordId !== 'string' ||
+        landlordId.trim() === ''
       ) {
-        throw new BadRequestException('Invalid property ID provided');
+        throw new BadRequestException('Invalid landlord ID provided');
       }
 
       const result = await this.kycLinkRepository.update(
         {
-          property_id: propertyId.trim(),
+          landlord_id: landlordId.trim(),
           is_active: true,
         },
         {
@@ -270,7 +266,7 @@ export class KYCLinksService {
       );
 
       console.log(
-        `Deactivated ${result.affected || 0} KYC links for property ${propertyId}`,
+        `Deactivated ${result.affected || 0} KYC links for landlord ${landlordId}`,
       );
     } catch (error) {
       console.error('Error deactivating KYC links:', error);
@@ -767,27 +763,16 @@ export class KYCLinksService {
   }
 
   /**
-   * Validate property ownership before generating KYC link
+   * Validate landlord exists and has properties
    * Private helper method
    */
-  private async validatePropertyOwnership(
-    propertyId: string,
-    landlordId: string,
-  ): Promise<Property> {
-    const property = await this.propertyRepository.findOne({
-      where: { id: propertyId },
+  private async validateLandlord(landlordId: string): Promise<void> {
+    const landlord = await this.propertyRepository.findOne({
+      where: { owner_id: landlordId },
     });
 
-    if (!property) {
-      throw new NotFoundException('Property not found');
+    if (!landlord) {
+      throw new NotFoundException('Landlord not found or has no properties');
     }
-
-    if (property.owner_id !== landlordId) {
-      throw new ForbiddenException(
-        'You are not authorized to generate KYC links for this property',
-      );
-    }
-
-    return property;
   }
 }

@@ -24,6 +24,11 @@ import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
  * Most fields have been made optional and can be re-enabled later by removing @IsOptional decorators.
  */
 export class CreateKYCApplicationDto {
+  // Property Selection - Required field for new general link system
+  @IsString()
+  @IsNotEmpty()
+  property_id: string;
+
   // Personal Information - Only names and phone are required for relaxed validation
   @IsString()
   @IsNotEmpty()

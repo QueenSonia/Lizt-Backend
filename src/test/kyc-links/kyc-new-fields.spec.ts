@@ -77,7 +77,7 @@ describe('KYC Application Service - New Fields', () => {
       const token = 'valid-token-123';
       const mockKycLink = {
         id: 'link-123',
-        property_id: 'property-123',
+        landlord_id: 'landlord-123',
         token,
         expires_at: new Date(Date.now() + 86400000),
         is_active: true,
@@ -91,6 +91,7 @@ describe('KYC Application Service - New Fields', () => {
 
       const kycDataWithNewFields: CreateKYCApplicationDto = {
         // Required fields
+        property_id: 'property-123',
         first_name: 'John',
         last_name: 'Doe',
         phone_number: '+2348012345678',
@@ -145,7 +146,7 @@ describe('KYC Application Service - New Fields', () => {
         id: 'app-123',
         ...kycDataWithNewFields,
         kyc_link_id: mockKycLink.id,
-        property_id: mockKycLink.property_id,
+        property_id: kycDataWithNewFields.property_id,
         status: ApplicationStatus.PENDING,
         created_at: new Date(),
       };
@@ -193,13 +194,14 @@ describe('KYC Application Service - New Fields', () => {
       const token = 'valid-token-456';
       const mockKycLink = {
         id: 'link-456',
-        property_id: 'property-456',
+        landlord_id: 'landlord-456',
         token,
         expires_at: new Date(Date.now() + 86400000),
         is_active: true,
       };
 
       const kycDataSelfEmployed: CreateKYCApplicationDto = {
+        property_id: 'property-456',
         first_name: 'Jane',
         last_name: 'Smith',
         phone_number: '+2348098765432',
@@ -217,7 +219,7 @@ describe('KYC Application Service - New Fields', () => {
         id: 'app-456',
         ...kycDataSelfEmployed,
         kyc_link_id: mockKycLink.id,
-        property_id: mockKycLink.property_id,
+        property_id: kycDataSelfEmployed.property_id,
         status: ApplicationStatus.PENDING,
       };
 
@@ -252,7 +254,7 @@ describe('KYC Application Service - New Fields', () => {
       const token = 'valid-token-789';
       const mockKycLink = {
         id: 'link-789',
-        property_id: 'property-789',
+        landlord_id: 'landlord-789',
         token,
         expires_at: new Date(Date.now() + 86400000),
         is_active: true,
@@ -260,6 +262,7 @@ describe('KYC Application Service - New Fields', () => {
 
       const minimalKycData: CreateKYCApplicationDto = {
         // Only required fields
+        property_id: 'property-789',
         first_name: 'Minimal',
         last_name: 'User',
         phone_number: '+2348055555555',
@@ -269,7 +272,7 @@ describe('KYC Application Service - New Fields', () => {
         id: 'app-789',
         ...minimalKycData,
         kyc_link_id: mockKycLink.id,
-        property_id: mockKycLink.property_id,
+        property_id: minimalKycData.property_id,
         status: ApplicationStatus.PENDING,
       };
 

@@ -218,11 +218,8 @@ export class TenantAttachmentService {
         queryRunner.manager,
       );
 
-      // Deactivate KYC links for this property
-      await this.deactivateKYCLinks(
-        application.property_id,
-        queryRunner.manager,
-      );
+      // Note: KYC links are now general per landlord, not property-specific
+      // No need to deactivate KYC links when attaching tenant to a property
 
       // CRITICAL: Verify data integrity before committing
       console.log('Verifying data integrity before commit...');
@@ -378,13 +375,10 @@ export class TenantAttachmentService {
     propertyId: string,
     manager: any,
   ): Promise<void> {
-    await manager
-      .createQueryBuilder()
-      .update(KYCLink)
-      .set({ is_active: false })
-      .where('property_id = :propertyId', { propertyId })
-      .andWhere('is_active = :isActive', { isActive: true })
-      .execute();
+    // No longer needed - KYC links are general per landlord
+    console.log(
+      `KYC links are now general per landlord, not deactivating for property ${propertyId}`,
+    );
   }
 
   /**

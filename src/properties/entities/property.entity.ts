@@ -87,8 +87,9 @@ export class Property extends BaseEntity {
   @OneToMany(() => Notification, (no) => no.property)
   notification: Notification[];
 
-  @OneToMany(() => KYCLink, (kycLink) => kycLink.property)
-  kyc_links: KYCLink[];
+  // KYC links are now general per landlord, not property-specific
+  // @OneToMany(() => KYCLink, (kycLink) => kycLink.property)
+  // kyc_links: KYCLink[];
 
   @OneToMany(() => KYCApplication, (kycApplication) => kycApplication.property)
   kyc_applications: KYCApplication[];

@@ -422,8 +422,7 @@ export class PropertiesService {
         'historyTenantKyc',
         'historyTenantKyc.admin_id = property.owner_id',
       )
-      // Temporarily commented out to fix kycLink.property_id error
-      // .leftJoinAndSelect('property.kyc_applications', 'kycApplication')
+      .leftJoinAndSelect('property.kyc_applications', 'kycApplication')
       // KYC links are now general per landlord, not property-specific
       // .leftJoinAndSelect(
       //   'property.kyc_links',

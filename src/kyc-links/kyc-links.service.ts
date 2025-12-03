@@ -229,7 +229,7 @@ export class KYCLinksService {
           propertyType: property.property_type,
           bedrooms: property.no_of_bedrooms,
           bathrooms: property.no_of_bathrooms,
-          description: `${property.property_type} • ${property.no_of_bedrooms} bed, ${property.no_of_bathrooms} bath • ${property.location}`,
+          description: `${property.location}`,
         })),
       };
     } catch (error) {

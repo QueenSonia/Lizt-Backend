@@ -57,7 +57,7 @@ export class TenantAttachmentService {
     private readonly dataSource: DataSource,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   /**
    * Attach tenant to property with tenancy details
@@ -143,22 +143,26 @@ export class TenantAttachmentService {
       // A tenant can now be active in multiple properties across different landlords
       // Each landlord sees only their own tenant assignments via property ownership filtering
 
-      // Calculate lease dates
+      // Parse lease dates
       const tenancyStartDate = tenancyDetails.tenancyStartDate
         ? new Date(tenancyDetails.tenancyStartDate)
         : new Date();
 
-      const leaseEndDate = this.calculateLeaseEndDate(
-        tenancyStartDate,
-        tenancyDetails.rentFrequency,
-      );
+      const tenancyEndDate = new Date(tenancyDetails.tenancyEndDate);
+
+      // Validate that end date is after start date
+      if (tenancyEndDate <= tenancyStartDate) {
+        throw new BadRequestException(
+          'Tenancy end date must be after tenancy start date',
+        );
+      }
 
       // Create rent record
       const rent = queryRunner.manager.create(Rent, {
         tenant_id: tenantAccount.id,
         property_id: application.property_id,
         lease_start_date: tenancyStartDate,
-        lease_end_date: leaseEndDate,
+        lease_end_date: tenancyEndDate,
         rental_price: tenancyDetails.rentAmount,
         security_deposit: tenancyDetails.securityDeposit || 0,
         service_charge: tenancyDetails.serviceCharge || 0,
@@ -727,35 +731,7 @@ export class TenantAttachmentService {
     }
   }
 
-  /**
-   * Calculate lease end date based on rent frequency
-   * Requirements: 5.1, 5.2
-   */
-  private calculateLeaseEndDate(
-    startDate: Date,
-    frequency: RentFrequency,
-  ): Date {
-    const endDate = new Date(startDate);
 
-    switch (frequency) {
-      case RentFrequency.MONTHLY:
-        endDate.setFullYear(endDate.getFullYear() + 1); // Default 1 year lease
-        break;
-      case RentFrequency.QUARTERLY:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-      case RentFrequency.BI_ANNUALLY:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-      case RentFrequency.ANNUALLY:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-      default:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-    }
-
-    return endDate;
-  }
 
   /**
    * Calculate next rent due date based on start date, due day, and frequency

@@ -2,6 +2,8 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -38,7 +40,7 @@ export class NoticeAgreementService {
     private readonly accountRepo: Repository<Account>,
     private readonly fileUploadService: FileUploadService,
     private readonly eventEmitter: EventEmitter2,
-  ) {}
+  ) { }
 
   async create(dto: CreateNoticeAgreementDto) {
     const property = await this.propertyRepo.findOne({
@@ -111,8 +113,28 @@ export class NoticeAgreementService {
     return agreement;
   }
 
-  async findOne(id: string) {
-    return this.noticeRepo.findOne({ where: { id } });
+  async findOne(id: string, userId: string) {
+    const noticeAgreement = await this.noticeRepo.findOne({
+      where: { id },
+      relations: ['tenant', 'property'],
+    });
+    if (!noticeAgreement) {
+      throw new HttpException(
+        'Notice agreement not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    // Allow if user is the tenant OR the landlord
+    if (
+      noticeAgreement.tenant_id !== userId &&
+      noticeAgreement.property.owner_id !== userId
+    ) {
+      throw new HttpException(
+        'You do not have permission to view this notice agreement',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    return noticeAgreement;
   }
 
   async getAllNoticeAgreement(
@@ -156,24 +178,37 @@ export class NoticeAgreementService {
     };
   }
 
-  async resendNoticeAgreement(id: string) {
-    const notice = await this.noticeRepo.findOne({
+  async resendNoticeAgreement(id: string, userId: string) {
+    const noticeAgreement = await this.noticeRepo.findOne({
       where: { id },
-      relations: ['tenant'],
+      relations: ['tenant', 'property'],
     });
 
-    if (!notice) {
-      throw new NotFoundException('Notice agreement not found');
+    if (!noticeAgreement) {
+      throw new HttpException(
+        'Notice agreement not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
 
-    if (!notice.notice_image) {
+    if (noticeAgreement.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to resend this notice agreement',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    if (!noticeAgreement.notice_image) {
       throw new NotFoundException('Notice agreement PDF not found');
     }
 
     try {
-      await sendEmailWithAttachment(notice.notice_image, notice.tenant.email);
+      await sendEmailWithAttachment(
+        noticeAgreement.notice_image,
+        noticeAgreement.tenant.email,
+      );
       console.log(
-        `Notice agreement resent successfully to ${notice.tenant.email}`,
+        `Notice agreement resent successfully to ${noticeAgreement.tenant.email}`,
       );
       return { message: 'Notice agreement sent successfully' };
     } catch (error) {
@@ -244,66 +279,30 @@ export class NoticeAgreementService {
       pendingNotices,
     };
   }
-  async attachNoticeDocument(property_id: string, fileUrls: string[]) {
-    try {
-      const property = await this.propertyRepo.findOne({
-        where: { id: property_id },
-        relations: ['property_tenants.tenant'],
-      });
+  async attachNoticeDocument(id: string, url: string, userId: string) {
+    const noticeAgreement = await this.noticeRepo.findOne({
+      where: { id },
+      relations: ['property'],
+    });
 
-      if (!property) {
-        throw new BadRequestException(
-          'Unable to upload document for this property',
-        );
-      }
-
-      const activeTenant = property?.property_tenants.find(
-        (item) => item.status === TenantStatusEnum.ACTIVE,
+    if (!noticeAgreement) {
+      throw new HttpException(
+        'Notice agreement not found',
+        HttpStatus.NOT_FOUND,
       );
-
-      if (!activeTenant) {
-        throw new NotFoundException('No active tenant on this property');
-      }
-
-      const documentObjects = fileUrls?.map((url) => ({
-        url,
-        // Optionally add `name` or `type` if provided from frontend
-      }));
-
-      const notice = this.noticeRepo.create({
-        notice_id: `NTC-${uuidv4().slice(0, 8)}`,
-        notice_type: NoticeType.UPLOAD,
-        property_id: property.id,
-        tenant_id: activeTenant.tenant_id,
-        notice_documents: documentObjects,
-        property_name: property.name,
-        tenant_name: activeTenant.tenant.profile_name,
-        effective_date: new Date(),
-      });
-
-      await this.noticeRepo.save(notice);
-
-      // Send email
-      await sendEmailWithMultipleAttachments(
-        fileUrls,
-        activeTenant.tenant.email,
-      );
-
-      // Emit event
-      this.eventEmitter.emit('notice.created', {
-        user_id: property.owner_id,
-        property_id: property.id,
-        property_name: property.name,
-      });
-
-      return {
-        message: 'Document(s) uploaded successfully',
-        files: documentObjects,
-      };
-    } catch (error) {
-      // Log the error for observability
-      console.error('Attach Notice Document Error:', error);
-      throw error; // Rethrow so NestJS handles it appropriately
     }
+
+    if (noticeAgreement.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to attach documents to this notice agreement',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    return this.noticeRepo.update(id, {
+      notice_image: url,
+      status: NoticeStatus.ACKNOWLEDGED,
+    });
   }
 }
+

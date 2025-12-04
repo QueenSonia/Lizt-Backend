@@ -66,7 +66,7 @@ export class ServiceRequestsService {
     private readonly teamMemberRepository: Repository<TeamMember>,
     private readonly eventEmitter: EventEmitter2,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   private generateTitle(payload: TawkWebhookPayload): string {
     const eventType =
@@ -238,7 +238,7 @@ export class ServiceRequestsService {
     };
   }
 
-  async getServiceRequestById(id: string): Promise<any> {
+  async getServiceRequestById(id: string, userId: string): Promise<any> {
     const serviceRequest = await this.serviceRequestRepository.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -247,6 +247,16 @@ export class ServiceRequestsService {
       throw new HttpException(
         `Service request with id: ${id} not found`,
         HttpStatus.NOT_FOUND,
+      );
+    }
+    // Allow if user is the tenant OR the landlord
+    if (
+      serviceRequest.tenant_id !== userId &&
+      serviceRequest.property.owner_id !== userId
+    ) {
+      throw new HttpException(
+        'You do not have permission to view this service request',
+        HttpStatus.FORBIDDEN,
       );
     }
     return serviceRequest;
@@ -278,11 +288,47 @@ export class ServiceRequestsService {
   async updateServiceRequestById(
     id: string,
     data: UpdateServiceRequestResponseDto,
+    userId: string,
   ) {
+    const serviceRequest = await this.serviceRequestRepository.findOne({
+      where: { id },
+      relations: ['property'],
+    });
+    if (!serviceRequest) {
+      throw new HttpException('Service request not found', HttpStatus.NOT_FOUND);
+    }
+    // Only landlord can update via this method (usually status updates)
+    // Tenants might update via a different endpoint or if we allow them to edit description
+    // For now, let's assume this is for general updates and restrict to landlord or tenant
+    if (
+      serviceRequest.tenant_id !== userId &&
+      serviceRequest.property.owner_id !== userId
+    ) {
+      throw new HttpException(
+        'You do not have permission to update this service request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     return this.serviceRequestRepository.update(id, data);
   }
 
-  async deleteServiceRequestById(id: string) {
+  async deleteServiceRequestById(id: string, userId: string) {
+    const serviceRequest = await this.serviceRequestRepository.findOne({
+      where: { id },
+      relations: ['property'],
+    });
+    if (!serviceRequest) {
+      throw new HttpException('Service request not found', HttpStatus.NOT_FOUND);
+    }
+    if (
+      serviceRequest.tenant_id !== userId &&
+      serviceRequest.property.owner_id !== userId
+    ) {
+      throw new HttpException(
+        'You do not have permission to delete this service request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     return this.serviceRequestRepository.delete(id);
   }
 

@@ -8,6 +8,7 @@ import { Users } from 'src/users/entities/user.entity';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
 import { Repository } from 'typeorm/repository/Repository';
+import { Not, IsNull } from 'typeorm';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
 
 // --- landlordLookup.ts ---
@@ -76,18 +77,19 @@ export class LandlordLookup {
       return;
     }
 
-    // Fetch only vacant properties for this landlord
+    // Fetch only vacant properties that are ready for marketing (have rental_price set)
     const properties = await this.propertyRepo.find({
       where: {
         owner_id: ownerUser.accounts[0].id,
         property_status: PropertyStatusEnum.VACANT,
+        rental_price: Not(IsNull()),
       },
     });
 
     if (!properties.length) {
       await this.whatsappUtil.sendText(
         from,
-        '🏠 You do not have any vacant properties at the moment.\n\nOnce you have vacant properties, you can generate a general KYC link that tenants can use to apply for any of your available properties.',
+        '🏠 You do not have any properties ready for marketing at the moment.\n\nPlease mark your vacant properties as "Ready for Marketing" and set their rental prices. Then you can generate a KYC link that tenants can use to apply.',
       );
       return;
     }

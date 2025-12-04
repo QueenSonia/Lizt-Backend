@@ -9,7 +9,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, MoreThan } from 'typeorm';
+import { Repository, LessThan, MoreThan, Not, IsNull } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { KYCLink } from './entities/kyc-link.entity';
@@ -201,11 +201,13 @@ export class KYCLinksService {
         };
       }
 
-      // Get all vacant properties for this landlord
+      // Get all vacant properties for this landlord that are ready for marketing
+      // (i.e., have a rental_price set)
       const vacantProperties = await this.propertyRepository.find({
         where: {
           owner_id: kycLink.landlord_id,
           property_status: PropertyStatusEnum.VACANT,
+          rental_price: Not(IsNull()),
         },
         order: {
           created_at: 'DESC',
@@ -215,7 +217,8 @@ export class KYCLinksService {
       if (vacantProperties.length === 0) {
         return {
           valid: false,
-          error: 'No vacant properties available for application',
+          error:
+            'No properties ready for marketing. Please contact the landlord.',
         };
       }
 
@@ -230,6 +233,7 @@ export class KYCLinksService {
           bedrooms: property.no_of_bedrooms,
           bathrooms: property.no_of_bathrooms,
           description: `${property.location}`,
+          rentalPrice: property.rental_price,
         })),
       };
     } catch (error) {

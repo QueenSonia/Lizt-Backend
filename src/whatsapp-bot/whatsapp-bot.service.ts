@@ -1475,18 +1475,34 @@ export class WhatsappBotService {
           return;
         }
 
-        await this.sendText(from, 'Here are your properties:');
-        for (const [i, item] of properties.entries()) {
+        for (const item of properties) {
           const rent = item.property.rents[0];
+          const startDate = new Date(rent.lease_start_date).toLocaleDateString(
+            'en-GB',
+            {
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+            },
+          );
+          const endDate = new Date(rent.lease_end_date).toLocaleDateString(
+            'en-GB',
+            {
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+            },
+          );
+
           await this.sendText(
             from,
-            `Property ${i + 1}: ${item.property.name}\n Amount: ${rent.rental_price.toLocaleString(
+            `Here are your tenancy details for ${item.property.name}:\n• Rent: ${rent.rental_price.toLocaleString(
               'en-NG',
               {
                 style: 'currency',
                 currency: 'NGN',
               },
-            )}\n Due Date: ${new Date(rent.lease_end_date).toLocaleDateString()}`,
+            )}\n• Tenancy term: ${startDate} to ${endDate}`,
           );
 
           await this.cache.set(

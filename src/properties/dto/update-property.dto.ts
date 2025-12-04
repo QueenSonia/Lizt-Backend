@@ -25,6 +25,36 @@ export class UpdatePropertyDto extends PartialType(CreatePropertyDto) {
   @IsOptional()
   @IsEnum(PropertyStatusEnum)
   property_status?: PropertyStatusEnum;
+
+  @ApiPropertyOptional({
+    example: 1000000,
+    description: 'Annual rental price of the property',
+    type: Number,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  rental_price?: number;
+
+  @ApiPropertyOptional({
+    example: 50000,
+    description: 'Security deposit',
+    type: Number,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  security_deposit?: number;
+
+  @ApiPropertyOptional({
+    example: 50000,
+    description: 'Service charge',
+    type: Number,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  service_charge?: number;
 }
 
 // export class UpdatePropertyDto {

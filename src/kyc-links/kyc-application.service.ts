@@ -81,6 +81,13 @@ export class KYCApplicationService {
       );
     }
 
+    // Check if property is ready for marketing (has rental_price set)
+    if (!selectedProperty.rental_price) {
+      throw new BadRequestException(
+        'Selected property is not ready for marketing. Please contact the landlord.',
+      );
+    }
+
     // Check if user has already submitted an application for this specific property using phone number
     const existingApplication = await this.kycApplicationRepository.findOne({
       where: {

@@ -1606,9 +1606,11 @@ export class UsersService {
       .leftJoinAndSelect('account.rents', 'rents')
       .leftJoinAndSelect('rents.property', 'property')
       .leftJoinAndSelect('account.service_requests', 'service_requests')
+      .leftJoinAndSelect('service_requests.property', 'sr_property')
       .leftJoinAndSelect('account.property_histories', 'property_histories') // join past tenancies
       .leftJoinAndSelect('property_histories.property', 'past_property') // Property for past tenancies
       .leftJoinAndSelect('account.notice_agreements', 'notice_agreements')
+      .leftJoinAndSelect('notice_agreements.property', 'notice_property')
       .where('account.id = :tenantId', { tenantId })
       .andWhere((qb) => {
         const subQuery = qb
@@ -1637,23 +1639,47 @@ export class UsersService {
       order: { created_at: 'DESC' }, // Get the most recent application
     });
 
-    return this.formatTenantData(tenantAccount, kycApplication);
+    return this.formatTenantData(tenantAccount, kycApplication, adminId);
   }
 
   private formatTenantData(
     account: Account,
     kycApplication?: KYCApplication | null,
+    adminId?: string,
   ): TenantDetailDto {
     const user = account.user;
     const kyc = user.kyc ?? {}; // Get the joined old KYC data
     const tenantKyc = user.tenant_kycs?.[0]; // Get the joined TenantKyc data (preferred, filtered by admin_id)
 
+    // Filter data by adminId if provided
+    const rents = adminId
+      ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
+      : account.rents || [];
+
+    const serviceRequests = adminId
+      ? account.service_requests?.filter(
+        (sr) => sr.property?.owner_id === adminId,
+      ) || []
+      : account.service_requests || [];
+
+    const propertyHistories = adminId
+      ? account.property_histories?.filter(
+        (ph) => ph.property?.owner_id === adminId,
+      ) || []
+      : account.property_histories || [];
+
+    const noticeAgreements = adminId
+      ? account.notice_agreements?.filter(
+        (na) => na.property?.owner_id === adminId,
+      ) || []
+      : account.notice_agreements || [];
+
     // Debug logging
-    console.log('Total rents loaded:', account.rents?.length || 0);
-    if (account.rents && account.rents.length > 0) {
+    console.log('Total rents loaded:', rents.length);
+    if (rents.length > 0) {
       console.log(
         'Rent records:',
-        account.rents.map((r) => ({
+        rents.map((r) => ({
           id: r.id,
           rent_status: r.rent_status,
           property_id: r.property_id,
@@ -1663,7 +1689,7 @@ export class UsersService {
     }
 
     // Find the most recent ACTIVE rent record for current details
-    const activeRent = account.rents
+    const activeRent = rents
       ?.filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
       .sort(
         (a, b) =>
@@ -1684,7 +1710,7 @@ export class UsersService {
     }
 
     // Aggregate documents from different sources if necessary
-    const documents = (account.notice_agreements || [])
+    const documents = noticeAgreements
       .flatMap((na) => na.notice_documents)
       .map((doc, index) => ({
         id: `${account.id}-doc-${index}`, // Generate a stable ID
@@ -1695,7 +1721,7 @@ export class UsersService {
       }));
 
     // Build the combined history timeline
-    const paymentEvents = (account.rents || []).map((rent) => ({
+    const paymentEvents = rents.map((rent) => ({
       id: rent.id,
       type: 'payment' as const,
       title: 'Rent Payment Received',
@@ -1709,7 +1735,7 @@ export class UsersService {
       status: rent.payment_status,
     }));
 
-    const maintenanceEvents = (account.service_requests || []).map((sr) => ({
+    const maintenanceEvents = serviceRequests.map((sr) => ({
       id: sr.id,
       type: 'maintenance' as const,
       title: `Maintenance Request Submitted`,

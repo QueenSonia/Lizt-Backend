@@ -56,8 +56,17 @@ export class AttachTenantDto {
     required: false,
   })
   @IsOptional()
-  @IsDateString()
+  @IsDateString({ strict: false })
   tenancyStartDate?: string;
+
+  @ApiProperty({
+    example: '2025-01-01',
+    description: 'Tenancy end date (lease expiry date)',
+    required: true,
+  })
+  @IsNotEmpty()
+  @IsDateString({ strict: false })
+  tenancyEndDate: string;
 
   @ApiProperty({
     example: 100000,

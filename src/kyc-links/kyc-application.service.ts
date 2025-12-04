@@ -16,6 +16,8 @@ import {
 } from './entities/kyc-application.entity';
 import { KYCLink } from './entities/kyc-link.entity';
 import { Property } from '../properties/entities/property.entity';
+import { PropertyTenant } from '../properties/entities/property-tenants.entity';
+import { TenantStatusEnum } from '../properties/dto/create-property.dto';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { EventsGateway } from '../events/events.gateway';
 import { NotificationService } from '../notifications/notification.service';
@@ -33,6 +35,8 @@ export class KYCApplicationService {
     private readonly kycLinkRepository: Repository<KYCLink>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepository: Repository<PropertyTenant>,
     private readonly utilService: UtilService,
     private readonly configService: ConfigService,
     @Optional()
@@ -86,9 +90,42 @@ export class KYCApplicationService {
     });
 
     if (existingApplication) {
-      throw new ConflictException(
-        `User with phone number ${kycData.phone_number} has already applied for this property`,
-      );
+      // If there's an existing application, check if the user currently has an active tenancy
+      // If they don't have an active tenancy (tenancy was ended), allow them to reapply
+      if (existingApplication.tenant_id) {
+        // Check if the tenant is currently active for this property
+        const activePropertyTenant =
+          await this.propertyTenantRepository.findOne({
+            where: {
+              property_id: kycData.property_id,
+              tenant_id: existingApplication.tenant_id,
+              status: TenantStatusEnum.ACTIVE,
+            },
+          });
+
+        // If tenant is still active, prevent reapplication
+        if (activePropertyTenant) {
+          throw new ConflictException(
+            `User with phone number ${kycData.phone_number} already has an active tenancy for this property`,
+          );
+        }
+
+        // If tenant is not active (tenancy ended), allow reapplication by deleting old application
+        // This ensures a fresh application process
+        await this.kycApplicationRepository.delete(existingApplication.id);
+      } else {
+        // If existing application has no tenant_id, check if it's still pending
+        if (existingApplication.status === ApplicationStatus.PENDING) {
+          throw new ConflictException(
+            `User with phone number ${kycData.phone_number} has a pending application for this property`,
+          );
+        }
+
+        // If it's rejected, allow reapplication by deleting old application
+        if (existingApplication.status === ApplicationStatus.REJECTED) {
+          await this.kycApplicationRepository.delete(existingApplication.id);
+        }
+      }
     }
 
     // Create new KYC application with automatic pending status

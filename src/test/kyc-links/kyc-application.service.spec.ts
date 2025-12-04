@@ -14,8 +14,12 @@ import {
 } from '../../kyc-links/entities/kyc-application.entity';
 import { KYCLink } from '../../kyc-links/entities/kyc-link.entity';
 import { Property } from '../../properties/entities/property.entity';
+import { PropertyTenant } from '../../properties/entities/property-tenants.entity';
 import { CreateKYCApplicationDto } from '../../kyc-links/dto/create-kyc-application.dto';
-import { PropertyStatusEnum } from '../../properties/dto/create-property.dto';
+import {
+  PropertyStatusEnum,
+  TenantStatusEnum,
+} from '../../properties/dto/create-property.dto';
 import {
   Gender,
   MaritalStatus,
@@ -27,6 +31,7 @@ describe('KYCApplicationService', () => {
   let kycApplicationRepository: Repository<KYCApplication>;
   let kycLinkRepository: Repository<KYCLink>;
   let propertyRepository: Repository<Property>;
+  let propertyTenantRepository: Repository<PropertyTenant>;
 
   const mockKycApplicationRepository = {
     findOne: jest.fn(),
@@ -34,6 +39,7 @@ describe('KYCApplicationService', () => {
     create: jest.fn(),
     save: jest.fn(),
     update: jest.fn(),
+    delete: jest.fn(),
     count: jest.fn(),
     createQueryBuilder: jest.fn(),
   };
@@ -44,6 +50,10 @@ describe('KYCApplicationService', () => {
   };
 
   const mockPropertyRepository = {
+    findOne: jest.fn(),
+  };
+
+  const mockPropertyTenantRepository = {
     findOne: jest.fn(),
   };
 
@@ -75,6 +85,10 @@ describe('KYCApplicationService', () => {
           provide: getRepositoryToken(Property),
           useValue: mockPropertyRepository,
         },
+        {
+          provide: getRepositoryToken(PropertyTenant),
+          useValue: mockPropertyTenantRepository,
+        },
       ],
     }).compile();
 
@@ -87,6 +101,9 @@ describe('KYCApplicationService', () => {
     );
     propertyRepository = module.get<Repository<Property>>(
       getRepositoryToken(Property),
+    );
+    propertyTenantRepository = module.get<Repository<PropertyTenant>>(
+      getRepositoryToken(PropertyTenant),
     );
   });
 
@@ -125,6 +142,9 @@ describe('KYCApplicationService', () => {
       reference2_address: '789 Reference Blvd',
       reference2_relationship: 'Colleague',
       reference2_phone_number: '+2348098765432',
+      passport_photo_url: 'https://cloudinary.com/passport.jpg',
+      id_document_url: 'https://cloudinary.com/id.jpg',
+      employment_proof_url: 'https://cloudinary.com/employment.jpg',
     };
 
     const mockKycLink = {
@@ -138,6 +158,11 @@ describe('KYCApplicationService', () => {
     it('should submit KYC application successfully', async () => {
       // Arrange
       mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockPropertyRepository.findOne.mockResolvedValue({
+        id: 'property-123',
+        property_status: PropertyStatusEnum.VACANT,
+        owner_id: 'landlord-123',
+      });
       mockKycApplicationRepository.findOne
         .mockResolvedValueOnce(null) // No existing application
         .mockResolvedValueOnce({
@@ -155,7 +180,6 @@ describe('KYCApplicationService', () => {
       const mockCreatedApplication = {
         id: 'application-123',
         kyc_link_id: mockKycLink.id,
-        property_id: mockKycData.property_id,
         status: ApplicationStatus.PENDING,
         ...mockKycData,
       };
@@ -173,59 +197,174 @@ describe('KYCApplicationService', () => {
       // Assert
       expect(mockKycLinkRepository.findOne).toHaveBeenCalledWith({
         where: { token },
-        relations: ['property'],
+        relations: ['landlord'],
+      });
+      expect(mockPropertyRepository.findOne).toHaveBeenCalledWith({
+        where: {
+          id: mockKycData.property_id,
+          owner_id: mockKycLink.landlord_id,
+        },
       });
       expect(mockKycApplicationRepository.findOne).toHaveBeenCalledWith({
         where: {
-          kyc_link_id: mockKycLink.id,
-          email: mockKycData.email,
+          property_id: mockKycData.property_id,
+          phone_number: mockKycData.phone_number,
         },
       });
-      expect(mockKycApplicationRepository.create).toHaveBeenCalledWith({
-        kyc_link_id: mockKycLink.id,
-        property_id: mockKycLink.property_id,
-        status: ApplicationStatus.PENDING,
-        first_name: mockKycData.first_name,
-        last_name: mockKycData.last_name,
-        email: mockKycData.email,
-        phone_number: mockKycData.phone_number,
-        date_of_birth: mockKycData.date_of_birth
-          ? new Date(mockKycData.date_of_birth)
-          : new Date(),
-        gender: mockKycData.gender,
-        nationality: mockKycData.nationality,
-        state_of_origin: mockKycData.state_of_origin,
-        marital_status: mockKycData.marital_status,
-        employment_status: mockKycData.employment_status,
-        occupation: mockKycData.occupation,
-        job_title: mockKycData.job_title,
-        employer_name: mockKycData.employer_name,
-        employer_address: mockKycData.employer_address,
-        monthly_net_income: mockKycData.monthly_net_income,
-        reference1_name: mockKycData.reference1_name,
-        reference1_address: mockKycData.reference1_address,
-        reference1_relationship: mockKycData.reference1_relationship,
-        reference1_phone_number: mockKycData.reference1_phone_number,
-        reference2_name: mockKycData.reference2_name,
-        reference2_address: mockKycData.reference2_address,
-        reference2_relationship: mockKycData.reference2_relationship,
-        reference2_phone_number: mockKycData.reference2_phone_number,
-      });
+      expect(mockKycApplicationRepository.create).toHaveBeenCalled();
       expect(result.status).toBe(ApplicationStatus.PENDING);
     });
 
-    it('should throw ConflictException when user already submitted application', async () => {
+    it('should throw ConflictException when user has pending application', async () => {
       // Arrange
       mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockPropertyRepository.findOne.mockResolvedValue({
+        id: 'property-123',
+        property_status: PropertyStatusEnum.VACANT,
+        owner_id: 'landlord-123',
+      });
       mockKycApplicationRepository.findOne.mockResolvedValue({
         id: 'existing-application',
-        email: mockKycData.email,
+        phone_number: mockKycData.phone_number,
+        property_id: mockKycData.property_id,
+        status: ApplicationStatus.PENDING,
       });
 
       // Act & Assert
       await expect(
         service.submitKYCApplication(token, mockKycData),
       ).rejects.toThrow(ConflictException);
+      expect(mockKycApplicationRepository.findOne).toHaveBeenCalledWith({
+        where: {
+          property_id: mockKycData.property_id,
+          phone_number: mockKycData.phone_number,
+        },
+      });
+    });
+
+    it('should throw ConflictException when user has active tenancy', async () => {
+      // Arrange
+      mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockPropertyRepository.findOne.mockResolvedValue({
+        id: 'property-123',
+        property_status: PropertyStatusEnum.VACANT,
+        owner_id: 'landlord-123',
+      });
+      mockKycApplicationRepository.findOne.mockResolvedValue({
+        id: 'existing-application',
+        phone_number: mockKycData.phone_number,
+        property_id: mockKycData.property_id,
+        status: ApplicationStatus.APPROVED,
+        tenant_id: 'tenant-123',
+      });
+      mockPropertyTenantRepository.findOne.mockResolvedValue({
+        id: 'property-tenant-123',
+        property_id: mockKycData.property_id,
+        tenant_id: 'tenant-123',
+        status: TenantStatusEnum.ACTIVE,
+      });
+
+      // Act & Assert
+      await expect(
+        service.submitKYCApplication(token, mockKycData),
+      ).rejects.toThrow(ConflictException);
+      expect(mockPropertyTenantRepository.findOne).toHaveBeenCalledWith({
+        where: {
+          property_id: mockKycData.property_id,
+          tenant_id: 'tenant-123',
+          status: TenantStatusEnum.ACTIVE,
+        },
+      });
+    });
+
+    it('should allow reapplication when previous tenancy ended', async () => {
+      // Arrange
+      mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockPropertyRepository.findOne.mockResolvedValue({
+        id: 'property-123',
+        property_status: PropertyStatusEnum.VACANT,
+        owner_id: 'landlord-123',
+      });
+
+      // First call: existing application found
+      // Second call: after deletion, no application found
+      mockKycApplicationRepository.findOne
+        .mockResolvedValueOnce({
+          id: 'existing-application',
+          phone_number: mockKycData.phone_number,
+          property_id: mockKycData.property_id,
+          status: ApplicationStatus.APPROVED,
+          tenant_id: 'tenant-123',
+        })
+        .mockResolvedValueOnce(null); // After deletion
+
+      // No active tenancy (tenancy was ended)
+      mockPropertyTenantRepository.findOne.mockResolvedValue(null);
+
+      mockKycApplicationRepository.delete.mockResolvedValue({ affected: 1 });
+      mockKycApplicationRepository.create.mockReturnValue({
+        id: 'new-application-123',
+        status: ApplicationStatus.PENDING,
+        ...mockKycData,
+      });
+      mockKycApplicationRepository.save.mockResolvedValue({
+        id: 'new-application-123',
+        status: ApplicationStatus.PENDING,
+        ...mockKycData,
+      });
+
+      // Act
+      const result = await service.submitKYCApplication(token, mockKycData);
+
+      // Assert
+      expect(mockKycApplicationRepository.delete).toHaveBeenCalledWith(
+        'existing-application',
+      );
+      expect(mockKycApplicationRepository.create).toHaveBeenCalled();
+      expect(result.status).toBe(ApplicationStatus.PENDING);
+    });
+
+    it('should allow reapplication when previous application was rejected', async () => {
+      // Arrange
+      mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockPropertyRepository.findOne.mockResolvedValue({
+        id: 'property-123',
+        property_status: PropertyStatusEnum.VACANT,
+        owner_id: 'landlord-123',
+      });
+
+      // First call: rejected application found
+      // Second call: after deletion, no application found
+      mockKycApplicationRepository.findOne
+        .mockResolvedValueOnce({
+          id: 'rejected-application',
+          phone_number: mockKycData.phone_number,
+          property_id: mockKycData.property_id,
+          status: ApplicationStatus.REJECTED,
+        })
+        .mockResolvedValueOnce(null); // After deletion
+
+      mockKycApplicationRepository.delete.mockResolvedValue({ affected: 1 });
+      mockKycApplicationRepository.create.mockReturnValue({
+        id: 'new-application-123',
+        status: ApplicationStatus.PENDING,
+        ...mockKycData,
+      });
+      mockKycApplicationRepository.save.mockResolvedValue({
+        id: 'new-application-123',
+        status: ApplicationStatus.PENDING,
+        ...mockKycData,
+      });
+
+      // Act
+      const result = await service.submitKYCApplication(token, mockKycData);
+
+      // Assert
+      expect(mockKycApplicationRepository.delete).toHaveBeenCalledWith(
+        'rejected-application',
+      );
+      expect(mockKycApplicationRepository.create).toHaveBeenCalled();
+      expect(result.status).toBe(ApplicationStatus.PENDING);
     });
 
     it('should throw BadRequestException for invalid token', async () => {

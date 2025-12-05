@@ -29,17 +29,7 @@ export class AttachTenantDto {
   @Min(1, { message: 'Rent amount must be greater than 0' })
   rentAmount: number;
 
-  @ApiProperty({
-    example: 15,
-    description: 'Day of the month when rent is due (1-31)',
-    type: 'integer',
-  })
-  @IsNotEmpty()
-  @IsNumber()
-  @Type(() => Number)
-  @Min(1, { message: 'Rent due date must be between 1 and 31' })
-  @Max(31, { message: 'Rent due date must be between 1 and 31' })
-  rentDueDate: number;
+
 
   @ApiProperty({
     example: RentFrequency.MONTHLY,
@@ -52,21 +42,14 @@ export class AttachTenantDto {
 
   @ApiProperty({
     example: '2024-01-01',
-    description: 'Tenancy start date (optional, defaults to current date)',
+    description: 'Rent start date (optional, defaults to current date)',
     required: false,
   })
   @IsOptional()
   @IsDateString({ strict: false })
   tenancyStartDate?: string;
 
-  @ApiProperty({
-    example: '2025-01-01',
-    description: 'Tenancy end date (lease expiry date)',
-    required: true,
-  })
-  @IsNotEmpty()
-  @IsDateString({ strict: false })
-  tenancyEndDate: string;
+
 
   @ApiProperty({
     example: 100000,

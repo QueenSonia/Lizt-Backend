@@ -37,9 +37,9 @@ export class RentsService {
   ) { }
 
   async payRent(data: any): Promise<Rent> {
-    const { lease_start_date, lease_end_date } = data;
-    data.lease_start_date = DateService.getStartOfTheDay(lease_start_date);
-    data.lease_end_date = DateService.getEndOfTheDay(lease_end_date);
+    const { rent_start_date, lease_agreement_end_date } = data;
+    data.rent_start_date = DateService.getStartOfTheDay(rent_start_date);
+    data.lease_agreement_end_date = DateService.getEndOfTheDay(lease_agreement_end_date);
     return this.rentRepository.save(data);
   }
 

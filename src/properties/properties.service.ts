@@ -63,7 +63,7 @@ export class PropertiesService {
     private readonly dataSource: DataSource,
     private readonly kycApplicationService: KYCApplicationService,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   async createProperty(
     propertyData: CreatePropertyDto,
@@ -175,7 +175,7 @@ export class PropertiesService {
       );
     } else if (queryParams.sort_by === 'expiry' && queryParams?.sort_order) {
       qb.orderBy(
-        'rents.lease_end_date',
+        'rents.expiry_date',
         queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
       );
     } else if (queryParams.sort_by && queryParams?.sort_order) {
@@ -312,8 +312,8 @@ export class PropertiesService {
         email: email,
         phone: phone,
         rentAmount: activeRent.rental_price,
-        leaseStartDate: activeRent.lease_start_date.toISOString(),
-        rentExpiryDate: activeRent.lease_end_date.toISOString(),
+        leaseStartDate: activeRent.rent_start_date.toISOString(),
+        rentExpiryDate: activeRent.expiry_date?.toISOString() || null,
       };
     }
 
@@ -463,7 +463,7 @@ export class PropertiesService {
         name: `${firstName} ${lastName}`,
         email: email,
         phone: phone,
-        tenancyStartDate: activeRent.lease_start_date
+        tenancyStartDate: activeRent.rent_start_date
           .toISOString()
           .split('T')[0],
         paymentCycle: activeRent.payment_frequency || 'Monthly',
@@ -570,11 +570,10 @@ export class PropertiesService {
       });
 
     // Computed description
-    const computedDescription = `${property.name} is a ${
-      property.no_of_bedrooms === -1
-        ? 'studio'
-        : `${property.no_of_bedrooms}-bedroom`
-    } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
+    const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1
+      ? 'studio'
+      : `${property.no_of_bedrooms}-bedroom`
+      } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
 
     // KYC Applications data
     const kycApplications =
@@ -614,7 +613,7 @@ export class PropertiesService {
             : 'Vacant',
       rent: activeRent?.rental_price || null,
       rentExpiryDate:
-        activeRent?.lease_end_date?.toISOString().split('T')[0] || null,
+        activeRent?.expiry_date?.toISOString().split('T')[0] || null,
       description: property.description || computedDescription,
       currentTenant,
       history,
@@ -673,8 +672,8 @@ export class PropertiesService {
   //       phone_number: data.phone_number,
   //     });
   //     await this.rentService.updateRentById(activeRent.id, {
-  //       lease_start_date: data.lease_end_date,
-  //       lease_end_date: data.lease_end_date,
+  //       rent_start_date: data.lease_agreement_end_date,
+  //       lease_agreement_end_date: data.lease_agreement_end_date,
   //       rental_price: data.rental_price,
   //       service_charge: data.service_charge,
   //       security_deposit: data.security_deposit,
@@ -1190,7 +1189,7 @@ export class PropertiesService {
             property_id,
             tenant_id,
             move_in_date:
-              activeRent.lease_start_date ||
+              activeRent.rent_start_date ||
               DateService.getStartOfTheDay(new Date()),
             monthly_rent: activeRent.rental_price,
             owner_comment: null,
@@ -1457,7 +1456,7 @@ export class PropertiesService {
               tenant_id: rent.tenant_id,
               event_type: 'tenancy_record',
               move_in_date:
-                rent.lease_start_date ||
+                rent.rent_start_date ||
                 DateService.getStartOfTheDay(new Date()),
               monthly_rent: rent.rental_price,
               owner_comment: 'Auto-created during sync',
@@ -1520,8 +1519,8 @@ export class PropertiesService {
 
       await queryRunner.manager.save(Rent, {
         tenant_id: data.tenant_id,
-        lease_start_date: data.lease_start_date,
-        lease_end_date: data.lease_end_date,
+        rent_start_date: data.rent_start_date,
+        lease_agreement_end_date: data.lease_agreement_end_date,
         property_id: property.id,
         amount_paid: data.rental_price,
         rental_price: data.rental_price,
@@ -1565,7 +1564,7 @@ export class PropertiesService {
       console.error('Transaction rolled back due to:', error);
       throw new HttpException(
         error?.message ||
-          'An error occurred while assigning Tenant To property',
+        'An error occurred while assigning Tenant To property',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     } finally {
@@ -1761,13 +1760,13 @@ export class PropertiesService {
           sampleResults: sampleResults.slice(0, 5), // Show first 5 results
           recommendations: isFixed
             ? [
-                'The fix is working correctly',
-                'Clear browser cache if you still see issues',
-              ]
+              'The fix is working correctly',
+              'Clear browser cache if you still see issues',
+            ]
             : [
-                'Database queries may need additional fixes',
-                'Contact technical support',
-              ],
+              'Database queries may need additional fixes',
+              'Contact technical support',
+            ],
         },
       };
     } catch (error) {

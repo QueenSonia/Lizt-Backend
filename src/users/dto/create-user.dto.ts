@@ -42,11 +42,11 @@ export class CreateTenantDto {
   // Rent details
   @IsNotEmpty()
   @IsDateString()
-  lease_start_date: Date;
+  rent_start_date: Date;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsDateString()
-  lease_end_date: Date;
+  lease_agreement_end_date?: Date;
 
   @IsNotEmpty()
   @IsNumber()
@@ -251,19 +251,19 @@ export class CreateUserDto {
 
   @ApiProperty({
     example: '',
-    description: 'lease start date',
+    description: 'rent start date',
   })
   @IsNotEmpty()
   @IsDateString()
-  lease_start_date: Date;
+  rent_start_date: Date;
 
   @ApiProperty({
     example: '',
-    description: 'lease end date',
+    description: 'lease agreement end date',
   })
-  @IsNotEmpty()
+  @IsOptional()
   @IsDateString()
-  lease_end_date: Date;
+  lease_agreement_end_date?: Date;
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',

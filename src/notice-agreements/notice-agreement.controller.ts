@@ -36,7 +36,7 @@ import { UploadNoticeDocumentDto } from './dto/uplaod-notice-document.dto';
 @ApiTags('Notice-Agreements')
 @Controller('notice-agreement')
 export class NoticeAgreementController {
-  constructor(private readonly service: NoticeAgreementService) {}
+  constructor(private readonly service: NoticeAgreementService) { }
 
   @ApiOperation({ summary: 'Get All Notice Agreements' })
   @ApiOkResponse({
@@ -119,9 +119,9 @@ export class NoticeAgreementController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id') id: string, @Req() req: any) {
     try {
-      return this.service.findOne(id);
+      return this.service.findOne(id, req?.user?.id);
     } catch (error) {
       throw error;
     }
@@ -133,16 +133,24 @@ export class NoticeAgreementController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post('resend/:id')
-  resendNoticeAgreement(@Param('id') id: string) {
+  resendNoticeAgreement(@Param('id') id: string, @Req() req: any) {
     try {
-      return this.service.resendNoticeAgreement(id);
+      return this.service.resendNoticeAgreement(id, req?.user?.id);
     } catch (error) {
       throw error;
     }
   }
 
   @Post('upload-document/:id')
-  async attachDocument(@Param('id') id: string, @Body() body: any) {
-    return this.service.attachNoticeDocument(id, body.document_url);
+  async attachDocument(
+    @Param('id') id: string,
+    @Body() body: any,
+    @Req() req: any,
+  ) {
+    return this.service.attachNoticeDocument(
+      id,
+      body.document_url,
+      req?.user?.id,
+    );
   }
 }

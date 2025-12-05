@@ -57,7 +57,7 @@ export class TenantAttachmentService {
     private readonly dataSource: DataSource,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   /**
    * Attach tenant to property with tenancy details
@@ -143,13 +143,15 @@ export class TenantAttachmentService {
       // A tenant can now be active in multiple properties across different landlords
       // Each landlord sees only their own tenant assignments via property ownership filtering
 
-      // Calculate lease dates
-      const tenancyStartDate = tenancyDetails.tenancyStartDate
+      // Parse rent start date
+      const rentStartDate = tenancyDetails.tenancyStartDate
         ? new Date(tenancyDetails.tenancyStartDate)
         : new Date();
 
-      const leaseEndDate = this.calculateLeaseEndDate(
-        tenancyStartDate,
+      // Calculate next rent due date (primary tracking mechanism)
+      // Due day is derived from the start date (e.g., if start is 15th, due day is 15th)
+      const nextRentDueDate = this.calculateNextRentDate(
+        rentStartDate,
         tenancyDetails.rentFrequency,
       );
 
@@ -157,8 +159,8 @@ export class TenantAttachmentService {
       const rent = queryRunner.manager.create(Rent, {
         tenant_id: tenantAccount.id,
         property_id: application.property_id,
-        lease_start_date: tenancyStartDate,
-        lease_end_date: leaseEndDate,
+        rent_start_date: rentStartDate,
+        lease_agreement_end_date: undefined,
         rental_price: tenancyDetails.rentAmount,
         security_deposit: tenancyDetails.securityDeposit || 0,
         service_charge: tenancyDetails.serviceCharge || 0,
@@ -168,11 +170,7 @@ export class TenantAttachmentService {
         rent_status: RentStatusEnum.ACTIVE,
         payment_status: RentPaymentStatusEnum.PENDING,
         amount_paid: 0,
-        expiry_date: this.calculateNextRentDate(
-          tenancyStartDate,
-          tenancyDetails.rentDueDate,
-          tenancyDetails.rentFrequency,
-        ),
+        expiry_date: nextRentDueDate,
       });
 
       await queryRunner.manager.save(rent);
@@ -195,9 +193,9 @@ export class TenantAttachmentService {
       const propertyHistory = queryRunner.manager.create(PropertyHistory, {
         property_id: application.property_id,
         tenant_id: tenantAccount.id,
-        move_in_date: DateService.getStartOfTheDay(tenancyStartDate),
+        move_in_date: DateService.getStartOfTheDay(rentStartDate),
         monthly_rent: tenancyDetails.rentAmount,
-        owner_comment: `Tenant attached via KYC application ${applicationId}`,
+        owner_comment: `Tenant attached via KYC application ${applicationId}. Rent: ₦${tenancyDetails.rentAmount.toLocaleString()}, Frequency: ${tenancyDetails.rentFrequency}, Next due: ${nextRentDueDate.toLocaleDateString()}`,
         tenant_comment: null,
         move_out_date: null,
         move_out_reason: null,
@@ -314,7 +312,7 @@ export class TenantAttachmentService {
           tenantAccount,
           application,
           tenancyDetails,
-          tenancyStartDate,
+          rentStartDate,
         );
       } catch (whatsappError) {
         // Log WhatsApp error but don't fail the entire operation
@@ -712,10 +710,6 @@ export class TenantAttachmentService {
       throw new BadRequestException('Rent amount must be greater than 0');
     }
 
-    if (tenancyDetails.rentDueDate < 1 || tenancyDetails.rentDueDate > 31) {
-      throw new BadRequestException('Rent due date must be between 1 and 31');
-    }
-
     // Tenancy start date validation removed - allow past dates
 
     if (tenancyDetails.securityDeposit && tenancyDetails.securityDeposit < 0) {
@@ -728,45 +722,15 @@ export class TenantAttachmentService {
   }
 
   /**
-   * Calculate lease end date based on rent frequency
-   * Requirements: 5.1, 5.2
-   */
-  private calculateLeaseEndDate(
-    startDate: Date,
-    frequency: RentFrequency,
-  ): Date {
-    const endDate = new Date(startDate);
-
-    switch (frequency) {
-      case RentFrequency.MONTHLY:
-        endDate.setFullYear(endDate.getFullYear() + 1); // Default 1 year lease
-        break;
-      case RentFrequency.QUARTERLY:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-      case RentFrequency.BI_ANNUALLY:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-      case RentFrequency.ANNUALLY:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-      default:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-    }
-
-    return endDate;
-  }
-
-  /**
    * Calculate next rent due date based on start date, due day, and frequency
    * Requirements: 5.1, 5.2
    */
   private calculateNextRentDate(
     startDate: Date,
-    dueDay: number,
     frequency: RentFrequency,
   ): Date {
     const nextDate = new Date(startDate);
+    const dueDay = startDate.getDate();
 
     // Add frequency duration to get to the next period
     switch (frequency) {
@@ -797,6 +761,10 @@ export class TenantAttachmentService {
     if (nextDate.getMonth() !== targetMonth) {
       nextDate.setDate(0);
     }
+
+    // Subtract 1 day to get the day BEFORE the next cycle starts
+    // e.g. Start Jan 1st -> Next Cycle Feb 1st -> Due Date Jan 31st
+    nextDate.setDate(nextDate.getDate() - 1);
 
     return nextDate;
   }
@@ -888,7 +856,7 @@ export class TenantAttachmentService {
         const propertyHistory = manager.create(PropertyHistory, {
           property_id: rent.property_id,
           tenant_id: tenantId,
-          move_in_date: rent.lease_start_date,
+          move_in_date: rent.rent_start_date,
           move_out_date: DateService.getStartOfTheDay(new Date()),
           move_out_reason: 'other',
           monthly_rent: rent.rental_price,
@@ -1001,7 +969,7 @@ export class TenantAttachmentService {
               {
                 property_id: oldRent.property_id,
                 tenant_id: tenantId,
-                move_in_date: oldRent.lease_start_date,
+                move_in_date: oldRent.rent_start_date,
                 move_out_date: DateService.getStartOfTheDay(new Date()),
                 move_out_reason: 'data_cleanup',
                 monthly_rent: oldRent.rental_price,

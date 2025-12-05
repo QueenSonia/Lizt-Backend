@@ -34,12 +34,12 @@ export class RentsService {
     @InjectRepository(RentIncrease)
     private readonly rentIncreaseRepository: Repository<RentIncrease>,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   async payRent(data: any): Promise<Rent> {
-    const { lease_start_date, lease_end_date } = data;
-    data.lease_start_date = DateService.getStartOfTheDay(lease_start_date);
-    data.lease_end_date = DateService.getEndOfTheDay(lease_end_date);
+    const { rent_start_date, lease_agreement_end_date } = data;
+    data.rent_start_date = DateService.getStartOfTheDay(rent_start_date);
+    data.lease_agreement_end_date = DateService.getEndOfTheDay(lease_agreement_end_date);
     return this.rentRepository.save(data);
   }
 
@@ -72,7 +72,7 @@ export class RentsService {
     };
   }
 
-  async getRentByTenantId(tenant_id: string) {
+  async getRentByTenantId(tenant_id: string, userId: string) {
     const rent = await this.rentRepository.findOne({
       where: { tenant_id },
       relations: ['tenant', 'property'],
@@ -81,6 +81,13 @@ export class RentsService {
       throw new HttpException(
         `Tenant has never paid rent`,
         HttpStatus.NOT_FOUND,
+      );
+    }
+    // Allow if user is the tenant OR the landlord (owner of the property)
+    if (rent.tenant_id !== userId && rent.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to view this rent',
+        HttpStatus.FORBIDDEN,
       );
     }
     return rent;
@@ -161,7 +168,7 @@ export class RentsService {
     };
   }
 
-  async sendRentReminder(id: string) {
+  async sendRentReminder(id: string, userId: string) {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -169,6 +176,13 @@ export class RentsService {
 
     if (!rent?.id) {
       throw new HttpException('Rent not found', HttpStatus.NOT_FOUND);
+    }
+
+    if (rent.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to send reminders for this rent',
+        HttpStatus.FORBIDDEN,
+      );
     }
 
     const emailContent = rentReminderEmailTemplate(
@@ -186,7 +200,7 @@ export class RentsService {
     return { message: 'Reminder sent successfully' };
   }
 
-  async getRentById(id: string) {
+  async getRentById(id: string, userId: string) {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -194,14 +208,47 @@ export class RentsService {
     if (!rent?.id) {
       throw new HttpException(`Rent not found`, HttpStatus.NOT_FOUND);
     }
+    // Allow if user is the tenant OR the landlord
+    if (rent.tenant_id !== userId && rent.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to view this rent',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     return rent;
   }
 
-  async updateRentById(id: string, data: any) {
+  async updateRentById(id: string, data: any, userId: string) {
+    const rent = await this.rentRepository.findOne({
+      where: { id },
+      relations: ['property'],
+    });
+    if (!rent) {
+      throw new HttpException('Rent not found', HttpStatus.NOT_FOUND);
+    }
+    if (rent.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to update this rent',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     return this.rentRepository.update(id, data);
   }
 
-  async deleteRentById(id: string) {
+  async deleteRentById(id: string, userId: string) {
+    const rent = await this.rentRepository.findOne({
+      where: { id },
+      relations: ['property'],
+    });
+    if (!rent) {
+      throw new HttpException('Rent not found', HttpStatus.NOT_FOUND);
+    }
+    if (rent.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to delete this rent',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     return this.rentRepository.delete(id);
   }
 

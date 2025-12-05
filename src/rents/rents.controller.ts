@@ -40,7 +40,7 @@ export class RentsController {
   constructor(
     private readonly rentsService: RentsService,
     private readonly fileUploadService: FileUploadService,
-  ) {}
+  ) { }
 
   @ApiOperation({ summary: 'Pay Rent' })
   // @ApiConsumes('multipart/form-data')
@@ -87,8 +87,9 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
-  getAllRents(@Query() query: RentFilter) {
+  getAllRents(@Query() query: RentFilter, @Req() req: any) {
     try {
+      query.owner_id = req?.user?.id;
       return this.rentsService.getAllRents(query);
     } catch (error) {
       throw error;
@@ -106,9 +107,10 @@ export class RentsController {
   @Get('tenant/:tenant_id')
   getRentByTenantId(
     @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,
+    @Req() req: any,
   ) {
     try {
-      return this.rentsService.getRentByTenantId(tenant_id);
+      return this.rentsService.getRentByTenantId(tenant_id, req?.user?.id);
     } catch (error) {
       throw error;
     }
@@ -173,9 +175,12 @@ export class RentsController {
   @Get('reminder/:id')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  sendReminder(@Param('id', new ParseUUIDPipe()) id: string) {
+  @Get('reminder/:id')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  sendReminder(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: any) {
     try {
-      return this.rentsService.sendRentReminder(id);
+      return this.rentsService.sendRentReminder(id, req?.user?.id);
     } catch (error) {
       throw error;
     }
@@ -190,9 +195,10 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  getRentById(@Param('id', new ParseUUIDPipe()) id: string) {
+  @Get(':id')
+  getRentById(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: any) {
     try {
-      return this.rentsService.getRentById(id);
+      return this.rentsService.getRentById(id, req?.user?.id);
     } catch (error) {
       throw error;
     }
@@ -209,6 +215,7 @@ export class RentsController {
   async updatePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: UpdateRentDto,
+    @Req() req: any,
     // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
@@ -218,7 +225,7 @@ export class RentsController {
       //   );
       //   body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
       // }
-      return this.rentsService.updateRentById(id, body);
+      return this.rentsService.updateRentById(id, body, req?.user?.id);
     } catch (error) {
       throw error;
     }
@@ -229,9 +236,13 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Delete(':id')
-  deletePropertyById(@Param('id', new ParseUUIDPipe()) id: string) {
+  @Delete(':id')
+  deletePropertyById(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: any,
+  ) {
     try {
-      return this.rentsService.deleteRentById(id);
+      return this.rentsService.deleteRentById(id, req?.user?.id);
     } catch (error) {
       throw error;
     }

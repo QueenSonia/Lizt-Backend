@@ -51,7 +51,7 @@ export class ServiceRequestsController {
   constructor(
     private readonly serviceRequestsService: ServiceRequestsService,
     private readonly fileUploadService: FileUploadService,
-  ) {}
+  ) { }
 
   @ApiOperation({ summary: 'Create Service Request' })
   @ApiConsumes('multipart/form-data')
@@ -159,9 +159,12 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  getServiceRequestById(@Param('id', new ParseUUIDPipe()) id: string) {
+  getServiceRequestById(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: any,
+  ) {
     try {
-      return this.serviceRequestsService.getServiceRequestById(id);
+      return this.serviceRequestsService.getServiceRequestById(id, req?.user?.id);
     } catch (error) {
       throw error;
     }
@@ -178,6 +181,7 @@ export class ServiceRequestsController {
   async updateServiceRequestById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: UpdateServiceRequestResponseDto,
+    @Req() req: any,
     @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
@@ -189,7 +193,11 @@ export class ServiceRequestsController {
         );
         body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
       }
-      return this.serviceRequestsService.updateServiceRequestById(id, body);
+      return this.serviceRequestsService.updateServiceRequestById(
+        id,
+        body,
+        req?.user?.id,
+      );
     } catch (error) {
       throw error;
     }
@@ -200,9 +208,15 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Delete(':id')
-  deleteServiceRequestById(@Param('id', new ParseUUIDPipe()) id: string) {
+  deleteServiceRequestById(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: any,
+  ) {
     try {
-      return this.serviceRequestsService.deleteServiceRequestById(id);
+      return this.serviceRequestsService.deleteServiceRequestById(
+        id,
+        req?.user?.id,
+      );
     } catch (error) {
       throw error;
     }

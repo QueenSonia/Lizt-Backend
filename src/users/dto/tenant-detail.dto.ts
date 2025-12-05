@@ -126,6 +126,7 @@ export class TenantDetailDto {
   rentStatus: string;
   nextRentDue: string | null;
   outstandingBalance: number;
+  paymentFrequency: string | null; // Actual agreed payment frequency from Rent record
 
   // Aggregated Data
   documents: DocumentItem[];

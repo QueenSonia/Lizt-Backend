@@ -68,7 +68,7 @@ export class WhatsappBotService {
     private readonly cache: CacheService,
     private readonly config: ConfigService,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   async getNextScreen(decryptedBody) {
     const { screen, data, action } = decryptedBody;
@@ -917,11 +917,11 @@ export class WhatsappBotService {
           `Account Info for ${this.utilService.toSentenceCase(
             teamMemberAccountInfo.account.profile_name,
           )}:\n\n` +
-            `- Email: ${teamMemberAccountInfo.account.email}\n` +
-            `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-            `- Role: ${this.utilService.toSentenceCase(
-              teamMemberAccountInfo.account.role,
-            )}`,
+          `- Email: ${teamMemberAccountInfo.account.email}\n` +
+          `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
+          `- Role: ${this.utilService.toSentenceCase(
+            teamMemberAccountInfo.account.role,
+          )}`,
         );
 
         await this.sendText(
@@ -1267,9 +1267,8 @@ export class WhatsappBotService {
       serviceRequests.forEach((req: any, i) => {
         response += `${req.description} (${new Date(
           req.created_at,
-        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
-          req.notes || '——'
-        }\n\n`;
+        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'
+          }\n\n`;
       });
 
       await this.sendText(from, response);
@@ -1477,7 +1476,7 @@ export class WhatsappBotService {
 
         for (const item of properties) {
           const rent = item.property.rents[0];
-          const startDate = new Date(rent.lease_start_date).toLocaleDateString(
+          const startDate = new Date(rent.rent_start_date).toLocaleDateString(
             'en-GB',
             {
               day: '2-digit',
@@ -1485,7 +1484,7 @@ export class WhatsappBotService {
               year: 'numeric',
             },
           );
-          const endDate = new Date(rent.lease_end_date).toLocaleDateString(
+          const endDate = new Date(rent.expiry_date).toLocaleDateString(
             'en-GB',
             {
               day: '2-digit',

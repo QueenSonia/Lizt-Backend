@@ -104,15 +104,15 @@ export class UsersService {
 
     private readonly utilService: UtilService,
     private readonly dataSource: DataSource,
-  ) {}
+  ) { }
 
   async addTenant(user_id: string, dto: CreateTenantDto) {
     const {
       phone_number,
       full_name,
       rental_price,
-      lease_start_date,
-      lease_end_date,
+      rent_start_date,
+      lease_agreement_end_date,
       email,
       property_id,
       security_deposit,
@@ -209,8 +209,8 @@ export class UsersService {
           tenant_id: userAccount.id,
           amount_paid: rental_price,
           rental_price: rental_price,
-          lease_start_date: lease_start_date,
-          lease_end_date: lease_end_date,
+          rent_start_date: rent_start_date,
+          lease_agreement_end_date: lease_agreement_end_date,
           security_deposit: security_deposit || 0,
           service_charge: service_charge || 0,
           payment_frequency: payment_frequency || 'Monthly',
@@ -418,8 +418,8 @@ export class UsersService {
           tenant_id: userAccount.id,
           amount_paid: rent_amount,
           rental_price: rent_amount,
-          lease_start_date: tenancy_start_date,
-          lease_end_date: tenancy_end_date,
+          rent_start_date: tenancy_start_date,
+          lease_agreement_end_date: tenancy_end_date, // Optional reference
           rent_status: RentStatusEnum.ACTIVE,
         });
 
@@ -506,8 +506,8 @@ export class UsersService {
           state_of_origin: data.state_of_origin,
           lga: data.lga,
           nationality: data.nationality,
-          lease_start_date: data.lease_start_date,
-          lease_end_date: data.lease_end_date,
+          rent_start_date: data.rent_start_date,
+          lease_agreement_end_date: data.lease_agreement_end_date,
           property_id: data.property_id,
           rental_price: data.rental_price,
           security_deposit: data.security_deposit,
@@ -587,8 +587,8 @@ export class UsersService {
 
       await queryRunner.manager.save(Rent, {
         tenant_id: tenantAccount.id,
-        lease_start_date: data.lease_start_date,
-        lease_end_date: data.lease_end_date,
+        rent_start_date: data.rent_start_date,
+        lease_agreement_end_date: data.lease_agreement_end_date,
         property_id: property.id,
         amount_paid: data.rental_price,
         rental_price: data.rental_price,
@@ -747,8 +747,8 @@ export class UsersService {
 
       const rent = {
         tenant_id: createdUser.id,
-        lease_start_date: data?.lease_start_date,
-        lease_end_date: data?.lease_end_date,
+        rent_start_date: data?.rent_start_date,
+        lease_agreement_end_date: data?.lease_agreement_end_date,
         property_id: property?.id,
         amount_paid: data?.rental_price,
         rental_price: data?.rental_price,
@@ -1087,10 +1087,10 @@ export class UsersService {
       const subAccountWhere = isEmail
         ? { id: Not(account.id), email: account.email, role: RolesEnum.TENANT }
         : {
-            id: Not(account.id),
-            user: { phone_number: account.user.phone_number },
-            role: RolesEnum.TENANT,
-          };
+          id: Not(account.id),
+          user: { phone_number: account.user.phone_number },
+          role: RolesEnum.TENANT,
+        };
 
       const subAccount = (await this.accountRepository.findOne({
         where: subAccountWhere,
@@ -1117,15 +1117,15 @@ export class UsersService {
     if (account.role === RolesEnum.TENANT) {
       const parentAccountWhere = isEmail
         ? {
-            id: Not(account.id),
-            email: account.email,
-            role: RolesEnum.LANDLORD,
-          }
+          id: Not(account.id),
+          email: account.email,
+          role: RolesEnum.LANDLORD,
+        }
         : {
-            id: Not(account.id),
-            user: { phone_number: account.user.phone_number },
-            role: RolesEnum.LANDLORD,
-          };
+          id: Not(account.id),
+          user: { phone_number: account.user.phone_number },
+          role: RolesEnum.LANDLORD,
+        };
 
       const parentAccount = (await this.accountRepository.findOne({
         where: parentAccountWhere,
@@ -1658,20 +1658,20 @@ export class UsersService {
 
     const serviceRequests = adminId
       ? account.service_requests?.filter(
-          (sr) => sr.property?.owner_id === adminId,
-        ) || []
+        (sr) => sr.property?.owner_id === adminId,
+      ) || []
       : account.service_requests || [];
 
     const propertyHistories = adminId
       ? account.property_histories?.filter(
-          (ph) => ph.property?.owner_id === adminId,
-        ) || []
+        (ph) => ph.property?.owner_id === adminId,
+      ) || []
       : account.property_histories || [];
 
     const noticeAgreements = adminId
       ? account.notice_agreements?.filter(
-          (na) => na.property?.owner_id === adminId,
-        ) || []
+        (na) => na.property?.owner_id === adminId,
+      ) || []
       : account.notice_agreements || [];
 
     // Debug logging
@@ -1693,8 +1693,8 @@ export class UsersService {
       ?.filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
       .sort(
         (a, b) =>
-          new Date(b.lease_end_date).getTime() -
-          new Date(a.lease_end_date).getTime(),
+          new Date(b.expiry_date).getTime() -
+          new Date(a.expiry_date).getTime(),
       )[0];
     const property = activeRent?.property;
 
@@ -1725,7 +1725,7 @@ export class UsersService {
       id: rent.id,
       type: 'payment' as const,
       title: 'Rent Payment Received',
-      description: `Rent payment of ${rent.amount_paid} for the period ${new Date(rent.lease_start_date).toLocaleDateString()}`,
+      description: `Rent payment of ${rent.amount_paid} for the period ${new Date(rent.rent_start_date).toLocaleDateString()}`,
       date: new Date(rent.created_at!).toISOString(),
       time: new Date(rent.created_at!).toLocaleTimeString([], {
         hour: '2-digit',
@@ -1906,18 +1906,18 @@ export class UsersService {
       propertyId: property?.id || '——',
       propertyAddress: property?.location || '——',
       propertyStatus: property?.property_status || 'Vacant',
-      leaseStartDate: activeRent?.lease_start_date
-        ? typeof activeRent.lease_start_date === 'string'
-          ? activeRent.lease_start_date
-          : activeRent.lease_start_date instanceof Date
-            ? activeRent.lease_start_date.toISOString()
+      leaseStartDate: activeRent?.rent_start_date
+        ? typeof activeRent.rent_start_date === 'string'
+          ? activeRent.rent_start_date
+          : activeRent.rent_start_date instanceof Date
+            ? activeRent.rent_start_date.toISOString()
             : null
         : null,
-      leaseEndDate: activeRent?.lease_end_date
-        ? typeof activeRent.lease_end_date === 'string'
-          ? activeRent.lease_end_date
-          : activeRent.lease_end_date instanceof Date
-            ? activeRent.lease_end_date.toISOString()
+      leaseEndDate: activeRent?.lease_agreement_end_date
+        ? typeof activeRent.lease_agreement_end_date === 'string'
+          ? activeRent.lease_agreement_end_date
+          : activeRent.lease_agreement_end_date instanceof Date
+            ? activeRent.lease_agreement_end_date.toISOString()
             : null
         : null,
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
@@ -1993,59 +1993,59 @@ export class UsersService {
             : null,
         kycDocuments: kycApplication
           ? [
-              ...(kycApplication.passport_photo_url
-                ? [
-                    {
-                      id: `kyc-passport-${kycApplication.id}`,
-                      name: 'Passport Photo',
-                      type: 'Passport',
-                      url: kycApplication.passport_photo_url,
-                      uploadDate: kycApplication.created_at
-                        ? new Date(kycApplication.created_at).toISOString()
-                        : new Date().toISOString(),
-                    },
-                  ]
-                : []),
-              ...(kycApplication.id_document_url
-                ? [
-                    {
-                      id: `kyc-id-${kycApplication.id}`,
-                      name: 'ID Document',
-                      type: 'ID',
-                      url: kycApplication.id_document_url,
-                      uploadDate: kycApplication.created_at
-                        ? new Date(kycApplication.created_at).toISOString()
-                        : new Date().toISOString(),
-                    },
-                  ]
-                : []),
-              ...(kycApplication.employment_proof_url
-                ? [
-                    {
-                      id: `kyc-employment-${kycApplication.id}`,
-                      name: 'Employment Proof',
-                      type: 'Employment',
-                      url: kycApplication.employment_proof_url,
-                      uploadDate: kycApplication.created_at
-                        ? new Date(kycApplication.created_at).toISOString()
-                        : new Date().toISOString(),
-                    },
-                  ]
-                : []),
-              ...(kycApplication.business_proof_url
-                ? [
-                    {
-                      id: `kyc-business-${kycApplication.id}`,
-                      name: 'Business Proof',
-                      type: 'Business',
-                      url: kycApplication.business_proof_url,
-                      uploadDate: kycApplication.created_at
-                        ? new Date(kycApplication.created_at).toISOString()
-                        : new Date().toISOString(),
-                    },
-                  ]
-                : []),
-            ]
+            ...(kycApplication.passport_photo_url
+              ? [
+                {
+                  id: `kyc-passport-${kycApplication.id}`,
+                  name: 'Passport Photo',
+                  type: 'Passport',
+                  url: kycApplication.passport_photo_url,
+                  uploadDate: kycApplication.created_at
+                    ? new Date(kycApplication.created_at).toISOString()
+                    : new Date().toISOString(),
+                },
+              ]
+              : []),
+            ...(kycApplication.id_document_url
+              ? [
+                {
+                  id: `kyc-id-${kycApplication.id}`,
+                  name: 'ID Document',
+                  type: 'ID',
+                  url: kycApplication.id_document_url,
+                  uploadDate: kycApplication.created_at
+                    ? new Date(kycApplication.created_at).toISOString()
+                    : new Date().toISOString(),
+                },
+              ]
+              : []),
+            ...(kycApplication.employment_proof_url
+              ? [
+                {
+                  id: `kyc-employment-${kycApplication.id}`,
+                  name: 'Employment Proof',
+                  type: 'Employment',
+                  url: kycApplication.employment_proof_url,
+                  uploadDate: kycApplication.created_at
+                    ? new Date(kycApplication.created_at).toISOString()
+                    : new Date().toISOString(),
+                },
+              ]
+              : []),
+            ...(kycApplication.business_proof_url
+              ? [
+                {
+                  id: `kyc-business-${kycApplication.id}`,
+                  name: 'Business Proof',
+                  type: 'Business',
+                  url: kycApplication.business_proof_url,
+                  uploadDate: kycApplication.created_at
+                    ? new Date(kycApplication.created_at).toISOString()
+                    : new Date().toISOString(),
+                },
+              ]
+              : []),
+          ]
           : [],
       },
     };

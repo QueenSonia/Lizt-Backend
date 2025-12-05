@@ -33,7 +33,7 @@ export class TenanciesService {
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
     private dataSource: DataSource,
-  ) {}
+  ) { }
 
   async createTenancyFromKYC(
     kycApplication: KYCApplication,
@@ -123,7 +123,7 @@ export class TenanciesService {
         );
       }
 
-      // 3. Validate dates
+      // 3. Validate and parse dates
       const startDate = new Date(renewTenancyDto.startDate);
       const endDate = new Date(renewTenancyDto.endDate);
 
@@ -132,12 +132,49 @@ export class TenanciesService {
       }
 
       // 4. Update the rent record with new tenancy details
-      activeRent.lease_start_date = startDate;
-      activeRent.lease_end_date = endDate;
-      activeRent.expiry_date = endDate;
+      // Note: In the new rent-based system, renewal updates rent terms
+      // The lease_agreement_end_date is optional and for reference only
+      activeRent.rent_start_date = startDate;
+      activeRent.lease_agreement_end_date = endDate; // Optional reference
       activeRent.rental_price = renewTenancyDto.rentAmount;
       activeRent.payment_frequency = renewTenancyDto.paymentFrequency;
       activeRent.updated_at = new Date();
+
+      // Calculate next rent due date based on new terms
+      // Logic: Start Date + Frequency - 1 Day
+      const nextRentDate = new Date(startDate);
+      const dueDay = startDate.getDate();
+      let monthsToAdd = 0;
+
+      switch (renewTenancyDto.paymentFrequency.toLowerCase()) {
+        case 'monthly':
+          monthsToAdd = 1;
+          break;
+        case 'quarterly':
+          monthsToAdd = 3;
+          break;
+        case 'bi-annually':
+          monthsToAdd = 6;
+          break;
+        case 'annually':
+          monthsToAdd = 12;
+          break;
+        default:
+          monthsToAdd = 1; // Default to monthly
+      }
+
+      nextRentDate.setMonth(nextRentDate.getMonth() + monthsToAdd);
+
+      // Handle month overflow (e.g. Jan 31 + 1 month -> Feb 28/29)
+      const targetMonth = (startDate.getMonth() + monthsToAdd) % 12;
+      if (nextRentDate.getMonth() !== targetMonth) {
+        nextRentDate.setDate(0); // Set to last day of previous month
+      }
+
+      // Subtract 1 day to get the due date (day before next cycle starts)
+      nextRentDate.setDate(nextRentDate.getDate() - 1);
+
+      activeRent.expiry_date = nextRentDate;
 
       await queryRunner.manager.save(Rent, activeRent);
 

@@ -302,16 +302,16 @@ export class UpdateUserResponseDto {
   @ApiProperty({
     example: '2023-10-01',
     required: false,
-    description: 'lease start date',
+    description: 'rent start date',
   })
-  lease_start_date: Date;
+  rent_start_date: Date;
 
   @ApiProperty({
     example: '2024-10-01',
     required: false,
-    description: 'lease end date',
+    description: 'lease agreement end date',
   })
-  lease_end_date: Date;
+  lease_agreement_end_date: Date;
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',

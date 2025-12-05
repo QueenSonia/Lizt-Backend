@@ -18,10 +18,10 @@ export class AssignTenantDto {
   security_deposit: number;
 
   @IsString()
-  lease_start_date: string;
+  rent_start_date: string;
 
   @IsString()
-  lease_end_date: string;
+  lease_agreement_end_date: string;
 
   @IsString()
   @IsOptional()

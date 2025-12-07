@@ -37,14 +37,39 @@ export class KYCLinksController {
   ) {}
 
   /**
-   * Generate KYC link for property (landlord only)
-   * POST /api/properties/:propertyId/kyc-link
+   * Generate general KYC link for landlord (not tied to specific property)
+   * POST /api/kyc-links/generate
    * Requirements: 1.1, 1.2, 2.1, 2.2
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
   @Roles('landlord')
+  @Post('kyc-links/generate')
+  async generateKYCLink(@CurrentUser() user: Account): Promise<{
+    success: boolean;
+    message: string;
+    data: KYCLinkResponse;
+  }> {
+    const kycLinkResponse = await this.kycLinksService.generateKYCLink(user.id);
+
+    console.log('Backend kycLinkResponse:', kycLinkResponse);
+
+    return {
+      success: true,
+      message: 'KYC link generated successfully',
+      data: kycLinkResponse,
+    };
+  }
+
+  /**
+   * Generate KYC link for property (landlord only) - DEPRECATED, use /api/kyc-links/generate instead
+   * POST /api/properties/:propertyId/kyc-link
+   * Requirements: 1.1, 1.2, 2.1, 2.2
+   * @deprecated This endpoint is kept for backward compatibility but propertyId is ignored
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
   @Post('properties/:propertyId/kyc-link')
-  async generateKYCLink(
+  async generateKYCLinkLegacy(
     @Param('propertyId', ParseUUIDPipe) propertyId: string,
     @CurrentUser() user: Account,
   ): Promise<{

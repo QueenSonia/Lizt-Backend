@@ -63,7 +63,7 @@ export class PropertiesService {
     private readonly dataSource: DataSource,
     private readonly kycApplicationService: KYCApplicationService,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   async createProperty(
     propertyData: CreatePropertyDto,
@@ -570,10 +570,11 @@ export class PropertiesService {
       });
 
     // Computed description
-    const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1
-      ? 'studio'
-      : `${property.no_of_bedrooms}-bedroom`
-      } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
+    const computedDescription = `${property.name} is a ${
+      property.no_of_bedrooms === -1
+        ? 'studio'
+        : `${property.no_of_bedrooms}-bedroom`
+    } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
 
     // KYC Applications data
     const kycApplications =
@@ -614,6 +615,7 @@ export class PropertiesService {
       rent: activeRent?.rental_price || null,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
+      rentalPrice: property.rental_price || null, // Marketing price for vacant properties
       description: property.description || computedDescription,
       currentTenant,
       history,
@@ -792,48 +794,73 @@ export class PropertiesService {
 
       // Delete all associated records in order (respecting foreign key constraints)
 
-      // 1. Delete scheduled move-outs
+      // 1. Delete auto service requests (through property_tenant_id)
+      // First get all property_tenant IDs for this property
+      const propertyTenants = await queryRunner.manager.find(PropertyTenant, {
+        where: { property_id: propertyId },
+        select: ['id'],
+      });
+
+      const propertyTenantIds = propertyTenants.map((pt) => pt.id);
+
+      if (propertyTenantIds.length > 0) {
+        await queryRunner.manager
+          .createQueryBuilder()
+          .delete()
+          .from('auto_service_requests')
+          .where('property_tenant_id IN (:...ids)', { ids: propertyTenantIds })
+          .execute();
+      }
+
+      // 2. Delete scheduled move-outs
       await queryRunner.manager.delete('scheduled_move_outs', {
         property_id: propertyId,
       });
 
-      // 2. Delete notice agreements
+      // 3. Delete notifications
+      await queryRunner.manager.delete('notification', {
+        property_id: propertyId,
+      });
+
+      // 4. Delete notice agreements
       await queryRunner.manager.delete('notice_agreement', {
         property_id: propertyId,
       });
 
-      // 3. Delete property history
+      // 5. Delete rent increases
+      await queryRunner.manager.delete('rent_increases', {
+        property_id: propertyId,
+      });
+
+      // 6. Delete property history
       await queryRunner.manager.delete(PropertyHistory, {
         property_id: propertyId,
       });
 
-      // 4. Delete property tenants
-      await queryRunner.manager.delete(PropertyTenant, {
-        property_id: propertyId,
-      });
-
-      // 5. Delete rents
-      await queryRunner.manager.delete('rents', {
-        property_id: propertyId,
-      });
-
-      // 6. Delete service requests
+      // 7. Delete service requests
       await queryRunner.manager.delete('service_requests', {
         property_id: propertyId,
       });
 
-      // 7. Delete KYC applications
+      // 8. Delete rents
+      await queryRunner.manager.delete('rents', {
+        property_id: propertyId,
+      });
+
+      // 9. Delete KYC applications
       await queryRunner.manager.delete('kyc_applications', {
         property_id: propertyId,
       });
 
-      // 8. KYC links are now general per landlord, not property-specific
-      // No need to delete KYC links when deleting a property
-      // await queryRunner.manager.delete('kyc_links', {
-      //   property_id: propertyId,
-      // });
+      // 10. Delete property tenants
+      await queryRunner.manager.delete(PropertyTenant, {
+        property_id: propertyId,
+      });
 
-      // 9. Remove property from property groups
+      // 11. KYC links are now general per landlord, not property-specific
+      // No need to delete KYC links when deleting a property
+
+      // 12. Remove property from property groups
       const propertyGroups = await queryRunner.manager.find(PropertyGroup, {
         where: {},
       });
@@ -847,7 +874,7 @@ export class PropertiesService {
         }
       }
 
-      // 10. Finally, delete the property itself (hard delete)
+      // 13. Finally, delete the property itself (hard delete)
       await queryRunner.manager.delete(Property, { id: propertyId });
 
       await queryRunner.commitTransaction();
@@ -1564,7 +1591,7 @@ export class PropertiesService {
       console.error('Transaction rolled back due to:', error);
       throw new HttpException(
         error?.message ||
-        'An error occurred while assigning Tenant To property',
+          'An error occurred while assigning Tenant To property',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     } finally {
@@ -1760,13 +1787,13 @@ export class PropertiesService {
           sampleResults: sampleResults.slice(0, 5), // Show first 5 results
           recommendations: isFixed
             ? [
-              'The fix is working correctly',
-              'Clear browser cache if you still see issues',
-            ]
+                'The fix is working correctly',
+                'Clear browser cache if you still see issues',
+              ]
             : [
-              'Database queries may need additional fixes',
-              'Contact technical support',
-            ],
+                'Database queries may need additional fixes',
+                'Contact technical support',
+              ],
         },
       };
     } catch (error) {

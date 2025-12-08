@@ -50,11 +50,39 @@ export class TenantKycService {
         `Invalid or non-existent ref with id: ${dto.landlord_id}`,
       );
 
+    // Check for duplicate identity hash
     const identity_hash = this.generateIdentityHash(dto);
-    const existingKyc = await this.tenantKycRepo.findOneBy({ identity_hash });
+    const existingKyc = await this.tenantKycRepo.findOneBy({
+      identity_hash,
+      admin_id: dto.landlord_id,
+    });
 
     if (existingKyc)
-      throw new ConflictException('Duplicate request; awaiting review.');
+      throw new ConflictException(
+        'You have already submitted KYC information to this landlord.',
+      );
+
+    // Check for duplicate phone number or email with this landlord
+    if (dto.phone_number || dto.email) {
+      const duplicateCheck = await this.tenantKycRepo
+        .createQueryBuilder('kyc')
+        .where('kyc.admin_id = :admin_id', { admin_id: dto.landlord_id })
+        .andWhere('(kyc.phone_number = :phone_number OR kyc.email = :email)', {
+          phone_number: dto.phone_number || null,
+          email: dto.email || null,
+        })
+        .getOne();
+
+      if (duplicateCheck) {
+        const duplicateField =
+          duplicateCheck.phone_number === dto.phone_number
+            ? 'phone number'
+            : 'email';
+        throw new ConflictException(
+          `A KYC record with this ${duplicateField} already exists for this landlord.`,
+        );
+      }
+    }
 
     // Map landlord_id to admin_id for the entity
     const { landlord_id, ...kycData } = dto;
@@ -94,11 +122,39 @@ export class TenantKycService {
       tenant = tenantAccount.user;
     }
 
+    // Check for duplicate identity hash
     const identity_hash = this.generateIdentityHash(dto);
-    const existingKyc = await this.tenantKycRepo.findOneBy({ identity_hash });
+    const existingKyc = await this.tenantKycRepo.findOneBy({
+      identity_hash,
+      admin_id: dto.landlord_id,
+    });
 
     if (existingKyc)
-      throw new ConflictException('Duplicate KYC request; awaiting review.');
+      throw new ConflictException(
+        'KYC information already exists for this tenant with this landlord.',
+      );
+
+    // Check for duplicate phone number or email with this landlord
+    if (dto.phone_number || dto.email) {
+      const duplicateCheck = await this.tenantKycRepo
+        .createQueryBuilder('kyc')
+        .where('kyc.admin_id = :admin_id', { admin_id: dto.landlord_id })
+        .andWhere('(kyc.phone_number = :phone_number OR kyc.email = :email)', {
+          phone_number: dto.phone_number || null,
+          email: dto.email || null,
+        })
+        .getOne();
+
+      if (duplicateCheck) {
+        const duplicateField =
+          duplicateCheck.phone_number === dto.phone_number
+            ? 'phone number'
+            : 'email';
+        throw new ConflictException(
+          `A KYC record with this ${duplicateField} already exists for this landlord.`,
+        );
+      }
+    }
 
     // Map landlord_id to admin_id for the entity
     const { landlord_id, tenant_id, property_id, ...kycData } = dto;

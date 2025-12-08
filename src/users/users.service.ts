@@ -104,7 +104,7 @@ export class UsersService {
 
     private readonly utilService: UtilService,
     private readonly dataSource: DataSource,
-  ) { }
+  ) {}
 
   async addTenant(user_id: string, dto: CreateTenantDto) {
     const {
@@ -475,6 +475,88 @@ export class UsersService {
         );
       }
     });
+  }
+
+  async attachTenantFromKyc(
+    landlordId: string,
+    dto: {
+      kycApplicationId: string;
+      propertyId: string;
+      rentAmount: number;
+      tenancyStartDate: string;
+      tenancyEndDate: string;
+      serviceCharge?: number;
+    },
+  ) {
+    // 1. Fetch the KYC application
+    const kycApplication = await this.kycApplicationRepository.findOne({
+      where: { id: dto.kycApplicationId },
+      relations: ['property'],
+    });
+
+    if (!kycApplication) {
+      throw new HttpException(
+        'KYC Application not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    if (kycApplication.status !== 'pending') {
+      throw new HttpException(
+        'KYC Application is not pending',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // 2. Map KYC application data to CreateTenantKycDto
+    const tenantKycDto: any = {
+      phone_number: kycApplication.phone_number,
+      first_name: kycApplication.first_name,
+      last_name: kycApplication.last_name,
+      email:
+        kycApplication.email ||
+        `${kycApplication.phone_number}@placeholder.com`,
+      date_of_birth: kycApplication.date_of_birth || new Date('1990-01-01'),
+      gender: kycApplication.gender || 'male',
+      state_of_origin: kycApplication.state_of_origin || 'N/A',
+      lga: 'N/A', // Not in KYC application
+      nationality: kycApplication.nationality || 'Nigerian',
+      employment_status: kycApplication.employment_status || 'employed',
+      marital_status: kycApplication.marital_status || 'single',
+      property_id: dto.propertyId,
+      rent_amount: dto.rentAmount,
+      tenancy_start_date: new Date(dto.tenancyStartDate),
+      tenancy_end_date: new Date(dto.tenancyEndDate),
+      employer_name: kycApplication.employer_name,
+      job_title: kycApplication.job_title,
+      employer_address: kycApplication.employer_address,
+      monthly_income: kycApplication.monthly_net_income
+        ? parseFloat(kycApplication.monthly_net_income)
+        : undefined,
+      work_email: kycApplication.email,
+      business_name: kycApplication.business_name,
+      nature_of_business: kycApplication.nature_of_business,
+      business_address: kycApplication.business_address,
+      business_monthly_income: undefined,
+      business_website: undefined,
+      source_of_funds: undefined,
+      monthly_income_estimate: undefined,
+      spouse_full_name: undefined,
+      spouse_phone_number: undefined,
+      spouse_occupation: undefined,
+      spouse_employer: undefined,
+    };
+
+    // 3. Call addTenantKyc to create the tenant
+    const result = await this.addTenantKyc(landlordId, tenantKycDto);
+
+    // 4. Update KYC application status to approved
+    await this.kycApplicationRepository.update(
+      { id: dto.kycApplicationId },
+      { status: 'approved' as any },
+    );
+
+    return result;
   }
 
   async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {
@@ -1087,10 +1169,10 @@ export class UsersService {
       const subAccountWhere = isEmail
         ? { id: Not(account.id), email: account.email, role: RolesEnum.TENANT }
         : {
-          id: Not(account.id),
-          user: { phone_number: account.user.phone_number },
-          role: RolesEnum.TENANT,
-        };
+            id: Not(account.id),
+            user: { phone_number: account.user.phone_number },
+            role: RolesEnum.TENANT,
+          };
 
       const subAccount = (await this.accountRepository.findOne({
         where: subAccountWhere,
@@ -1117,15 +1199,15 @@ export class UsersService {
     if (account.role === RolesEnum.TENANT) {
       const parentAccountWhere = isEmail
         ? {
-          id: Not(account.id),
-          email: account.email,
-          role: RolesEnum.LANDLORD,
-        }
+            id: Not(account.id),
+            email: account.email,
+            role: RolesEnum.LANDLORD,
+          }
         : {
-          id: Not(account.id),
-          user: { phone_number: account.user.phone_number },
-          role: RolesEnum.LANDLORD,
-        };
+            id: Not(account.id),
+            user: { phone_number: account.user.phone_number },
+            role: RolesEnum.LANDLORD,
+          };
 
       const parentAccount = (await this.accountRepository.findOne({
         where: parentAccountWhere,
@@ -1658,20 +1740,20 @@ export class UsersService {
 
     const serviceRequests = adminId
       ? account.service_requests?.filter(
-        (sr) => sr.property?.owner_id === adminId,
-      ) || []
+          (sr) => sr.property?.owner_id === adminId,
+        ) || []
       : account.service_requests || [];
 
     const propertyHistories = adminId
       ? account.property_histories?.filter(
-        (ph) => ph.property?.owner_id === adminId,
-      ) || []
+          (ph) => ph.property?.owner_id === adminId,
+        ) || []
       : account.property_histories || [];
 
     const noticeAgreements = adminId
       ? account.notice_agreements?.filter(
-        (na) => na.property?.owner_id === adminId,
-      ) || []
+          (na) => na.property?.owner_id === adminId,
+        ) || []
       : account.notice_agreements || [];
 
     // Debug logging
@@ -1693,8 +1775,7 @@ export class UsersService {
       ?.filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
       .sort(
         (a, b) =>
-          new Date(b.expiry_date).getTime() -
-          new Date(a.expiry_date).getTime(),
+          new Date(b.expiry_date).getTime() - new Date(a.expiry_date).getTime(),
       )[0];
     const property = activeRent?.property;
 
@@ -1922,6 +2003,8 @@ export class UsersService {
         : null,
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
+      serviceCharge: activeRent?.service_charge || 0,
+      rentFrequency: activeRent?.payment_frequency || 'Annually',
       rentStatus: activeRent?.payment_status || '——',
       nextRentDue: activeRent?.expiry_date
         ? typeof activeRent.expiry_date === 'string'
@@ -1957,24 +2040,53 @@ export class UsersService {
           : null,
         priority: sr.status === 'URGENT' ? 'High' : 'Medium',
       })),
-      tenancyHistory: (account.property_histories || []).map((ph) => ({
-        id: ph.id,
-        property: ph.property?.name ?? 'Unknown Property',
-        startDate:
-          typeof ph.move_in_date === 'string'
-            ? ph.move_in_date
-            : ph.move_in_date instanceof Date
-              ? ph.move_in_date.toISOString()
-              : '——',
-        endDate: ph.move_out_date
-          ? typeof ph.move_out_date === 'string'
-            ? ph.move_out_date
-            : ph.move_out_date instanceof Date
-              ? ph.move_out_date.toISOString()
-              : null
-          : null,
-        status: ph.move_out_date ? 'Completed' : 'Active',
-      })),
+      tenancyHistory: [
+        // Active tenancies (current properties)
+        ...rents
+          .filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
+          .map((rent) => ({
+            id: rent.id,
+            property: rent.property?.name ?? 'Unknown Property',
+            propertyId: rent.property_id,
+            rentAmount: rent.rental_price || 0,
+            serviceCharge: rent.service_charge || 0,
+            rentFrequency: rent.payment_frequency || 'Annually',
+            rentDueDate:
+              typeof rent.expiry_date === 'string'
+                ? rent.expiry_date
+                : rent.expiry_date instanceof Date
+                  ? rent.expiry_date.toISOString()
+                  : null,
+            tenancyStartDate:
+              typeof rent.rent_start_date === 'string'
+                ? rent.rent_start_date
+                : rent.rent_start_date instanceof Date
+                  ? rent.rent_start_date.toISOString()
+                  : null,
+            status: 'Active' as const,
+          })),
+        // Past tenancies
+        ...(account.property_histories || []).map((ph) => ({
+          id: ph.id,
+          property: ph.property?.name ?? 'Unknown Property',
+          startDate:
+            typeof ph.move_in_date === 'string'
+              ? ph.move_in_date
+              : ph.move_in_date instanceof Date
+                ? ph.move_in_date.toISOString()
+                : '——',
+          endDate: ph.move_out_date
+            ? typeof ph.move_out_date === 'string'
+              ? ph.move_out_date
+              : ph.move_out_date instanceof Date
+                ? ph.move_out_date.toISOString()
+                : null
+            : null,
+          status: ph.move_out_date
+            ? ('Completed' as const)
+            : ('Active' as const),
+        })),
+      ],
 
       // System Info
       whatsAppConnected: false, // Add real logic
@@ -1993,59 +2105,59 @@ export class UsersService {
             : null,
         kycDocuments: kycApplication
           ? [
-            ...(kycApplication.passport_photo_url
-              ? [
-                {
-                  id: `kyc-passport-${kycApplication.id}`,
-                  name: 'Passport Photo',
-                  type: 'Passport',
-                  url: kycApplication.passport_photo_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.id_document_url
-              ? [
-                {
-                  id: `kyc-id-${kycApplication.id}`,
-                  name: 'ID Document',
-                  type: 'ID',
-                  url: kycApplication.id_document_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.employment_proof_url
-              ? [
-                {
-                  id: `kyc-employment-${kycApplication.id}`,
-                  name: 'Employment Proof',
-                  type: 'Employment',
-                  url: kycApplication.employment_proof_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.business_proof_url
-              ? [
-                {
-                  id: `kyc-business-${kycApplication.id}`,
-                  name: 'Business Proof',
-                  type: 'Business',
-                  url: kycApplication.business_proof_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-          ]
+              ...(kycApplication.passport_photo_url
+                ? [
+                    {
+                      id: `kyc-passport-${kycApplication.id}`,
+                      name: 'Passport Photo',
+                      type: 'Passport',
+                      url: kycApplication.passport_photo_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.id_document_url
+                ? [
+                    {
+                      id: `kyc-id-${kycApplication.id}`,
+                      name: 'ID Document',
+                      type: 'ID',
+                      url: kycApplication.id_document_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.employment_proof_url
+                ? [
+                    {
+                      id: `kyc-employment-${kycApplication.id}`,
+                      name: 'Employment Proof',
+                      type: 'Employment',
+                      url: kycApplication.employment_proof_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.business_proof_url
+                ? [
+                    {
+                      id: `kyc-business-${kycApplication.id}`,
+                      name: 'Business Proof',
+                      type: 'Business',
+                      url: kycApplication.business_proof_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+            ]
           : [],
       },
     };

@@ -38,6 +38,9 @@ export enum EmploymentStatus {
 //   ['first_name', 'last_name', 'date_of_birth', 'email', 'phone_number'],
 //   { unique: true },
 // ) // I'd only use this unique index if I'm sure that there'll always be email and phone number. But for now, this approach won't be so reliable, so I'll stick with using identity hash.
+@Index('unique_tenant_per_landlord', ['admin_id', 'identity_hash'], {
+  unique: true,
+})
 @Entity('tenant_kyc')
 export class TenantKyc extends BaseEntity {
   @Column({ type: 'varchar' })
@@ -137,7 +140,7 @@ export class TenantKyc extends BaseEntity {
   @OneToOne(() => Users)
   admin?: Users;
 
-  @Column({ unique: true, type: 'varchar', length: 64 })
+  @Column({ type: 'varchar', length: 64 })
   identity_hash: string;
 
   toJSON() {

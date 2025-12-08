@@ -28,6 +28,7 @@ import {
   UploadLogoDto,
   UserFilter,
 } from './dto/create-user.dto';
+import { AttachTenantFromKycDto } from './dto/attach-tenant-from-kyc.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
@@ -67,7 +68,7 @@ export class UsersController {
   constructor(
     private readonly usersService: UsersService,
     private readonly syncTenantDataService: SyncTenantDataService,
-  ) { }
+  ) {}
 
   @SkipAuth()
   @Get('/test-dev')
@@ -123,6 +124,21 @@ export class UsersController {
     try {
       const user_id = req?.user?.id;
       return this.usersService.addTenant(user_id, body);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @Post('attach-tenant-from-kyc')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async attachTenantFromKyc(
+    @Body() body: AttachTenantFromKycDto,
+    @Req() req: any,
+  ) {
+    try {
+      const landlordId = req?.user?.id;
+      return this.usersService.attachTenantFromKyc(landlordId, body);
     } catch (error) {
       throw error;
     }

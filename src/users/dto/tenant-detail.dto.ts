@@ -18,8 +18,14 @@ interface DocumentItem {
 interface PastTenancyItem {
   id: string;
   property: string;
-  startDate: string;
-  endDate: string | null;
+  propertyId?: string; // For active tenancies
+  rentAmount?: number; // For active tenancies
+  serviceCharge?: number; // For active tenancies
+  rentFrequency?: string; // For active tenancies
+  rentDueDate?: string | null; // For active tenancies
+  tenancyStartDate?: string | null; // For active tenancies
+  startDate?: string; // For past tenancies
+  endDate?: string | null; // For past tenancies
   status: 'Active' | 'Completed';
 }
 
@@ -123,6 +129,8 @@ export class TenantDetailDto {
 
   // Rent Information
   rentAmount: number;
+  serviceCharge?: number;
+  rentFrequency?: string;
   rentStatus: string;
   nextRentDue: string | null;
   outstandingBalance: number;

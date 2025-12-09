@@ -29,6 +29,7 @@ import {
   UserFilter,
 } from './dto/create-user.dto';
 import { AttachTenantFromKycDto } from './dto/attach-tenant-from-kyc.dto';
+import { AttachTenantToPropertyDto } from './dto/attach-tenant-to-property.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
@@ -139,6 +140,31 @@ export class UsersController {
     try {
       const landlordId = req?.user?.id;
       return this.usersService.attachTenantFromKyc(landlordId, body);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Attach existing tenant to a property' })
+  @ApiOkResponse({ description: 'Tenant successfully attached to property' })
+  @ApiBadRequestResponse({ description: 'Invalid request data' })
+  @ApiNotFoundResponse({ description: 'Tenant or property not found' })
+  @ApiSecurity('access_token')
+  @Post(':tenantId/attach-to-property')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async attachTenantToProperty(
+    @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
+    @Body() body: AttachTenantToPropertyDto,
+    @Req() req: any,
+  ) {
+    try {
+      const landlordId = req?.user?.id;
+      return this.usersService.attachTenantToProperty(
+        tenantId,
+        body,
+        landlordId,
+      );
     } catch (error) {
       throw error;
     }

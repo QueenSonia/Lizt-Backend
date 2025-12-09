@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   forwardRef,
   HttpException,
@@ -20,6 +21,10 @@ import {
   LoginDto,
   UserFilter,
 } from './dto/create-user.dto';
+import {
+  AttachTenantToPropertyDto,
+  RentFrequency,
+} from './dto/attach-tenant-to-property.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
@@ -270,6 +275,237 @@ export class UsersService {
         );
       }
     });
+  }
+
+  /**
+   * Attach an existing tenant to a property
+   * This allows tenants to be attached to multiple properties
+   */
+  async attachTenantToProperty(
+    tenantId: string,
+    dto: AttachTenantToPropertyDto,
+    landlordId: string,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    tenantId: string;
+    propertyId: string;
+  }> {
+    const {
+      propertyId,
+      tenancyStartDate,
+      rentAmount,
+      rentFrequency,
+      serviceCharge,
+    } = dto;
+
+    return await this.dataSource.transaction(async (manager) => {
+      try {
+        // 1. Verify tenant exists
+        const tenantAccount = await manager.getRepository(Account).findOne({
+          where: { id: tenantId },
+          relations: ['user'],
+        });
+
+        if (!tenantAccount) {
+          throw new NotFoundException('Tenant not found');
+        }
+
+        // 2. Verify property exists and belongs to this landlord
+        const property = await manager.getRepository(Property).findOne({
+          where: { id: propertyId },
+        });
+
+        if (!property) {
+          throw new NotFoundException('Property not found');
+        }
+
+        if (property.owner_id !== landlordId) {
+          throw new ForbiddenException(
+            'You are not authorized to attach tenants to this property',
+          );
+        }
+
+        // 3. Check if property is vacant
+        if (property.property_status === PropertyStatusEnum.OCCUPIED) {
+          throw new ConflictException(
+            'Property is already occupied. Cannot attach another tenant.',
+          );
+        }
+
+        // 4. Check if tenant is already attached to this property
+        const existingAttachment = await manager
+          .getRepository(PropertyTenant)
+          .findOne({
+            where: {
+              property_id: propertyId,
+              tenant_id: tenantId,
+              status: TenantStatusEnum.ACTIVE,
+            },
+          });
+
+        if (existingAttachment) {
+          throw new ConflictException(
+            'Tenant is already attached to this property',
+          );
+        }
+
+        // 5. Parse rent start date
+        const rentStartDate = tenancyStartDate
+          ? new Date(tenancyStartDate)
+          : new Date();
+
+        // 6. Calculate next rent due date based on frequency
+        const nextRentDueDate = this.calculateNextRentDate(
+          rentStartDate,
+          rentFrequency,
+        );
+
+        // 7. Create rent record
+        const rent = manager.getRepository(Rent).create({
+          tenant_id: tenantId,
+          property_id: propertyId,
+          rent_start_date: rentStartDate,
+          rental_price: rentAmount,
+          security_deposit: 0,
+          service_charge: serviceCharge || 0,
+          payment_frequency:
+            this.mapRentFrequencyToPaymentFrequency(rentFrequency),
+          rent_status: RentStatusEnum.ACTIVE,
+          payment_status: RentPaymentStatusEnum.PENDING,
+          amount_paid: 0,
+          expiry_date: nextRentDueDate,
+        });
+
+        await manager.getRepository(Rent).save(rent);
+
+        // 8. Create property-tenant relationship
+        const propertyTenant = manager.getRepository(PropertyTenant).create({
+          property_id: propertyId,
+          tenant_id: tenantId,
+          status: TenantStatusEnum.ACTIVE,
+        });
+
+        await manager.getRepository(PropertyTenant).save(propertyTenant);
+
+        // 9. Update property status to OCCUPIED
+        await manager.getRepository(Property).update(propertyId, {
+          property_status: PropertyStatusEnum.OCCUPIED,
+        });
+
+        // 10. Create property history record
+        const propertyHistory = manager.getRepository(PropertyHistory).create({
+          property_id: propertyId,
+          tenant_id: tenantId,
+          move_in_date: DateService.getStartOfTheDay(rentStartDate),
+          monthly_rent: rentAmount,
+          owner_comment: `Tenant attached to property. Rent: ₦${rentAmount.toLocaleString()}, Frequency: ${rentFrequency}, Next due: ${nextRentDueDate.toLocaleDateString()}`,
+          tenant_comment: null,
+          move_out_date: null,
+          move_out_reason: null,
+        });
+
+        await manager.getRepository(PropertyHistory).save(propertyHistory);
+
+        // 11. Send WhatsApp notification to tenant
+        try {
+          const landlord = await manager.getRepository(Account).findOne({
+            where: { id: landlordId },
+            relations: ['user'],
+          });
+
+          const agencyName = landlord?.profile_name
+            ? landlord.profile_name
+            : landlord?.user
+              ? `${this.utilService.toSentenceCase(landlord.user.first_name)} ${this.utilService.toSentenceCase(landlord.user.last_name)}`
+              : 'Your Landlord';
+
+          const tenantName = `${this.utilService.toSentenceCase(tenantAccount.user.first_name)} ${this.utilService.toSentenceCase(tenantAccount.user.last_name)}`;
+
+          await this.whatsappBotService.sendTenantAttachmentNotification({
+            phone_number: this.utilService.normalizePhoneNumber(
+              tenantAccount.user.phone_number,
+            ),
+            tenant_name: tenantName,
+            landlord_name: agencyName,
+            apartment_name: property.name,
+          });
+        } catch (whatsappError) {
+          console.error('Failed to send WhatsApp notification:', whatsappError);
+        }
+
+        return {
+          success: true,
+          message: 'Tenant successfully attached to property',
+          tenantId: tenantId,
+          propertyId: propertyId,
+        };
+      } catch (error) {
+        console.error('Error attaching tenant to property:', error);
+        if (error instanceof HttpException) throw error;
+        throw new HttpException(
+          error.message || 'Failed to attach tenant to property',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+    });
+  }
+
+  /**
+   * Calculate next rent due date based on start date and frequency
+   */
+  private calculateNextRentDate(
+    startDate: Date,
+    frequency: RentFrequency,
+  ): Date {
+    const nextDate = new Date(startDate);
+    const dueDay = startDate.getDate();
+
+    switch (frequency) {
+      case RentFrequency.MONTHLY:
+        nextDate.setMonth(nextDate.getMonth() + 1);
+        break;
+      case RentFrequency.QUARTERLY:
+        nextDate.setMonth(nextDate.getMonth() + 3);
+        break;
+      case RentFrequency.BI_ANNUALLY:
+        nextDate.setMonth(nextDate.getMonth() + 6);
+        break;
+      case RentFrequency.ANNUALLY:
+        nextDate.setFullYear(nextDate.getFullYear() + 1);
+        break;
+      default:
+        nextDate.setMonth(nextDate.getMonth() + 1);
+    }
+
+    const targetMonth = nextDate.getMonth();
+    nextDate.setDate(dueDay);
+
+    if (nextDate.getMonth() !== targetMonth) {
+      nextDate.setDate(0);
+    }
+
+    nextDate.setDate(nextDate.getDate() - 1);
+
+    return nextDate;
+  }
+
+  /**
+   * Map RentFrequency enum to payment frequency string
+   */
+  private mapRentFrequencyToPaymentFrequency(frequency: RentFrequency): string {
+    switch (frequency) {
+      case RentFrequency.MONTHLY:
+        return 'Monthly';
+      case RentFrequency.QUARTERLY:
+        return 'Quarterly';
+      case RentFrequency.BI_ANNUALLY:
+        return 'Bi-annually';
+      case RentFrequency.ANNUALLY:
+        return 'Annually';
+      default:
+        return 'Monthly';
+    }
   }
 
   async addTenantKyc(user_id: string, dto: CreateTenantKycDto) {
@@ -2040,8 +2276,8 @@ export class UsersService {
           : null,
         priority: sr.status === 'URGENT' ? 'High' : 'Medium',
       })),
-      tenancyHistory: [
-        // Active tenancies (current properties)
+      activeTenancies: [
+        // Active tenancies (current properties with rent details)
         ...rents
           .filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
           .map((rent) => ({
@@ -2065,27 +2301,29 @@ export class UsersService {
                   : null,
             status: 'Active' as const,
           })),
-        // Past tenancies
-        ...(account.property_histories || []).map((ph) => ({
-          id: ph.id,
-          property: ph.property?.name ?? 'Unknown Property',
-          startDate:
-            typeof ph.move_in_date === 'string'
-              ? ph.move_in_date
-              : ph.move_in_date instanceof Date
-                ? ph.move_in_date.toISOString()
-                : '——',
-          endDate: ph.move_out_date
-            ? typeof ph.move_out_date === 'string'
-              ? ph.move_out_date
-              : ph.move_out_date instanceof Date
-                ? ph.move_out_date.toISOString()
-                : null
-            : null,
-          status: ph.move_out_date
-            ? ('Completed' as const)
-            : ('Active' as const),
-        })),
+      ],
+      tenancyHistory: [
+        // Historical tenancy records (past properties from property_histories)
+        ...(propertyHistories || [])
+          .filter((ph) => ph.move_out_date) // Only include completed tenancies
+          .map((ph) => ({
+            id: ph.id,
+            property: ph.property?.name ?? 'Unknown Property',
+            startDate:
+              typeof ph.move_in_date === 'string'
+                ? ph.move_in_date
+                : ph.move_in_date instanceof Date
+                  ? ph.move_in_date.toISOString()
+                  : '——',
+            endDate: ph.move_out_date
+              ? typeof ph.move_out_date === 'string'
+                ? ph.move_out_date
+                : ph.move_out_date instanceof Date
+                  ? ph.move_out_date.toISOString()
+                  : null
+              : null,
+            status: 'Completed' as const,
+          })),
       ],
 
       // System Info

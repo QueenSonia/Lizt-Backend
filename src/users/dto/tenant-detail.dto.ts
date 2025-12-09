@@ -138,7 +138,8 @@ export class TenantDetailDto {
 
   // Aggregated Data
   documents: DocumentItem[];
-  tenancyHistory: PastTenancyItem[];
+  activeTenancies: PastTenancyItem[]; // Active rent records with full property details
+  tenancyHistory: PastTenancyItem[]; // Historical tenancy records (past properties)
   paymentHistory: PaymentHistoryItem[];
   maintenanceIssues: MaintenanceIssue[];
   history: TimeLineEvent[];

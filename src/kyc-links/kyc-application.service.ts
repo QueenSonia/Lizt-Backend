@@ -4,6 +4,8 @@ import {
   BadRequestException,
   ForbiddenException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Inject,
   forwardRef,
   Optional,
@@ -19,6 +21,7 @@ import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from '../properties/dto/create-property.dto';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
+import { CompleteKYCDto } from './dto/complete-kyc.dto';
 import { EventsGateway } from '../events/events.gateway';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
@@ -744,6 +747,380 @@ export class KYCApplicationService {
     }
 
     return kycLink;
+  }
+
+  /**
+   * Check for pending completion KYC applications by phone number
+   * Requirements: 4.4, 7.2, 7.3, 7.4
+   */
+  async checkPendingCompletion(
+    landlordId: string,
+    phoneNumber: string,
+    email?: string,
+  ): Promise<{
+    hasPending: boolean;
+    kycData?: Partial<KYCApplication>;
+    propertyIds?: string[];
+  }> {
+    try {
+      // Validate input
+      if (!landlordId || !phoneNumber) {
+        throw new BadRequestException(
+          'Landlord ID and phone number are required',
+        );
+      }
+
+      console.log('🔍 Checking for pending KYC completion:', {
+        landlordId,
+        phoneNumber,
+        email,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Normalize phone number for consistent matching
+      const normalizedPhone =
+        this.utilService.normalizePhoneNumber(phoneNumber);
+
+      // Build query to find pending completion KYCs
+      const queryBuilder = this.kycApplicationRepository
+        .createQueryBuilder('kyc')
+        .leftJoinAndSelect('kyc.property', 'property')
+        .leftJoinAndSelect('kyc.tenant', 'tenant')
+        .where('kyc.status = :status', {
+          status: ApplicationStatus.PENDING_COMPLETION,
+        })
+        .andWhere('property.owner_id = :landlordId', { landlordId })
+        .andWhere('kyc.phone_number = :phone', { phone: normalizedPhone });
+
+      // Also match by email if provided
+      if (email) {
+        queryBuilder.orWhere(
+          'kyc.email = :email AND kyc.status = :status AND property.owner_id = :landlordId',
+          { email, status: ApplicationStatus.PENDING_COMPLETION, landlordId },
+        );
+      }
+
+      const pendingKycs = await queryBuilder.getMany();
+
+      if (pendingKycs.length === 0) {
+        console.log('✅ No pending KYC found for phone:', normalizedPhone);
+        return { hasPending: false };
+      }
+
+      // Return the oldest pending KYC (based on created_at timestamp)
+      const oldestKyc = pendingKycs.sort((a, b) => {
+        const aTime =
+          a.created_at instanceof Date
+            ? a.created_at.getTime()
+            : a.created_at
+              ? new Date(a.created_at).getTime()
+              : 0;
+        const bTime =
+          b.created_at instanceof Date
+            ? b.created_at.getTime()
+            : b.created_at
+              ? new Date(b.created_at).getTime()
+              : 0;
+        return aTime - bTime;
+      })[0];
+
+      console.log('✅ Found pending KYC:', {
+        kycId: oldestKyc.id,
+        propertyCount: pendingKycs.length,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        hasPending: true,
+        kycData: oldestKyc,
+        propertyIds: pendingKycs.map((kyc) => kyc.property_id),
+      };
+    } catch (error) {
+      console.error('❌ Error checking pending KYC completion:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        landlordId,
+        phoneNumber,
+        email,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Re-throw known exceptions
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      // Wrap unknown errors
+      throw new HttpException(
+        `Failed to check pending KYC: ${error.message || 'Unknown error'}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Complete a pending KYC application
+   * Requirements: 5.1, 5.2, 5.3
+   */
+  async completePendingKYC(
+    kycId: string,
+    completionData: CompleteKYCDto,
+  ): Promise<KYCApplication> {
+    try {
+      // Validate input
+      if (!kycId) {
+        throw new BadRequestException('KYC ID is required');
+      }
+
+      console.log('📝 Completing pending KYC:', {
+        kycId,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Fetch existing KYC with status pending_completion
+      const kyc = await this.kycApplicationRepository.findOne({
+        where: { id: kycId, status: ApplicationStatus.PENDING_COMPLETION },
+        relations: ['property', 'tenant'],
+      });
+
+      if (!kyc) {
+        throw new NotFoundException(
+          'Pending KYC application not found or already completed',
+        );
+      }
+
+      // Update KYC with completion data
+      const updateData: Partial<KYCApplication> = {
+        status: ApplicationStatus.APPROVED, // Auto-approve on completion
+        updated_at: new Date(),
+      };
+
+      // Add all completion data fields
+      if (completionData.email !== undefined)
+        updateData.email = completionData.email;
+      if (completionData.contact_address !== undefined)
+        updateData.contact_address = completionData.contact_address;
+      if (completionData.date_of_birth)
+        updateData.date_of_birth = new Date(completionData.date_of_birth);
+      if (completionData.gender !== undefined)
+        updateData.gender = completionData.gender;
+      if (completionData.state_of_origin !== undefined)
+        updateData.state_of_origin = completionData.state_of_origin;
+      if (completionData.nationality !== undefined)
+        updateData.nationality = completionData.nationality;
+      if (completionData.employment_status !== undefined)
+        updateData.employment_status = completionData.employment_status;
+      if (completionData.marital_status !== undefined)
+        updateData.marital_status = completionData.marital_status;
+
+      // Employment fields
+      if (completionData.occupation !== undefined)
+        updateData.occupation = completionData.occupation;
+      if (completionData.job_title !== undefined)
+        updateData.job_title = completionData.job_title;
+      if (completionData.employer_name !== undefined)
+        updateData.employer_name = completionData.employer_name;
+      if (completionData.employer_address !== undefined)
+        updateData.employer_address = completionData.employer_address;
+      if (completionData.monthly_net_income !== undefined)
+        updateData.monthly_net_income = completionData.monthly_net_income;
+      if (completionData.employer_phone_number !== undefined)
+        updateData.employer_phone_number = completionData.employer_phone_number;
+      if (completionData.length_of_employment !== undefined)
+        updateData.length_of_employment = completionData.length_of_employment;
+
+      // Self-employed fields
+      if (completionData.nature_of_business !== undefined)
+        updateData.nature_of_business = completionData.nature_of_business;
+      if (completionData.business_name !== undefined)
+        updateData.business_name = completionData.business_name;
+      if (completionData.business_address !== undefined)
+        updateData.business_address = completionData.business_address;
+      if (completionData.business_duration !== undefined)
+        updateData.business_duration = completionData.business_duration;
+
+      // References
+      if (completionData.reference1_name !== undefined)
+        updateData.reference1_name = completionData.reference1_name;
+      if (completionData.reference1_phone_number !== undefined)
+        updateData.reference1_phone_number =
+          completionData.reference1_phone_number;
+      if (completionData.reference1_relationship !== undefined)
+        updateData.reference1_relationship =
+          completionData.reference1_relationship;
+      if (completionData.reference1_address !== undefined)
+        updateData.reference1_address = completionData.reference1_address;
+      if (completionData.reference1_email !== undefined)
+        updateData.reference1_email = completionData.reference1_email;
+
+      if (completionData.reference2_name !== undefined)
+        updateData.reference2_name = completionData.reference2_name;
+      if (completionData.reference2_phone_number !== undefined)
+        updateData.reference2_phone_number =
+          completionData.reference2_phone_number;
+      if (completionData.reference2_relationship !== undefined)
+        updateData.reference2_relationship =
+          completionData.reference2_relationship;
+      if (completionData.reference2_address !== undefined)
+        updateData.reference2_address = completionData.reference2_address;
+
+      // Additional personal information
+      if (completionData.religion !== undefined)
+        updateData.religion = completionData.religion;
+
+      // Tenancy information
+      if (completionData.intended_use_of_property !== undefined)
+        updateData.intended_use_of_property =
+          completionData.intended_use_of_property;
+      if (completionData.number_of_occupants !== undefined)
+        updateData.number_of_occupants = completionData.number_of_occupants;
+      if (completionData.number_of_cars_owned !== undefined)
+        updateData.number_of_cars_owned = completionData.number_of_cars_owned;
+      if (completionData.proposed_rent_amount !== undefined)
+        updateData.proposed_rent_amount = completionData.proposed_rent_amount;
+      if (completionData.rent_payment_frequency !== undefined)
+        updateData.rent_payment_frequency =
+          completionData.rent_payment_frequency;
+      if (completionData.additional_notes !== undefined)
+        updateData.additional_notes = completionData.additional_notes;
+
+      // Document URLs
+      if (completionData.passport_photo_url !== undefined)
+        updateData.passport_photo_url = completionData.passport_photo_url;
+      if (completionData.id_document_url !== undefined)
+        updateData.id_document_url = completionData.id_document_url;
+      if (completionData.employment_proof_url !== undefined)
+        updateData.employment_proof_url = completionData.employment_proof_url;
+      if (completionData.business_proof_url !== undefined)
+        updateData.business_proof_url = completionData.business_proof_url;
+
+      // Save the updated KYC
+      await this.kycApplicationRepository.update(kycId, updateData);
+
+      // Fetch the updated KYC with relations
+      const updatedKyc = await this.kycApplicationRepository.findOne({
+        where: { id: kycId },
+        relations: ['property', 'tenant', 'kyc_link'],
+      });
+
+      if (!updatedKyc) {
+        throw new NotFoundException(
+          'Failed to retrieve updated KYC application',
+        );
+      }
+
+      // Send notification to landlord
+      try {
+        if (this.notificationService && updatedKyc.property) {
+          await this.notificationService.create({
+            date: new Date().toISOString(),
+            type: NotificationType.KYC_SUBMITTED,
+            description: `${updatedKyc.first_name} ${updatedKyc.last_name} completed their KYC application for ${updatedKyc.property.name}`,
+            status: 'Completed',
+            property_id: updatedKyc.property_id,
+            user_id: updatedKyc.property.owner_id,
+          });
+        }
+      } catch (error) {
+        // Log error but don't fail the request if notification creation fails
+        console.error('Failed to create KYC completion notification:', error);
+      }
+
+      // Emit WebSocket event to notify landlord
+      try {
+        if (this.eventsGateway && updatedKyc.property) {
+          this.eventsGateway.emitKYCSubmission(
+            updatedKyc.property_id,
+            updatedKyc.property.owner_id,
+            {
+              id: updatedKyc.id,
+              firstName: updatedKyc.first_name,
+              lastName: updatedKyc.last_name,
+              email: updatedKyc.email,
+              phoneNumber: updatedKyc.phone_number,
+            },
+          );
+        }
+      } catch (error) {
+        console.error('Failed to emit KYC completion event:', error);
+      }
+
+      // Send WhatsApp notification to landlord
+      try {
+        if (this.whatsappBotService && updatedKyc.property) {
+          const property = updatedKyc.property;
+
+          // Get landlord details
+          const landlord = await this.propertyRepository
+            .createQueryBuilder('property')
+            .leftJoinAndSelect('property.owner', 'owner')
+            .leftJoinAndSelect('owner.user', 'user')
+            .where('property.id = :propertyId', { propertyId: property.id })
+            .getOne();
+
+          if (landlord?.owner?.user?.phone_number && updatedKyc.tenant_id) {
+            const landlordPhone = this.utilService.normalizePhoneNumber(
+              landlord.owner.user.phone_number,
+            );
+            const landlordName = this.utilService.toSentenceCase(
+              landlord.owner.user.first_name,
+            );
+            const tenantName = this.utilService.toSentenceCase(
+              updatedKyc.first_name,
+            );
+
+            await this.whatsappBotService.sendKYCCompletionNotification({
+              phone_number: landlordPhone,
+              landlord_name: landlordName,
+              tenant_name: tenantName,
+              property_name: property.name,
+              tenant_id: updatedKyc.tenant_id,
+            });
+
+            console.log('✅ WhatsApp KYC completion notification sent:', {
+              to: landlordPhone,
+              tenant: tenantName,
+              property: property.name,
+              tenantId: updatedKyc.tenant_id,
+            });
+          }
+        }
+      } catch (error) {
+        console.error(
+          'Failed to send WhatsApp KYC completion notification:',
+          error,
+        );
+      }
+
+      console.log('✅ KYC completion successful:', {
+        kycId: updatedKyc.id,
+        status: updatedKyc.status,
+        timestamp: new Date().toISOString(),
+      });
+
+      return updatedKyc;
+    } catch (error) {
+      console.error('❌ Error completing pending KYC:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        kycId,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Re-throw known exceptions
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      // Wrap unknown errors
+      throw new HttpException(
+        `Failed to complete KYC: ${error.message || 'Unknown error'}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   /**

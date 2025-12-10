@@ -41,6 +41,15 @@ import { PerformanceMonitor } from 'src/utils/performance-monitor';
 import { KYCApplicationService } from 'src/kyc-links/kyc-application.service';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
+import { Account } from 'src/users/entities/account.entity';
+import {
+  KYCApplication,
+  ApplicationStatus,
+} from 'src/kyc-links/entities/kyc-application.entity';
+import { ExistingTenantDto } from './dto/existing-tenant.dto';
+import { CreatePropertyWithTenantDto } from './dto/create-property-with-tenant.dto';
+import { RolesEnum } from 'src/base.entity';
+import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
 
 @Injectable()
 export class PropertiesService {
@@ -57,12 +66,24 @@ export class PropertiesService {
     private readonly scheduledMoveOutRepository: Repository<ScheduledMoveOut>,
     @InjectRepository(TenantKyc)
     private readonly tenantKycRepository: Repository<TenantKyc>,
+    @InjectRepository(Users)
+    private readonly usersRepository: Repository<Users>,
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
+    @InjectRepository(Rent)
+    private readonly rentRepository: Repository<Rent>,
+    @InjectRepository(KYCApplication)
+    private readonly kycApplicationRepository: Repository<KYCApplication>,
+    @InjectRepository(KYCLink)
+    private readonly kycLinkRepository: Repository<KYCLink>,
     private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly dataSource: DataSource,
     private readonly kycApplicationService: KYCApplicationService,
+    private readonly kycLinksService: KYCLinksService,
     private readonly utilService: UtilService,
+    private readonly whatsappBotService: WhatsappBotService,
   ) {}
 
   async createProperty(
@@ -130,6 +151,581 @@ export class PropertiesService {
       // Log the detailed error and throw a standardized exception
       console.error('Error creating property in service:', error);
       throw new Error(`Failed to create property: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create a property with an existing tenant
+   * Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7
+   */
+  async createPropertyWithExistingTenant(
+    propertyData: CreatePropertyDto,
+    tenantData: ExistingTenantDto,
+    ownerId: string,
+  ): Promise<{
+    property: Property;
+    kycStatus: string;
+    isExistingTenant: boolean;
+  }> {
+    // Validate input data
+    if (!propertyData || !tenantData || !ownerId) {
+      throw new HttpException(
+        'Missing required data for property creation',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      console.log('🏠 Creating property with existing tenant:', {
+        propertyName: propertyData.name,
+        tenantPhone: tenantData.phone,
+        ownerId,
+        timestamp: new Date().toISOString(),
+      });
+      // 1. Create property record
+      const newProperty = queryRunner.manager.create(Property, {
+        ...propertyData,
+        owner_id: ownerId,
+        property_status: PropertyStatusEnum.OCCUPIED, // Property is occupied from the start
+      });
+      const savedProperty = await queryRunner.manager.save(
+        Property,
+        newProperty,
+      );
+
+      // 2. Normalize tenant phone number
+      const normalizedPhone = this.utilService.normalizePhoneNumber(
+        tenantData.phone,
+      );
+
+      // 3. Check for duplicate phone (for warning - doesn't block creation)
+      const duplicateCheck = await this.checkExistingTenant(
+        ownerId,
+        normalizedPhone,
+      );
+      if (duplicateCheck.exists) {
+        console.log(
+          `⚠️ Warning: Phone number ${normalizedPhone} already exists for property: ${duplicateCheck.propertyName}`,
+        );
+      }
+
+      // 4. Parse tenant name into first/last
+      const { firstName, lastName } = this.parseTenantName(tenantData.fullName);
+
+      // 5. Find or create tenant user (BEFORE transaction to avoid transaction abort issues)
+      console.log('🔍 Step 5: Checking for existing tenant user...', {
+        normalizedPhone,
+        firstName,
+        lastName,
+      });
+
+      // Try multiple phone number formats to find existing user
+      let tenantUser = await this.usersRepository.findOne({
+        where: { phone_number: normalizedPhone },
+      });
+
+      if (!tenantUser) {
+        // Try with original phone format
+        console.log('🔄 Trying with original phone format:', tenantData.phone);
+        tenantUser = await this.usersRepository.findOne({
+          where: { phone_number: tenantData.phone },
+        });
+      }
+
+      if (!tenantUser) {
+        // Try without the + prefix (database might store without it)
+        const phoneWithoutPlus = normalizedPhone.replace('+', '');
+        console.log('� Tsrying without + prefix:', phoneWithoutPlus);
+        tenantUser = await this.usersRepository.findOne({
+          where: { phone_number: phoneWithoutPlus },
+        });
+      }
+
+      console.log('📞 User lookup result:', {
+        found: !!tenantUser,
+        userId: tenantUser?.id,
+        userRole: tenantUser?.role,
+      });
+
+      if (!tenantUser) {
+        // Create new user OUTSIDE transaction first
+        const email =
+          tenantData.email ||
+          `${normalizedPhone.replace('+', '')}@placeholder.lizt.app`;
+
+        console.log('👤 Creating new user...', {
+          firstName,
+          lastName,
+          phone: normalizedPhone,
+          email,
+        });
+
+        try {
+          tenantUser = this.usersRepository.create({
+            first_name: firstName,
+            last_name: lastName,
+            phone_number: normalizedPhone,
+            email: email,
+            role: RolesEnum.TENANT,
+            is_verified: false,
+            creator_id: ownerId,
+          });
+          tenantUser = await this.usersRepository.save(tenantUser);
+          console.log('✅ User created successfully:', {
+            userId: tenantUser.id,
+            phone: tenantUser.phone_number,
+          });
+        } catch (userError) {
+          console.error('❌ User creation failed:', {
+            errorCode: userError.code,
+            errorMessage: userError.message,
+            constraint: userError.constraint,
+            detail: userError.detail,
+          });
+
+          // If user creation fails due to duplicate, try to find the existing user again
+          if (userError.code === '23505') {
+            console.log(
+              `✅ User already exists, finding existing user for new property...`,
+            );
+
+            // Try all phone number formats again
+            tenantUser = await this.usersRepository.findOne({
+              where: { phone_number: normalizedPhone },
+            });
+
+            if (!tenantUser) {
+              tenantUser = await this.usersRepository.findOne({
+                where: { phone_number: tenantData.phone },
+              });
+            }
+
+            if (!tenantUser) {
+              const phoneWithoutPlus = normalizedPhone.replace('+', '');
+              tenantUser = await this.usersRepository.findOne({
+                where: { phone_number: phoneWithoutPlus },
+              });
+            }
+
+            if (!tenantUser) {
+              throw new HttpException(
+                'Unable to find the existing user with this phone number. Please try again.',
+                HttpStatus.INTERNAL_SERVER_ERROR,
+              );
+            }
+
+            console.log('✅ Found and reusing existing user:', {
+              userId: tenantUser.id,
+              phone: tenantUser.phone_number,
+              role: tenantUser.role,
+            });
+          } else {
+            throw userError;
+          }
+        }
+      } else {
+        console.log('✅ Using existing user:', {
+          userId: tenantUser.id,
+          phone: tenantUser.phone_number,
+          role: tenantUser.role,
+        });
+      }
+
+      // 6. Create tenant account
+      // Check outside transaction first
+      let tenantAccount = await this.accountRepository.findOne({
+        where: { userId: tenantUser.id, role: RolesEnum.TENANT },
+      });
+
+      if (!tenantAccount) {
+        // Double-check within transaction
+        tenantAccount = await queryRunner.manager.findOne(Account, {
+          where: { userId: tenantUser.id, role: RolesEnum.TENANT },
+        });
+      }
+
+      if (!tenantAccount) {
+        try {
+          tenantAccount = queryRunner.manager.create(Account, {
+            userId: tenantUser.id,
+            email: tenantUser.email,
+            role: RolesEnum.TENANT,
+            is_verified: false,
+            creator_id: ownerId,
+          });
+          tenantAccount = await queryRunner.manager.save(
+            Account,
+            tenantAccount,
+          );
+        } catch (accountError) {
+          // If account creation fails due to duplicate, try to fetch the existing account
+          if (accountError.code === '23505') {
+            console.log(
+              `Account for user ${tenantUser.id} was created by another process, fetching...`,
+            );
+            tenantAccount = await this.accountRepository.findOne({
+              where: { userId: tenantUser.id, role: RolesEnum.TENANT },
+            });
+            if (!tenantAccount) {
+              throw new HttpException(
+                'Failed to create or find tenant account',
+                HttpStatus.INTERNAL_SERVER_ERROR,
+              );
+            }
+          } else {
+            throw accountError;
+          }
+        }
+      }
+
+      // 7. Get or create KYC link for landlord
+      const kycLinkResponse =
+        await this.kycLinksService.generateKYCLink(ownerId);
+
+      // Get the actual KYC link entity
+      const kycLink = await queryRunner.manager.findOne(KYCLink, {
+        where: { landlord_id: ownerId, is_active: true },
+      });
+
+      if (!kycLink) {
+        throw new HttpException(
+          'Failed to get or create KYC link for landlord',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+
+      // 8. Check if tenant already has ANY KYC application for this landlord
+      let kycApplication = await queryRunner.manager.findOne(KYCApplication, {
+        where: {
+          tenant_id: tenantAccount.id,
+          kyc_link: { landlord_id: ownerId },
+        },
+        relations: ['kyc_link'],
+        order: {
+          created_at: 'DESC', // Most recent first
+        },
+      });
+
+      let isNewKycApplication = false;
+
+      if (kycApplication) {
+        const status = kycApplication.status;
+
+        if (status === ApplicationStatus.APPROVED) {
+          console.log(
+            '✅ Tenant already has APPROVED KYC, reusing existing application',
+          );
+          // Tenant can be attached to new property without additional KYC
+        } else if (status === ApplicationStatus.PENDING) {
+          console.log(
+            '⏳ Tenant has KYC AWAITING APPROVAL, reusing existing application',
+          );
+          // Tenant's KYC is submitted and awaiting landlord approval
+        } else if (status === ApplicationStatus.REJECTED) {
+          console.log(
+            '❌ Tenant has REJECTED KYC, reusing existing application',
+          );
+          // Tenant's previous KYC was rejected, they may need to resubmit
+        } else if (status === ApplicationStatus.PENDING_COMPLETION) {
+          console.log(
+            '📝 Tenant has PENDING COMPLETION KYC, reusing existing application',
+          );
+          // Tenant hasn't completed their KYC form yet
+        } else {
+          console.log(
+            `🔍 Tenant has KYC with status: ${status}, reusing existing application`,
+          );
+        }
+
+        // Always reuse existing KYC application regardless of status
+      } else {
+        // Create new KYC application only if tenant has NO existing KYC for this landlord
+        console.log('🆕 Creating new KYC application for new tenant');
+        isNewKycApplication = true;
+        kycApplication = queryRunner.manager.create(KYCApplication, {
+          kyc_link_id: kycLink.id,
+          property_id: savedProperty.id,
+          tenant_id: tenantAccount.id,
+          status: ApplicationStatus.PENDING_COMPLETION,
+          first_name: firstName,
+          last_name: lastName,
+          phone_number: normalizedPhone,
+          email: tenantData.email || undefined,
+          // Pre-fill with landlord-provided data (stored in KYC application for reference)
+          // Note: Rent details are stored in the Rent entity, not KYC
+        });
+        await queryRunner.manager.save(KYCApplication, kycApplication);
+      }
+
+      // 9. Attach tenant to property
+      // Check if this tenant is already attached to this property
+      let propertyTenant = await queryRunner.manager.findOne(PropertyTenant, {
+        where: {
+          property_id: savedProperty.id,
+          tenant_id: tenantAccount.id,
+        },
+      });
+
+      if (propertyTenant) {
+        // Update existing relationship to active status
+        propertyTenant.status = TenantStatusEnum.ACTIVE;
+        await queryRunner.manager.save(PropertyTenant, propertyTenant);
+        console.log(
+          '✅ Updated existing property-tenant relationship to active',
+        );
+      } else {
+        // Create new property-tenant relationship
+        propertyTenant = queryRunner.manager.create(PropertyTenant, {
+          property_id: savedProperty.id,
+          tenant_id: tenantAccount.id,
+          status: TenantStatusEnum.ACTIVE,
+        });
+        await queryRunner.manager.save(PropertyTenant, propertyTenant);
+        console.log('✅ Created new property-tenant relationship');
+      }
+
+      // 10. Create rent records
+      const rentStartDate = new Date(tenantData.tenancyStartDate);
+      const rentDueDate = new Date(tenantData.rentDueDate);
+
+      // Calculate expiry date based on rent frequency
+      let expiryDate: Date;
+      const frequency = tenantData.rentFrequency.toLowerCase();
+      if (frequency === 'monthly') {
+        expiryDate = new Date(rentStartDate);
+        expiryDate.setMonth(expiryDate.getMonth() + 1);
+      } else if (frequency === 'quarterly') {
+        expiryDate = new Date(rentStartDate);
+        expiryDate.setMonth(expiryDate.getMonth() + 3);
+      } else if (frequency === 'annually' || frequency === 'yearly') {
+        expiryDate = new Date(rentStartDate);
+        expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+      } else {
+        // Default to monthly
+        expiryDate = new Date(rentStartDate);
+        expiryDate.setMonth(expiryDate.getMonth() + 1);
+      }
+
+      const rent = queryRunner.manager.create(Rent, {
+        property_id: savedProperty.id,
+        tenant_id: tenantAccount.id,
+        rent_start_date: rentStartDate,
+        expiry_date: expiryDate,
+        rental_price: tenantData.rentAmount,
+        amount_paid: tenantData.rentAmount,
+        service_charge: tenantData.serviceChargeAmount || 0,
+        payment_frequency: tenantData.rentFrequency,
+        payment_status: RentPaymentStatusEnum.PAID,
+        rent_status: RentStatusEnum.ACTIVE,
+      });
+      await queryRunner.manager.save(Rent, rent);
+
+      // 11. Property status already set to OCCUPIED in step 1
+
+      // 12. Create property history record
+      const propertyHistory = queryRunner.manager.create(PropertyHistory, {
+        property_id: savedProperty.id,
+        tenant_id: tenantAccount.id,
+        event_type: 'tenant_moved_in',
+        move_in_date: rentStartDate,
+        monthly_rent: tenantData.rentAmount,
+        owner_comment: 'Tenant added during property creation',
+        tenant_comment: null,
+        move_out_date: null,
+        move_out_reason: null,
+      });
+      await queryRunner.manager.save(PropertyHistory, propertyHistory);
+
+      // Commit transaction before sending WhatsApp (non-critical operation)
+      await queryRunner.commitTransaction();
+
+      // 13. Send WhatsApp notification based on KYC status (async, don't block on failure)
+      try {
+        // Fetch landlord information for the notification
+        const landlord = await this.usersRepository.findOne({
+          where: { id: ownerId },
+        });
+
+        const landlordName = landlord
+          ? this.utilService.toSentenceCase(landlord.first_name)
+          : 'Your landlord';
+
+        const tenantName = this.utilService.toSentenceCase(firstName);
+
+        // Send appropriate notification based on KYC status
+        const status = kycApplication.status;
+
+        if (status === ApplicationStatus.PENDING_COMPLETION) {
+          // Send KYC completion link for incomplete applications
+          await this.whatsappBotService.sendKYCCompletionLink({
+            phone_number: normalizedPhone,
+            tenant_name: tenantName,
+            landlord_name: landlordName,
+            property_name: savedProperty.name,
+            kyc_link_id: kycLink.id,
+          });
+          console.log(
+            `✅ WhatsApp KYC completion link sent to ${normalizedPhone} (PENDING_COMPLETION)`,
+          );
+        } else if (status === ApplicationStatus.APPROVED) {
+          console.log(
+            `✅ Tenant has APPROVED KYC, no KYC link needed for ${normalizedPhone}`,
+          );
+          // TODO: Send "welcome back" or "property assignment" notification
+        } else if (status === ApplicationStatus.PENDING) {
+          console.log(
+            `⏳ Tenant has KYC AWAITING APPROVAL, no new KYC link needed for ${normalizedPhone}`,
+          );
+          // TODO: Send notification about property assignment while KYC is pending approval
+        } else if (status === ApplicationStatus.REJECTED) {
+          // Send KYC completion link for rejected applications (they need to resubmit)
+          await this.whatsappBotService.sendKYCCompletionLink({
+            phone_number: normalizedPhone,
+            tenant_name: tenantName,
+            landlord_name: landlordName,
+            property_name: savedProperty.name,
+            kyc_link_id: kycLink.id,
+          });
+          console.log(
+            `🔄 WhatsApp KYC completion link sent to ${normalizedPhone} (REJECTED - resubmission needed)`,
+          );
+        } else {
+          console.log(
+            `🔍 Tenant has KYC status: ${status}, no notification sent to ${normalizedPhone}`,
+          );
+        }
+      } catch (whatsappError) {
+        // Log but don't fail the entire operation
+        console.error('Failed to send WhatsApp notification:', whatsappError);
+      }
+
+      // Emit event after property is created
+      this.eventEmitter.emit('property.created', {
+        property_id: savedProperty.id,
+        property_name: savedProperty.name,
+        user_id: savedProperty.owner_id,
+        has_tenant: true,
+      });
+
+      // Determine if tenant is "existing" - true if we reused an existing KYC application
+      const isExistingTenant = !isNewKycApplication;
+
+      console.log('✅ Property with existing tenant created successfully:', {
+        propertyId: savedProperty.id,
+        propertyName: savedProperty.name,
+        kycStatus: kycApplication.status,
+        isExistingTenant,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        property: savedProperty,
+        kycStatus: kycApplication.status,
+        isExistingTenant,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+
+      // Enhanced error logging
+      console.error('❌ Error creating property with existing tenant:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        propertyData: {
+          name: propertyData.name,
+          location: propertyData.location,
+        },
+        tenantData: {
+          fullName: tenantData.fullName,
+          phone: tenantData.phone,
+        },
+        ownerId,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Provide specific error messages based on error type
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      // Database constraint violations
+      if (error.code === '23505') {
+        // Check which constraint was violated
+        const constraintName = error.constraint || '';
+        const errorDetail = error.detail || '';
+
+        if (
+          constraintName.includes('phone') ||
+          errorDetail.includes('phone_number')
+        ) {
+          throw new HttpException(
+            'This phone number is already registered. The existing tenant will be reused for this property.',
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        if (constraintName.includes('email') || errorDetail.includes('email')) {
+          throw new HttpException(
+            'This email address is already registered in the system. Please use a different email or leave it blank.',
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        if (
+          errorDetail.includes('name') ||
+          errorDetail.includes('properties')
+        ) {
+          throw new HttpException(
+            'A property with this name already exists. Please choose a different name.',
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        // Check for property-tenant relationship constraint
+        if (
+          constraintName.includes('property_tenants') ||
+          errorDetail.includes('property_tenants')
+        ) {
+          throw new HttpException(
+            'This tenant is already attached to this property. Please check your data.',
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        // Generic duplicate error
+        throw new HttpException(
+          'Some information is already in use. Tenants can be reused across multiple properties, but property names must be unique.',
+          HttpStatus.CONFLICT,
+        );
+      }
+
+      // Foreign key violations
+      if (error.code === '23503') {
+        throw new HttpException(
+          'Invalid data provided. Please check all fields and try again.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // Generic database errors
+      if (error.code && error.code.startsWith('23')) {
+        throw new HttpException(
+          'Unable to create property due to data conflict. Please review your information and try again.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      // Default error
+      throw new HttpException(
+        `Failed to create property with tenant: ${error.message || 'Please try again or contact support.'}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    } finally {
+      await queryRunner.release();
     }
   }
 
@@ -222,6 +818,7 @@ export class PropertiesService {
         'property.name',
         'property.location',
         'property.property_status',
+        'property.rental_price',
       ])
       .where('property.owner_id = :ownerId', { ownerId })
       .andWhere('property.property_status = :status', {
@@ -1972,6 +2569,75 @@ export class PropertiesService {
         issues: [],
         details: { error: error.message },
       };
+    }
+  }
+
+  /**
+   * Parse tenant full name into first and last name
+   * Requirements: 2.2
+   */
+  parseTenantName(fullName: string): {
+    firstName: string;
+    lastName: string;
+  } {
+    // Trim and normalize whitespace
+    const trimmed = fullName.trim().replace(/\s+/g, ' ');
+
+    // Split by space
+    const parts = trimmed.split(' ');
+
+    if (parts.length === 0 || trimmed === '') {
+      // Empty name - use placeholder
+      return { firstName: 'Tenant', lastName: 'User' };
+    } else if (parts.length === 1) {
+      // Single name - use as first name, empty last name
+      return { firstName: parts[0], lastName: '' };
+    } else {
+      // Multiple parts - first part is first name, rest is last name
+      const firstName = parts[0];
+      const lastName = parts.slice(1).join(' ');
+      return { firstName, lastName };
+    }
+  }
+
+  /**
+   * Check if a tenant with the given phone number already exists for this landlord
+   * Requirements: 8.1, 8.2
+   */
+  async checkExistingTenant(
+    landlordId: string,
+    normalizedPhone: string,
+  ): Promise<{ exists: boolean; propertyName?: string }> {
+    try {
+      // Find any active tenant with this phone number for this landlord
+      const existingTenant = await this.propertyTenantRepository
+        .createQueryBuilder('pt')
+        .leftJoinAndSelect('pt.property', 'property')
+        .leftJoinAndSelect('pt.tenant', 'tenant')
+        .leftJoinAndSelect('tenant.user', 'user')
+        .where('pt.status = :status', { status: TenantStatusEnum.ACTIVE })
+        .andWhere('property.owner_id = :landlordId', { landlordId })
+        .andWhere('user.phone_number = :phone', { phone: normalizedPhone })
+        .getOne();
+
+      if (existingTenant) {
+        return {
+          exists: true,
+          propertyName: existingTenant.property.name,
+        };
+      }
+
+      return { exists: false };
+    } catch (error) {
+      console.error('Error checking existing tenant:', {
+        error: error instanceof Error ? error.message : String(error),
+        landlordId,
+        phone: normalizedPhone,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Return false on error to not block property creation
+      return { exists: false };
     }
   }
 

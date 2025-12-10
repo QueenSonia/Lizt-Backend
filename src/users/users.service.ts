@@ -248,22 +248,25 @@ export class UsersService {
           role: RolesEnum.TENANT,
         });
 
-        const admin_phone_number = this.utilService.normalizePhoneNumber(
-          admin.user.phone_number,
-        );
-
         await this.whatsappBotService.sendTenantWelcomeTemplate({
           phone_number: this.utilService.normalizePhoneNumber(phone_number),
           tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
           landlord_name: admin.profile_name,
         });
 
-        await this.sendUserAddedTemplate({
-          phone_number: admin_phone_number,
-          name: 'Admin',
-          user: `${tenantUser.first_name} ${tenantUser.last_name}`,
-          property_name: property?.name,
-        });
+        // Only send notification to admin if phone number exists
+        if (admin.user?.phone_number) {
+          const admin_phone_number = this.utilService.normalizePhoneNumber(
+            admin.user.phone_number,
+          );
+
+          await this.sendUserAddedTemplate({
+            phone_number: admin_phone_number,
+            name: 'Admin',
+            user: `${tenantUser.first_name} ${tenantUser.last_name}`,
+            property_name: property?.name,
+          });
+        }
 
         return tenantUser;
       } catch (error) {
@@ -555,6 +558,13 @@ export class UsersService {
       throw new HttpException('admin account not found', HttpStatus.NOT_FOUND);
     }
 
+    console.log('=== DEBUG: Admin Data in addTenantKyc ===');
+    console.log('Admin ID:', admin.id);
+    console.log('Admin userId:', admin.userId);
+    console.log('Admin user object:', admin.user);
+    console.log('Admin user phone_number:', admin.user?.phone_number);
+    console.log('=========================================');
+
     return await this.dataSource.transaction(async (manager) => {
       try {
         // 1. Check existing user
@@ -684,22 +694,25 @@ export class UsersService {
           role: RolesEnum.TENANT,
         });
 
-        const admin_phone_number = this.utilService.normalizePhoneNumber(
-          admin.user.phone_number,
-        );
-
         await this.whatsappBotService.sendTenantWelcomeTemplate({
           phone_number: this.utilService.normalizePhoneNumber(phone_number),
           tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
           landlord_name: admin.profile_name,
         });
 
-        await this.sendUserAddedTemplate({
-          phone_number: admin_phone_number,
-          name: 'Admin',
-          user: `${tenantUser.first_name} ${tenantUser.last_name}`,
-          property_name: property?.name,
-        });
+        // Only send notification to admin if phone number exists
+        if (admin.user?.phone_number) {
+          const admin_phone_number = this.utilService.normalizePhoneNumber(
+            admin.user.phone_number,
+          );
+
+          await this.sendUserAddedTemplate({
+            phone_number: admin_phone_number,
+            name: 'Admin',
+            user: `${tenantUser.first_name} ${tenantUser.last_name}`,
+            property_name: property?.name,
+          });
+        }
 
         return tenantUser;
       } catch (error) {
@@ -737,12 +750,14 @@ export class UsersService {
       );
     }
 
-    if (kycApplication.status !== 'pending') {
-      throw new HttpException(
-        'KYC Application is not pending',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+    // Allow attaching tenant regardless of KYC status
+    // Removed status check to enable attaching tenants with any KYC status
+    // if (kycApplication.status !== 'pending') {
+    //   throw new HttpException(
+    //     'KYC Application is not pending',
+    //     HttpStatus.BAD_REQUEST,
+    //   );
+    // }
 
     // 2. Map KYC application data to CreateTenantKycDto
     const tenantKycDto: any = {

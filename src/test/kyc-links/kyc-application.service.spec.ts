@@ -57,11 +57,16 @@ describe('KYCApplicationService', () => {
     findOne: jest.fn(),
   };
 
+  const mockUtilService = {
+    normalizePhoneNumber: jest.fn((phone) => phone),
+  };
+
   const mockQueryBuilder = {
     update: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
+    orWhere: jest.fn().mockReturnThis(),
     execute: jest.fn(),
     leftJoinAndSelect: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
@@ -88,6 +93,10 @@ describe('KYCApplicationService', () => {
         {
           provide: getRepositoryToken(PropertyTenant),
           useValue: mockPropertyTenantRepository,
+        },
+        {
+          provide: 'UtilService',
+          useValue: mockUtilService,
         },
       ],
     }).compile();
@@ -742,6 +751,200 @@ describe('KYCApplicationService', () => {
       await expect(
         service.getApplicationStatistics(propertyId, landlordId),
       ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  describe('checkPendingCompletion', () => {
+    const landlordId = 'landlord-123';
+    const phoneNumber = '+2348012345678';
+    const email = 'test@example.com';
+
+    const mockPendingKyc = {
+      id: 'kyc-123',
+      property_id: 'property-123',
+      phone_number: phoneNumber,
+      email: email,
+      status: ApplicationStatus.PENDING_COMPLETION,
+      first_name: 'John',
+      last_name: 'Doe',
+      created_at: new Date('2024-01-01'),
+    };
+
+    beforeEach(() => {
+      mockKycApplicationRepository.createQueryBuilder.mockReturnValue(
+        mockQueryBuilder,
+      );
+    });
+
+    it('should return pending KYC when phone number matches', async () => {
+      // Arrange
+      mockQueryBuilder.getMany.mockResolvedValue([mockPendingKyc]);
+
+      // Act
+      const result = await service.checkPendingCompletion(
+        landlordId,
+        phoneNumber,
+      );
+
+      // Assert
+      expect(result.hasPending).toBe(true);
+      expect(result.kycData).toEqual(mockPendingKyc);
+      expect(result.propertyIds).toEqual(['property-123']);
+      expect(mockQueryBuilder.where).toHaveBeenCalledWith(
+        'kyc.status = :status',
+        { status: ApplicationStatus.PENDING_COMPLETION },
+      );
+      expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith(
+        'property.owner_id = :landlordId',
+        { landlordId },
+      );
+    });
+
+    it('should return oldest KYC when multiple matches exist', async () => {
+      // Arrange
+      const olderKyc = {
+        ...mockPendingKyc,
+        id: 'kyc-older',
+        created_at: new Date('2024-01-01'),
+      };
+      const newerKyc = {
+        ...mockPendingKyc,
+        id: 'kyc-newer',
+        property_id: 'property-456',
+        created_at: new Date('2024-01-15'),
+      };
+      mockQueryBuilder.getMany.mockResolvedValue([newerKyc, olderKyc]);
+
+      // Act
+      const result = await service.checkPendingCompletion(
+        landlordId,
+        phoneNumber,
+      );
+
+      // Assert
+      expect(result.hasPending).toBe(true);
+      expect(result.kycData?.id).toBe('kyc-older');
+      expect(result.propertyIds).toEqual(['property-456', 'property-123']);
+    });
+
+    it('should match by email when provided', async () => {
+      // Arrange
+      mockQueryBuilder.getMany.mockResolvedValue([mockPendingKyc]);
+
+      // Act
+      const result = await service.checkPendingCompletion(
+        landlordId,
+        phoneNumber,
+        email,
+      );
+
+      // Assert
+      expect(result.hasPending).toBe(true);
+      expect(mockQueryBuilder.orWhere).toHaveBeenCalledWith(
+        'kyc.email = :email AND kyc.status = :status AND property.owner_id = :landlordId',
+        { email, status: ApplicationStatus.PENDING_COMPLETION, landlordId },
+      );
+    });
+
+    it('should return hasPending false when no matches found', async () => {
+      // Arrange
+      mockQueryBuilder.getMany.mockResolvedValue([]);
+
+      // Act
+      const result = await service.checkPendingCompletion(
+        landlordId,
+        phoneNumber,
+      );
+
+      // Assert
+      expect(result.hasPending).toBe(false);
+      expect(result.kycData).toBeUndefined();
+      expect(result.propertyIds).toBeUndefined();
+    });
+  });
+
+  describe('completePendingKYC', () => {
+    const kycId = 'kyc-123';
+    const mockCompletionData = {
+      email: 'updated@example.com',
+      contact_address: '123 Main St',
+      date_of_birth: '1990-01-01',
+      gender: Gender.MALE,
+      state_of_origin: 'Lagos',
+      nationality: 'Nigerian',
+      employment_status: EmploymentStatus.EMPLOYED,
+      marital_status: MaritalStatus.SINGLE,
+      occupation: 'Engineer',
+      job_title: 'Senior Engineer',
+      employer_name: 'Tech Corp',
+      employer_address: '456 Tech Ave',
+      monthly_net_income: '500000',
+      passport_photo_url: 'https://cloudinary.com/passport.jpg',
+      id_document_url: 'https://cloudinary.com/id.jpg',
+      employment_proof_url: 'https://cloudinary.com/employment.jpg',
+    };
+
+    const mockPendingKyc = {
+      id: kycId,
+      property_id: 'property-123',
+      status: ApplicationStatus.PENDING_COMPLETION,
+      first_name: 'John',
+      last_name: 'Doe',
+      phone_number: '+2348012345678',
+      property: {
+        id: 'property-123',
+        name: 'Test Property',
+        owner_id: 'landlord-123',
+      },
+    };
+
+    it('should complete pending KYC successfully', async () => {
+      // Arrange
+      mockKycApplicationRepository.findOne
+        .mockResolvedValueOnce(mockPendingKyc)
+        .mockResolvedValueOnce({
+          ...mockPendingKyc,
+          ...mockCompletionData,
+          status: ApplicationStatus.APPROVED,
+        });
+
+      // Act
+      const result = await service.completePendingKYC(
+        kycId,
+        mockCompletionData as any,
+      );
+
+      // Assert
+      expect(mockKycApplicationRepository.findOne).toHaveBeenCalledWith({
+        where: { id: kycId, status: ApplicationStatus.PENDING_COMPLETION },
+        relations: ['property', 'tenant'],
+      });
+      expect(mockKycApplicationRepository.update).toHaveBeenCalled();
+      expect(result.status).toBe(ApplicationStatus.APPROVED);
+    });
+
+    it('should throw NotFoundException when KYC not found', async () => {
+      // Arrange
+      mockKycApplicationRepository.findOne.mockResolvedValue(null);
+
+      // Act & Assert
+      await expect(
+        service.completePendingKYC(kycId, mockCompletionData as any),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw NotFoundException when KYC already completed', async () => {
+      // Arrange
+      const completedKyc = {
+        ...mockPendingKyc,
+        status: ApplicationStatus.APPROVED,
+      };
+      mockKycApplicationRepository.findOne.mockResolvedValue(null); // Query filters by PENDING_COMPLETION status
+
+      // Act & Assert
+      await expect(
+        service.completePendingKYC(kycId, mockCompletionData as any),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

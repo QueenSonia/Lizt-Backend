@@ -11,6 +11,7 @@ import {
 
 export enum ApplicationStatus {
   PENDING = 'pending',
+  PENDING_COMPLETION = 'pending_completion',
   APPROVED = 'approved',
   REJECTED = 'rejected',
 }

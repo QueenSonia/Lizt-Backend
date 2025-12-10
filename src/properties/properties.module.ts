@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { PropertiesService } from './properties.service';
 import { PropertiesController } from './properties.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -19,6 +19,10 @@ import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
 import { Users } from 'src/users/entities/user.entity';
 import { UtilsModule } from 'src/utils/utils.module';
+import { Rent } from 'src/rents/entities/rent.entity';
+import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
+import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
+import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 
 @Module({
   imports: [
@@ -31,11 +35,15 @@ import { UtilsModule } from 'src/utils/utils.module';
       ScheduledMoveOut,
       TenantKyc,
       Users,
+      Rent,
+      KYCApplication,
+      KYCLink,
     ]),
     RentsModule,
     UsersModule,
     KYCLinksModule,
     UtilsModule,
+    forwardRef(() => WhatsappBotModule),
   ],
   controllers: [PropertiesController],
   providers: [

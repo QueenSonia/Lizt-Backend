@@ -68,7 +68,7 @@ export class WhatsappBotService {
     private readonly cache: CacheService,
     private readonly config: ConfigService,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   async getNextScreen(decryptedBody) {
     const { screen, data, action } = decryptedBody;
@@ -917,11 +917,11 @@ export class WhatsappBotService {
           `Account Info for ${this.utilService.toSentenceCase(
             teamMemberAccountInfo.account.profile_name,
           )}:\n\n` +
-          `- Email: ${teamMemberAccountInfo.account.email}\n` +
-          `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-          `- Role: ${this.utilService.toSentenceCase(
-            teamMemberAccountInfo.account.role,
-          )}`,
+            `- Email: ${teamMemberAccountInfo.account.email}\n` +
+            `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
+            `- Role: ${this.utilService.toSentenceCase(
+              teamMemberAccountInfo.account.role,
+            )}`,
         );
 
         await this.sendText(
@@ -1267,8 +1267,9 @@ export class WhatsappBotService {
       serviceRequests.forEach((req: any, i) => {
         response += `${req.description} (${new Date(
           req.created_at,
-        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'
-          }\n\n`;
+        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
+          req.notes || '——'
+        }\n\n`;
       });
 
       await this.sendText(from, response);
@@ -2418,6 +2419,150 @@ export class WhatsappBotService {
               {
                 type: 'payload',
                 payload: 'view_all_service_requests',
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send KYC completion link to existing tenant via WhatsApp
+   * Notifies tenant when landlord creates property with existing tenant
+   * Uses 'kyc_completion_link' template with one URL button:
+   * - Complete KYC - Opens KYC form with pre-filled data
+   *
+   * Template body: "Hello {{1}}, {{2}} has added you as a tenant for {{3}}. Please complete your KYC information using the link below."
+   * Variables:
+   * {{1}} = tenant_name
+   * {{2}} = landlord_name
+   * {{3}} = property_name
+   *
+   * Button URL: {{frontend_url}}/kyc/{{kyc_link_id}}
+   */
+  async sendKYCCompletionLink({
+    phone_number,
+    tenant_name,
+    landlord_name,
+    property_name,
+    kyc_link_id,
+  }: {
+    phone_number: string;
+    tenant_name: string;
+    landlord_name: string;
+    property_name: string;
+    kyc_link_id: string;
+  }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'kyc_completion_link',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name, // {{1}}
+              },
+              {
+                type: 'text',
+                text: landlord_name, // {{2}}
+              },
+              {
+                type: 'text',
+                text: property_name, // {{3}}
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: kyc_link_id, // Dynamic part of URL
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send KYC completion notification to landlord via WhatsApp
+   * Notifies landlord when tenant completes their pending KYC
+   * Uses 'kyc_completion_notification' template with one URL button:
+   * - View Tenant Details - Opens tenant detail page
+   *
+   * Template body: "Hello {{1}}, {{2}} has completed their KYC information for {{3}}. You can now view their full tenant details."
+   * Variables:
+   * {{1}} = landlord_name
+   * {{2}} = tenant_name
+   * {{3}} = property_name
+   *
+   * Button URL: https://www.lizt.co/landlord/tenant-detail?tenantId={{tenant_id}}
+   */
+  async sendKYCCompletionNotification({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    tenant_id,
+  }: {
+    phone_number: string;
+    landlord_name: string;
+    tenant_name: string;
+    property_name: string;
+    tenant_id: string;
+  }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'kyc_completion_notification',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlord_name, // {{1}}
+              },
+              {
+                type: 'text',
+                text: tenant_name, // {{2}}
+              },
+              {
+                type: 'text',
+                text: property_name, // {{3}}
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_id, // Dynamic part of URL (tenantId query parameter)
               },
             ],
           },

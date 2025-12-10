@@ -32,34 +32,31 @@ export class UtilService {
     console.log(`Original phone number: ${phone_number}`);
     if (!phone_number) return '';
 
-    // 0. If number starts with '+', remove it
-    if (phone_number.startsWith('+')) {
-      phone_number = phone_number.slice(1);
+    // Remove all non-digit characters
+    let cleaned = phone_number.replace(/\D/g, '');
+
+    // Handle different formats
+    if (cleaned.startsWith('234')) {
+      // Already in international format without +
+      const result = `+${cleaned}`;
+      console.log(`Normalized phone number: ${result}`);
+      return result;
+    } else if (cleaned.startsWith('0')) {
+      // Nigerian local format (0234...)
+      const result = `+234${cleaned.substring(1)}`;
+      console.log(`Normalized phone number: ${result}`);
+      return result;
+    } else if (cleaned.length === 10) {
+      // 10 digits without country code
+      const result = `+234${cleaned}`;
+      console.log(`Normalized phone number: ${result}`);
+      return result;
     }
 
-    // 1. Keep digits only
-    let normalized = phone_number.replace(/\D/g, '');
-
-    // 2. If number already starts with '234' (Nigeria country code), leave it
-    if (normalized.startsWith('234')) {
-      console.log(`Normalized phone number: ${normalized}`);
-      return normalized;
-    }
-
-    // 3. If number starts with '0', strip it and prepend '234'
-    if (normalized.startsWith('0')) {
-      normalized = '234' + normalized.slice(1);
-      console.log(`Normalized phone number: ${normalized}`);
-      return normalized;
-    }
-
-    // 4. If it's missing both '0' and '234' (e.g., "8031234567"), add '234'
-    if (/^[7-9]\d{9}$/.test(normalized)) {
-      normalized = '234' + normalized;
-    }
-    
-    console.log(`Normalized phone number: ${normalized}`);
-    return normalized;
+    // Default: assume it needs +234 prefix
+    const result = `+234${cleaned}`;
+    console.log(`Normalized phone number: ${result}`);
+    return result;
   };
 
   sendEmail = async (email: string, subject: string, htmlContent: string) => {

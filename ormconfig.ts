@@ -54,6 +54,12 @@ export const config = {
   //   rejectUnauthorized: false,
   // },
   schema: 'public',
+
+  // Cache schema metadata to avoid slow startup queries
+  cache: {
+    type: 'database',
+    duration: 60000, // Cache for 60 seconds
+  },
 } as DataSourceOptions;
 
 export default registerAs('typeorm', () => config);

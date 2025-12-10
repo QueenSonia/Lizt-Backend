@@ -12,12 +12,20 @@ import {
 
 export class ExistingTenantDto {
   @ApiProperty({
-    example: 'John Doe',
-    description: 'Full name of the existing tenant',
+    example: 'John',
+    description: 'First name of the existing tenant',
   })
   @IsNotEmpty()
   @IsString()
-  fullName: string;
+  firstName: string;
+
+  @ApiProperty({
+    example: 'Doe',
+    description: 'Surname of the existing tenant',
+  })
+  @IsNotEmpty()
+  @IsString()
+  surname: string;
 
   @ApiProperty({
     example: '+2348012345678',

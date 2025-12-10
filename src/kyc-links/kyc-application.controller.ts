@@ -264,4 +264,56 @@ export class KYCApplicationController {
       application,
     };
   }
+
+  /**
+   * Get KYC link token for a specific application (landlord only)
+   * GET /api/kyc-applications/:applicationId/kyc-token
+   * Used for resending KYC completion links
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('kyc-applications/:applicationId/kyc-token')
+  async getKYCTokenForApplication(
+    @Param('applicationId', ParseUUIDPipe) applicationId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    token: string;
+  }> {
+    const token = await this.kycApplicationService.getKYCTokenForApplication(
+      applicationId,
+      user.id,
+    );
+
+    return {
+      success: true,
+      token,
+    };
+  }
+
+  /**
+   * Resend KYC completion link for a specific application (landlord only)
+   * POST /api/kyc-applications/:applicationId/resend-kyc
+   * Uses the same template as initial KYC completion links
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Post('kyc-applications/:applicationId/resend-kyc')
+  async resendKYCCompletionLink(
+    @Param('applicationId', ParseUUIDPipe) applicationId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    await this.kycApplicationService.resendKYCCompletionLink(
+      applicationId,
+      user.id,
+    );
+
+    return {
+      success: true,
+      message: 'KYC completion link sent successfully',
+    };
+  }
 }

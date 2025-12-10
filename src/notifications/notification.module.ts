@@ -8,6 +8,7 @@ import { UserAddedListener } from './listeners/user-added.listener';
 import { PropertyListener } from './listeners/property-created.listener';
 import { ServiceRequestListener } from './listeners/service-request.listener';
 import { UserSignUpListener } from './listeners/user-signup.listener';
+import { TenantAttachmentListener } from './listeners/tenant-attachment.listener';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Notification])],
@@ -19,6 +20,7 @@ import { UserSignUpListener } from './listeners/user-signup.listener';
     UserSignUpListener,
     PropertyListener,
     ServiceRequestListener,
+    TenantAttachmentListener,
   ],
   exports: [NotificationService],
 })

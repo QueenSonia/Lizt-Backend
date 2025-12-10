@@ -433,8 +433,27 @@ export class UsersService {
             landlord_name: agencyName,
             apartment_name: property.name,
           });
+
+          // Emit tenant attached event for live feed
+          this.eventEmitter.emit('tenant.attached', {
+            property_id: propertyId,
+            property_name: property.name,
+            tenant_id: tenantId,
+            tenant_name: tenantName,
+            user_id: property.owner_id,
+          });
         } catch (whatsappError) {
           console.error('Failed to send WhatsApp notification:', whatsappError);
+
+          // Still emit the event even if WhatsApp fails
+          const fallbackTenantName = `${this.utilService.toSentenceCase(tenantAccount.user.first_name)} ${this.utilService.toSentenceCase(tenantAccount.user.last_name)}`;
+          this.eventEmitter.emit('tenant.attached', {
+            property_id: propertyId,
+            property_name: property.name,
+            tenant_id: tenantId,
+            tenant_name: fallbackTenantName,
+            user_id: property.owner_id,
+          });
         }
 
         return {
@@ -1946,7 +1965,8 @@ export class UsersService {
       .leftJoinAndSelect('notice_agreements.property', 'notice_property')
       .where('account.id = :tenantId', { tenantId })
       .andWhere((qb) => {
-        const subQuery = qb
+        // Check for current tenancy OR past tenancy (property history)
+        const currentTenancySubQuery = qb
           .subQuery()
           .select('1')
           .from(PropertyTenant, 'pt')
@@ -1954,7 +1974,17 @@ export class UsersService {
           .where('pt.tenant_id = account.id')
           .andWhere('p.owner_id = :adminId')
           .getQuery();
-        return `EXISTS ${subQuery}`;
+
+        const pastTenancySubQuery = qb
+          .subQuery()
+          .select('1')
+          .from(PropertyHistory, 'ph')
+          .innerJoin('ph.property', 'p')
+          .where('ph.tenant_id = account.id')
+          .andWhere('p.owner_id = :adminId')
+          .getQuery();
+
+        return `(EXISTS ${currentTenancySubQuery} OR EXISTS ${pastTenancySubQuery})`;
       })
       .setParameters({ tenantId, adminId })
       .getOne();

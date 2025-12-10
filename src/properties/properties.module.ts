@@ -15,6 +15,7 @@ import { UsersModule } from 'src/users/users.module';
 import { Account } from 'src/users/entities/account.entity';
 import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
 import { MoveOutSchedulerService } from './tasks/move-out-scheduler.service';
+import { RentConsistencyService } from '../cron/rent-consistency.service';
 import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
 import { Users } from 'src/users/entities/user.entity';
@@ -51,6 +52,7 @@ import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
     FileUploadService,
     RentsService,
     MoveOutSchedulerService,
+    RentConsistencyService,
     FixEmptyLastnameService,
   ],
 })

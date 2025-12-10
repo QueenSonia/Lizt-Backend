@@ -1946,7 +1946,8 @@ export class UsersService {
       .leftJoinAndSelect('notice_agreements.property', 'notice_property')
       .where('account.id = :tenantId', { tenantId })
       .andWhere((qb) => {
-        const subQuery = qb
+        // Check for current tenancy OR past tenancy (property history)
+        const currentTenancySubQuery = qb
           .subQuery()
           .select('1')
           .from(PropertyTenant, 'pt')
@@ -1954,7 +1955,17 @@ export class UsersService {
           .where('pt.tenant_id = account.id')
           .andWhere('p.owner_id = :adminId')
           .getQuery();
-        return `EXISTS ${subQuery}`;
+
+        const pastTenancySubQuery = qb
+          .subQuery()
+          .select('1')
+          .from(PropertyHistory, 'ph')
+          .innerJoin('ph.property', 'p')
+          .where('ph.tenant_id = account.id')
+          .andWhere('p.owner_id = :adminId')
+          .getQuery();
+
+        return `(EXISTS ${currentTenancySubQuery} OR EXISTS ${pastTenancySubQuery})`;
       })
       .setParameters({ tenantId, adminId })
       .getOne();

@@ -692,4 +692,54 @@ export class PropertiesController {
       kycResult,
     };
   }
+
+  @ApiOperation({
+    summary: 'Check and Fix Rent Data Consistency',
+    description:
+      'Identifies and fixes rent data consistency issues like orphaned active rents, multiple active rents, etc.',
+  })
+  @ApiOkResponse({
+    description: 'Rent consistency check and fix completed',
+    schema: {
+      properties: {
+        message: { type: 'string' },
+        issues: { type: 'array' },
+        fixed: { type: 'number' },
+        details: { type: 'object' },
+      },
+    },
+  })
+  @ApiSecurity('access_token')
+  @Post('check-fix-rent-consistency')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async checkAndFixRentConsistency(@CurrentUser() requester: Account) {
+    return this.propertiesService.checkAndFixRentConsistency(requester.id);
+  }
+
+  @ApiOperation({
+    summary: 'Fix Specific Rent Record',
+    description:
+      'Fix a specific rent record by ID. Useful for addressing individual problematic records.',
+  })
+  @ApiOkResponse({
+    description: 'Specific rent record fixed',
+    schema: {
+      properties: {
+        message: { type: 'string' },
+        fixed: { type: 'boolean' },
+        details: { type: 'object' },
+      },
+    },
+  })
+  @ApiSecurity('access_token')
+  @Post('fix-rent-record/:rentId')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async fixSpecificRentRecord(
+    @Param('rentId', new ParseUUIDPipe()) rentId: string,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.propertiesService.fixSpecificRentRecord(rentId, requester.id);
+  }
 }

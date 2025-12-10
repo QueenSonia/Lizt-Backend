@@ -19,6 +19,7 @@ import {
 import { PropertiesService } from './properties.service';
 import { CreatePropertyDto, PropertyFilter } from './dto/create-property.dto';
 import { UpdatePropertyDto } from './dto/update-property.dto';
+import { CreatePropertyWithTenantDto } from './dto/create-property-with-tenant.dto';
 import {
   ApiOperation,
   ApiBody,
@@ -72,6 +73,110 @@ export class PropertiesController {
     @CurrentUser() requester: Account,
   ): Promise<Property> {
     return this.propertiesService.createProperty(body, requester.id);
+  }
+
+  @ApiOperation({ summary: 'Check for Duplicate Tenant Phone Number' })
+  @ApiOkResponse({
+    description: 'Returns property name if phone number already exists',
+    schema: {
+      properties: {
+        exists: { type: 'boolean' },
+        propertyName: { type: 'string' },
+      },
+    },
+  })
+  @ApiQuery({ name: 'phone', required: true, type: String })
+  @ApiSecurity('access_token')
+  @Get('check-duplicate-phone')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async checkDuplicatePhone(
+    @Query('phone') phone: string,
+    @CurrentUser() requester: Account,
+  ) {
+    try {
+      const result = await this.propertiesService.checkExistingTenant(
+        requester.id,
+        phone,
+      );
+      return result;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Create Property with Existing Tenant' })
+  @ApiBody({ type: CreatePropertyWithTenantDto })
+  @ApiCreatedResponse({
+    description: 'Property created with existing tenant successfully',
+    schema: {
+      properties: {
+        property: { type: 'object' },
+        message: { type: 'string' },
+      },
+    },
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Post('create-with-tenant')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async createPropertyWithTenant(
+    @Body() body: CreatePropertyWithTenantDto,
+    @CurrentUser() requester: Account,
+  ): Promise<{
+    property: Property;
+    message: string;
+    kycStatus: string;
+    isExistingTenant: boolean;
+  }> {
+    try {
+      const result =
+        await this.propertiesService.createPropertyWithExistingTenant(
+          body,
+          body.existingTenant,
+          requester.id,
+        );
+
+      // Provide appropriate message based on KYC status
+      let message: string;
+      if (result.isExistingTenant) {
+        // Existing tenant - provide status-specific message
+        switch (result.kycStatus) {
+          case 'approved':
+            message =
+              'Property created successfully. Existing tenant with approved KYC has been attached.';
+            break;
+          case 'pending':
+            message =
+              'Property created successfully. Existing tenant attached (KYC awaiting approval).';
+            break;
+          case 'rejected':
+            message =
+              'Property created successfully. Existing tenant attached (KYC was rejected - resubmission link sent).';
+            break;
+          case 'pending_completion':
+            message =
+              'Property created successfully. Existing tenant attached (KYC completion link sent).';
+            break;
+          default:
+            message =
+              'Property created successfully. Existing tenant has been attached to the new property.';
+        }
+      } else {
+        message =
+          'Property created successfully. KYC completion link sent to tenant.';
+      }
+
+      return {
+        property: result.property,
+        message,
+        kycStatus: result.kycStatus,
+        isExistingTenant: result.isExistingTenant,
+      };
+    } catch (error) {
+      throw error;
+    }
   }
 
   @ApiOperation({ summary: 'Get All Properties' })

@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Put,
   Body,
   Param,
   Query,
@@ -21,10 +22,11 @@ import {
   ApplicationStatus,
 } from './entities/kyc-application.entity';
 import { Account } from '../users/entities/account.entity';
+import { CompleteKYCDto } from './dto/complete-kyc.dto';
 
 @Controller('api')
 export class KYCApplicationController {
-  constructor(private readonly kycApplicationService: KYCApplicationService) { }
+  constructor(private readonly kycApplicationService: KYCApplicationService) {}
 
   /**
    * Submit KYC application (public endpoint - no authentication required)
@@ -166,9 +168,7 @@ export class KYCApplicationController {
   @UseGuards(JwtAuthGuard, RoleGuard)
   @Roles('landlord')
   @Get('kyc-applications')
-  async getAllApplications(
-    @CurrentUser() user: Account,
-  ): Promise<{
+  async getAllApplications(@CurrentUser() user: Account): Promise<{
     success: boolean;
     applications: any[];
   }> {
@@ -206,6 +206,62 @@ export class KYCApplicationController {
     return {
       success: true,
       applications,
+    };
+  }
+
+  /**
+   * Check for pending completion KYC by phone number
+   * GET /api/kyc/check-pending
+   * Requirements: 4.4
+   */
+  @Public()
+  @Get('kyc/check-pending')
+  async checkPendingCompletion(
+    @Query('landlordId', ParseUUIDPipe) landlordId: string,
+    @Query('phone') phone: string,
+    @Query('email') email?: string,
+  ): Promise<{
+    success: boolean;
+    hasPending: boolean;
+    kycData?: any;
+    propertyIds?: string[];
+  }> {
+    const result = await this.kycApplicationService.checkPendingCompletion(
+      landlordId,
+      phone,
+      email,
+    );
+
+    return {
+      success: true,
+      ...result,
+    };
+  }
+
+  /**
+   * Complete a pending KYC application
+   * PUT /api/kyc/complete-pending/:kycId
+   * Requirements: 5.1
+   */
+  @Public()
+  @Put('kyc/complete-pending/:kycId')
+  async completePendingKYC(
+    @Param('kycId', ParseUUIDPipe) kycId: string,
+    @Body(ValidationPipe) completionData: CompleteKYCDto,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    application: KYCApplication;
+  }> {
+    const application = await this.kycApplicationService.completePendingKYC(
+      kycId,
+      completionData,
+    );
+
+    return {
+      success: true,
+      message: 'KYC application completed successfully',
+      application,
     };
   }
 }

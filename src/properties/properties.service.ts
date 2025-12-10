@@ -214,8 +214,9 @@ export class PropertiesService {
         );
       }
 
-      // 4. Parse tenant name into first/last
-      const { firstName, lastName } = this.parseTenantName(tenantData.fullName);
+      // 4. Use provided first name and surname
+      const firstName = tenantData.firstName;
+      const lastName = tenantData.surname;
 
       // 5. Find or create tenant user (BEFORE transaction to avoid transaction abort issues)
       console.log('🔍 Step 5: Checking for existing tenant user...', {
@@ -567,16 +568,22 @@ export class PropertiesService {
             tenant_name: tenantName,
             landlord_name: landlordName,
             property_name: savedProperty.name,
-            kyc_link_id: kycLink.id,
+            kyc_link_id: kycLink.token,
           });
           console.log(
             `✅ WhatsApp KYC completion link sent to ${normalizedPhone} (PENDING_COMPLETION)`,
           );
         } else if (status === ApplicationStatus.APPROVED) {
+          // Send welcome message for approved tenants being attached to new property
+          await this.whatsappBotService.sendTenantAttachmentNotification({
+            phone_number: normalizedPhone,
+            tenant_name: tenantName,
+            landlord_name: landlordName,
+            apartment_name: savedProperty.name,
+          });
           console.log(
-            `✅ Tenant has APPROVED KYC, no KYC link needed for ${normalizedPhone}`,
+            `✅ WhatsApp welcome message sent to ${normalizedPhone} (APPROVED KYC)`,
           );
-          // TODO: Send "welcome back" or "property assignment" notification
         } else if (status === ApplicationStatus.PENDING) {
           console.log(
             `⏳ Tenant has KYC AWAITING APPROVAL, no new KYC link needed for ${normalizedPhone}`,
@@ -589,10 +596,21 @@ export class PropertiesService {
             tenant_name: tenantName,
             landlord_name: landlordName,
             property_name: savedProperty.name,
-            kyc_link_id: kycLink.id,
+            kyc_link_id: kycLink.token,
           });
           console.log(
             `🔄 WhatsApp KYC completion link sent to ${normalizedPhone} (REJECTED - resubmission needed)`,
+          );
+
+          // Also send welcome message for rejected tenants being attached to new property
+          await this.whatsappBotService.sendTenantAttachmentNotification({
+            phone_number: normalizedPhone,
+            tenant_name: tenantName,
+            landlord_name: landlordName,
+            apartment_name: savedProperty.name,
+          });
+          console.log(
+            `✅ WhatsApp welcome message sent to ${normalizedPhone} (REJECTED KYC - property attachment)`,
           );
         } else {
           console.log(
@@ -610,6 +628,15 @@ export class PropertiesService {
         property_name: savedProperty.name,
         user_id: savedProperty.owner_id,
         has_tenant: true,
+      });
+
+      // Emit tenant attached event for live feed
+      this.eventEmitter.emit('tenant.attached', {
+        property_id: savedProperty.id,
+        property_name: savedProperty.name,
+        tenant_id: tenantAccount.id,
+        tenant_name: `${firstName} ${lastName}`,
+        user_id: ownerId,
       });
 
       // Determine if tenant is "existing" - true if we reused an existing KYC application
@@ -640,7 +667,8 @@ export class PropertiesService {
           location: propertyData.location,
         },
         tenantData: {
-          fullName: tenantData.fullName,
+          firstName: tenantData.firstName,
+          surname: tenantData.surname,
           phone: tenantData.phone,
         },
         ownerId,
@@ -1933,6 +1961,33 @@ export class PropertiesService {
         // This will be caught by the scheduled consistency check
       }
 
+      // Get property and tenant information for the event
+      try {
+        const property = await this.propertyRepository.findOne({
+          where: { id: property_id },
+          relations: ['owner'],
+        });
+
+        const tenant = await this.usersRepository.findOne({
+          where: { id: tenant_id },
+        });
+
+        if (property && tenant) {
+          // Emit tenancy ended event for live feed
+          this.eventEmitter.emit('tenancy.ended', {
+            property_id: property_id,
+            property_name: property.name,
+            tenant_id: tenant_id,
+            tenant_name: `${tenant.first_name} ${tenant.last_name}`,
+            user_id: property.owner_id,
+            move_out_date: move_out_date,
+          });
+        }
+      } catch (eventError) {
+        // Log but don't fail the operation if event emission fails
+        console.error('Failed to emit tenancy.ended event:', eventError);
+      }
+
       return updatedHistory;
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -2667,34 +2722,6 @@ export class PropertiesService {
         issues: [],
         details: { error: error.message },
       };
-    }
-  }
-
-  /**
-   * Parse tenant full name into first and last name
-   * Requirements: 2.2
-   */
-  parseTenantName(fullName: string): {
-    firstName: string;
-    lastName: string;
-  } {
-    // Trim and normalize whitespace
-    const trimmed = fullName.trim().replace(/\s+/g, ' ');
-
-    // Split by space
-    const parts = trimmed.split(' ');
-
-    if (parts.length === 0 || trimmed === '') {
-      // Empty name - use placeholder
-      return { firstName: 'Tenant', lastName: 'User' };
-    } else if (parts.length === 1) {
-      // Single name - use as first name, empty last name
-      return { firstName: parts[0], lastName: '' };
-    } else {
-      // Multiple parts - first part is first name, rest is last name
-      const firstName = parts[0];
-      const lastName = parts.slice(1).join(' ');
-      return { firstName, lastName };
     }
   }
 

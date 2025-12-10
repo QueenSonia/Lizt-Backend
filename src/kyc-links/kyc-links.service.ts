@@ -9,11 +9,12 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, MoreThan, Not, IsNull } from 'typeorm';
+import { Repository, LessThan, MoreThan, Not, IsNull, In } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { KYCLink } from './entities/kyc-link.entity';
 import { KYCOtp } from './entities/kyc-otp.entity';
+import { ApplicationStatus } from './entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyStatusEnum } from '../properties/dto/create-property.dto';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
@@ -201,8 +202,9 @@ export class KYCLinksService {
         };
       }
 
-      // Get all vacant properties for this landlord that are ready for marketing
-      // (i.e., have a rental_price set)
+      // Get properties for this landlord:
+      // 1. Vacant properties ready for marketing (have rental_price set)
+      // 2. Properties with pending KYC applications (for existing tenants)
       const vacantProperties = await this.propertyRepository.find({
         where: {
           owner_id: kycLink.landlord_id,
@@ -214,18 +216,44 @@ export class KYCLinksService {
         },
       });
 
-      if (vacantProperties.length === 0) {
+      // Also get properties that have pending KYC applications (for existing tenants)
+      const propertiesWithPendingKYC = await this.propertyRepository
+        .createQueryBuilder('property')
+        .leftJoin('property.kyc_applications', 'kyc')
+        .where('property.owner_id = :landlordId', {
+          landlordId: kycLink.landlord_id,
+        })
+        .andWhere('kyc.status = :status', {
+          status: ApplicationStatus.PENDING_COMPLETION,
+        })
+        .getMany();
+
+      // Combine and deduplicate properties
+      const allPropertyIds = new Set([
+        ...vacantProperties.map((p) => p.id),
+        ...propertiesWithPendingKYC.map((p) => p.id),
+      ]);
+
+      const allProperties = await this.propertyRepository.find({
+        where: {
+          id: In([...allPropertyIds]),
+        },
+        order: {
+          created_at: 'DESC',
+        },
+      });
+
+      if (allProperties.length === 0) {
         return {
           valid: false,
-          error:
-            'No properties ready for marketing. Please contact the landlord.',
+          error: 'No properties available. Please contact the landlord.',
         };
       }
 
       return {
         valid: true,
         landlordId: kycLink.landlord_id,
-        vacantProperties: vacantProperties.map((property) => ({
+        vacantProperties: allProperties.map((property) => ({
           id: property.id,
           name: property.name,
           location: property.location,

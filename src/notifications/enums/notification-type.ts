@@ -7,4 +7,6 @@ export enum NotificationType {
   LEASE_SIGNED = 'Lease Signed',
   PROPERTY_CREATED = 'Property Created',
   KYC_SUBMITTED = 'KYC Submitted',
+  TENANT_ATTACHED = 'Tenant Attached',
+  TENANCY_ENDED = 'Tenancy Ended',
 }

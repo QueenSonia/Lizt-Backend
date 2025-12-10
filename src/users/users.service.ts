@@ -433,8 +433,27 @@ export class UsersService {
             landlord_name: agencyName,
             apartment_name: property.name,
           });
+
+          // Emit tenant attached event for live feed
+          this.eventEmitter.emit('tenant.attached', {
+            property_id: propertyId,
+            property_name: property.name,
+            tenant_id: tenantId,
+            tenant_name: tenantName,
+            user_id: property.owner_id,
+          });
         } catch (whatsappError) {
           console.error('Failed to send WhatsApp notification:', whatsappError);
+
+          // Still emit the event even if WhatsApp fails
+          const fallbackTenantName = `${this.utilService.toSentenceCase(tenantAccount.user.first_name)} ${this.utilService.toSentenceCase(tenantAccount.user.last_name)}`;
+          this.eventEmitter.emit('tenant.attached', {
+            property_id: propertyId,
+            property_name: property.name,
+            tenant_id: tenantId,
+            tenant_name: fallbackTenantName,
+            user_id: property.owner_id,
+          });
         }
 
         return {

@@ -1092,6 +1092,34 @@ export class KYCApplicationService {
         );
       }
 
+      // Send WhatsApp confirmation to tenant
+      try {
+        if (this.whatsappBotService && updatedKyc.phone_number) {
+          const tenantPhone = this.utilService.normalizePhoneNumber(
+            updatedKyc.phone_number,
+          );
+          const tenantName = `${updatedKyc.first_name} ${updatedKyc.last_name}`;
+
+          await this.whatsappBotService.sendKYCSubmissionConfirmation({
+            phone_number: tenantPhone,
+            tenant_name: tenantName,
+          });
+
+          console.log(
+            '✅ WhatsApp KYC completion confirmation sent to tenant:',
+            {
+              to: tenantPhone,
+              tenant: tenantName,
+            },
+          );
+        }
+      } catch (error) {
+        console.error(
+          'Failed to send tenant KYC completion confirmation:',
+          error,
+        );
+      }
+
       console.log('✅ KYC completion successful:', {
         kycId: updatedKyc.id,
         status: updatedKyc.status,
@@ -1118,6 +1146,161 @@ export class KYCApplicationService {
       // Wrap unknown errors
       throw new HttpException(
         `Failed to complete KYC: ${error.message || 'Unknown error'}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Get KYC link token for a specific application (for resending)
+   */
+  async getKYCTokenForApplication(
+    applicationId: string,
+    landlordId: string,
+  ): Promise<string> {
+    try {
+      // Find the application with its KYC link
+      const application = await this.kycApplicationRepository.findOne({
+        where: { id: applicationId },
+        relations: ['kyc_link', 'property'],
+      });
+
+      if (!application) {
+        throw new NotFoundException('KYC application not found');
+      }
+
+      // Validate property ownership
+      await this.validatePropertyOwnership(application.property_id, landlordId);
+
+      if (!application.kyc_link) {
+        throw new NotFoundException('KYC link not found for this application');
+      }
+
+      if (!application.kyc_link.is_active) {
+        throw new BadRequestException('KYC link is no longer active');
+      }
+
+      return application.kyc_link.token;
+    } catch (error) {
+      console.error('❌ Error getting KYC token for application:', {
+        error: error instanceof Error ? error.message : String(error),
+        applicationId,
+        landlordId,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Re-throw known exceptions
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException ||
+        error instanceof ForbiddenException
+      ) {
+        throw error;
+      }
+
+      // Wrap unknown errors
+      throw new HttpException(
+        `Failed to get KYC token: ${error.message || 'Unknown error'}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Resend KYC completion link for a specific application
+   * Uses the same template as initial KYC completion links
+   */
+  async resendKYCCompletionLink(
+    applicationId: string,
+    landlordId: string,
+  ): Promise<void> {
+    try {
+      // Find the application with all necessary relations
+      const application = await this.kycApplicationRepository.findOne({
+        where: { id: applicationId },
+        relations: [
+          'kyc_link',
+          'property',
+          'property.owner',
+          'property.owner.user',
+        ],
+      });
+
+      if (!application) {
+        throw new NotFoundException('KYC application not found');
+      }
+
+      // Validate property ownership
+      await this.validatePropertyOwnership(application.property_id, landlordId);
+
+      if (!application.kyc_link) {
+        throw new NotFoundException('KYC link not found for this application');
+      }
+
+      if (!application.kyc_link.is_active) {
+        throw new BadRequestException('KYC link is no longer active');
+      }
+
+      // Only allow resending for pending completion applications
+      if (application.status !== ApplicationStatus.PENDING_COMPLETION) {
+        throw new BadRequestException(
+          'Can only resend KYC links for applications awaiting completion',
+        );
+      }
+
+      // Prepare data for WhatsApp message
+      const normalizedPhone = this.utilService.normalizePhoneNumber(
+        application.phone_number,
+      );
+      const tenantName = this.utilService.toSentenceCase(
+        application.first_name,
+      );
+      const landlordName = application.property?.owner?.user
+        ? this.utilService.toSentenceCase(
+            application.property.owner.user.first_name,
+          )
+        : 'Your landlord';
+
+      // Send KYC completion link using the same method as initial creation
+      if (this.whatsappBotService) {
+        await this.whatsappBotService.sendKYCCompletionLink({
+          phone_number: normalizedPhone,
+          tenant_name: tenantName,
+          landlord_name: landlordName,
+          property_name: application.property.name,
+          kyc_link_id: application.kyc_link.token,
+        });
+
+        console.log(
+          `✅ KYC completion link resent to ${normalizedPhone} for application ${applicationId}`,
+        );
+      } else {
+        throw new HttpException(
+          'WhatsApp service not available',
+          HttpStatus.SERVICE_UNAVAILABLE,
+        );
+      }
+    } catch (error) {
+      console.error('❌ Error resending KYC completion link:', {
+        error: error instanceof Error ? error.message : String(error),
+        applicationId,
+        landlordId,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Re-throw known exceptions
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException ||
+        error instanceof ForbiddenException ||
+        error instanceof HttpException
+      ) {
+        throw error;
+      }
+
+      // Wrap unknown errors
+      throw new HttpException(
+        `Failed to resend KYC completion link: ${error.message || 'Unknown error'}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

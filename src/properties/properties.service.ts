@@ -1716,6 +1716,7 @@ export class PropertiesService {
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
+      // Enhanced validation: Check if tenant is currently assigned to this property
       const propertyTenant = await queryRunner.manager.findOne(PropertyTenant, {
         where: {
           property_id,
@@ -1731,8 +1732,58 @@ export class PropertiesService {
         );
       }
 
+      // Get ALL rent records for this tenant-property combination (not just active ones)
+      const allRents = await queryRunner.manager.find(Rent, {
+        where: {
+          property_id,
+          tenant_id,
+        },
+        order: { created_at: 'DESC' },
+      });
+
       // Get the active rent record BEFORE deactivating (needed for PropertyHistory creation)
-      const activeRent = await queryRunner.manager.findOne(Rent, {
+      const activeRent = allRents.find(
+        (rent) => rent.rent_status === RentStatusEnum.ACTIVE,
+      );
+      const hasActiveRent = !!activeRent;
+
+      console.log(
+        `[MOVE_OUT] Processing tenant ${tenant_id} from property ${property_id}:`,
+        {
+          totalRentRecords: allRents.length,
+          activeRentFound: hasActiveRent,
+          activeRentId: activeRent?.id,
+          allRentStatuses: allRents.map((r) => ({
+            id: r.id,
+            status: r.rent_status,
+          })),
+        },
+      );
+
+      // CRITICAL: Deactivate ALL active rent records for this tenant-property combination
+      // This prevents the issue where multiple active rents exist
+      const activeRentUpdateResult = await queryRunner.manager.update(
+        Rent,
+        {
+          property_id,
+          tenant_id,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+        {
+          rent_status: RentStatusEnum.INACTIVE,
+          updated_at: new Date(), // Explicitly set updated timestamp
+        },
+      );
+
+      console.log(`[MOVE_OUT] Rent deactivation result:`, {
+        affectedRows: activeRentUpdateResult.affected,
+        expectedRows: allRents.filter(
+          (r) => r.rent_status === RentStatusEnum.ACTIVE,
+        ).length,
+      });
+
+      // Verify that all rent records are now inactive
+      const remainingActiveRents = await queryRunner.manager.find(Rent, {
         where: {
           property_id,
           tenant_id,
@@ -1740,34 +1791,49 @@ export class PropertiesService {
         },
       });
 
-      // If no active rent exists, we still need to clean up the PropertyTenant relationship
-      // This handles cases where data is inconsistent (PropertyTenant exists but no Rent)
-      const hasActiveRent = !!activeRent;
-
-      // Deactivate the rent record (if it exists)
-      if (hasActiveRent) {
-        await queryRunner.manager.update(
-          Rent,
-          {
-            property_id,
-            tenant_id,
-            rent_status: RentStatusEnum.ACTIVE,
-          },
-          {
-            rent_status: RentStatusEnum.INACTIVE,
-          },
+      if (remainingActiveRents.length > 0) {
+        console.error(
+          `[MOVE_OUT] ERROR: ${remainingActiveRents.length} rent records still active after update:`,
+          remainingActiveRents.map((r) => ({
+            id: r.id,
+            status: r.rent_status,
+          })),
         );
+
+        // Force deactivate any remaining active rents
+        for (const rent of remainingActiveRents) {
+          await queryRunner.manager.update(Rent, rent.id, {
+            rent_status: RentStatusEnum.INACTIVE,
+            updated_at: new Date(),
+          });
+          console.log(`[MOVE_OUT] Force deactivated rent record: ${rent.id}`);
+        }
       }
 
       // Remove property-tenant relationship
-      await queryRunner.manager.delete(PropertyTenant, {
-        property_id,
-        tenant_id,
+      const propertyTenantDeleteResult = await queryRunner.manager.delete(
+        PropertyTenant,
+        {
+          property_id,
+          tenant_id,
+        },
+      );
+
+      console.log(`[MOVE_OUT] PropertyTenant deletion result:`, {
+        affectedRows: propertyTenantDeleteResult.affected,
       });
 
       // Update property status to vacant
-      await queryRunner.manager.update(Property, property_id, {
-        property_status: PropertyStatusEnum.VACANT,
+      const propertyUpdateResult = await queryRunner.manager.update(
+        Property,
+        property_id,
+        {
+          property_status: PropertyStatusEnum.VACANT,
+        },
+      );
+
+      console.log(`[MOVE_OUT] Property status update result:`, {
+        affectedRows: propertyUpdateResult.affected,
       });
 
       // Note: KYC links are not automatically reactivated when tenant moves out
@@ -1834,7 +1900,39 @@ export class PropertiesService {
         tenant_comment: moveOutData?.tenant_comment || null,
       });
 
+      // POST-TRANSACTION VERIFICATION: Ensure all changes were applied correctly
+      const verificationResults = await this.verifyMoveOutTransaction(
+        queryRunner,
+        property_id,
+        tenant_id,
+      );
+
+      if (!verificationResults.success) {
+        console.error(`[MOVE_OUT] Verification failed:`, verificationResults);
+        throw new HttpException(
+          `Move-out verification failed: ${verificationResults.errors.join(', ')}`,
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+
+      console.log(`[MOVE_OUT] Verification successful:`, verificationResults);
+
       await queryRunner.commitTransaction();
+
+      // FINAL VERIFICATION: Double-check after commit using a fresh connection
+      const finalVerification = await this.verifyMoveOutComplete(
+        property_id,
+        tenant_id,
+      );
+      if (!finalVerification.success) {
+        console.error(
+          `[MOVE_OUT] Final verification failed:`,
+          finalVerification,
+        );
+        // Log the issue but don't fail the operation since transaction is already committed
+        // This will be caught by the scheduled consistency check
+      }
+
       return updatedHistory;
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -2900,6 +2998,458 @@ export class PropertiesService {
         success: false,
         details: { error: error.message },
       };
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Check and fix rent data consistency issues
+   * This method identifies and fixes cases where:
+   * 1. Rent records are active but no PropertyTenant relationship exists
+   * 2. PropertyTenant relationship exists but no active rent record
+   * 3. Multiple active rent records exist for the same tenant-property
+   */
+  async checkAndFixRentConsistency(adminId?: string): Promise<{
+    message: string;
+    issues: Array<{
+      type: string;
+      rentId?: string;
+      propertyId?: string;
+      tenantId?: string;
+      propertyName?: string;
+      count?: number;
+      rentIds?: string[];
+    }>;
+    fixed: number;
+    details: {
+      orphanedActiveRents: number;
+      duplicateActiveRents: number;
+      tenantsWithoutActiveRent: number;
+    };
+  }> {
+    const queryRunner = this.dataSource.createQueryRunner();
+
+    try {
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
+      const issues: Array<{
+        type: string;
+        rentId?: string;
+        propertyId?: string;
+        tenantId?: string;
+        propertyName?: string;
+        count?: number;
+        rentIds?: string[];
+      }> = [];
+      let fixedCount = 0;
+
+      // Issue 1: Active rents without PropertyTenant relationship
+      const orphanedActiveRents = await queryRunner.manager
+        .createQueryBuilder(Rent, 'rent')
+        .leftJoin(
+          PropertyTenant,
+          'pt',
+          'pt.property_id = rent.property_id AND pt.tenant_id = rent.tenant_id AND pt.status = :activeStatus',
+          { activeStatus: TenantStatusEnum.ACTIVE },
+        )
+        .leftJoin(Property, 'p', 'p.id = rent.property_id')
+        .where('rent.rent_status = :activeRent', {
+          activeRent: RentStatusEnum.ACTIVE,
+        })
+        .andWhere('pt.id IS NULL')
+        .andWhere(
+          adminId ? 'p.owner_id = :adminId' : '1=1',
+          adminId ? { adminId } : {},
+        )
+        .select(['rent.id', 'rent.property_id', 'rent.tenant_id', 'p.name'])
+        .getRawMany();
+
+      for (const orphanedRent of orphanedActiveRents) {
+        issues.push({
+          type: 'orphaned_active_rent',
+          rentId: orphanedRent.rent_id,
+          propertyId: orphanedRent.rent_property_id,
+          tenantId: orphanedRent.rent_tenant_id,
+          propertyName: orphanedRent.p_name,
+        });
+
+        // Fix: Deactivate orphaned rent records
+        await queryRunner.manager.update(Rent, orphanedRent.rent_id, {
+          rent_status: RentStatusEnum.INACTIVE,
+          updated_at: new Date(),
+        });
+        fixedCount++;
+      }
+
+      // Issue 2: Multiple active rents for same tenant-property
+      const duplicateActiveRents = await queryRunner.manager
+        .createQueryBuilder(Rent, 'rent')
+        .leftJoin(Property, 'p', 'p.id = rent.property_id')
+        .where('rent.rent_status = :activeRent', {
+          activeRent: RentStatusEnum.ACTIVE,
+        })
+        .andWhere(
+          adminId ? 'p.owner_id = :adminId' : '1=1',
+          adminId ? { adminId } : {},
+        )
+        .groupBy('rent.property_id, rent.tenant_id')
+        .having('COUNT(*) > 1')
+        .select(['rent.property_id', 'rent.tenant_id', 'COUNT(*) as count'])
+        .getRawMany();
+
+      for (const duplicate of duplicateActiveRents) {
+        const allActiveRents = await queryRunner.manager.find(Rent, {
+          where: {
+            property_id: duplicate.rent_property_id,
+            tenant_id: duplicate.rent_tenant_id,
+            rent_status: RentStatusEnum.ACTIVE,
+          },
+          order: { created_at: 'DESC' },
+        });
+
+        issues.push({
+          type: 'multiple_active_rents',
+          propertyId: duplicate.rent_property_id,
+          tenantId: duplicate.rent_tenant_id,
+          count: duplicate.count,
+          rentIds: allActiveRents.map((r) => r.id),
+        });
+
+        // Fix: Keep only the most recent rent, deactivate others
+        const [keepRent, ...deactivateRents] = allActiveRents;
+        for (const rent of deactivateRents) {
+          await queryRunner.manager.update(Rent, rent.id, {
+            rent_status: RentStatusEnum.INACTIVE,
+            updated_at: new Date(),
+          });
+          fixedCount++;
+        }
+      }
+
+      // Issue 3: PropertyTenant relationships without active rent records
+      const tenantsWithoutActiveRent = await queryRunner.manager
+        .createQueryBuilder(PropertyTenant, 'pt')
+        .leftJoin(
+          Rent,
+          'rent',
+          'rent.property_id = pt.property_id AND rent.tenant_id = pt.tenant_id AND rent.rent_status = :activeRent',
+          { activeRent: RentStatusEnum.ACTIVE },
+        )
+        .leftJoin(Property, 'p', 'p.id = pt.property_id')
+        .where('pt.status = :activeStatus', {
+          activeStatus: TenantStatusEnum.ACTIVE,
+        })
+        .andWhere('rent.id IS NULL')
+        .andWhere(
+          adminId ? 'p.owner_id = :adminId' : '1=1',
+          adminId ? { adminId } : {},
+        )
+        .select(['pt.property_id', 'pt.tenant_id', 'p.name'])
+        .getRawMany();
+
+      for (const tenantWithoutRent of tenantsWithoutActiveRent) {
+        issues.push({
+          type: 'tenant_without_active_rent',
+          propertyId: tenantWithoutRent.pt_property_id,
+          tenantId: tenantWithoutRent.pt_tenant_id,
+          propertyName: tenantWithoutRent.p_name,
+        });
+
+        // Fix: Remove the PropertyTenant relationship since there's no active rent
+        await queryRunner.manager.delete(PropertyTenant, {
+          property_id: tenantWithoutRent.pt_property_id,
+          tenant_id: tenantWithoutRent.pt_tenant_id,
+        });
+        fixedCount++;
+      }
+
+      await queryRunner.commitTransaction();
+
+      return {
+        message: `Rent consistency check completed. Found ${issues.length} issues, fixed ${fixedCount}.`,
+        issues,
+        fixed: fixedCount,
+        details: {
+          orphanedActiveRents: orphanedActiveRents.length,
+          duplicateActiveRents: duplicateActiveRents.length,
+          tenantsWithoutActiveRent: tenantsWithoutActiveRent.length,
+        },
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('[RENT_CONSISTENCY_CHECK] Error:', error);
+      throw new HttpException(
+        'Failed to check rent consistency',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Verify that move-out transaction was successful (within transaction)
+   */
+  private async verifyMoveOutTransaction(
+    queryRunner: any,
+    propertyId: string,
+    tenantId: string,
+  ): Promise<{
+    success: boolean;
+    errors: string[];
+    details: {
+      activeRentsFound?: number;
+      activePropertyTenantsFound?: number;
+      propertyStatus?: string;
+      error?: string;
+    };
+  }> {
+    const errors: string[] = [];
+    const details: {
+      activeRentsFound?: number;
+      activePropertyTenantsFound?: number;
+      propertyStatus?: string;
+      error?: string;
+    } = {};
+
+    try {
+      // Check 1: No active rent records should exist
+      const activeRents = await queryRunner.manager.find(Rent, {
+        where: {
+          property_id: propertyId,
+          tenant_id: tenantId,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+      });
+
+      details.activeRentsFound = activeRents.length;
+      if (activeRents.length > 0) {
+        errors.push(`${activeRents.length} active rent records still exist`);
+      }
+
+      // Check 2: No active PropertyTenant relationship should exist
+      const activePropertyTenants = await queryRunner.manager.find(
+        PropertyTenant,
+        {
+          where: {
+            property_id: propertyId,
+            tenant_id: tenantId,
+            status: TenantStatusEnum.ACTIVE,
+          },
+        },
+      );
+
+      details.activePropertyTenantsFound = activePropertyTenants.length;
+      if (activePropertyTenants.length > 0) {
+        errors.push(
+          `${activePropertyTenants.length} active PropertyTenant relationships still exist`,
+        );
+      }
+
+      // Check 3: Property should be vacant
+      const property = await queryRunner.manager.findOne(Property, {
+        where: { id: propertyId },
+      });
+
+      details.propertyStatus = property?.property_status;
+      if (property?.property_status !== PropertyStatusEnum.VACANT) {
+        errors.push(
+          `Property status is ${property?.property_status}, expected VACANT`,
+        );
+      }
+
+      return {
+        success: errors.length === 0,
+        errors,
+        details,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        errors: [`Verification error: ${error.message}`],
+        details: { error: error.message },
+      };
+    }
+  }
+
+  /**
+   * Final verification after transaction commit (using fresh connection)
+   */
+  private async verifyMoveOutComplete(
+    propertyId: string,
+    tenantId: string,
+  ): Promise<{
+    success: boolean;
+    errors: string[];
+    details: {
+      activeRentsFound?: number;
+      activePropertyTenantsFound?: number;
+      error?: string;
+    };
+  }> {
+    const errors: string[] = [];
+    const details: {
+      activeRentsFound?: number;
+      activePropertyTenantsFound?: number;
+      error?: string;
+    } = {};
+
+    try {
+      // Check 1: No active rent records should exist
+      const activeRents = await this.rentRepository.find({
+        where: {
+          property_id: propertyId,
+          tenant_id: tenantId,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+      });
+
+      details.activeRentsFound = activeRents.length;
+      if (activeRents.length > 0) {
+        errors.push(
+          `${activeRents.length} active rent records still exist after commit`,
+        );
+      }
+
+      // Check 2: No active PropertyTenant relationship should exist
+      const activePropertyTenants = await this.propertyTenantRepository.find({
+        where: {
+          property_id: propertyId,
+          tenant_id: tenantId,
+          status: TenantStatusEnum.ACTIVE,
+        },
+      });
+
+      details.activePropertyTenantsFound = activePropertyTenants.length;
+      if (activePropertyTenants.length > 0) {
+        errors.push(
+          `${activePropertyTenants.length} active PropertyTenant relationships still exist after commit`,
+        );
+      }
+
+      return {
+        success: errors.length === 0,
+        errors,
+        details,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        errors: [`Final verification error: ${error.message}`],
+        details: { error: error.message },
+      };
+    }
+  }
+
+  /**
+   * Fix specific rent record issue
+   * Use this to fix individual problematic rent records
+   */
+  async fixSpecificRentRecord(
+    rentId: string,
+    adminId?: string,
+  ): Promise<{
+    message: string;
+    fixed: boolean;
+    details: {
+      rentId: string;
+      currentStatus: string;
+      propertyId: string;
+      tenantId: string;
+      propertyName: string;
+      propertyStatus: string;
+      hasPropertyTenantRelation: boolean;
+      action?: string;
+    };
+  }> {
+    const queryRunner = this.dataSource.createQueryRunner();
+
+    try {
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+
+      // Get the rent record with property info
+      const rentRecord = await queryRunner.manager
+        .createQueryBuilder(Rent, 'rent')
+        .leftJoin(Property, 'p', 'p.id = rent.property_id')
+        .leftJoin(
+          PropertyTenant,
+          'pt',
+          'pt.property_id = rent.property_id AND pt.tenant_id = rent.tenant_id AND pt.status = :activeStatus',
+          { activeStatus: TenantStatusEnum.ACTIVE },
+        )
+        .where('rent.id = :rentId', { rentId })
+        .andWhere(
+          adminId ? 'p.owner_id = :adminId' : '1=1',
+          adminId ? { adminId } : {},
+        )
+        .select([
+          'rent.id',
+          'rent.rent_status',
+          'rent.property_id',
+          'rent.tenant_id',
+          'p.name',
+          'p.property_status',
+          'pt.id as property_tenant_id',
+        ])
+        .getRawOne();
+
+      if (!rentRecord) {
+        throw new HttpException(
+          'Rent record not found or access denied',
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      const details: {
+        rentId: string;
+        currentStatus: string;
+        propertyId: string;
+        tenantId: string;
+        propertyName: string;
+        propertyStatus: string;
+        hasPropertyTenantRelation: boolean;
+        action?: string;
+      } = {
+        rentId: rentRecord.rent_id,
+        currentStatus: rentRecord.rent_rent_status,
+        propertyId: rentRecord.rent_property_id,
+        tenantId: rentRecord.rent_tenant_id,
+        propertyName: rentRecord.p_name,
+        propertyStatus: rentRecord.p_property_status,
+        hasPropertyTenantRelation: !!rentRecord.property_tenant_id,
+      };
+
+      let fixed = false;
+
+      // If rent is active but no PropertyTenant relationship exists, deactivate the rent
+      if (
+        rentRecord.rent_rent_status === RentStatusEnum.ACTIVE &&
+        !rentRecord.property_tenant_id
+      ) {
+        await queryRunner.manager.update(Rent, rentId, {
+          rent_status: RentStatusEnum.INACTIVE,
+          updated_at: new Date(),
+        });
+        fixed = true;
+        details.action = 'Deactivated orphaned rent record';
+      }
+
+      await queryRunner.commitTransaction();
+
+      return {
+        message: fixed
+          ? 'Rent record fixed successfully'
+          : 'No issues found with this rent record',
+        fixed,
+        details,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('[FIX_SPECIFIC_RENT] Error:', error);
+      throw error;
     } finally {
       await queryRunner.release();
     }

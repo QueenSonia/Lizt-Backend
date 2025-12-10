@@ -16,6 +16,11 @@ export class UpdateTenantKycUniqueConstraint1733700000000
       `DROP INDEX IF EXISTS "IDX_tenant_kyc_identity_hash"`,
     );
 
+    // Drop the composite unique index if it already exists
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "unique_tenant_per_landlord"`,
+    );
+
     // Create a composite unique index on admin_id and identity_hash
     await queryRunner.query(
       `CREATE UNIQUE INDEX "unique_tenant_per_landlord" ON "tenant_kyc" ("admin_id", "identity_hash")`,

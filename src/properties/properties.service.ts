@@ -50,6 +50,7 @@ import { ExistingTenantDto } from './dto/existing-tenant.dto';
 import { CreatePropertyWithTenantDto } from './dto/create-property-with-tenant.dto';
 import { RolesEnum } from 'src/base.entity';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
+import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
 
 @Injectable()
 export class PropertiesService {
@@ -84,6 +85,7 @@ export class PropertiesService {
     private readonly kycLinksService: KYCLinksService,
     private readonly utilService: UtilService,
     private readonly whatsappBotService: WhatsappBotService,
+    private readonly databaseErrorHandler: DatabaseErrorHandlerService,
   ) {}
 
   async createProperty(

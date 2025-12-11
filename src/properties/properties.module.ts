@@ -24,6 +24,7 @@ import { Rent } from 'src/rents/entities/rent.entity';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
+import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
     MoveOutSchedulerService,
     RentConsistencyService,
     FixEmptyLastnameService,
+    DatabaseErrorHandlerService,
   ],
 })
 export class PropertiesModule {}

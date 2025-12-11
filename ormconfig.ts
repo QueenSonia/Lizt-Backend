@@ -32,23 +32,28 @@ export const config = {
   migrations: ['dist/src/migrations/*{.ts,.js}'],
   ssl: { rejectUnauthorized: false },
 
-  // Connection pool settings for Neon
+  // Connection pool settings optimized for Neon
   extra: {
     sslmode: 'require',
-    max: Number(DB_MAX_CONNECTIONS) || 3, // Further reduced for Neon's connection limits
-    connectionTimeoutMillis: Number(DB_CONNECTION_TIMEOUT) || 20000, // 20 seconds (increased)
-    idleTimeoutMillis: Number(DB_IDLE_TIMEOUT) || 30000, // 30 seconds (increased)
-    acquireTimeoutMillis: 20000, // 20 seconds (increased)
-    keepAlive: true, // Keep connections alive
-    keepAliveInitialDelayMillis: 10000,
+    max: Number(DB_MAX_CONNECTIONS) || 2, // Reduced for Neon's connection limits
+    min: 0, // Allow pool to scale down to 0
+    connectionTimeoutMillis: Number(DB_CONNECTION_TIMEOUT) || 20000,
+    idleTimeoutMillis: Number(DB_IDLE_TIMEOUT) || 10000, // Shorter idle timeout
+    acquireTimeoutMillis: 15000,
+    createTimeoutMillis: 20000,
+    destroyTimeoutMillis: 5000,
+    reapIntervalMillis: 1000,
+    createRetryIntervalMillis: 200,
+    // Disable keep-alive for Neon compatibility
+    keepAlive: false,
   },
 
   // Additional pool settings
-  maxQueryExecutionTime: 45000, // 45 seconds (increased)
+  maxQueryExecutionTime: 30000, // 30 seconds
 
   // Retry logic for connection issues
-  retryAttempts: 5, // More retries
-  retryDelay: 2000, // Faster retries
+  retryAttempts: 3,
+  retryDelay: 1000,
 
   // ssl: {
   //   rejectUnauthorized: false,

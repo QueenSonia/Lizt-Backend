@@ -365,6 +365,10 @@ export class UsersService {
         );
 
         // 7. Create rent record
+        console.log(
+          '💰 [AttachToProperty] Creating rent record with service_charge:',
+          serviceCharge,
+        );
         const rent = manager.getRepository(Rent).create({
           tenant_id: tenantId,
           property_id: propertyId,
@@ -751,8 +755,9 @@ export class UsersService {
       kycApplicationId: string;
       propertyId: string;
       rentAmount: number;
+      rentFrequency: string;
       tenancyStartDate: string;
-      tenancyEndDate: string;
+      rentDueDate: string;
       serviceCharge?: number;
     },
   ) {
@@ -795,8 +800,9 @@ export class UsersService {
       marital_status: kycApplication.marital_status || 'single',
       property_id: dto.propertyId,
       rent_amount: dto.rentAmount,
+      rent_frequency: dto.rentFrequency,
       tenancy_start_date: new Date(dto.tenancyStartDate),
-      tenancy_end_date: new Date(dto.tenancyEndDate),
+      rent_due_date: new Date(dto.rentDueDate),
       employer_name: kycApplication.employer_name,
       job_title: kycApplication.job_title,
       employer_address: kycApplication.employer_address,
@@ -815,10 +821,11 @@ export class UsersService {
       spouse_phone_number: undefined,
       spouse_occupation: undefined,
       spouse_employer: undefined,
+      service_charge: dto.serviceCharge,
     };
 
-    // 3. Call addTenantKyc to create the tenant
-    const result = await this.addTenantKyc(landlordId, tenantKycDto);
+    // 3. Handle existing user or create new tenant
+    const result = await this.handleTenantFromKyc(landlordId, tenantKycDto);
 
     // 4. Update KYC application status to approved
     await this.kycApplicationRepository.update(
@@ -827,6 +834,266 @@ export class UsersService {
     );
 
     return result;
+  }
+
+  /**
+   * Handle tenant creation from KYC - supports existing users
+   */
+  private async handleTenantFromKyc(landlordId: string, dto: any) {
+    return await this.dataSource.transaction(async (manager) => {
+      const {
+        phone_number,
+        first_name,
+        last_name,
+        email,
+        date_of_birth,
+        gender,
+        state_of_origin,
+        lga,
+        nationality,
+        employment_status,
+        marital_status,
+        property_id,
+        rent_amount,
+        rent_frequency,
+        tenancy_start_date,
+        rent_due_date,
+        employer_name,
+        job_title,
+        employer_address,
+        monthly_income,
+        work_email,
+        business_name,
+        nature_of_business,
+        business_address,
+        service_charge,
+      } = dto;
+
+      // 1. Check if user already exists
+      const normalizedPhone =
+        this.utilService.normalizePhoneNumber(phone_number);
+      console.log('🔍 Looking for existing user with phone:', normalizedPhone);
+      console.log('📞 Original phone number:', phone_number);
+
+      // Try multiple search strategies to find existing user
+      let tenantUser = await manager.getRepository(Users).findOne({
+        where: {
+          phone_number: normalizedPhone,
+        },
+      });
+
+      // If not found with normalized phone, try with original phone
+      if (!tenantUser) {
+        tenantUser = await manager.getRepository(Users).findOne({
+          where: {
+            phone_number: phone_number,
+          },
+        });
+        console.log(
+          '🔍 Tried original phone, found:',
+          tenantUser ? `Yes (ID: ${tenantUser.id})` : 'No',
+        );
+      }
+
+      // If still not found, try without + prefix
+      if (!tenantUser && phone_number.startsWith('+')) {
+        const phoneWithoutPlus = phone_number.substring(1);
+        tenantUser = await manager.getRepository(Users).findOne({
+          where: {
+            phone_number: phoneWithoutPlus,
+          },
+        });
+        console.log(
+          '🔍 Tried without +, found:',
+          tenantUser ? `Yes (ID: ${tenantUser.id})` : 'No',
+        );
+      }
+
+      console.log(
+        '👤 Final result - Found existing user:',
+        tenantUser ? `Yes (ID: ${tenantUser.id})` : 'No',
+      );
+
+      // 2. If user doesn't exist, create new user
+      if (!tenantUser) {
+        console.log('➕ Creating new user with phone:', normalizedPhone);
+
+        try {
+          tenantUser = manager.getRepository(Users).create({
+            first_name: this.utilService.toSentenceCase(first_name),
+            last_name: this.utilService.toSentenceCase(last_name),
+            email,
+            phone_number: this.utilService.normalizePhoneNumber(phone_number),
+            date_of_birth,
+            gender,
+            state_of_origin,
+            lga,
+            nationality,
+            employment_status,
+            marital_status,
+            role: RolesEnum.TENANT,
+            is_verified: true,
+            employer_name,
+            job_title,
+            employer_address,
+            monthly_income,
+            work_email,
+            nature_of_business,
+            business_name,
+            business_address,
+            source_of_funds: undefined,
+            monthly_income_estimate: undefined,
+            spouse_full_name: undefined,
+            spouse_phone_number: undefined,
+            spouse_occupation: undefined,
+            spouse_employer: undefined,
+          });
+
+          tenantUser = await manager.getRepository(Users).save(tenantUser);
+          console.log(
+            '✅ Successfully created new user with ID:',
+            tenantUser.id,
+          );
+        } catch (error: any) {
+          // If duplicate key error, try to find the existing user again
+          if (
+            error.code === '23505' &&
+            error.constraint === 'UQ_17d1817f241f10a3dbafb169fd2'
+          ) {
+            console.log(
+              '⚠️ Duplicate key error caught, searching for existing user again...',
+            );
+
+            // Try all possible phone number formats
+            const phoneVariants = [
+              normalizedPhone,
+              phone_number,
+              phone_number.startsWith('+')
+                ? phone_number.substring(1)
+                : `+${phone_number}`,
+            ];
+
+            for (const phoneVariant of phoneVariants) {
+              tenantUser = await manager.getRepository(Users).findOne({
+                where: { phone_number: phoneVariant },
+              });
+              if (tenantUser) {
+                console.log(
+                  '🔄 Found existing user with phone variant:',
+                  phoneVariant,
+                  'User ID:',
+                  tenantUser.id,
+                );
+                break;
+              }
+            }
+
+            if (!tenantUser) {
+              console.error(
+                '❌ Could not find existing user even after duplicate key error',
+              );
+              throw error;
+            }
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        console.log('♻️ Using existing user with ID:', tenantUser.id);
+      }
+
+      // 3. Check if property exists and is available
+      const property = await manager.getRepository(Property).findOne({
+        where: { id: property_id },
+      });
+
+      if (!property) {
+        throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+      }
+
+      // 4. Check if property already has active rent
+      const hasActiveRent = await manager.getRepository(Rent).findOne({
+        where: {
+          property_id: property_id,
+          rent_status: RentStatusEnum.ACTIVE,
+        },
+      });
+
+      if (hasActiveRent) {
+        throw new HttpException(
+          'Property is already rented out',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+
+      // 5. Create account for tenant if it doesn't exist
+      let tenantAccount = await manager.getRepository(Account).findOne({
+        where: { userId: tenantUser.id },
+      });
+
+      if (!tenantAccount) {
+        tenantAccount = manager.getRepository(Account).create({
+          userId: tenantUser.id,
+          role: RolesEnum.TENANT,
+        });
+        tenantAccount = await manager
+          .getRepository(Account)
+          .save(tenantAccount);
+      }
+
+      // 6. Create rent record
+      console.log(
+        '💰 Creating rent record with service_charge:',
+        service_charge,
+      );
+      const rent = manager.getRepository(Rent).create({
+        tenant_id: tenantAccount.id,
+        property_id: property_id,
+        rent_start_date: tenancy_start_date,
+        rental_price: rent_amount,
+        security_deposit: 0,
+        service_charge: service_charge || 0,
+        payment_frequency: this.mapRentFrequencyToPaymentFrequency(
+          rent_frequency as RentFrequency,
+        ),
+        rent_status: RentStatusEnum.ACTIVE,
+        payment_status: RentPaymentStatusEnum.PENDING,
+        amount_paid: 0,
+        expiry_date: rent_due_date,
+      });
+
+      await manager.getRepository(Rent).save(rent);
+
+      // 7. Create property-tenant relationship
+      const propertyTenant = manager.getRepository(PropertyTenant).create({
+        property_id: property_id,
+        tenant_id: tenantAccount.id,
+        status: TenantStatusEnum.ACTIVE,
+      });
+
+      await manager.getRepository(PropertyTenant).save(propertyTenant);
+
+      // 8. Update property status to occupied
+      await manager.getRepository(Property).update(property_id, {
+        property_status: PropertyStatusEnum.OCCUPIED,
+      });
+
+      // 9. Create property history record
+      const propertyHistory = manager.getRepository(PropertyHistory).create({
+        property_id: property_id,
+        tenant_id: tenantAccount.id,
+        move_in_date: tenancy_start_date,
+        monthly_rent: rent_amount,
+        owner_comment: 'Tenant attached from KYC application',
+        tenant_comment: null,
+        move_out_date: null,
+        move_out_reason: null,
+      });
+
+      await manager.getRepository(PropertyHistory).save(propertyHistory);
+
+      return tenantUser;
+    });
   }
 
   async createUser(data: CreateUserDto, creatorId: string): Promise<Account> {

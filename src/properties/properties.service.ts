@@ -86,7 +86,7 @@ export class PropertiesService {
     private readonly utilService: UtilService,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly databaseErrorHandler: DatabaseErrorHandlerService,
-  ) {}
+  ) { }
 
   async createProperty(
     propertyData: CreatePropertyDto,
@@ -1142,9 +1142,8 @@ export class PropertiesService {
         const tenantUser = hist.tenant?.user;
         const tenantKyc = tenantUser?.tenant_kycs?.[0];
         const tenantName = tenantUser
-          ? `${tenantKyc?.first_name ?? tenantUser.first_name} ${
-              tenantKyc?.last_name ?? tenantUser.last_name
-            }`
+          ? `${tenantKyc?.first_name ?? tenantUser.first_name} ${tenantKyc?.last_name ?? tenantUser.last_name
+          }`
           : 'A tenant';
 
         switch (hist.event_type) {
@@ -1157,10 +1156,10 @@ export class PropertiesService {
               description: 'Property was added to the system.',
               details: null,
             };
-          case 'tenant_moved_in':
+          case 'tenancy_started':
             return {
               id: hist.id,
-              date: hist.move_in_date || hist.created_at,
+              date: hist.created_at || hist.move_in_date,
               eventType: 'tenancy_started',
               title: 'Tenancy Started',
               description: `${tenantName} started tenancy for this property.`,
@@ -1171,7 +1170,7 @@ export class PropertiesService {
           case 'tenancy_ended':
             return {
               id: hist.id,
-              date: hist.move_out_date || hist.created_at,
+              date: hist.created_at || hist.move_out_date,
               eventType: 'tenancy_ended',
               title: 'Tenancy Ended',
               description: 'Tenant moved out of the property.',
@@ -1274,11 +1273,10 @@ export class PropertiesService {
     }
 
     // Computed description
-    const computedDescription = `${property.name} is a ${
-      property.no_of_bedrooms === -1
+    const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1
         ? 'studio'
         : `${property.no_of_bedrooms}-bedroom`
-    } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
+      } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
 
     // KYC Applications data
     const kycApplications =
@@ -1701,6 +1699,7 @@ export class PropertiesService {
       await queryRunner.manager.save(PropertyHistory, {
         property_id,
         tenant_id,
+        event_type: 'tenancy_started',
         move_in_date: DateService.getStartOfTheDay(move_in_date),
         monthly_rent: property?.rental_price,
         owner_comment: null,
@@ -2017,14 +2016,25 @@ export class PropertiesService {
       }
 
       // Create a new history record for the move-out event
-      await queryRunner.manager.save(PropertyHistory, {
-        property_id,
-        tenant_id,
-        event_type: 'tenancy_ended',
-        move_out_date: DateService.getStartOfTheDay(move_out_date),
-        event_description: `Tenant moved out. Reason: ${
-          moveOutData?.move_out_reason || 'Not specified'
-        }`,
+      const tenancyEndedHistory = await queryRunner.manager.save(
+        PropertyHistory,
+        {
+          property_id,
+          tenant_id,
+          event_type: 'tenancy_ended',
+          move_out_date: DateService.getStartOfTheDay(move_out_date),
+          event_description: `Tenant moved out. Reason: ${moveOutData?.move_out_reason || 'Not specified'
+            }`,
+        },
+      );
+
+      console.log('🏁 DEBUG: Created tenancy_ended history entry:', {
+        id: tenancyEndedHistory.id,
+        property_id: tenancyEndedHistory.property_id,
+        tenant_id: tenancyEndedHistory.tenant_id,
+        event_type: tenancyEndedHistory.event_type,
+        move_out_date: tenancyEndedHistory.move_out_date,
+        event_description: tenancyEndedHistory.event_description,
       });
 
       // POST-TRANSACTION VERIFICATION: Ensure all changes were applied correctly
@@ -2444,7 +2454,7 @@ export class PropertiesService {
       console.error('Transaction rolled back due to:', error);
       throw new HttpException(
         error?.message ||
-          'An error occurred while assigning Tenant To property',
+        'An error occurred while assigning Tenant To property',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     } finally {
@@ -2640,13 +2650,13 @@ export class PropertiesService {
           sampleResults: sampleResults.slice(0, 5), // Show first 5 results
           recommendations: isFixed
             ? [
-                'The fix is working correctly',
-                'Clear browser cache if you still see issues',
-              ]
+              'The fix is working correctly',
+              'Clear browser cache if you still see issues',
+            ]
             : [
-                'Database queries may need additional fixes',
-                'Contact technical support',
-              ],
+              'Database queries may need additional fixes',
+              'Contact technical support',
+            ],
         },
       };
     } catch (error) {

@@ -102,6 +102,13 @@ export class PropertiesService {
       // save the single entity to the database
       const savedProperty = await this.propertyRepository.save(newProperty);
 
+      // Add a history record for property creation
+      await this.propertyHistoryRepository.save({
+        property_id: savedProperty.id,
+        event_type: 'property_created',
+        event_description: 'Property was added to the system.',
+      });
+
       //// Tenant assignment-on-property-creation option removed from frontend form
       // If tenant_id is provided, create PropertyTenant relationship
       // if (propertyData.tenant_id) {
@@ -534,10 +541,10 @@ export class PropertiesService {
       const propertyHistory = queryRunner.manager.create(PropertyHistory, {
         property_id: savedProperty.id,
         tenant_id: tenantAccount.id,
-        event_type: 'tenant_moved_in',
+        event_type: 'tenancy_started',
         move_in_date: rentStartDate,
         monthly_rent: tenantData.rentAmount,
-        owner_comment: 'Tenant added during property creation',
+        owner_comment: 'Tenant moved in', // Simplified comment
         tenant_comment: null,
         move_out_date: null,
         move_out_reason: null,
@@ -857,6 +864,24 @@ export class PropertiesService {
       .getMany();
   }
 
+  async getMarketingReadyProperties(ownerId: string): Promise<Property[]> {
+    return this.propertyRepository
+      .createQueryBuilder('property')
+      .select([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+        'property.rental_price',
+      ])
+      .where('property.owner_id = :ownerId', { ownerId })
+      .andWhere('property.property_status = :status', {
+        status: PropertyStatusEnum.VACANT,
+      })
+      .andWhere('property.rental_price IS NOT NULL')
+      .getMany();
+  }
+
   async getPropertyById(id: string): Promise<any> {
     // Use query builder for better performance - only load active relationships
     const property = await this.propertyRepository
@@ -1100,101 +1125,143 @@ export class PropertiesService {
     // Property history from property_histories table
     const history = property.property_histories
       .sort((a, b) => {
-        // Sort by created_at for all event types
         const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
         const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
         return dateB - dateA;
       })
-      .map((hist, index) => {
-        const tenantUser = hist.tenant.user;
-        const tenantKyc = tenantUser.tenant_kycs?.[0]; // Filtered by admin_id in query
+      .map((hist) => {
+        const tenantUser = hist.tenant?.user;
+        const tenantKyc = tenantUser?.tenant_kycs?.[0];
+        const tenantName = tenantUser
+          ? `${tenantKyc?.first_name ?? tenantUser.first_name} ${
+              tenantKyc?.last_name ?? tenantUser.last_name
+            }`
+          : 'A tenant';
 
-        // Prioritize TenantKyc data for consistency
-        const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
-        const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
-        const tenantName = `${firstName} ${lastName}`;
+        switch (hist.event_type) {
+          case 'property_created':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'property_created',
+              title: 'Property Created',
+              description: 'Property was added to the system.',
+              details: null,
+            };
+          case 'tenant_moved_in':
+            return {
+              id: hist.id,
+              date: hist.move_in_date || hist.created_at,
+              eventType: 'tenancy_started',
+              title: 'Tenancy Started',
+              description: `${tenantName} started tenancy for this property.`,
+              details: hist.monthly_rent
+                ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
+                : null,
+            };
+          case 'tenancy_ended':
+            return {
+              id: hist.id,
+              date: hist.move_out_date || hist.created_at,
+              eventType: 'tenancy_ended',
+              title: 'Tenancy Ended',
+              description: 'Tenant moved out of the property.',
+              details: hist.move_out_reason
+                ? `Reason: ${hist.move_out_reason.replace(/_/g, ' ')}`
+                : null,
+            };
+          case 'service_request_created':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'service_request_created',
+              title: 'Service Request Created',
+              description: 'Service request opened by tenant.',
+              details: hist.event_description
+                ? `Issue: "${hist.event_description}"`
+                : null,
+            };
+          case 'service_request_updated':
+            const parts = hist.event_description?.split('|||') || [];
+            const status = parts[0] || 'updated';
+            const issueDescription = parts[1] || 'Service request updated';
+            const resolver = parts.length > 2 ? parts[2] : null;
 
-        // Handle different event types
-        if (
-          hist.event_type === 'service_request' ||
-          hist.event_type === 'service_request_created'
-        ) {
-          // Service request created event
-          const eventDate = hist.created_at
-            ? new Date(hist.created_at).toISOString().split('T')[0]
-            : new Date().toISOString().split('T')[0];
+            let title = 'Service Request Updated';
+            let eventType = 'service_request_updated';
+            let description = issueDescription;
+            let details = resolver ? `Resolver: ${resolver}` : null;
 
-          return {
-            id: index + 1,
-            date: eventDate,
-            eventType: 'service_request_created',
-            title: hist.event_description || 'Service request reported',
-            description: 'Service request created',
-            details: `Reported by: ${tenantName}`,
-          };
-        } else if (hist.event_type === 'service_request_updated') {
-          // Service request updated event
-          const eventDate = hist.created_at
-            ? new Date(hist.created_at).toISOString().split('T')[0]
-            : new Date().toISOString().split('T')[0];
+            if (status.toLowerCase() === 'resolved') {
+              title = 'Service Request Resolved';
+              eventType = 'service_request_resolved';
+              description = 'Issue fixed and marked as resolved.';
+            } else if (status.toLowerCase() === 'closed') {
+              title = 'Service Request Closed';
+              eventType = 'service_request_closed';
+              description = 'Tenant confirmed issue is fully resolved.';
+            } else if (status.toLowerCase() === 'reopened') {
+              title = 'Service Request Reopened';
+              eventType = 'service_request_reopened';
+              description =
+                'Tenant reopened the request: issue not fully resolved.';
+            }
 
-          // Parse status and description from event_description
-          const parts = hist.event_description?.split('|||') || [];
-          const status = parts[0] || 'updated';
-          const description = parts[1] || 'Service request updated';
-
-          // Format status label (e.g., "in_progress" -> "In Progress")
-          const statusLabel = status
-            .split('_')
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
-
-          return {
-            id: index + 1,
-            date: eventDate,
-            eventType: 'service_request_updated',
-            title: description,
-            description: `Service request ${statusLabel.toLowerCase()}`,
-            details: null,
-          };
-        } else if (hist.move_out_date) {
-          // Tenant moved out
-          return {
-            id: index + 1,
-            date: new Date(hist.move_out_date).toISOString().split('T')[0],
-            eventType: 'tenant_moved_out',
-            title: 'Tenant Moved Out',
-            description: `${tenantName} ended tenancy.`,
-            details: hist.move_out_reason
-              ? `Reason: ${hist.move_out_reason.replace('_', ' ')}`
-              : null,
-          };
-        } else if (hist.move_in_date) {
-          // Tenant moved in
-          return {
-            id: index + 1,
-            date: new Date(hist.move_in_date).toISOString().split('T')[0],
-            eventType: 'tenant_moved_in',
-            title: 'Tenant Moved In',
-            description: `${tenantName} started tenancy.`,
-            details: `Monthly rent: ₦${hist.monthly_rent?.toLocaleString()}`,
-          };
-        } else {
-          // Fallback for any other event type
-          const eventDate = hist.created_at
-            ? new Date(hist.created_at).toISOString().split('T')[0]
-            : new Date().toISOString().split('T')[0];
-
-          return {
-            id: index + 1,
-            date: eventDate,
-            eventType: hist.event_type || 'unknown',
-            title: hist.event_type || 'Event',
-            description: hist.event_description || 'Event occurred',
-            details: null,
-          };
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: eventType,
+              title: title,
+              description: description,
+              details: details,
+            };
+          case 'property_deactivated':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'property_deactivated',
+              title: 'Property Deactivated',
+              description: 'Property is no longer active.',
+              details: null,
+            };
+          case 'property_edited':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'property_edited',
+              title: 'Property Edited',
+              description: 'Property details were updated.',
+              details: hist.event_description,
+            };
+          case 'property_deleted':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'property_deleted',
+              title: 'Property Deleted',
+              description: 'Property removed from the system.',
+              details: null,
+            };
+          default:
+            return null;
         }
+      })
+      .filter(Boolean);
+
+    // Manually add the property creation event if it doesn't exist from the history
+    const hasCreationEvent = history.some(
+      (e) => e && e.eventType === 'property_created',
+    );
+    if (!hasCreationEvent) {
+      history.push({
+        id: property.id,
+        date: property.created_at,
+        eventType: 'property_created',
+        title: 'Property Created',
+        description: 'Property was added to the system.',
+        details: null,
       });
+    }
 
     // Computed description
     const computedDescription = `${property.name} is a ${
@@ -1337,7 +1404,24 @@ export class PropertiesService {
     console.log(property);
 
     // Save the updated entity back to the db
-    return this.propertyRepository.save(property);
+    const updatedProperty = await this.propertyRepository.save(property);
+
+    // Add a history record for property update
+    if (updatePropertyDto.property_status === 'inactive') {
+      await this.propertyHistoryRepository.save({
+        property_id: id,
+        event_type: 'property_deactivated',
+        event_description: 'Property is no longer active.',
+      });
+    } else {
+      await this.propertyHistoryRepository.save({
+        property_id: id,
+        event_type: 'property_edited',
+        event_description: 'Property details were updated.',
+      });
+    }
+
+    return updatedProperty;
   }
 
   async deletePropertyById(propertyId: string, ownerId: string): Promise<void> {
@@ -1922,12 +2006,15 @@ export class PropertiesService {
         console.log('Created PropertyHistory record:', propertyHistory.id);
       }
 
-      const updatedHistory = await queryRunner.manager.save(PropertyHistory, {
-        ...propertyHistory,
+      // Create a new history record for the move-out event
+      await queryRunner.manager.save(PropertyHistory, {
+        property_id,
+        tenant_id,
+        event_type: 'tenancy_ended',
         move_out_date: DateService.getStartOfTheDay(move_out_date),
-        move_out_reason: moveOutData?.move_out_reason || null,
-        owner_comment: moveOutData?.owner_comment || null,
-        tenant_comment: moveOutData?.tenant_comment || null,
+        event_description: `Tenant moved out. Reason: ${
+          moveOutData?.move_out_reason || 'Not specified'
+        }`,
       });
 
       // POST-TRANSACTION VERIFICATION: Ensure all changes were applied correctly
@@ -1990,7 +2077,11 @@ export class PropertiesService {
         console.error('Failed to emit tenancy.ended event:', eventError);
       }
 
-      return updatedHistory;
+      return {
+        message: 'Tenant moved out successfully',
+        scheduled: false,
+        effective_date: move_out_date,
+      };
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw new HttpException(

@@ -210,6 +210,35 @@ export class KYCApplicationController {
   }
 
   /**
+   * Check for any existing KYC record system-wide by phone number
+   * GET /api/kyc/check-existing
+   */
+  @Public()
+  @Get('kyc/check-existing')
+  async checkExistingKYC(
+    @Query('phone') phone: string,
+    @Query('email') email?: string,
+  ): Promise<{
+    success: boolean;
+    hasExisting: boolean;
+    kycData?: any;
+    source?: string | null;
+  }> {
+    // Decode URL-encoded phone number
+    const decodedPhone = decodeURIComponent(phone);
+
+    const result = await this.kycApplicationService.checkExistingKYC(
+      decodedPhone,
+      email,
+    );
+
+    return {
+      success: true,
+      ...result,
+    };
+  }
+
+  /**
    * Check for pending completion KYC by phone number
    * GET /api/kyc/check-pending
    * Requirements: 4.4
@@ -226,9 +255,12 @@ export class KYCApplicationController {
     kycData?: any;
     propertyIds?: string[];
   }> {
+    // Decode URL-encoded phone number
+    const decodedPhone = decodeURIComponent(phone);
+
     const result = await this.kycApplicationService.checkPendingCompletion(
       landlordId,
-      phone,
+      decodedPhone,
       email,
     );
 

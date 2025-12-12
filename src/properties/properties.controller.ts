@@ -212,6 +212,14 @@ export class PropertiesController {
     return this.propertiesService.getVacantProperties(requester.id);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('/marketing-ready')
+  getMarketingReadyProperties(
+    @CurrentUser() requester: Account,
+  ): Promise<Property[]> {
+    return this.propertiesService.getMarketingReadyProperties(requester.id);
+  }
+
   @ApiOperation({ summary: 'Get All Property Groups' })
   @ApiOkResponse({
     description: 'List of property groups with their properties',

@@ -126,6 +126,30 @@ export class CreateTenantKycDto {
   @IsOptional()
   monthly_net_income?: string;
 
+  /** Only required when `employment_status` is `self-employed` */
+  @ValidateIf((o) => o.employment_status === 'self-employed')
+  @IsString()
+  @IsOptional()
+  nature_of_business?: string;
+
+  /** Only required when `employment_status` is `self-employed` */
+  @ValidateIf((o) => o.employment_status === 'self-employed')
+  @IsString()
+  @IsOptional()
+  business_name?: string;
+
+  /** Only required when `employment_status` is `self-employed` */
+  @ValidateIf((o) => o.employment_status === 'self-employed')
+  @IsString()
+  @IsOptional()
+  business_address?: string;
+
+  /** Only required when `employment_status` is `self-employed` */
+  @ValidateIf((o) => o.employment_status === 'self-employed')
+  @IsString()
+  @IsOptional()
+  business_duration?: string;
+
   @IsString()
   @IsOptional()
   reference1_name?: string;

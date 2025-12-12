@@ -2320,6 +2320,22 @@ export class UsersService {
     return this.formatTenantData(tenantAccount, kycApplication, adminId);
   }
 
+  private getServiceRequestUpdateDescription(
+    status: string,
+    originalDescription: string,
+  ): string {
+    switch (status.toLowerCase()) {
+      case 'resolved':
+        return 'Issue fixed and marked as resolved.';
+      case 'closed':
+        return 'Tenant confirmed issue is fully resolved.';
+      case 'reopened':
+        return 'Tenant reopened the request: issue not fully resolved.';
+      default:
+        return 'Service request updated.';
+    }
+  }
+
   private formatTenantData(
     account: Account,
     kycApplication?: KYCApplication | null,
@@ -2402,7 +2418,7 @@ export class UsersService {
     // Build the combined history timeline for tenant
     const tenancyEvents: any[] = [];
 
-    // Add tenancy started events from property histories
+    // Add tenancy and service request events from property histories
     if (propertyHistories && propertyHistories.length > 0) {
       propertyHistories.forEach((ph) => {
         if (ph.event_type === 'tenant_moved_in') {
@@ -2434,6 +2450,39 @@ export class UsersService {
             ).toISOString(),
           });
         }
+
+        // Add service request status updates from property history
+        if (ph.event_type === 'service_request_updated') {
+          const parts = ph.event_description?.split('|||') || [];
+          const status = parts[0] || 'updated';
+          const description = parts[1] || 'Service request updated';
+
+          let title = 'Service Request Updated';
+          let eventType = 'service_request_updated';
+
+          if (status.toLowerCase() === 'resolved') {
+            title = 'Service Request Resolved';
+            eventType = 'service_request_resolved';
+          } else if (status.toLowerCase() === 'closed') {
+            title = 'Service Request Closed';
+            eventType = 'service_request_closed';
+          } else if (status.toLowerCase() === 'reopened') {
+            title = 'Service Request Reopened';
+            eventType = 'service_request_reopened';
+          }
+
+          tenancyEvents.push({
+            id: `service-update-${ph.id}`,
+            eventType: eventType,
+            title: title,
+            description: this.getServiceRequestUpdateDescription(
+              status,
+              description,
+            ),
+            details: null,
+            date: new Date(ph.created_at || new Date()).toISOString(),
+          });
+        }
       });
     }
 
@@ -2442,7 +2491,7 @@ export class UsersService {
       id: `service-${sr.id}`,
       eventType: 'service_request_created',
       title: 'Service Request Created',
-      description: `Issue reported by tenant: "${sr.issue_category}".`,
+      description: `Issue reported by tenant: "${sr.description}".`,
       details: null,
       date: new Date(sr.date_reported).toISOString(),
     }));

@@ -1123,6 +1123,15 @@ export class PropertiesService {
     }
 
     // Property history from property_histories table
+    console.log(
+      `🔍 Property ${id} has ${property.property_histories.length} history entries:`,
+    );
+    property.property_histories.forEach((hist, index) => {
+      console.log(
+        `  ${index + 1}. ${hist.event_type} - ${hist.created_at} - ${hist.event_description}`,
+      );
+    });
+
     const history = property.property_histories
       .sort((a, b) => {
         const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
@@ -1181,7 +1190,7 @@ export class PropertiesService {
                 ? `Issue: "${hist.event_description}"`
                 : null,
             };
-          case 'service_request_updated':
+          case 'service_request_updated': {
             const parts = hist.event_description?.split('|||') || [];
             const status = parts[0] || 'updated';
             const issueDescription = parts[1] || 'Service request updated';
@@ -1190,7 +1199,7 @@ export class PropertiesService {
             let title = 'Service Request Updated';
             let eventType = 'service_request_updated';
             let description = issueDescription;
-            let details = resolver ? `Resolver: ${resolver}` : null;
+            const details = resolver ? `Resolver: ${resolver}` : null;
 
             if (status.toLowerCase() === 'resolved') {
               title = 'Service Request Resolved';
@@ -1215,6 +1224,7 @@ export class PropertiesService {
               description: description,
               details: details,
             };
+          }
           case 'property_deactivated':
             return {
               id: hist.id,

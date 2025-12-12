@@ -100,6 +100,19 @@ export class TenantKyc extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   monthly_net_income: string;
 
+  // Self-employed fields
+  @Column({ type: 'varchar', nullable: true })
+  nature_of_business: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  business_name: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  business_address: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  business_duration: string;
+
   @Column({ type: 'varchar', nullable: true })
   reference1_name: string;
 

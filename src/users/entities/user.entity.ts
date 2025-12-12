@@ -110,6 +110,9 @@ export class Users extends BaseEntity {
   business_monthly_income?: number;
 
   @Column({ nullable: true, type: 'varchar' })
+  business_duration?: string;
+
+  @Column({ nullable: true, type: 'varchar' })
   business_website?: string;
 
   @Column({ nullable: true, type: 'enum', enum: MaritalStatus })

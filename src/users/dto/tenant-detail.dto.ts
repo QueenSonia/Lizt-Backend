@@ -81,6 +81,13 @@ export class TenantDetailDto {
   employerPhoneNumber: string | null;
   lengthOfEmployment: string | null;
 
+  // Self-employed Information
+  natureOfBusiness: string | null;
+  businessName: string | null;
+  businessAddress: string | null;
+  businessDuration: string | null;
+  occupation: string | null;
+
   // Residence information (from KYC)
   currentAddress: string | null;
 

@@ -28,6 +28,7 @@ import { NotificationType } from '../notifications/enums/notification-type';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
 import { UtilService } from '../utils/utility-service';
 import { ConfigService } from '@nestjs/config';
+import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 
 @Injectable()
 export class KYCApplicationService {
@@ -40,6 +41,8 @@ export class KYCApplicationService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
+    @InjectRepository(TenantKyc)
+    private readonly tenantKycRepository: Repository<TenantKyc>,
     private readonly utilService: UtilService,
     private readonly configService: ConfigService,
     @Optional()
@@ -491,6 +494,7 @@ export class KYCApplicationService {
         rentPaymentFrequency: application.rent_payment_frequency,
         intendedUse: application.intended_use_of_property,
         numberOfOccupants: application.number_of_occupants,
+        numberOfCarsOwned: application.number_of_cars_owned,
         additionalNotes: application.additional_notes,
       },
       documents: {
@@ -750,6 +754,136 @@ export class KYCApplicationService {
   }
 
   /**
+   * Check for any existing KYC record system-wide by phone number
+   * Returns the most recent KYC data for autofill purposes
+   */
+  async checkExistingKYC(
+    phoneNumber: string,
+    email?: string,
+  ): Promise<{
+    hasExisting: boolean;
+    kycData?: Partial<KYCApplication>;
+    source: 'kyc_application' | 'tenant_kyc' | null;
+  }> {
+    try {
+      // Validate input
+      if (!phoneNumber) {
+        throw new BadRequestException('Phone number is required');
+      }
+
+      // Normalize phone number for consistent matching
+      const normalizedPhone =
+        this.utilService.normalizePhoneNumber(phoneNumber);
+
+      // Also prepare phone number without + prefix for database compatibility
+      const phoneWithoutPlus = normalizedPhone.startsWith('+')
+        ? normalizedPhone.substring(1)
+        : normalizedPhone;
+
+      // First check KYC applications table (most recent data)
+      // Search for both formats since database might store without + prefix
+      let kycApplication = await this.kycApplicationRepository
+        .createQueryBuilder('kyc')
+        .where('kyc.phone_number = :phone1', { phone1: normalizedPhone })
+        .orWhere('kyc.phone_number = :phone2', { phone2: phoneWithoutPlus })
+        .orderBy('kyc.created_at', 'DESC')
+        .getOne();
+
+      // Also check by email if provided
+      if (!kycApplication && email) {
+        kycApplication = await this.kycApplicationRepository
+          .createQueryBuilder('kyc')
+          .where('kyc.email = :email', { email })
+          .orderBy('kyc.created_at', 'DESC')
+          .getOne();
+      }
+
+      if (kycApplication) {
+        return {
+          hasExisting: true,
+          kycData: kycApplication,
+          source: 'kyc_application',
+        };
+      }
+
+      // If no KYC application found, check tenant_kyc table
+      const tenantKyc = await this.tenantKycRepository
+        .createQueryBuilder('kyc')
+        .leftJoinAndSelect('kyc.user', 'user')
+        .where('kyc.phone_number = :phone1', { phone1: normalizedPhone })
+        .orWhere('kyc.phone_number = :phone2', { phone2: phoneWithoutPlus })
+        .orWhere('kyc.email = :email', { email: email || null })
+        .orderBy('kyc.created_at', 'DESC')
+        .getOne();
+
+      if (tenantKyc) {
+        // Convert tenant KYC to KYC application format for consistency
+        const convertedKyc: Partial<KYCApplication> = {
+          id: tenantKyc.id,
+          first_name: tenantKyc.first_name,
+          last_name: tenantKyc.last_name,
+          email: tenantKyc.email,
+          phone_number: tenantKyc.phone_number,
+          date_of_birth: tenantKyc.date_of_birth,
+          gender: tenantKyc.gender as any, // Cast to handle enum compatibility
+          nationality: tenantKyc.nationality,
+          state_of_origin: tenantKyc.state_of_origin,
+          marital_status: tenantKyc.marital_status as any, // Cast to handle enum compatibility
+          religion: tenantKyc.religion,
+          employment_status: tenantKyc.employment_status as any, // Cast to handle enum compatibility
+          occupation: tenantKyc.occupation,
+          job_title: tenantKyc.job_title,
+          employer_name: tenantKyc.employer_name,
+          employer_address: tenantKyc.employer_address,
+          employer_phone_number: tenantKyc.employer_phone_number,
+          nature_of_business: tenantKyc.nature_of_business,
+          business_name: tenantKyc.business_name,
+          business_address: tenantKyc.business_address,
+          business_duration: tenantKyc.business_duration,
+          monthly_net_income: tenantKyc.monthly_net_income,
+          reference1_name: tenantKyc.reference1_name,
+          reference1_address: tenantKyc.reference1_address,
+          reference1_relationship: tenantKyc.reference1_relationship,
+          reference1_phone_number: tenantKyc.reference1_phone_number,
+          reference2_name: tenantKyc.reference2_name,
+          reference2_address: tenantKyc.reference2_address,
+          reference2_relationship: tenantKyc.reference2_relationship,
+          reference2_phone_number: tenantKyc.reference2_phone_number,
+          // Note: Don't include tenancy information - that should be fresh for each application
+        };
+
+        return {
+          hasExisting: true,
+          kycData: convertedKyc,
+          source: 'tenant_kyc',
+        };
+      }
+
+      console.log(
+        '✅ No existing KYC found system-wide for phone:',
+        normalizedPhone,
+      );
+      return { hasExisting: false, source: null };
+    } catch (error) {
+      console.error('❌ Error checking existing KYC system-wide:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        phoneNumber,
+        email,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Re-throw known exceptions
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      // For other errors, return no existing KYC to allow normal flow
+      return { hasExisting: false, source: null };
+    }
+  }
+
+  /**
    * Check for pending completion KYC applications by phone number
    * Requirements: 4.4, 7.2, 7.3, 7.4
    */
@@ -770,16 +904,14 @@ export class KYCApplicationService {
         );
       }
 
-      console.log('🔍 Checking for pending KYC completion:', {
-        landlordId,
-        phoneNumber,
-        email,
-        timestamp: new Date().toISOString(),
-      });
-
       // Normalize phone number for consistent matching
       const normalizedPhone =
         this.utilService.normalizePhoneNumber(phoneNumber);
+
+      // Also prepare phone number without + prefix for database compatibility
+      const phoneWithoutPlus = normalizedPhone.startsWith('+')
+        ? normalizedPhone.substring(1)
+        : normalizedPhone;
 
       // Build query to find pending completion KYCs
       const queryBuilder = this.kycApplicationRepository
@@ -790,7 +922,13 @@ export class KYCApplicationService {
           status: ApplicationStatus.PENDING_COMPLETION,
         })
         .andWhere('property.owner_id = :landlordId', { landlordId })
-        .andWhere('kyc.phone_number = :phone', { phone: normalizedPhone });
+        .andWhere(
+          '(kyc.phone_number = :phone1 OR kyc.phone_number = :phone2)',
+          {
+            phone1: normalizedPhone,
+            phone2: phoneWithoutPlus,
+          },
+        );
 
       // Also match by email if provided
       if (email) {
@@ -803,7 +941,6 @@ export class KYCApplicationService {
       const pendingKycs = await queryBuilder.getMany();
 
       if (pendingKycs.length === 0) {
-        console.log('✅ No pending KYC found for phone:', normalizedPhone);
         return { hasPending: false };
       }
 

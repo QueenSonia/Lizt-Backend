@@ -66,7 +66,7 @@ export class ServiceRequestsService {
     private readonly teamMemberRepository: Repository<TeamMember>,
     private readonly eventEmitter: EventEmitter2,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   private generateTitle(payload: TawkWebhookPayload): string {
     const eventType =
@@ -295,7 +295,10 @@ export class ServiceRequestsService {
       relations: ['property'],
     });
     if (!serviceRequest) {
-      throw new HttpException('Service request not found', HttpStatus.NOT_FOUND);
+      throw new HttpException(
+        'Service request not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     // Only landlord can update via this method (usually status updates)
     // Tenants might update via a different endpoint or if we allow them to edit description
@@ -309,7 +312,36 @@ export class ServiceRequestsService {
         HttpStatus.FORBIDDEN,
       );
     }
-    return this.serviceRequestRepository.update(id, data);
+
+    const previousStatus = serviceRequest.status;
+
+    // Update the service request
+    await this.serviceRequestRepository.update(id, data);
+
+    // Fetch the updated service request to get the new values
+    const updatedServiceRequest = await this.serviceRequestRepository.findOne({
+      where: { id },
+      relations: ['property'],
+    });
+
+    // Emit service.updated event if status changed or other significant updates
+    if (updatedServiceRequest && (data.status || data.description)) {
+      this.eventEmitter.emit('service.updated', {
+        request_id: updatedServiceRequest.id,
+        status: updatedServiceRequest.status,
+        previous_status: previousStatus,
+        tenant_name: updatedServiceRequest.tenant_name,
+        property_name: updatedServiceRequest.property_name,
+        property_id: updatedServiceRequest.property_id,
+        landlord_id: updatedServiceRequest.property?.owner_id,
+        tenant_id: updatedServiceRequest.tenant_id,
+        description: updatedServiceRequest.description,
+        updated_at: new Date(),
+        actor: { id: userId, role: 'user', name: 'System' },
+      });
+    }
+
+    return updatedServiceRequest;
   }
 
   async deleteServiceRequestById(id: string, userId: string) {
@@ -318,7 +350,10 @@ export class ServiceRequestsService {
       relations: ['property'],
     });
     if (!serviceRequest) {
-      throw new HttpException('Service request not found', HttpStatus.NOT_FOUND);
+      throw new HttpException(
+        'Service request not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     if (
       serviceRequest.tenant_id !== userId &&

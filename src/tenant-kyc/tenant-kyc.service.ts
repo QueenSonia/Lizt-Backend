@@ -263,6 +263,15 @@ export class TenantKycService {
       if (dto.monthly_net_income)
         updateData.monthly_income = parseFloat(dto.monthly_net_income);
 
+      // Self-employed fields
+      if (dto.nature_of_business)
+        updateData.nature_of_business = dto.nature_of_business;
+      if (dto.business_name) updateData.business_name = dto.business_name;
+      if (dto.business_address)
+        updateData.business_address = dto.business_address;
+      if (dto.business_duration)
+        updateData.business_duration = dto.business_duration;
+
       if (Object.keys(updateData).length > 0) {
         await this.usersRepo.update(kyc_data.user_id, updateData);
       }

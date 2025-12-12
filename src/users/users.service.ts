@@ -404,9 +404,10 @@ export class UsersService {
         const propertyHistory = manager.getRepository(PropertyHistory).create({
           property_id: propertyId,
           tenant_id: tenantId,
+          event_type: 'tenancy_started',
           move_in_date: DateService.getStartOfTheDay(rentStartDate),
           monthly_rent: rentAmount,
-          owner_comment: `Tenant attached to property. Rent: ₦${rentAmount.toLocaleString()}, Frequency: ${rentFrequency}, Next due: ${nextRentDueDate.toLocaleDateString()}`,
+          owner_comment: 'Tenant moved in',
           tenant_comment: null,
           move_out_date: null,
           move_out_reason: null,
@@ -1082,15 +1083,62 @@ export class UsersService {
       const propertyHistory = manager.getRepository(PropertyHistory).create({
         property_id: property_id,
         tenant_id: tenantAccount.id,
+        event_type: 'tenancy_started',
         move_in_date: tenancy_start_date,
         monthly_rent: rent_amount,
-        owner_comment: 'Tenant attached from KYC application',
+        owner_comment: 'Tenant moved in',
         tenant_comment: null,
         move_out_date: null,
         move_out_reason: null,
       });
 
       await manager.getRepository(PropertyHistory).save(propertyHistory);
+
+      // 10. Send WhatsApp notification to tenant and emit live feed event
+      try {
+        const landlord = await manager.getRepository(Account).findOne({
+          where: { id: landlordId },
+          relations: ['user'],
+        });
+
+        const agencyName = landlord?.profile_name
+          ? landlord.profile_name
+          : landlord?.user
+            ? `${this.utilService.toSentenceCase(landlord.user.first_name)} ${this.utilService.toSentenceCase(landlord.user.last_name)}`
+            : 'Your Landlord';
+
+        const tenantName = `${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}`;
+
+        await this.whatsappBotService.sendTenantAttachmentNotification({
+          phone_number: this.utilService.normalizePhoneNumber(
+            tenantUser.phone_number,
+          ),
+          tenant_name: tenantName,
+          landlord_name: agencyName,
+          apartment_name: property.name,
+        });
+
+        // Emit tenant attached event for live feed
+        this.eventEmitter.emit('tenant.attached', {
+          property_id: property_id,
+          property_name: property.name,
+          tenant_id: tenantAccount.id,
+          tenant_name: tenantName,
+          user_id: property.owner_id,
+        });
+      } catch (whatsappError) {
+        console.error('Failed to send WhatsApp notification:', whatsappError);
+
+        // Still emit the event even if WhatsApp fails
+        const fallbackTenantName = `${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}`;
+        this.eventEmitter.emit('tenant.attached', {
+          property_id: property_id,
+          property_name: property.name,
+          tenant_id: tenantAccount.id,
+          tenant_name: fallbackTenantName,
+          user_id: property.owner_id,
+        });
+      }
 
       return tenantUser;
     });
@@ -2278,6 +2326,8 @@ export class UsersService {
     adminId?: string,
   ): TenantDetailDto {
     const user = account.user;
+
+    // Debug logging removed
     const kyc = user.kyc ?? {}; // Get the joined old KYC data
     const tenantKyc = user.tenant_kycs?.[0]; // Get the joined TenantKyc data (preferred, filtered by admin_id)
 
@@ -2349,34 +2399,56 @@ export class UsersService {
         uploadDate: new Date().toISOString(),
       }));
 
-    // Build the combined history timeline
-    const paymentEvents = rents.map((rent) => ({
-      id: rent.id,
-      type: 'payment' as const,
-      title: 'Rent Payment Received',
-      description: `Rent payment of ${rent.amount_paid} for the period ${new Date(rent.rent_start_date).toLocaleDateString()}`,
-      date: new Date(rent.created_at!).toISOString(),
-      time: new Date(rent.created_at!).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      }),
-      amount: rent.amount_paid,
-      status: rent.payment_status,
-    }));
+    // Build the combined history timeline for tenant
+    const tenancyEvents: any[] = [];
 
-    const maintenanceEvents = serviceRequests.map((sr) => ({
-      id: sr.id,
-      type: 'maintenance' as const,
-      title: `Maintenance Request Submitted`,
-      description: sr.issue_category,
+    // Add tenancy started events from property histories
+    if (propertyHistories && propertyHistories.length > 0) {
+      propertyHistories.forEach((ph) => {
+        if (ph.event_type === 'tenant_moved_in') {
+          const property = ph.property;
+          tenancyEvents.push({
+            id: `tenancy-start-${ph.id}`,
+            eventType: 'tenancy_started',
+            title: 'Tenancy Started',
+            description: `Tenancy began for ${property?.name || 'property'}.`,
+            details: ph.monthly_rent
+              ? `Annual Rent: ₦${ph.monthly_rent?.toLocaleString()}`
+              : null,
+            date: new Date(
+              ph.move_in_date || ph.created_at || new Date(),
+            ).toISOString(),
+          });
+        }
+
+        if (ph.event_type === 'tenancy_ended') {
+          const property = ph.property;
+          tenancyEvents.push({
+            id: `tenancy-end-${ph.id}`,
+            eventType: 'tenancy_ended',
+            title: 'Tenancy Ended',
+            description: `Tenant moved out of ${property?.name || 'property'}.`,
+            details: null,
+            date: new Date(
+              ph.move_out_date || ph.created_at || new Date(),
+            ).toISOString(),
+          });
+        }
+      });
+    }
+
+    // Add service request events
+    const serviceRequestEvents = serviceRequests.map((sr) => ({
+      id: `service-${sr.id}`,
+      eventType: 'service_request_created',
+      title: 'Service Request Created',
+      description: `Issue reported by tenant: "${sr.issue_category}".`,
+      details: null,
       date: new Date(sr.date_reported).toISOString(),
-      time: new Date(sr.date_reported).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      }),
     }));
 
-    const history = [...paymentEvents, ...maintenanceEvents].sort(
+    // Combine all events and sort by date (newest first)
+    const history = [...tenancyEvents, ...serviceRequestEvents].sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
     );
 
@@ -2454,6 +2526,7 @@ export class UsersService {
         kycApplication?.job_title ??
         tenantKyc?.job_title ??
         user.job_title ??
+        kyc.occupation ??
         null,
       workEmail: user.work_email ?? null,
       monthlyIncome: kycApplication?.monthly_net_income
@@ -2468,6 +2541,25 @@ export class UsersService {
         null,
       lengthOfEmployment: kycApplication?.length_of_employment ?? null,
 
+      // Self-employed Info - prioritize KYC Application
+      natureOfBusiness:
+        kycApplication?.nature_of_business ??
+        tenantKyc?.nature_of_business ??
+        null,
+      businessName:
+        kycApplication?.business_name ?? tenantKyc?.business_name ?? null,
+      businessAddress:
+        kycApplication?.business_address ?? tenantKyc?.business_address ?? null,
+      businessDuration:
+        kycApplication?.business_duration ??
+        tenantKyc?.business_duration ??
+        null,
+      occupation:
+        kycApplication?.occupation ??
+        tenantKyc?.occupation ??
+        kyc.occupation ??
+        null,
+
       // Residence info - prioritize KYC Application
       currentAddress:
         kycApplication?.contact_address ??
@@ -2477,7 +2569,10 @@ export class UsersService {
 
       // Next of Kin Info - prioritize KYC Application reference1 fields
       nokName:
-        kycApplication?.reference1_name ?? tenantKyc?.reference1_name ?? null,
+        kycApplication?.reference1_name ??
+        tenantKyc?.reference1_name ??
+        kyc.next_of_kin ??
+        null,
       nokRelationship:
         kycApplication?.reference1_relationship ??
         tenantKyc?.reference1_relationship ??
@@ -2490,31 +2585,56 @@ export class UsersService {
       nokAddress:
         kycApplication?.reference1_address ??
         tenantKyc?.reference1_address ??
+        kyc.next_of_kin_address ??
         null,
 
-      // Guarantor Info - prioritize KYC Application reference2 fields
+      // Guarantor Info - prioritize KYC Application reference2 fields, fallback to reference1 if reference2 is empty
       guarantorName:
         kycApplication?.reference2_name ??
         tenantKyc?.reference2_name ??
+        // Fallback to reference1 if reference2 is not available (some forms use reference1 as guarantor)
+        (!kycApplication?.reference2_name && !tenantKyc?.reference2_name
+          ? (kycApplication?.reference1_name ?? tenantKyc?.reference1_name)
+          : null) ??
         kyc?.guarantor ??
         null,
       guarantorPhone:
         kycApplication?.reference2_phone_number ??
         tenantKyc?.reference2_phone_number ??
+        // Fallback to reference1 if reference2 is not available
+        (!kycApplication?.reference2_phone_number &&
+        !tenantKyc?.reference2_phone_number
+          ? (kycApplication?.reference1_phone_number ??
+            tenantKyc?.reference1_phone_number)
+          : null) ??
         kyc.guarantor_phone_number ??
         null,
-      guarantorEmail: null, // Not in KYC application
+      guarantorEmail: kycApplication?.reference1_email ?? null, // reference2_email doesn't exist in schema
       guarantorAddress:
         kycApplication?.reference2_address ??
         tenantKyc?.reference2_address ??
+        // Fallback to reference1 if reference2 is not available
+        (!kycApplication?.reference2_address && !tenantKyc?.reference2_address
+          ? (kycApplication?.reference1_address ??
+            tenantKyc?.reference1_address)
+          : null) ??
         kyc.guarantor_address ??
         null,
       guarantorRelationship:
         kycApplication?.reference2_relationship ??
         tenantKyc?.reference2_relationship ??
+        // Fallback to reference1 if reference2 is not available
+        (!kycApplication?.reference2_relationship &&
+        !tenantKyc?.reference2_relationship
+          ? (kycApplication?.reference1_relationship ??
+            tenantKyc?.reference1_relationship)
+          : null) ??
         null,
       guarantorOccupation:
-        kycApplication?.occupation ?? tenantKyc?.occupation ?? null,
+        kycApplication?.occupation ??
+        tenantKyc?.occupation ??
+        kyc.guarantor_occupation ??
+        null,
 
       // Tenancy Proposal Information (from KYC Application)
       intendedUseOfProperty: kycApplication?.intended_use_of_property ?? null,

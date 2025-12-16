@@ -847,7 +847,7 @@ export class PropertiesService {
   //   });
   // }
 
-  async getVacantProperties(ownerId: string): Promise<Property[]> {
+  async fetchAllVacantProperties(ownerId: string): Promise<Property[]> {
     return this.propertyRepository
       .createQueryBuilder('property')
       .select([
@@ -863,14 +863,6 @@ export class PropertiesService {
       })
       .andWhere('property.rental_price IS NOT NULL')
       .getMany();
-  }
-
-  async fetchAllVacantProperties(ownerId: string): Promise<Property[]> {
-    return this.getVacantProperties(ownerId);
-  }
-
-  async getMarketingReadyProperties(ownerId: string): Promise<Property[]> {
-    return this.getVacantProperties(ownerId);
   }
 
   async getPropertyById(id: string): Promise<any> {

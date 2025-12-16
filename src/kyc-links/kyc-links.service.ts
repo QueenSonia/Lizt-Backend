@@ -38,6 +38,7 @@ export interface PropertyKYCData {
     bedrooms: number;
     bathrooms: number;
     description?: string;
+    hasPendingKyc?: boolean;
   }>;
   error?: string;
 }
@@ -71,7 +72,7 @@ export class KYCLinksService {
     @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-  ) {}
+  ) { }
 
   /**
    * Generate a unique KYC link for a landlord (general link for all properties)
@@ -154,6 +155,8 @@ export class KYCLinksService {
       bedrooms: number;
       bathrooms: number;
       description?: string;
+      rentalPrice?: number;
+      hasPendingKyc?: boolean;
     }>;
     error?: string;
   }> {
@@ -217,6 +220,7 @@ export class KYCLinksService {
       });
 
       // Also get properties that have pending KYC applications (for existing tenants)
+      // Only include vacant properties to prevent occupied properties from showing in KYC forms
       const propertiesWithPendingKYC = await this.propertyRepository
         .createQueryBuilder('property')
         .leftJoin('property.kyc_applications', 'kyc')
@@ -225,6 +229,9 @@ export class KYCLinksService {
         })
         .andWhere('kyc.status = :status', {
           status: ApplicationStatus.PENDING_COMPLETION,
+        })
+        .andWhere('property.property_status = :vacantStatus', {
+          vacantStatus: PropertyStatusEnum.VACANT,
         })
         .getMany();
 
@@ -262,6 +269,7 @@ export class KYCLinksService {
           bathrooms: property.no_of_bathrooms,
           description: `${property.location}`,
           rentalPrice: property.rental_price,
+          hasPendingKyc: propertiesWithPendingKYC.some((p) => p.id === property.id),
         })),
       };
     } catch (error) {

@@ -18,8 +18,8 @@ export class PropertyHistory extends BaseEntity {
   @Column({ nullable: false, type: 'uuid' })
   property_id: string;
 
-  @Column({ nullable: false, type: 'uuid' })
-  tenant_id: string;
+  @Column({ nullable: true, type: 'uuid' })
+  tenant_id?: string | null;
 
   // New fields for event type support
   @Column({
@@ -67,7 +67,7 @@ export class PropertyHistory extends BaseEntity {
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
   property: Property;
 
-  @ManyToOne(() => Account, (u) => u.property_histories)
+  @ManyToOne(() => Account, (u) => u.property_histories, { nullable: true })
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Account;
+  tenant?: Account | null;
 }

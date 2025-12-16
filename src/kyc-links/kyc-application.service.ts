@@ -850,6 +850,7 @@ export class KYCApplicationService {
           reference2_relationship: tenantKyc.reference2_relationship,
           reference2_phone_number: tenantKyc.reference2_phone_number,
           // Note: Don't include tenancy information - that should be fresh for each application
+          // Note: tenant_kyc doesn't have document URLs - only kyc_application does
         };
 
         return {

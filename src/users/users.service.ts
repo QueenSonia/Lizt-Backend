@@ -109,7 +109,7 @@ export class UsersService {
 
     private readonly utilService: UtilService,
     private readonly dataSource: DataSource,
-  ) { }
+  ) {}
 
   async addTenant(user_id: string, dto: CreateTenantDto) {
     const {
@@ -843,10 +843,13 @@ export class UsersService {
     // 3. Handle existing user or create new tenant
     const result = await this.handleTenantFromKyc(landlordId, tenantKycDto);
 
-    // 4. Update KYC application status to approved
+    // 4. Update KYC application status to approved and set tenant_id
     await this.kycApplicationRepository.update(
       { id: dto.kycApplicationId },
-      { status: 'approved' as any },
+      {
+        status: 'approved' as any,
+        tenant_id: result.tenantAccount.id, // Link the KYC application to the tenant account
+      },
     );
 
     return result;
@@ -891,38 +894,47 @@ export class UsersService {
       console.log('🔍 Looking for existing user with phone:', normalizedPhone);
       console.log('📞 Original phone number:', phone_number);
 
-      // Try multiple search strategies to find existing user
-      let tenantUser = await manager.getRepository(Users).findOne({
-        where: {
-          phone_number: normalizedPhone,
-        },
-      });
+      // Create comprehensive list of phone number variations to try
+      const phoneVariations = [
+        normalizedPhone, // +2349012333333
+        phone_number, // Original format
+        phone_number.startsWith('+') ? phone_number.substring(1) : phone_number, // Without +
+        phone_number.startsWith('+234')
+          ? '0' + phone_number.substring(4)
+          : null, // Nigerian local format
+        phone_number.startsWith('234') ? '0' + phone_number.substring(3) : null, // From 234 to 0
+        phone_number.startsWith('0') ? phone_number.substring(1) : null, // Remove leading 0
+        phone_number.startsWith('0') ? '234' + phone_number.substring(1) : null, // 0 to 234
+        phone_number.startsWith('0')
+          ? '+234' + phone_number.substring(1)
+          : null, // 0 to +234
+      ].filter(Boolean); // Remove null values
 
-      // If not found with normalized phone, try with original phone
-      if (!tenantUser) {
+      console.log('🔍 Phone variations to try:', phoneVariations);
+
+      let tenantUser: any = null;
+
+      // Try each phone variation
+      for (const phoneVariation of phoneVariations) {
         tenantUser = await manager.getRepository(Users).findOne({
           where: {
-            phone_number: phone_number,
+            phone_number: phoneVariation,
           },
         });
-        console.log(
-          '🔍 Tried original phone, found:',
-          tenantUser ? `Yes (ID: ${tenantUser.id})` : 'No',
-        );
+
+        if (tenantUser) {
+          console.log(
+            '🔍 Found existing user with phone variation:',
+            phoneVariation,
+            'User ID:',
+            tenantUser.id,
+          );
+          break;
+        }
       }
 
-      // If still not found, try without + prefix
-      if (!tenantUser && phone_number.startsWith('+')) {
-        const phoneWithoutPlus = phone_number.substring(1);
-        tenantUser = await manager.getRepository(Users).findOne({
-          where: {
-            phone_number: phoneWithoutPlus,
-          },
-        });
-        console.log(
-          '🔍 Tried without +, found:',
-          tenantUser ? `Yes (ID: ${tenantUser.id})` : 'No',
-        );
+      if (!tenantUser) {
+        console.log('🔍 No existing user found with any phone variation');
       }
 
       console.log(
@@ -990,10 +1002,11 @@ export class UsersService {
             ];
 
             for (const phoneVariant of phoneVariants) {
-              tenantUser = await manager.getRepository(Users).findOne({
+              const foundUser = await manager.getRepository(Users).findOne({
                 where: { phone_number: phoneVariant },
               });
-              if (tenantUser) {
+              if (foundUser) {
+                tenantUser = foundUser;
                 console.log(
                   '🔄 Found existing user with phone variant:',
                   phoneVariant,
@@ -1048,9 +1061,18 @@ export class UsersService {
       });
 
       if (!tenantAccount) {
+        const accountEmail = tenantUser.email || email;
+        if (!accountEmail) {
+          throw new HttpException(
+            'Email is required to create tenant account',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
         tenantAccount = manager.getRepository(Account).create({
           userId: tenantUser.id,
           role: RolesEnum.TENANT,
+          email: accountEmail,
         });
         tenantAccount = await manager
           .getRepository(Account)
@@ -1155,7 +1177,7 @@ export class UsersService {
         });
       }
 
-      return tenantUser;
+      return { tenantUser, tenantAccount, property };
     });
   }
 
@@ -1769,10 +1791,10 @@ export class UsersService {
       const subAccountWhere = isEmail
         ? { id: Not(account.id), email: account.email, role: RolesEnum.TENANT }
         : {
-          id: Not(account.id),
-          user: { phone_number: account.user.phone_number },
-          role: RolesEnum.TENANT,
-        };
+            id: Not(account.id),
+            user: { phone_number: account.user.phone_number },
+            role: RolesEnum.TENANT,
+          };
 
       const subAccount = (await this.accountRepository.findOne({
         where: subAccountWhere,
@@ -1799,15 +1821,15 @@ export class UsersService {
     if (account.role === RolesEnum.TENANT) {
       const parentAccountWhere = isEmail
         ? {
-          id: Not(account.id),
-          email: account.email,
-          role: RolesEnum.LANDLORD,
-        }
+            id: Not(account.id),
+            email: account.email,
+            role: RolesEnum.LANDLORD,
+          }
         : {
-          id: Not(account.id),
-          user: { phone_number: account.user.phone_number },
-          role: RolesEnum.LANDLORD,
-        };
+            id: Not(account.id),
+            user: { phone_number: account.user.phone_number },
+            role: RolesEnum.LANDLORD,
+          };
 
       const parentAccount = (await this.accountRepository.findOne({
         where: parentAccountWhere,
@@ -2389,14 +2411,14 @@ export class UsersService {
 
     const serviceRequests = adminId
       ? account.service_requests?.filter(
-        (sr) => sr.property?.owner_id === adminId,
-      ) || []
+          (sr) => sr.property?.owner_id === adminId,
+        ) || []
       : account.service_requests || [];
 
     const propertyHistories = adminId
       ? account.property_histories?.filter(
-        (ph) => ph.property?.owner_id === adminId,
-      ) || []
+          (ph) => ph.property?.owner_id === adminId,
+        ) || []
       : account.property_histories || [];
 
     // Debug logging for property histories
@@ -2418,8 +2440,8 @@ export class UsersService {
 
     const noticeAgreements = adminId
       ? account.notice_agreements?.filter(
-        (na) => na.property?.owner_id === adminId,
-      ) || []
+          (na) => na.property?.owner_id === adminId,
+        ) || []
       : account.notice_agreements || [];
 
     // Debug logging
@@ -2725,7 +2747,7 @@ export class UsersService {
         tenantKyc?.reference2_phone_number ??
         // Fallback to reference1 if reference2 is not available
         (!kycApplication?.reference2_phone_number &&
-          !tenantKyc?.reference2_phone_number
+        !tenantKyc?.reference2_phone_number
           ? (kycApplication?.reference1_phone_number ??
             tenantKyc?.reference1_phone_number)
           : null) ??
@@ -2747,7 +2769,7 @@ export class UsersService {
         tenantKyc?.reference2_relationship ??
         // Fallback to reference1 if reference2 is not available
         (!kycApplication?.reference2_relationship &&
-          !tenantKyc?.reference2_relationship
+        !tenantKyc?.reference2_relationship
           ? (kycApplication?.reference1_relationship ??
             tenantKyc?.reference1_relationship)
           : null) ??
@@ -2897,59 +2919,59 @@ export class UsersService {
             : null,
         kycDocuments: kycApplication
           ? [
-            ...(kycApplication.passport_photo_url
-              ? [
-                {
-                  id: `kyc-passport-${kycApplication.id}`,
-                  name: 'Passport Photo',
-                  type: 'Passport',
-                  url: kycApplication.passport_photo_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.id_document_url
-              ? [
-                {
-                  id: `kyc-id-${kycApplication.id}`,
-                  name: 'ID Document',
-                  type: 'ID',
-                  url: kycApplication.id_document_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.employment_proof_url
-              ? [
-                {
-                  id: `kyc-employment-${kycApplication.id}`,
-                  name: 'Employment Proof',
-                  type: 'Employment',
-                  url: kycApplication.employment_proof_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-            ...(kycApplication.business_proof_url
-              ? [
-                {
-                  id: `kyc-business-${kycApplication.id}`,
-                  name: 'Business Proof',
-                  type: 'Business',
-                  url: kycApplication.business_proof_url,
-                  uploadDate: kycApplication.created_at
-                    ? new Date(kycApplication.created_at).toISOString()
-                    : new Date().toISOString(),
-                },
-              ]
-              : []),
-          ]
+              ...(kycApplication.passport_photo_url
+                ? [
+                    {
+                      id: `kyc-passport-${kycApplication.id}`,
+                      name: 'Passport Photo',
+                      type: 'Passport',
+                      url: kycApplication.passport_photo_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.id_document_url
+                ? [
+                    {
+                      id: `kyc-id-${kycApplication.id}`,
+                      name: 'ID Document',
+                      type: 'ID',
+                      url: kycApplication.id_document_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.employment_proof_url
+                ? [
+                    {
+                      id: `kyc-employment-${kycApplication.id}`,
+                      name: 'Employment Proof',
+                      type: 'Employment',
+                      url: kycApplication.employment_proof_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+              ...(kycApplication.business_proof_url
+                ? [
+                    {
+                      id: `kyc-business-${kycApplication.id}`,
+                      name: 'Business Proof',
+                      type: 'Business',
+                      url: kycApplication.business_proof_url,
+                      uploadDate: kycApplication.created_at
+                        ? new Date(kycApplication.created_at).toISOString()
+                        : new Date().toISOString(),
+                    },
+                  ]
+                : []),
+            ]
           : [],
       },
     };

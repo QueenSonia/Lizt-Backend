@@ -19,6 +19,7 @@ import { Property } from '../properties/entities/property.entity';
 import { PropertyStatusEnum } from '../properties/dto/create-property.dto';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
 import { UtilService } from '../utils/utility-service';
+import { KYCApplicationService } from './kyc-application.service';
 
 export interface KYCLinkResponse {
   token: string;
@@ -39,6 +40,7 @@ export interface PropertyKYCData {
     bathrooms: number;
     description?: string;
     hasPendingKyc?: boolean;
+    applicationsCount?: number;
   }>;
   error?: string;
 }
@@ -72,7 +74,9 @@ export class KYCLinksService {
     @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-  ) { }
+    @Inject(forwardRef(() => KYCApplicationService))
+    private readonly kycApplicationService: KYCApplicationService,
+  ) {}
 
   /**
    * Generate a unique KYC link for a landlord (general link for all properties)
@@ -157,6 +161,7 @@ export class KYCLinksService {
       description?: string;
       rentalPrice?: number;
       hasPendingKyc?: boolean;
+      applicationsCount?: number;
     }>;
     error?: string;
   }> {
@@ -257,20 +262,51 @@ export class KYCLinksService {
         };
       }
 
+      // Get applications count for each property
+      const propertiesWithCounts = await Promise.all(
+        allProperties.map(async (property) => {
+          let applicationsCount = 0;
+          try {
+            const stats =
+              await this.kycApplicationService.getApplicationStatistics(
+                property.id,
+                kycLink.landlord_id,
+              );
+            // For vacant properties, only show pending applications count
+            // For occupied properties, show total count
+            applicationsCount =
+              property.property_status === PropertyStatusEnum.VACANT
+                ? stats.pending
+                : stats.total;
+          } catch (error) {
+            console.warn(
+              `Failed to get application count for property ${property.id}:`,
+              error,
+            );
+            // Continue with 0 count if there's an error
+          }
+
+          return {
+            id: property.id,
+            name: property.name,
+            location: property.location,
+            propertyType: property.property_type,
+            bedrooms: property.no_of_bedrooms,
+            bathrooms: property.no_of_bathrooms,
+            description: `${property.location}`,
+            rentalPrice: property.rental_price,
+            hasPendingKyc: propertiesWithPendingKYC.some(
+              (p) => p.id === property.id,
+            ),
+            applicationsCount,
+          };
+        }),
+      );
+
       return {
         valid: true,
         landlordId: kycLink.landlord_id,
-        vacantProperties: allProperties.map((property) => ({
-          id: property.id,
-          name: property.name,
-          location: property.location,
-          propertyType: property.property_type,
-          bedrooms: property.no_of_bedrooms,
-          bathrooms: property.no_of_bathrooms,
-          description: `${property.location}`,
-          rentalPrice: property.rental_price,
-          hasPendingKyc: propertiesWithPendingKYC.some((p) => p.id === property.id),
-        })),
+        vacantProperties: propertiesWithCounts,
       };
     } catch (error) {
       console.error('Error validating KYC token:', error);

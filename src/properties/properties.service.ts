@@ -1112,6 +1112,15 @@ export class PropertiesService {
       const email = tenantKyc?.email ?? tenantUser.email;
       const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
 
+      // Get the most recent KYC application for this tenant to get passport photo
+      const tenantKycApplication = property.kyc_applications
+        ?.filter((app) => app.tenant_id === activeTenantRelation.tenant.id)
+        ?.sort((a, b) => {
+          const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+          const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+          return dateB - dateA;
+        })[0];
+
       currentTenant = {
         id: activeTenantRelation.tenant.id,
         tenancyId: activeTenantRelation.id, // PropertyTenant entity ID for tenancy operations
@@ -1122,6 +1131,7 @@ export class PropertiesService {
           .toISOString()
           .split('T')[0],
         paymentCycle: activeRent.payment_frequency || 'Monthly',
+        passportPhoto: tenantKycApplication?.passport_photo_url || null,
       };
     }
 

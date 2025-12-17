@@ -329,10 +329,22 @@ export class UsersService {
           );
         }
 
-        // 3. Check if property is vacant
+        // 3. Check if property is available for tenant attachment
         if (property.property_status === PropertyStatusEnum.OCCUPIED) {
           throw new ConflictException(
             'Property is already occupied. Cannot attach another tenant.',
+          );
+        }
+
+        if (property.property_status === PropertyStatusEnum.INACTIVE) {
+          throw new ConflictException(
+            'Cannot attach tenant to inactive property. Please reactivate the property first.',
+          );
+        }
+
+        if (property.property_status !== PropertyStatusEnum.VACANT) {
+          throw new ConflictException(
+            'Can only attach tenant to vacant properties.',
           );
         }
 
@@ -2422,21 +2434,21 @@ export class UsersService {
       : account.property_histories || [];
 
     // Debug logging for property histories
-    console.log('🔍 DEBUG: Property histories loaded:', {
-      tenantId: account.id,
-      adminId,
-      totalPropertyHistories: account.property_histories?.length || 0,
-      filteredPropertyHistories: propertyHistories.length,
-      propertyHistories: propertyHistories.map((ph) => ({
-        id: ph.id,
-        event_type: ph.event_type,
-        property_id: ph.property_id,
-        property_owner_id: ph.property?.owner_id,
-        move_in_date: ph.move_in_date,
-        move_out_date: ph.move_out_date,
-        created_at: ph.created_at,
-      })),
-    });
+    // console.log('🔍 DEBUG: Property histories loaded:', {
+    //   tenantId: account.id,
+    //   adminId,
+    //   totalPropertyHistories: account.property_histories?.length || 0,
+    //   filteredPropertyHistories: propertyHistories.length,
+    //   propertyHistories: propertyHistories.map((ph) => ({
+    //     id: ph.id,
+    //     event_type: ph.event_type,
+    //     property_id: ph.property_id,
+    //     property_owner_id: ph.property?.owner_id,
+    //     move_in_date: ph.move_in_date,
+    //     move_out_date: ph.move_out_date,
+    //     created_at: ph.created_at,
+    //   })),
+    // });
 
     const noticeAgreements = adminId
       ? account.notice_agreements?.filter(
@@ -2509,11 +2521,19 @@ export class UsersService {
       propertyHistories.forEach((ph) => {
         if (ph.event_type === 'tenancy_started') {
           const property = ph.property;
+          const moveInDate = ph.move_in_date
+            ? new Date(ph.move_in_date).toLocaleDateString('en-US', {
+                month: 'long',
+                day: 'numeric',
+                year: 'numeric',
+              })
+            : 'an unspecified date';
+
           tenancyEvents.push({
             id: `tenancy-start-${ph.id}`,
             eventType: 'tenancy_started',
-            title: 'Tenancy Started',
-            description: `Tenancy began for ${property?.name || 'property'}.`,
+            title: 'Tenant Attached',
+            description: `Tenancy began for ${property?.name || 'property'} on ${moveInDate}.`,
             details: ph.monthly_rent
               ? `Annual Rent: ₦${ph.monthly_rent?.toLocaleString()}`
               : null,

@@ -861,7 +861,6 @@ export class PropertiesService {
       .andWhere('property.property_status = :status', {
         status: PropertyStatusEnum.VACANT,
       })
-      .andWhere('property.rental_price IS NOT NULL')
       .getMany();
   }
 
@@ -870,7 +869,20 @@ export class PropertiesService {
   }
 
   async getMarketingReadyProperties(ownerId: string): Promise<Property[]> {
-    return this.getVacantProperties(ownerId);
+    return this.propertyRepository
+      .createQueryBuilder('property')
+      .select([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+        'property.rental_price',
+      ])
+      .where('property.owner_id = :ownerId', { ownerId })
+      .andWhere('property.property_status = :status', {
+        status: PropertyStatusEnum.READY_FOR_MARKETING,
+      })
+      .getMany();
   }
 
   async getPropertyById(id: string): Promise<any> {
@@ -1148,17 +1160,26 @@ export class PropertiesService {
               description: 'Property was added to the system.',
               details: null,
             };
-          case 'tenancy_started':
+          case 'tenancy_started': {
+            const moveInDate = hist.move_in_date
+              ? new Date(hist.move_in_date).toLocaleDateString('en-US', {
+                  month: 'long',
+                  day: 'numeric',
+                  year: 'numeric',
+                })
+              : 'an unspecified date';
+
             return {
               id: hist.id,
               date: hist.created_at || hist.move_in_date,
               eventType: 'tenancy_started',
-              title: 'Tenancy Started',
-              description: `${tenantName} started tenancy for this property.`,
+              title: 'Tenant Attached',
+              description: `${tenantName} started tenancy for this property on ${moveInDate}.`,
               details: hist.monthly_rent
                 ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
                 : null,
             };
+          }
           case 'tenancy_ended':
             return {
               id: hist.id,
@@ -1453,7 +1474,7 @@ export class PropertiesService {
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
 
-      // Requirement 7.4: Cannot delete occupied or deactivated properties
+      // Cannot delete occupied properties
       if (property.property_status === PropertyStatusEnum.OCCUPIED) {
         throw new HttpException(
           'Cannot delete property that is currently occupied. Please end the tenancy first.',
@@ -1461,14 +1482,7 @@ export class PropertiesService {
         );
       }
 
-      if (property.property_status === PropertyStatusEnum.INACTIVE) {
-        throw new HttpException(
-          'Cannot delete property that is deactivated. Please reactivate the property first.',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      // Requirement 7.2 & 7.3: Check if property has any tenancy history records
+      // Cannot delete properties with history records
       const historyCount = await this.propertyHistoryRepository.count({
         where: { property_id: propertyId },
       });
@@ -2405,10 +2419,24 @@ export class PropertiesService {
         );
       }
 
-      // Prevent tenant assignment to inactive properties
+      // Only allow tenant assignment to vacant properties
+      if (property.property_status === PropertyStatusEnum.OCCUPIED) {
+        throw new HttpException(
+          'Property is already occupied. Cannot attach another tenant.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       if (property.property_status === PropertyStatusEnum.INACTIVE) {
         throw new HttpException(
           'Cannot assign tenant to inactive property. Please reactivate the property first.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      if (property.property_status !== PropertyStatusEnum.VACANT) {
+        throw new HttpException(
+          'Can only attach tenant to vacant properties.',
           HttpStatus.BAD_REQUEST,
         );
       }

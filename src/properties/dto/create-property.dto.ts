@@ -12,6 +12,7 @@ export enum PropertyStatusEnum {
   VACANT = 'vacant',
   OCCUPIED = 'occupied',
   INACTIVE = 'inactive',
+  READY_FOR_MARKETING = 'ready_for_marketing',
 }
 
 export class CreatePropertyDto {

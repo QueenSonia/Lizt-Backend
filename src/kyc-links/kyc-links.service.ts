@@ -211,13 +211,12 @@ export class KYCLinksService {
       }
 
       // Get properties for this landlord:
-      // 1. Vacant properties ready for marketing (have rental_price set)
+      // 1. Properties ready for marketing
       // 2. Properties with pending KYC applications (for existing tenants)
-      const vacantProperties = await this.propertyRepository.find({
+      const marketingReadyProperties = await this.propertyRepository.find({
         where: {
           owner_id: kycLink.landlord_id,
-          property_status: PropertyStatusEnum.VACANT,
-          rental_price: Not(IsNull()),
+          property_status: PropertyStatusEnum.READY_FOR_MARKETING,
         },
         order: {
           created_at: 'DESC',
@@ -242,7 +241,7 @@ export class KYCLinksService {
 
       // Combine and deduplicate properties
       const allPropertyIds = new Set([
-        ...vacantProperties.map((p) => p.id),
+        ...marketingReadyProperties.map((p) => p.id),
         ...propertiesWithPendingKYC.map((p) => p.id),
       ]);
 

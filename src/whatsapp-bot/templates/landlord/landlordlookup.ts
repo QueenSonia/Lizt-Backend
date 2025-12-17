@@ -77,19 +77,18 @@ export class LandlordLookup {
       return;
     }
 
-    // Fetch only vacant properties that are ready for marketing (have rental_price set)
+    // Fetch all vacant properties
     const properties = await this.propertyRepo.find({
       where: {
         owner_id: ownerUser.accounts[0].id,
         property_status: PropertyStatusEnum.VACANT,
-        rental_price: Not(IsNull()),
       },
     });
 
     if (!properties.length) {
       await this.whatsappUtil.sendText(
         from,
-        '🏠 You do not have any properties ready for marketing at the moment.\n\nPlease mark your vacant properties as "Ready for Marketing" and set their rental prices. Then you can generate a KYC link that tenants can use to apply.',
+        '🏠 You do not have any vacant properties at the moment.\n\nPlease add some properties or ensure your properties are marked as vacant to generate KYC links.',
       );
       return;
     }

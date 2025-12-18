@@ -2,7 +2,13 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 import { PropertyFilter } from 'src/properties/dto/create-property.dto';
 import { RentFilter } from 'src/rents/dto/create-rent.dto';
 import { UserFilter } from 'src/users/dto/create-user.dto';
-import { Between, FindOptionsWhere, ILike, SelectQueryBuilder } from 'typeorm';
+import {
+  Between,
+  FindOptionsWhere,
+  ILike,
+  In,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { ServiceRequestFilter } from 'src/service-requests/dto/create-service-request.dto';
 import { PropertyHistoryFilter } from 'src/property-history/dto/create-property-history.dto';
 import { Property } from 'src/properties/entities/property.entity';
@@ -115,8 +121,15 @@ export const buildPropertyFilter = async (
   if (queryParams?.owner_id) query['owner_id'] = queryParams.owner_id;
   if (queryParams?.location)
     query['location'] = queryParams.location.toLowerCase();
-  if (queryParams?.property_status)
-    query['property_status'] = queryParams.property_status.toLowerCase();
+  if (queryParams?.property_status) {
+    const status = queryParams.property_status.toLowerCase();
+    // When filtering for vacant properties, include both vacant and ready_for_marketing
+    if (status === 'vacant') {
+      query['property_status'] = In(['vacant', 'ready_for_marketing']);
+    } else {
+      query['property_status'] = status;
+    }
+  }
 
   // Date Range
   if (queryParams?.start_date && queryParams?.end_date) {

@@ -858,8 +858,11 @@ export class PropertiesService {
         'property.rental_price',
       ])
       .where('property.owner_id = :ownerId', { ownerId })
-      .andWhere('property.property_status = :status', {
-        status: PropertyStatusEnum.VACANT,
+      .andWhere('property.property_status IN (:...statuses)', {
+        statuses: [
+          PropertyStatusEnum.VACANT,
+          PropertyStatusEnum.READY_FOR_MARKETING,
+        ],
       })
       .getMany();
   }

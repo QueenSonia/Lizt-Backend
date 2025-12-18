@@ -19,7 +19,7 @@ import { NotificationModule } from './notifications/notification.module';
 import { ChatModule } from './chat/chat.module';
 import { DatabaseService } from './database.service';
 import { DatabaseErrorHandlerService } from './database/database-error-handler.service';
-import { DatabaseHealthService } from './database/database-health.service';
+// import { DatabaseHealthService } from './database/database-health.service'; // DISABLED to save compute
 import { TenantKycModule } from './tenant-kyc/tenant-kyc.module';
 import { WhatsappBotModule } from './whatsapp-bot/whatsapp-bot.module';
 import { KYCLinksModule } from './kyc-links/kyc-links.module';
@@ -74,7 +74,7 @@ config({ default_node_env: 'production' });
     AppService,
     DatabaseService,
     DatabaseErrorHandlerService,
-    DatabaseHealthService,
+    // DatabaseHealthService, // DISABLED to save compute
     UtilService,
   ],
 })

@@ -11,8 +11,9 @@ export class RentConsistencyService {
   /**
    * Run rent consistency check every day at 2 AM
    * This helps catch and fix data inconsistencies automatically
+   * DISABLED: Temporarily disabled to save Neon compute quota
    */
-  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  // @Cron(CronExpression.EVERY_DAY_AT_2AM)
   async runDailyConsistencyCheck() {
     this.logger.log('Starting daily rent consistency check...');
 
@@ -40,8 +41,9 @@ export class RentConsistencyService {
   /**
    * Run a more frequent check every 6 hours for critical issues
    * This catches issues faster during business hours
+   * DISABLED: Temporarily disabled to save Neon compute quota
    */
-  @Cron('0 */6 * * *') // Every 6 hours
+  // @Cron('0 */6 * * *') // Every 6 hours
   async runFrequentConsistencyCheck() {
     this.logger.log('Starting frequent rent consistency check...');
 

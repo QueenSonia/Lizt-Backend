@@ -30,6 +30,7 @@ export class Property extends BaseEntity {
       PropertyStatusEnum.OCCUPIED,
       PropertyStatusEnum.VACANT,
       PropertyStatusEnum.INACTIVE,
+      PropertyStatusEnum.READY_FOR_MARKETING,
     ],
     default: PropertyStatusEnum.VACANT,
   })

@@ -12,29 +12,30 @@ export class DatabaseHealthService {
     private readonly dataSource: DataSource,
   ) {}
 
-  @Cron(CronExpression.EVERY_30_SECONDS)
-  async checkDatabaseHealth() {
-    try {
-      await this.dataSource.query('SELECT 1');
-      this.logger.debug('Database health check passed');
-    } catch (error) {
-      this.logger.error('Database health check failed:', error.message);
+  // DISABLED: Health check was burning Neon compute quota
+  // @Cron(CronExpression.EVERY_30_SECONDS)
+  // async checkDatabaseHealth() {
+  //   try {
+  //     await this.dataSource.query('SELECT 1');
+  //     this.logger.debug('Database health check passed');
+  //   } catch (error) {
+  //     this.logger.error('Database health check failed:', error.message);
 
-      // Attempt to reconnect if connection is lost
-      if (!this.dataSource.isInitialized) {
-        this.logger.warn('Attempting to reconnect to database...');
-        try {
-          await this.dataSource.initialize();
-          this.logger.log('Database reconnection successful');
-        } catch (reconnectError) {
-          this.logger.error(
-            'Database reconnection failed:',
-            reconnectError.message,
-          );
-        }
-      }
-    }
-  }
+  //     // Attempt to reconnect if connection is lost
+  //     if (!this.dataSource.isInitialized) {
+  //       this.logger.warn('Attempting to reconnect to database...');
+  //       try {
+  //         await this.dataSource.initialize();
+  //         this.logger.log('Database reconnection successful');
+  //       } catch (reconnectError) {
+  //         this.logger.error(
+  //           'Database reconnection failed:',
+  //           reconnectError.message,
+  //         );
+  //       }
+  //     }
+  //   }
+  // }
 
   async isHealthy(): Promise<boolean> {
     try {

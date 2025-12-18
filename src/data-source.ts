@@ -14,22 +14,25 @@ const {
 
 const isProduction = process.env.NODE_ENV === 'production';
 
+// Build connection URL for Neon
+const connectionUrl = `postgresql://${PROD_DB_USERNAME}:${PROD_DB_PASSWORD}@${PROD_DB_HOST}:${PROD_PORT}/${PROD_DB_NAME}?sslmode=require`;
+
 // For CLI operations (migrations), use source files
 const cliConfig: DataSourceOptions = {
   type: 'postgres',
-  host: PROD_DB_HOST!,
-  port: Number(PROD_PORT),
-  username: PROD_DB_USERNAME!,
-  password: PROD_DB_PASSWORD!,
-  database: PROD_DB_NAME!,
+  url: connectionUrl,
   entities: ['src/**/*.entity{.ts,.js}'], // Source files for CLI generation
   migrations: ['src/migrations/**/*.ts'],
   synchronize: false,
-  ssl: { rejectUnauthorized: false }, // Always use SSL for database connection
-  extra: {
-    sslmode: 'require',
-  },
+  ssl: { rejectUnauthorized: false },
   schema: 'public',
+  // Minimal connection settings for migrations
+  extra: {
+    max: 1,
+    connectionTimeoutMillis: 60000,
+    statement_timeout: 60000,
+    query_timeout: 60000,
+  },
 };
 
 // Use CLI config for migrations, runtime config for app

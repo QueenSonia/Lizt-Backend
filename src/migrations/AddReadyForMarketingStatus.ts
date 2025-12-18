@@ -6,19 +6,29 @@ export class AddReadyForMarketingStatus1734456000000
   name = 'AddReadyForMarketingStatus1734456000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // Step 1: Add the new enum value
-    // PostgreSQL requires this to be in a separate transaction from using the value
-    await queryRunner.query(`
-      ALTER TYPE "properties_property_status_enum" ADD VALUE 'ready_for_marketing'
+    // Step 1: Check if the enum value already exists
+    const enumExists = await queryRunner.query(`
+      SELECT 1 FROM pg_enum 
+      WHERE enumlabel = 'ready_for_marketing' 
+      AND enumtypid = (
+        SELECT oid FROM pg_type WHERE typname = 'properties_property_status_enum'
+      )
     `);
 
-    // Step 2: Commit the transaction to make the enum value available
-    await queryRunner.commitTransaction();
+    // Step 2: Only add the enum value if it doesn't exist
+    if (enumExists.length === 0) {
+      await queryRunner.query(`
+        ALTER TYPE "properties_property_status_enum" ADD VALUE 'ready_for_marketing'
+      `);
 
-    // Step 3: Start a new transaction for the data update
-    await queryRunner.startTransaction();
+      // Step 3: Commit the transaction to make the enum value available
+      await queryRunner.commitTransaction();
 
-    // Step 4: Update existing data - Convert vacant properties with rental_price to ready_for_marketing
+      // Step 4: Start a new transaction for the data update
+      await queryRunner.startTransaction();
+    }
+
+    // Step 5: Update existing data - Convert vacant properties with rental_price to ready_for_marketing
     await queryRunner.query(`
       UPDATE properties 
       SET property_status = 'ready_for_marketing' 

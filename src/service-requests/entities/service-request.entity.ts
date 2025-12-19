@@ -14,6 +14,7 @@ import { Account } from 'src/users/entities/account.entity';
 import { ChatMessage } from 'src/chat/chat-message.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
+import { ServiceRequestStatusHistory } from './service-request-status-history.entity';
 
 @Entity({ name: 'service_requests' })
 export class ServiceRequest extends BaseEntity {
@@ -94,4 +95,10 @@ export class ServiceRequest extends BaseEntity {
   @ManyToOne(() => TeamMember, (tm) => tm.account, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'assigned_to', referencedColumnName: 'id' })
   facilityManager: TeamMember;
+
+  @OneToMany(
+    () => ServiceRequestStatusHistory,
+    (history) => history.serviceRequest,
+  )
+  statusHistory: ServiceRequestStatusHistory[];
 }

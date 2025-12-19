@@ -37,26 +37,31 @@ export class NotificationService {
   // Loads related data (property, tenants, serviceRequest) in one query.
   // Sorts them by date (newest first).
   // Returns the full list as a Promise.
-  async findByUserId(user_id: string): Promise<Notification[]> {
-    console.log('Finding notifications for user_id:', user_id);
+  async findByUserId(
+    user_id: string,
+    options: { page: number; limit: number },
+  ): Promise<{ notifications: Notification[]; total: number }> {
+    console.log(
+      `Finding notifications for user_id: ${user_id} with page: ${options.page}, limit: ${options.limit}`,
+    );
 
-    const notifications = await this.notificationRepository.find({
-      where: {
-        property: {
-          owner_id: user_id,
-        },
-      },
-      relations: [
-        'property',
-        'property.property_tenants',
-        'property.property_tenants.tenant',
-        'serviceRequest',
-      ],
-      order: {
-        date: 'DESC',
-      },
-    });
-    return notifications;
+    const { page = 1, limit = 20 } = options;
+    const skip = (page - 1) * limit;
+
+    const query = this.notificationRepository
+      .createQueryBuilder('notification')
+      .leftJoinAndSelect('notification.property', 'property')
+      .leftJoinAndSelect('property.property_tenants', 'property_tenants')
+      .leftJoinAndSelect('property_tenants.tenant', 'tenant')
+      .leftJoinAndSelect('notification.serviceRequest', 'serviceRequest')
+      .where('property.owner_id = :user_id', { user_id })
+      .orderBy('notification.date', 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    const [notifications, total] = await query.getManyAndCount();
+
+    return { notifications, total };
   }
 
   async findByServiceRequestId(

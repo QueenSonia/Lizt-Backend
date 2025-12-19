@@ -5,19 +5,25 @@ import {
   Get,
   Param,
   Req,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { NotificationService } from './notification.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { Notification } from './entities/notification.entity';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 
 @Controller('notifications')
 export class NotificationController {
   constructor(private readonly service: NotificationService) {}
   @Get('user')
-  findByUserId(@Req() req): Promise<Notification[]> {
+  findByUserId(
+    @Req() req,
+    @Query() paginationQuery: PaginationQueryDto,
+  ): Promise<{ notifications: Notification[]; total: number }> {
     const user_id = req?.user?.id;
-    return this.service.findByUserId(user_id);
+    const { page = 1, limit = 20 } = paginationQuery;
+    return this.service.findByUserId(user_id, { page, limit });
   }
 
   @Post()

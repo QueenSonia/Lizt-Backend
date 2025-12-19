@@ -673,8 +673,19 @@ export class WhatsappBotService {
         return;
       }
 
-      serviceRequest.status = ServiceRequestStatusEnum.IN_PROGRESS;
-      await this.serviceRequestRepo.save(serviceRequest);
+      // Update status via service to track history
+      await this.serviceRequestService.updateStatus(
+        serviceRequest.id,
+        ServiceRequestStatusEnum.IN_PROGRESS,
+        `Acknowledged by facility manager via WhatsApp`,
+        {
+          id: serviceRequest.facilityManager?.account?.user?.id || 'system',
+          role: 'facility_manager',
+          name:
+            serviceRequest.facilityManager?.account?.profile_name ||
+            'Facility Manager',
+        },
+      );
       await this.sendText(
         from,
         `You have acknowledged service request ID: ${text}`,
@@ -967,9 +978,22 @@ export class WhatsappBotService {
             return;
           }
 
+          // Get facility manager info
+          const facilityManager = await this.teamMemberRepo.findOne({
+            where: { account: { user: { phone_number: from } } },
+            relations: ['account', 'account.user'],
+          });
+
           await this.serviceRequestService.updateStatus(
             serviceRequest.id,
             ServiceRequestStatusEnum.RESOLVED,
+            'Facility manager marked as resolved via WhatsApp',
+            {
+              id: facilityManager?.account?.user?.id || 'system',
+              role: 'facility_manager',
+              name:
+                facilityManager?.account?.profile_name || 'Facility Manager',
+            },
           );
 
           await this.sendText(
@@ -1748,6 +1772,12 @@ export class WhatsappBotService {
           await this.serviceRequestService.updateStatus(
             latestResolvedRequest.id,
             ServiceRequestStatusEnum.CLOSED,
+            'Tenant confirmed issue is fully resolved via WhatsApp',
+            {
+              id: latestResolvedRequest.tenant.user.id,
+              role: 'tenant',
+              name: `${latestResolvedRequest.tenant.user.first_name} ${latestResolvedRequest.tenant.user.last_name}`,
+            },
           );
 
           await this.sendText(from, "Fantastic! Glad that's sorted 😊");
@@ -1824,6 +1854,12 @@ export class WhatsappBotService {
           await this.serviceRequestService.updateStatus(
             latestResolvedRequest.id,
             ServiceRequestStatusEnum.REOPENED,
+            'Tenant reported issue is not fully resolved via WhatsApp',
+            {
+              id: latestResolvedRequest.tenant.user.id,
+              role: 'tenant',
+              name: `${latestResolvedRequest.tenant.user.first_name} ${latestResolvedRequest.tenant.user.last_name}`,
+            },
           );
 
           await this.sendText(

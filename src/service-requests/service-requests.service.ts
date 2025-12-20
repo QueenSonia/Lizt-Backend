@@ -15,6 +15,7 @@ import {
 } from './dto/update-service-request.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ServiceRequest } from './entities/service-request.entity';
+import { ServiceRequestStatusHistory } from './entities/service-request-status-history.entity';
 import { In, Repository } from 'typeorm';
 import { buildServiceRequestFilter } from 'src/filters/query-filter';
 import { UtilService } from 'src/utils/utility-service';
@@ -60,6 +61,8 @@ export class ServiceRequestsService {
   constructor(
     @InjectRepository(ServiceRequest)
     private readonly serviceRequestRepository: Repository<ServiceRequest>,
+    @InjectRepository(ServiceRequestStatusHistory)
+    private readonly statusHistoryRepository: Repository<ServiceRequestStatusHistory>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(TeamMember)
@@ -170,6 +173,16 @@ export class ServiceRequestsService {
 
     const savedRequest = await this.serviceRequestRepository.save(request);
 
+    // Create initial status history entry
+    await this.createStatusHistoryEntry(
+      savedRequest.id,
+      null, // no previous status for new requests
+      ServiceRequestStatusEnum.PENDING,
+      tenantExistInProperty.tenant.user.id,
+      'tenant',
+      'Service request created',
+    );
+
     // Emit event after successful database commit with complete payload
     try {
       this.eventEmitter.emit('service.created', {
@@ -219,10 +232,20 @@ export class ServiceRequestsService {
             owner_id: user_id,
           },
         },
-        relations: ['tenant', 'property'],
+        relations: [
+          'tenant',
+          'property',
+          'statusHistory',
+          'statusHistory.changedBy',
+        ],
         skip,
         take: size,
-        order: { created_at: 'DESC' },
+        order: {
+          created_at: 'DESC',
+          statusHistory: {
+            changed_at: 'ASC',
+          },
+        },
       });
 
     const totalPages = Math.ceil(count / size);
@@ -241,7 +264,17 @@ export class ServiceRequestsService {
   async getServiceRequestById(id: string, userId: string): Promise<any> {
     const serviceRequest = await this.serviceRequestRepository.findOne({
       where: { id },
-      relations: ['tenant', 'property'],
+      relations: [
+        'tenant',
+        'property',
+        'statusHistory',
+        'statusHistory.changedBy',
+      ],
+      order: {
+        statusHistory: {
+          changed_at: 'ASC',
+        },
+      },
     });
     if (!serviceRequest?.id) {
       throw new HttpException(
@@ -274,7 +307,17 @@ export class ServiceRequestsService {
         tenant_id: id,
         status: In(statuses),
       },
-      relations: ['tenant', 'property'],
+      relations: [
+        'tenant',
+        'property',
+        'statusHistory',
+        'statusHistory.changedBy',
+      ],
+      order: {
+        statusHistory: {
+          changed_at: 'ASC',
+        },
+      },
     });
     // if (!serviceRequest?.id) {
     //   throw new HttpException(
@@ -323,6 +366,20 @@ export class ServiceRequestsService {
       where: { id },
       relations: ['property'],
     });
+
+    // Create status history entry if status changed
+    if (data.status && data.status !== previousStatus) {
+      const userRole =
+        serviceRequest.tenant_id === userId ? 'tenant' : 'landlord';
+      await this.createStatusHistoryEntry(
+        id,
+        previousStatus,
+        data.status,
+        userId,
+        userRole,
+        `Status updated via API from ${previousStatus} to ${data.status}`,
+      );
+    }
 
     // Emit service.updated event if status changed or other significant updates
     if (updatedServiceRequest && (data.status || data.description)) {
@@ -387,10 +444,20 @@ export class ServiceRequestsService {
           property: { owner_id },
           status: In(['pending', 'urgent']),
         },
-        relations: ['tenant', 'property'],
+        relations: [
+          'tenant',
+          'property',
+          'statusHistory',
+          'statusHistory.changedBy',
+        ],
         skip,
         take: size,
-        order: { created_at: 'DESC' },
+        order: {
+          created_at: 'DESC',
+          statusHistory: {
+            changed_at: 'ASC',
+          },
+        },
       });
 
     const totalPages = Math.ceil(count / size);
@@ -423,10 +490,20 @@ export class ServiceRequestsService {
         where: {
           tenant_id,
         },
-        relations: ['tenant', 'property'],
+        relations: [
+          'tenant',
+          'property',
+          'statusHistory',
+          'statusHistory.changedBy',
+        ],
         skip,
         take: size,
-        order: { created_at: 'DESC' },
+        order: {
+          created_at: 'DESC',
+          statusHistory: {
+            changed_at: 'ASC',
+          },
+        },
       });
     const totalPages = Math.ceil(count / size);
     return {
@@ -444,7 +521,12 @@ export class ServiceRequestsService {
   async getRequestById(id: string): Promise<ServiceRequest> {
     const request = await this.serviceRequestRepository.findOne({
       where: { id },
-      relations: ['messages'],
+      relations: ['messages', 'statusHistory', 'statusHistory.changedBy'],
+      order: {
+        statusHistory: {
+          changed_at: 'ASC',
+        },
+      },
     });
 
     if (!request) {
@@ -476,6 +558,19 @@ export class ServiceRequestsService {
 
     const savedRequest = await this.serviceRequestRepository.save(request);
 
+    // Create status history entry
+    if (actor?.id) {
+      await this.createStatusHistoryEntry(
+        savedRequest.id,
+        previousStatus,
+        status,
+        actor.id,
+        actor.role || 'system',
+        `Status changed from ${previousStatus} to ${status}`,
+        notes,
+      );
+    }
+
     this.eventEmitter.emit('service.updated', {
       request_id: savedRequest.id,
       status: savedRequest.status,
@@ -491,5 +586,28 @@ export class ServiceRequestsService {
     });
 
     return savedRequest;
+  }
+
+  private async createStatusHistoryEntry(
+    serviceRequestId: string,
+    previousStatus: string | null,
+    newStatus: string,
+    changedByUserId: string,
+    changedByRole: string,
+    changeReason?: string,
+    notes?: string,
+  ): Promise<ServiceRequestStatusHistory> {
+    const historyEntry = this.statusHistoryRepository.create({
+      service_request_id: serviceRequestId,
+      previous_status: previousStatus,
+      new_status: newStatus,
+      changed_by_user_id: changedByUserId,
+      changed_by_role: changedByRole,
+      change_reason: changeReason,
+      notes: notes,
+      changed_at: new Date(),
+    });
+
+    return await this.statusHistoryRepository.save(historyEntry);
   }
 }

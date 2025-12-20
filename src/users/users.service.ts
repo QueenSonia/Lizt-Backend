@@ -303,6 +303,7 @@ export class UsersService {
     } = dto;
 
     return await this.dataSource.transaction(async (manager) => {
+      console.log('data received = ', dto);
       try {
         // 1. Verify tenant exists
         const tenantAccount = await manager.getRepository(Account).findOne({
@@ -342,9 +343,12 @@ export class UsersService {
           );
         }
 
-        if (property.property_status !== PropertyStatusEnum.VACANT) {
+        if (
+          property.property_status !== PropertyStatusEnum.VACANT &&
+          property.property_status !== PropertyStatusEnum.READY_FOR_MARKETING
+        ) {
           throw new ConflictException(
-            'Can only attach tenant to vacant properties.',
+            'Tenant can only be attached to properties that are Vacant or Ready for Marketing.',
           );
         }
 
@@ -395,6 +399,7 @@ export class UsersService {
           amount_paid: 0,
           expiry_date: nextRentDueDate,
         });
+        console.log('Created rent record;', rent);
 
         await manager.getRepository(Rent).save(rent);
 

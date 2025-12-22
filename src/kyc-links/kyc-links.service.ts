@@ -234,9 +234,13 @@ export class KYCLinksService {
         .andWhere('kyc.status = :status', {
           status: ApplicationStatus.PENDING_COMPLETION,
         })
-        .andWhere('property.property_status = :vacantStatus', {
-          vacantStatus: PropertyStatusEnum.VACANT,
-        })
+        .andWhere(
+          '(property.property_status = :vacantStatus OR property.property_status = :readyStatus)',
+          {
+            vacantStatus: PropertyStatusEnum.VACANT,
+            readyStatus: PropertyStatusEnum.READY_FOR_MARKETING,
+          },
+        )
         .getMany();
 
       // Combine and deduplicate properties
@@ -271,12 +275,17 @@ export class KYCLinksService {
                 property.id,
                 kycLink.landlord_id,
               );
-            // For vacant properties, only show pending applications count
+            // For vacant and ready for marketing properties, only show pending applications count
             // For occupied properties, show total count
-            applicationsCount =
-              property.property_status === PropertyStatusEnum.VACANT
-                ? stats.pending
-                : stats.total;
+            const allowedStatuses = [
+              PropertyStatusEnum.VACANT,
+              PropertyStatusEnum.READY_FOR_MARKETING,
+            ];
+            applicationsCount = allowedStatuses.includes(
+              property.property_status as PropertyStatusEnum,
+            )
+              ? stats.pending
+              : stats.total;
           } catch (error) {
             console.warn(
               `Failed to get application count for property ${property.id}:`,

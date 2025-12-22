@@ -81,7 +81,8 @@ export class KYCApplicationService {
       );
     }
 
-    if (selectedProperty.property_status !== 'vacant') {
+    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    if (!allowedStatuses.includes(selectedProperty.property_status)) {
       throw new BadRequestException(
         'Selected property is no longer available for applications',
       );
@@ -364,8 +365,9 @@ export class KYCApplicationService {
     // Determine which applications to show based on property status
     const whereCondition: any = { property_id: propertyId };
 
-    // If property is vacant, only show pending applications
-    if (property.property_status === 'vacant') {
+    // If property is vacant or ready for marketing, only show pending applications
+    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    if (allowedStatuses.includes(property.property_status)) {
       whereCondition.status = ApplicationStatus.PENDING;
     }
 
@@ -409,8 +411,9 @@ export class KYCApplicationService {
       .leftJoinAndSelect('application.tenant', 'tenant')
       .where('application.property_id = :propertyId', { propertyId });
 
-    // If property is vacant, only show pending applications (override any status filter)
-    if (property.property_status === 'vacant') {
+    // If property is vacant or ready for marketing, only show pending applications (override any status filter)
+    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    if (allowedStatuses.includes(property.property_status)) {
       queryBuilder.andWhere('application.status = :pendingStatus', {
         pendingStatus: ApplicationStatus.PENDING,
       });
@@ -641,8 +644,9 @@ export class KYCApplicationService {
       landlordId,
     );
 
-    if (property.property_status === 'vacant') {
-      // For vacant properties, only show pending applications count
+    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    if (allowedStatuses.includes(property.property_status)) {
+      // For vacant and ready for marketing properties, only show pending applications count
       const pending = await this.kycApplicationRepository.count({
         where: { property_id: propertyId, status: ApplicationStatus.PENDING },
       });

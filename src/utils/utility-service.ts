@@ -33,7 +33,7 @@ export class UtilService {
     if (!phone_number) return '';
 
     // Remove all non-digit characters
-    let cleaned = phone_number.replace(/\D/g, '');
+    const cleaned = phone_number.replace(/\D/g, '');
 
     // Handle different formats
     if (cleaned.startsWith('234')) {

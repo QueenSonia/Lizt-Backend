@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { ILike, Not, Repository } from 'typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import WhatsApp from 'whatsapp';
 import { Users } from 'src/users/entities/user.entity';
@@ -25,6 +26,8 @@ import { Account } from 'src/users/entities/account.entity';
 import { LandlordFlow } from './templates/landlord/landlordflow';
 import { LandlordLookup } from './templates/landlord/landlordlookup';
 import { LandlordInteractive } from './templates/landlord/landinteractive';
+import { ChatLogService } from './chat-log.service';
+import { MessageDirection } from './entities/message-direction.enum';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -68,7 +71,9 @@ export class WhatsappBotService {
     private readonly cache: CacheService,
     private readonly config: ConfigService,
     private readonly utilService: UtilService,
-  ) {}
+    private readonly chatLogService: ChatLogService,
+    private readonly eventEmitter: EventEmitter2,
+  ) { }
 
   async getNextScreen(decryptedBody) {
     const { screen, data, action } = decryptedBody;
@@ -126,6 +131,22 @@ export class WhatsappBotService {
 
     console.log('📱 Incoming WhatsApp message from:', from);
     console.log('📨 Full message object:', JSON.stringify(message, null, 2));
+
+    // Log inbound message with graceful error handling
+    try {
+      await this.chatLogService.logInboundMessage(
+        from,
+        message.type || 'unknown',
+        this.extractMessageContent(message),
+        message,
+      );
+    } catch (error) {
+      console.error(
+        'Failed to log inbound message, continuing with processing:',
+        error,
+      );
+      // Continue processing even if logging fails (graceful degradation)
+    }
 
     // CRITICAL: Check if this is a role selection button click BEFORE role detection
     const buttonReply =
@@ -190,7 +211,8 @@ export class WhatsappBotService {
     // WhatsApp sends international format (2348184350211)
     // But DB might have local format (08184350211)
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-    const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+    const strippedFrom = from.replace(/^\+/, '');
+    const localPhone = strippedFrom.startsWith('234') ? '0' + strippedFrom.slice(3) : from;
 
     console.log('🔍 Phone number formats:', {
       original: from,
@@ -204,6 +226,7 @@ export class WhatsappBotService {
         { phone_number: from },
         { phone_number: normalizedPhone },
         { phone_number: localPhone },
+        { phone_number: strippedFrom },
       ],
       relations: ['accounts'],
     });
@@ -928,11 +951,11 @@ export class WhatsappBotService {
           `Account Info for ${this.utilService.toSentenceCase(
             teamMemberAccountInfo.account.profile_name,
           )}:\n\n` +
-            `- Email: ${teamMemberAccountInfo.account.email}\n` +
-            `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-            `- Role: ${this.utilService.toSentenceCase(
-              teamMemberAccountInfo.account.role,
-            )}`,
+          `- Email: ${teamMemberAccountInfo.account.email}\n` +
+          `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
+          `- Role: ${this.utilService.toSentenceCase(
+            teamMemberAccountInfo.account.role,
+          )}`,
         );
 
         await this.sendText(
@@ -1126,7 +1149,8 @@ export class WhatsappBotService {
 
       // FIXED: Use multi-format phone lookup
       const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-      const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+      const strippedFrom = from.replace(/^\+/, '');
+      const localPhone = strippedFrom.startsWith('234') ? '0' + strippedFrom.slice(3) : from;
 
       const user = await this.usersRepo.findOne({
         where: [
@@ -1136,6 +1160,7 @@ export class WhatsappBotService {
             accounts: { role: RolesEnum.TENANT },
           },
           { phone_number: localPhone, accounts: { role: RolesEnum.TENANT } },
+          { phone_number: strippedFrom, accounts: { role: RolesEnum.TENANT } },
         ],
         relations: ['accounts'],
       });
@@ -1291,9 +1316,8 @@ export class WhatsappBotService {
       serviceRequests.forEach((req: any, i) => {
         response += `${req.description} (${new Date(
           req.created_at,
-        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
-          req.notes || '——'
-        }\n\n`;
+        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'
+          }\n\n`;
       });
 
       await this.sendText(from, response);
@@ -1310,7 +1334,8 @@ export class WhatsappBotService {
     } else {
       // FIXED: Use multi-format phone lookup like in handleMessage
       const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-      const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+      const strippedFrom = from.replace(/^\+/, '');
+      const localPhone = strippedFrom.startsWith('234') ? '0' + strippedFrom.slice(3) : from;
 
       const user = await this.usersRepo.findOne({
         where: [
@@ -1320,6 +1345,7 @@ export class WhatsappBotService {
             accounts: { role: RolesEnum.TENANT },
           },
           { phone_number: localPhone, accounts: { role: RolesEnum.TENANT } },
+          { phone_number: strippedFrom, accounts: { role: RolesEnum.TENANT } },
         ],
         relations: ['accounts'],
       });
@@ -2732,6 +2758,31 @@ export class WhatsappBotService {
 
   async sendToWhatsappAPI(payload: object) {
     try {
+      // INTERCEPTION FOR LOCAl SIMULATOR
+      // INTERCEPTION FOR LOCAl SIMULATOR
+      if (this.config.get('WHATSAPP_SIMULATOR') === 'true') {
+        console.log('Intercepting WhatsApp outgoing message for simulator');
+        this.eventEmitter.emit('whatsapp.outbound', payload);
+
+        // Log outbound message even in simulator mode for consistency
+        try {
+          const recipientPhone = (payload as any)?.to;
+          if (recipientPhone) {
+            console.log('Simulating log for:', recipientPhone);
+            await this.chatLogService.logOutboundMessage(
+              recipientPhone,
+              this.extractPayloadMessageType(payload),
+              this.extractPayloadContent(payload),
+              { ...payload, is_simulated: true },
+              'sim_msg_id_' + Date.now(),
+            );
+          }
+        } catch (e) {
+          console.error('Simulator log error', e);
+        }
+        return { messaging_product: 'whatsapp', contacts: [{ input: 'sim_input', wa_id: 'sim_wa_id' }], messages: [{ id: 'sim_msg_id_' + Date.now() }] };
+      }
+
       const phoneNumberId = this.config.get('WA_PHONE_NUMBER_ID');
       if (!phoneNumberId) {
         throw new Error('WhatsApp phone number ID is not configured.');
@@ -2757,10 +2808,103 @@ export class WhatsappBotService {
         throw new Error(`WhatsApp API Error: ${JSON.stringify(data)}`);
       }
 
+      // Log outbound message with graceful error handling
+      try {
+        const wamid = data?.messages?.[0]?.id;
+        const recipientPhone = (payload as any)?.to;
+
+        if (recipientPhone) {
+          await this.chatLogService.logOutboundMessage(
+            recipientPhone,
+            this.extractPayloadMessageType(payload),
+            this.extractPayloadContent(payload),
+            payload,
+            wamid,
+          );
+        }
+      } catch (error) {
+        console.error(
+          'Failed to log outbound message, continuing with response:',
+          error,
+        );
+        // Continue processing even if logging fails (graceful degradation)
+      }
+
       return data;
     } catch (error) {
       console.error('Error sending to WhatsApp API:', error);
       throw error;
     }
+  }
+
+  /**
+   * Helper method to extract content from incoming messages
+   */
+  private extractMessageContent(message: any): string {
+    if (message.text?.body) {
+      return message.text.body;
+    }
+    if (message.interactive?.button_reply?.title) {
+      return `Button: ${message.interactive.button_reply.title}`;
+    }
+    if (message.interactive?.list_reply?.title) {
+      return `List: ${message.interactive.list_reply.title}`;
+    }
+    if (message.button?.text) {
+      return `Button: ${message.button.text}`;
+    }
+    if (message.image) {
+      return `Image message (ID: ${message.image.id || 'unknown'})`;
+    }
+    if (message.document) {
+      return `Document: ${message.document.filename || 'unknown'}`;
+    }
+    if (message.audio) {
+      return `Audio message (ID: ${message.audio.id || 'unknown'})`;
+    }
+    if (message.video) {
+      return `Video message (ID: ${message.video.id || 'unknown'})`;
+    }
+    if (message.location) {
+      return `Location: ${message.location.latitude}, ${message.location.longitude}`;
+    }
+    return 'Unknown message content';
+  }
+
+  /**
+   * Helper method to extract message type from outbound payload
+   */
+  private extractPayloadMessageType(payload: any): string {
+    if (payload.text) return 'text';
+    if (payload.interactive) return 'interactive';
+    if (payload.template) return 'template';
+    if (payload.image) return 'image';
+    if (payload.document) return 'document';
+    if (payload.audio) return 'audio';
+    if (payload.video) return 'video';
+    if (payload.location) return 'location';
+    return 'unknown';
+  }
+
+  /**
+   * Helper method to extract content from outbound payload
+   */
+  private extractPayloadContent(payload: any): string {
+    if (payload.text?.body) {
+      return payload.text.body;
+    }
+    if (payload.interactive?.body?.text) {
+      return payload.interactive.body.text;
+    }
+    if (payload.template?.name) {
+      return `Template: ${payload.template.name}`;
+    }
+    if (payload.image?.caption) {
+      return `Image: ${payload.image.caption}`;
+    }
+    if (payload.document?.filename) {
+      return `Document: ${payload.document.filename}`;
+    }
+    return 'Outbound message content';
   }
 }

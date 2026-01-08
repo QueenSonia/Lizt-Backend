@@ -18,6 +18,13 @@ import { LandlordFlow } from './templates/landlord/landlordflow';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { UtilsModule } from 'src/utils/utils.module';
 import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
+import { ChatLog } from './entities/chat-log.entity';
+import { ChatLogService } from './chat-log.service';
+import { MessageStatusTracker } from './message-status-tracker.service';
+import { WebhookHandler } from './webhook-handler.service';
+import { ChatHistoryModule } from './chat-history.module';
+import { SimulatorGateway } from './simulator/simulator.gateway';
+import { SimulatorController } from './simulator/simulator.controller';
 
 @Module({
   imports: [
@@ -30,14 +37,29 @@ import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
       Property,
       Account,
       Rent,
+      ChatLog,
     ]),
     ServiceRequestsModule,
     forwardRef(() => UsersModule),
     UtilsModule,
     forwardRef(() => KYCLinksModule),
+    ChatHistoryModule,
   ],
-  controllers: [WhatsappBotController],
-  providers: [WhatsappBotService, LandlordFlow],
-  exports: [WhatsappBotService],
+  controllers: [WhatsappBotController, SimulatorController],
+  providers: [
+    WhatsappBotService,
+    LandlordFlow,
+    ChatLogService,
+    MessageStatusTracker,
+    WebhookHandler,
+    SimulatorGateway,
+  ],
+  exports: [
+    WhatsappBotService,
+    ChatLogService,
+    MessageStatusTracker,
+    WebhookHandler,
+    SimulatorGateway,
+  ],
 })
-export class WhatsappBotModule {}
+export class WhatsappBotModule { }

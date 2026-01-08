@@ -36,7 +36,7 @@ import { UploadNoticeDocumentDto } from './dto/uplaod-notice-document.dto';
 @ApiTags('Notice-Agreements')
 @Controller('notice-agreement')
 export class NoticeAgreementController {
-  constructor(private readonly service: NoticeAgreementService) { }
+  constructor(private readonly service: NoticeAgreementService) {}
 
   @ApiOperation({ summary: 'Get All Notice Agreements' })
   @ApiOkResponse({

@@ -8,6 +8,8 @@ import {
   Req,
   Res,
   HttpCode,
+  BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
@@ -23,12 +25,16 @@ import {
 } from './utils';
 import { isRequestSignatureValid } from './utils/validate-request';
 import { Public } from 'src/auth/public.decorator';
+import { WebhookHandler } from './webhook-handler.service';
 
 @Controller('whatsapp')
 export class WhatsappBotController {
+  private readonly logger = new Logger(WhatsappBotController.name);
+
   constructor(
     private readonly whatsappBotService: WhatsappBotService,
     private readonly config: ConfigService,
+    private readonly webhookHandler: WebhookHandler,
   ) {}
 
   @SkipAuth()
@@ -52,13 +58,44 @@ export class WhatsappBotController {
   @Post('webhook')
   async create(@Body() payload: WhatsAppWebhookPayload) {
     try {
+      this.logger.log('Received webhook payload');
+
+      // Validate payload structure
+      // Validates: Requirements 5.5
+      if (!this.webhookHandler.validateWebhookPayload(payload)) {
+        this.logger.warn('Received malformed webhook payload');
+        throw new BadRequestException('Invalid webhook payload structure');
+      }
+
+      // Process the webhook payload using the WebhookHandler
+      // This handles both message webhooks and status update webhooks
+      // Validates: Requirements 5.4, 5.5
+      await this.webhookHandler.processWebhookPayload(payload);
+
+      // Legacy message handling for backward compatibility
+      // This ensures existing functionality continues to work
       const value: any = payload?.entry?.[0]?.changes?.[0]?.value;
       const messages = value?.messages;
       if (Array.isArray(messages)) {
         await this.whatsappBotService.handleMessage(messages);
       }
+
+      this.logger.log('Successfully processed webhook payload');
     } catch (error) {
-      console.error('Webhook error:', error);
+      this.logger.error('Webhook processing error:', error);
+
+      // For malformed payloads, throw BadRequestException
+      // Validates: Requirements 5.5
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      // For other errors, log but don't throw to ensure webhook reliability
+      // Validates: Requirements 5.2
+      this.logger.error(
+        'Non-critical webhook error, continuing operation:',
+        error,
+      );
     }
   }
 

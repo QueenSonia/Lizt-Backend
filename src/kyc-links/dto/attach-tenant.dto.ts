@@ -29,8 +29,6 @@ export class AttachTenantDto {
   @Min(1, { message: 'Rent amount must be greater than 0' })
   rentAmount: number;
 
-
-
   @ApiProperty({
     example: RentFrequency.MONTHLY,
     description: 'Frequency of rent payment',
@@ -48,8 +46,6 @@ export class AttachTenantDto {
   @IsOptional()
   @IsDateString({ strict: false })
   tenancyStartDate?: string;
-
-
 
   @ApiProperty({
     example: 100000,

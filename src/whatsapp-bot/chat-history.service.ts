@@ -13,6 +13,7 @@ export interface ChatHistoryOptions {
   status?: MessageStatus;
   direction?: MessageDirection;
   messageType?: string;
+  simulatedOnly?: boolean;
 }
 
 export interface DeliveryStats {
@@ -48,6 +49,7 @@ export interface SearchOptions {
   messageType?: string;
   limit?: number;
   offset?: number;
+  simulatedOnly?: boolean;
 }
 
 @Injectable()
@@ -291,6 +293,15 @@ export class ChatHistoryService {
         messageType: options.messageType,
       });
     }
+
+    if (options.simulatedOnly === true) {
+      // Filter for messages that have simulation metadata
+      queryBuilder.andWhere(
+        "(chat_log.metadata->>'is_simulated' = 'true' OR " +
+          "chat_log.metadata->>'simulation_status' = 'simulator_message' OR " +
+          "chat_log.metadata->>'message_source' = 'whatsapp_simulator')",
+      );
+    }
   }
 
   /**
@@ -355,6 +366,16 @@ export class ChatHistoryService {
       queryBuilder[condition]('chat_log.message_type = :messageType', {
         messageType: searchOptions.messageType,
       });
+      hasConditions = true;
+    }
+
+    if (searchOptions.simulatedOnly === true) {
+      const condition = hasConditions ? 'andWhere' : 'where';
+      queryBuilder[condition](
+        "(chat_log.metadata->>'is_simulated' = 'true' OR " +
+          "chat_log.metadata->>'simulation_status' = 'simulator_message' OR " +
+          "chat_log.metadata->>'message_source' = 'whatsapp_simulator')",
+      );
       hasConditions = true;
     }
 
@@ -448,5 +469,31 @@ export class ChatHistoryService {
       readRate: Math.round(readRate * 100) / 100,
       commonErrors,
     };
+  }
+
+  /**
+   * Mark inbound messages as read when landlord views chat
+   */
+  async markInboundMessagesAsRead(phoneNumber: string): Promise<void> {
+    try {
+      const result = await this.chatLogRepository.update(
+        {
+          phone_number: phoneNumber,
+          direction: MessageDirection.INBOUND,
+          status: MessageStatus.DELIVERED,
+        },
+        { status: MessageStatus.READ },
+      );
+
+      this.logger.log(
+        `Marked ${result.affected} inbound messages as read for ${phoneNumber}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to mark inbound messages as read for ${phoneNumber}:`,
+        error,
+      );
+      throw error;
+    }
   }
 }

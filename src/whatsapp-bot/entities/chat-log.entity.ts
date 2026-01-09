@@ -35,7 +35,7 @@ export class ChatLog {
   content: string;
 
   @Column({ type: 'jsonb', nullable: true })
-  metadata: any;
+  metadata: Record<string, any>;
 
   @Column({ type: 'varchar', nullable: true, unique: true })
   whatsapp_message_id: string;

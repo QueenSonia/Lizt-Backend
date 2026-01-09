@@ -30,7 +30,7 @@ export class ChatHistoryController {
   constructor(
     private readonly chatHistoryService: ChatHistoryService,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   /**
    * Get chat history for a specific phone number
@@ -44,7 +44,9 @@ export class ChatHistoryController {
     let normalizedPhone = phoneNumber;
     try {
       normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
-      this.logger.log(`Getting chat history for phone number: ${normalizedPhone} (original: ${phoneNumber})`);
+      this.logger.log(
+        `Getting chat history for phone number: ${normalizedPhone} (original: ${phoneNumber})`,
+      );
 
       // Validate phone number format (basic validation)
       if (!normalizedPhone || normalizedPhone.trim().length === 0) {
@@ -61,6 +63,7 @@ export class ChatHistoryController {
           ? new Date(queryDto.startDate)
           : undefined,
         endDate: queryDto.endDate ? new Date(queryDto.endDate) : undefined,
+        simulatedOnly: queryDto.simulatedOnly,
       };
 
       // Validate date range
@@ -86,13 +89,13 @@ export class ChatHistoryController {
       const hasMore = messages.length === limit;
       const page = Math.floor(offset / limit) + 1;
 
-      const response: ChatHistoryResponseDto = {
+      const response = ChatHistoryResponseDto.fromChatLogs(
         messages,
-        total: messages.length,
+        messages.length,
         page,
         limit,
         hasMore,
-      };
+      );
 
       this.logger.log(
         `Retrieved ${messages.length} messages for phone number: ${normalizedPhone}`,
@@ -111,6 +114,50 @@ export class ChatHistoryController {
 
       throw new HttpException(
         'Failed to retrieve chat history',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Mark inbound messages as read when landlord views chat
+   */
+  @Get(':phoneNumber/mark-read')
+  async markMessagesAsRead(
+    @Param('phoneNumber') phoneNumber: string,
+  ): Promise<{ success: boolean; message: string }> {
+    let normalizedPhone = phoneNumber;
+    try {
+      normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
+      this.logger.log(
+        `Marking messages as read for phone number: ${normalizedPhone}`,
+      );
+
+      if (!normalizedPhone || normalizedPhone.trim().length === 0) {
+        throw new HttpException(
+          'Phone number is required',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      await this.chatHistoryService.markInboundMessagesAsRead(normalizedPhone);
+
+      return {
+        success: true,
+        message: 'Messages marked as read successfully',
+      };
+    } catch (error) {
+      this.logger.error(
+        `Failed to mark messages as read for ${normalizedPhone}:`,
+        error,
+      );
+
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      throw new HttpException(
+        'Failed to mark messages as read',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

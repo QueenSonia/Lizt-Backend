@@ -61,13 +61,31 @@ export class ChatLogService {
     metadata: any,
   ): Promise<ChatLog> {
     try {
+      // Extract whatsapp_message_id from metadata to prevent duplicates
+      const whatsappMessageId = metadata?.whatsapp_message_id;
+
+      // Check if message already exists to prevent duplicates
+      if (whatsappMessageId) {
+        const existingMessage = await this.chatLogRepository.findOne({
+          where: { whatsapp_message_id: whatsappMessageId },
+        });
+
+        if (existingMessage) {
+          this.logger.log(
+            `Message with ID ${whatsappMessageId} already exists, skipping duplicate`,
+          );
+          return existingMessage;
+        }
+      }
+
       const chatLog = this.chatLogRepository.create({
         phone_number: phoneNumber,
         direction: MessageDirection.INBOUND,
         message_type: messageType,
         content,
         metadata,
-        status: MessageStatus.SENT, // Inbound messages are considered "sent" by the user
+        whatsapp_message_id: whatsappMessageId, // Set the whatsapp_message_id field
+        status: MessageStatus.DELIVERED, // Inbound messages are delivered when received
       });
 
       const savedLog = await this.chatLogRepository.save(chatLog);
@@ -100,6 +118,20 @@ export class ChatLogService {
     whatsappMessageId?: string,
   ): Promise<ChatLog> {
     try {
+      // Check if message already exists to prevent duplicates
+      if (whatsappMessageId) {
+        const existingMessage = await this.chatLogRepository.findOne({
+          where: { whatsapp_message_id: whatsappMessageId },
+        });
+
+        if (existingMessage) {
+          this.logger.log(
+            `Outbound message with ID ${whatsappMessageId} already exists, skipping duplicate`,
+          );
+          return existingMessage;
+        }
+      }
+
       const chatLog = this.chatLogRepository.create({
         phone_number: phoneNumber,
         direction: MessageDirection.OUTBOUND,
@@ -157,6 +189,64 @@ export class ChatLogService {
     } catch (error) {
       this.logger.error(
         `Failed to update message status for WAMID ${wamid}:`,
+        error,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Update inbound message status (for tenant messages)
+   * Used when bot processes/reads tenant messages
+   */
+  async updateInboundMessageStatus(
+    messageId: string,
+    status: MessageStatus,
+  ): Promise<void> {
+    try {
+      const result = await this.chatLogRepository.update(
+        { id: messageId, direction: MessageDirection.INBOUND },
+        { status },
+      );
+
+      if (result.affected === 0) {
+        this.logger.warn(`No inbound message found with ID: ${messageId}`);
+        return;
+      }
+
+      this.logger.log(
+        `Updated inbound message status for ID ${messageId} to ${status}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to update inbound message status for ID ${messageId}:`,
+        error,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Mark inbound messages as read (bulk update for phone number)
+   * Useful when landlord/admin views chat history
+   */
+  async markInboundMessagesAsRead(phoneNumber: string): Promise<void> {
+    try {
+      const result = await this.chatLogRepository.update(
+        {
+          phone_number: phoneNumber,
+          direction: MessageDirection.INBOUND,
+          status: MessageStatus.DELIVERED,
+        },
+        { status: MessageStatus.READ },
+      );
+
+      this.logger.log(
+        `Marked ${result.affected} inbound messages as read for ${phoneNumber}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to mark inbound messages as read for ${phoneNumber}:`,
         error,
       );
       throw error;

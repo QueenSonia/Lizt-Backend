@@ -6,6 +6,7 @@ import {
   IsEnum,
   IsString,
   IsDateString,
+  IsBoolean,
 } from 'class-validator';
 import { MessageStatus } from '../entities/message-status.enum';
 import { MessageDirection } from '../entities/message-direction.enum';
@@ -42,4 +43,8 @@ export class ChatHistoryQueryDto {
   @IsOptional()
   @IsString()
   messageType?: string;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  simulatedOnly?: boolean;
 }

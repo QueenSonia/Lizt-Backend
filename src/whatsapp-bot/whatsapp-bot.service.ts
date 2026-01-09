@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { ILike, Not, Repository } from 'typeorm';
@@ -37,7 +37,8 @@ const MAIN_MENU_BUTTONS = [
 ];
 
 @Injectable()
-export class WhatsappBotService {
+export class WhatsappBotService implements OnModuleInit {
+  private readonly logger = new Logger(WhatsappBotService.name);
   private wa = new WhatsApp();
 
   // ✅ Define timeout in milliseconds
@@ -73,7 +74,36 @@ export class WhatsappBotService {
     private readonly utilService: UtilService,
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
-  ) { }
+  ) {}
+
+  /**
+   * Module initialization - Add configuration validation and startup logging
+   * Requirements: 6.1, 6.2, 6.3, 6.4
+   */
+  async onModuleInit() {
+    this.logger.log('🚀 WhatsApp Bot Service initializing...');
+
+    try {
+      // Validate and log simulation mode configuration
+      await this.validateAndLogSimulationMode();
+
+      // Validate simulator dependencies when simulation mode is active
+      await this.validateSimulatorDependencies();
+
+      // Validate production dependencies when not in simulation mode
+      await this.validateProductionDependencies();
+
+      this.logger.log(
+        '✅ WhatsApp Bot Service initialization completed successfully',
+      );
+    } catch (error) {
+      this.logger.error(
+        '❌ WhatsApp Bot Service initialization failed:',
+        error.message,
+      );
+      throw error;
+    }
+  }
 
   async getNextScreen(decryptedBody) {
     const { screen, data, action } = decryptedBody;
@@ -124,6 +154,65 @@ export class WhatsappBotService {
     throw new Error('Unhandled endpoint request.');
   }
 
+  /**
+   * Get all possible phone number formats for lookup
+   * Handles the mismatch between WhatsApp webhook format and database storage
+   */
+  private getPhoneNumberFormats(phoneNumber: string): string[] {
+    const normalized = this.utilService.normalizePhoneNumber(phoneNumber);
+    const withoutPlus = normalized.startsWith('+')
+      ? normalized.slice(1)
+      : normalized;
+    const local = phoneNumber.startsWith('234')
+      ? '0' + phoneNumber.slice(3)
+      : phoneNumber;
+
+    return [
+      phoneNumber, // Original format from WhatsApp
+      normalized, // +234... format
+      withoutPlus, // 234... format (without +)
+      local, // 0... local format
+    ];
+  }
+
+  /**
+   * Find user by phone number with comprehensive format matching
+   */
+  private async findUserByPhone(
+    phoneNumber: string,
+    role?: RolesEnum,
+  ): Promise<Users | null> {
+    const phoneFormats = this.getPhoneNumberFormats(phoneNumber);
+
+    console.log('🔍 Phone number lookup formats:', {
+      original: phoneNumber,
+      formats: phoneFormats,
+      role: role || 'any',
+    });
+
+    const whereConditions = phoneFormats.map((format) => {
+      const condition: any = { phone_number: format };
+      if (role) {
+        condition.accounts = { role };
+      }
+      return condition;
+    });
+
+    const user = await this.usersRepo.findOne({
+      where: whereConditions,
+      relations: ['accounts'],
+    });
+
+    console.log('👤 User lookup result:', {
+      found: !!user,
+      userId: user?.id,
+      accountsCount: user?.accounts?.length || 0,
+      matchedPhone: user?.phone_number,
+    });
+
+    return user;
+  }
+
   async handleMessage(messages: IncomingMessage[]) {
     const message = messages[0];
     const from = message?.from;
@@ -132,20 +221,44 @@ export class WhatsappBotService {
     console.log('📱 Incoming WhatsApp message from:', from);
     console.log('📨 Full message object:', JSON.stringify(message, null, 2));
 
-    // Log inbound message with graceful error handling
+    // Log inbound message with graceful error handling and simulation status
     try {
+      // Detect if this is a simulator message
+      const isSimulated = this.isSimulatorMessage(message);
+
+      // Enhanced logging with simulation status
+      console.log('📝 Logging inbound message:', {
+        from,
+        messageType: message.type || 'unknown',
+        isSimulated,
+        messageId: message.id,
+      });
+
       await this.chatLogService.logInboundMessage(
         from,
         message.type || 'unknown',
         this.extractMessageContent(message),
-        message,
+        {
+          ...message,
+          is_simulated: isSimulated,
+          simulation_status: isSimulated
+            ? 'simulator_message'
+            : 'production_message',
+        },
       );
+
+      if (isSimulated) {
+        console.log('✅ Successfully logged SIMULATED inbound message');
+      } else {
+        console.log('✅ Successfully logged production inbound message');
+      }
     } catch (error) {
       console.error(
-        'Failed to log inbound message, continuing with processing:',
+        '⚠️ Failed to log inbound message, continuing with processing:',
         error,
       );
       // Continue processing even if logging fails (graceful degradation)
+      // Requirements: 7.3 - Ensure logging errors don't break message flow
     }
 
     // CRITICAL: Check if this is a role selection button click BEFORE role detection
@@ -212,7 +325,9 @@ export class WhatsappBotService {
     // But DB might have local format (08184350211)
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
     const strippedFrom = from.replace(/^\+/, '');
-    const localPhone = strippedFrom.startsWith('234') ? '0' + strippedFrom.slice(3) : from;
+    const localPhone = strippedFrom.startsWith('234')
+      ? '0' + strippedFrom.slice(3)
+      : from;
 
     console.log('🔍 Phone number formats:', {
       original: from,
@@ -951,11 +1066,11 @@ export class WhatsappBotService {
           `Account Info for ${this.utilService.toSentenceCase(
             teamMemberAccountInfo.account.profile_name,
           )}:\n\n` +
-          `- Email: ${teamMemberAccountInfo.account.email}\n` +
-          `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-          `- Role: ${this.utilService.toSentenceCase(
-            teamMemberAccountInfo.account.role,
-          )}`,
+            `- Email: ${teamMemberAccountInfo.account.email}\n` +
+            `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
+            `- Role: ${this.utilService.toSentenceCase(
+              teamMemberAccountInfo.account.role,
+            )}`,
         );
 
         await this.sendText(
@@ -1150,7 +1265,9 @@ export class WhatsappBotService {
       // FIXED: Use multi-format phone lookup
       const normalizedPhone = this.utilService.normalizePhoneNumber(from);
       const strippedFrom = from.replace(/^\+/, '');
-      const localPhone = strippedFrom.startsWith('234') ? '0' + strippedFrom.slice(3) : from;
+      const localPhone = strippedFrom.startsWith('234')
+        ? '0' + strippedFrom.slice(3)
+        : from;
 
       const user = await this.usersRepo.findOne({
         where: [
@@ -1316,8 +1433,9 @@ export class WhatsappBotService {
       serviceRequests.forEach((req: any, i) => {
         response += `${req.description} (${new Date(
           req.created_at,
-        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'
-          }\n\n`;
+        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
+          req.notes || '——'
+        }\n\n`;
       });
 
       await this.sendText(from, response);
@@ -1335,7 +1453,9 @@ export class WhatsappBotService {
       // FIXED: Use multi-format phone lookup like in handleMessage
       const normalizedPhone = this.utilService.normalizePhoneNumber(from);
       const strippedFrom = from.replace(/^\+/, '');
-      const localPhone = strippedFrom.startsWith('234') ? '0' + strippedFrom.slice(3) : from;
+      const localPhone = strippedFrom.startsWith('234')
+        ? '0' + strippedFrom.slice(3)
+        : from;
 
       const user = await this.usersRepo.findOne({
         where: [
@@ -1467,12 +1587,24 @@ export class WhatsappBotService {
         break;
 
       case 'view_tenancy': {
-        // FIXED: Use multi-format phone lookup
+        // FIXED: Use comprehensive multi-format phone lookup
         const normalizedPhoneViewTenancy =
           this.utilService.normalizePhoneNumber(from);
         const localPhoneViewTenancy = from.startsWith('234')
           ? '0' + from.slice(3)
           : from;
+
+        // Additional format: without + prefix (common in WhatsApp webhooks)
+        const withoutPlusPrefix = normalizedPhoneViewTenancy.startsWith('+')
+          ? normalizedPhoneViewTenancy.slice(1)
+          : normalizedPhoneViewTenancy;
+
+        console.log('🔍 Phone number lookup formats:', {
+          original: from,
+          normalized: normalizedPhoneViewTenancy,
+          local: localPhoneViewTenancy,
+          withoutPlus: withoutPlusPrefix,
+        });
 
         const user = await this.usersRepo.findOne({
           where: [
@@ -1485,11 +1617,26 @@ export class WhatsappBotService {
               phone_number: localPhoneViewTenancy,
               accounts: { role: RolesEnum.TENANT },
             },
+            {
+              phone_number: withoutPlusPrefix,
+              accounts: { role: RolesEnum.TENANT },
+            },
           ],
           relations: ['accounts'],
         });
 
+        console.log('👤 User lookup result:', {
+          found: !!user,
+          userId: user?.id,
+          accountsCount: user?.accounts?.length || 0,
+          accounts: user?.accounts?.map((acc) => ({
+            id: acc.id,
+            role: acc.role,
+          })),
+        });
+
         if (!user?.accounts?.length) {
+          console.log('❌ No user found with tenant account for phone:', from);
           await this.sendText(from, 'No tenancy info available.');
           return;
         }
@@ -1526,7 +1673,38 @@ export class WhatsappBotService {
         }
 
         for (const item of properties) {
+          // Check if rent data exists
+          if (!item.property?.rents?.length) {
+            console.log(
+              '⚠️ No rent data found for property:',
+              item.property?.name,
+            );
+            await this.sendText(
+              from,
+              `Property ${item.property?.name || 'Unknown'} found, but no rent details available. Please contact support.`,
+            );
+            continue;
+          }
+
           const rent = item.property.rents[0];
+
+          // Validate rent data
+          if (
+            !rent.rent_start_date ||
+            !rent.expiry_date ||
+            !rent.rental_price
+          ) {
+            console.log(
+              '⚠️ Incomplete rent data for property:',
+              item.property?.name,
+            );
+            await this.sendText(
+              from,
+              `Property ${item.property?.name || 'Unknown'} found, but rent details are incomplete. Please contact support.`,
+            );
+            continue;
+          }
+
           const startDate = new Date(rent.rent_start_date).toLocaleDateString(
             'en-GB',
             {
@@ -1648,6 +1826,19 @@ export class WhatsappBotService {
           ? '0' + from.slice(3)
           : from;
 
+        // Additional format: without + prefix (common in WhatsApp webhooks)
+        const withoutPlusPrefixNewRequest =
+          normalizedPhoneNewRequest.startsWith('+')
+            ? normalizedPhoneNewRequest.slice(1)
+            : normalizedPhoneNewRequest;
+
+        console.log('🔍 Phone number lookup formats (new request):', {
+          original: from,
+          normalized: normalizedPhoneNewRequest,
+          local: localPhoneNewRequest,
+          withoutPlus: withoutPlusPrefixNewRequest,
+        });
+
         const userNewRequest = await this.usersRepo.findOne({
           where: [
             { phone_number: from, accounts: { role: RolesEnum.TENANT } },
@@ -1659,11 +1850,25 @@ export class WhatsappBotService {
               phone_number: localPhoneNewRequest,
               accounts: { role: RolesEnum.TENANT },
             },
+            {
+              phone_number: withoutPlusPrefixNewRequest,
+              accounts: { role: RolesEnum.TENANT },
+            },
           ],
           relations: ['accounts'],
         });
 
+        console.log('👤 User lookup result (new request):', {
+          found: !!userNewRequest,
+          userId: userNewRequest?.id,
+          accountsCount: userNewRequest?.accounts?.length || 0,
+        });
+
         if (!userNewRequest?.accounts?.length) {
+          console.log(
+            '❌ No user found with tenant account for phone (new request):',
+            from,
+          );
           await this.sendText(from, 'No tenancy info available.');
           return;
         }
@@ -1727,6 +1932,13 @@ export class WhatsappBotService {
           ? '0' + from.slice(3)
           : from;
 
+        // Additional format: without + prefix (common in WhatsApp webhooks)
+        const withoutPlusPrefixMainMenu = normalizedPhoneMainMenu.startsWith(
+          '+',
+        )
+          ? normalizedPhoneMainMenu.slice(1)
+          : normalizedPhoneMainMenu;
+
         const userMainMenu = await this.usersRepo.findOne({
           where: [
             { phone_number: from, accounts: { role: RolesEnum.TENANT } },
@@ -1736,6 +1948,10 @@ export class WhatsappBotService {
             },
             {
               phone_number: localPhoneMainMenu,
+              accounts: { role: RolesEnum.TENANT },
+            },
+            {
+              phone_number: withoutPlusPrefixMainMenu,
               accounts: { role: RolesEnum.TENANT },
             },
           ],
@@ -2758,81 +2974,253 @@ export class WhatsappBotService {
 
   async sendToWhatsappAPI(payload: object) {
     try {
-      // INTERCEPTION FOR LOCAl SIMULATOR
-      // INTERCEPTION FOR LOCAl SIMULATOR
-      if (this.config.get('WHATSAPP_SIMULATOR') === 'true') {
-        console.log('Intercepting WhatsApp outgoing message for simulator');
-        this.eventEmitter.emit('whatsapp.outbound', payload);
+      // Enhanced simulation mode detection with improved logging
+      const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+      const isSimulationMode = this.validateSimulationMode(simulatorMode);
 
-        // Log outbound message even in simulator mode for consistency
+      console.log('🎭 Simulation mode detection:', {
+        environmentVariable: simulatorMode,
+        isSimulationMode,
+        messageType: this.extractPayloadMessageType(payload),
+        recipient: (payload as any)?.to,
+      });
+
+      if (isSimulationMode) {
+        console.log('🎭 Simulation mode: Intercepting outbound message');
+        console.log(
+          '📤 Intercepted payload:',
+          JSON.stringify(payload, null, 2),
+        );
+
         try {
+          // Emit to WebSocket gateway for simulator
+          this.eventEmitter.emit('whatsapp.outbound', payload);
+          console.log('✅ Successfully emitted to WebSocket gateway');
+
+          // Log outbound message with simulation flag and enhanced debugging
           const recipientPhone = (payload as any)?.to;
           if (recipientPhone) {
-            console.log('Simulating log for:', recipientPhone);
+            console.log('📝 Logging simulated outbound message:', {
+              recipient: recipientPhone,
+              messageType: this.extractPayloadMessageType(payload),
+              isSimulated: true,
+              simulationMode: 'intercepted',
+            });
+
             await this.chatLogService.logOutboundMessage(
               recipientPhone,
               this.extractPayloadMessageType(payload),
               this.extractPayloadContent(payload),
-              { ...payload, is_simulated: true },
+              {
+                ...payload,
+                is_simulated: true,
+                simulation_status: 'intercepted_by_simulator',
+                simulation_mode: simulatorMode,
+              },
               'sim_msg_id_' + Date.now(),
             );
+            console.log('✅ Successfully logged simulated outbound message');
           }
-        } catch (e) {
-          console.error('Simulator log error', e);
+
+          // Return properly formatted simulated response
+          const simulatedResponse = this.createSimulatedResponse(payload);
+          console.log('📋 Returning simulated response:', simulatedResponse);
+          return simulatedResponse;
+        } catch (simulationError) {
+          console.error(
+            '❌ Error in simulation mode processing:',
+            simulationError,
+          );
+          // Enhanced error handling for simulation mode
+          // Requirements: 7.3, 8.1, 8.4 - Ensure logging errors don't break message flow
+
+          // Enhanced error context for debugging
+          const errorContext = {
+            mode: 'simulation',
+            errorType: simulationError.constructor.name,
+            errorMessage: simulationError.message,
+            recipient: (payload as any)?.to,
+            messageType: this.extractPayloadMessageType(payload),
+            timestamp: new Date().toISOString(),
+          };
+
+          console.error('Simulation error context:', errorContext);
+
+          // Still try to emit to WebSocket even if logging fails
+          try {
+            this.eventEmitter.emit('whatsapp.outbound', payload);
+            console.log(
+              '✅ Successfully emitted to WebSocket despite logging error',
+            );
+          } catch (emitError) {
+            console.error('❌ Failed to emit to WebSocket:', emitError);
+            // Don't throw - continue with response generation
+          }
+
+          // Return simulated response even if other operations fail
+          // Validates: Requirements 8.1, 8.3 - Maintain same error response format
+          const simulatedResponse = this.createSimulatedResponse(payload);
+          console.log(
+            '📋 Returning simulated response despite errors:',
+            simulatedResponse,
+          );
+          return simulatedResponse;
         }
-        return { messaging_product: 'whatsapp', contacts: [{ input: 'sim_input', wa_id: 'sim_wa_id' }], messages: [{ id: 'sim_msg_id_' + Date.now() }] };
       }
+
+      // Production mode: Send to real WhatsApp API
+      console.log('🚀 Production mode: Sending to WhatsApp Cloud API');
 
       const phoneNumberId = this.config.get('WA_PHONE_NUMBER_ID');
-      if (!phoneNumberId) {
-        throw new Error('WhatsApp phone number ID is not configured.');
-      }
-      const response = await fetch(
-        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.config.get('CLOUD_API_ACCESS_TOKEN')}`,
-          },
-          body: JSON.stringify(payload),
-        },
-      );
+      const accessToken = this.config.get('CLOUD_API_ACCESS_TOKEN');
 
-      const data = await response.json();
-      console.log('Response from WhatsApp API:', data);
-      console.log('Response status:', response.status);
+      // Enhanced configuration validation with consistent error format
+      // Validates: Requirements 8.1, 8.3, 8.4
+      if (!phoneNumberId) {
+        const configError = new Error(
+          'WhatsApp phone number ID (WA_PHONE_NUMBER_ID) is not configured.',
+        );
+        console.error('❌ Configuration error:', {
+          error: configError.message,
+          mode: 'production',
+          missingConfig: 'WA_PHONE_NUMBER_ID',
+          timestamp: new Date().toISOString(),
+        });
+        throw configError;
+      }
+      if (!accessToken) {
+        const configError = new Error(
+          'WhatsApp access token (CLOUD_API_ACCESS_TOKEN) is not configured.',
+        );
+        console.error('❌ Configuration error:', {
+          error: configError.message,
+          mode: 'production',
+          missingConfig: 'CLOUD_API_ACCESS_TOKEN',
+          timestamp: new Date().toISOString(),
+        });
+        throw configError;
+      }
+
+      let response;
+      let data;
+
+      try {
+        response = await fetch(
+          `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify(payload),
+          },
+        );
+
+        data = await response.json();
+        console.log('📨 Response from WhatsApp API:', data);
+        console.log('📊 Response status:', response.status);
+      } catch (networkError) {
+        // Enhanced network error handling
+        // Validates: Requirements 8.1, 8.4
+        const errorContext = {
+          mode: 'production',
+          errorType: 'NetworkError',
+          errorMessage: networkError.message,
+          recipient: (payload as any)?.to,
+          messageType: this.extractPayloadMessageType(payload),
+          timestamp: new Date().toISOString(),
+        };
+
+        console.error('❌ Network error calling WhatsApp API:', errorContext);
+        throw new Error(`Network error: ${networkError.message}`);
+      }
 
       if (!response.ok) {
-        console.error('WhatsApp API Error:', data);
-        throw new Error(`WhatsApp API Error: ${JSON.stringify(data)}`);
+        // Enhanced API error handling with consistent format
+        // Validates: Requirements 8.1, 8.3, 8.4
+        const apiErrorContext = {
+          mode: 'production',
+          httpStatus: response.status,
+          httpStatusText: response.statusText,
+          whatsappError: data,
+          recipient: (payload as any)?.to,
+          messageType: this.extractPayloadMessageType(payload),
+          timestamp: new Date().toISOString(),
+        };
+
+        console.error('❌ WhatsApp API Error:', apiErrorContext);
+
+        // Create consistent error message format
+        const errorMessage = `WhatsApp API Error (${response.status}): ${
+          data?.error?.message || response.statusText
+        }`;
+
+        throw new Error(errorMessage);
       }
 
-      // Log outbound message with graceful error handling
+      // Log outbound message with graceful error handling and simulation status
       try {
         const wamid = data?.messages?.[0]?.id;
         const recipientPhone = (payload as any)?.to;
 
         if (recipientPhone) {
+          console.log('📝 Logging production outbound message:', {
+            recipient: recipientPhone,
+            messageType: this.extractPayloadMessageType(payload),
+            isSimulated: false,
+            wamid,
+          });
+
           await this.chatLogService.logOutboundMessage(
             recipientPhone,
             this.extractPayloadMessageType(payload),
             this.extractPayloadContent(payload),
-            payload,
+            {
+              ...payload,
+              is_simulated: false,
+              simulation_status: 'production_message',
+              whatsapp_response: data,
+            },
             wamid,
           );
+          console.log('✅ Successfully logged production outbound message');
         }
-      } catch (error) {
+      } catch (loggingError) {
+        // Enhanced logging error handling
+        // Validates: Requirements 7.3, 8.4 - Ensure logging errors don't break message flow
+        const loggingErrorContext = {
+          mode: 'production',
+          errorType: loggingError.constructor.name,
+          errorMessage: loggingError.message,
+          recipient: (payload as any)?.to,
+          messageType: this.extractPayloadMessageType(payload),
+          timestamp: new Date().toISOString(),
+        };
+
         console.error(
-          'Failed to log outbound message, continuing with response:',
-          error,
+          '⚠️ Failed to log outbound message, continuing with response:',
+          loggingErrorContext,
         );
         // Continue processing even if logging fails (graceful degradation)
       }
 
       return data;
     } catch (error) {
-      console.error('Error sending to WhatsApp API:', error);
+      // Enhanced top-level error handling with consistent format
+      // Validates: Requirements 8.1, 8.2, 8.3, 8.4
+      const errorContext = {
+        errorType: error.constructor.name,
+        errorMessage: error.message,
+        recipient: (payload as any)?.to,
+        messageType: this.extractPayloadMessageType(payload),
+        timestamp: new Date().toISOString(),
+      };
+
+      console.error('❌ Error in sendToWhatsappAPI:', errorContext);
+
+      // Re-throw with enhanced context but maintain original error type
+      // This ensures consistent error handling across both modes
       throw error;
     }
   }
@@ -2872,6 +3260,14 @@ export class WhatsappBotService {
   }
 
   /**
+   * Check if an incoming message is from the simulator
+   * Requirements: 7.1 - Update inbound message logging to handle simulator messages
+   */
+  private isSimulatorMessage(message: any): boolean {
+    return message.is_simulated === true;
+  }
+
+  /**
    * Helper method to extract message type from outbound payload
    */
   private extractPayloadMessageType(payload: any): string {
@@ -2906,5 +3302,198 @@ export class WhatsappBotService {
       return `Document: ${payload.document.filename}`;
     }
     return 'Outbound message content';
+  }
+
+  /**
+   * Validates the WHATSAPP_SIMULATOR environment variable
+   * Requirements: 6.1, 6.2
+   */
+  private validateSimulationMode(simulatorValue: string | undefined): boolean {
+    console.log('🔍 Validating simulation mode configuration:', {
+      rawValue: simulatorValue,
+      type: typeof simulatorValue,
+    });
+
+    if (simulatorValue === undefined || simulatorValue === null) {
+      console.log('✅ Simulation mode disabled (undefined/null)');
+      return false;
+    }
+
+    const normalizedValue = simulatorValue.toString().toLowerCase().trim();
+    console.log('🔄 Normalized value:', normalizedValue);
+
+    if (normalizedValue === 'true') {
+      console.log(
+        '⚠️ WARNING: Simulation mode is ENABLED - no real WhatsApp messages will be sent',
+      );
+      return true;
+    }
+
+    if (normalizedValue === 'false' || normalizedValue === '') {
+      console.log('✅ Simulation mode disabled (false/empty)');
+      return false;
+    }
+
+    console.warn(
+      '⚠️ Invalid WHATSAPP_SIMULATOR value:',
+      simulatorValue,
+      'treating as disabled',
+    );
+    return false;
+  }
+
+  /**
+   * Creates a properly formatted simulated WhatsApp API response
+   * Requirements: 2.5
+   */
+  private createSimulatedResponse(payload: any): any {
+    const recipientPhone = payload?.to || 'unknown';
+    const messageId =
+      'sim_msg_id_' +
+      Date.now() +
+      '_' +
+      Math.random().toString(36).substr(2, 9);
+
+    console.log('🎭 Creating simulated response for:', {
+      recipient: recipientPhone,
+      messageId,
+      messageType: this.extractPayloadMessageType(payload),
+    });
+
+    // Match WhatsApp Cloud API response format exactly
+    const simulatedResponse = {
+      messaging_product: 'whatsapp',
+      contacts: [
+        {
+          input: recipientPhone,
+          wa_id: recipientPhone.replace(/^\+/, ''), // Remove + prefix if present
+        },
+      ],
+      messages: [
+        {
+          id: messageId,
+        },
+      ],
+    };
+
+    console.log('📋 Generated simulated response:', simulatedResponse);
+    return simulatedResponse;
+  }
+
+  /**
+   * Validate and log simulation mode configuration
+   * Requirements: 6.1, 6.2
+   */
+  private async validateAndLogSimulationMode(): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    this.logger.log('📋 Configuration Status:');
+    this.logger.log(`   WHATSAPP_SIMULATOR: ${simulatorMode || 'undefined'}`);
+    this.logger.log(`   Simulation Mode Active: ${isSimulationMode}`);
+
+    if (isSimulationMode) {
+      this.logger.warn('⚠️  WARNING: SIMULATION MODE IS ENABLED');
+      this.logger.warn(
+        '⚠️  No real WhatsApp messages will be sent to WhatsApp Cloud API',
+      );
+      this.logger.warn(
+        '⚠️  All outbound messages will be intercepted and routed to simulator',
+      );
+      this.logger.warn(
+        '⚠️  This should only be used in development/testing environments',
+      );
+    } else {
+      this.logger.log(
+        '✅ Production mode active - messages will be sent to WhatsApp Cloud API',
+      );
+    }
+  }
+
+  /**
+   * Validate simulator dependencies when simulation mode is active
+   * Requirements: 6.3
+   */
+  private async validateSimulatorDependencies(): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    if (!isSimulationMode) {
+      return; // Skip validation if not in simulation mode
+    }
+
+    this.logger.log('🔍 Validating simulator dependencies...');
+
+    // Check if EventEmitter2 is available (required for WebSocket communication)
+    if (!this.eventEmitter) {
+      throw new Error(
+        'EventEmitter2 is required for simulation mode but not available',
+      );
+    }
+
+    // Check if ChatLogService is available (required for message logging)
+    if (!this.chatLogService) {
+      throw new Error(
+        'ChatLogService is required for simulation mode but not available',
+      );
+    }
+
+    // Validate that WebSocket gateway dependencies are available
+    // Note: We can't directly check the gateway here, but we can verify the event emitter works
+    try {
+      // Test event emission capability
+      this.eventEmitter.emit('whatsapp.test', { test: true });
+      this.logger.log('✅ Event emitter is working correctly');
+    } catch (error) {
+      throw new Error(`Event emitter validation failed: ${error.message}`);
+    }
+
+    this.logger.log('✅ All simulator dependencies validated successfully');
+  }
+
+  /**
+   * Validate production dependencies when not in simulation mode
+   * Requirements: 6.4
+   */
+  private async validateProductionDependencies(): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    if (isSimulationMode) {
+      return; // Skip validation if in simulation mode
+    }
+
+    this.logger.log('🔍 Validating production dependencies...');
+
+    const phoneNumberId = this.config.get('WA_PHONE_NUMBER_ID');
+    const accessToken = this.config.get('CLOUD_API_ACCESS_TOKEN');
+
+    const errors: string[] = [];
+
+    if (!phoneNumberId) {
+      errors.push(
+        'WA_PHONE_NUMBER_ID environment variable is required for production mode',
+      );
+    }
+
+    if (!accessToken) {
+      errors.push(
+        'CLOUD_API_ACCESS_TOKEN environment variable is required for production mode',
+      );
+    }
+
+    if (errors.length > 0) {
+      const errorMessage = `Production configuration validation failed:\n${errors.map((err) => `  - ${err}`).join('\n')}`;
+      this.logger.error('❌ ' + errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    this.logger.log('✅ All production dependencies validated successfully');
+    this.logger.log(
+      `   Phone Number ID: ${phoneNumberId ? '***configured***' : 'missing'}`,
+    );
+    this.logger.log(
+      `   Access Token: ${accessToken ? '***configured***' : 'missing'}`,
+    );
   }
 }

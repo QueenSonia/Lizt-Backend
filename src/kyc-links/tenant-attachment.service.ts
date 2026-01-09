@@ -57,7 +57,7 @@ export class TenantAttachmentService {
     private readonly dataSource: DataSource,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   /**
    * Attach tenant to property with tenancy details

@@ -77,12 +77,18 @@ export class LandlordLookup {
       return;
     }
 
-    // Fetch all vacant properties
+    // Fetch all vacant and ready for marketing properties
     const properties = await this.propertyRepo.find({
-      where: {
-        owner_id: ownerUser.accounts[0].id,
-        property_status: PropertyStatusEnum.VACANT,
-      },
+      where: [
+        {
+          owner_id: ownerUser.accounts[0].id,
+          property_status: PropertyStatusEnum.VACANT,
+        },
+        {
+          owner_id: ownerUser.accounts[0].id,
+          property_status: PropertyStatusEnum.READY_FOR_MARKETING,
+        },
+      ],
     });
 
     if (!properties.length) {

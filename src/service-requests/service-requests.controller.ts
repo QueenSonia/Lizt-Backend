@@ -51,7 +51,7 @@ export class ServiceRequestsController {
   constructor(
     private readonly serviceRequestsService: ServiceRequestsService,
     private readonly fileUploadService: FileUploadService,
-  ) { }
+  ) {}
 
   @ApiOperation({ summary: 'Create Service Request' })
   @ApiConsumes('multipart/form-data')
@@ -164,7 +164,10 @@ export class ServiceRequestsController {
     @Req() req: any,
   ) {
     try {
-      return this.serviceRequestsService.getServiceRequestById(id, req?.user?.id);
+      return this.serviceRequestsService.getServiceRequestById(
+        id,
+        req?.user?.id,
+      );
     } catch (error) {
       throw error;
     }

@@ -40,7 +40,7 @@ export class NoticeAgreementService {
     private readonly accountRepo: Repository<Account>,
     private readonly fileUploadService: FileUploadService,
     private readonly eventEmitter: EventEmitter2,
-  ) { }
+  ) {}
 
   async create(dto: CreateNoticeAgreementDto) {
     const property = await this.propertyRepo.findOne({
@@ -305,4 +305,3 @@ export class NoticeAgreementService {
     });
   }
 }
-

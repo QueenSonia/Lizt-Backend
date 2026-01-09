@@ -34,12 +34,14 @@ export class RentsService {
     @InjectRepository(RentIncrease)
     private readonly rentIncreaseRepository: Repository<RentIncrease>,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   async payRent(data: any): Promise<Rent> {
     const { rent_start_date, lease_agreement_end_date } = data;
     data.rent_start_date = DateService.getStartOfTheDay(rent_start_date);
-    data.lease_agreement_end_date = DateService.getEndOfTheDay(lease_agreement_end_date);
+    data.lease_agreement_end_date = DateService.getEndOfTheDay(
+      lease_agreement_end_date,
+    );
     return this.rentRepository.save(data);
   }
 

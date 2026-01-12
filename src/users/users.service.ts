@@ -1638,7 +1638,10 @@ export class UsersService {
   }
 
   async getAccountById(id: string): Promise<any> {
-    const user = await this.accountRepository.findOne({ where: { id } });
+    const user = await this.accountRepository.findOne({
+      where: { id },
+      relations: ['user'],
+    });
     if (!user?.id) {
       throw new HttpException(
         `User with id: ${id} not found`,

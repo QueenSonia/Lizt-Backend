@@ -58,6 +58,8 @@ export class LandlordFlow {
       propertyRepo,
       usersRepo,
       accountRepo,
+      propertyTenantRepo,
+      serviceRequestRepo,
       utilService,
       kycLinksService,
     );
@@ -126,6 +128,8 @@ export class LandlordFlow {
       // URL buttons (view_properties, view_maintenance) redirect automatically
       // Only handle the quick reply button
       generate_kyc_link: () => this.lookup.startGenerateKYCLinkFlow(from),
+      view_tenancies: () => this.lookup.handleViewTenancies(from),
+      view_maintenance: () => this.lookup.handleViewMaintenance(from),
     };
 
     const handler = handlers[buttonId];

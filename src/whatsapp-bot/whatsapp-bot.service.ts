@@ -83,6 +83,10 @@ export class WhatsappBotService implements OnModuleInit {
   async onModuleInit() {
     this.logger.log('🚀 WhatsApp Bot Service initializing...');
 
+    // Make EventEmitter available to WhatsappUtils
+    const { WhatsappUtils } = await import('./utils/whatsapp');
+    WhatsappUtils.setEventEmitter(this.eventEmitter);
+
     try {
       // Validate and log simulation mode configuration
       await this.validateAndLogSimulationMode();
@@ -208,9 +212,99 @@ export class WhatsappBotService implements OnModuleInit {
       userId: user?.id,
       accountsCount: user?.accounts?.length || 0,
       matchedPhone: user?.phone_number,
+      accountRoles: user?.accounts?.map((acc) => acc.role) || [],
     });
 
     return user;
+  }
+
+  /**
+   * Find user by email address (for simulator)
+   */
+  private async findUserByEmail(
+    email: string,
+    role?: RolesEnum,
+  ): Promise<Users | null> {
+    console.log('📧 Email lookup:', {
+      email,
+      role: role || 'any',
+    });
+
+    // Look up user by account email
+    const whereCondition: any = { email };
+    if (role) {
+      whereCondition.role = role;
+    }
+
+    const account = await this.accountRepo.findOne({
+      where: whereCondition,
+      relations: ['user'],
+    });
+
+    const user = account?.user || null;
+
+    // CRITICAL: Populate the accounts array for role detection
+    if (user && account) {
+      user.accounts = [account];
+    }
+
+    console.log('👤 Email lookup result:', {
+      found: !!user,
+      userId: user?.id,
+      userPhone: user?.phone_number,
+      accountId: account?.id,
+      accountRole: account?.role,
+      accountsCount: user?.accounts?.length || 0,
+    });
+
+    return user;
+  }
+
+  /**
+   * Convert email address to phone number for simulator mode
+   * If the identifier is an email, look up the user's phone number
+   * Otherwise, return the identifier as-is (assuming it's already a phone number)
+   */
+  private async getPhoneNumberFromIdentifier(
+    identifier: string,
+  ): Promise<string> {
+    const isEmail = identifier.includes('@') && identifier.includes('.');
+
+    if (isEmail) {
+      console.log('🔄 Converting email to phone number for WhatsApp messaging');
+      const user = await this.findUserByEmail(identifier);
+      if (user?.phone_number) {
+        const normalizedPhone = this.utilService.normalizePhoneNumber(
+          user.phone_number,
+        );
+        console.log('📞 Converted email to phone:', {
+          email: identifier,
+          rawPhone: user.phone_number,
+          normalizedPhone,
+        });
+        return normalizedPhone;
+      } else {
+        console.log('⚠️ Could not find phone number for email:', identifier);
+        return identifier; // Fallback to original identifier
+      }
+    }
+
+    return identifier; // Already a phone number
+  }
+  private async findUserByPhoneOrEmail(
+    identifier: string,
+    role?: RolesEnum,
+  ): Promise<Users | null> {
+    // Check if identifier looks like an email
+    const isEmail = identifier.includes('@') && identifier.includes('.');
+
+    if (isEmail) {
+      console.log('🔍 Identifier appears to be email, using email lookup');
+      return this.findUserByEmail(identifier, role);
+    } else {
+      console.log('🔍 Identifier appears to be phone, using phone lookup');
+      return this.findUserByPhone(identifier, role);
+    }
   }
 
   async handleMessage(messages: IncomingMessage[]) {
@@ -221,45 +315,9 @@ export class WhatsappBotService implements OnModuleInit {
     console.log('📱 Incoming WhatsApp message from:', from);
     console.log('📨 Full message object:', JSON.stringify(message, null, 2));
 
-    // Log inbound message with graceful error handling and simulation status
-    try {
-      // Detect if this is a simulator message
-      const isSimulated = this.isSimulatorMessage(message);
-
-      // Enhanced logging with simulation status
-      console.log('📝 Logging inbound message:', {
-        from,
-        messageType: message.type || 'unknown',
-        isSimulated,
-        messageId: message.id,
-      });
-
-      await this.chatLogService.logInboundMessage(
-        from,
-        message.type || 'unknown',
-        this.extractMessageContent(message),
-        {
-          ...message,
-          is_simulated: isSimulated,
-          simulation_status: isSimulated
-            ? 'simulator_message'
-            : 'production_message',
-        },
-      );
-
-      if (isSimulated) {
-        console.log('✅ Successfully logged SIMULATED inbound message');
-      } else {
-        console.log('✅ Successfully logged production inbound message');
-      }
-    } catch (error) {
-      console.error(
-        '⚠️ Failed to log inbound message, continuing with processing:',
-        error,
-      );
-      // Continue processing even if logging fails (graceful degradation)
-      // Requirements: 7.3 - Ensure logging errors don't break message flow
-    }
+    // NOTE: Inbound message logging is now handled by WebhookHandler.processIncomingMessage
+    // to avoid duplicate database entries. This method now only processes the message logic.
+    // DO NOT add logging here - it will duplicate messages when user refreshes the page.
 
     // CRITICAL: Check if this is a role selection button click BEFORE role detection
     const buttonReply =
@@ -295,14 +353,12 @@ export class WhatsappBotService implements OnModuleInit {
         console.log('✅ Verified cache storage:', verify);
 
         // Now show the appropriate menu
-        const user = await this.usersRepo.findOne({
-          where: { phone_number: from },
-          relations: ['accounts'],
-        });
+        const user = await this.findUserByPhoneOrEmail(from);
+        const userPhone = await this.getPhoneNumberFromIdentifier(from);
 
         if (selectedRole === RolesEnum.FACILITY_MANAGER) {
           await this.sendButtons(
-            from,
+            userPhone,
             `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
             [
               { id: 'service_request', title: 'View requests' },
@@ -314,37 +370,18 @@ export class WhatsappBotService implements OnModuleInit {
           const landlordName = this.utilService.toSentenceCase(
             user?.first_name || 'there',
           );
-          await this.sendLandlordMainMenu(from, landlordName);
+          await this.sendLandlordMainMenu(userPhone, landlordName);
         }
         return; // Don't continue with role detection
       }
     }
 
-    // CRITICAL FIX: Try both phone number formats
-    // WhatsApp sends international format (2348184350211)
-    // But DB might have local format (08184350211)
-    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-    const strippedFrom = from.replace(/^\+/, '');
-    const localPhone = strippedFrom.startsWith('234')
-      ? '0' + strippedFrom.slice(3)
-      : from;
+    // CRITICAL FIX: Use unified lookup that handles both phone numbers and emails
+    // WhatsApp sends international format (2348184350211) for real messages
+    // But simulator might send email addresses for landlord chat
+    console.log('🔍 Looking up user with identifier:', from);
 
-    console.log('🔍 Phone number formats:', {
-      original: from,
-      normalized: normalizedPhone,
-      local: localPhone,
-    });
-
-    // Try to find user with either format
-    const user = await this.usersRepo.findOne({
-      where: [
-        { phone_number: from },
-        { phone_number: normalizedPhone },
-        { phone_number: localPhone },
-        { phone_number: strippedFrom },
-      ],
-      relations: ['accounts'],
-    });
+    const user = await this.findUserByPhoneOrEmail(from);
 
     // console.log('👤 User lookup result:', {
     //   found: !!user,
@@ -477,52 +514,73 @@ export class WhatsappBotService implements OnModuleInit {
     });
 
     switch (role) {
-      case RolesEnum.FACILITY_MANAGER:
+      case RolesEnum.FACILITY_MANAGER: {
         console.log('Facility Manager Message');
+
+        // Convert email to phone number for WhatsApp messaging
+        const facilityManagerPhone =
+          await this.getPhoneNumberFromIdentifier(from);
+
         if (message.type === 'interactive' || message.type === 'button') {
-          void this.handleFacilityInteractive(message, from);
+          void this.handleFacilityInteractive(message, facilityManagerPhone);
         }
 
         if (message.type === 'text') {
           console.log('in facility');
-          void this.handleFacilityText(message, from);
+          void this.handleFacilityText(message, facilityManagerPhone);
         }
 
         break;
-      case RolesEnum.TENANT:
+      }
+      case RolesEnum.TENANT: {
         console.log('In tenant');
+
+        // Convert email to phone number for WhatsApp messaging
+        const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
+
         if (message.type === 'interactive' || message.type === 'button') {
-          void this.handleInteractive(message, from);
+          void this.handleInteractive(message, tenantPhone);
         }
 
         if (message.type === 'text') {
-          void this.handleText(message, from);
+          void this.handleText(message, tenantPhone);
         }
         break;
-      case RolesEnum.LANDLORD:
+      }
+      case RolesEnum.LANDLORD: {
         console.log('In Landlord');
+
+        // Convert email to phone number for WhatsApp messaging
+        const landlordPhone = await this.getPhoneNumberFromIdentifier(from);
+
         if (message.type === 'interactive' || message.type === 'button') {
-          void this.flow.handleInteractive(message, from);
+          void this.flow.handleInteractive(message, landlordPhone);
         }
 
         if (message.type === 'text') {
-          void this.flow.handleText(from, message.text?.body as any);
+          void this.flow.handleText(landlordPhone, message.text?.body as any);
         }
 
         break;
-      default:
+      }
+      default: {
         console.log('⚠️ Routing to DEFAULT handler (unrecognized role):', {
           role,
           messageType: message.type,
           from,
         });
+
+        // Convert email to phone number for WhatsApp messaging
+        const defaultPhone = await this.getPhoneNumberFromIdentifier(from);
+
         if (message.type === 'interactive') {
-          void this.handleDefaultInteractive(message, from);
+          void this.handleDefaultInteractive(message, defaultPhone);
         }
 
         if (message.type === 'text') {
-          void this.handleDefaultText(message, from);
+          void this.handleDefaultText(message, defaultPhone);
         }
+      }
     }
   }
 
@@ -957,11 +1015,32 @@ export class WhatsappBotService implements OnModuleInit {
       await this.cache.delete(`service_request_state_facility_${from}`);
       return;
     } else {
+      // Use multi-format phone lookup
+      const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+      const strippedFrom = from.replace(/^\+/, '');
+      const localPhone = strippedFrom.startsWith('234')
+        ? '0' + strippedFrom.slice(3)
+        : from;
+
       const user = await this.usersRepo.findOne({
-        where: {
-          phone_number: `${from}`,
-          accounts: { role: RolesEnum.FACILITY_MANAGER },
-        },
+        where: [
+          {
+            phone_number: from,
+            accounts: { role: RolesEnum.FACILITY_MANAGER },
+          },
+          {
+            phone_number: normalizedPhone,
+            accounts: { role: RolesEnum.FACILITY_MANAGER },
+          },
+          {
+            phone_number: strippedFrom,
+            accounts: { role: RolesEnum.FACILITY_MANAGER },
+          },
+          {
+            phone_number: localPhone,
+            accounts: { role: RolesEnum.FACILITY_MANAGER },
+          },
+        ],
         relations: ['accounts'],
       });
 
@@ -1004,10 +1083,21 @@ export class WhatsappBotService implements OnModuleInit {
       case 'view_all_service_requests':
       case 'service_request': {
         console.log('✅ Matched view_all_service_requests or service_request');
+
+        // Use multi-format phone lookup
+        const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+        const strippedFrom = from.replace(/^\+/, '');
+        const localPhone = strippedFrom.startsWith('234')
+          ? '0' + strippedFrom.slice(3)
+          : from;
+
         const teamMemberInfo = await this.teamMemberRepo.findOne({
-          where: {
-            account: { user: { phone_number: `${from}` } },
-          },
+          where: [
+            { account: { user: { phone_number: from } } },
+            { account: { user: { phone_number: normalizedPhone } } },
+            { account: { user: { phone_number: strippedFrom } } },
+            { account: { user: { phone_number: localPhone } } },
+          ],
           relations: ['team'],
         });
 
@@ -1049,10 +1139,20 @@ export class WhatsappBotService implements OnModuleInit {
       }
 
       case 'view_account_info': {
+        // Use multi-format phone lookup
+        const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+        const strippedFrom = from.replace(/^\+/, '');
+        const localPhone = strippedFrom.startsWith('234')
+          ? '0' + strippedFrom.slice(3)
+          : from;
+
         const teamMemberAccountInfo = await this.teamMemberRepo.findOne({
-          where: {
-            account: { user: { phone_number: `${from}` } },
-          },
+          where: [
+            { account: { user: { phone_number: from } } },
+            { account: { user: { phone_number: normalizedPhone } } },
+            { account: { user: { phone_number: strippedFrom } } },
+            { account: { user: { phone_number: localPhone } } },
+          ],
           relations: ['account', 'account.user'],
         });
 
@@ -2992,14 +3092,20 @@ export class WhatsappBotService implements OnModuleInit {
           JSON.stringify(payload, null, 2),
         );
 
+        // Emit to WebSocket gateway for simulator (do this ONCE, outside try-catch)
         try {
-          // Emit to WebSocket gateway for simulator
           this.eventEmitter.emit('whatsapp.outbound', payload);
           console.log('✅ Successfully emitted to WebSocket gateway');
+        } catch (emitError) {
+          console.error('❌ Failed to emit to WebSocket:', emitError);
+          // Log but continue - we'll still try to log and return response
+        }
 
-          // Log outbound message with simulation flag and enhanced debugging
-          const recipientPhone = (payload as any)?.to;
-          if (recipientPhone) {
+        // Log outbound message with simulation flag and enhanced debugging
+        // Logging errors should not prevent response generation
+        const recipientPhone = (payload as any)?.to;
+        if (recipientPhone) {
+          try {
             console.log('📝 Logging simulated outbound message:', {
               recipient: recipientPhone,
               messageType: this.extractPayloadMessageType(payload),
@@ -3020,52 +3126,25 @@ export class WhatsappBotService implements OnModuleInit {
               'sim_msg_id_' + Date.now(),
             );
             console.log('✅ Successfully logged simulated outbound message');
-          }
-
-          // Return properly formatted simulated response
-          const simulatedResponse = this.createSimulatedResponse(payload);
-          console.log('📋 Returning simulated response:', simulatedResponse);
-          return simulatedResponse;
-        } catch (simulationError) {
-          console.error(
-            '❌ Error in simulation mode processing:',
-            simulationError,
-          );
-          // Enhanced error handling for simulation mode
-          // Requirements: 7.3, 8.1, 8.4 - Ensure logging errors don't break message flow
-
-          // Enhanced error context for debugging
-          const errorContext = {
-            mode: 'simulation',
-            errorType: simulationError.constructor.name,
-            errorMessage: simulationError.message,
-            recipient: (payload as any)?.to,
-            messageType: this.extractPayloadMessageType(payload),
-            timestamp: new Date().toISOString(),
-          };
-
-          console.error('Simulation error context:', errorContext);
-
-          // Still try to emit to WebSocket even if logging fails
-          try {
-            this.eventEmitter.emit('whatsapp.outbound', payload);
-            console.log(
-              '✅ Successfully emitted to WebSocket despite logging error',
+          } catch (loggingError) {
+            console.error(
+              '⚠️ Failed to log simulated outbound message (continuing):',
+              {
+                errorType: loggingError.constructor.name,
+                errorMessage: loggingError.message,
+                recipient: recipientPhone,
+                messageType: this.extractPayloadMessageType(payload),
+                timestamp: new Date().toISOString(),
+              },
             );
-          } catch (emitError) {
-            console.error('❌ Failed to emit to WebSocket:', emitError);
-            // Don't throw - continue with response generation
+            // Continue execution - logging errors should not break message flow
           }
-
-          // Return simulated response even if other operations fail
-          // Validates: Requirements 8.1, 8.3 - Maintain same error response format
-          const simulatedResponse = this.createSimulatedResponse(payload);
-          console.log(
-            '📋 Returning simulated response despite errors:',
-            simulatedResponse,
-          );
-          return simulatedResponse;
         }
+
+        // Return properly formatted simulated response
+        const simulatedResponse = this.createSimulatedResponse(payload);
+        console.log('📋 Returning simulated response:', simulatedResponse);
+        return simulatedResponse;
       }
 
       // Production mode: Send to real WhatsApp API

@@ -3,6 +3,8 @@ import { RolesEnum } from 'src/base.entity';
 import { CacheService } from 'src/lib/cache';
 import { Property } from 'src/properties/entities/property.entity';
 import { PropertyStatusEnum } from 'src/properties/dto/create-property.dto';
+import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { UtilService } from 'src/utils/utility-service';
@@ -23,6 +25,8 @@ export class LandlordLookup {
     private propertyRepo: Repository<Property>,
     private readonly usersRepo: Repository<Users>,
     private readonly accountRepo: Repository<Account>,
+    private readonly propertyTenantRepo: Repository<PropertyTenant>,
+    private readonly serviceRequestRepo: Repository<ServiceRequest>,
     private readonly utilService: UtilService,
     private readonly kycLinksService: KYCLinksService,
   ) {
@@ -64,12 +68,43 @@ export class LandlordLookup {
   }
 
   async startGenerateKYCLinkFlow(from: string) {
-    const ownerUser = await this.usersRepo.findOne({
-      where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+    console.log('🔍 startGenerateKYCLinkFlow called with phone:', from);
+
+    // Use multi-format phone lookup like in other parts of the codebase
+    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const strippedFrom = from.replace(/^\+/, '');
+    const localPhone = strippedFrom.startsWith('234')
+      ? '0' + strippedFrom.slice(3)
+      : from;
+
+    console.log('📞 Phone formats:', {
+      original: from,
+      normalized: normalizedPhone,
+      stripped: strippedFrom,
+      local: localPhone,
+    });
+
+    // Try multiple phone number formats
+    const user = await this.usersRepo.findOne({
+      where: [
+        { phone_number: from },
+        { phone_number: normalizedPhone },
+        { phone_number: strippedFrom },
+        { phone_number: localPhone },
+      ],
       relations: ['accounts'],
     });
 
-    if (!ownerUser?.accounts?.[0]) {
+    console.log('👤 User lookup result:', {
+      found: !!user,
+      userId: user?.id,
+      userPhone: user?.phone_number,
+      accountsCount: user?.accounts?.length || 0,
+      accounts:
+        user?.accounts?.map((acc) => ({ id: acc.id, role: acc.role })) || [],
+    });
+
+    if (!user) {
       await this.whatsappUtil.sendText(
         from,
         'Account not found. Please try again.',
@@ -77,15 +112,37 @@ export class LandlordLookup {
       return;
     }
 
+    // Find the landlord account for this user
+    const landlordAccount = user.accounts?.find(
+      (account) => account.role === RolesEnum.LANDLORD,
+    );
+
+    console.log('🏠 Landlord account lookup:', {
+      found: !!landlordAccount,
+      accountId: landlordAccount?.id,
+      accountRole: landlordAccount?.role,
+      searchingFor: RolesEnum.LANDLORD,
+    });
+
+    if (!landlordAccount) {
+      await this.whatsappUtil.sendText(
+        from,
+        'Landlord account not found. Please try again.',
+      );
+      return;
+    }
+
+    const ownerUser = user;
+
     // Fetch all vacant and ready for marketing properties
     const properties = await this.propertyRepo.find({
       where: [
         {
-          owner_id: ownerUser.accounts[0].id,
+          owner_id: landlordAccount.id,
           property_status: PropertyStatusEnum.VACANT,
         },
         {
-          owner_id: ownerUser.accounts[0].id,
+          owner_id: landlordAccount.id,
           property_status: PropertyStatusEnum.READY_FOR_MARKETING,
         },
       ],
@@ -146,5 +203,170 @@ export class LandlordLookup {
 
       await this.whatsappUtil.sendText(from, errorMessage);
     }
+  }
+
+  async handleViewTenancies(from: string) {
+    // Use multi-format phone lookup like in other parts of the codebase
+    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const strippedFrom = from.replace(/^\+/, '');
+    const localPhone = strippedFrom.startsWith('234')
+      ? '0' + strippedFrom.slice(3)
+      : from;
+
+    // Try multiple phone number formats
+    const user = await this.usersRepo.findOne({
+      where: [
+        { phone_number: from },
+        { phone_number: normalizedPhone },
+        { phone_number: strippedFrom },
+        { phone_number: localPhone },
+      ],
+      relations: ['accounts'],
+    });
+
+    if (!user) {
+      await this.whatsappUtil.sendText(from, 'No tenancy info available.');
+      return;
+    }
+
+    // Find the landlord account for this user
+    const landlordAccount = user.accounts?.find(
+      (account) => account.role === RolesEnum.LANDLORD,
+    );
+
+    if (!landlordAccount) {
+      await this.whatsappUtil.sendText(from, 'Landlord account not found.');
+      return;
+    }
+
+    const propertyTenants = await this.propertyTenantRepo.find({
+      where: { property: { owner_id: landlordAccount.id } },
+      relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
+    });
+
+    if (!propertyTenants?.length) {
+      await this.whatsappUtil.sendText(from, 'No tenancies found.');
+      return;
+    }
+
+    let tenancyMessage = 'Here are your current tenancies:\n';
+    for (const [i, pt] of propertyTenants.entries()) {
+      const latestRent =
+        pt.property.rents?.[pt.property.rents.length - 1] || null;
+      const tenantName = pt.tenant?.user
+        ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`
+        : 'Vacant';
+
+      const rentAmount = latestRent?.rental_price
+        ? latestRent.rental_price.toLocaleString('en-NG', {
+            style: 'currency',
+            currency: 'NGN',
+          })
+        : '——';
+
+      const dueDate = latestRent?.expiry_date
+        ? new Date(latestRent.expiry_date).toLocaleDateString('en-NG', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+          })
+        : '——';
+
+      tenancyMessage += `${i + 1}. ${pt.property.name}\n${tenantName}\n${rentAmount}/yr\nNext rent due: ${dueDate}\n\n`;
+    }
+
+    await this.whatsappUtil.sendText(from, tenancyMessage);
+    await this.whatsappUtil.sendText(
+      from,
+      'Reply with the number of the tenancy you want to view (e.g., 1 for first property).',
+    );
+
+    await this.cache.set(
+      `service_request_state_landlord_${from}`,
+      JSON.stringify({
+        type: 'tenancy',
+        ids: propertyTenants.map((pt) => pt.id),
+        step: 'no_step',
+        data: {},
+      }),
+      this.SESSION_TIMEOUT_MS,
+    );
+  }
+
+  async handleViewMaintenance(from: string) {
+    // Use multi-format phone lookup like in other parts of the codebase
+    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const strippedFrom = from.replace(/^\+/, '');
+    const localPhone = strippedFrom.startsWith('234')
+      ? '0' + strippedFrom.slice(3)
+      : from;
+
+    // Try multiple phone number formats
+    const user = await this.usersRepo.findOne({
+      where: [
+        { phone_number: from },
+        { phone_number: normalizedPhone },
+        { phone_number: strippedFrom },
+        { phone_number: localPhone },
+      ],
+      relations: ['accounts'],
+    });
+
+    if (!user) {
+      await this.whatsappUtil.sendText(from, 'No maintenance info available.');
+      return;
+    }
+
+    // Find the landlord account for this user
+    const landlordAccount = user.accounts?.find(
+      (account) => account.role === RolesEnum.LANDLORD,
+    );
+
+    if (!landlordAccount) {
+      await this.whatsappUtil.sendText(from, 'Landlord account not found.');
+      return;
+    }
+
+    const serviceRequests = await this.serviceRequestRepo.find({
+      where: { property: { owner_id: landlordAccount.id } },
+      relations: ['property', 'tenant', 'tenant.user', 'facilityManager'],
+      order: { date_reported: 'DESC' },
+    });
+
+    if (!serviceRequests?.length) {
+      await this.whatsappUtil.sendText(from, 'No maintenance requests found.');
+      return;
+    }
+
+    let maintenanceMessage = 'Here are open maintenance requests:\n';
+    for (const [i, req] of serviceRequests.entries()) {
+      const reportedDate = new Date(req.date_reported).toLocaleDateString(
+        'en-NG',
+        {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        },
+      );
+
+      maintenanceMessage += `${i + 1}. ${req.property_name} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
+    }
+
+    await this.whatsappUtil.sendText(from, maintenanceMessage);
+    await this.whatsappUtil.sendText(
+      from,
+      'Reply with the number of the request you want to view.',
+    );
+
+    await this.cache.set(
+      `service_request_state_landlord_${from}`,
+      JSON.stringify({
+        type: 'maintenance',
+        ids: serviceRequests.map((req) => req.id),
+        step: 'no_step',
+        data: {},
+      }),
+      this.SESSION_TIMEOUT_MS,
+    );
   }
 }

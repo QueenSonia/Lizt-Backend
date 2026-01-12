@@ -1,7 +1,15 @@
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 export class WhatsappUtils {
+  private static globalEventEmitter: EventEmitter2;
+
   constructor(private readonly config: ConfigService) {}
+
+  static setEventEmitter(eventEmitter: EventEmitter2) {
+    WhatsappUtils.globalEventEmitter = eventEmitter;
+  }
+
   async sendText(to: string, text: string) {
     const payload = {
       messaging_product: 'whatsapp',
@@ -89,6 +97,63 @@ export class WhatsappUtils {
   }
 
   private async sendToWhatsappAPI(payload: object) {
+    // Check simulation mode directly from environment
+    const simulatorMode = process.env.WHATSAPP_SIMULATOR;
+    const isSimulationMode = simulatorMode === 'true';
+
+    if (isSimulationMode) {
+      console.log(
+        '🎭 WhatsappUtils: Simulation mode detected, intercepting message',
+      );
+      console.log(
+        '📤 WhatsappUtils payload:',
+        JSON.stringify(payload, null, 2),
+      );
+
+      // In simulation mode, we need to convert phone numbers back to emails
+      // for proper frontend routing
+      const modifiedPayload = { ...payload };
+      const to = (payload as any).to;
+
+      // If the 'to' field looks like a phone number, try to find the original email
+      if (to && to.startsWith('+') && to.length > 10) {
+        console.log(
+          '🔄 Converting phone number back to email for simulator routing',
+        );
+        // For now, we'll use a simple mapping - in a real app, you'd want a proper lookup
+        if (to === '+2349138834648') {
+          (modifiedPayload as any).to = 'tunjioginni@gmail.com';
+          console.log(
+            '📧 Converted phone to email for simulator:',
+            to,
+            '→',
+            'tunjioginni@gmail.com',
+          );
+        }
+      }
+
+      // Emit to simulator if EventEmitter is available
+      if (WhatsappUtils.globalEventEmitter) {
+        console.log('📡 WhatsappUtils: Emitting to simulator');
+        WhatsappUtils.globalEventEmitter.emit(
+          'whatsapp.outbound',
+          modifiedPayload,
+        );
+      } else {
+        console.log(
+          '⚠️ WhatsappUtils: EventEmitter not available, cannot emit to simulator',
+        );
+      }
+
+      // Return simulated response
+      return {
+        messaging_product: 'whatsapp',
+        contacts: [{ input: (payload as any).to, wa_id: (payload as any).to }],
+        messages: [{ id: `sim_msg_${Date.now()}`, message_status: 'accepted' }],
+      };
+    }
+
+    // Production mode - send to real WhatsApp API
     try {
       const response = await fetch(
         'https://graph.facebook.com/v23.0/746591371864338/messages',
@@ -104,8 +169,10 @@ export class WhatsappUtils {
 
       const data = await response.json();
       console.log('Response from WhatsApp API:', data);
+      return data;
     } catch (error) {
       console.error('Error sending to WhatsApp API:', error);
+      throw error;
     }
   }
 }

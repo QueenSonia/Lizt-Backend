@@ -74,7 +74,7 @@ export class WhatsappBotService implements OnModuleInit {
     private readonly utilService: UtilService,
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
-  ) {}
+  ) { }
 
   /**
    * Module initialization - Add configuration validation and startup logging
@@ -324,7 +324,11 @@ export class WhatsappBotService implements OnModuleInit {
       message.interactive?.button_reply || (message as any).button;
     const buttonId = buttonReply?.id || buttonReply?.payload;
 
-    if (buttonId === 'select_role_fm' || buttonId === 'select_role_landlord') {
+    if (
+      buttonId === 'select_role_fm' ||
+      buttonId === 'select_role_landlord' ||
+      buttonId === 'select_role_tenant'
+    ) {
       console.log('🎯 Role selection button detected, handling directly');
       // Handle role selection in the appropriate handler based on message type
       if (message.type === 'interactive' || message.type === 'button') {
@@ -333,7 +337,9 @@ export class WhatsappBotService implements OnModuleInit {
         const selectedRole =
           buttonId === 'select_role_fm'
             ? RolesEnum.FACILITY_MANAGER
-            : RolesEnum.LANDLORD;
+            : buttonId === 'select_role_landlord'
+              ? RolesEnum.LANDLORD
+              : RolesEnum.TENANT;
 
         console.log('✅ User selected role:', selectedRole);
         console.log(
@@ -366,11 +372,24 @@ export class WhatsappBotService implements OnModuleInit {
               { id: 'visit_site', title: 'Visit website' },
             ],
           );
-        } else {
+        } else if (selectedRole === RolesEnum.LANDLORD) {
           const landlordName = this.utilService.toSentenceCase(
             user?.first_name || 'there',
           );
           await this.sendLandlordMainMenu(userPhone, landlordName);
+        } else {
+          await this.sendButtons(
+            userPhone,
+            `Hello ${this.utilService.toSentenceCase(
+              user?.first_name || '',
+            )} What would you like to do?`,
+            [
+              { id: 'service_request', title: 'Service request' },
+              { id: 'view_tenancy', title: 'View tenancy details' },
+              { id: 'visit_site', title: 'Visit our website' },
+            ],
+            'Tap on any option to continue.',
+          );
         }
         return; // Don't continue with role detection
       }
@@ -444,8 +463,11 @@ export class WhatsappBotService implements OnModuleInit {
         const hasLandlord = user.accounts.some(
           (acc) => acc.role === RolesEnum.LANDLORD,
         );
+        const hasTenant = user.accounts.some(
+          (acc) => acc.role === RolesEnum.TENANT,
+        );
 
-        if (hasMultipleRoles && (hasFM || hasLandlord)) {
+        if (hasMultipleRoles && (hasFM || hasLandlord || hasTenant)) {
           console.log(
             '👥 User has multiple roles, showing role selection menu',
           );
@@ -460,6 +482,9 @@ export class WhatsappBotService implements OnModuleInit {
           }
           if (hasLandlord) {
             roleButtons.push({ id: 'select_role_landlord', title: 'Landlord' });
+          }
+          if (hasTenant) {
+            roleButtons.push({ id: 'select_role_tenant', title: 'Tenant' });
           }
 
           await this.sendButtons(
@@ -1166,11 +1191,11 @@ export class WhatsappBotService implements OnModuleInit {
           `Account Info for ${this.utilService.toSentenceCase(
             teamMemberAccountInfo.account.profile_name,
           )}:\n\n` +
-            `- Email: ${teamMemberAccountInfo.account.email}\n` +
-            `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-            `- Role: ${this.utilService.toSentenceCase(
-              teamMemberAccountInfo.account.role,
-            )}`,
+          `- Email: ${teamMemberAccountInfo.account.email}\n` +
+          `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
+          `- Role: ${this.utilService.toSentenceCase(
+            teamMemberAccountInfo.account.role,
+          )}`,
         );
 
         await this.sendText(
@@ -1533,9 +1558,8 @@ export class WhatsappBotService implements OnModuleInit {
       serviceRequests.forEach((req: any, i) => {
         response += `${req.description} (${new Date(
           req.created_at,
-        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
-          req.notes || '——'
-        }\n\n`;
+        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'
+          }\n\n`;
       });
 
       await this.sendText(from, response);
@@ -1605,11 +1629,17 @@ export class WhatsappBotService implements OnModuleInit {
     console.log(buttonId, 'bID');
 
     // Handle role selection buttons
-    if (buttonId === 'select_role_fm' || buttonId === 'select_role_landlord') {
+    if (
+      buttonId === 'select_role_fm' ||
+      buttonId === 'select_role_landlord' ||
+      buttonId === 'select_role_tenant'
+    ) {
       const selectedRole =
         buttonId === 'select_role_fm'
           ? RolesEnum.FACILITY_MANAGER
-          : RolesEnum.LANDLORD;
+          : buttonId === 'select_role_landlord'
+            ? RolesEnum.LANDLORD
+            : RolesEnum.TENANT;
 
       console.log('✅ User selected role:', selectedRole);
       console.log(
@@ -1646,7 +1676,7 @@ export class WhatsappBotService implements OnModuleInit {
             { id: 'visit_site', title: 'Visit Website' },
           ],
         );
-      } else {
+      } else if (selectedRole === RolesEnum.LANDLORD) {
         const user = await this.usersRepo.findOne({
           where: { phone_number: from },
           relations: ['accounts'],
@@ -1660,6 +1690,24 @@ export class WhatsappBotService implements OnModuleInit {
             { id: 'view_maintenance', title: 'Maintenance requests' },
             { id: 'generate_kyc_link', title: 'Generate KYC link' },
           ],
+        );
+      } else {
+        const user = await this.usersRepo.findOne({
+          where: { phone_number: from },
+          relations: ['accounts'],
+        });
+
+        await this.sendButtons(
+          from,
+          `Hello ${this.utilService.toSentenceCase(
+            user?.first_name || '',
+          )} What would you like to do?`,
+          [
+            { id: 'service_request', title: 'Service request' },
+            { id: 'view_tenancy', title: 'View tenancy details' },
+            { id: 'visit_site', title: 'Visit our website' },
+          ],
+          'Tap on any option to continue.',
         );
       }
       return;
@@ -3231,9 +3279,8 @@ export class WhatsappBotService implements OnModuleInit {
         console.error('❌ WhatsApp API Error:', apiErrorContext);
 
         // Create consistent error message format
-        const errorMessage = `WhatsApp API Error (${response.status}): ${
-          data?.error?.message || response.statusText
-        }`;
+        const errorMessage = `WhatsApp API Error (${response.status}): ${data?.error?.message || response.statusText
+          }`;
 
         throw new Error(errorMessage);
       }

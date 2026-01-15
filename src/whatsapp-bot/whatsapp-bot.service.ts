@@ -74,7 +74,7 @@ export class WhatsappBotService implements OnModuleInit {
     private readonly utilService: UtilService,
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
-  ) { }
+  ) {}
 
   /**
    * Module initialization - Add configuration validation and startup logging
@@ -1191,11 +1191,11 @@ export class WhatsappBotService implements OnModuleInit {
           `Account Info for ${this.utilService.toSentenceCase(
             teamMemberAccountInfo.account.profile_name,
           )}:\n\n` +
-          `- Email: ${teamMemberAccountInfo.account.email}\n` +
-          `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-          `- Role: ${this.utilService.toSentenceCase(
-            teamMemberAccountInfo.account.role,
-          )}`,
+            `- Email: ${teamMemberAccountInfo.account.email}\n` +
+            `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
+            `- Role: ${this.utilService.toSentenceCase(
+              teamMemberAccountInfo.account.role,
+            )}`,
         );
 
         await this.sendText(
@@ -1558,8 +1558,9 @@ export class WhatsappBotService implements OnModuleInit {
       serviceRequests.forEach((req: any, i) => {
         response += `${req.description} (${new Date(
           req.created_at,
-        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${req.notes || '——'
-          }\n\n`;
+        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
+          req.notes || '——'
+        }\n\n`;
       });
 
       await this.sendText(from, response);
@@ -3279,8 +3280,9 @@ export class WhatsappBotService implements OnModuleInit {
         console.error('❌ WhatsApp API Error:', apiErrorContext);
 
         // Create consistent error message format
-        const errorMessage = `WhatsApp API Error (${response.status}): ${data?.error?.message || response.statusText
-          }`;
+        const errorMessage = `WhatsApp API Error (${response.status}): ${
+          data?.error?.message || response.statusText
+        }`;
 
         throw new Error(errorMessage);
       }

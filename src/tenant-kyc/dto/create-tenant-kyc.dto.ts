@@ -113,14 +113,14 @@ export class CreateTenantKycDto {
   @ValidateIf((o) => o.employment_status === 'employed')
   @IsString()
   @IsOptional()
-  employer_address?: string;
+  work_address?: string;
 
   /** Only required when `employment_status` is `employed` */
   @ValidateIf((o) => o.employment_status === 'employed')
   @IsOptional()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  employer_phone_number?: string;
+  work_phone_number?: string;
 
   @IsNumberString()
   @IsOptional()
@@ -150,39 +150,44 @@ export class CreateTenantKycDto {
   @IsOptional()
   business_duration?: string;
 
+  @ValidateIf((o) => o.employment_status === 'self-employed')
   @IsString()
   @IsOptional()
-  reference1_name?: string;
+  estimated_monthly_income?: string;
 
   @IsString()
   @IsOptional()
-  reference1_address?: string;
+  contact_address?: string;
 
   @IsString()
   @IsOptional()
-  reference1_relationship?: string;
+  next_of_kin_full_name?: string;
+
+  @IsString()
+  @IsOptional()
+  next_of_kin_address?: string;
+
+  @IsString()
+  @IsOptional()
+  next_of_kin_relationship?: string;
 
   @IsPhoneNumber('NG')
   @IsOptional()
   @NormalizePhoneNumber()
-  reference1_phone_number?: string;
+  next_of_kin_phone_number?: string;
+
+  @IsEmail()
+  @IsOptional()
+  next_of_kin_email?: string;
 
   @IsOptional()
   @IsString()
-  reference2_name?: string;
-
-  @IsOptional()
-  @IsString()
-  reference2_address?: string;
-
-  @IsOptional()
-  @IsString()
-  reference2_relationship?: string;
+  referral_agent_full_name?: string;
 
   @IsOptional()
   // @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  reference2_phone_number?: string;
+  referral_agent_phone_number?: string;
 
   @IsUUID()
   landlord_id: string;

@@ -106,66 +106,57 @@ export class CreateKYCApplicationDto {
 
   @IsOptional()
   @IsString()
-  employer_address?: string;
+  work_address?: string;
 
   @IsOptional()
   @IsNumberString()
   monthly_net_income?: string;
 
-  // References - All made optional for relaxed validation
   @IsOptional()
-  @IsString()
-  reference1_name?: string;
+  @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
+  work_phone_number?: string;
 
   @IsOptional()
   @IsString()
-  reference1_address?: string;
+  length_of_employment?: string;
+
+  // Next of Kin Information
+  @IsOptional()
+  @IsString()
+  next_of_kin_full_name?: string;
 
   @IsOptional()
   @IsString()
-  reference1_relationship?: string;
+  next_of_kin_address?: string;
+
+  @IsOptional()
+  @IsString()
+  next_of_kin_relationship?: string;
 
   @IsOptional()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  reference1_phone_number?: string;
+  next_of_kin_phone_number?: string;
 
   @IsOptional()
-  @IsString()
-  reference2_name?: string;
+  @IsEmail()
+  next_of_kin_email?: string;
 
+  // Referral Agent Information
   @IsOptional()
   @IsString()
-  reference2_address?: string;
-
-  @IsOptional()
-  @IsString()
-  reference2_relationship?: string;
+  referral_agent_full_name?: string;
 
   @IsOptional()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  reference2_phone_number?: string;
+  referral_agent_phone_number?: string;
 
   // Additional Personal Information
   @IsOptional()
   @IsString()
   religion?: string;
-
-  // Additional Reference Information
-  @IsOptional()
-  @IsEmail()
-  reference1_email?: string;
-
-  // Additional Employment Information
-  @IsOptional()
-  @IsPhoneNumber('NG')
-  @NormalizePhoneNumber()
-  employer_phone_number?: string;
-
-  @IsOptional()
-  @IsString()
-  length_of_employment?: string;
 
   // Self-Employed Specific Fields
   @IsOptional()
@@ -194,8 +185,8 @@ export class CreateKYCApplicationDto {
   number_of_occupants?: string;
 
   @IsOptional()
-  @IsNumberString()
-  number_of_cars_owned?: string;
+  @IsString() // Changed from number string to string as per schema/entity
+  parking_needs?: string;
 
   @IsOptional()
   @IsNumberString()

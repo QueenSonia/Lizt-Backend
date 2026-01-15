@@ -838,7 +838,7 @@ export class UsersService {
       rent_due_date: new Date(dto.rentDueDate),
       employer_name: kycApplication.employer_name,
       job_title: kycApplication.job_title,
-      employer_address: kycApplication.employer_address,
+      employer_address: kycApplication.work_address,
       monthly_income: kycApplication.monthly_net_income
         ? parseFloat(kycApplication.monthly_net_income)
         : undefined,
@@ -2689,8 +2689,8 @@ export class UsersService {
         kyc.employers_name ??
         null,
       employerAddress:
-        kycApplication?.employer_address ??
-        tenantKyc?.employer_address ??
+        kycApplication?.work_address ??
+        tenantKyc?.work_address ??
         user.employer_address ??
         kyc.employers_address ??
         null,
@@ -2708,10 +2708,13 @@ export class UsersService {
           : (user.monthly_income ??
             (kyc ? parseFloat(kyc.monthly_income) : null)),
       employerPhoneNumber:
-        kycApplication?.employer_phone_number ??
-        tenantKyc?.employer_phone_number ??
+        kycApplication?.work_phone_number ??
+        tenantKyc?.work_phone_number ??
         null,
-      lengthOfEmployment: kycApplication?.length_of_employment ?? null,
+      lengthOfEmployment:
+        kycApplication?.length_of_employment ??
+        tenantKyc?.length_of_employment ??
+        null,
 
       // Self-employed Info - prioritize KYC Application
       natureOfBusiness:
@@ -2741,66 +2744,69 @@ export class UsersService {
 
       // Next of Kin Info - prioritize KYC Application reference1 fields
       nokName:
-        kycApplication?.reference1_name ??
-        tenantKyc?.reference1_name ??
+        kycApplication?.next_of_kin_full_name ??
+        tenantKyc?.next_of_kin_full_name ??
         kyc.next_of_kin ??
         null,
       nokRelationship:
-        kycApplication?.reference1_relationship ??
-        tenantKyc?.reference1_relationship ??
+        kycApplication?.next_of_kin_relationship ??
+        tenantKyc?.next_of_kin_relationship ??
         null,
       nokPhone:
-        kycApplication?.reference1_phone_number ??
-        tenantKyc?.reference1_phone_number ??
+        kycApplication?.next_of_kin_phone_number ??
+        tenantKyc?.next_of_kin_phone_number ??
         null,
-      nokEmail: kycApplication?.reference1_email ?? null,
+      nokEmail:
+        kycApplication?.next_of_kin_email ??
+        tenantKyc?.next_of_kin_email ??
+        null,
       nokAddress:
-        kycApplication?.reference1_address ??
-        tenantKyc?.reference1_address ??
+        kycApplication?.next_of_kin_address ??
+        tenantKyc?.next_of_kin_address ??
         kyc.next_of_kin_address ??
         null,
 
-      // Guarantor Info - prioritize KYC Application reference2 fields, fallback to reference1 if reference2 is empty
+      // Guarantor Info - prioritize KYC Application referral agent fields, fallback to next of kin if referral agent is empty
       guarantorName:
-        kycApplication?.reference2_name ??
-        tenantKyc?.reference2_name ??
-        // Fallback to reference1 if reference2 is not available (some forms use reference1 as guarantor)
-        (!kycApplication?.reference2_name && !tenantKyc?.reference2_name
-          ? (kycApplication?.reference1_name ?? tenantKyc?.reference1_name)
+        kycApplication?.referral_agent_full_name ??
+        tenantKyc?.referral_agent_full_name ??
+        // Fallback to next of kin if referral agent is not available (some forms use next of kin as guarantor)
+        (!kycApplication?.referral_agent_full_name &&
+        !tenantKyc?.referral_agent_full_name
+          ? (kycApplication?.next_of_kin_full_name ??
+            tenantKyc?.next_of_kin_full_name)
           : null) ??
         kyc?.guarantor ??
         null,
       guarantorPhone:
-        kycApplication?.reference2_phone_number ??
-        tenantKyc?.reference2_phone_number ??
-        // Fallback to reference1 if reference2 is not available
-        (!kycApplication?.reference2_phone_number &&
-        !tenantKyc?.reference2_phone_number
-          ? (kycApplication?.reference1_phone_number ??
-            tenantKyc?.reference1_phone_number)
+        kycApplication?.referral_agent_phone_number ??
+        tenantKyc?.referral_agent_phone_number ??
+        // Fallback to next of kin if referral agent is not available
+        (!kycApplication?.referral_agent_phone_number &&
+        !tenantKyc?.referral_agent_phone_number
+          ? (kycApplication?.next_of_kin_phone_number ??
+            tenantKyc?.next_of_kin_phone_number)
           : null) ??
         kyc.guarantor_phone_number ??
         null,
-      guarantorEmail: kycApplication?.reference1_email ?? null, // reference2_email doesn't exist in schema
+      guarantorEmail:
+        kycApplication?.next_of_kin_email ??
+        tenantKyc?.next_of_kin_email ??
+        null, // referral agent email doesn't exist in schema
       guarantorAddress:
-        kycApplication?.reference2_address ??
-        tenantKyc?.reference2_address ??
-        // Fallback to reference1 if reference2 is not available
-        (!kycApplication?.reference2_address && !tenantKyc?.reference2_address
-          ? (kycApplication?.reference1_address ??
-            tenantKyc?.reference1_address)
-          : null) ??
+        // kycApplication doesn't have referral_agent_address
+        // tenantKyc doesn't have referral_agent_address
+        // Fallback to next of kin address
+        kycApplication?.next_of_kin_address ??
+        tenantKyc?.next_of_kin_address ??
         kyc.guarantor_address ??
         null,
       guarantorRelationship:
-        kycApplication?.reference2_relationship ??
-        tenantKyc?.reference2_relationship ??
-        // Fallback to reference1 if reference2 is not available
-        (!kycApplication?.reference2_relationship &&
-        !tenantKyc?.reference2_relationship
-          ? (kycApplication?.reference1_relationship ??
-            tenantKyc?.reference1_relationship)
-          : null) ??
+        // kycApplication doesn't have referral_agent_relationship
+        // tenantKyc doesn't have referral_agent_relationship
+        // Fallback to next of kin relationship
+        kycApplication?.next_of_kin_relationship ??
+        tenantKyc?.next_of_kin_relationship ??
         null,
       guarantorOccupation:
         kycApplication?.occupation ??
@@ -2811,7 +2817,7 @@ export class UsersService {
       // Tenancy Proposal Information (from KYC Application)
       intendedUseOfProperty: kycApplication?.intended_use_of_property ?? null,
       numberOfOccupants: kycApplication?.number_of_occupants ?? null,
-      numberOfCarsOwned: kycApplication?.number_of_cars_owned ?? null,
+      numberOfCarsOwned: null, // This field doesn't exist in KYCApplication entity
       proposedRentAmount: kycApplication?.proposed_rent_amount ?? null,
       rentPaymentFrequency: kycApplication?.rent_payment_frequency ?? null,
       additionalNotes: kycApplication?.additional_notes ?? null,

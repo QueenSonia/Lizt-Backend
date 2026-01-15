@@ -37,7 +37,7 @@ export class TenantKycService {
     private kycApplicationRepo: Repository<KYCApplication>,
 
     private readonly tenanciesService: TenanciesService,
-  ) {}
+  ) { }
 
   async create(dto: CreateTenantKycDto) {
     const landlord = await this.accountRepo.findOneBy({
@@ -258,8 +258,8 @@ export class TenantKycService {
         updateData.employment_status = dto.employment_status;
       if (dto.employer_name) updateData.employer_name = dto.employer_name;
       if (dto.job_title) updateData.job_title = dto.job_title;
-      if (dto.employer_address)
-        updateData.employer_address = dto.employer_address;
+      if (dto.work_address)
+        updateData.employer_address = dto.work_address; // User entity might NOT be updated yet! Check User entity.
       if (dto.monthly_net_income)
         updateData.monthly_income = parseFloat(dto.monthly_net_income);
 

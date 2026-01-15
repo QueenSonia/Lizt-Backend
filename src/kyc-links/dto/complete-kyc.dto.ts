@@ -88,7 +88,7 @@ export class CompleteKYCDto {
   @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsString()
   @IsNotEmpty()
-  employer_address?: string;
+  work_address?: string;
 
   @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsNumberString()
@@ -99,7 +99,7 @@ export class CompleteKYCDto {
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
   @IsOptional()
-  employer_phone_number?: string;
+  work_phone_number?: string;
 
   @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsString()
@@ -127,44 +127,37 @@ export class CompleteKYCDto {
   @IsOptional()
   business_duration?: string;
 
-  // References - Optional
+  // Next of Kin - Optional
   @IsOptional()
   @IsString()
-  reference1_name?: string;
+  next_of_kin_full_name?: string;
 
   @IsOptional()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  reference1_phone_number?: string;
+  next_of_kin_phone_number?: string;
 
   @IsOptional()
   @IsString()
-  reference1_relationship?: string;
+  next_of_kin_relationship?: string;
 
   @IsOptional()
   @IsString()
-  reference1_address?: string;
+  next_of_kin_address?: string;
 
   @IsOptional()
   @IsEmail()
-  reference1_email?: string;
+  next_of_kin_email?: string;
 
+  // Referral Agent - Optional
   @IsOptional()
   @IsString()
-  reference2_name?: string;
+  referral_agent_full_name?: string;
 
   @IsOptional()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  reference2_phone_number?: string;
-
-  @IsOptional()
-  @IsString()
-  reference2_relationship?: string;
-
-  @IsOptional()
-  @IsString()
-  reference2_address?: string;
+  referral_agent_phone_number?: string;
 
   // Additional Personal Information
   @IsOptional()
@@ -179,10 +172,6 @@ export class CompleteKYCDto {
   @IsOptional()
   @IsNumberString()
   number_of_occupants?: string;
-
-  @IsOptional()
-  @IsNumberString()
-  number_of_cars_owned?: string;
 
   @IsOptional()
   @IsNumberString()

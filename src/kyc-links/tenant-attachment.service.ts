@@ -646,20 +646,22 @@ export class TenantAttachmentService {
       job_title: application.job_title || '',
       employer_name:
         application.employer_name || application.business_name || '',
-      employer_address:
-        application.employer_address || application.business_address || '',
-      employer_phone_number: application.employer_phone_number || '',
+      work_address:
+        application.work_address || application.business_address || '',
+      work_phone_number: application.work_phone_number || '',
       monthly_net_income: application.monthly_net_income || '0',
 
-      // References (Next of Kin and Guarantor)
-      reference1_name: application.reference1_name || '',
-      reference1_address: application.reference1_address || '',
-      reference1_relationship: application.reference1_relationship || '',
-      reference1_phone_number: application.reference1_phone_number || '',
-      reference2_name: application.reference2_name || '',
-      reference2_address: application.reference2_address || '',
-      reference2_relationship: application.reference2_relationship || '',
-      reference2_phone_number: application.reference2_phone_number || '',
+      // Next of Kin
+      next_of_kin_full_name: application.next_of_kin_full_name || '',
+      next_of_kin_address: application.next_of_kin_address || '',
+      next_of_kin_relationship: application.next_of_kin_relationship || '',
+      next_of_kin_phone_number: application.next_of_kin_phone_number || '',
+      next_of_kin_email: application.next_of_kin_email || '',
+
+      // Referral Agent
+      referral_agent_full_name: application.referral_agent_full_name || '',
+      referral_agent_phone_number:
+        application.referral_agent_phone_number || '',
     };
 
     if (existingTenantKyc) {

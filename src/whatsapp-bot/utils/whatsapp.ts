@@ -110,35 +110,11 @@ export class WhatsappUtils {
         JSON.stringify(payload, null, 2),
       );
 
-      // In simulation mode, we need to convert phone numbers back to emails
-      // for proper frontend routing
-      const modifiedPayload = { ...payload };
-      const to = (payload as any).to;
-
-      // If the 'to' field looks like a phone number, try to find the original email
-      if (to && to.startsWith('+') && to.length > 10) {
-        console.log(
-          '🔄 Converting phone number back to email for simulator routing',
-        );
-        // For now, we'll use a simple mapping - in a real app, you'd want a proper lookup
-        if (to === '+2349138834648') {
-          (modifiedPayload as any).to = 'tunjioginni@gmail.com';
-          console.log(
-            '📧 Converted phone to email for simulator:',
-            to,
-            '→',
-            'tunjioginni@gmail.com',
-          );
-        }
-      }
-
       // Emit to simulator if EventEmitter is available
+      // The frontend handles phone number matching directly - no conversion needed
       if (WhatsappUtils.globalEventEmitter) {
         console.log('📡 WhatsappUtils: Emitting to simulator');
-        WhatsappUtils.globalEventEmitter.emit(
-          'whatsapp.outbound',
-          modifiedPayload,
-        );
+        WhatsappUtils.globalEventEmitter.emit('whatsapp.outbound', payload);
       } else {
         console.log(
           '⚠️ WhatsappUtils: EventEmitter not available, cannot emit to simulator',

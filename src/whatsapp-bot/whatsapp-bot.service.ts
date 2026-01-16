@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { ILike, Not, Repository } from 'typeorm';
+import { ILike, Not, In, Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import WhatsApp from 'whatsapp';
@@ -28,6 +28,10 @@ import { LandlordLookup } from './templates/landlord/landlordlookup';
 import { LandlordInteractive } from './templates/landlord/landinteractive';
 import { ChatLogService } from './chat-log.service';
 import { MessageDirection } from './entities/message-direction.enum';
+import {
+  KYCApplication,
+  ApplicationStatus,
+} from 'src/kyc-links/entities/kyc-application.entity';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -65,6 +69,9 @@ export class WhatsappBotService implements OnModuleInit {
 
     @InjectRepository(Account)
     private readonly accountRepo: Repository<Account>,
+
+    @InjectRepository(KYCApplication)
+    private readonly kycApplicationRepo: Repository<KYCApplication>,
 
     private readonly flow: LandlordFlow,
 
@@ -305,6 +312,61 @@ export class WhatsappBotService implements OnModuleInit {
       console.log('🔍 Identifier appears to be phone, using phone lookup');
       return this.findUserByPhone(identifier, role);
     }
+  }
+
+  /**
+   * Find KYC application by phone number
+   * Returns the most recent pending or rejected application for the phone number
+   */
+  private async findKYCApplicationByPhone(
+    phoneNumber: string,
+  ): Promise<KYCApplication | null> {
+    const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
+    const strippedPhone = phoneNumber.replace(/^\+/, '');
+    const localPhone = strippedPhone.startsWith('234')
+      ? '0' + strippedPhone.slice(3)
+      : phoneNumber;
+
+    console.log('🔍 Looking up KYC application for phone:', {
+      original: phoneNumber,
+      normalized: normalizedPhone,
+      stripped: strippedPhone,
+      local: localPhone,
+    });
+
+    // Find the most recent pending or rejected application
+    const application = await this.kycApplicationRepo.findOne({
+      where: [
+        {
+          phone_number: phoneNumber,
+          status: In([ApplicationStatus.PENDING, ApplicationStatus.REJECTED]),
+        },
+        {
+          phone_number: normalizedPhone,
+          status: In([ApplicationStatus.PENDING, ApplicationStatus.REJECTED]),
+        },
+        {
+          phone_number: strippedPhone,
+          status: In([ApplicationStatus.PENDING, ApplicationStatus.REJECTED]),
+        },
+        {
+          phone_number: localPhone,
+          status: In([ApplicationStatus.PENDING, ApplicationStatus.REJECTED]),
+        },
+      ],
+      order: { created_at: 'DESC' },
+    });
+
+    console.log('📋 KYC application lookup result:', {
+      found: !!application,
+      applicationId: application?.id,
+      status: application?.status,
+      applicantName: application
+        ? `${application.first_name} ${application.last_name}`
+        : 'N/A',
+    });
+
+    return application;
   }
 
   async handleMessage(messages: IncomingMessage[]) {
@@ -598,6 +660,21 @@ export class WhatsappBotService implements OnModuleInit {
         // Convert email to phone number for WhatsApp messaging
         const defaultPhone = await this.getPhoneNumberFromIdentifier(from);
 
+        // Check if this is a KYC applicant (tenant who submitted application but not yet approved)
+        const kycApplication = await this.findKYCApplicationByPhone(from);
+
+        if (kycApplication) {
+          console.log('📋 Found KYC application for user:', {
+            applicationId: kycApplication.id,
+            status: kycApplication.status,
+            applicantName: `${kycApplication.first_name} ${kycApplication.last_name}`,
+          });
+
+          // Handle KYC applicant based on application status
+          await this.handleKYCApplicantMessage(defaultPhone, kycApplication);
+          return;
+        }
+
         if (message.type === 'interactive') {
           void this.handleDefaultInteractive(message, defaultPhone);
         }
@@ -606,6 +683,44 @@ export class WhatsappBotService implements OnModuleInit {
           void this.handleDefaultText(message, defaultPhone);
         }
       }
+    }
+  }
+
+  /**
+   * Handle messages from KYC applicants (prospective tenants who submitted applications)
+   * Responds based on application status: pending or rejected
+   */
+  private async handleKYCApplicantMessage(
+    phone: string,
+    application: KYCApplication,
+  ): Promise<void> {
+    const applicantName = application.first_name || 'there';
+
+    switch (application.status) {
+      case ApplicationStatus.PENDING:
+      case ApplicationStatus.PENDING_COMPLETION:
+        console.log('📋 Responding to PENDING KYC applicant:', applicantName);
+        await this.sendText(
+          phone,
+          `Thanks for reaching out, ${applicantName}!\n\nYour landlord is still reviewing your KYC and will get back to you.`,
+        );
+        break;
+
+      case ApplicationStatus.REJECTED:
+        console.log('📋 Responding to REJECTED KYC applicant:', applicantName);
+        await this.sendText(
+          phone,
+          `Thanks for your message, ${applicantName}.\n\nUnfortunately, this property is no longer available on the market.`,
+        );
+        break;
+
+      default:
+        // This shouldn't happen since we only query for pending/rejected
+        console.log(
+          '⚠️ Unexpected KYC application status:',
+          application.status,
+        );
+        break;
     }
   }
 
@@ -1447,6 +1562,11 @@ export class WhatsappBotService implements OnModuleInit {
           await this.cache.delete(`service_request_state_${from}`);
 
           // Send notifications to facility managers
+          // Convert tenant phone to local format (e.g., 09016469693)
+          const tenantLocalPhone = user.phone_number.startsWith('234')
+            ? '0' + user.phone_number.slice(3)
+            : user.phone_number.replace(/^\+234/, '0');
+
           for (const manager of facility_managers) {
             await this.sendFacilityServiceRequest({
               phone_number: manager.phone_number,
@@ -1457,7 +1577,7 @@ export class WhatsappBotService implements OnModuleInit {
               tenant_name: `${this.utilService.toSentenceCase(
                 user.first_name,
               )} ${this.utilService.toSentenceCase(user.last_name)}`,
-              tenant_phone_number: user.phone_number,
+              tenant_phone_number: tenantLocalPhone,
               date_created: new Date(created_at).toLocaleString('en-US', {
                 year: 'numeric',
                 month: 'short',
@@ -1498,7 +1618,7 @@ export class WhatsappBotService implements OnModuleInit {
               tenant_name: `${this.utilService.toSentenceCase(
                 user.first_name,
               )} ${this.utilService.toSentenceCase(user.last_name)}`,
-              tenant_phone_number: user.phone_number,
+              tenant_phone_number: tenantLocalPhone,
               date_created: new Date(created_at).toLocaleString('en-US', {
                 year: 'numeric',
                 month: 'short',

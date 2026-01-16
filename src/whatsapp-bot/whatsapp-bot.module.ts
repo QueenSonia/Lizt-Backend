@@ -25,6 +25,7 @@ import { MessageStatusTracker } from './message-status-tracker.service';
 import { WebhookHandler } from './webhook-handler.service';
 import { ChatHistoryModule } from './chat-history.module';
 import { SimulatorGateway } from './simulator/simulator.gateway';
+import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { SimulatorGateway } from './simulator/simulator.gateway';
       Account,
       Rent,
       ChatLog,
+      KYCApplication,
     ]),
     ServiceRequestsModule,
     forwardRef(() => UsersModule),

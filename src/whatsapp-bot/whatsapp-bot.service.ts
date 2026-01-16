@@ -1180,6 +1180,11 @@ export class WhatsappBotService {
           await this.cache.delete(`service_request_state_${from}`);
 
           // Send notifications to facility managers
+          // Convert tenant phone to local format (e.g., 09016469693)
+          const tenantLocalPhone = user.phone_number.startsWith('234')
+            ? '0' + user.phone_number.slice(3)
+            : user.phone_number.replace(/^\+234/, '0');
+
           for (const manager of facility_managers) {
             await this.sendFacilityServiceRequest({
               phone_number: manager.phone_number,
@@ -1190,7 +1195,7 @@ export class WhatsappBotService {
               tenant_name: `${this.utilService.toSentenceCase(
                 user.first_name,
               )} ${this.utilService.toSentenceCase(user.last_name)}`,
-              tenant_phone_number: user.phone_number,
+              tenant_phone_number: tenantLocalPhone,
               date_created: new Date(created_at).toLocaleString('en-US', {
                 year: 'numeric',
                 month: 'short',
@@ -1231,7 +1236,7 @@ export class WhatsappBotService {
               tenant_name: `${this.utilService.toSentenceCase(
                 user.first_name,
               )} ${this.utilService.toSentenceCase(user.last_name)}`,
-              tenant_phone_number: user.phone_number,
+              tenant_phone_number: tenantLocalPhone,
               date_created: new Date(created_at).toLocaleString('en-US', {
                 year: 'numeric',
                 month: 'short',

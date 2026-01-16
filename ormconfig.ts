@@ -68,4 +68,6 @@ export const config = {
 } as DataSourceOptions;
 
 export default registerAs('typeorm', () => config);
-// export const connectionSource = new DataSource(config);
+
+// DataSource instance for TypeORM CLI (migrations)
+export const connectionSource = new DataSource(config);

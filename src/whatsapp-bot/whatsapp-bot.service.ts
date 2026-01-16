@@ -2740,6 +2740,71 @@ export class WhatsappBotService implements OnModuleInit {
     await this.sendToWhatsappAPI(payload);
   }
 
+  /**
+   * Send KYC application notification to referral agent via WhatsApp
+   * Notifies the agent when a tenant they referred submits a KYC application
+   * Uses 'agent_kyc_notification' template
+   *
+   * Template body: "Hi {{1}}, {{2}} has submitted a tenant application for {{3}}, managed by {{4}}. Thank you for the referral!"
+   * Variables:
+   * {{1}} = agent_name
+   * {{2}} = tenant_name
+   * {{3}} = property_name
+   * {{4}} = landlord_name
+   *
+   * NOTE: You need to create this template in your WhatsApp Business Manager with the name 'agent_kyc_notification'
+   */
+  async sendAgentKYCNotification({
+    phone_number,
+    agent_name,
+    tenant_name,
+    property_name,
+    landlord_name,
+  }: {
+    phone_number: string;
+    agent_name: string;
+    tenant_name: string;
+    property_name: string;
+    landlord_name: string;
+  }) {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'agent_kyc_notification',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: agent_name, // {{1}}
+              },
+              {
+                type: 'text',
+                text: tenant_name, // {{2}}
+              },
+              {
+                type: 'text',
+                text: property_name, // {{3}}
+              },
+              {
+                type: 'text',
+                text: landlord_name, // {{4}}
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   async sendFacilityServiceRequest({
     phone_number,
     manager_name,

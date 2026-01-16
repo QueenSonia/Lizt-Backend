@@ -352,6 +352,53 @@ export class KYCApplicationService {
       console.error('Failed to send tenant KYC confirmation:', error);
     }
 
+    // Send WhatsApp notification to referral agent (if provided)
+    try {
+      if (
+        this.whatsappBotService &&
+        kycData.referral_agent_phone_number &&
+        kycData.referral_agent_full_name &&
+        applicationWithRelations.property
+      ) {
+        const property = applicationWithRelations.property;
+
+        // Get landlord details for the notification
+        const landlord = await this.propertyRepository
+          .createQueryBuilder('property')
+          .leftJoinAndSelect('property.owner', 'owner')
+          .leftJoinAndSelect('owner.user', 'user')
+          .where('property.id = :propertyId', { propertyId: property.id })
+          .getOne();
+
+        const landlordName =
+          landlord?.owner?.profile_name ||
+          (landlord?.owner?.user
+            ? `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`
+            : 'Property Manager');
+
+        const agentPhone = this.utilService.normalizePhoneNumber(
+          kycData.referral_agent_phone_number,
+        );
+        const agentName = kycData.referral_agent_full_name;
+        const tenantName = `${kycData.first_name} ${kycData.last_name}`;
+
+        await this.whatsappBotService.sendAgentKYCNotification({
+          phone_number: agentPhone,
+          agent_name: agentName,
+          tenant_name: tenantName,
+          property_name: property.name,
+          landlord_name: landlordName,
+        });
+
+        console.log(
+          `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
+        );
+      }
+    } catch (error) {
+      // Log error but don't fail the request if WhatsApp notification fails
+      console.error('Failed to send agent KYC notification:', error);
+    }
+
     return applicationWithRelations;
   }
 
@@ -1265,6 +1312,52 @@ export class KYCApplicationService {
           'Failed to send tenant KYC completion confirmation:',
           error,
         );
+      }
+
+      // Send WhatsApp notification to referral agent (if provided)
+      try {
+        if (
+          this.whatsappBotService &&
+          updatedKyc.referral_agent_phone_number &&
+          updatedKyc.referral_agent_full_name &&
+          updatedKyc.property
+        ) {
+          const property = updatedKyc.property;
+
+          // Get landlord details for the notification
+          const landlord = await this.propertyRepository
+            .createQueryBuilder('property')
+            .leftJoinAndSelect('property.owner', 'owner')
+            .leftJoinAndSelect('owner.user', 'user')
+            .where('property.id = :propertyId', { propertyId: property.id })
+            .getOne();
+
+          const landlordName =
+            landlord?.owner?.profile_name ||
+            (landlord?.owner?.user
+              ? `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`
+              : 'Property Manager');
+
+          const agentPhone = this.utilService.normalizePhoneNumber(
+            updatedKyc.referral_agent_phone_number,
+          );
+          const agentName = updatedKyc.referral_agent_full_name;
+          const tenantName = `${updatedKyc.first_name} ${updatedKyc.last_name}`;
+
+          await this.whatsappBotService.sendAgentKYCNotification({
+            phone_number: agentPhone,
+            agent_name: agentName,
+            tenant_name: tenantName,
+            property_name: property.name,
+            landlord_name: landlordName,
+          });
+
+          console.log(
+            `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
+          );
+        }
+      } catch (error) {
+        console.error('Failed to send agent KYC notification:', error);
       }
 
       console.log('✅ KYC completion successful:', {

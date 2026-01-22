@@ -10,6 +10,7 @@ import { RoleGuard } from './role.guard';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Account } from 'src/users/entities/account.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
+import { AccountCacheService } from './account-cache.service';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { RefreshToken } from './entities/refresh-token.entity';
   providers: [
     AuthService,
     JwtStrategy,
+    AccountCacheService,
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
@@ -37,6 +39,6 @@ import { RefreshToken } from './entities/refresh-token.entity';
       useClass: RoleGuard,
     },
   ],
-  exports: [AuthService, JwtModule, TypeOrmModule],
+  exports: [AuthService, JwtModule, TypeOrmModule, AccountCacheService],
 })
 export class AuthModule {}

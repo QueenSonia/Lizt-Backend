@@ -26,6 +26,9 @@ import { WebhookHandler } from './webhook-handler.service';
 import { ChatHistoryModule } from './chat-history.module';
 import { SimulatorGateway } from './simulator/simulator.gateway';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
+import { TemplateSenderService } from './template-sender';
+import { TenantFlowService } from './tenant-flow';
+import { LandlordFlowService } from './landlord-flow';
 
 @Module({
   imports: [
@@ -50,6 +53,9 @@ import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
   ],
   controllers: [WhatsappBotController],
   providers: [
+    TemplateSenderService,
+    TenantFlowService,
+    LandlordFlowService,
     WhatsappBotService,
     LandlordFlow,
     ChatLogService,
@@ -58,6 +64,9 @@ import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
     SimulatorGateway,
   ],
   exports: [
+    TemplateSenderService,
+    TenantFlowService,
+    LandlordFlowService,
     WhatsappBotService,
     ChatLogService,
     MessageStatusTracker,

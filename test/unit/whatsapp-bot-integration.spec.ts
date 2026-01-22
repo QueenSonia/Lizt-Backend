@@ -137,6 +137,8 @@ describe('WhatsappBotService Integration', () => {
       // Arrange
       const mockMessage = {
         from: '2348123456789',
+        id: 'wamid.test123',
+        timestamp: '1234567890',
         type: 'text',
         text: { body: 'Hello' },
       };

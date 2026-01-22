@@ -62,12 +62,28 @@ export class CacheService {
     }
   }
 
+  /**
+   * Set a value with TTL specified in seconds (not milliseconds)
+   */
+  async setWithTtlSeconds(key: string, value: any, ttlSeconds: number) {
+    const stringifiedValue = this.stringifyIfNeeded(value);
+    return await this.cache.set(key, stringifiedValue, 'EX', ttlSeconds);
+  }
+
   async delete(key: string) {
     return await this.cache.del(key);
   }
 
   async exists(key: string): Promise<boolean> {
     return (await this.cache.exists(key)) === 1;
+  }
+
+  /**
+   * Get the remaining TTL (time to live) for a key in seconds
+   * Returns -2 if the key does not exist, -1 if the key exists but has no TTL
+   */
+  async ttl(key: string): Promise<number> {
+    return await this.cache.ttl(key);
   }
 
   async clear() {

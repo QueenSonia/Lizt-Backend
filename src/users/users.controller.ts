@@ -71,11 +71,11 @@ export class UsersController {
     private readonly syncTenantDataService: SyncTenantDataService,
   ) {}
 
-  @SkipAuth()
-  @Get('/test-dev')
-  async testDev() {
-    return 'dev is working';
-  }
+  // @SkipAuth()
+  // @Get('/test-dev')
+  // async testDev() {
+  //   return 'dev is working';
+  // }
 
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN)
@@ -502,23 +502,23 @@ export class UsersController {
     return this.usersService.update(userId, updateKycDto);
   }
 
-  @SkipAuth()
-  @Post('admin')
-  async createAdmin(@Body() createUserDto: CreateAdminDto) {
-    return this.usersService.createAdmin(createUserDto);
-  }
+  // @SkipAuth()
+  // @Post('admin')
+  // async createAdmin(@Body() createUserDto: CreateAdminDto) {
+  //   return this.usersService.createAdmin(createUserDto);
+  // }
 
-  @SkipAuth()
-  @Post('landlord')
-  async createLandlord(@Body() createUserDto: CreateLandlordDto) {
-    return this.usersService.createLandlord(createUserDto);
-  }
+  // @SkipAuth()
+  // @Post('landlord')
+  // async createLandlord(@Body() createUserDto: CreateLandlordDto) {
+  //   return this.usersService.createLandlord(createUserDto);
+  // }
 
-  @SkipAuth()
-  @Post('rep')
-  async createCustomerRep(@Body() createUserDto: CreateCustomerRepDto) {
-    return this.usersService.createCustomerRep(createUserDto);
-  }
+  // @SkipAuth()
+  // @Post('rep')
+  // async createCustomerRep(@Body() createUserDto: CreateCustomerRepDto) {
+  //   return this.usersService.createCustomerRep(createUserDto);
+  // }
 
   @Get('sub-accounts')
   async getSubAccounts(@Req() req) {

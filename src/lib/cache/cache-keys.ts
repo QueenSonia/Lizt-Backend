@@ -10,3 +10,7 @@ export const SIGN_UP_SESSION = (phoneNumber: string) =>
   `session:signup:${phoneNumber}`;
 
 export const USER_GROUPS = (userId: string) => `user:groups:${userId}`;
+
+// Auth cache keys
+export const ACCOUNT_CACHE = (accountId: string) => `auth:account:${accountId}`;
+export const ACCOUNT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds

@@ -20,29 +20,30 @@ export function NormalizePhoneNumber() {
 
 /**
  * Standalone function to normalize phone numbers
+ * Normalizes to format: 234XXXXXXXXXX (no + prefix)
  * Can be used in services, controllers, etc.
  */
 export function normalizePhoneNumber(phoneNumber: string): string {
   if (!phoneNumber) return '';
 
-  // Remove all non-digit characters
-  let normalized = phoneNumber.replace(/\D/g, '');
+  // Remove all non-digit characters (including +)
+  const cleaned = phoneNumber.replace(/\D/g, '');
 
-  // If number already starts with '234' (Nigeria country code), leave it
-  if (normalized.startsWith('234')) {
-    return normalized;
+  // Already in correct format: 234XXXXXXXXXX
+  if (cleaned.startsWith('234')) {
+    return cleaned;
   }
 
-  // If number starts with '0', strip it and prepend '234'
-  if (normalized.startsWith('0')) {
-    normalized = '234' + normalized.slice(1);
-    return normalized;
+  // Nigerian local format: 0XXXXXXXXXX -> 234XXXXXXXXXX
+  if (cleaned.startsWith('0')) {
+    return '234' + cleaned.slice(1);
   }
 
-  // If it's missing both '0' and '234' (e.g., "8031234567"), add '234'
-  if (/^[7-9]\d{9}$/.test(normalized)) {
-    normalized = '234' + normalized;
+  // 10 digits without country code (e.g., 8031234567)
+  if (/^[7-9]\d{9}$/.test(cleaned)) {
+    return '234' + cleaned;
   }
 
-  return normalized;
+  // Default: prepend 234
+  return '234' + cleaned;
 }

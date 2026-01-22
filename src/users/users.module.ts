@@ -19,6 +19,9 @@ import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { SyncTenantDataService } from './sync-tenant-data.service';
 import { UtilsModule } from 'src/utils/utils.module';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
+import { TenantManagementService } from './tenant-management';
+import { TeamService } from './team';
+import { PasswordService } from './password';
 
 @Global()
 @Module({
@@ -41,7 +44,21 @@ import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
     UtilsModule,
   ],
   controllers: [UsersController],
-  providers: [UsersService, FileUploadService, SyncTenantDataService],
-  exports: [UsersService, FileUploadService, SyncTenantDataService],
+  providers: [
+    UsersService,
+    FileUploadService,
+    SyncTenantDataService,
+    TenantManagementService,
+    TeamService,
+    PasswordService,
+  ],
+  exports: [
+    UsersService,
+    FileUploadService,
+    SyncTenantDataService,
+    TenantManagementService,
+    TeamService,
+    PasswordService,
+  ],
 })
 export class UsersModule {}

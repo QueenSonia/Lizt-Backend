@@ -48,7 +48,36 @@ export class ChatLogService {
     private readonly chatLogRepository: Repository<ChatLog>,
     @InjectRepository(Users)
     private readonly usersRepository: Repository<Users>,
-  ) {}
+  ) { }
+
+  /**
+   * Normalize phone number to consistent format: 234XXXXXXXXXX (no + prefix)
+   * This ensures all phone numbers are stored consistently in the database
+   */
+  private normalizePhoneNumber(phoneNumber: string): string {
+    if (!phoneNumber) return '';
+
+    // Remove all non-digit characters (including +)
+    const cleaned = phoneNumber.replace(/\D/g, '');
+
+    // Already in correct format: 234XXXXXXXXXX
+    if (cleaned.startsWith('234')) {
+      return cleaned;
+    }
+
+    // Nigerian local format: 0XXXXXXXXXX -> 234XXXXXXXXXX
+    if (cleaned.startsWith('0')) {
+      return '234' + cleaned.substring(1);
+    }
+
+    // 10 digits without country code (e.g., 8031234567)
+    if (/^[7-9]\d{9}$/.test(cleaned)) {
+      return '234' + cleaned;
+    }
+
+    // Default: prepend 234
+    return '234' + cleaned;
+  }
 
   /**
    * Log an inbound message (Tenant -> Bot)
@@ -61,6 +90,9 @@ export class ChatLogService {
     metadata: any,
   ): Promise<ChatLog> {
     try {
+      // Normalize phone number to ensure consistent format in database
+      const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+
       // Extract whatsapp_message_id from metadata to prevent duplicates
       const whatsappMessageId = metadata?.whatsapp_message_id;
 
@@ -79,7 +111,7 @@ export class ChatLogService {
       }
 
       const chatLog = this.chatLogRepository.create({
-        phone_number: phoneNumber,
+        phone_number: normalizedPhone,
         direction: MessageDirection.INBOUND,
         message_type: messageType,
         content,
@@ -91,10 +123,10 @@ export class ChatLogService {
       const savedLog = await this.chatLogRepository.save(chatLog);
 
       // Attempt to link to user if phone number matches
-      await this.tryLinkUserToMessage(savedLog.id, phoneNumber);
+      await this.tryLinkUserToMessage(savedLog.id, normalizedPhone);
 
       this.logger.log(
-        `Logged inbound message from ${phoneNumber}: ${messageType}`,
+        `✅ Logged inbound message: ID=${savedLog.id}, Phone=${normalizedPhone}, Type=${messageType}, Simulated=${metadata?.is_simulated || false}`,
       );
       return savedLog;
     } catch (error) {
@@ -118,6 +150,9 @@ export class ChatLogService {
     whatsappMessageId?: string,
   ): Promise<ChatLog> {
     try {
+      // Normalize phone number to ensure consistent format in database
+      const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+
       // Check if message already exists to prevent duplicates
       if (whatsappMessageId) {
         const existingMessage = await this.chatLogRepository.findOne({
@@ -133,7 +168,7 @@ export class ChatLogService {
       }
 
       const chatLog = this.chatLogRepository.create({
-        phone_number: phoneNumber,
+        phone_number: normalizedPhone,
         direction: MessageDirection.OUTBOUND,
         message_type: messageType,
         content,
@@ -145,10 +180,10 @@ export class ChatLogService {
       const savedLog = await this.chatLogRepository.save(chatLog);
 
       // Attempt to link to user if phone number matches
-      await this.tryLinkUserToMessage(savedLog.id, phoneNumber);
+      await this.tryLinkUserToMessage(savedLog.id, normalizedPhone);
 
       this.logger.log(
-        `Logged outbound message to ${phoneNumber}: ${messageType}`,
+        `✅ Logged outbound message: ID=${savedLog.id}, Phone=${normalizedPhone}, Type=${messageType}, Simulated=${metadata?.is_simulated || false}`,
       );
       return savedLog;
     } catch (error) {

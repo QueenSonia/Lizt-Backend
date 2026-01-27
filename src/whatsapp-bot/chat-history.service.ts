@@ -59,7 +59,7 @@ export class ChatHistoryService {
   constructor(
     @InjectRepository(ChatLog)
     private readonly chatLogRepository: Repository<ChatLog>,
-  ) {}
+  ) { }
 
   /**
    * Get chat history with pagination and filtering
@@ -88,9 +88,20 @@ export class ChatHistoryService {
 
       const results = await queryBuilder.getMany();
 
-      this.logger.log(
-        `Retrieved ${results.length} messages for phone number ${phoneNumber}`,
+      this.logger.debug(
+        `Retrieved ${results.length} messages for phone number ${phoneNumber} (options: ${JSON.stringify(options)})`,
       );
+
+      if (results.length === 0) {
+        this.logger.debug(
+          `No messages found for ${phoneNumber}. Checking if any messages exist for this number...`,
+        );
+        const count = await this.chatLogRepository.count({
+          where: { phone_number: phoneNumber },
+        });
+        this.logger.debug(`Found ${count} total messages for ${phoneNumber} without filters.`);
+      }
+
       return results;
     } catch (error) {
       this.logger.error(
@@ -295,11 +306,15 @@ export class ChatHistoryService {
     }
 
     if (options.simulatedOnly === true) {
+      this.logger.debug(`Applying simulatedOnly filter for ${queryBuilder.alias}`);
       // Filter for messages that have simulation metadata
+      // Enhanced to handle both boolean and string representations in JSONB
       queryBuilder.andWhere(
         "(chat_log.metadata->>'is_simulated' = 'true' OR " +
-          "chat_log.metadata->>'simulation_status' = 'simulator_message' OR " +
-          "chat_log.metadata->>'message_source' = 'whatsapp_simulator')",
+        "chat_log.metadata->'is_simulated' @> 'true' OR " +
+        "chat_log.metadata->>'simulation_status' = 'simulator_message' OR " +
+        "chat_log.metadata->>'simulation_status' = 'intercepted_by_simulator' OR " +
+        "chat_log.metadata->>'message_source' = 'whatsapp_simulator')",
       );
     }
   }
@@ -373,8 +388,10 @@ export class ChatHistoryService {
       const condition = hasConditions ? 'andWhere' : 'where';
       queryBuilder[condition](
         "(chat_log.metadata->>'is_simulated' = 'true' OR " +
-          "chat_log.metadata->>'simulation_status' = 'simulator_message' OR " +
-          "chat_log.metadata->>'message_source' = 'whatsapp_simulator')",
+        "chat_log.metadata->'is_simulated' @> 'true' OR " +
+        "chat_log.metadata->>'simulation_status' = 'simulator_message' OR " +
+        "chat_log.metadata->>'simulation_status' = 'intercepted_by_simulator' OR " +
+        "chat_log.metadata->>'message_source' = 'whatsapp_simulator')",
       );
       hasConditions = true;
     }

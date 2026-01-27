@@ -28,6 +28,7 @@ import { TenanciesModule } from './tenancies/tenancies.module';
 import { EventsModule } from './events/events.module';
 import { UtilService } from 'src/utils/utility-service';
 import { KycFeedbackModule } from './kyc-feedback/kyc-feedback.module';
+import { OfferLettersModule } from './offer-letters/offer-letters.module';
 
 config({ default_node_env: 'production' });
 
@@ -68,6 +69,7 @@ config({ default_node_env: 'production' });
     TenanciesModule,
     EventsModule,
     KycFeedbackModule,
+    OfferLettersModule,
   ],
   controllers: [AppController],
   providers: [

@@ -43,13 +43,16 @@ export class ChatHistoryController {
   ): Promise<ChatHistoryResponseDto> {
     let normalizedPhone = phoneNumber;
     try {
+      // Always normalize phone numbers to match database format (234XXXXXXXXXX)
+      // This ensures consistent lookups regardless of how the phone number is provided
       normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
+
       this.logger.log(
-        `Getting chat history for phone number: ${normalizedPhone} (original: ${phoneNumber})`,
+        `Getting chat history for phone number: ${normalizedPhone} (original: ${phoneNumber}, simulated: ${queryDto.simulatedOnly})`,
       );
 
       // Validate phone number format (basic validation)
-      if (!normalizedPhone || normalizedPhone.trim().length === 0) {
+      if (!normalizedPhone || normalizedPhone.length === 0) {
         throw new HttpException(
           'Phone number is required',
           HttpStatus.BAD_REQUEST,

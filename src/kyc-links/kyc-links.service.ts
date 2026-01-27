@@ -235,10 +235,12 @@ export class KYCLinksService {
           status: ApplicationStatus.PENDING_COMPLETION,
         })
         .andWhere(
-          '(property.property_status = :vacantStatus OR property.property_status = :readyStatus)',
+          '(property.property_status = :vacantStatus OR property.property_status = :readyStatus OR property.property_status = :offerPendingStatus OR property.property_status = :offerAcceptedStatus)',
           {
             vacantStatus: PropertyStatusEnum.VACANT,
             readyStatus: PropertyStatusEnum.READY_FOR_MARKETING,
+            offerPendingStatus: PropertyStatusEnum.OFFER_PENDING,
+            offerAcceptedStatus: PropertyStatusEnum.OFFER_ACCEPTED,
           },
         )
         .getMany();

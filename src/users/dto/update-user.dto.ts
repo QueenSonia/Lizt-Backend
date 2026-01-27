@@ -246,6 +246,7 @@ export class UpdateUserDto {
       contactInfo: 'contact@propertykraft.com | +234 901 234 5678',
       footerColor: '#6B6B6B',
       letterhead: null,
+      signature: null,
       headingFont: 'Inter',
       bodyFont: 'Inter',
     },
@@ -258,8 +259,10 @@ export class UpdateUserDto {
     contactInfo?: string;
     footerColor?: string;
     letterhead?: string;
+    signature?: string;
     headingFont?: string;
     bodyFont?: string;
+    updatedAt?: string;
   };
 }
 

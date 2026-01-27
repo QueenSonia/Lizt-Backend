@@ -81,7 +81,12 @@ export class KYCApplicationService {
       );
     }
 
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    const allowedStatuses = [
+      'vacant',
+      'ready_for_marketing',
+      'offer_pending',
+      'offer_accepted',
+    ];
     if (!allowedStatuses.includes(selectedProperty.property_status)) {
       throw new BadRequestException(
         'Selected property is no longer available for applications',
@@ -420,8 +425,13 @@ export class KYCApplicationService {
     // Determine which applications to show based on property status
     const whereCondition: any = { property_id: propertyId };
 
-    // If property is vacant or ready for marketing, only show pending applications
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    // If property is vacant or ready for marketing (including offer statuses), only show pending applications
+    const allowedStatuses = [
+      'vacant',
+      'ready_for_marketing',
+      'offer_pending',
+      'offer_accepted',
+    ];
     if (allowedStatuses.includes(property.property_status)) {
       whereCondition.status = ApplicationStatus.PENDING;
     }
@@ -429,7 +439,7 @@ export class KYCApplicationService {
     // Get applications for the property with sorting
     const applications = await this.kycApplicationRepository.find({
       where: whereCondition,
-      relations: ['property', 'kyc_link', 'tenant'],
+      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
       order: {
         created_at: 'DESC', // Most recent applications first
         status: 'ASC', // Pending applications first within same date
@@ -464,10 +474,16 @@ export class KYCApplicationService {
       .leftJoinAndSelect('application.property', 'property')
       .leftJoinAndSelect('application.kyc_link', 'kyc_link')
       .leftJoinAndSelect('application.tenant', 'tenant')
+      .leftJoinAndSelect('application.offer_letters', 'offer_letters')
       .where('application.property_id = :propertyId', { propertyId });
 
-    // If property is vacant or ready for marketing, only show pending applications (override any status filter)
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    // If property is vacant or ready for marketing (including offer statuses), only show pending applications (override any status filter)
+    const allowedStatuses = [
+      'vacant',
+      'ready_for_marketing',
+      'offer_pending',
+      'offer_accepted',
+    ];
     if (allowedStatuses.includes(property.property_status)) {
       queryBuilder.andWhere('application.status = :pendingStatus', {
         pendingStatus: ApplicationStatus.PENDING,
@@ -584,6 +600,41 @@ export class KYCApplicationService {
         application.updated_at instanceof Date
           ? application.updated_at.toISOString()
           : application.updated_at,
+
+      // Offer Letter Information
+      offerLetterStatus:
+        application.offer_letters && application.offer_letters.length > 0
+          ? application.offer_letters.sort((a, b) => {
+              // Sort by created_at desc (handling potential string/Date types)
+              const dateA = new Date(a.created_at || 0).getTime();
+              const dateB = new Date(b.created_at || 0).getTime();
+              return dateB - dateA;
+            })[0].status
+          : undefined,
+
+      offerLetter:
+        application.offer_letters && application.offer_letters.length > 0
+          ? (() => {
+              const latestOffer = application.offer_letters.sort((a, b) => {
+                const dateA = new Date(a.created_at || 0).getTime();
+                const dateB = new Date(b.created_at || 0).getTime();
+                return dateB - dateA;
+              })[0];
+              return {
+                id: latestOffer.id,
+                token: latestOffer.token,
+                status: latestOffer.status,
+                rentAmount: latestOffer.rent_amount,
+                rentFrequency: latestOffer.rent_frequency,
+                serviceCharge: latestOffer.service_charge,
+                tenancyStartDate: latestOffer.tenancy_start_date,
+                tenancyEndDate: latestOffer.tenancy_end_date,
+                cautionDeposit: latestOffer.caution_deposit,
+                legalFee: latestOffer.legal_fee,
+                agencyFee: latestOffer.agency_fee,
+              };
+            })()
+          : undefined,
     };
   }
 
@@ -602,7 +653,7 @@ export class KYCApplicationService {
 
     const application = await this.kycApplicationRepository.findOne({
       where: { id: applicationId },
-      relations: ['property', 'kyc_link', 'tenant'],
+      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
     });
 
     if (!application) {
@@ -702,9 +753,14 @@ export class KYCApplicationService {
       landlordId,
     );
 
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    const allowedStatuses = [
+      'vacant',
+      'ready_for_marketing',
+      'offer_pending',
+      'offer_accepted',
+    ];
     if (allowedStatuses.includes(property.property_status)) {
-      // For vacant and ready for marketing properties, only show pending applications count
+      // For vacant and ready for marketing properties (including offer statuses), only show pending applications count
       const pending = await this.kycApplicationRepository.count({
         where: { property_id: propertyId, status: ApplicationStatus.PENDING },
       });
@@ -751,6 +807,7 @@ export class KYCApplicationService {
       .leftJoinAndSelect('application.property', 'property')
       .leftJoinAndSelect('application.kyc_link', 'kyc_link')
       .leftJoinAndSelect('application.tenant', 'tenant')
+      .leftJoinAndSelect('application.offer_letters', 'offer_letters')
       .where('property.owner_id = :landlordId', { landlordId })
       .orderBy('application.created_at', 'DESC')
       .getMany();
@@ -769,7 +826,7 @@ export class KYCApplicationService {
     // Get all applications for the tenant
     const applications = await this.kycApplicationRepository.find({
       where: { tenant_id: tenantId },
-      relations: ['property', 'kyc_link', 'tenant'],
+      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
       order: {
         created_at: 'DESC', // Most recent applications first
       },

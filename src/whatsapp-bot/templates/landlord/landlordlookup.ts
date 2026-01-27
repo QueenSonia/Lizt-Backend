@@ -70,28 +70,15 @@ export class LandlordLookup {
   async startGenerateKYCLinkFlow(from: string) {
     console.log('🔍 startGenerateKYCLinkFlow called with phone:', from);
 
-    // Use multi-format phone lookup like in other parts of the codebase
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-    const strippedFrom = from.replace(/^\+/, '');
-    const localPhone = strippedFrom.startsWith('234')
-      ? '0' + strippedFrom.slice(3)
-      : from;
 
-    console.log('📞 Phone formats:', {
+    console.log('📞 Phone format:', {
       original: from,
       normalized: normalizedPhone,
-      stripped: strippedFrom,
-      local: localPhone,
     });
 
-    // Try multiple phone number formats
     const user = await this.usersRepo.findOne({
-      where: [
-        { phone_number: from },
-        { phone_number: normalizedPhone },
-        { phone_number: strippedFrom },
-        { phone_number: localPhone },
-      ],
+      where: { phone_number: normalizedPhone },
       relations: ['accounts'],
     });
 
@@ -134,7 +121,7 @@ export class LandlordLookup {
 
     const ownerUser = user;
 
-    // Fetch all vacant and ready for marketing properties
+    // Fetch all vacant and ready for marketing properties (including offer_pending and offer_accepted)
     const properties = await this.propertyRepo.find({
       where: [
         {
@@ -144,6 +131,14 @@ export class LandlordLookup {
         {
           owner_id: landlordAccount.id,
           property_status: PropertyStatusEnum.READY_FOR_MARKETING,
+        },
+        {
+          owner_id: landlordAccount.id,
+          property_status: PropertyStatusEnum.OFFER_PENDING,
+        },
+        {
+          owner_id: landlordAccount.id,
+          property_status: PropertyStatusEnum.OFFER_ACCEPTED,
         },
       ],
     });
@@ -206,21 +201,10 @@ export class LandlordLookup {
   }
 
   async handleViewTenancies(from: string) {
-    // Use multi-format phone lookup like in other parts of the codebase
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-    const strippedFrom = from.replace(/^\+/, '');
-    const localPhone = strippedFrom.startsWith('234')
-      ? '0' + strippedFrom.slice(3)
-      : from;
 
-    // Try multiple phone number formats
     const user = await this.usersRepo.findOne({
-      where: [
-        { phone_number: from },
-        { phone_number: normalizedPhone },
-        { phone_number: strippedFrom },
-        { phone_number: localPhone },
-      ],
+      where: { phone_number: normalizedPhone },
       relations: ['accounts'],
     });
 
@@ -294,21 +278,10 @@ export class LandlordLookup {
   }
 
   async handleViewMaintenance(from: string) {
-    // Use multi-format phone lookup like in other parts of the codebase
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-    const strippedFrom = from.replace(/^\+/, '');
-    const localPhone = strippedFrom.startsWith('234')
-      ? '0' + strippedFrom.slice(3)
-      : from;
 
-    // Try multiple phone number formats
     const user = await this.usersRepo.findOne({
-      where: [
-        { phone_number: from },
-        { phone_number: normalizedPhone },
-        { phone_number: strippedFrom },
-        { phone_number: localPhone },
-      ],
+      where: { phone_number: normalizedPhone },
       relations: ['accounts'],
     });
 

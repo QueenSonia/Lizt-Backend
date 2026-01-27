@@ -862,6 +862,8 @@ export class PropertiesService {
         statuses: [
           PropertyStatusEnum.VACANT,
           PropertyStatusEnum.READY_FOR_MARKETING,
+          PropertyStatusEnum.OFFER_PENDING,
+          PropertyStatusEnum.OFFER_ACCEPTED,
         ],
       })
       .getMany();

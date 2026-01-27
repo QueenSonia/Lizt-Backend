@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 import {
   IsOptional,
   IsInt,
@@ -45,6 +45,7 @@ export class ChatHistoryQueryDto {
   messageType?: string;
 
   @IsOptional()
-  @Type(() => Boolean)
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
   simulatedOnly?: boolean;
 }

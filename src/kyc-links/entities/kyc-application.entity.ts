@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { Account } from '../../users/entities/account.entity';
@@ -8,6 +8,7 @@ import {
   MaritalStatus,
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
+import { OfferLetter } from '../../offer-letters/entities/offer-letter.entity';
 
 export enum ApplicationStatus {
   PENDING = 'pending',
@@ -188,4 +189,7 @@ export class KYCApplication extends BaseEntity {
   @ManyToOne(() => Account, { nullable: true })
   @JoinColumn({ name: 'tenant_id' })
   tenant?: Account;
+
+  @OneToMany(() => OfferLetter, (offerLetter) => offerLetter.kyc_application)
+  offer_letters: OfferLetter[];
 }

@@ -121,7 +121,7 @@ export class LandlordLookup {
 
     const ownerUser = user;
 
-    // Fetch all vacant and ready for marketing properties
+    // Fetch all vacant and ready for marketing properties (including offer_pending and offer_accepted)
     const properties = await this.propertyRepo.find({
       where: [
         {
@@ -131,6 +131,14 @@ export class LandlordLookup {
         {
           owner_id: landlordAccount.id,
           property_status: PropertyStatusEnum.READY_FOR_MARKETING,
+        },
+        {
+          owner_id: landlordAccount.id,
+          property_status: PropertyStatusEnum.OFFER_PENDING,
+        },
+        {
+          owner_id: landlordAccount.id,
+          property_status: PropertyStatusEnum.OFFER_ACCEPTED,
         },
       ],
     });

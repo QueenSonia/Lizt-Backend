@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
 import sgMail from '@sendgrid/mail';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 
 dotenv.config();
 
@@ -104,10 +104,9 @@ export class UtilService {
   }
 
   generateOTP(length = 6): string {
-    const digits = '0123456789';
     let otp = '';
     for (let i = 0; i < length; i++) {
-      otp += digits[Math.floor(Math.random() * 10)];
+      otp += randomInt(0, 10).toString();
     }
     return otp;
   }

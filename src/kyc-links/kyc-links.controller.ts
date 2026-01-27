@@ -12,6 +12,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { SkipAuth } from '../auth/auth.decorator';
 import { Public } from '../auth/public.decorator';
 import {
   KYCLinksService,
@@ -145,7 +146,7 @@ export class KYCLinksController {
    * GET /api/kyc/:token/validate
    * Requirements: 2.4, 2.5, 3.5
    */
-  @Public()
+  @SkipAuth()
   @Get('kyc/:token/validate')
   async validateKYCToken(@Param('token') token: string): Promise<{
     success: boolean;
@@ -173,7 +174,7 @@ export class KYCLinksController {
    * POST /api/kyc/:token/send-otp
    * Requirements: Phone verification for KYC applications
    */
-  @Public()
+  @SkipAuth()
   @Post('kyc/:token/send-otp')
   async sendOTPForKYC(
     @Param('token') token: string,
@@ -203,7 +204,7 @@ export class KYCLinksController {
    * POST /api/kyc/:token/verify-otp
    * Requirements: Phone verification for KYC applications
    */
-  @Public()
+  @SkipAuth()
   @Post('kyc/:token/verify-otp')
   async verifyOTPForKYC(
     @Param('token') token: string,

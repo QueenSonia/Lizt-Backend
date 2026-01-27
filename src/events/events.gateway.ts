@@ -108,4 +108,64 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await client.join(`landlord:${landlordId}`);
     this.logger.log(`Client ${client.id} joined landlord room: ${landlordId}`);
   }
+
+  // Emit offer letter sent event to landlord
+  emitOfferLetterSent(
+    landlordId: string,
+    offerLetterData: {
+      propertyId: string;
+      propertyName: string;
+      applicantName: string;
+      token: string;
+    },
+  ) {
+    this.logger.log(
+      `Emitting offer letter sent for property ${offerLetterData.propertyName} to landlord ${landlordId}`,
+    );
+
+    this.server.to(`landlord:${landlordId}`).emit('offer_letter:sent', {
+      ...offerLetterData,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // Emit offer letter accepted event to landlord
+  emitOfferLetterAccepted(
+    landlordId: string,
+    offerLetterData: {
+      propertyId: string;
+      propertyName: string;
+      applicantName: string;
+      token: string;
+    },
+  ) {
+    this.logger.log(
+      `Emitting offer letter accepted for property ${offerLetterData.propertyName} to landlord ${landlordId}`,
+    );
+
+    this.server.to(`landlord:${landlordId}`).emit('offer_letter:accepted', {
+      ...offerLetterData,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // Emit offer letter rejected event to landlord
+  emitOfferLetterRejected(
+    landlordId: string,
+    offerLetterData: {
+      propertyId: string;
+      propertyName: string;
+      applicantName: string;
+      token: string;
+    },
+  ) {
+    this.logger.log(
+      `Emitting offer letter rejected for property ${offerLetterData.propertyName} to landlord ${landlordId}`,
+    );
+
+    this.server.to(`landlord:${landlordId}`).emit('offer_letter:rejected', {
+      ...offerLetterData,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }

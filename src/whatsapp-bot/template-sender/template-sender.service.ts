@@ -198,6 +198,37 @@ export interface KYCCompletionNotificationParams {
 }
 
 /**
+ * Parameters for offer letter notification
+ */
+export interface OfferLetterNotificationParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  offer_letter_token: string;
+  frontend_url: string;
+}
+
+/**
+ * Parameters for OTP authentication template
+ */
+export interface OTPAuthenticationParams {
+  phone_number: string;
+  otp_code: string;
+}
+
+/**
+ * Parameters for offer letter status notification to landlord
+ */
+export interface OfferLetterStatusNotificationParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  property_id: string;
+  status: 'accepted' | 'rejected';
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -219,7 +250,7 @@ export class TemplateSenderService {
     private readonly config: ConfigService,
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
-  ) {}
+  ) { }
 
   /**
    * Send a message using a WhatsApp template with custom parameters
@@ -914,6 +945,169 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send offer letter notification to tenant via WhatsApp
+   * Uses a template message with a URL button to view the offer letter
+   * Requirements: 7.1, 7.2
+   */
+  async sendOfferLetterNotification({
+    phone_number,
+    tenant_name,
+    property_name,
+    offer_letter_token,
+    frontend_url,
+  }: OfferLetterNotificationParams): Promise<void> {
+    const offerLetterUrl = `${frontend_url}/offer-letters/${offer_letter_token}`;
+
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'offer_letter_notification',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: offerLetterUrl,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send OTP authentication code via WhatsApp authentication template
+   * Uses WhatsApp's authentication template category for OTP delivery
+   * Requirements: 9.1
+   */
+  async sendOTPAuthentication({
+    phone_number,
+    otp_code,
+  }: OTPAuthenticationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'offer_letter_otp',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: otp_code,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: otp_code,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send offer letter status notification to landlord via WhatsApp
+   * Notifies landlord when tenant accepts or rejects an offer letter
+   * Requirements: 9.4, 9.8
+   */
+  async sendOfferLetterStatusNotification({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    property_id,
+    status,
+  }: OfferLetterStatusNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'offer_letter_status_notification',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlord_name,
+              },
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: status,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: property_id,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send plain text message
    */
   async sendText(to: string, text: string): Promise<void> {
@@ -1085,7 +1279,8 @@ export class TemplateSenderService {
               {
                 ...payload,
                 is_simulated: true,
-                simulation_status: 'intercepted_by_simulator',
+                simulation_status: 'simulator_message',
+                message_source: 'whatsapp_simulator',
                 simulation_mode: simulatorMode,
               },
               'sim_msg_id_' + Date.now(),
@@ -1187,9 +1382,8 @@ export class TemplateSenderService {
         console.error('❌ WhatsApp API Error:', apiErrorContext);
 
         const errorData = data as { error?: { message?: string } };
-        const errorMessage = `WhatsApp API Error (${response.status}): ${
-          errorData?.error?.message || response.statusText
-        }`;
+        const errorMessage = `WhatsApp API Error (${response.status}): ${errorData?.error?.message || response.statusText
+          }`;
 
         throw new Error(errorMessage);
       }
@@ -1348,7 +1542,18 @@ export class TemplateSenderService {
       return payload.interactive.body.text;
     }
     if (payload.template?.name) {
-      return `Template: ${payload.template.name}`;
+      // Extract template parameters for better simulator display
+      const templateName = payload.template.name;
+      const params = payload.template.components
+        ?.flatMap((c) => c.parameters || [])
+        .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+        .map((p) => p.text)
+        .join(', ');
+
+      if (params) {
+        return `Template: ${templateName} [${params}]`;
+      }
+      return `Template: ${templateName}`;
     }
     return 'Outbound message content';
   }

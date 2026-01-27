@@ -29,10 +29,11 @@ import { isRequestSignatureValid } from './utils/validate-request';
 import { Public } from 'src/auth/public.decorator';
 import { WebhookHandler } from './webhook-handler.service';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In, IsNull } from 'typeorm';
 import { Account } from 'src/users/entities/account.entity';
 import { Team } from 'src/users/entities/team.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
+import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
 
@@ -50,6 +51,8 @@ export class WhatsappBotController {
     private readonly teamRepository: Repository<Team>,
     @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
+    @InjectRepository(KYCApplication)
+    private readonly kycApplicationRepository: Repository<KYCApplication>,
     private readonly utilService: UtilService,
   ) {}
 
@@ -525,10 +528,67 @@ export class WhatsappBotController {
         // This maintains partial functionality when team data is unavailable
       }
 
+      // Get KYC applicants who haven't been converted to tenants yet
+      try {
+        if (landlordAccount.properties) {
+          const propertyIds = landlordAccount.properties.map((p) => p.id);
+
+          const kycApplications = await this.kycApplicationRepository.find({
+            where: {
+              property_id: propertyIds.length > 0 ? In(propertyIds) : undefined,
+              tenant_id: IsNull(), // Only get applicants not yet converted to tenants
+            },
+            relations: ['property'],
+          });
+
+          this.logger.log(
+            `📋 Found ${kycApplications.length} KYC applicants for landlord's properties`,
+          );
+
+          for (const application of kycApplications) {
+            // Use phone number as unique identifier for applicants
+            const applicantPhone = this.utilService.normalizePhoneNumber(
+              application.phone_number,
+            );
+
+            // Check if this phone number is already in the map (might be a tenant already)
+            const existingUser = Array.from(usersMap.values()).find(
+              (u) => u.phone === applicantPhone,
+            );
+
+            if (!existingUser) {
+              const applicantData = {
+                id: application.id, // Use application ID as unique identifier
+                name: `${application.first_name} ${application.last_name}`,
+                phone: applicantPhone,
+                userType: 'kyc_applicant',
+                properties: [application.property?.name || 'Unknown Property'],
+              };
+
+              // Use a unique key combining type and phone to avoid conflicts
+              usersMap.set(`kyc_${applicantPhone}`, applicantData);
+              this.logger.log(
+                `✅ Added KYC applicant: ${applicantData.name} (${applicantPhone})`,
+              );
+            }
+          }
+        }
+      } catch (kycError) {
+        this.logger.error('Failed to fetch KYC applicants:', {
+          error: kycError,
+          context: {
+            ...requestContext,
+            errorType: kycError.constructor.name,
+            errorMessage: kycError.message,
+          },
+        });
+        // Continue processing without KYC applicants
+      }
+
       const usersWithProperties = Array.from(usersMap.values());
 
       this.logger.log(
-        `📊 Final users count: ${usersWithProperties.length} (${usersWithProperties.filter((u) => u.userType === 'tenant').length} tenants, ${usersWithProperties.filter((u) => u.userType === 'facility_manager').length} facility managers)`,
+        `📊 Final users count: ${usersWithProperties.length} (${usersWithProperties.filter((u) => u.userType === 'tenant').length} tenants, ${usersWithProperties.filter((u) => u.userType === 'facility_manager').length} facility managers, ${usersWithProperties.filter((u) => u.userType === 'kyc_applicant').length} KYC applicants)`,
       );
 
       // Consistent success response format
@@ -547,6 +607,9 @@ export class WhatsappBotController {
             ).length,
             landlords: usersWithProperties.filter(
               (u) => u.userType === 'landlord',
+            ).length,
+            kycApplicants: usersWithProperties.filter(
+              (u) => u.userType === 'kyc_applicant',
             ).length,
           },
         },

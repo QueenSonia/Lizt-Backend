@@ -12,6 +12,19 @@ export enum OfferLetterStatus {
   PENDING = 'pending',
   ACCEPTED = 'accepted',
   REJECTED = 'rejected',
+  SELECTED = 'selected',
+  REJECTED_BY_PAYMENT = 'rejected_by_payment',
+  PAYMENT_HELD_RACE_CONDITION = 'payment_held_race_condition',
+}
+
+/**
+ * Payment Status Enum
+ * Represents the payment state of an offer letter
+ */
+export enum PaymentStatus {
+  UNPAID = 'unpaid',
+  PARTIAL = 'partial',
+  FULLY_PAID = 'fully_paid',
 }
 
 /**
@@ -56,14 +69,14 @@ export class OfferLetter extends BaseEntity {
   @Column({ type: 'date' })
   tenancy_end_date: Date;
 
-  @Column({ type: 'decimal', precision: 12, scale: 2 })
-  caution_deposit: number;
+  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
+  caution_deposit?: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 2 })
-  legal_fee: number;
+  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
+  legal_fee?: number;
 
-  @Column({ type: 'varchar', length: 255 })
-  agency_fee: string;
+  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
+  agency_fee?: number;
 
   @Column({
     type: 'enum',
@@ -77,6 +90,65 @@ export class OfferLetter extends BaseEntity {
 
   @Column({ type: 'jsonb' })
   terms_of_tenancy: TermsOfTenancy[];
+
+  // Branding snapshot at time of creation
+  @Column({ type: 'jsonb', nullable: true })
+  branding?: {
+    businessName: string;
+    businessAddress: string;
+    contactInfo: string;
+    footerColor: string;
+    letterhead?: string;
+    signature?: string;
+    headingFont: string;
+    bodyFont: string;
+  };
+
+  // Payment-related fields (added in migration 1769400000000)
+  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
+  total_amount?: number;
+
+  @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
+  amount_paid: number;
+
+  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
+  outstanding_balance?: number;
+
+  @Column({
+    type: 'enum',
+    enum: PaymentStatus,
+    default: PaymentStatus.UNPAID,
+  })
+  payment_status: PaymentStatus;
+
+  @Column({ type: 'timestamp', nullable: true })
+  selected_at?: Date;
+
+  // PDF caching fields (added in migration 1738252800000)
+  @Column({ type: 'text', nullable: true })
+  pdf_url?: string;
+
+  @Column({ type: 'timestamp', nullable: true })
+  pdf_generated_at?: Date;
+
+  // New field to store snapshot of all editable text content
+  @Column({ type: 'jsonb', nullable: true })
+  content_snapshot?: {
+    offer_title: string;
+    intro_text: string;
+    agreement_text: string;
+    closing_text: string;
+    for_landlord_text: string;
+    tenant_address: string;
+    permitted_use: string;
+    rent_amount_formatted?: string;
+    service_charge_formatted?: string;
+    caution_deposit_formatted?: string;
+    legal_fee_formatted?: string;
+    agency_fee_formatted?: string;
+    tenancy_term?: string;
+    tenancy_period?: string;
+  };
 
   // Relations
   @ManyToOne(() => KYCApplication, { eager: false })

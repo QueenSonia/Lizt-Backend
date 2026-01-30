@@ -18,6 +18,15 @@ import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 export class UpdateUserDto {
   @ApiProperty({
     required: false,
+    example: "John's Account",
+    description: 'Profile name for the account',
+  })
+  @IsOptional()
+  @IsString()
+  profile_name?: string;
+
+  @ApiProperty({
+    required: false,
     example: 'John',
     description: 'First name of the user',
   })

@@ -35,6 +35,61 @@ export class TermsOfTenancyDto {
   content: string;
 }
 
+
+/**
+ * Content Snapshot DTO
+ */
+export class ContentSnapshotDto {
+  @IsString()
+  offer_title: string;
+
+  @IsString()
+  intro_text: string;
+
+  @IsString()
+  agreement_text: string;
+
+  @IsString()
+  closing_text: string;
+
+  @IsString()
+  for_landlord_text: string;
+
+  @IsString()
+  tenant_address: string;
+
+  @IsString()
+  permitted_use: string;
+
+  @IsOptional()
+  @IsString()
+  rent_amount_formatted?: string;
+
+  @IsOptional()
+  @IsString()
+  service_charge_formatted?: string;
+
+  @IsOptional()
+  @IsString()
+  caution_deposit_formatted?: string;
+
+  @IsOptional()
+  @IsString()
+  legal_fee_formatted?: string;
+
+  @IsOptional()
+  @IsString()
+  agency_fee_formatted?: string;
+
+  @IsOptional()
+  @IsString()
+  tenancy_term?: string;
+
+  @IsOptional()
+  @IsString()
+  tenancy_period?: string;
+}
+
 /**
  * Create Offer Letter DTO
  * Used for creating a new offer letter from the landlord dashboard
@@ -65,20 +120,28 @@ export class CreateOfferLetterDto {
   @IsDateString()
   tenancyEndDate: string;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  cautionDeposit: number;
+  cautionDeposit?: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  legalFee: number;
+  legalFee?: number;
 
-  @IsString()
-  @MaxLength(255)
-  agencyFee: string;
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  agencyFee?: number;
 
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => TermsOfTenancyDto)
   termsOfTenancy: TermsOfTenancyDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContentSnapshotDto)
+  contentSnapshot?: ContentSnapshotDto;
 }

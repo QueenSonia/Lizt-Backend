@@ -229,6 +229,73 @@ export interface OfferLetterStatusNotificationParams {
 }
 
 /**
+ * Parameters for landlord payment received notification
+ * Used for ALL payment notifications (partial and full)
+ */
+export interface LandlordPaymentReceivedParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  amount: number;
+  outstanding_balance: number; // Will be 0 when payment is complete
+}
+
+/**
+ * Parameters for landlord payment complete notification
+ * DEPRECATED: No longer used - replaced by LandlordPaymentReceivedParams
+ */
+export interface LandlordPaymentCompleteParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  total_amount: number;
+  property_id: string;
+}
+
+/**
+ * Parameters for tenant payment success notification
+ */
+export interface TenantPaymentSuccessParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  total_amount: number;
+}
+
+/**
+ * Parameters for tenant payment refund notification
+ */
+export interface TenantPaymentRefundParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  amount_paid: number;
+}
+
+/**
+ * Parameters for landlord race condition notification
+ */
+export interface LandlordRaceConditionParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  amount: number;
+}
+
+/**
+ * Parameters for tenant race condition notification
+ */
+export interface TenantRaceConditionParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  amount: number;
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -250,7 +317,7 @@ export class TemplateSenderService {
     private readonly config: ConfigService,
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
-  ) { }
+  ) {}
 
   /**
    * Send a message using a WhatsApp template with custom parameters
@@ -1108,6 +1175,308 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send landlord payment received notification (for ANY payment - partial or full)
+   * Requirements: Phase 5 - Task 19.3
+   * Template: ll_payment_received (20 chars)
+   */
+  async sendLandlordPaymentReceived({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    amount,
+    outstanding_balance,
+  }: LandlordPaymentReceivedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'll_payment_received',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlord_name,
+              },
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: `₦${outstanding_balance.toLocaleString()}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send landlord payment complete notification (100% paid, property secured)
+   * Requirements: Phase 5 - Task 19.4
+   * Template: ll_payment_complete (19 chars)
+   */
+  async sendLandlordPaymentComplete({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    total_amount,
+    property_id,
+  }: LandlordPaymentCompleteParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'll_payment_complete',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlord_name,
+              },
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${total_amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: property_id,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send tenant payment success notification (winning tenant)
+   * Requirements: Phase 5 - Task 19.1
+   * Template: tenant_payment_success (22 chars)
+   */
+  async sendTenantPaymentSuccess({
+    phone_number,
+    tenant_name,
+    property_name,
+    total_amount,
+  }: TenantPaymentSuccessParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_payment_success',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${total_amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send tenant payment refund notification (losing tenant)
+   * Requirements: Phase 5 - Task 19.2
+   * Template: tenant_payment_refund (21 chars)
+   */
+  async sendTenantPaymentRefund({
+    phone_number,
+    tenant_name,
+    property_name,
+    amount_paid,
+  }: TenantPaymentRefundParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_payment_refund',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount_paid.toLocaleString()}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send landlord race condition notification
+   * Requirements: Phase 5 - Task 19.5.1
+   * Template: ll_payment_race (15 chars)
+   */
+  async sendLandlordRaceCondition({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    amount,
+  }: LandlordRaceConditionParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'll_payment_race',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlord_name,
+              },
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send tenant race condition notification
+   * Requirements: Phase 5 - Task 19.5.2
+   * Template: tenant_payment_race (19 chars)
+   */
+  async sendTenantRaceCondition({
+    phone_number,
+    tenant_name,
+    property_name,
+    amount,
+  }: TenantRaceConditionParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_payment_race',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send plain text message
    */
   async sendText(to: string, text: string): Promise<void> {
@@ -1382,8 +1751,9 @@ export class TemplateSenderService {
         console.error('❌ WhatsApp API Error:', apiErrorContext);
 
         const errorData = data as { error?: { message?: string } };
-        const errorMessage = `WhatsApp API Error (${response.status}): ${errorData?.error?.message || response.statusText
-          }`;
+        const errorMessage = `WhatsApp API Error (${response.status}): ${
+          errorData?.error?.message || response.statusText
+        }`;
 
         throw new Error(errorMessage);
       }

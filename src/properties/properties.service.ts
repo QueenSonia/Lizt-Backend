@@ -51,6 +51,7 @@ import { CreatePropertyWithTenantDto } from './dto/create-property-with-tenant.d
 import { RolesEnum } from 'src/base.entity';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
 import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
+import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 
 @Injectable()
 export class PropertiesService {
@@ -86,7 +87,7 @@ export class PropertiesService {
     private readonly utilService: UtilService,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly databaseErrorHandler: DatabaseErrorHandlerService,
-  ) {}
+  ) { }
 
   async createProperty(
     propertyData: CreatePropertyDto,
@@ -798,6 +799,7 @@ export class PropertiesService {
         'property_tenants.status = :tenantStatus',
         { tenantStatus: TenantStatusEnum.ACTIVE },
       )
+      .loadRelationCountAndMap('property.offer_letter_count', 'property.offer_letters')
       .where(query);
 
     // Apply sorting (rent requires custom logic)
@@ -1160,9 +1162,8 @@ export class PropertiesService {
         const tenantUser = hist.tenant?.user;
         const tenantKyc = tenantUser?.tenant_kycs?.[0];
         const tenantName = tenantUser
-          ? `${tenantKyc?.first_name ?? tenantUser.first_name} ${
-              tenantKyc?.last_name ?? tenantUser.last_name
-            }`
+          ? `${tenantKyc?.first_name ?? tenantUser.first_name} ${tenantKyc?.last_name ?? tenantUser.last_name
+          }`
           : 'A tenant';
 
         switch (hist.event_type) {
@@ -1178,10 +1179,10 @@ export class PropertiesService {
           case 'tenancy_started': {
             const moveInDate = hist.move_in_date
               ? new Date(hist.move_in_date).toLocaleDateString('en-US', {
-                  month: 'long',
-                  day: 'numeric',
-                  year: 'numeric',
-                })
+                month: 'long',
+                day: 'numeric',
+                year: 'numeric',
+              })
               : 'an unspecified date';
 
             return {
@@ -1310,11 +1311,10 @@ export class PropertiesService {
     }
 
     // Computed description
-    const computedDescription = `${property.name} is a ${
-      property.no_of_bedrooms === -1
+    const computedDescription = `${property.name} is a ${property.no_of_bedrooms === -1
         ? 'studio'
         : `${property.no_of_bedrooms}-bedroom`
-    } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
+      } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
 
     // KYC Applications data
     const kycApplications =
@@ -2060,9 +2060,8 @@ export class PropertiesService {
           tenant_id,
           event_type: 'tenancy_ended',
           move_out_date: DateService.getStartOfTheDay(move_out_date),
-          event_description: `Tenant moved out. Reason: ${
-            moveOutData?.move_out_reason || 'Not specified'
-          }`,
+          event_description: `Tenant moved out. Reason: ${moveOutData?.move_out_reason || 'Not specified'
+            }`,
         },
       );
 
@@ -2506,7 +2505,7 @@ export class PropertiesService {
       console.error('Transaction rolled back due to:', error);
       throw new HttpException(
         error?.message ||
-          'An error occurred while assigning Tenant To property',
+        'An error occurred while assigning Tenant To property',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     } finally {
@@ -2702,13 +2701,13 @@ export class PropertiesService {
           sampleResults: sampleResults.slice(0, 5), // Show first 5 results
           recommendations: isFixed
             ? [
-                'The fix is working correctly',
-                'Clear browser cache if you still see issues',
-              ]
+              'The fix is working correctly',
+              'Clear browser cache if you still see issues',
+            ]
             : [
-                'Database queries may need additional fixes',
-                'Contact technical support',
-              ],
+              'Database queries may need additional fixes',
+              'Contact technical support',
+            ],
         },
       };
     } catch (error) {

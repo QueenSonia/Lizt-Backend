@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { config } from 'dotenv-flow';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
+import { BullModule } from '@nestjs/bull';
 
 import typeorm from '../ormconfig';
 import { AppController } from './app.controller';
@@ -29,6 +30,7 @@ import { EventsModule } from './events/events.module';
 import { UtilService } from 'src/utils/utility-service';
 import { KycFeedbackModule } from './kyc-feedback/kyc-feedback.module';
 import { OfferLettersModule } from './offer-letters/offer-letters.module';
+import { PaymentsModule } from './payments/payments.module';
 
 config({ default_node_env: 'production' });
 
@@ -48,6 +50,24 @@ config({ default_node_env: 'production' });
         if (!typeOrmConfig) throw new Error('TypeORM configuration not found');
 
         return typeOrmConfig;
+      },
+    }),
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: async (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_CLOUD_URL');
+
+        if (!redisUrl) {
+          throw new Error('REDIS_CLOUD_URL environment variable is required');
+        }
+
+        return {
+          redis: redisUrl,
+          defaultJobOptions: {
+            removeOnComplete: 100, // Keep last 100 completed jobs
+            removeOnFail: 500, // Keep last 500 failed jobs
+          },
+        };
       },
     }),
     AppCacheModule,
@@ -70,6 +90,7 @@ config({ default_node_env: 'production' });
     EventsModule,
     KycFeedbackModule,
     OfferLettersModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [

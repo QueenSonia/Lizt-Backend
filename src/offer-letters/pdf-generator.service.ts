@@ -2,9 +2,10 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as puppeteer from 'puppeteer';
-import { OfferLetter } from './entities/offer-letter.entity';
+import { OfferLetter, TermsOfTenancy } from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
+import { FileUploadService } from '../utils/cloudinary';
 
 /**
  * PDF Generator Service
@@ -22,6 +23,7 @@ export class PDFGeneratorService {
     private readonly kycApplicationRepository: Repository<KYCApplication>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    private readonly fileUploadService: FileUploadService,
   ) {}
 
   /**
@@ -31,7 +33,6 @@ export class PDFGeneratorService {
   async generateOfferLetterPDF(token: string): Promise<Buffer> {
     const offerLetter = await this.offerLetterRepository.findOne({
       where: { token },
-      relations: ['landlord', 'landlord.user'], // Load landlord and their user data for branding
     });
 
     if (!offerLetter) {
@@ -56,6 +57,49 @@ export class PDFGeneratorService {
       property,
     );
     return this.htmlToPDF(html);
+  }
+
+  /**
+   * Generate and cache PDF in the background
+   */
+  async generatePDFInBackground(token: string): Promise<void> {
+    try {
+      const offerLetter = await this.offerLetterRepository.findOne({
+        where: { token },
+      });
+
+      if (!offerLetter) {
+        this.logger.error(
+          `Cannot generate PDF: Offer letter with token ${token} not found`,
+        );
+        return;
+      }
+
+      // Generate the PDF
+      const pdfBuffer = await this.generateOfferLetterPDF(token);
+
+      // Upload to Cloudinary
+      const filename = `offer-letter-${token.substring(0, 8)}-${Date.now()}`;
+      const uploadResult = await this.fileUploadService.uploadBuffer(
+        pdfBuffer,
+        filename,
+      );
+
+      // Update offer letter with cached URL
+      await this.offerLetterRepository.update(offerLetter.id, {
+        pdf_url: uploadResult.secure_url,
+        pdf_generated_at: new Date(),
+      });
+
+      this.logger.log(
+        `Background PDF generation successful for token: ${token}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Background PDF generation failed: ${error.message}`,
+        error.stack,
+      );
+    }
   }
 
   /**
@@ -107,106 +151,51 @@ export class PDFGeneratorService {
   }
 
   /**
-   * Format date to match frontend format (e.g., "1st January, 2026")
+   * Format date to readable string (e.g., "January 15, 2025")
    */
   private formatDate(dateString: string): string {
     const date = new Date(dateString);
-    const day = date.getDate();
-    const month = date.toLocaleString('en-US', { month: 'long' });
-    const year = date.getFullYear();
-
-    const suffix =
-      day === 1 || day === 21 || day === 31
-        ? 'st'
-        : day === 2 || day === 22
-          ? 'nd'
-          : day === 3 || day === 23
-            ? 'rd'
-            : 'th';
-
-    return `${day}${suffix} ${month}, ${year}`;
+    return date.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
   }
 
   /**
-   * Calculate tenancy term in words (e.g., "One Year Fixed")
+   * Calculate tenancy term in months/years
    */
   private calculateTenancyTerm(startDate: Date, endDate: Date): string {
     const start = new Date(startDate);
     const end = new Date(endDate);
-    const months = Math.round(
-      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24 * 30),
-    );
+    const months =
+      (end.getFullYear() - start.getFullYear()) * 12 +
+      (end.getMonth() - start.getMonth());
 
     if (months >= 12) {
       const years = Math.floor(months / 12);
-      return `${years} Year${years > 1 ? 's' : ''} Fixed`;
+      const remainingMonths = months % 12;
+      if (remainingMonths === 0) {
+        return years === 1 ? '1 year' : `${years} years`;
+      }
+      return `${years} year${years > 1 ? 's' : ''} and ${remainingMonths} month${remainingMonths > 1 ? 's' : ''}`;
     }
-    return `${months} Month${months > 1 ? 's' : ''} Fixed`;
+    return months === 1 ? '1 month' : `${months} months`;
   }
 
   /**
    * Format currency with Naira symbol
    */
-  private formatCurrency(amount: number): string {
-    return `₦${amount.toLocaleString()}`;
-  }
-
-  /**
-   * Get standard terms of tenancy (matches frontend STANDARD_TERMS)
-   */
-  private getStandardTerms(): Array<{ title: string; content: string }> {
-    return [
-      {
-        title: 'Permitted Use',
-        content:
-          'The Property shall be used solely for residential purposes. Commercial use, Airbnb/short-let, or subletting is strictly prohibited without the prior written consent of the Landlord.',
-      },
-      {
-        title: 'Condition of Property',
-        content:
-          'The Property is being let "as is" based on its condition as at the date of inspection and acceptance by the Tenant. No further works, renovations, replacements, or modifications are required from the Landlord as a condition of taking possession, unless expressly stated in writing and agreed upon by both parties.',
-      },
-      {
-        title: 'Conduct & Restrictions',
-        content:
-          "The Tenant shall not engage in any activity that may constitute a nuisance or disturbance to other occupants or neighbours. No noisy generators are allowed on the premises, however, the Tenant may install an inverter system. Pets must remain inside the Tenant's apartment at all times; pets in common areas are strictly prohibited. No illegal or immoral activity is permitted within the Property or on the premises.",
-      },
-      {
-        title: 'Caution Deposit',
-        content:
-          'The Caution Deposit is refundable only after the Tenant has vacated and returned possession of the Property to the Landlord in good condition, fair wear and tear excepted. Deductions may be made from the Caution Deposit for damages beyond fair wear and tear, outstanding rent, utilities, or any other obligations under this Agreement.',
-      },
-      {
-        title: 'Repairs & Maintenance',
-        content:
-          "The Tenant shall be responsible for all internal repairs and minor maintenance, including but not limited to plumbing fixtures, electrical fittings, door locks, and general upkeep of the interior. The Landlord shall be responsible for structural repairs and major building systems including the roof, foundation, and main building infrastructure. Any damage to the Property caused by the Tenant's negligence or misuse shall be the sole responsibility of the Tenant.",
-      },
-      {
-        title: 'Access',
-        content:
-          "The Landlord or the Landlord's authorized representative may access the Property with reasonable notice to the Tenant for the purposes of inspection, repairs, maintenance, or in the event of an emergency. The Tenant shall grant such access and shall not unreasonably refuse entry.",
-      },
-      {
-        title: 'Service of Notices',
-        content:
-          "Any notice to be served on the Tenant under this Agreement will be considered duly served if delivered by any of the following means: (i) left on the door of the Property; (ii) sent via WhatsApp to the Tenant's registered mobile number; (iii) sent via email to the Tenant's registered email address; or (iv) delivered by hand to the Tenant or any person of suitable age and discretion at the Property.",
-      },
-      {
-        title: 'Breach & Termination',
-        content:
-          'In the event of a breach of any term or condition of this Agreement by the Tenant, the Landlord reserves the right to terminate the tenancy, disconnect the Property from general utilities and services, and commence eviction proceedings in accordance with applicable law. The Tenant shall remain liable for all rent and other obligations up to the date of termination.',
-      },
-      {
-        title: 'Rent Refund',
-        content:
-          'If the tenancy is terminated before the expiry date, whether by the Tenant or by the Landlord (in the case of breach by the Tenant), the Tenant shall only be entitled to a refund of the rent for the unused days remaining on the tenancy, calculated on a pro-rata basis. The refund will be processed only after the Tenant has fully vacated the Property, returned possession to the Landlord, and settled all outstanding obligations including utilities, damages, and any other charges due under this Agreement.',
-      },
-    ];
+  private formatCurrency(amount: number | undefined | null): string {
+    if (amount === undefined || amount === null || isNaN(amount)) return '₦0';
+    // Use regex for formatting to avoid locale issues in Node environments
+    const parts = amount.toFixed(2).split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return `₦${parts.join('.')}`;
   }
 
   /**
    * Generate HTML content for offer letter
-   * Matches the OfferLetterDocument component exactly
    * Requirements: 4.3, 4.4
    */
   private generateOfferLetterHTML(
@@ -219,23 +208,30 @@ export class PDFGeneratorService {
     const lastName = nameParts[nameParts.length - 1];
 
     const today = this.formatDate(new Date().toISOString());
-    const tenancyStartDate = this.formatDate(
-      offerLetter.tenancy_start_date.toString(),
-    );
-    const tenancyEndDate = this.formatDate(
-      offerLetter.tenancy_end_date.toString(),
-    );
-    const tenancyTerm = this.calculateTenancyTerm(
-      offerLetter.tenancy_start_date,
-      offerLetter.tenancy_end_date,
-    );
-    const tenancyPeriod = `${tenancyStartDate} to ${tenancyEndDate}`;
+    const snapshot = offerLetter.content_snapshot;
+
+    // Use snapshot if available, otherwise format manually
+    const tenancyStartDateFormatted =
+      snapshot?.tenancy_period?.split(' to ')[0] ||
+      this.formatDate(offerLetter.tenancy_start_date.toString());
+    const tenancyEndDateFormatted =
+      snapshot?.tenancy_period?.split(' to ')[1] ||
+      this.formatDate(offerLetter.tenancy_end_date.toString());
+    const tenancyTerm =
+      snapshot?.tenancy_term ||
+      this.calculateTenancyTerm(
+        offerLetter.tenancy_start_date,
+        offerLetter.tenancy_end_date,
+      );
+    const tenancyPeriod =
+      snapshot?.tenancy_period ||
+      `${tenancyStartDateFormatted} to ${tenancyEndDateFormatted}`;
 
     const propertyName = property.name || 'Property';
+    const propertyAddress = snapshot?.tenant_address || 'Lagos, Nigeria';
 
-    // Get landlord branding data from landlord.user
-    const landlordUser = offerLetter.landlord?.user;
-    const branding = landlordUser?.branding || {};
+    // Get landlord branding data from branding field
+    const branding = offerLetter.branding || ({} as any);
     const businessName = branding.businessName || 'Business Name';
     const businessAddress =
       branding.businessAddress ||
@@ -252,12 +248,14 @@ export class PDFGeneratorService {
     const terms =
       offerLetter.terms_of_tenancy && offerLetter.terms_of_tenancy.length > 0
         ? offerLetter.terms_of_tenancy
-        : this.getStandardTerms();
+        : [];
 
     // Generate terms HTML
-    const termsHtml = terms
-      .map(
-        (term, index) => `
+    const termsHtml =
+      terms.length > 0
+        ? terms
+            .map(
+              (term, index) => `
       <div style="margin-bottom: 24px;">
         <h3 style="font-weight: 700; font-size: 14px; margin-bottom: 8px; font-family: ${headingFont}, sans-serif;">
           ${index + 1}. ${this.escapeHtml(term.title)}
@@ -267,8 +265,19 @@ export class PDFGeneratorService {
         </div>
       </div>
     `,
-      )
-      .join('');
+            )
+            .join('')
+        : '<p>Standard terms of tenancy apply.</p>';
+
+    const offerTitle =
+      snapshot?.offer_title ||
+      `OFFER FOR RENT OF ${propertyName.toUpperCase()}`;
+    const introText =
+      snapshot?.intro_text ||
+      `Following your visit and review of the property "${propertyName}" (hereafter the "Property"), we hereby make you an offer to rent the Property upon the following terms:`;
+    const agreementText =
+      snapshot?.agreement_text ||
+      'This Offer and the attached Terms of Tenancy (together the "Agreement") is non-binding until you have accepted this offer, made payment of all sums due into the company\'s designated bank account, and have been granted possession of the Property by the Landlord or the Landlord\'s authorized representative.';
 
     return `
 <!DOCTYPE html>
@@ -277,6 +286,9 @@ export class PDFGeneratorService {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Offer Letter - ${applicantName}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
   <style>
     * {
       margin: 0;
@@ -284,9 +296,9 @@ export class PDFGeneratorService {
       box-sizing: border-box;
     }
     body {
-      font-family: ${bodyFont}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: ${bodyFont === 'Inter' ? "'Inter', sans-serif" : bodyFont}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       font-size: 14px;
-      line-height: 1.6;
+      line-height: 1.428;
       color: #000;
       background: #fff;
     }
@@ -296,7 +308,6 @@ export class PDFGeneratorService {
       padding: 64px 80px;
     }
     
-    /* Header Section */
     .header {
       display: flex;
       justify-content: flex-end;
@@ -309,13 +320,11 @@ export class PDFGeneratorService {
       object-fit: contain;
     }
     
-    /* Date */
     .date-section {
       margin-bottom: 32px;
       font-size: 14px;
     }
     
-    /* Recipient Address */
     .recipient-section {
       margin-bottom: 32px;
     }
@@ -326,33 +335,32 @@ export class PDFGeneratorService {
       font-weight: 700;
     }
     
-    /* Salutation */
     .salutation {
       margin-bottom: 24px;
     }
     
-    /* Main Heading */
     .main-heading {
       margin-bottom: 24px;
     }
     .main-heading h1 {
-      font-family: ${headingFont}, sans-serif;
+      font-family: ${headingFont === 'Inter' ? "'Inter', sans-serif" : headingFont}, sans-serif;
       font-weight: 700;
       font-size: 14px;
       text-transform: uppercase;
       text-decoration: underline;
     }
     
-    /* Introduction */
     .intro-text {
-      margin-bottom: 24px;
+      margin-bottom: 32px;
       font-size: 14px;
       text-align: justify;
     }
+    .intro-text p {
+      margin-bottom: 0;
+    }
     
-    /* Commercial Terms - Bullet Points */
     .terms-bullets {
-      margin-bottom: 24px;
+      margin-bottom: 32px;
       font-size: 14px;
     }
     .terms-bullets .term-item {
@@ -370,20 +378,20 @@ export class PDFGeneratorService {
       font-weight: 700;
     }
     
-    /* Agreement Text */
     .agreement-text {
       margin-bottom: 32px;
       font-size: 14px;
       text-align: justify;
     }
+    .agreement-text p {
+      margin-bottom: 0;
+    }
     
-    /* Closing Section */
     .closing-section {
       margin-bottom: 8px;
       font-size: 14px;
     }
     
-    /* Signature Space */
     .signature-space {
       height: 64px;
       display: flex;
@@ -396,7 +404,6 @@ export class PDFGeneratorService {
       object-fit: contain;
     }
     
-    /* For Landlord */
     .for-landlord {
       margin-bottom: 48px;
       font-size: 14px;
@@ -405,18 +412,17 @@ export class PDFGeneratorService {
       font-style: italic;
     }
     
-    /* Page Divider */
     .page-divider {
       margin: 48px 0;
       border-top: 2px solid #d1d5db;
+      page-break-after: always;
     }
     
-    /* Terms of Tenancy Section */
     .terms-section {
       margin-bottom: 48px;
     }
     .terms-section h2 {
-      font-family: ${headingFont}, sans-serif;
+      font-family: ${headingFont === 'Inter' ? "'Inter', sans-serif" : headingFont}, sans-serif;
       font-weight: 700;
       font-size: 16px;
       text-transform: uppercase;
@@ -424,7 +430,6 @@ export class PDFGeneratorService {
       text-decoration: underline;
     }
     
-    /* Footer Section */
     .footer-section {
       margin-top: 64px;
       padding-top: 32px;
@@ -447,78 +452,89 @@ export class PDFGeneratorService {
 </head>
 <body>
   <div class="container">
-    <!-- Header Section -->
     <div class="header">
       ${letterhead ? `<img src="${letterhead}" alt="Logo" />` : ''}
     </div>
 
-    <!-- Date -->
     <div class="date-section">
       <p>${today}</p>
     </div>
 
-    <!-- Recipient Address -->
     <div class="recipient-section">
       <p class="name">${applicantName}</p>
-      <p>Lagos, Nigeria</p>
+      <p>${this.escapeHtml(propertyAddress)}</p>
     </div>
 
-    <!-- Salutation -->
     <div class="salutation">
       <p>Dear Mr/Ms ${lastName},</p>
     </div>
 
-    <!-- Main Heading -->
     <div class="main-heading">
-      <h1>OFFER FOR RENT OF ${propertyName.toUpperCase()}</h1>
+      <h1>${this.escapeHtml(offerTitle)}</h1>
     </div>
 
-    <!-- Introduction -->
     <div class="intro-text">
-      <p>Following your visit and review of the property "${propertyName}" (hereafter the "Property"), we hereby make you an offer to rent the Property upon the following terms:</p>
+      <p>${this.escapeHtml(introText)}</p>
     </div>
 
-    <!-- Commercial Terms - Bullet Points -->
     <div class="terms-bullets">
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
-          <strong>Permitted Use:</strong> Residential
+          <strong>Permitted Use:</strong> ${this.escapeHtml(snapshot?.permitted_use || 'Residential')}
         </div>
       </div>
 
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
-          <strong>Rent:</strong> ${this.formatCurrency(offerLetter.rent_amount)}
+          <strong>Rent:</strong> ${snapshot?.rent_amount_formatted || this.formatCurrency(offerLetter.rent_amount)}
         </div>
       </div>
 
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
-          <strong>Service Charge:</strong> ${offerLetter.service_charge ? this.formatCurrency(offerLetter.service_charge) : '₦0'}
+          <strong>Service Charge:</strong> ${snapshot?.service_charge_formatted || (offerLetter.service_charge ? this.formatCurrency(offerLetter.service_charge) : '₦0')}
         </div>
       </div>
+
+      ${
+        (snapshot?.caution_deposit_formatted &&
+          snapshot.caution_deposit_formatted !== '₦0' &&
+          snapshot.caution_deposit_formatted !== '') ||
+        (offerLetter.caution_deposit && offerLetter.caution_deposit > 0)
+          ? `
+      <div class="term-item">
+        <span class="bullet">•</span>
+        <div class="term-content">
+          <strong>Caution (Refundable):</strong> ${snapshot?.caution_deposit_formatted || this.formatCurrency(offerLetter.caution_deposit)}
+        </div>
+      </div>
+      `
+          : ''
+      }
+
+      ${
+        (snapshot?.legal_fee_formatted &&
+          snapshot.legal_fee_formatted !== '₦0' &&
+          snapshot.legal_fee_formatted !== '') ||
+        (offerLetter.legal_fee && offerLetter.legal_fee > 0)
+          ? `
+      <div class="term-item">
+        <span class="bullet">•</span>
+        <div class="term-content">
+          <strong>Legal Fee:</strong> ${snapshot?.legal_fee_formatted || this.formatCurrency(offerLetter.legal_fee)}
+        </div>
+      </div>
+      `
+          : ''
+      }
 
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
-          <strong>Caution (Refundable):</strong> ${this.formatCurrency(offerLetter.caution_deposit)}
-        </div>
-      </div>
-
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Legal Fee:</strong> ${this.formatCurrency(offerLetter.legal_fee)}
-        </div>
-      </div>
-
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Agency Fee:</strong> ${this.escapeHtml(offerLetter.agency_fee)}
+          <strong>Agency Fee:</strong> ${snapshot?.agency_fee_formatted || this.escapeHtml(offerLetter.agency_fee?.toString() || 'N/A')}
         </div>
       </div>
 
@@ -537,30 +553,24 @@ export class PDFGeneratorService {
       </div>
     </div>
 
-    <!-- Non-binding Agreement Text -->
     <div class="agreement-text">
-      <p>This Offer and the attached Terms of Tenancy (together the "Agreement") is non-binding until you have accepted this offer, made payment of all sums due into the company's designated bank account, and have been granted possession of the Property by the Landlord or the Landlord's authorized representative.</p>
+      <p>${this.escapeHtml(agreementText)}</p>
     </div>
 
-    <!-- Closing Section -->
     <div class="closing-section">
-      <p>Yours faithfully,</p>
+      <p>${this.escapeHtml(snapshot?.closing_text || 'Yours faithfully,')}</p>
     </div>
 
-    <!-- Signature Space -->
     <div class="signature-space">
       ${signature ? `<img src="${signature}" alt="Signature" />` : ''}
     </div>
 
-    <!-- For Landlord -->
     <div class="for-landlord">
-      <p><em>For Landlord</em></p>
+      <p><em>${this.escapeHtml(snapshot?.for_landlord_text || 'For Landlord')}</em></p>
     </div>
 
-    <!-- Page Divider -->
     <div class="page-divider"></div>
 
-    <!-- Terms of Tenancy Section -->
     <div class="terms-section">
       <h2>Terms of Tenancy</h2>
       <div>
@@ -568,7 +578,6 @@ export class PDFGeneratorService {
       </div>
     </div>
 
-    <!-- Footer Section -->
     <div class="footer-section">
       <p class="business-name">${this.escapeHtml(businessName)}</p>
       <p class="business-address">${this.escapeHtml(businessAddress)}</p>
@@ -578,6 +587,37 @@ export class PDFGeneratorService {
 </body>
 </html>
     `;
+  }
+
+  /**
+   * Get human-readable rent frequency label
+   */
+  private getRentFrequencyLabel(frequency: string): string {
+    const labels: Record<string, string> = {
+      monthly: 'per month',
+      quarterly: 'per quarter',
+      biannually: 'per 6 months',
+      annually: 'per year',
+    };
+    return labels[frequency] || frequency;
+  }
+
+  /**
+   * Generate HTML for terms of tenancy
+   */
+  private generateTermsHtml(terms: TermsOfTenancy[]): string {
+    if (!terms || terms.length === 0) {
+      return '<p>Standard terms of tenancy apply.</p>';
+    }
+
+    const termItems = terms
+      .map(
+        (term) =>
+          `<li><strong>${this.escapeHtml(term.title)}:</strong> ${this.escapeHtml(term.content)}</li>`,
+      )
+      .join('\n');
+
+    return `<ol class="terms-list">${termItems}</ol>`;
   }
 
   /**

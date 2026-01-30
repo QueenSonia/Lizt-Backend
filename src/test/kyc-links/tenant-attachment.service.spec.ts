@@ -650,3 +650,370 @@ describe('TenantAttachmentService', () => {
     });
   });
 });
+
+  describe('attachTenantFromOffer', () => {
+    const offerLetterId = 'offer-123';
+    const applicationId = 'app-123';
+    const propertyId = 'property-123';
+    const tenantId = 'tenant-123';
+    const landlordId = 'landlord-123';
+
+    const mockOfferLetter = {
+      id: offerLetterId,
+      kyc_application_id: applicationId,
+      property_id: propertyId,
+      landlord_id: landlordId,
+      rent_amount: 1200000,
+      rent_frequency: 'Annually',
+      service_charge: 200000,
+      tenancy_start_date: new Date('2026-02-01'),
+      tenancy_end_date: new Date('2027-01-31'),
+      caution_deposit: 500000,
+      legal_fee: 100000,
+      agency_fee: 50000,
+      total_amount: 2050000,
+      amount_paid: 2050000,
+      outstanding_balance: 0,
+      payment_status: 'fully_paid',
+      status: 'selected',
+    };
+
+    const mockApplication = {
+      id: applicationId,
+      property_id: propertyId,
+      status: ApplicationStatus.PENDING,
+      first_name: 'John',
+      last_name: 'Doe',
+      email: 'john.doe@example.com',
+      phone_number: '+2348012345678',
+      date_of_birth: new Date('1990-01-01'),
+      gender: Gender.MALE,
+      nationality: 'Nigerian',
+      state_of_origin: 'Lagos',
+      marital_status: MaritalStatus.SINGLE,
+      employment_status: EmploymentStatus.EMPLOYED,
+      property: {
+        id: propertyId,
+        owner_id: landlordId,
+        property_status: PropertyStatusEnum.OCCUPIED,
+      },
+    };
+
+    const mockTenantAccount = {
+      id: tenantId,
+      email: 'john.doe@example.com',
+      role: RolesEnum.TENANT,
+      userId: 'user-123',
+      user: {
+        id: 'user-123',
+        first_name: 'John',
+        last_name: 'Doe',
+        email: 'john.doe@example.com',
+        phone_number: '+2348012345678',
+      },
+    };
+
+    beforeEach(() => {
+      mockQueryRunner.manager.createQueryBuilder.mockReturnValue(
+        mockQueryBuilder,
+      );
+    });
+
+    it('should successfully attach tenant from offer letter', async () => {
+      // Arrange
+      mockQueryRunner.manager.findOne
+        .mockResolvedValueOnce(mockApplication) // Application lookup
+        .mockResolvedValueOnce(mockTenantAccount); // Tenant account lookup
+
+      const mockRent = { id: 'rent-123' };
+      const mockPropertyTenant = {
+        id: 'pt-123',
+        property_id: propertyId,
+        tenant_id: tenantId,
+      };
+      const mockPropertyHistory = {
+        id: 'ph-123',
+        property_id: propertyId,
+        tenant_id: tenantId,
+      };
+
+      mockQueryRunner.manager.create
+        .mockReturnValueOnce(mockRent)
+        .mockReturnValueOnce(mockPropertyTenant)
+        .mockReturnValueOnce(mockPropertyHistory);
+
+      mockQueryRunner.manager.save
+        .mockResolvedValueOnce(mockRent)
+        .mockResolvedValueOnce(mockPropertyTenant)
+        .mockResolvedValueOnce(mockPropertyHistory);
+
+      // Act
+      await service.attachTenantFromOffer(
+        mockQueryRunner.manager,
+        mockOfferLetter as any,
+      );
+
+      // Assert
+      // Verify rent creation with offer letter data
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        Rent,
+        expect.objectContaining({
+          tenant_id: tenantId,
+          property_id: propertyId,
+          rental_price: 1200000,
+          security_deposit: 500000,
+          service_charge: 200000,
+          payment_frequency: 'Annually',
+          rent_status: RentStatusEnum.ACTIVE,
+          payment_status: RentPaymentStatusEnum.PENDING,
+          amount_paid: 0,
+        }),
+      );
+
+      // Verify property-tenant relationship creation
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        PropertyTenant,
+        {
+          property_id: propertyId,
+          tenant_id: tenantId,
+          status: TenantStatusEnum.ACTIVE,
+        },
+      );
+
+      // Verify property history creation
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        PropertyHistory,
+        expect.objectContaining({
+          property_id: propertyId,
+          tenant_id: tenantId,
+          monthly_rent: 1200000,
+        }),
+      );
+
+      // Verify application status update
+      expect(mockQueryRunner.manager.update).toHaveBeenCalledWith(
+        KYCApplication,
+        applicationId,
+        {
+          status: ApplicationStatus.APPROVED,
+          tenant_id: tenantId,
+        },
+      );
+
+      // Verify other applications rejected
+      expect(mockQueryRunner.manager.createQueryBuilder).toHaveBeenCalled();
+    });
+
+    it('should throw NotFoundException when KYC application not found', async () => {
+      // Arrange
+      mockQueryRunner.manager.findOne.mockResolvedValueOnce(null); // Application not found
+
+      // Act & Assert
+      await expect(
+        service.attachTenantFromOffer(
+          mockQueryRunner.manager,
+          mockOfferLetter as any,
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should handle offer letter with no optional fees', async () => {
+      // Arrange
+      const offerLetterNoFees = {
+        ...mockOfferLetter,
+        caution_deposit: null,
+        legal_fee: null,
+        agency_fee: null,
+        service_charge: null,
+      };
+
+      mockQueryRunner.manager.findOne
+        .mockResolvedValueOnce(mockApplication)
+        .mockResolvedValueOnce(mockTenantAccount);
+
+      mockQueryRunner.manager.create
+        .mockReturnValueOnce({ id: 'rent-123' })
+        .mockReturnValueOnce({ id: 'pt-123' })
+        .mockReturnValueOnce({ id: 'ph-123' });
+
+      mockQueryRunner.manager.save
+        .mockResolvedValueOnce({ id: 'rent-123' })
+        .mockResolvedValueOnce({ id: 'pt-123' })
+        .mockResolvedValueOnce({ id: 'ph-123' });
+
+      // Act
+      await service.attachTenantFromOffer(
+        mockQueryRunner.manager,
+        offerLetterNoFees as any,
+      );
+
+      // Assert
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        Rent,
+        expect.objectContaining({
+          security_deposit: 0,
+          service_charge: 0,
+        }),
+      );
+    });
+
+    it('should correctly map different rent frequencies', async () => {
+      // Test Monthly
+      const monthlyOffer = { ...mockOfferLetter, rent_frequency: 'Monthly' };
+      mockQueryRunner.manager.findOne
+        .mockResolvedValueOnce(mockApplication)
+        .mockResolvedValueOnce(mockTenantAccount);
+
+      mockQueryRunner.manager.create
+        .mockReturnValueOnce({ id: 'rent-123' })
+        .mockReturnValueOnce({ id: 'pt-123' })
+        .mockReturnValueOnce({ id: 'ph-123' });
+
+      mockQueryRunner.manager.save
+        .mockResolvedValueOnce({ id: 'rent-123' })
+        .mockResolvedValueOnce({ id: 'pt-123' })
+        .mockResolvedValueOnce({ id: 'ph-123' });
+
+      await service.attachTenantFromOffer(
+        mockQueryRunner.manager,
+        monthlyOffer as any,
+      );
+
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        Rent,
+        expect.objectContaining({
+          payment_frequency: 'Monthly',
+        }),
+      );
+
+      jest.clearAllMocks();
+
+      // Test Quarterly
+      const quarterlyOffer = {
+        ...mockOfferLetter,
+        rent_frequency: 'Quarterly',
+      };
+      mockQueryRunner.manager.findOne
+        .mockResolvedValueOnce(mockApplication)
+        .mockResolvedValueOnce(mockTenantAccount);
+
+      mockQueryRunner.manager.create
+        .mockReturnValueOnce({ id: 'rent-123' })
+        .mockReturnValueOnce({ id: 'pt-123' })
+        .mockReturnValueOnce({ id: 'ph-123' });
+
+      mockQueryRunner.manager.save
+        .mockResolvedValueOnce({ id: 'rent-123' })
+        .mockResolvedValueOnce({ id: 'pt-123' })
+        .mockResolvedValueOnce({ id: 'ph-123' });
+
+      await service.attachTenantFromOffer(
+        mockQueryRunner.manager,
+        quarterlyOffer as any,
+      );
+
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        Rent,
+        expect.objectContaining({
+          payment_frequency: 'Quarterly',
+        }),
+      );
+    });
+
+    it('should set correct tenancy dates from offer letter', async () => {
+      // Arrange
+      mockQueryRunner.manager.findOne
+        .mockResolvedValueOnce(mockApplication)
+        .mockResolvedValueOnce(mockTenantAccount);
+
+      mockQueryRunner.manager.create
+        .mockReturnValueOnce({ id: 'rent-123' })
+        .mockReturnValueOnce({ id: 'pt-123' })
+        .mockReturnValueOnce({ id: 'ph-123' });
+
+      mockQueryRunner.manager.save
+        .mockResolvedValueOnce({ id: 'rent-123' })
+        .mockResolvedValueOnce({ id: 'pt-123' })
+        .mockResolvedValueOnce({ id: 'ph-123' });
+
+      // Act
+      await service.attachTenantFromOffer(
+        mockQueryRunner.manager,
+        mockOfferLetter as any,
+      );
+
+      // Assert
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        Rent,
+        expect.objectContaining({
+          rent_start_date: new Date('2026-02-01'),
+          lease_agreement_end_date: new Date('2027-01-31'),
+        }),
+      );
+    });
+
+    it('should create or get tenant account from KYC data', async () => {
+      // Arrange - simulate new tenant creation
+      mockQueryRunner.manager.findOne
+        .mockResolvedValueOnce(mockApplication) // Application lookup
+        .mockResolvedValueOnce(null); // No existing account
+
+      const mockNewUser = {
+        id: 'new-user-123',
+        first_name: 'John',
+        last_name: 'Doe',
+        email: 'john.doe@example.com',
+        phone_number: '+2348012345678',
+      };
+
+      const mockNewAccount = {
+        id: 'new-account-123',
+        email: 'john.doe@example.com',
+        userId: mockNewUser.id,
+        role: RolesEnum.TENANT,
+        user: mockNewUser,
+      };
+
+      mockQueryRunner.manager.create
+        .mockReturnValueOnce(mockNewUser) // User creation
+        .mockReturnValueOnce(mockNewAccount) // Account creation
+        .mockReturnValueOnce({ id: 'rent-123' }) // Rent creation
+        .mockReturnValueOnce({ id: 'pt-123' }) // PropertyTenant creation
+        .mockReturnValueOnce({ id: 'ph-123' }); // PropertyHistory creation
+
+      mockQueryRunner.manager.save
+        .mockResolvedValueOnce(mockNewUser) // User save
+        .mockResolvedValueOnce(mockNewAccount) // Account save
+        .mockResolvedValueOnce({ id: 'rent-123' }) // Rent save
+        .mockResolvedValueOnce({ id: 'pt-123' }) // PropertyTenant save
+        .mockResolvedValueOnce({ id: 'ph-123' }); // PropertyHistory save
+
+      // Act
+      await service.attachTenantFromOffer(
+        mockQueryRunner.manager,
+        mockOfferLetter as any,
+      );
+
+      // Assert
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        Users,
+        expect.objectContaining({
+          first_name: mockApplication.first_name,
+          last_name: mockApplication.last_name,
+          email: mockApplication.email,
+          phone_number: mockApplication.phone_number,
+          role: RolesEnum.TENANT,
+        }),
+      );
+
+      expect(mockQueryRunner.manager.create).toHaveBeenCalledWith(
+        Account,
+        expect.objectContaining({
+          email: mockApplication.email,
+          userId: mockNewUser.id,
+          role: RolesEnum.TENANT,
+        }),
+      );
+    });
+  });
+});

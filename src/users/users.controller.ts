@@ -13,6 +13,7 @@ import {
   Req,
   UseInterceptors,
   UploadedFiles,
+  UploadedFile,
   Patch,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
@@ -53,7 +54,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { UserPaginationResponseDto } from './dto/paginate.dto';
-import { FilesInterceptor } from '@nestjs/platform-express';
+import { FilesInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { CreateKycDto } from './dto/create-kyc.dto';
 import { KYC } from './entities/kyc.entity';
 import { UpdateKycDto } from './dto/update-kyc.dto';
@@ -463,6 +464,24 @@ export class UsersController {
     return { message: 'Password reset successful' };
   }
 
+  @ApiOperation({ summary: 'Change Password (Authenticated User)' })
+  @ApiOkResponse({ description: 'Password changed successfully' })
+  @ApiBadRequestResponse({ description: 'Invalid current password' })
+  @ApiSecurity('access_token')
+  @Put('change-password')
+  @UseGuards(JwtAuthGuard)
+  async changePassword(
+    @Body() body: { currentPassword: string; newPassword: string },
+    @Req() req: any,
+  ) {
+    const userId = req?.user?.id;
+    return this.usersService.changePassword(
+      userId,
+      body.currentPassword,
+      body.newPassword,
+    );
+  }
+
   @ApiOperation({ summary: 'Upload Admin Logos' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ type: UploadLogoDto })
@@ -480,6 +499,32 @@ export class UsersController {
     try {
       const userId = req?.user?.id;
       return await this.usersService.uploadLogos(userId, files);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Upload Branding Asset (Letterhead or Signature)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiOkResponse({ description: 'Branding asset uploaded successfully' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Post('upload-branding-asset')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadBrandingAsset(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('assetType') assetType: 'letterhead' | 'signature',
+    @Req() req: any,
+  ) {
+    try {
+      const userId = req?.user?.id;
+      return await this.usersService.uploadBrandingAsset(
+        userId,
+        file,
+        assetType,
+      );
     } catch (error) {
       throw error;
     }

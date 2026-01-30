@@ -8,5 +8,6 @@ import { PropertyHistory } from './entities/property-history.entity';
   imports: [TypeOrmModule.forFeature([PropertyHistory])],
   controllers: [PropertyHistoryController],
   providers: [PropertyHistoryService],
+  exports: [PropertyHistoryService],
 })
 export class PropertyHistoryModule {}

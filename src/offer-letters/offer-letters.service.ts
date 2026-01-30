@@ -11,7 +11,11 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
-import { OfferLetter, OfferLetterStatus } from './entities/offer-letter.entity';
+import {
+  OfferLetter,
+  OfferLetterStatus,
+  PaymentStatus,
+} from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { Users } from '../users/entities/user.entity';
@@ -25,6 +29,7 @@ import {
 import { TemplateSenderService } from '../whatsapp-bot/template-sender';
 import { OTPService } from './otp.service';
 import { EventsGateway } from '../events/events.gateway';
+import { PDFGeneratorService } from './pdf-generator.service';
 
 /**
  * OfferLetterService
@@ -48,8 +53,10 @@ export class OfferLettersService {
     private readonly otpService: OTPService,
     @Inject(forwardRef(() => EventsGateway))
     private readonly eventsGateway: EventsGateway,
+    @Inject(forwardRef(() => PDFGeneratorService))
+    private readonly pdfGeneratorService: PDFGeneratorService,
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   /**
    * Create a new offer letter
@@ -91,24 +98,48 @@ export class OfferLettersService {
       );
     }
 
-    // Validate property is available (vacant or ready_for_marketing)
-    // Requirements: 10.8, 10.9
-    const allowedStatuses = [
-      PropertyStatusEnum.VACANT,
-      PropertyStatusEnum.READY_FOR_MARKETING,
-    ];
-    if (
-      !allowedStatuses.includes(property.property_status as PropertyStatusEnum)
-    ) {
-      throw new ConflictException('Property is not available for offer');
+    // Validate property is available (not occupied)
+    // Requirements: 2.1 - Allow multiple offers when property is NOT occupied
+    if (property.property_status === PropertyStatusEnum.OCCUPIED) {
+      throw new ConflictException('Property is already occupied');
     }
+
+    // Calculate total amount from all fees
+    // Requirements: 1.6
+    const totalAmount =
+      dto.rentAmount +
+      (dto.serviceCharge || 0) +
+      (dto.cautionDeposit || 0) +
+      (dto.legalFee || 0) +
+      (dto.agencyFee || 0);
 
     // Generate unique token using UUID
     // Requirements: 5.3
     const token = uuidv4();
 
-    // Create offer letter entity with pending status
-    // Requirements: 5.1, 5.5
+    // Load landlord account and user to get branding data for snapshot
+    const landlordAccount = await this.propertyRepository.manager
+      .getRepository('Account')
+      .findOne({ where: { id: landlordId }, relations: ['user'] });
+
+    const landlord = landlordAccount?.user;
+
+    // Snapshot branding data at time of offer letter creation
+    const brandingSnapshot = landlord?.branding
+      ? {
+        businessName: landlord.branding.businessName || '',
+        businessAddress: landlord.branding.businessAddress || '',
+        contactInfo: landlord.branding.contactInfo || '',
+        footerColor: landlord.branding.footerColor || '#6B6B6B',
+        letterhead: landlord.branding.letterhead,
+        signature: landlord.branding.signature,
+        headingFont: landlord.branding.headingFont || 'Inter',
+        bodyFont: landlord.branding.bodyFont || 'Inter',
+      }
+      : undefined;
+
+    // Create offer letter entity with pending status and payment fields
+    // Requirements: 5.1, 5.5, 2.1
     const offerLetter = this.offerLetterRepository.create({
       kyc_application_id: dto.kycApplicationId,
       property_id: dto.propertyId,
@@ -124,16 +155,30 @@ export class OfferLettersService {
       status: OfferLetterStatus.PENDING,
       token,
       terms_of_tenancy: dto.termsOfTenancy,
+      branding: brandingSnapshot,
+      content_snapshot: dto.contentSnapshot,
+      // Payment fields - Requirements: 2.1
+      total_amount: totalAmount,
+      amount_paid: 0,
+      outstanding_balance: totalAmount,
+      payment_status: PaymentStatus.UNPAID,
     });
 
     // Save offer letter
     const savedOfferLetter = await this.offerLetterRepository.save(offerLetter);
 
-    // Update property status to offer_pending
-    // Requirements: 6.1
-    await this.propertyRepository.update(dto.propertyId, {
-      property_status: PropertyStatusEnum.OFFER_PENDING,
-    });
+    // Generate PDF in background (fire and forget)
+    // This ensures PDF is ready when user tries to download
+    this.pdfGeneratorService
+      .generatePDFInBackground(savedOfferLetter.token)
+      .catch((err) => {
+        this.logger.error(
+          `Background PDF generation failed for token ${savedOfferLetter.token.substring(0, 8)}: ${err.message}`,
+        );
+      });
+
+    // DO NOT update property status to offer_pending
+    // Requirements: 2.4 - Property status only changes to 'occupied' when first full payment completes
 
     // Send WhatsApp notification to tenant
     // Requirements: 7.1, 7.2
@@ -142,11 +187,6 @@ export class OfferLettersService {
       property,
       savedOfferLetter.token,
     );
-
-    // Load landlord user to get branding data
-    const landlord = await this.propertyRepository.manager
-      .getRepository(Users)
-      .findOne({ where: { id: landlordId } });
 
     // Emit WebSocket event for real-time notification
     const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
@@ -225,10 +265,15 @@ export class OfferLettersService {
       where: { id: offerLetter.property_id },
     });
 
-    // Load landlord user to get branding data
-    const landlord = await this.propertyRepository.manager
-      .getRepository(Users)
-      .findOne({ where: { id: offerLetter.landlord_id } });
+    // Load landlord account and user to get branding data
+    const landlordAccount = await this.propertyRepository.manager
+      .getRepository('Account')
+      .findOne({
+        where: { id: offerLetter.landlord_id },
+        relations: ['user'],
+      });
+
+    const landlord = landlordAccount?.user;
 
     if (!kycApplication || !property) {
       throw new NotFoundException('Offer letter data incomplete');
@@ -331,10 +376,15 @@ export class OfferLettersService {
       where: { id: offerLetter.property_id },
     });
 
-    // Load landlord user to get branding data
-    const landlord = await this.propertyRepository.manager
-      .getRepository(Users)
-      .findOne({ where: { id: offerLetter.landlord_id } });
+    // Load landlord account and user to get branding data
+    const landlordAccount = await this.propertyRepository.manager
+      .getRepository('Account')
+      .findOne({
+        where: { id: offerLetter.landlord_id },
+        relations: ['user'],
+      });
+
+    const landlord = landlordAccount?.user;
 
     if (!updatedOfferLetter || !kycApplication || !property) {
       throw new NotFoundException('Offer letter data incomplete');
@@ -456,10 +506,15 @@ export class OfferLettersService {
       where: { id: offerLetter.property_id },
     });
 
-    // Load landlord user to get branding data
-    const landlord = await this.propertyRepository.manager
-      .getRepository(Users)
-      .findOne({ where: { id: offerLetter.landlord_id } });
+    // Load landlord account and user to get branding data
+    const landlordAccount = await this.propertyRepository.manager
+      .getRepository('Account')
+      .findOne({
+        where: { id: offerLetter.landlord_id },
+        relations: ['user'],
+      });
+
+    const landlord = landlordAccount?.user;
 
     if (!updatedOfferLetter || !kycApplication || !property) {
       throw new NotFoundException('Offer letter data incomplete');

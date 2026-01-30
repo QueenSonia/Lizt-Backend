@@ -619,20 +619,54 @@ export class UsersService {
   async updateUserById(id: string, data: UpdateUserDto) {
     const account = await this.accountRepository.findOne({
       where: { id },
+      relations: ['user'],
     });
 
     if (!account?.id) {
       throw new NotFoundException(`Account with userId: ${id} not found`);
     }
 
-    await this.accountRepository.update(account.id, {
-      profile_name: `${data.first_name} ${data.last_name}`,
-    });
+    // Separate account fields from user fields
+    const { profile_name, preferences, branding, ...userFields } = data;
+
+    // Update account table fields
+    const accountUpdates: any = {};
+
+    if (profile_name !== undefined) {
+      accountUpdates.profile_name = profile_name;
+    } else if (data.first_name && data.last_name) {
+      // Generate profile_name from first_name and last_name if not provided
+      accountUpdates.profile_name = `${data.first_name} ${data.last_name}`;
+    }
+
+    if (Object.keys(accountUpdates).length > 0) {
+      await this.accountRepository.update(account.id, accountUpdates);
+    }
+
+    // Update user table fields (first_name, last_name, email, phone_number, preferences, branding)
+    const userUpdates: any = { ...userFields };
+
+    if (preferences !== undefined) {
+      userUpdates.preferences = preferences;
+    }
+
+    if (branding !== undefined) {
+      userUpdates.branding = branding;
+    }
+
+    // Only update if there are user fields to update
+    if (Object.keys(userUpdates).length > 0) {
+      await this.usersRepository.update(account.userId, userUpdates);
+    }
 
     // Invalidate account cache after update
     await this.accountCacheService.invalidate(account.id);
 
-    return this.usersRepository.update(account.userId, data);
+    // Return updated account with user
+    return this.accountRepository.findOne({
+      where: { id: account.id },
+      relations: ['user'],
+    });
   }
 
   async deleteUserById(id: string) {
@@ -1051,6 +1085,48 @@ export class UsersService {
   }
 
   /**
+   * Change password for authenticated user
+   */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ) {
+    // Get account to find user
+    const account = await this.accountRepository.findOne({
+      where: { id: userId },
+      relations: ['user'],
+    });
+
+    if (!account?.user) {
+      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+    }
+
+    // Verify current password
+    const isPasswordValid = await this.utilService.validatePassword(
+      currentPassword,
+      account.user.password,
+    );
+
+    if (!isPasswordValid) {
+      throw new HttpException(
+        'Current password is incorrect',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Hash new password
+    const hashedPassword = await this.utilService.hashPassword(newPassword);
+
+    // Update password
+    await this.usersRepository.update(account.userId, {
+      password: hashedPassword,
+    });
+
+    return { message: 'Password changed successfully' };
+  }
+
+  /**
    * Get tenants of a specific admin/landlord
    * Delegates to TenantManagementService
    */
@@ -1103,6 +1179,53 @@ export class UsersService {
     } catch (error) {
       throw new HttpException(
         'Error uploading logos',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  async uploadBrandingAsset(
+    userId: string,
+    file: Express.Multer.File,
+    assetType: 'letterhead' | 'signature',
+  ): Promise<{ url: string; assetType: string }> {
+    const user = await this.usersRepository.findOne({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+    }
+
+    if (!file) {
+      throw new HttpException('No file provided', HttpStatus.BAD_REQUEST);
+    }
+
+    try {
+      // Upload to Cloudinary in branding folder
+      const uploadResult = await this.fileUploadService.uploadFile(
+        file,
+        `branding/${assetType}`,
+      );
+
+      // Update user's branding data with the Cloudinary URL
+      const updatedBranding = {
+        ...user.branding,
+        [assetType]: uploadResult.secure_url,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await this.usersRepository.update(userId, {
+        branding: updatedBranding,
+      });
+
+      return {
+        url: uploadResult.secure_url,
+        assetType,
+      };
+    } catch (error) {
+      throw new HttpException(
+        `Error uploading ${assetType}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

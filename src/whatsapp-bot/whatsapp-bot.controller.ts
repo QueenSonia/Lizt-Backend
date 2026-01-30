@@ -415,11 +415,15 @@ export class WhatsappBotController {
       const usersMap = new Map(); // Use Map to avoid duplicates
 
       // Add the landlord themselves for chat simulation
+      // User Account.profile_name as primary source for name, with fallbacks
+      const rawLandlordName =
+        landlordAccount.profile_name ||
+        `${landlordAccount.user.first_name || ''} ${landlordAccount.user.last_name || ''}`.trim() ||
+        'Landlord';
+
       const landlordUser = {
         id: landlordAccount.id,
-        name:
-          landlordAccount.profile_name ||
-          `${landlordAccount.user.first_name} ${landlordAccount.user.last_name}`,
+        name: rawLandlordName,
         phone: this.utilService.normalizePhoneNumber(
           landlordAccount.user.phone_number,
         ),

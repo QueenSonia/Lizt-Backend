@@ -18,8 +18,10 @@ import { SkipAuth } from '../auth/auth.decorator';
 import { Account } from '../users/entities/account.entity';
 import { OfferLettersService } from './offer-letters.service';
 import { PDFGeneratorService } from './pdf-generator.service';
+import { PaymentService } from '../payments/payment.service';
 import { CreateOfferLetterDto } from './dto/create-offer-letter.dto';
 import { VerifyOfferOtpDto } from './dto/verify-otp.dto';
+import { InitiatePaymentDto } from '../payments/dto/initiate-payment.dto';
 import {
   OfferLetterResponse,
   AcceptanceInitiationResponse,
@@ -35,6 +37,7 @@ export class OfferLettersController {
   constructor(
     private readonly offerLettersService: OfferLettersService,
     private readonly pdfGeneratorService: PDFGeneratorService,
+    private readonly paymentService: PaymentService,
   ) { }
 
   /**
@@ -74,8 +77,15 @@ export class OfferLettersController {
   @Get(':token/pdf')
   async downloadPDF(
     @Param('token') token: string,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<StreamableFile> {
+    @Res() res: Response,
+  ): Promise<any> {
+    const offerLetter =
+      await this.offerLettersService.getOfferLetterByToken(token);
+
+    if (offerLetter && offerLetter.pdf_url) {
+      return res.redirect(offerLetter.pdf_url);
+    }
+
     const pdfBuffer =
       await this.pdfGeneratorService.generateOfferLetterPDF(token);
 
@@ -85,7 +95,7 @@ export class OfferLettersController {
       'Content-Length': pdfBuffer.length,
     });
 
-    return new StreamableFile(pdfBuffer);
+    res.send(pdfBuffer);
   }
 
   /**
@@ -124,5 +134,30 @@ export class OfferLettersController {
   @Post(':token/reject')
   async reject(@Param('token') token: string): Promise<OfferLetterResponse> {
     return this.offerLettersService.reject(token);
+  }
+
+  /**
+   * Initiate payment for an offer letter
+   * POST /offer-letters/:token/initiate-payment
+   * Requirements: US-3, US-4, TR-4
+   */
+  @SkipAuth()
+  @Post(':token/initiate-payment')
+  async initiatePayment(
+    @Param('token') token: string,
+    @Body(ValidationPipe) dto: InitiatePaymentDto,
+  ): Promise<any> {
+    return this.paymentService.initiatePayment(token, dto);
+  }
+
+  /**
+   * Get payment status for an offer letter
+   * GET /offer-letters/:token/payment-status
+   * Requirements: US-4, TR-4
+   */
+  @SkipAuth()
+  @Get(':token/payment-status')
+  async getPaymentStatus(@Param('token') token: string): Promise<any> {
+    return this.paymentService.getPaymentStatus(token);
   }
 }

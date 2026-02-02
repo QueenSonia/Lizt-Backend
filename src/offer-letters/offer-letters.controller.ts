@@ -38,7 +38,7 @@ export class OfferLettersController {
     private readonly offerLettersService: OfferLettersService,
     private readonly pdfGeneratorService: PDFGeneratorService,
     private readonly paymentService: PaymentService,
-  ) { }
+  ) {}
 
   /**
    * Create and send an offer letter
@@ -53,6 +53,23 @@ export class OfferLettersController {
     @CurrentUser() user: Account,
   ): Promise<OfferLetterResponse> {
     return this.offerLettersService.create(createOfferLetterDto, user.id);
+  }
+
+  /**
+   * Send offer letter notification via WhatsApp
+   * POST /offer-letters/:id/send
+   * Requirements: 7.1, 7.2
+   */
+  @Post(':id/send')
+  async sendOfferLetter(
+    @Param('id') id: string,
+    @CurrentUser() user: Account,
+  ): Promise<{ success: boolean; message: string }> {
+    await this.offerLettersService.sendOfferLetterById(id, user.id);
+    return {
+      success: true,
+      message: 'Offer letter sent successfully',
+    };
   }
 
   /**

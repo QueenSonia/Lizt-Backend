@@ -56,7 +56,7 @@ export class OfferLettersService {
     @Inject(forwardRef(() => PDFGeneratorService))
     private readonly pdfGeneratorService: PDFGeneratorService,
     private readonly configService: ConfigService,
-  ) { }
+  ) {}
 
   /**
    * Create a new offer letter
@@ -127,15 +127,15 @@ export class OfferLettersService {
     // Snapshot branding data at time of offer letter creation
     const brandingSnapshot = landlord?.branding
       ? {
-        businessName: landlord.branding.businessName || '',
-        businessAddress: landlord.branding.businessAddress || '',
-        contactInfo: landlord.branding.contactInfo || '',
-        footerColor: landlord.branding.footerColor || '#6B6B6B',
-        letterhead: landlord.branding.letterhead,
-        signature: landlord.branding.signature,
-        headingFont: landlord.branding.headingFont || 'Inter',
-        bodyFont: landlord.branding.bodyFont || 'Inter',
-      }
+          businessName: landlord.branding.businessName || '',
+          businessAddress: landlord.branding.businessAddress || '',
+          contactInfo: landlord.branding.contactInfo || '',
+          footerColor: landlord.branding.footerColor || '#6B6B6B',
+          letterhead: landlord.branding.letterhead,
+          signature: landlord.branding.signature,
+          headingFont: landlord.branding.headingFont || 'Inter',
+          bodyFont: landlord.branding.bodyFont || 'Inter',
+        }
       : undefined;
 
     // Create offer letter entity with pending status and payment fields
@@ -180,22 +180,24 @@ export class OfferLettersService {
     // DO NOT update property status to offer_pending
     // Requirements: 2.4 - Property status only changes to 'occupied' when first full payment completes
 
-    // Send WhatsApp notification to tenant
+    // Send WhatsApp notification to tenant only if requested
     // Requirements: 7.1, 7.2
-    await this.sendOfferLetterNotification(
-      kycApplication,
-      property,
-      savedOfferLetter.token,
-    );
+    if (dto.sendNotification) {
+      await this.sendOfferLetterNotification(
+        kycApplication,
+        property,
+        savedOfferLetter.token,
+      );
 
-    // Emit WebSocket event for real-time notification
-    const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
-    this.eventsGateway.emitOfferLetterSent(landlordId, {
-      propertyId: property.id,
-      propertyName: property.name,
-      applicantName,
-      token: savedOfferLetter.token,
-    });
+      // Emit WebSocket event for real-time notification only when sent
+      const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+      this.eventsGateway.emitOfferLetterSent(landlordId, {
+        propertyId: property.id,
+        propertyName: property.name,
+        applicantName,
+        token: savedOfferLetter.token,
+      });
+    }
 
     return toOfferLetterResponse(
       savedOfferLetter,
@@ -241,6 +243,58 @@ export class OfferLettersService {
         error.stack,
       );
     }
+  }
+
+  /**
+   * Send offer letter notification via WhatsApp
+   * Requirements: 7.1, 7.2
+   */
+  async sendOfferLetterById(
+    offerId: string,
+    landlordId: string,
+  ): Promise<void> {
+    // Find offer letter
+    const offerLetter = await this.offerLetterRepository.findOne({
+      where: { id: offerId },
+    });
+
+    if (!offerLetter) {
+      throw new NotFoundException('Offer letter not found');
+    }
+
+    // Verify landlord owns this offer letter
+    if (offerLetter.landlord_id !== landlordId) {
+      throw new ForbiddenException('Not authorized to send this offer letter');
+    }
+
+    // Load related entities
+    const kycApplication = await this.kycApplicationRepository.findOne({
+      where: { id: offerLetter.kyc_application_id },
+    });
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: offerLetter.property_id },
+    });
+
+    if (!kycApplication || !property) {
+      throw new NotFoundException('Related data not found');
+    }
+
+    // Send WhatsApp notification
+    await this.sendOfferLetterNotification(
+      kycApplication,
+      property,
+      offerLetter.token,
+    );
+
+    // Emit WebSocket event for real-time notification
+    const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+    this.eventsGateway.emitOfferLetterSent(landlordId, {
+      propertyId: property.id,
+      propertyName: property.name,
+      applicantName,
+      token: offerLetter.token,
+    });
   }
 
   /**

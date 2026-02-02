@@ -6,6 +6,7 @@ import {
   IsDateString,
   IsEnum,
   IsOptional,
+  IsBoolean,
   ValidateNested,
   Min,
   MaxLength,
@@ -34,7 +35,6 @@ export class TermsOfTenancyDto {
   @IsString()
   content: string;
 }
-
 
 /**
  * Content Snapshot DTO
@@ -144,4 +144,8 @@ export class CreateOfferLetterDto {
   @ValidateNested()
   @Type(() => ContentSnapshotDto)
   contentSnapshot?: ContentSnapshotDto;
+
+  @IsOptional()
+  @IsBoolean()
+  sendNotification?: boolean; // If true, send WhatsApp notification immediately
 }

@@ -54,7 +54,7 @@ export class NotificationService {
       .leftJoinAndSelect('property.property_tenants', 'property_tenants')
       .leftJoinAndSelect('property_tenants.tenant', 'tenant')
       .leftJoinAndSelect('notification.serviceRequest', 'serviceRequest')
-      .where('property.owner_id = :user_id', { user_id })
+      .where('notification.user_id = :user_id', { user_id })
       .orderBy('notification.date', 'DESC')
       .skip(skip)
       .take(limit);

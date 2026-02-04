@@ -12,6 +12,7 @@ import { Account } from '../users/entities/account.entity';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { EventsModule } from '../events/events.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { NotificationModule } from '../notifications/notification.module';
 
 /**
  * OfferLettersModule
@@ -25,6 +26,7 @@ import { PaymentsModule } from '../payments/payments.module';
     forwardRef(() => WhatsappBotModule),
     forwardRef(() => EventsModule),
     forwardRef(() => PaymentsModule),
+    forwardRef(() => NotificationModule),
   ],
   controllers: [OfferLettersController],
   providers: [OfferLettersService, PDFGeneratorService, OTPService],

@@ -96,7 +96,9 @@ export class OfferLetter extends BaseEntity {
   branding?: {
     businessName: string;
     businessAddress: string;
-    contactInfo: string;
+    contactPhone: string;
+    contactEmail: string;
+    websiteLink: string;
     footerColor: string;
     letterhead?: string;
     signature?: string;

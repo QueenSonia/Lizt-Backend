@@ -30,6 +30,8 @@ import { TemplateSenderService } from '../whatsapp-bot/template-sender';
 import { OTPService } from './otp.service';
 import { EventsGateway } from '../events/events.gateway';
 import { PDFGeneratorService } from './pdf-generator.service';
+import { NotificationService } from '../notifications/notification.service';
+import { NotificationType } from '../notifications/enums/notification-type';
 
 /**
  * OfferLetterService
@@ -55,12 +57,17 @@ export class OfferLettersService {
     private readonly eventsGateway: EventsGateway,
     @Inject(forwardRef(() => PDFGeneratorService))
     private readonly pdfGeneratorService: PDFGeneratorService,
+    @Inject(forwardRef(() => NotificationService))
+    private readonly notificationService: NotificationService,
     private readonly configService: ConfigService,
   ) {}
 
   /**
-   * Create a new offer letter
-   * Requirements: 5.1, 5.3, 5.5, 6.1, 7.1, 7.2, 10.1, 10.8, 10.9
+   * Create a new offer letter (with upsert behavior)
+   * If a pending offer letter already exists for the same tenant+property combination,
+   * updates the existing one instead of creating a new one.
+   * Requirements: 4.1, 4.5, 5.1, 5.3, 5.5, 6.1, 7.1, 7.2, 10.1, 10.8, 10.9
+   * Property 5: Upsert Behavior for Pending Offers
    */
   async create(
     dto: CreateOfferLetterDto,
@@ -104,6 +111,26 @@ export class OfferLettersService {
       throw new ConflictException('Property is already occupied');
     }
 
+    // Check for existing pending offer letter (upsert behavior)
+    // Requirements: 4.1, 4.5 - Property 5: Upsert Behavior for Pending Offers
+    // If a pending offer letter already exists for this tenant+property combination,
+    // update it instead of creating a new one
+    const existingPendingOffer = await this.findPendingByTenantAndProperty(
+      dto.kycApplicationId,
+      dto.propertyId,
+      landlordId,
+    );
+
+    if (existingPendingOffer) {
+      // Update existing pending offer letter instead of creating a new one
+      this.logger.log(
+        `Found existing pending offer ${existingPendingOffer.id} for tenant+property, performing upsert`,
+      );
+      return this.updateOfferLetter(existingPendingOffer.id, dto, landlordId);
+    }
+
+    // No existing pending offer found, proceed with creating a new one
+
     // Calculate total amount from all fees
     // Requirements: 1.6
     const totalAmount =
@@ -129,7 +156,9 @@ export class OfferLettersService {
       ? {
           businessName: landlord.branding.businessName || '',
           businessAddress: landlord.branding.businessAddress || '',
-          contactInfo: landlord.branding.contactInfo || '',
+          contactPhone: landlord.branding.contactPhone || '',
+          contactEmail: landlord.branding.contactEmail || '',
+          websiteLink: landlord.branding.websiteLink || '',
           footerColor: landlord.branding.footerColor || '#6B6B6B',
           letterhead: landlord.branding.letterhead,
           signature: landlord.branding.signature,
@@ -180,6 +209,26 @@ export class OfferLettersService {
     // DO NOT update property status to offer_pending
     // Requirements: 2.4 - Property status only changes to 'occupied' when first full payment completes
 
+    // Create notification for live feed - ALWAYS create notification when offer letter is created
+    const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.OFFER_LETTER_SENT,
+        description: dto.sendNotification
+          ? `Offer letter sent to ${applicantName} for ${property.name}`
+          : `Offer letter created for ${applicantName} for ${property.name}`,
+        status: 'Completed',
+        property_id: property.id,
+        user_id: landlordId,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to create notification for offer letter: ${error.message}`,
+        error.stack,
+      );
+    }
+
     // Send WhatsApp notification to tenant only if requested
     // Requirements: 7.1, 7.2
     if (dto.sendNotification) {
@@ -190,7 +239,6 @@ export class OfferLettersService {
       );
 
       // Emit WebSocket event for real-time notification only when sent
-      const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
       this.eventsGateway.emitOfferLetterSent(landlordId, {
         propertyId: property.id,
         propertyName: property.name,
@@ -220,7 +268,7 @@ export class OfferLettersService {
       const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
       const phoneNumber = kycApplication.phone_number;
       const frontendUrl =
-        this.configService.get<string>('FRONTEND_URL') || 'https://app.lizt.io';
+        this.configService.get<string>('FRONTEND_URL') || 'https://lizt.co';
 
       // Send WhatsApp template message with offer letter link
       // Requirements: 7.1, 7.2
@@ -295,6 +343,23 @@ export class OfferLettersService {
       applicantName,
       token: offerLetter.token,
     });
+
+    // Create notification for live feed
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.OFFER_LETTER_SENT,
+        description: `Offer letter sent to ${applicantName} for ${property.name}`,
+        status: 'Completed',
+        property_id: property.id,
+        user_id: landlordId,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to create notification for offer letter: ${error.message}`,
+        error.stack,
+      );
+    }
   }
 
   /**
@@ -462,6 +527,23 @@ export class OfferLettersService {
       token: offerLetter.token,
     });
 
+    // Create notification for live feed
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.OFFER_LETTER_ACCEPTED,
+        description: `${applicantName} accepted the offer for ${property.name}`,
+        status: 'Completed',
+        property_id: property.id,
+        user_id: offerLetter.landlord_id,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to create notification for offer letter acceptance: ${error.message}`,
+        error.stack,
+      );
+    }
+
     return toOfferLetterResponse(
       updatedOfferLetter,
       kycApplication,
@@ -592,6 +674,23 @@ export class OfferLettersService {
       token: offerLetter.token,
     });
 
+    // Create notification for live feed
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.OFFER_LETTER_REJECTED,
+        description: `${applicantName} declined the offer for ${property.name}`,
+        status: 'Completed',
+        property_id: property.id,
+        user_id: offerLetter.landlord_id,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to create notification for offer letter rejection: ${error.message}`,
+        error.stack,
+      );
+    }
+
     return toOfferLetterResponse(
       updatedOfferLetter,
       kycApplication,
@@ -607,5 +706,153 @@ export class OfferLettersService {
     return this.offerLetterRepository.findOne({
       where: { token },
     });
+  }
+
+  /**
+   * Find existing pending offer letter for a tenant+property combination
+   * Used for upsert behavior to prevent duplicate draft offer letters
+   * Requirements: 4.1, 4.4
+   */
+  async findPendingByTenantAndProperty(
+    kycApplicationId: string,
+    propertyId: string,
+    landlordId: string,
+  ): Promise<OfferLetter | null> {
+    return this.offerLetterRepository.findOne({
+      where: {
+        kyc_application_id: kycApplicationId,
+        property_id: propertyId,
+        landlord_id: landlordId,
+        status: OfferLetterStatus.PENDING,
+      },
+    });
+  }
+
+  /**
+   * Update an existing offer letter with new data from DTO
+   * Preserves the original token to ensure existing links remain valid
+   * Triggers PDF regeneration in background
+   * Requirements: 4.2, 4.3
+   * Property 6: Token Preservation on Upsert
+   * Property 7: PDF Generation on Save
+   */
+  async updateOfferLetter(
+    existingOfferId: string,
+    dto: CreateOfferLetterDto,
+    landlordId: string,
+  ): Promise<OfferLetterResponse> {
+    // Load the existing offer letter
+    const existingOffer = await this.offerLetterRepository.findOne({
+      where: { id: existingOfferId },
+    });
+
+    if (!existingOffer) {
+      throw new NotFoundException('Offer letter not found');
+    }
+
+    // Verify landlord owns this offer letter
+    if (existingOffer.landlord_id !== landlordId) {
+      throw new ForbiddenException(
+        'Not authorized to update this offer letter',
+      );
+    }
+
+    // Calculate total amount from all fees
+    const totalAmount =
+      dto.rentAmount +
+      (dto.serviceCharge || 0) +
+      (dto.cautionDeposit || 0) +
+      (dto.legalFee || 0) +
+      (dto.agencyFee || 0);
+
+    // Calculate outstanding balance (total minus any amount already paid)
+    const amountPaid = Number(existingOffer.amount_paid || 0);
+    const outstandingBalance = totalAmount - amountPaid;
+
+    // Load landlord account and user to get branding data for snapshot
+    const landlordAccount = await this.propertyRepository.manager
+      .getRepository('Account')
+      .findOne({ where: { id: landlordId }, relations: ['user'] });
+
+    const landlord = landlordAccount?.user;
+
+    // Snapshot branding data at time of update
+    const brandingSnapshot = landlord?.branding
+      ? {
+          businessName: landlord.branding.businessName || '',
+          businessAddress: landlord.branding.businessAddress || '',
+          contactPhone: landlord.branding.contactPhone || '',
+          contactEmail: landlord.branding.contactEmail || '',
+          websiteLink: landlord.branding.websiteLink || '',
+          footerColor: landlord.branding.footerColor || '#6B6B6B',
+          letterhead: landlord.branding.letterhead,
+          signature: landlord.branding.signature,
+          headingFont: landlord.branding.headingFont || 'Inter',
+          bodyFont: landlord.branding.bodyFont || 'Inter',
+        }
+      : existingOffer.branding; // Preserve existing branding if no new branding available
+
+    // Update offer letter fields from DTO
+    // IMPORTANT: Preserve the original token (Property 6: Token Preservation on Upsert)
+    await this.offerLetterRepository.update(existingOfferId, {
+      rent_amount: dto.rentAmount,
+      rent_frequency: dto.rentFrequency,
+      service_charge: dto.serviceCharge,
+      tenancy_start_date: new Date(dto.tenancyStartDate),
+      tenancy_end_date: new Date(dto.tenancyEndDate),
+      caution_deposit: dto.cautionDeposit,
+      legal_fee: dto.legalFee,
+      agency_fee: dto.agencyFee,
+      terms_of_tenancy: dto.termsOfTenancy,
+      content_snapshot: dto.contentSnapshot,
+      branding: brandingSnapshot,
+      total_amount: totalAmount,
+      outstanding_balance: outstandingBalance,
+      // Note: token is NOT updated - preserving original token
+      // Note: amount_paid and payment_status are NOT updated - preserving payment state
+    });
+
+    // Reload the updated offer letter
+    const updatedOfferLetter = await this.offerLetterRepository.findOne({
+      where: { id: existingOfferId },
+    });
+
+    if (!updatedOfferLetter) {
+      throw new NotFoundException('Failed to reload updated offer letter');
+    }
+
+    // Trigger PDF regeneration in background (Property 7: PDF Generation on Save)
+    // Use the preserved original token
+    this.pdfGeneratorService
+      .generatePDFInBackground(updatedOfferLetter.token)
+      .catch((err) => {
+        this.logger.error(
+          `Background PDF regeneration failed for token ${updatedOfferLetter.token.substring(0, 8)}: ${err.message}`,
+        );
+      });
+
+    // Load related entities for response
+    const kycApplication = await this.kycApplicationRepository.findOne({
+      where: { id: updatedOfferLetter.kyc_application_id },
+    });
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: updatedOfferLetter.property_id },
+    });
+
+    if (!kycApplication || !property) {
+      throw new NotFoundException('Related data not found');
+    }
+
+    this.logger.log(
+      `Offer letter ${existingOfferId} updated, token preserved: ${updatedOfferLetter.token.substring(0, 8)}...`,
+    );
+
+    return toOfferLetterResponse(
+      updatedOfferLetter,
+      kycApplication,
+      property,
+      landlord ?? undefined,
+    );
   }
 }

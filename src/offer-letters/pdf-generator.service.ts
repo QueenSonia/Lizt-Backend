@@ -257,11 +257,11 @@ export class PDFGeneratorService {
             .map(
               (term, index) => `
       <div style="margin-bottom: 24px;">
-        <h3 style="font-weight: 700; font-size: 14px; margin-bottom: 8px; font-family: ${headingFont}, sans-serif;">
+        <h3 style="font-weight: 700; font-size: 14px; margin-bottom: 12px; font-family: ${headingFont}, sans-serif;">
           ${index + 1}. ${this.escapeHtml(term.title)}
         </h3>
-        <div style="font-size: 14px; text-align: justify;">
-          ${this.escapeHtml(term.content)}
+        <div style="font-size: 14px; line-height: 1.6; text-align: justify;">
+          ${this.formatTermContent(term.content)}
         </div>
       </div>
     `,
@@ -278,6 +278,20 @@ export class PDFGeneratorService {
     const agreementText =
       snapshot?.agreement_text ||
       'This Offer and the attached Terms of Tenancy (together the "Agreement") is non-binding until you have accepted this offer, made payment of all sums due into the company\'s designated bank account, and have been granted possession of the Property by the Landlord or the Landlord\'s authorized representative.';
+
+    // Strip HTML tags from editable fields (they may contain HTML from contentEditable)
+    const cleanOfferTitle = this.stripHtmlTags(offerTitle);
+    const cleanIntroText = this.stripHtmlTags(introText);
+    const cleanAgreementText = this.stripHtmlTags(agreementText);
+    const cleanClosingText = this.stripHtmlTags(
+      snapshot?.closing_text || 'Yours faithfully,',
+    );
+    const cleanForLandlordText = this.stripHtmlTags(
+      snapshot?.for_landlord_text || 'For Landlord',
+    );
+    const cleanPermittedUse = this.stripHtmlTags(
+      snapshot?.permitted_use || 'Residential',
+    );
 
     return `
 <!DOCTYPE html>
@@ -429,6 +443,25 @@ export class PDFGeneratorService {
       margin-bottom: 24px;
       text-decoration: underline;
     }
+    .terms-section h3 {
+      font-weight: 700;
+      font-size: 14px;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+    .terms-section p {
+      margin: 0;
+      line-height: 1.6;
+    }
+    .terms-section ul {
+      margin: 0;
+      padding-left: 24px;
+      list-style-type: disc;
+    }
+    .terms-section li {
+      margin-bottom: 8px;
+      line-height: 1.6;
+    }
     
     .footer-section {
       margin-top: 64px;
@@ -470,18 +503,18 @@ export class PDFGeneratorService {
     </div>
 
     <div class="main-heading">
-      <h1>${this.escapeHtml(offerTitle)}</h1>
+      <h1>${this.escapeHtml(cleanOfferTitle)}</h1>
     </div>
 
     <div class="intro-text">
-      <p>${this.escapeHtml(introText)}</p>
+      <p>${this.escapeHtml(cleanIntroText)}</p>
     </div>
 
     <div class="terms-bullets">
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
-          <strong>Permitted Use:</strong> ${this.escapeHtml(snapshot?.permitted_use || 'Residential')}
+          <strong>Permitted Use:</strong> ${this.escapeHtml(cleanPermittedUse)}
         </div>
       </div>
 
@@ -554,11 +587,11 @@ export class PDFGeneratorService {
     </div>
 
     <div class="agreement-text">
-      <p>${this.escapeHtml(agreementText)}</p>
+      <p>${this.escapeHtml(cleanAgreementText)}</p>
     </div>
 
     <div class="closing-section">
-      <p>${this.escapeHtml(snapshot?.closing_text || 'Yours faithfully,')}</p>
+      <p>${this.escapeHtml(cleanClosingText)}</p>
     </div>
 
     <div class="signature-space">
@@ -566,7 +599,7 @@ export class PDFGeneratorService {
     </div>
 
     <div class="for-landlord">
-      <p><em>${this.escapeHtml(snapshot?.for_landlord_text || 'For Landlord')}</em></p>
+      <p><em>${this.escapeHtml(cleanForLandlordText)}</em></p>
     </div>
 
     <div class="page-divider"></div>
@@ -618,6 +651,82 @@ export class PDFGeneratorService {
       .join('\n');
 
     return `<ol class="terms-list">${termItems}</ol>`;
+  }
+
+  /**
+   * Format term content - converts newlines to proper HTML structure
+   * Handles both plain text and newline-separated lists
+   */
+  private formatTermContent(content: string): string {
+    if (!content) return '';
+
+    // Split by newlines to detect if it's a list
+    const lines = content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    // If single line, return as paragraph
+    if (lines.length === 1) {
+      return `<p style="margin: 0;">${this.escapeHtml(lines[0])}</p>`;
+    }
+
+    // If multiple lines, render as bullet list
+    const listItems = lines
+      .map(
+        (line) =>
+          `<li style="margin-bottom: 8px;">${this.escapeHtml(line)}</li>`,
+      )
+      .join('');
+
+    return `<ul style="margin: 0; padding-left: 24px; list-style-type: disc;">${listItems}</ul>`;
+  }
+
+  /**
+   * Strip HTML tags and convert to plain text while preserving basic formatting
+   * Used for contentEditable fields that may contain HTML
+   */
+  private stripHtmlTags(html: string): string {
+    if (!html) return '';
+
+    // Replace <br> and <br/> with newlines
+    let text = html.replace(/<br\s*\/?>/gi, '\n');
+
+    // Replace </p> and </div> with newlines
+    text = text.replace(/<\/(p|div)>/gi, '\n');
+
+    // Remove all other HTML tags
+    text = text.replace(/<[^>]*>/g, '');
+
+    // Decode HTML entities
+    text = this.decodeHtmlEntities(text);
+
+    // Clean up multiple newlines
+    text = text.replace(/\n\s*\n/g, '\n');
+
+    // Trim whitespace
+    return text.trim();
+  }
+
+  /**
+   * Decode common HTML entities
+   */
+  private decodeHtmlEntities(text: string): string {
+    const entities: Record<string, string> = {
+      '&amp;': '&',
+      '&lt;': '<',
+      '&gt;': '>',
+      '&quot;': '"',
+      '&#39;': "'",
+      '&nbsp;': ' ',
+    };
+
+    let decoded = text;
+    for (const [entity, char] of Object.entries(entities)) {
+      decoded = decoded.replace(new RegExp(entity, 'g'), char);
+    }
+
+    return decoded;
   }
 
   /**

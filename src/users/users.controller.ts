@@ -211,9 +211,14 @@ export class UsersController {
   }
 
   @Get('/profile')
-  getProfile(@Req() req: any) {
+  @UseGuards(JwtAuthGuard)
+  getProfile(@Req() req: any, @Query('user_id') targetUserId?: string) {
     try {
-      const userId = req.query.user_id || req?.user?.id;
+      const currentUserId = req.user.id;
+      const isAdmin = req.user.role === 'admin';
+
+      // Only admins can view other users' profiles
+      const userId = targetUserId && isAdmin ? targetUserId : currentUserId;
       return this.usersService.getAccountById(userId);
     } catch (error) {
       throw error;

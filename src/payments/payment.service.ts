@@ -134,43 +134,56 @@ export class PaymentService {
       paystack_response: paystackResponse,
     });
 
-    // Create property history event for payment initiation
+    // Calculate expiry (Paystack access codes expire after 30 minutes)
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+    // Create property history event for payment initiation (non-blocking)
     const tenantName = `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`;
     const propertyName = property.name;
-    await this.createPaymentHistoryEvent(
+    void this.createPaymentHistoryEvent(
       offerLetter.property_id,
       'payment_initiated',
       `${tenantName} initiated payment of ₦${dto.amount.toLocaleString()} for ${propertyName}`,
       payment.id,
       'payment',
-    );
-
-    // Queue polling job - start after 30 seconds, retry 10 times every 30 seconds
-    await this.pollingQueue.add(
-      'verify-payment',
-      {
-        paymentId: payment.id,
-        reference,
-      },
-      {
-        delay: 30000, // Start after 30 seconds
-        attempts: 10, // Poll 10 times
-        backoff: {
-          type: 'fixed',
-          delay: 30000, // Every 30 seconds
-        },
-      },
-    );
-
-    this.paystackLogger.info('Polling job queued', {
-      payment_id: payment.id,
-      reference,
-      attempts: 10,
-      interval: '30s',
+    ).catch((err) => {
+      this.paystackLogger.error('Failed to create payment history event', {
+        error: err.message,
+        payment_id: payment.id,
+      });
     });
 
-    // Calculate expiry (Paystack access codes expire after 30 minutes)
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    // Queue polling job - start after 30 seconds, retry 10 times every 30 seconds (non-blocking)
+    void this.pollingQueue
+      .add(
+        'verify-payment',
+        {
+          paymentId: payment.id,
+          reference,
+        },
+        {
+          delay: 30000, // Start after 30 seconds
+          attempts: 10, // Poll 10 times
+          backoff: {
+            type: 'fixed',
+            delay: 30000, // Every 30 seconds
+          },
+        },
+      )
+      .then(() => {
+        this.paystackLogger.info('Polling job queued', {
+          payment_id: payment.id,
+          reference,
+          attempts: 10,
+          interval: '30s',
+        });
+      })
+      .catch((err) => {
+        this.paystackLogger.error('Failed to queue polling job', {
+          error: err.message,
+          payment_id: payment.id,
+        });
+      });
 
     return {
       paymentId: payment.id,

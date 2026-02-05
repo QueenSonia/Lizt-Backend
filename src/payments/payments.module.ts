@@ -20,6 +20,7 @@ import { PropertyHistoryModule } from '../property-history/property-history.modu
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { AuthModule } from '../auth/auth.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { InvoicesModule } from '../invoices/invoices.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     KYCLinksModule,
     PropertyHistoryModule,
     forwardRef(() => WhatsappBotModule),
+    forwardRef(() => InvoicesModule),
     EventEmitterModule,
   ],
   controllers: [WebhooksController, PaymentsController],

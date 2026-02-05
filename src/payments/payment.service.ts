@@ -3,6 +3,8 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, LessThan } from 'typeorm';
@@ -26,6 +28,7 @@ import { TenantAttachmentService } from '../kyc-links/tenant-attachment.service'
 import { PropertyHistoryService } from '../property-history/property-history.service';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender/template-sender.service';
 import { InitiatePaymentDto, InitiatePaymentResponseDto } from './dto';
+import { InvoicesService } from '../invoices/invoices.service';
 
 @Injectable()
 export class PaymentService {
@@ -49,6 +52,8 @@ export class PaymentService {
     private readonly tenantAttachmentService: TenantAttachmentService,
     private readonly propertyHistoryService: PropertyHistoryService,
     private readonly templateSenderService: TemplateSenderService,
+    @Inject(forwardRef(() => InvoicesService))
+    private readonly invoicesService: InvoicesService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -310,6 +315,24 @@ export class PaymentService {
       );
     });
 
+    // Record payment on the invoice (outside transaction - non-critical)
+    try {
+      await this.invoicesService.recordPaymentFromOfferLetter(
+        payment.offerLetter.id,
+        Number(payment.amount),
+        data.reference,
+        data.channel || 'card',
+        payment.id,
+      );
+    } catch (error) {
+      // Log but don't fail - invoice update is not critical
+      this.paystackLogger.error('Failed to record payment on invoice', {
+        offer_letter_id: payment.offerLetter.id,
+        payment_id: payment.id,
+        error: error.message,
+      });
+    }
+
     // Log successful processing
     await this.logPaymentEvent(payment.id, PaymentLogEventType.VERIFICATION, {
       event: 'charge.success',
@@ -522,16 +545,30 @@ export class PaymentService {
       .andWhere('offer.amount_paid > 0');
 
     // Apply status filter
+    // Valid payment_status values: 'unpaid', 'partial', 'fully_paid'
+    // Special cases: 'all' (no filter), 'refund_required' (uses offer status), 'pending' (maps to unpaid/partial)
     if (status !== 'all') {
       if (status === 'refund_required') {
         query.andWhere('offer.status = :status', {
           status: OfferLetterStatus.REJECTED_BY_PAYMENT,
         });
-      } else {
+      } else if (status === 'pending') {
+        // 'pending' means payments that are not fully paid yet (unpaid or partial)
+        query.andWhere('offer.payment_status IN (:...pendingStatuses)', {
+          pendingStatuses: [
+            OfferPaymentStatus.UNPAID,
+            OfferPaymentStatus.PARTIAL,
+          ],
+        });
+      } else if (
+        Object.values(OfferPaymentStatus).includes(status as OfferPaymentStatus)
+      ) {
+        // Only apply filter if it's a valid PaymentStatus enum value
         query.andWhere('offer.payment_status = :paymentStatus', {
           paymentStatus: status,
         });
       }
+      // If status is not recognized, don't apply any filter (treat as 'all')
     }
 
     // Apply search filter

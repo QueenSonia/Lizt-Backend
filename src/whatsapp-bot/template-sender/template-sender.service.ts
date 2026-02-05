@@ -1477,6 +1477,63 @@ export class TemplateSenderService {
   }
 
   /**
+   * Parameters for invoice reminder template
+   */
+  /**
+   * Send invoice payment reminder to tenant via WhatsApp
+   * Template: invoice_reminder
+   */
+  async sendInvoiceReminder(params: {
+    phone_number: string;
+    tenant_name: string;
+    landlord_name: string;
+    property_name: string;
+    invoice_number: string;
+    outstanding_balance: number;
+  }): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: params.phone_number,
+      type: 'template',
+      template: {
+        name: 'invoice_reminder',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: params.tenant_name,
+              },
+              {
+                type: 'text',
+                text: params.landlord_name,
+              },
+              {
+                type: 'text',
+                text: params.invoice_number,
+              },
+              {
+                type: 'text',
+                text: `₦${params.outstanding_balance.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: params.property_name,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send plain text message
    */
   async sendText(to: string, text: string): Promise<void> {

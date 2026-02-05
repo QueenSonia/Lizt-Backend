@@ -32,6 +32,7 @@ import { EventsGateway } from '../events/events.gateway';
 import { PDFGeneratorService } from './pdf-generator.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
+import { InvoicesService } from '../invoices/invoices.service';
 
 /**
  * OfferLetterService
@@ -59,6 +60,8 @@ export class OfferLettersService {
     private readonly pdfGeneratorService: PDFGeneratorService,
     @Inject(forwardRef(() => NotificationService))
     private readonly notificationService: NotificationService,
+    @Inject(forwardRef(() => InvoicesService))
+    private readonly invoicesService: InvoicesService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -542,6 +545,21 @@ export class OfferLettersService {
         `Failed to create notification for offer letter acceptance: ${error.message}`,
         error.stack,
       );
+    }
+
+    // Generate invoice for the accepted offer letter
+    try {
+      await this.invoicesService.generateFromOfferLetter(
+        offerLetter.id,
+        offerLetter.landlord_id,
+      );
+      this.logger.log(`Invoice generated for offer letter ${offerLetter.id}`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to generate invoice for offer letter ${offerLetter.id}: ${error.message}`,
+        error.stack,
+      );
+      // Don't throw - invoice generation failure shouldn't block offer acceptance
     }
 
     return toOfferLetterResponse(

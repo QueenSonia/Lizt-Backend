@@ -6,10 +6,10 @@ import {
   TableForeignKey,
 } from 'typeorm';
 
-export class CreateOfferLettersTable1769000000000
+export class CreateOfferLettersTable1738252700000
   implements MigrationInterface
 {
-  name = 'CreateOfferLettersTable1769000000000';
+  name = 'CreateOfferLettersTable1738252700000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     // First, add 'offer_pending' to the property_status enum

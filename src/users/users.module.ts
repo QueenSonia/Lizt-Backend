@@ -19,6 +19,8 @@ import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { SyncTenantDataService } from './sync-tenant-data.service';
 import { UtilsModule } from 'src/utils/utils.module';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
+import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
+import { Payment } from 'src/payments/entities/payment.entity';
 import { TenantManagementService } from './tenant-management';
 import { TeamService } from './team';
 import { PasswordService } from './password';
@@ -38,6 +40,8 @@ import { PasswordService } from './password';
       Waitlist,
       TenantKyc,
       KYCApplication,
+      OfferLetter,
+      Payment,
     ]),
     AuthModule,
     forwardRef(() => WhatsappBotModule),

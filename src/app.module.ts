@@ -31,6 +31,7 @@ import { UtilService } from 'src/utils/utility-service';
 import { KycFeedbackModule } from './kyc-feedback/kyc-feedback.module';
 import { OfferLettersModule } from './offer-letters/offer-letters.module';
 import { PaymentsModule } from './payments/payments.module';
+import { InvoicesModule } from './invoices/invoices.module';
 
 config({ default_node_env: 'production' });
 
@@ -91,6 +92,7 @@ config({ default_node_env: 'production' });
     KycFeedbackModule,
     OfferLettersModule,
     PaymentsModule,
+    InvoicesModule,
   ],
   controllers: [AppController],
   providers: [

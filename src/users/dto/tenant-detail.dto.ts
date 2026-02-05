@@ -41,11 +41,46 @@ interface MaintenanceIssue {
 
 interface TimeLineEvent {
   id: string;
-  type: 'payment' | 'maintenance' | 'notice' | 'general';
+  type:
+    | 'payment'
+    | 'maintenance'
+    | 'notice'
+    | 'general'
+    | 'offer_letter'
+    | 'receipt';
   date: string;
   description: string;
   time: string;
   title: string;
+  offerLetterData?: {
+    id: string;
+    token: string;
+    propertyName: string;
+    propertyId: string;
+    rentAmount: number;
+    rentFrequency: string;
+    serviceCharge: number;
+    cautionDeposit: number;
+    legalFee: number;
+    agencyFee: number;
+    totalAmount: number;
+    tenancyStartDate: Date;
+    tenancyEndDate: Date;
+    status: string;
+    paymentStatus: string;
+    amountPaid: number;
+    outstandingBalance: number;
+  };
+  receiptData?: {
+    id: string;
+    propertyName: string;
+    propertyId?: string;
+    amountPaid: number;
+    paymentMethod: string | null;
+    reference: string;
+    paidAt?: string;
+    isPartPayment: boolean;
+  };
 }
 
 interface KycInfo {

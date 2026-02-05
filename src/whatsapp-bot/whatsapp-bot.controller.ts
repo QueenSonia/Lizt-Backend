@@ -79,6 +79,9 @@ export class WhatsappBotController {
     @Body() payload: WhatsAppWebhookPayload,
     @Req() req: ExpressRequest,
   ) {
+    console.log('🔔🔔🔔 WEBHOOK POST RECEIVED 🔔🔔🔔');
+    console.log('📦 Raw payload:', JSON.stringify(payload, null, 2));
+
     try {
       this.logger.log('Received webhook payload');
 
@@ -162,7 +165,17 @@ export class WhatsappBotController {
       // Validates: Requirements 8.1, 8.2
       const value: any = payload?.entry?.[0]?.changes?.[0]?.value;
       const messages = value?.messages;
+
+      console.log('📨 Extracted value:', JSON.stringify(value, null, 2));
+      console.log('📨 Extracted messages:', JSON.stringify(messages, null, 2));
+      console.log('📨 Messages is array:', Array.isArray(messages));
+
       if (Array.isArray(messages)) {
+        console.log(
+          '✅ Calling whatsappBotService.handleMessage with',
+          messages.length,
+          'messages',
+        );
         try {
           await this.whatsappBotService.handleMessage(messages);
         } catch (messageHandlingError) {

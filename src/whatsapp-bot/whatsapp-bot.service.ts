@@ -357,12 +357,27 @@ export class WhatsappBotService implements OnModuleInit {
   }
 
   async handleMessage(messages: IncomingMessage[]) {
+    console.log('🚀🚀🚀 handleMessage ENTRY POINT 🚀🚀🚀');
+    console.log('📦 Raw messages array:', JSON.stringify(messages, null, 2));
+    console.log('📦 Messages count:', messages?.length);
+
     const message = messages[0];
     const from = message?.from;
-    if (!from || !message) return;
+
+    console.log('📱 Extracted from:', from);
+    console.log('📱 Message exists:', !!message);
+
+    if (!from || !message) {
+      console.log('❌❌❌ EARLY RETURN - no from or message ❌❌❌');
+      console.log('   from:', from);
+      console.log('   message:', message);
+      return;
+    }
 
     console.log('📱 Incoming WhatsApp message from:', from);
     console.log('📨 Full message object:', JSON.stringify(message, null, 2));
+    console.log('📨 Message type:', message.type);
+    console.log('📨 Message text:', message.text?.body);
 
     // NOTE: Inbound message logging is now handled by WebhookHandler.processIncomingMessage
     // to avoid duplicate database entries. This method now only processes the message logic.
@@ -963,286 +978,10 @@ export class WhatsappBotService implements OnModuleInit {
     return this.templateSenderService.sendToFacilityManagerWithTemplate(params);
   }
 
-<<<<<<< HEAD
-  async cachedResponse(from, text) {
-    const userState = await this.cache.get(`service_request_state_${from}`);
-
-    // Handle property selection for multi-property tenants
-    if (userState && userState.startsWith('select_property:')) {
-      const propertyIds = JSON.parse(userState.split('select_property:')[1]);
-      const selectedIndex = parseInt(text.trim()) - 1;
-
-      if (
-        isNaN(selectedIndex) ||
-        selectedIndex < 0 ||
-        selectedIndex >= propertyIds.length
-      ) {
-        await this.sendText(
-          from,
-          'Invalid selection. Please reply with a valid number.',
-        );
-        return;
-      }
-
-      const selectedPropertyId = propertyIds[selectedIndex];
-
-      // Store selected property and move to awaiting description
-      await this.cache.set(
-        `service_request_state_${from}`,
-        `awaiting_description:${selectedPropertyId}`,
-        this.SESSION_TIMEOUT_MS,
-      );
-
-      await this.sendText(from, 'Sure! Please tell me what needs to be fixed.');
-      return;
-    }
-
-    if (
-      userState === 'awaiting_description' ||
-      userState?.startsWith('awaiting_description:')
-    ) {
-      // Extract property_id if it was stored
-      let selectedPropertyId: string | undefined = undefined;
-      if (userState.startsWith('awaiting_description:')) {
-        selectedPropertyId = userState.split('awaiting_description:')[1];
-      }
-
-      // FIXED: Use multi-format phone lookup
-      const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-      const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
-
-      const user = await this.usersRepo.findOne({
-        where: [
-          { phone_number: from, accounts: { role: RolesEnum.TENANT } },
-          {
-            phone_number: normalizedPhone,
-            accounts: { role: RolesEnum.TENANT },
-          },
-          { phone_number: localPhone, accounts: { role: RolesEnum.TENANT } },
-        ],
-        relations: ['accounts'],
-      });
-
-      if (!user?.accounts?.length) {
-        await this.sendText(
-          from,
-          'We could not find your tenancy information.',
-        );
-        await this.cache.delete(`service_request_state_${from}`);
-        return;
-      }
-
-      try {
-        const new_service_request =
-          await this.serviceRequestService.createServiceRequest({
-            tenant_id: user.accounts[0].id,
-            property_id: selectedPropertyId,
-            text,
-          });
-
-        if (new_service_request) {
-          const {
-            created_at,
-            facility_managers,
-            property_name,
-            property_location,
-            request_id,
-            property_id,
-          } = new_service_request;
-          await this.sendText(
-            from,
-            "Got it. I've noted your request — someone will take a look and reach out once it's being handled.",
-          );
-
-          // Send navigation options after completing request
-          await this.sendButtons(from, 'Want to do something else?', [
-            { id: 'new_service_request', title: 'Request a service' },
-            { id: 'main_menu', title: 'Go back to main menu' },
-          ]);
-
-          await this.cache.delete(`service_request_state_${from}`);
-
-          // Send notifications to facility managers
-          // Convert tenant phone to local format (e.g., 09016469693)
-          const tenantLocalPhone = user.phone_number.startsWith('234')
-            ? '0' + user.phone_number.slice(3)
-            : user.phone_number.replace(/^\+234/, '0');
-
-          for (const manager of facility_managers) {
-            await this.sendFacilityServiceRequest({
-              phone_number: manager.phone_number,
-              manager_name: manager.name,
-              property_name: property_name,
-              property_location: property_location,
-              service_request: text,
-              tenant_name: `${this.utilService.toSentenceCase(
-                user.first_name,
-              )} ${this.utilService.toSentenceCase(user.last_name)}`,
-              tenant_phone_number: tenantLocalPhone,
-              date_created: new Date(created_at).toLocaleString('en-US', {
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: true,
-                timeZone: 'Africa/Lagos',
-              }),
-              is_landlord: false, // Explicitly mark as FM notification
-            });
-
-            // Add delay (e.g., 2 seconds)
-            await new Promise((resolve) => setTimeout(resolve, 2000));
-          }
-
-          // Send notification to landlord
-          const property_tenant = await this.propertyTenantRepo.findOne({
-            where: {
-              property_id,
-            },
-            relations: ['property', 'property.owner', 'property.owner.user'],
-          });
-
-          if (property_tenant) {
-            const admin_phone_number = this.utilService.normalizePhoneNumber(
-              property_tenant?.property.owner.user.phone_number,
-            );
-
-            await this.sendFacilityServiceRequest({
-              phone_number: admin_phone_number,
-              manager_name: this.utilService.toSentenceCase(
-                property_tenant.property.owner.user.first_name,
-              ),
-              property_name: property_name,
-              property_location: property_location,
-              service_request: text,
-              tenant_name: `${this.utilService.toSentenceCase(
-                user.first_name,
-              )} ${this.utilService.toSentenceCase(user.last_name)}`,
-              tenant_phone_number: tenantLocalPhone,
-              date_created: new Date(created_at).toLocaleString('en-US', {
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: true,
-                timeZone: 'Africa/Lagos',
-              }),
-              is_landlord: true, // Explicitly mark as landlord notification
-            });
-          }
-        }
-        await this.cache.delete(`service_request_state_${from}`);
-      } catch (error) {
-        await this.sendText(
-          from,
-          error.message || 'An error occurred while logging your request.',
-        );
-        await this.cache.delete(`service_request_state_${from}`);
-      }
-
-      return;
-    } else if (userState === 'view_single_service_request') {
-      // FIXED: Use multi-format phone lookup
-      const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-      const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
-
-      const serviceRequests = await this.serviceRequestRepo.find({
-        where: [
-          {
-            tenant: { user: { phone_number: from } },
-            description: ILike(`%${text}%`),
-          },
-          {
-            tenant: { user: { phone_number: normalizedPhone } },
-            description: ILike(`%${text}%`),
-          },
-          {
-            tenant: { user: { phone_number: localPhone } },
-            description: ILike(`%${text}%`),
-          },
-        ],
-        relations: ['tenant'],
-      });
-
-      if (!serviceRequests.length) {
-        await this.sendText(
-          from,
-          'No service requests found matching that description.',
-        );
-        await this.cache.delete(`service_request_state_${from}`);
-        return;
-      }
-
-      let response = 'Here are the matching service requests:\n';
-      serviceRequests.forEach((req: any, i) => {
-        response += `${req.description} (${new Date(
-          req.created_at,
-        ).toLocaleDateString()}) \n Status: ${req.status}\n Notes: ${
-          req.notes || '——'
-        }\n\n`;
-      });
-
-      await this.sendText(from, response);
-      await this.cache.delete(`service_request_state_${from}`);
-
-      await this.sendButtons(from, 'back', [
-        {
-          id: 'service_request',
-          title: 'Back to Requests',
-        },
-      ]);
-
-      return;
-    } else {
-      // FIXED: Use multi-format phone lookup like in handleMessage
-      const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-      const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
-
-      const user = await this.usersRepo.findOne({
-        where: [
-          { phone_number: from, accounts: { role: RolesEnum.TENANT } },
-          {
-            phone_number: normalizedPhone,
-            accounts: { role: RolesEnum.TENANT },
-          },
-          { phone_number: localPhone, accounts: { role: RolesEnum.TENANT } },
-        ],
-        relations: ['accounts'],
-      });
-
-      if (!user) {
-        console.log(
-          '⚠️ Tenant not found in cachedResponse, sending agent template',
-        );
-        await this.sendToAgentWithTemplate(from);
-      } else {
-        console.log('✅ Sending tenant menu to:', user.first_name);
-        await this.sendButtons(
-          from,
-          `Hello ${this.utilService.toSentenceCase(
-            user.first_name,
-          )} What would you like to do?`,
-          [
-            { id: 'service_request', title: 'Service request' },
-            { id: 'view_tenancy', title: 'View tenancy details' },
-            // {
-            //   id: 'view_notices_and_documents',
-            //   title: 'See notices and documents',
-            // },
-            { id: 'visit_site', title: 'Visit our website' },
-          ],
-          'Tap on any option to continue.',
-        );
-      }
-    }
-=======
   async sendToPropertiesCreatedTemplate(
     params: PropertyCreatedParams,
   ): Promise<void> {
     return this.templateSenderService.sendToPropertiesCreatedTemplate(params);
->>>>>>> dev
   }
 
   async sendUserAddedTemplate(params: UserAddedParams): Promise<void> {

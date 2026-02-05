@@ -59,6 +59,12 @@ export class WhatsappUtils {
    * This uses a WhatsApp template with URL buttons that redirect directly
    */
   async sendLandlordMainMenu(to: string, landlordName: string) {
+    console.log('📤 [WhatsappUtils.sendLandlordMainMenu] START', {
+      to,
+      landlordName,
+      timestamp: new Date().toISOString(),
+    });
+
     const payload = {
       messaging_product: 'whatsapp',
       to,
@@ -93,13 +99,36 @@ export class WhatsappUtils {
       },
     };
 
-    await this.sendToWhatsappAPI(payload);
+    console.log(
+      '📤 [WhatsappUtils.sendLandlordMainMenu] Payload:',
+      JSON.stringify(payload, null, 2),
+    );
+
+    const result = await this.sendToWhatsappAPI(payload);
+
+    console.log(
+      '✅ [WhatsappUtils.sendLandlordMainMenu] Result:',
+      JSON.stringify(result, null, 2),
+    );
+
+    return result;
   }
 
   private async sendToWhatsappAPI(payload: object) {
+    console.log('🌐 [WhatsappUtils.sendToWhatsappAPI] START');
+    console.log(
+      '🌐 [WhatsappUtils.sendToWhatsappAPI] Payload recipient:',
+      (payload as any).to,
+    );
+
     // Check simulation mode directly from environment
     const simulatorMode = process.env.WHATSAPP_SIMULATOR;
     const isSimulationMode = simulatorMode === 'true';
+
+    console.log('🌐 [WhatsappUtils.sendToWhatsappAPI] Mode check:', {
+      WHATSAPP_SIMULATOR: simulatorMode,
+      isSimulationMode,
+    });
 
     if (isSimulationMode) {
       console.log(
@@ -122,14 +151,22 @@ export class WhatsappUtils {
       }
 
       // Return simulated response
-      return {
+      const simResponse = {
         messaging_product: 'whatsapp',
         contacts: [{ input: (payload as any).to, wa_id: (payload as any).to }],
         messages: [{ id: `sim_msg_${Date.now()}`, message_status: 'accepted' }],
       };
+      console.log(
+        '🎭 [WhatsappUtils.sendToWhatsappAPI] Simulated response:',
+        simResponse,
+      );
+      return simResponse;
     }
 
     // Production mode - send to real WhatsApp API
+    console.log(
+      '🚀 [WhatsappUtils.sendToWhatsappAPI] Production mode - sending to WhatsApp API',
+    );
     try {
       const response = await fetch(
         'https://graph.facebook.com/v23.0/746591371864338/messages',
@@ -144,10 +181,16 @@ export class WhatsappUtils {
       );
 
       const data = await response.json();
-      console.log('Response from WhatsApp API:', data);
+      console.log(
+        '✅ [WhatsappUtils.sendToWhatsappAPI] Response from WhatsApp API:',
+        data,
+      );
       return data;
     } catch (error) {
-      console.error('Error sending to WhatsApp API:', error);
+      console.error(
+        '❌ [WhatsappUtils.sendToWhatsappAPI] Error sending to WhatsApp API:',
+        error,
+      );
       throw error;
     }
   }

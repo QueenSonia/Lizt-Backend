@@ -44,16 +44,35 @@ export class LandlordLookup {
   }
 
   async handleExitOrMenu(from: string, text: string) {
+    console.log('📋 [LandlordLookup.handleExitOrMenu] START', {
+      from,
+      text,
+      timestamp: new Date().toISOString(),
+    });
+
     if (text.toLowerCase() === 'done') {
+      console.log(
+        '👋 [LandlordLookup.handleExitOrMenu] Done command - exiting flow',
+      );
       await this.whatsappUtil.sendText(
         from,
         'Thanks! You have exited landlord flow.',
       );
       await this.cache.delete(`service_request_state_landlord_${from}`);
     } else {
+      console.log(
+        '🔍 [LandlordLookup.handleExitOrMenu] Looking up landlord user',
+      );
       const ownerUser = await this.usersRepo.findOne({
         where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
         relations: ['accounts'],
+      });
+
+      console.log('👤 [LandlordLookup.handleExitOrMenu] User lookup result:', {
+        found: !!ownerUser,
+        userId: ownerUser?.id,
+        phone: ownerUser?.phone_number,
+        accountsCount: ownerUser?.accounts?.length || 0,
       });
 
       const landlordName =
@@ -61,8 +80,18 @@ export class LandlordLookup {
         ownerUser?.first_name ||
         'there';
 
+      console.log(
+        '📤 [LandlordLookup.handleExitOrMenu] Sending main menu to:',
+        {
+          from,
+          landlordName,
+        },
+      );
+
       // Use template with URL buttons for direct redirects
       await this.whatsappUtil.sendLandlordMainMenu(from, landlordName);
+
+      console.log('✅ [LandlordLookup.handleExitOrMenu] Main menu sent');
       return;
     }
   }

@@ -69,11 +69,18 @@ export class LandlordFlow {
    * Handle landlord TEXT input
    */
   async handleText(from: string, text: string) {
+    console.log('🏠 [LandlordFlow.handleText] START', {
+      from,
+      text,
+      timestamp: new Date().toISOString(),
+    });
+
     // Handle "switch role" command for multi-role users
     if (
       text?.toLowerCase() === 'switch role' ||
       text?.toLowerCase() === 'switch'
     ) {
+      console.log('🔄 [LandlordFlow.handleText] Switch role command detected');
       await this.cache.delete(`selected_role_${from}`);
       await this.whatsappUtil.sendText(
         from,
@@ -83,25 +90,43 @@ export class LandlordFlow {
     }
 
     if (['done', 'menu'].includes(text?.toLowerCase())) {
+      console.log(
+        '📋 [LandlordFlow.handleText] Done/Menu command, calling handleExitOrMenu',
+      );
       await this.lookup.handleExitOrMenu(from, text);
       return;
     }
 
     const raw = await this.cache.get(`service_request_state_landlord_${from}`);
+    console.log('💾 [LandlordFlow.handleText] Cache state:', {
+      cacheKey: `service_request_state_landlord_${from}`,
+      rawValue: raw,
+      hasState: !!raw,
+    });
+
     if (!raw) {
+      console.log(
+        '📋 [LandlordFlow.handleText] No cache state, calling handleExitOrMenu',
+      );
       await this.lookup.handleExitOrMenu(from, text);
       return;
     }
 
     const { type } = raw;
 
-    console.log({ type });
+    console.log('🔍 [LandlordFlow.handleText] State type:', { type });
 
     if (type === 'generate_kyc_link') {
+      console.log('🔗 [LandlordFlow.handleText] Handling KYC link generation');
       await this.lookup.handleGenerateKYCLinkText(from, text);
     } else {
+      console.log(
+        '📋 [LandlordFlow.handleText] Unknown type, calling handleExitOrMenu',
+      );
       await this.lookup.handleExitOrMenu(from, text);
     }
+
+    console.log('🏠 [LandlordFlow.handleText] END');
   }
 
   /**

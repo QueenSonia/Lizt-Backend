@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { Account } from '../../users/entities/account.entity';
@@ -8,6 +8,7 @@ import {
   MaritalStatus,
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
+import { OfferLetter } from '../../offer-letters/entities/offer-letter.entity';
 
 export enum ApplicationStatus {
   PENDING = 'pending',
@@ -86,50 +87,43 @@ export class KYCApplication extends BaseEntity {
   employer_name?: string;
 
   @Column({ type: 'varchar', nullable: true })
-  employer_address?: string;
+  work_address?: string;
 
   @Column({ type: 'varchar', nullable: true })
   monthly_net_income?: string;
 
-  // References - All made optional for relaxed validation
   @Column({ type: 'varchar', nullable: true })
-  reference1_name?: string;
+  work_phone_number?: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference1_address?: string;
+  length_of_employment?: string;
+
+  // Next of Kin Information
+  @Column({ type: 'varchar', nullable: true })
+  next_of_kin_full_name?: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference1_relationship?: string;
+  next_of_kin_address?: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference1_phone_number?: string;
+  next_of_kin_relationship?: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference2_name?: string;
+  next_of_kin_phone_number?: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference2_address?: string;
+  next_of_kin_email?: string;
+
+  // Referral Agent Information
+  @Column({ type: 'varchar', nullable: true })
+  referral_agent_full_name?: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference2_relationship?: string;
-
-  @Column({ type: 'varchar', nullable: true })
-  reference2_phone_number?: string;
+  referral_agent_phone_number?: string;
 
   // Additional Personal Information
   @Column({ type: 'varchar', nullable: true })
   religion?: string;
-
-  // Additional Reference Information
-  @Column({ type: 'varchar', nullable: true })
-  reference1_email?: string;
-
-  // Additional Employment Information
-  @Column({ type: 'varchar', nullable: true })
-  employer_phone_number?: string;
-
-  @Column({ type: 'varchar', nullable: true })
-  length_of_employment?: string;
 
   // Self-Employed Specific Fields
   @Column({ type: 'varchar', nullable: true })
@@ -152,7 +146,7 @@ export class KYCApplication extends BaseEntity {
   number_of_occupants?: string;
 
   @Column({ type: 'varchar', nullable: true })
-  number_of_cars_owned?: string;
+  parking_needs?: string;
 
   @Column({ type: 'varchar', nullable: true })
   proposed_rent_amount?: string;
@@ -176,6 +170,14 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   business_proof_url?: string;
 
+  // Pending KYC ID (for tracking incomplete submissions)
+  @Column({ type: 'varchar', nullable: true })
+  pending_kyc_id?: string;
+
+  // Available Property IDs (for tracking property options)
+  @Column({ type: 'varchar', nullable: true })
+  available_property_ids?: string;
+
   @ManyToOne(() => KYCLink, (kycLink) => kycLink.applications)
   @JoinColumn({ name: 'kyc_link_id' })
   kyc_link: KYCLink;
@@ -187,4 +189,7 @@ export class KYCApplication extends BaseEntity {
   @ManyToOne(() => Account, { nullable: true })
   @JoinColumn({ name: 'tenant_id' })
   tenant?: Account;
+
+  @OneToMany(() => OfferLetter, (offerLetter) => offerLetter.kyc_application)
+  offer_letters: OfferLetter[];
 }

@@ -40,7 +40,7 @@ export class RentsController {
   constructor(
     private readonly rentsService: RentsService,
     private readonly fileUploadService: FileUploadService,
-  ) { }
+  ) {}
 
   @ApiOperation({ summary: 'Pay Rent' })
   // @ApiConsumes('multipart/form-data')

@@ -2,6 +2,7 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
@@ -12,6 +13,8 @@ import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
+  private readonly logger = new Logger(AuthGuard.name);
+
   constructor(
     private jwtService: JwtService,
     private reflector: Reflector,
@@ -31,13 +34,8 @@ export class AuthGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const token = this.extractTokenFromCookie(request);
 
-    console.log(
-      '[AuthGuard] Token extracted:',
-      token ? `${token.substring(0, 50)}...` : 'NO TOKEN',
-    );
-
     if (!token) {
-      console.log('[AuthGuard] No token found, rejecting request');
+      this.logger.debug('No token found, rejecting request');
       throw new UnauthorizedException();
     }
     try {
@@ -45,13 +43,10 @@ export class AuthGuard implements CanActivate {
         secret: this.configService.get('JWT_SECRET'),
       });
 
-      console.log(
-        '[AuthGuard] Token verified successfully for user:',
-        payload.id,
-      );
+      this.logger.debug(`Token verified successfully for user: ${payload.id}`);
       request['user'] = payload;
     } catch (error) {
-      console.log('[AuthGuard] Token verification failed:', error.message);
+      this.logger.debug(`Token verification failed: ${error.message}`);
       throw new UnauthorizedException();
     }
     return true;
@@ -60,26 +55,16 @@ export class AuthGuard implements CanActivate {
   private extractTokenFromCookie(request: Request): string | null {
     // First try to get token from cookies
     const cookies = request.cookies;
-    console.log('[AuthGuard] Checking cookies:', cookies ? 'present' : 'none');
     if (cookies && cookies['access_token']) {
-      console.log('[AuthGuard] Token found in cookies');
       return cookies['access_token'];
     }
 
     // Fallback to Authorization header for API proxy requests
     const authHeader = request.headers['authorization'];
-    console.log(
-      '[AuthGuard] Checking Authorization header:',
-      authHeader ? 'present' : 'none',
-    );
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      console.log('[AuthGuard] Token found in Authorization header');
       return authHeader.substring(7);
     }
 
-    console.log(
-      '[AuthGuard] No token found in cookies or Authorization header',
-    );
     return null;
   }
 }

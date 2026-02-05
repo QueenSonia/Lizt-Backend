@@ -14,6 +14,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { SkipAuth } from '../auth/auth.decorator';
 import { Public } from '../auth/public.decorator';
 import { KYCApplicationService } from './kyc-application.service';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
@@ -33,7 +34,7 @@ export class KYCApplicationController {
    * POST /api/kyc/:token/submit
    * Requirements: 3.1, 3.2, 3.4
    */
-  @Public()
+  @SkipAuth()
   @Post('kyc/:token/submit')
   async submitKYCApplication(
     @Param('token') token: string,
@@ -213,7 +214,7 @@ export class KYCApplicationController {
    * Check for any existing KYC record system-wide by phone number
    * GET /api/kyc/check-existing
    */
-  @Public()
+  @SkipAuth()
   @Get('kyc/check-existing')
   async checkExistingKYC(
     @Query('phone') phone: string,
@@ -243,7 +244,7 @@ export class KYCApplicationController {
    * GET /api/kyc/check-pending
    * Requirements: 4.4
    */
-  @Public()
+  @SkipAuth()
   @Get('kyc/check-pending')
   async checkPendingCompletion(
     @Query('landlordId', ParseUUIDPipe) landlordId: string,

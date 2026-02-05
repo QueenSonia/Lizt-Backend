@@ -20,6 +20,9 @@ export type IncomingMessage = {
     from: string;
     id: string;
   };
+
+  // Simulator-specific field to identify simulated messages
+  is_simulated?: boolean;
 };
 
 export type WhatsAppIncomingMessagePayload = {

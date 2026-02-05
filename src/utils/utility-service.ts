@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
 import sgMail from '@sendgrid/mail';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 
 dotenv.config();
 
@@ -28,35 +28,33 @@ export class UtilService {
   //   }
   // };
 
+  /**
+   * Normalize phone number to consistent format: 234XXXXXXXXXX (no + prefix)
+   * This matches the format stored in the database via the entity transformer.
+   */
   normalizePhoneNumber = (phone_number: string): string => {
-    console.log(`Original phone number: ${phone_number}`);
     if (!phone_number) return '';
 
-    // Remove all non-digit characters
-    let cleaned = phone_number.replace(/\D/g, '');
+    // Remove all non-digit characters (including +)
+    const cleaned = phone_number.replace(/\D/g, '');
 
-    // Handle different formats
+    // Already in correct format: 234XXXXXXXXXX
     if (cleaned.startsWith('234')) {
-      // Already in international format without +
-      const result = `+${cleaned}`;
-      console.log(`Normalized phone number: ${result}`);
-      return result;
-    } else if (cleaned.startsWith('0')) {
-      // Nigerian local format (0234...)
-      const result = `+234${cleaned.substring(1)}`;
-      console.log(`Normalized phone number: ${result}`);
-      return result;
-    } else if (cleaned.length === 10) {
-      // 10 digits without country code
-      const result = `+234${cleaned}`;
-      console.log(`Normalized phone number: ${result}`);
-      return result;
+      return cleaned;
     }
 
-    // Default: assume it needs +234 prefix
-    const result = `+234${cleaned}`;
-    console.log(`Normalized phone number: ${result}`);
-    return result;
+    // Nigerian local format: 0XXXXXXXXXX -> 234XXXXXXXXXX
+    if (cleaned.startsWith('0')) {
+      return '234' + cleaned.substring(1);
+    }
+
+    // 10 digits without country code (e.g., 8031234567)
+    if (/^[7-9]\d{9}$/.test(cleaned)) {
+      return '234' + cleaned;
+    }
+
+    // Default: prepend 234
+    return '234' + cleaned;
   };
 
   sendEmail = async (email: string, subject: string, htmlContent: string) => {
@@ -106,10 +104,9 @@ export class UtilService {
   }
 
   generateOTP(length = 6): string {
-    const digits = '0123456789';
     let otp = '';
     for (let i = 0; i < length; i++) {
-      otp += digits[Math.floor(Math.random() * 10)];
+      otp += randomInt(0, 10).toString();
     }
     return otp;
   }

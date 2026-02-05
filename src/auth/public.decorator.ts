@@ -1,4 +1,4 @@
 import { SetMetadata } from '@nestjs/common';
 
-export const IS_PUBLIC_KEY = 'isPublic';
-export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
+// Re-export from auth.decorator to maintain a single source of truth
+export { IS_PUBLIC_KEY, SkipAuth as Public } from './auth.decorator';

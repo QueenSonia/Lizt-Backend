@@ -172,35 +172,39 @@ export class KYCApplicationService {
     if (kycData.job_title) applicationData.job_title = kycData.job_title;
     if (kycData.employer_name)
       applicationData.employer_name = kycData.employer_name;
-    if (kycData.employer_address)
-      applicationData.employer_address = kycData.employer_address;
+    if (kycData.work_address)
+      applicationData.work_address = kycData.work_address;
     if (kycData.monthly_net_income)
       applicationData.monthly_net_income = kycData.monthly_net_income;
-    if (kycData.reference1_name)
-      applicationData.reference1_name = kycData.reference1_name;
-    if (kycData.reference1_address)
-      applicationData.reference1_address = kycData.reference1_address;
-    if (kycData.reference1_relationship)
-      applicationData.reference1_relationship = kycData.reference1_relationship;
-    if (kycData.reference1_phone_number)
-      applicationData.reference1_phone_number = kycData.reference1_phone_number;
-    if (kycData.reference2_name)
-      applicationData.reference2_name = kycData.reference2_name;
-    if (kycData.reference2_address)
-      applicationData.reference2_address = kycData.reference2_address;
-    if (kycData.reference2_relationship)
-      applicationData.reference2_relationship = kycData.reference2_relationship;
-    if (kycData.reference2_phone_number)
-      applicationData.reference2_phone_number = kycData.reference2_phone_number;
+    if (kycData.work_phone_number)
+      applicationData.work_phone_number = kycData.work_phone_number;
+    if (kycData.length_of_employment)
+      applicationData.length_of_employment = kycData.length_of_employment;
+
+    // Next of Kin
+    if (kycData.next_of_kin_full_name)
+      applicationData.next_of_kin_full_name = kycData.next_of_kin_full_name;
+    if (kycData.next_of_kin_address)
+      applicationData.next_of_kin_address = kycData.next_of_kin_address;
+    if (kycData.next_of_kin_relationship)
+      applicationData.next_of_kin_relationship =
+        kycData.next_of_kin_relationship;
+    if (kycData.next_of_kin_phone_number)
+      applicationData.next_of_kin_phone_number =
+        kycData.next_of_kin_phone_number;
+    if (kycData.next_of_kin_email)
+      applicationData.next_of_kin_email = kycData.next_of_kin_email;
+
+    // Referral Agent
+    if (kycData.referral_agent_full_name)
+      applicationData.referral_agent_full_name =
+        kycData.referral_agent_full_name;
+    if (kycData.referral_agent_phone_number)
+      applicationData.referral_agent_phone_number =
+        kycData.referral_agent_phone_number;
 
     // Add new fields
     if (kycData.religion) applicationData.religion = kycData.religion;
-    if (kycData.reference1_email)
-      applicationData.reference1_email = kycData.reference1_email;
-    if (kycData.employer_phone_number)
-      applicationData.employer_phone_number = kycData.employer_phone_number;
-    if (kycData.length_of_employment)
-      applicationData.length_of_employment = kycData.length_of_employment;
 
     // Self-employed specific fields
     if (kycData.nature_of_business)
@@ -211,19 +215,23 @@ export class KYCApplicationService {
       applicationData.business_address = kycData.business_address;
     if (kycData.business_duration)
       applicationData.business_duration = kycData.business_duration;
+
+    // Tenancy Info
     if (kycData.intended_use_of_property)
       applicationData.intended_use_of_property =
         kycData.intended_use_of_property;
     if (kycData.number_of_occupants)
       applicationData.number_of_occupants = kycData.number_of_occupants;
-    if (kycData.number_of_cars_owned)
-      applicationData.number_of_cars_owned = kycData.number_of_cars_owned;
+    if (kycData.parking_needs)
+      applicationData.parking_needs = kycData.parking_needs;
     if (kycData.proposed_rent_amount)
       applicationData.proposed_rent_amount = kycData.proposed_rent_amount;
     if (kycData.rent_payment_frequency)
       applicationData.rent_payment_frequency = kycData.rent_payment_frequency;
     if (kycData.additional_notes)
       applicationData.additional_notes = kycData.additional_notes;
+
+    // Documents
     if (kycData.passport_photo_url)
       applicationData.passport_photo_url = kycData.passport_photo_url;
     if (kycData.id_document_url)
@@ -344,6 +352,53 @@ export class KYCApplicationService {
       console.error('Failed to send tenant KYC confirmation:', error);
     }
 
+    // Send WhatsApp notification to referral agent (if provided)
+    try {
+      if (
+        this.whatsappBotService &&
+        kycData.referral_agent_phone_number &&
+        kycData.referral_agent_full_name &&
+        applicationWithRelations.property
+      ) {
+        const property = applicationWithRelations.property;
+
+        // Get landlord details for the notification
+        const landlord = await this.propertyRepository
+          .createQueryBuilder('property')
+          .leftJoinAndSelect('property.owner', 'owner')
+          .leftJoinAndSelect('owner.user', 'user')
+          .where('property.id = :propertyId', { propertyId: property.id })
+          .getOne();
+
+        const landlordName =
+          landlord?.owner?.profile_name ||
+          (landlord?.owner?.user
+            ? `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`
+            : 'Property Manager');
+
+        const agentPhone = this.utilService.normalizePhoneNumber(
+          kycData.referral_agent_phone_number,
+        );
+        const agentName = kycData.referral_agent_full_name;
+        const tenantName = `${kycData.first_name} ${kycData.last_name}`;
+
+        await this.whatsappBotService.sendAgentKYCNotification({
+          phone_number: agentPhone,
+          agent_name: agentName,
+          tenant_name: tenantName,
+          property_name: property.name,
+          landlord_name: landlordName,
+        });
+
+        console.log(
+          `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
+        );
+      }
+    } catch (error) {
+      // Log error but don't fail the request if WhatsApp notification fails
+      console.error('Failed to send agent KYC notification:', error);
+    }
+
     return applicationWithRelations;
   }
 
@@ -374,7 +429,7 @@ export class KYCApplicationService {
     // Get applications for the property with sorting
     const applications = await this.kycApplicationRepository.find({
       where: whereCondition,
-      relations: ['property', 'kyc_link', 'tenant'],
+      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
       order: {
         created_at: 'DESC', // Most recent applications first
         status: 'ASC', // Pending applications first within same date
@@ -409,6 +464,7 @@ export class KYCApplicationService {
       .leftJoinAndSelect('application.property', 'property')
       .leftJoinAndSelect('application.kyc_link', 'kyc_link')
       .leftJoinAndSelect('application.tenant', 'tenant')
+      .leftJoinAndSelect('application.offer_letters', 'offer_letters')
       .where('application.property_id = :propertyId', { propertyId });
 
     // If property is vacant or ready for marketing, only show pending applications (override any status filter)
@@ -442,6 +498,10 @@ export class KYCApplicationService {
    * Transform KYC application entity to frontend-compatible format
    * Converts snake_case to camelCase and structures references properly
    */
+  /**
+   * Transform KYC application entity to frontend-compatible format
+   * No complex mapping needed anymore, just formatting
+   */
   private transformApplicationForFrontend(application: KYCApplication): any {
     return {
       id: application.id,
@@ -463,49 +523,48 @@ export class KYCApplicationService {
       stateOfOrigin: application.state_of_origin,
       maritalStatus: application.marital_status,
       religion: application.religion,
+
+      // Employment Info
       employmentStatus: application.employment_status,
       occupation: application.occupation,
       jobTitle: application.job_title,
       employerName: application.employer_name,
-      employerAddress: application.employer_address,
-      employerPhoneNumber: application.employer_phone_number,
+      workAddress: application.work_address,
+      workPhoneNumber: application.work_phone_number,
       lengthOfEmployment: application.length_of_employment,
       monthlyNetIncome: application.monthly_net_income,
+
       // Self-employed specific fields
       natureOfBusiness: application.nature_of_business,
       businessName: application.business_name,
       businessAddress: application.business_address,
       businessDuration: application.business_duration,
-      reference1: {
-        name: application.reference1_name,
-        address: application.reference1_address,
-        relationship: application.reference1_relationship,
-        phoneNumber: application.reference1_phone_number,
-        email: application.reference1_email,
-      },
-      reference2: application.reference2_name
-        ? {
-            name: application.reference2_name,
-            address: application.reference2_address,
-            relationship: application.reference2_relationship,
-            phoneNumber: application.reference2_phone_number,
-            email: null, // reference2_email not in schema
-          }
-        : null,
-      tenantOffer: {
-        proposedRentAmount: application.proposed_rent_amount,
-        rentPaymentFrequency: application.rent_payment_frequency,
-        intendedUse: application.intended_use_of_property,
-        numberOfOccupants: application.number_of_occupants,
-        numberOfCarsOwned: application.number_of_cars_owned,
-        additionalNotes: application.additional_notes,
-      },
-      documents: {
-        passportPhoto: application.passport_photo_url,
-        idDocument: application.id_document_url,
-        employmentProof: application.employment_proof_url,
-        businessProof: application.business_proof_url,
-      },
+
+      // Next of Kin
+      nextOfKinFullName: application.next_of_kin_full_name,
+      nextOfKinAddress: application.next_of_kin_address,
+      nextOfKinRelationship: application.next_of_kin_relationship,
+      nextOfKinPhoneNumber: application.next_of_kin_phone_number,
+      nextOfKinEmail: application.next_of_kin_email,
+
+      // Referral Agent
+      referralAgentFullName: application.referral_agent_full_name,
+      referralAgentPhoneNumber: application.referral_agent_phone_number,
+
+      // Tenancy Info
+      intendedUseOfProperty: application.intended_use_of_property,
+      numberOfOccupants: application.number_of_occupants,
+      parkingNeeds: application.parking_needs,
+      proposedRentAmount: application.proposed_rent_amount,
+      rentPaymentFrequency: application.rent_payment_frequency,
+      additionalNotes: application.additional_notes,
+
+      // Documents
+      passportPhotoUrl: application.passport_photo_url,
+      idDocumentUrl: application.id_document_url,
+      employmentProofUrl: application.employment_proof_url,
+      businessProofUrl: application.business_proof_url,
+
       // Include property information if the relation is loaded
       property: application.property
         ? {
@@ -526,6 +585,41 @@ export class KYCApplicationService {
         application.updated_at instanceof Date
           ? application.updated_at.toISOString()
           : application.updated_at,
+
+      // Offer Letter Information
+      offerLetterStatus:
+        application.offer_letters && application.offer_letters.length > 0
+          ? application.offer_letters.sort((a, b) => {
+              // Sort by created_at desc (handling potential string/Date types)
+              const dateA = new Date(a.created_at || 0).getTime();
+              const dateB = new Date(b.created_at || 0).getTime();
+              return dateB - dateA;
+            })[0].status
+          : undefined,
+
+      offerLetter:
+        application.offer_letters && application.offer_letters.length > 0
+          ? (() => {
+              const latestOffer = application.offer_letters.sort((a, b) => {
+                const dateA = new Date(a.created_at || 0).getTime();
+                const dateB = new Date(b.created_at || 0).getTime();
+                return dateB - dateA;
+              })[0];
+              return {
+                id: latestOffer.id,
+                token: latestOffer.token,
+                status: latestOffer.status,
+                rentAmount: latestOffer.rent_amount,
+                rentFrequency: latestOffer.rent_frequency,
+                serviceCharge: latestOffer.service_charge,
+                tenancyStartDate: latestOffer.tenancy_start_date,
+                tenancyEndDate: latestOffer.tenancy_end_date,
+                cautionDeposit: latestOffer.caution_deposit,
+                legalFee: latestOffer.legal_fee,
+                agencyFee: latestOffer.agency_fee,
+              };
+            })()
+          : undefined,
     };
   }
 
@@ -544,7 +638,7 @@ export class KYCApplicationService {
 
     const application = await this.kycApplicationRepository.findOne({
       where: { id: applicationId },
-      relations: ['property', 'kyc_link', 'tenant'],
+      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
     });
 
     if (!application) {
@@ -693,6 +787,7 @@ export class KYCApplicationService {
       .leftJoinAndSelect('application.property', 'property')
       .leftJoinAndSelect('application.kyc_link', 'kyc_link')
       .leftJoinAndSelect('application.tenant', 'tenant')
+      .leftJoinAndSelect('application.offer_letters', 'offer_letters')
       .where('property.owner_id = :landlordId', { landlordId })
       .orderBy('application.created_at', 'DESC')
       .getMany();
@@ -711,7 +806,7 @@ export class KYCApplicationService {
     // Get all applications for the tenant
     const applications = await this.kycApplicationRepository.find({
       where: { tenant_id: tenantId },
-      relations: ['property', 'kyc_link', 'tenant'],
+      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
       order: {
         created_at: 'DESC', // Most recent applications first
       },
@@ -838,21 +933,20 @@ export class KYCApplicationService {
           occupation: tenantKyc.occupation,
           job_title: tenantKyc.job_title,
           employer_name: tenantKyc.employer_name,
-          employer_address: tenantKyc.employer_address,
-          employer_phone_number: tenantKyc.employer_phone_number,
+          work_address: tenantKyc.work_address,
+          work_phone_number: tenantKyc.work_phone_number,
           nature_of_business: tenantKyc.nature_of_business,
           business_name: tenantKyc.business_name,
           business_address: tenantKyc.business_address,
           business_duration: tenantKyc.business_duration,
           monthly_net_income: tenantKyc.monthly_net_income,
-          reference1_name: tenantKyc.reference1_name,
-          reference1_address: tenantKyc.reference1_address,
-          reference1_relationship: tenantKyc.reference1_relationship,
-          reference1_phone_number: tenantKyc.reference1_phone_number,
-          reference2_name: tenantKyc.reference2_name,
-          reference2_address: tenantKyc.reference2_address,
-          reference2_relationship: tenantKyc.reference2_relationship,
-          reference2_phone_number: tenantKyc.reference2_phone_number,
+          next_of_kin_full_name: tenantKyc.next_of_kin_full_name,
+          next_of_kin_address: tenantKyc.next_of_kin_address,
+          next_of_kin_relationship: tenantKyc.next_of_kin_relationship,
+          next_of_kin_phone_number: tenantKyc.next_of_kin_phone_number,
+          next_of_kin_email: tenantKyc.next_of_kin_email,
+          referral_agent_full_name: tenantKyc.referral_agent_full_name,
+          referral_agent_phone_number: tenantKyc.referral_agent_phone_number,
           // Note: Don't include tenancy information - that should be fresh for each application
           // Note: tenant_kyc doesn't have document URLs - only kyc_application does
         };
@@ -1062,12 +1156,12 @@ export class KYCApplicationService {
         updateData.job_title = completionData.job_title;
       if (completionData.employer_name !== undefined)
         updateData.employer_name = completionData.employer_name;
-      if (completionData.employer_address !== undefined)
-        updateData.employer_address = completionData.employer_address;
+      if (completionData.work_address !== undefined)
+        updateData.work_address = completionData.work_address;
       if (completionData.monthly_net_income !== undefined)
         updateData.monthly_net_income = completionData.monthly_net_income;
-      if (completionData.employer_phone_number !== undefined)
-        updateData.employer_phone_number = completionData.employer_phone_number;
+      if (completionData.work_phone_number !== undefined)
+        updateData.work_phone_number = completionData.work_phone_number;
       if (completionData.length_of_employment !== undefined)
         updateData.length_of_employment = completionData.length_of_employment;
 
@@ -1081,30 +1175,27 @@ export class KYCApplicationService {
       if (completionData.business_duration !== undefined)
         updateData.business_duration = completionData.business_duration;
 
-      // References
-      if (completionData.reference1_name !== undefined)
-        updateData.reference1_name = completionData.reference1_name;
-      if (completionData.reference1_phone_number !== undefined)
-        updateData.reference1_phone_number =
-          completionData.reference1_phone_number;
-      if (completionData.reference1_relationship !== undefined)
-        updateData.reference1_relationship =
-          completionData.reference1_relationship;
-      if (completionData.reference1_address !== undefined)
-        updateData.reference1_address = completionData.reference1_address;
-      if (completionData.reference1_email !== undefined)
-        updateData.reference1_email = completionData.reference1_email;
+      // Next of Kin
+      if (completionData.next_of_kin_full_name !== undefined)
+        updateData.next_of_kin_full_name = completionData.next_of_kin_full_name;
+      if (completionData.next_of_kin_phone_number !== undefined)
+        updateData.next_of_kin_phone_number =
+          completionData.next_of_kin_phone_number;
+      if (completionData.next_of_kin_relationship !== undefined)
+        updateData.next_of_kin_relationship =
+          completionData.next_of_kin_relationship;
+      if (completionData.next_of_kin_address !== undefined)
+        updateData.next_of_kin_address = completionData.next_of_kin_address;
+      if (completionData.next_of_kin_email !== undefined)
+        updateData.next_of_kin_email = completionData.next_of_kin_email;
 
-      if (completionData.reference2_name !== undefined)
-        updateData.reference2_name = completionData.reference2_name;
-      if (completionData.reference2_phone_number !== undefined)
-        updateData.reference2_phone_number =
-          completionData.reference2_phone_number;
-      if (completionData.reference2_relationship !== undefined)
-        updateData.reference2_relationship =
-          completionData.reference2_relationship;
-      if (completionData.reference2_address !== undefined)
-        updateData.reference2_address = completionData.reference2_address;
+      // Referral Agent
+      if (completionData.referral_agent_full_name !== undefined)
+        updateData.referral_agent_full_name =
+          completionData.referral_agent_full_name;
+      if (completionData.referral_agent_phone_number !== undefined)
+        updateData.referral_agent_phone_number =
+          completionData.referral_agent_phone_number;
 
       // Additional personal information
       if (completionData.religion !== undefined)
@@ -1116,8 +1207,6 @@ export class KYCApplicationService {
           completionData.intended_use_of_property;
       if (completionData.number_of_occupants !== undefined)
         updateData.number_of_occupants = completionData.number_of_occupants;
-      if (completionData.number_of_cars_owned !== undefined)
-        updateData.number_of_cars_owned = completionData.number_of_cars_owned;
       if (completionData.proposed_rent_amount !== undefined)
         updateData.proposed_rent_amount = completionData.proposed_rent_amount;
       if (completionData.rent_payment_frequency !== undefined)
@@ -1260,6 +1349,52 @@ export class KYCApplicationService {
           'Failed to send tenant KYC completion confirmation:',
           error,
         );
+      }
+
+      // Send WhatsApp notification to referral agent (if provided)
+      try {
+        if (
+          this.whatsappBotService &&
+          updatedKyc.referral_agent_phone_number &&
+          updatedKyc.referral_agent_full_name &&
+          updatedKyc.property
+        ) {
+          const property = updatedKyc.property;
+
+          // Get landlord details for the notification
+          const landlord = await this.propertyRepository
+            .createQueryBuilder('property')
+            .leftJoinAndSelect('property.owner', 'owner')
+            .leftJoinAndSelect('owner.user', 'user')
+            .where('property.id = :propertyId', { propertyId: property.id })
+            .getOne();
+
+          const landlordName =
+            landlord?.owner?.profile_name ||
+            (landlord?.owner?.user
+              ? `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`
+              : 'Property Manager');
+
+          const agentPhone = this.utilService.normalizePhoneNumber(
+            updatedKyc.referral_agent_phone_number,
+          );
+          const agentName = updatedKyc.referral_agent_full_name;
+          const tenantName = `${updatedKyc.first_name} ${updatedKyc.last_name}`;
+
+          await this.whatsappBotService.sendAgentKYCNotification({
+            phone_number: agentPhone,
+            agent_name: agentName,
+            tenant_name: tenantName,
+            property_name: property.name,
+            landlord_name: landlordName,
+          });
+
+          console.log(
+            `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
+          );
+        }
+      } catch (error) {
+        console.error('Failed to send agent KYC notification:', error);
       }
 
       console.log('✅ KYC completion successful:', {

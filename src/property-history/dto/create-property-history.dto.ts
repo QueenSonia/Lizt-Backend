@@ -20,19 +20,57 @@ export class CreatePropertyHistoryDto {
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',
-    description: 'UUID of the tenant',
+    description: 'UUID of the tenant (optional for non-tenancy events)',
+    required: false,
   })
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  tenant_id: string;
+  tenant_id?: string | null;
+
+  @ApiProperty({
+    example: 'tenancy_record',
+    description: 'Type of event (tenancy_record, payment_initiated, etc.)',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  event_type?: string;
+
+  @ApiProperty({
+    example: 'Tenant initiated payment of ₦500,000',
+    description: 'Description of the event',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  event_description?: string | null;
+
+  @ApiProperty({
+    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
+    description: 'UUID of related entity (payment, offer_letter, etc.)',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  related_entity_id?: string | null;
+
+  @ApiProperty({
+    example: 'payment',
+    description: 'Type of related entity (payment, offer_letter, etc.)',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  related_entity_type?: string | null;
 
   @ApiProperty({
     example: '2024-01-01',
-    description: 'Date tenant moved in',
+    description: 'Date tenant moved in (for tenancy records)',
+    required: false,
   })
   @IsString()
-  @IsNotEmpty()
-  move_in_date: Date | string;
+  @IsOptional()
+  move_in_date?: Date | string | null;
 
   @ApiProperty({
     example: '2024-12-31',
@@ -73,13 +111,14 @@ export class CreatePropertyHistoryDto {
 
   @ApiProperty({
     example: 50000,
-    description: 'Monthly rent amount',
+    description: 'Monthly rent amount (for tenancy records)',
     type: 'integer',
+    required: false,
   })
-  @IsNotEmpty()
+  @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  monthly_rent: number;
+  monthly_rent?: number | null;
 }
 
 export interface PropertyHistoryFilter {

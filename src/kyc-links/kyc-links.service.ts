@@ -235,10 +235,12 @@ export class KYCLinksService {
           status: ApplicationStatus.PENDING_COMPLETION,
         })
         .andWhere(
-          '(property.property_status = :vacantStatus OR property.property_status = :readyStatus)',
+          '(property.property_status = :vacantStatus OR property.property_status = :readyStatus OR property.property_status = :offerPendingStatus OR property.property_status = :offerAcceptedStatus)',
           {
             vacantStatus: PropertyStatusEnum.VACANT,
             readyStatus: PropertyStatusEnum.READY_FOR_MARKETING,
+            offerPendingStatus: PropertyStatusEnum.OFFER_PENDING,
+            offerAcceptedStatus: PropertyStatusEnum.OFFER_ACCEPTED,
           },
         )
         .getMany();
@@ -692,16 +694,40 @@ export class KYCLinksService {
       await this.kycOtpRepository.save(kycOtp);
       console.log(otpCode);
 
-      // Send OTP via WhatsApp
-      const message = `🔐 Your KYC verification code is: ${otpCode}\n\nThis code expires in 10 minutes.\n\n*Do not share this code with anyone.*\n\nPowered by Lizt Property Management`;
-
+      // Send OTP via WhatsApp using authentication template
+      // Template: kyc_otp_verification (must be registered in WhatsApp Business Manager)
+      // Authentication templates have a special format with OTP button
       const payload = {
         messaging_product: 'whatsapp',
         to: normalizedPhone,
-        type: 'text',
-        text: {
-          preview_url: false,
-          body: message,
+        type: 'template',
+        template: {
+          name: 'kyc_otp_verification',
+          language: {
+            code: 'en',
+          },
+          components: [
+            {
+              type: 'body',
+              parameters: [
+                {
+                  type: 'text',
+                  text: otpCode,
+                },
+              ],
+            },
+            {
+              type: 'button',
+              sub_type: 'url',
+              index: '0',
+              parameters: [
+                {
+                  type: 'text',
+                  text: otpCode,
+                },
+              ],
+            },
+          ],
         },
       };
 

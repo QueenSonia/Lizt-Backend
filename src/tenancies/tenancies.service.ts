@@ -33,7 +33,7 @@ export class TenanciesService {
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
     private dataSource: DataSource,
-  ) { }
+  ) {}
 
   async createTenancyFromKYC(
     kycApplication: KYCApplication,

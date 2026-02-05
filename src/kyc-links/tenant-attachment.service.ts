@@ -19,6 +19,7 @@ import { Rent } from '../rents/entities/rent.entity';
 import { Account } from '../users/entities/account.entity';
 import { Users } from '../users/entities/user.entity';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
+import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { AttachTenantDto, RentFrequency } from './dto/attach-tenant.dto';
 import {
   PropertyStatusEnum,
@@ -57,7 +58,7 @@ export class TenantAttachmentService {
     private readonly dataSource: DataSource,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-  ) { }
+  ) {}
 
   /**
    * Attach tenant to property with tenancy details
@@ -343,6 +344,198 @@ export class TenantAttachmentService {
       throw error;
     } finally {
       await queryRunner.release();
+    }
+  }
+
+  /**
+   * Attach tenant from offer letter (for payment system)
+   * This method is called when a tenant completes 100% payment on an offer letter
+   * Requirements: US-6 (First Full Payment Wins)
+   */
+  async attachTenantFromOffer(
+    manager: any,
+    offerLetter: OfferLetter,
+  ): Promise<void> {
+    console.log('Attaching tenant from offer letter:', {
+      offerLetterId: offerLetter.id,
+      propertyId: offerLetter.property_id,
+      kycApplicationId: offerLetter.kyc_application_id,
+    });
+
+    // Load the KYC application with relations
+    const application = await manager.findOne(KYCApplication, {
+      where: { id: offerLetter.kyc_application_id },
+      relations: ['property'],
+    });
+
+    if (!application) {
+      throw new NotFoundException(
+        `KYC application ${offerLetter.kyc_application_id} not found`,
+      );
+    }
+
+    console.log('Found KYC application:', {
+      id: application.id,
+      first_name: application.first_name,
+      last_name: application.last_name,
+      email: application.email,
+      phone_number: application.phone_number,
+    });
+
+    // Create or get tenant account
+    const tenantAccount = await this.createOrGetTenantAccount(
+      application,
+      manager,
+    );
+
+    console.log('Tenant account ready:', {
+      accountId: tenantAccount.id,
+      userId: tenantAccount.userId,
+    });
+
+    // Parse dates from offer letter
+    const rentStartDate = new Date(offerLetter.tenancy_start_date);
+    const leaseEndDate = new Date(offerLetter.tenancy_end_date);
+
+    // Map rent frequency from offer letter format to RentFrequency enum
+    const rentFrequency = this.mapOfferLetterFrequencyToRentFrequency(
+      offerLetter.rent_frequency,
+    );
+
+    // Calculate next rent due date
+    const nextRentDueDate = this.calculateNextRentDate(
+      rentStartDate,
+      rentFrequency,
+    );
+
+    console.log('Rent schedule calculated:', {
+      startDate: rentStartDate.toISOString(),
+      endDate: leaseEndDate.toISOString(),
+      frequency: rentFrequency,
+      nextDueDate: nextRentDueDate.toISOString(),
+    });
+
+    // Create rent record
+    const rent = manager.create(Rent, {
+      tenant_id: tenantAccount.id,
+      property_id: offerLetter.property_id,
+      rent_start_date: rentStartDate,
+      lease_agreement_end_date: leaseEndDate,
+      rental_price: Number(offerLetter.rent_amount),
+      security_deposit: Number(offerLetter.caution_deposit || 0),
+      service_charge: Number(offerLetter.service_charge || 0),
+      payment_frequency: this.mapRentFrequencyToPaymentFrequency(rentFrequency),
+      rent_status: RentStatusEnum.ACTIVE,
+      payment_status: RentPaymentStatusEnum.PENDING,
+      amount_paid: 0,
+      expiry_date: nextRentDueDate,
+    });
+
+    await manager.save(rent);
+
+    console.log('Rent record created:', {
+      rentId: rent.id,
+      rentalPrice: rent.rental_price,
+      securityDeposit: rent.security_deposit,
+      serviceCharge: rent.service_charge,
+    });
+
+    // Create property-tenant relationship
+    const propertyTenant = manager.create(PropertyTenant, {
+      property_id: offerLetter.property_id,
+      tenant_id: tenantAccount.id,
+      status: TenantStatusEnum.ACTIVE,
+    });
+
+    await manager.save(propertyTenant);
+
+    console.log('Property-tenant relationship created:', {
+      propertyTenantId: propertyTenant.id,
+    });
+
+    // Create property history record
+    const propertyHistory = manager.create(PropertyHistory, {
+      property_id: offerLetter.property_id,
+      tenant_id: tenantAccount.id,
+      move_in_date: DateService.getStartOfTheDay(rentStartDate),
+      monthly_rent: Number(offerLetter.rent_amount),
+      owner_comment: `Tenant attached via offer letter payment. Rent: ₦${Number(offerLetter.rent_amount).toLocaleString()}, Frequency: ${offerLetter.rent_frequency}, Lease ends: ${leaseEndDate.toLocaleDateString()}`,
+      tenant_comment: null,
+      move_out_date: null,
+      move_out_reason: null,
+    });
+
+    await manager.save(propertyHistory);
+
+    console.log('Property history record created:', {
+      propertyHistoryId: propertyHistory.id,
+    });
+
+    // Update application status to APPROVED and link to tenant
+    await manager.update(KYCApplication, application.id, {
+      status: ApplicationStatus.APPROVED,
+      tenant_id: tenantAccount.id,
+    });
+
+    console.log('KYC application updated to APPROVED');
+
+    // Reject all other pending applications for this property
+    await this.rejectOtherApplications(
+      offerLetter.property_id,
+      application.id,
+      manager,
+    );
+
+    console.log('Other applications rejected');
+
+    // Send WhatsApp notification to tenant
+    try {
+      await this.sendTenantAttachmentWhatsAppNotification(
+        tenantAccount,
+        application,
+        {
+          rentAmount: Number(offerLetter.rent_amount),
+          rentFrequency: rentFrequency,
+          tenancyStartDate: rentStartDate.toISOString(),
+          securityDeposit: Number(offerLetter.caution_deposit || 0),
+          serviceCharge: Number(offerLetter.service_charge || 0),
+        },
+        rentStartDate,
+      );
+    } catch (whatsappError) {
+      console.error(
+        'Failed to send WhatsApp notification to tenant:',
+        whatsappError,
+      );
+      // Continue - don't fail the entire operation if WhatsApp fails
+    }
+
+    console.log('Tenant attachment from offer letter completed successfully');
+  }
+
+  /**
+   * Map offer letter rent frequency string to RentFrequency enum
+   */
+  private mapOfferLetterFrequencyToRentFrequency(
+    frequency: string,
+  ): RentFrequency {
+    const normalized = frequency.toLowerCase().replace(/\s+/g, '-');
+    switch (normalized) {
+      case 'monthly':
+        return RentFrequency.MONTHLY;
+      case 'quarterly':
+        return RentFrequency.QUARTERLY;
+      case 'bi-annually':
+      case 'bi-annual':
+        return RentFrequency.BI_ANNUALLY;
+      case 'annually':
+      case 'annual':
+        return RentFrequency.ANNUALLY;
+      default:
+        console.warn(
+          `Unknown rent frequency: ${frequency}, defaulting to MONTHLY`,
+        );
+        return RentFrequency.MONTHLY;
     }
   }
 
@@ -646,20 +839,22 @@ export class TenantAttachmentService {
       job_title: application.job_title || '',
       employer_name:
         application.employer_name || application.business_name || '',
-      employer_address:
-        application.employer_address || application.business_address || '',
-      employer_phone_number: application.employer_phone_number || '',
+      work_address:
+        application.work_address || application.business_address || '',
+      work_phone_number: application.work_phone_number || '',
       monthly_net_income: application.monthly_net_income || '0',
 
-      // References (Next of Kin and Guarantor)
-      reference1_name: application.reference1_name || '',
-      reference1_address: application.reference1_address || '',
-      reference1_relationship: application.reference1_relationship || '',
-      reference1_phone_number: application.reference1_phone_number || '',
-      reference2_name: application.reference2_name || '',
-      reference2_address: application.reference2_address || '',
-      reference2_relationship: application.reference2_relationship || '',
-      reference2_phone_number: application.reference2_phone_number || '',
+      // Next of Kin
+      next_of_kin_full_name: application.next_of_kin_full_name || '',
+      next_of_kin_address: application.next_of_kin_address || '',
+      next_of_kin_relationship: application.next_of_kin_relationship || '',
+      next_of_kin_phone_number: application.next_of_kin_phone_number || '',
+      next_of_kin_email: application.next_of_kin_email || '',
+
+      // Referral Agent
+      referral_agent_full_name: application.referral_agent_full_name || '',
+      referral_agent_phone_number:
+        application.referral_agent_phone_number || '',
     };
 
     if (existingTenantKyc) {

@@ -92,10 +92,13 @@ export class TenantKyc extends BaseEntity {
   employer_name: string;
 
   @Column({ type: 'varchar', nullable: true })
-  employer_address: string;
+  work_address: string;
 
   @Column({ type: 'varchar', nullable: true })
-  employer_phone_number: string;
+  work_phone_number: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  length_of_employment: string;
 
   @Column({ type: 'varchar', nullable: true })
   monthly_net_income: string;
@@ -114,28 +117,31 @@ export class TenantKyc extends BaseEntity {
   business_duration: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference1_name: string;
+  estimated_monthly_income: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference1_address: string;
+  contact_address: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference1_relationship: string;
+  next_of_kin_full_name: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference1_phone_number: string;
+  next_of_kin_address: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference2_name: string;
+  next_of_kin_relationship: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference2_address: string;
+  next_of_kin_phone_number: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference2_relationship: string;
+  next_of_kin_email: string;
 
   @Column({ type: 'varchar', nullable: true })
-  reference2_phone_number: string;
+  referral_agent_full_name: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  referral_agent_phone_number: string;
 
   @Column({ nullable: true, type: 'uuid' })
   user_id?: string;

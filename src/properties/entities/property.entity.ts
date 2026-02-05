@@ -11,6 +11,7 @@ import { Account } from 'src/users/entities/account.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
+import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 
 @Entity({ name: 'properties' })
 export class Property extends BaseEntity {
@@ -31,6 +32,8 @@ export class Property extends BaseEntity {
       PropertyStatusEnum.VACANT,
       PropertyStatusEnum.INACTIVE,
       PropertyStatusEnum.READY_FOR_MARKETING,
+      PropertyStatusEnum.OFFER_PENDING,
+      PropertyStatusEnum.OFFER_ACCEPTED,
     ],
     default: PropertyStatusEnum.VACANT,
   })
@@ -94,4 +97,7 @@ export class Property extends BaseEntity {
 
   @OneToMany(() => KYCApplication, (kycApplication) => kycApplication.property)
   kyc_applications: KYCApplication[];
+
+  @OneToMany(() => OfferLetter, (offerLetter) => offerLetter.property)
+  offer_letters: OfferLetter[];
 }

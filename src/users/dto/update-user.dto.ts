@@ -18,6 +18,15 @@ import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 export class UpdateUserDto {
   @ApiProperty({
     required: false,
+    example: "John's Account",
+    description: 'Profile name for the account',
+  })
+  @IsOptional()
+  @IsString()
+  profile_name?: string;
+
+  @ApiProperty({
+    required: false,
     example: 'John',
     description: 'First name of the user',
   })
@@ -246,6 +255,7 @@ export class UpdateUserDto {
       contactInfo: 'contact@propertykraft.com | +234 901 234 5678',
       footerColor: '#6B6B6B',
       letterhead: null,
+      signature: null,
       headingFont: 'Inter',
       bodyFont: 'Inter',
     },
@@ -258,8 +268,10 @@ export class UpdateUserDto {
     contactInfo?: string;
     footerColor?: string;
     letterhead?: string;
+    signature?: string;
     headingFont?: string;
     bodyFont?: string;
+    updatedAt?: string;
   };
 }
 

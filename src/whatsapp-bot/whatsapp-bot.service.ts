@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { ILike, Not, Repository } from 'typeorm';
+import { ILike, Not, In, Repository } from 'typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import WhatsApp from 'whatsapp';
 import { Users } from 'src/users/entities/user.entity';
@@ -25,6 +26,31 @@ import { Account } from 'src/users/entities/account.entity';
 import { LandlordFlow } from './templates/landlord/landlordflow';
 import { LandlordLookup } from './templates/landlord/landlordlookup';
 import { LandlordInteractive } from './templates/landlord/landinteractive';
+import { ChatLogService } from './chat-log.service';
+import { MessageDirection } from './entities/message-direction.enum';
+import {
+  KYCApplication,
+  ApplicationStatus,
+} from 'src/kyc-links/entities/kyc-application.entity';
+import {
+  TemplateSenderService,
+  SendTemplateParams,
+  FMTemplateParams,
+  PropertyCreatedParams,
+  UserAddedParams,
+  TenantWelcomeParams,
+  TenantConfirmationParams,
+  TenantAttachmentParams,
+  KYCApplicationNotificationParams,
+  KYCSubmissionConfirmationParams,
+  AgentKYCNotificationParams,
+  FacilityServiceRequestParams,
+  KYCCompletionLinkParams,
+  KYCCompletionNotificationParams,
+  ButtonDefinition,
+} from './template-sender';
+import { TenantFlowService } from './tenant-flow';
+import { LandlordFlowService } from './landlord-flow';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -34,7 +60,8 @@ const MAIN_MENU_BUTTONS = [
 ];
 
 @Injectable()
-export class WhatsappBotService {
+export class WhatsappBotService implements OnModuleInit {
+  private readonly logger = new Logger(WhatsappBotService.name);
   private wa = new WhatsApp();
 
   // ✅ Define timeout in milliseconds
@@ -62,13 +89,54 @@ export class WhatsappBotService {
     @InjectRepository(Account)
     private readonly accountRepo: Repository<Account>,
 
+    @InjectRepository(KYCApplication)
+    private readonly kycApplicationRepo: Repository<KYCApplication>,
+
     private readonly flow: LandlordFlow,
 
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly cache: CacheService,
     private readonly config: ConfigService,
     private readonly utilService: UtilService,
+    private readonly chatLogService: ChatLogService,
+    private readonly eventEmitter: EventEmitter2,
+    private readonly templateSenderService: TemplateSenderService,
+    private readonly tenantFlowService: TenantFlowService,
+    private readonly landlordFlowService: LandlordFlowService,
   ) {}
+
+  /**
+   * Module initialization - Add configuration validation and startup logging
+   * Requirements: 6.1, 6.2, 6.3, 6.4
+   */
+  async onModuleInit() {
+    this.logger.log('🚀 WhatsApp Bot Service initializing...');
+
+    // Make EventEmitter available to WhatsappUtils
+    const { WhatsappUtils } = await import('./utils/whatsapp');
+    WhatsappUtils.setEventEmitter(this.eventEmitter);
+
+    try {
+      // Validate and log simulation mode configuration
+      await this.validateAndLogSimulationMode();
+
+      // Validate simulator dependencies when simulation mode is active
+      await this.validateSimulatorDependencies();
+
+      // Validate production dependencies when not in simulation mode
+      await this.validateProductionDependencies();
+
+      this.logger.log(
+        '✅ WhatsApp Bot Service initialization completed successfully',
+      );
+    } catch (error) {
+      this.logger.error(
+        '❌ WhatsApp Bot Service initialization failed:',
+        error.message,
+      );
+      throw error;
+    }
+  }
 
   async getNextScreen(decryptedBody) {
     const { screen, data, action } = decryptedBody;
@@ -119,6 +187,175 @@ export class WhatsappBotService {
     throw new Error('Unhandled endpoint request.');
   }
 
+  /**
+   * Get normalized phone number format for lookup
+   * All phone numbers are stored as 234XXXXXXXXXX in the database
+   */
+  private getPhoneNumberFormats(phoneNumber: string): string[] {
+    const normalized = this.utilService.normalizePhoneNumber(phoneNumber);
+    // Return just the normalized format since DB is now consistent
+    return [normalized];
+  }
+
+  /**
+   * Find user by phone number using normalized format
+   */
+  private async findUserByPhone(
+    phoneNumber: string,
+    role?: RolesEnum,
+  ): Promise<Users | null> {
+    const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
+
+    console.log('🔍 Phone number lookup:', {
+      original: phoneNumber,
+      normalized: normalizedPhone,
+      role: role || 'any',
+    });
+
+    const whereCondition: any = { phone_number: normalizedPhone };
+    if (role) {
+      whereCondition.accounts = { role };
+    }
+
+    const user = await this.usersRepo.findOne({
+      where: whereCondition,
+      relations: ['accounts'],
+    });
+
+    console.log('👤 User lookup result:', {
+      found: !!user,
+      userId: user?.id,
+      accountsCount: user?.accounts?.length || 0,
+      matchedPhone: user?.phone_number,
+      accountRoles: user?.accounts?.map((acc) => acc.role) || [],
+    });
+
+    return user;
+  }
+
+  /**
+   * Find user by email address (for simulator)
+   */
+  private async findUserByEmail(
+    email: string,
+    role?: RolesEnum,
+  ): Promise<Users | null> {
+    console.log('📧 Email lookup:', {
+      email,
+      role: role || 'any',
+    });
+
+    // Look up user by account email
+    const whereCondition: any = { email };
+    if (role) {
+      whereCondition.role = role;
+    }
+
+    const account = await this.accountRepo.findOne({
+      where: whereCondition,
+      relations: ['user'],
+    });
+
+    const user = account?.user || null;
+
+    // CRITICAL: Populate the accounts array for role detection
+    if (user && account) {
+      user.accounts = [account];
+    }
+
+    console.log('👤 Email lookup result:', {
+      found: !!user,
+      userId: user?.id,
+      userPhone: user?.phone_number,
+      accountId: account?.id,
+      accountRole: account?.role,
+      accountsCount: user?.accounts?.length || 0,
+    });
+
+    return user;
+  }
+
+  /**
+   * Convert email address to phone number for simulator mode
+   * If the identifier is an email, look up the user's phone number
+   * Otherwise, return the identifier as-is (assuming it's already a phone number)
+   */
+  private async getPhoneNumberFromIdentifier(
+    identifier: string,
+  ): Promise<string> {
+    const isEmail = identifier.includes('@') && identifier.includes('.');
+
+    if (isEmail) {
+      console.log('🔄 Converting email to phone number for WhatsApp messaging');
+      const user = await this.findUserByEmail(identifier);
+      if (user?.phone_number) {
+        const normalizedPhone = this.utilService.normalizePhoneNumber(
+          user.phone_number,
+        );
+        console.log('📞 Converted email to phone:', {
+          email: identifier,
+          rawPhone: user.phone_number,
+          normalizedPhone,
+        });
+        return normalizedPhone;
+      } else {
+        console.log('⚠️ Could not find phone number for email:', identifier);
+        return identifier; // Fallback to original identifier
+      }
+    }
+
+    return identifier; // Already a phone number
+  }
+  private async findUserByPhoneOrEmail(
+    identifier: string,
+    role?: RolesEnum,
+  ): Promise<Users | null> {
+    // Check if identifier looks like an email
+    const isEmail = identifier.includes('@') && identifier.includes('.');
+
+    if (isEmail) {
+      console.log('🔍 Identifier appears to be email, using email lookup');
+      return this.findUserByEmail(identifier, role);
+    } else {
+      console.log('🔍 Identifier appears to be phone, using phone lookup');
+      return this.findUserByPhone(identifier, role);
+    }
+  }
+
+  /**
+   * Find KYC application by phone number using normalized format
+   */
+  private async findKYCApplicationByPhone(
+    phoneNumber: string,
+  ): Promise<KYCApplication | null> {
+    const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
+
+    console.log('🔍 Looking up KYC application for phone:', {
+      original: phoneNumber,
+      normalized: normalizedPhone,
+    });
+
+    // Find the most recent pending or rejected application
+    const application = await this.kycApplicationRepo.findOne({
+      where: {
+        phone_number: normalizedPhone,
+        status: In([ApplicationStatus.PENDING, ApplicationStatus.REJECTED]),
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    console.log('📋 KYC application lookup result:', {
+      found: !!application,
+      applicationId: application?.id,
+      status: application?.status,
+      applicantName: application
+        ? `${application.first_name} ${application.last_name}`
+        : 'N/A',
+    });
+
+    return application;
+  }
+
   async handleMessage(messages: IncomingMessage[]) {
     const message = messages[0];
     const from = message?.from;
@@ -127,12 +364,20 @@ export class WhatsappBotService {
     console.log('📱 Incoming WhatsApp message from:', from);
     console.log('📨 Full message object:', JSON.stringify(message, null, 2));
 
+    // NOTE: Inbound message logging is now handled by WebhookHandler.processIncomingMessage
+    // to avoid duplicate database entries. This method now only processes the message logic.
+    // DO NOT add logging here - it will duplicate messages when user refreshes the page.
+
     // CRITICAL: Check if this is a role selection button click BEFORE role detection
     const buttonReply =
       message.interactive?.button_reply || (message as any).button;
     const buttonId = buttonReply?.id || buttonReply?.payload;
 
-    if (buttonId === 'select_role_fm' || buttonId === 'select_role_landlord') {
+    if (
+      buttonId === 'select_role_fm' ||
+      buttonId === 'select_role_landlord' ||
+      buttonId === 'select_role_tenant'
+    ) {
       console.log('🎯 Role selection button detected, handling directly');
       // Handle role selection in the appropriate handler based on message type
       if (message.type === 'interactive' || message.type === 'button') {
@@ -141,7 +386,9 @@ export class WhatsappBotService {
         const selectedRole =
           buttonId === 'select_role_fm'
             ? RolesEnum.FACILITY_MANAGER
-            : RolesEnum.LANDLORD;
+            : buttonId === 'select_role_landlord'
+              ? RolesEnum.LANDLORD
+              : RolesEnum.TENANT;
 
         console.log('✅ User selected role:', selectedRole);
         console.log(
@@ -161,14 +408,12 @@ export class WhatsappBotService {
         console.log('✅ Verified cache storage:', verify);
 
         // Now show the appropriate menu
-        const user = await this.usersRepo.findOne({
-          where: { phone_number: from },
-          relations: ['accounts'],
-        });
+        const user = await this.findUserByPhoneOrEmail(from);
+        const userPhone = await this.getPhoneNumberFromIdentifier(from);
 
         if (selectedRole === RolesEnum.FACILITY_MANAGER) {
           await this.sendButtons(
-            from,
+            userPhone,
             `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
             [
               { id: 'service_request', title: 'View requests' },
@@ -176,37 +421,35 @@ export class WhatsappBotService {
               { id: 'visit_site', title: 'Visit website' },
             ],
           );
-        } else {
+        } else if (selectedRole === RolesEnum.LANDLORD) {
           const landlordName = this.utilService.toSentenceCase(
             user?.first_name || 'there',
           );
-          await this.sendLandlordMainMenu(from, landlordName);
+          await this.sendLandlordMainMenu(userPhone, landlordName);
+        } else {
+          await this.sendButtons(
+            userPhone,
+            `Hello ${this.utilService.toSentenceCase(
+              user?.first_name || '',
+            )} What would you like to do?`,
+            [
+              { id: 'service_request', title: 'Service request' },
+              { id: 'view_tenancy', title: 'View tenancy details' },
+              { id: 'visit_site', title: 'Visit our website' },
+            ],
+            'Tap on any option to continue.',
+          );
         }
         return; // Don't continue with role detection
       }
     }
 
-    // CRITICAL FIX: Try both phone number formats
-    // WhatsApp sends international format (2348184350211)
-    // But DB might have local format (08184350211)
-    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-    const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
+    // CRITICAL FIX: Use unified lookup that handles both phone numbers and emails
+    // WhatsApp sends international format (2348184350211) for real messages
+    // But simulator might send email addresses for landlord chat
+    console.log('🔍 Looking up user with identifier:', from);
 
-    console.log('🔍 Phone number formats:', {
-      original: from,
-      normalized: normalizedPhone,
-      local: localPhone,
-    });
-
-    // Try to find user with either format
-    const user = await this.usersRepo.findOne({
-      where: [
-        { phone_number: from },
-        { phone_number: normalizedPhone },
-        { phone_number: localPhone },
-      ],
-      relations: ['accounts'],
-    });
+    const user = await this.findUserByPhoneOrEmail(from);
 
     // console.log('👤 User lookup result:', {
     //   found: !!user,
@@ -269,8 +512,11 @@ export class WhatsappBotService {
         const hasLandlord = user.accounts.some(
           (acc) => acc.role === RolesEnum.LANDLORD,
         );
+        const hasTenant = user.accounts.some(
+          (acc) => acc.role === RolesEnum.TENANT,
+        );
 
-        if (hasMultipleRoles && (hasFM || hasLandlord)) {
+        if (hasMultipleRoles && (hasFM || hasLandlord || hasTenant)) {
           console.log(
             '👥 User has multiple roles, showing role selection menu',
           );
@@ -285,6 +531,9 @@ export class WhatsappBotService {
           }
           if (hasLandlord) {
             roleButtons.push({ id: 'select_role_landlord', title: 'Landlord' });
+          }
+          if (hasTenant) {
+            roleButtons.push({ id: 'select_role_tenant', title: 'Tenant' });
           }
 
           await this.sendButtons(
@@ -339,52 +588,136 @@ export class WhatsappBotService {
     });
 
     switch (role) {
-      case RolesEnum.FACILITY_MANAGER:
+      case RolesEnum.FACILITY_MANAGER: {
         console.log('Facility Manager Message');
+
+        // Convert email to phone number for WhatsApp messaging
+        const facilityManagerPhone =
+          await this.getPhoneNumberFromIdentifier(from);
+
+        // Delegate to LandlordFlowService
+        // Requirements: 3.5
         if (message.type === 'interactive' || message.type === 'button') {
-          void this.handleFacilityInteractive(message, from);
+          void this.landlordFlowService.handleFacilityInteractive(
+            message,
+            facilityManagerPhone,
+          );
         }
 
         if (message.type === 'text') {
           console.log('in facility');
-          void this.handleFacilityText(message, from);
+          void this.landlordFlowService.handleFacilityText(
+            message,
+            facilityManagerPhone,
+          );
         }
 
         break;
-      case RolesEnum.TENANT:
+      }
+      case RolesEnum.TENANT: {
         console.log('In tenant');
+
+        // Convert email to phone number for WhatsApp messaging
+        const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
+
+        // Delegate to TenantFlowService
+        // Requirements: 2.5
         if (message.type === 'interactive' || message.type === 'button') {
-          void this.handleInteractive(message, from);
+          void this.tenantFlowService.handleInteractive(message, tenantPhone);
         }
 
         if (message.type === 'text') {
-          void this.handleText(message, from);
+          void this.tenantFlowService.handleText(message, tenantPhone);
         }
         break;
-      case RolesEnum.LANDLORD:
+      }
+      case RolesEnum.LANDLORD: {
         console.log('In Landlord');
+
+        // Convert email to phone number for WhatsApp messaging
+        const landlordPhone = await this.getPhoneNumberFromIdentifier(from);
+
         if (message.type === 'interactive' || message.type === 'button') {
-          void this.flow.handleInteractive(message, from);
+          void this.flow.handleInteractive(message, landlordPhone);
         }
 
         if (message.type === 'text') {
-          void this.flow.handleText(from, message.text?.body as any);
+          void this.flow.handleText(landlordPhone, message.text?.body as any);
         }
 
         break;
-      default:
+      }
+      default: {
         console.log('⚠️ Routing to DEFAULT handler (unrecognized role):', {
           role,
           messageType: message.type,
           from,
         });
+
+        // Convert email to phone number for WhatsApp messaging
+        const defaultPhone = await this.getPhoneNumberFromIdentifier(from);
+
+        // Check if this is a KYC applicant (tenant who submitted application but not yet approved)
+        const kycApplication = await this.findKYCApplicationByPhone(from);
+
+        if (kycApplication) {
+          console.log('📋 Found KYC application for user:', {
+            applicationId: kycApplication.id,
+            status: kycApplication.status,
+            applicantName: `${kycApplication.first_name} ${kycApplication.last_name}`,
+          });
+
+          // Handle KYC applicant based on application status
+          await this.handleKYCApplicantMessage(defaultPhone, kycApplication);
+          return;
+        }
+
         if (message.type === 'interactive') {
-          void this.handleDefaultInteractive(message, from);
+          void this.handleDefaultInteractive(message, defaultPhone);
         }
 
         if (message.type === 'text') {
-          void this.handleDefaultText(message, from);
+          void this.handleDefaultText(message, defaultPhone);
         }
+      }
+    }
+  }
+
+  /**
+   * Handle messages from KYC applicants (prospective tenants who submitted applications)
+   * Responds based on application status: pending or rejected
+   */
+  private async handleKYCApplicantMessage(
+    phone: string,
+    application: KYCApplication,
+  ): Promise<void> {
+    const applicantName = application.first_name || 'there';
+
+    switch (application.status) {
+      case ApplicationStatus.PENDING:
+      case ApplicationStatus.PENDING_COMPLETION:
+        console.log('📋 Responding to PENDING KYC applicant:', applicantName);
+        await this.sendText(
+          phone,
+          `Thanks for reaching out, ${applicantName}!\n\nYour landlord is still reviewing your KYC and will get back to you.`,
+        );
+        break;
+
+      case ApplicationStatus.REJECTED:
+        console.log('📋 Responding to REJECTED KYC applicant:', applicantName);
+        await this.sendText(
+          phone,
+          `Thanks for your message, ${applicantName}.\n\nUnfortunately, this property is no longer available on the market.`,
+        );
+        break;
+
+      default:
+        // This shouldn't happen since we only query for pending/rejected
+        console.log(
+          '⚠️ Unexpected KYC application status:',
+          application.status,
+        );
+        break;
     }
   }
 
@@ -449,8 +782,9 @@ export class WhatsappBotService {
         return;
       }
 
+      const normalizedFrom = this.utilService.normalizePhoneNumber(from);
       const waitlist = await this.waitlistRepo.findOne({
-        where: { phone_number: from },
+        where: { phone_number: normalizedFrom },
       });
 
       if (!waitlist) {
@@ -528,559 +862,108 @@ export class WhatsappBotService {
     }
   }
 
-  async handleFacilityText(message: any, from: string) {
-    const text = message.text?.body;
+  // ============================================================================
+  // LANDLORD/FACILITY MANAGER FLOW DELEGATION METHODS
+  // These methods delegate to LandlordFlowService for backward compatibility
+  // Requirements: 3.5
+  // ============================================================================
 
-    console.log(text, 'facility');
-
-    // Handle "switch role" command for multi-role users
-    if (
-      text?.toLowerCase() === 'switch role' ||
-      text?.toLowerCase() === 'switch'
-    ) {
-      await this.cache.delete(`selected_role_${from}`);
-      await this.sendText(
-        from,
-        'Role cleared. Send any message to select a new role.',
-      );
-      return;
-    }
-
-    if (text?.toLowerCase() === 'start flow') {
-      void this.sendFlow(from); // Call the send flow logic
-    }
-
-    if (text?.toLowerCase() === 'acknowledge request') {
-      await this.cache.set(
-        `service_request_state_facility_${from}`,
-        'acknowledged',
-        this.SESSION_TIMEOUT_MS, // now in ms,
-      );
-      await this.sendText(from, 'Please provide the request ID to acknowledge');
-    }
-
-    if (text?.toLowerCase() === 'menu') {
-      await this.sendButtons(from, 'Menu Options', [
-        { id: 'service_request', title: 'Resolve request' },
-        { id: 'view_account_info', title: 'View Account Info' },
-        { id: 'visit_site', title: 'Visit our website' },
-      ]);
-      return;
-    }
-
-    if (text.toLowerCase() === 'done') {
-      await this.cache.delete(`service_request_state_${from}`);
-      await this.cache.delete(`service_request_state_facility_${from}`);
-      await this.sendText(from, 'Thank you!  Your session has ended.');
-      return;
-    }
-
-    //handle redis cache
-    void this.cachedFacilityResponse(from, text);
+  /**
+   * Handle text messages from facility managers
+   * Delegates to LandlordFlowService
+   */
+  async handleFacilityText(
+    message: IncomingMessage,
+    from: string,
+  ): Promise<void> {
+    return this.landlordFlowService.handleFacilityText(message, from);
   }
 
-  async cachedFacilityResponse(from, text) {
-    const facilityState = await this.cache.get(
-      `service_request_state_facility_${from}`,
+  /**
+   * Handle cached response for facility manager session state
+   * Delegates to LandlordFlowService
+   */
+  async cachedFacilityResponse(from: string, text: string): Promise<void> {
+    return this.landlordFlowService.cachedFacilityResponse(from, text);
+  }
+
+  /**
+   * Handle interactive button messages from facility managers
+   * Delegates to LandlordFlowService
+   */
+  async handleFacilityInteractive(
+    message: IncomingMessage,
+    from: string,
+  ): Promise<void> {
+    return this.landlordFlowService.handleFacilityInteractive(message, from);
+  }
+
+  // ============================================================================
+  // TENANT FLOW DELEGATION METHODS
+  // These methods delegate to TenantFlowService for backward compatibility
+  // Requirements: 2.5
+  // ============================================================================
+
+  /**
+   * Handle text messages from tenants
+   * Delegates to TenantFlowService
+   */
+  async handleText(message: IncomingMessage, from: string): Promise<void> {
+    return this.tenantFlowService.handleText(message, from);
+  }
+
+  /**
+   * Handle cached response for tenant session state
+   * Delegates to TenantFlowService
+   */
+  async cachedResponse(from: string, text: string): Promise<void> {
+    return this.tenantFlowService.cachedResponse(from, text);
+  }
+
+  /**
+   * Handle interactive button messages from tenants
+   * Delegates to TenantFlowService
+   */
+  async handleInteractive(
+    message: IncomingMessage,
+    from: string,
+  ): Promise<void> {
+    return this.tenantFlowService.handleInteractive(message, from);
+  }
+
+  // ============================================================================
+  // TEMPLATE SENDER DELEGATION METHODS
+  // These methods delegate to TemplateSenderService for backward compatibility
+  // Requirements: 1.4, 10.4, 10.5
+  // ============================================================================
+
+  async sendWhatsappMessageWithTemplate(
+    params: SendTemplateParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendWhatsappMessageWithTemplate(params);
+  }
+
+  async sendToUserWithTemplate(
+    phone_number: string,
+    customer_name: string,
+  ): Promise<void> {
+    return this.templateSenderService.sendToUserWithTemplate(
+      phone_number,
+      customer_name,
     );
-
-    // Handle viewing specific request by number
-    if (facilityState && facilityState.startsWith('view_request_list:')) {
-      const requestIds = JSON.parse(
-        facilityState.split('view_request_list:')[1],
-      );
-      const selectedIndex = parseInt(text.trim()) - 1;
-
-      if (
-        isNaN(selectedIndex) ||
-        selectedIndex < 0 ||
-        selectedIndex >= requestIds.length
-      ) {
-        await this.sendText(
-          from,
-          "I couldn't find that request. Please try again with a valid number.",
-        );
-        return;
-      }
-
-      const requestId = requestIds[selectedIndex];
-      const serviceRequest = await this.serviceRequestRepo.findOne({
-        where: { id: requestId },
-        relations: ['tenant', 'tenant.user', 'property'],
-      });
-
-      if (!serviceRequest) {
-        await this.sendText(
-          from,
-          "I couldn't find that request. Please try again.",
-        );
-        return;
-      }
-
-      const statusLabel =
-        serviceRequest.status === ServiceRequestStatusEnum.OPEN
-          ? 'Open'
-          : serviceRequest.status === ServiceRequestStatusEnum.RESOLVED
-            ? 'Resolved'
-            : serviceRequest.status === ServiceRequestStatusEnum.REOPENED
-              ? 'Reopened'
-              : serviceRequest.status === ServiceRequestStatusEnum.IN_PROGRESS
-                ? 'In Progress'
-                : serviceRequest.status;
-
-      await this.sendText(
-        from,
-        `*${serviceRequest.description}*\n\nTenant: ${this.utilService.toSentenceCase(serviceRequest.tenant.user.first_name)} ${this.utilService.toSentenceCase(serviceRequest.tenant.user.last_name)}\nProperty: ${serviceRequest.property.name}\nStatus: ${statusLabel}`,
-      );
-
-      await this.sendButtons(from, 'What would you like to do?', [
-        { id: `mark_resolved:${serviceRequest.id}`, title: 'Mark as Resolved' },
-        { id: 'back_to_list', title: 'Back to List' },
-      ]);
-
-      await this.cache.set(
-        `service_request_state_facility_${from}`,
-        `viewing_request:${serviceRequest.id}`,
-        this.SESSION_TIMEOUT_MS,
-      );
-      return;
-    }
-
-    // Handle marking request as resolved (kept for backward compatibility with text input)
-    if (facilityState && facilityState.startsWith('viewing_request:')) {
-      // User is viewing a request but typed text instead of using buttons
-      await this.sendText(
-        from,
-        'Please use the buttons above to mark as resolved or go back to the list.',
-      );
-      return;
-    }
-
-    if (facilityState === 'acknowledged') {
-      const serviceRequest = await this.serviceRequestRepo.findOne({
-        where: {
-          request_id: text,
-        },
-        relations: ['tenant', 'facilityManager'],
-      });
-
-      if (!serviceRequest) {
-        await this.sendText(
-          from,
-          'No service requests found with that ID. try again',
-        );
-        await this.cache.delete(`service_request_state_facility_${from}`);
-        return;
-      }
-
-      // Update status via service to track history
-      await this.serviceRequestService.updateStatus(
-        serviceRequest.id,
-        ServiceRequestStatusEnum.IN_PROGRESS,
-        `Acknowledged by facility manager via WhatsApp`,
-        {
-          id: serviceRequest.facilityManager?.account?.user?.id || 'system',
-          role: 'facility_manager',
-          name:
-            serviceRequest.facilityManager?.account?.profile_name ||
-            'Facility Manager',
-        },
-      );
-      await this.sendText(
-        from,
-        `You have acknowledged service request ID: ${text}`,
-      );
-      await this.sendText(
-        this.utilService.normalizePhoneNumber(
-          serviceRequest.tenant.user.phone_number,
-        ),
-        `Your service request with ID: ${text} is being processed by ${this.utilService.toSentenceCase(
-          serviceRequest.facilityManager.account.profile_name,
-        )}.`,
-      );
-      await this.cache.delete(`service_request_state_facility_${from}`);
-    } else if (facilityState === 'resolve-or-update') {
-      if (text.toLowerCase() === 'update') {
-        await this.cache.set(
-          `service_request_state_facility_${from}`,
-          'awaiting_update',
-          this.SESSION_TIMEOUT_MS, // now in ms,
-        );
-        await this.sendText(
-          from,
-          'Please provide the request ID and feedback-update separated by a colon. e.g "#SR12345: Your request is being processed"',
-        );
-        return;
-      } else if (text.toLowerCase() === 'resolve') {
-        await this.cache.set(
-          `service_request_state_facility_${from}`,
-          'awaiting_resolution',
-          this.SESSION_TIMEOUT_MS, // now in ms,
-        );
-        await this.sendText(
-          from,
-          'Please provide the request ID to resolve e.g #SR12345',
-        );
-        return;
-      } else {
-        await this.sendText(
-          from,
-          'Invalid option. Please type "update" or "resolve".',
-        );
-        return;
-      }
-    } else if (facilityState === 'awaiting_update') {
-      const [requestId, ...feedbackParts] = text.split(':');
-      const feedback = feedbackParts.join(':').trim();
-      if (!requestId || !feedback) {
-        await this.sendText(
-          from,
-          'Invalid format. Please provide the request ID and feedback-update separated by a colon. e.g "#SR12345: Your request is being processed"',
-        );
-        await this.sendText(
-          from,
-          'Type the right format to see other options or "done" to finish.',
-        );
-        return;
-      }
-      const serviceRequest = await this.serviceRequestRepo.findOne({
-        where: {
-          request_id: requestId.trim(),
-        },
-        relations: ['tenant', 'facilityManager'],
-      });
-
-      if (!serviceRequest) {
-        await this.sendText(
-          from,
-          'No service requests found with that ID. try again',
-        );
-        await this.cache.delete(`service_request_state_facility_${from}`);
-        return;
-      }
-      serviceRequest.notes = feedback;
-      await this.serviceRequestRepo.save(serviceRequest);
-      await this.sendText(
-        from,
-        `You have updated service request ID: ${requestId.trim()}`,
-      );
-      await this.sendText(
-        this.utilService.normalizePhoneNumber(
-          serviceRequest.tenant.user.phone_number,
-        ),
-        `Update on your service request with ID: ${requestId.trim()} - ${feedback}`,
-      );
-      await this.cache.delete(`service_request_state_facility_${from}`);
-    } else if (facilityState === 'awaiting_resolution') {
-      const requestId = text.trim();
-      if (!requestId) {
-        await this.sendText(
-          from,
-          'Invalid format. Please provide the request ID to resolve e.g "#SR12345"',
-        );
-        return;
-      }
-      const serviceRequest = await this.serviceRequestRepo.findOne({
-        where: {
-          request_id: requestId,
-        },
-        relations: ['tenant', 'facilityManager'],
-      });
-
-      if (!serviceRequest) {
-        await this.sendText(
-          from,
-          'No service requests found with that ID. try again',
-        );
-        await this.cache.delete(`service_request_state_facility_${from}`);
-        return;
-      }
-      await this.serviceRequestService.updateStatus(
-        serviceRequest.id,
-        ServiceRequestStatusEnum.RESOLVED,
-      );
-      await this.sendText(
-        from,
-        `You have resolved service request ID: ${requestId}. Waiting for tenant confirmation.`,
-      );
-
-      // Trigger Tenant Confirmation
-      await this.sendTenantConfirmationTemplate({
-        phone_number: this.utilService.normalizePhoneNumber(
-          serviceRequest.tenant.user.phone_number,
-        ),
-        tenant_name: this.utilService.toSentenceCase(
-          serviceRequest.tenant.user.first_name,
-        ),
-        request_description: serviceRequest.description,
-        request_id: serviceRequest.request_id,
-      });
-
-      await this.cache.delete(`service_request_state_facility_${from}`);
-      return;
-    } else {
-      const user = await this.usersRepo.findOne({
-        where: {
-          phone_number: `${from}`,
-          accounts: { role: RolesEnum.FACILITY_MANAGER },
-        },
-        relations: ['accounts'],
-      });
-
-      if (!user) {
-        await this.sendToAgentWithTemplate(from);
-      } else {
-        await this.sendButtons(
-          from,
-          `Hello Manager ${this.utilService.toSentenceCase(
-            user.first_name,
-          )} Welcome to Property Kraft! What would you like to do today?`,
-          [
-            { id: 'service_request', title: 'Service Requests' },
-            { id: 'view_account_info', title: 'Account Info' },
-            { id: 'visit_site', title: 'Visit Website' },
-          ],
-        );
-      }
-    }
   }
 
-  async handleFacilityInteractive(message: any, from: string) {
-    // Handle both interactive button_reply and direct button formats
-    const buttonReply = message.interactive?.button_reply || message.button;
-    const buttonId = buttonReply?.id || buttonReply?.payload;
-
-    console.log('🔘 FM Button clicked:', {
-      messageType: message.type,
-      buttonReply,
-      buttonId,
-      from,
-    });
-
-    if (!buttonReply || !buttonId) {
-      console.log('❌ No button reply found in message');
-      return;
-    }
-
-    switch (buttonId) {
-      case 'view_all_service_requests':
-      case 'service_request': {
-        console.log('✅ Matched view_all_service_requests or service_request');
-        const teamMemberInfo = await this.teamMemberRepo.findOne({
-          where: {
-            account: { user: { phone_number: `${from}` } },
-          },
-          relations: ['team'],
-        });
-
-        if (!teamMemberInfo) {
-          await this.sendText(from, 'No team info available.');
-          return;
-        }
-
-        const serviceRequests = await this.serviceRequestRepo.find({
-          where: {
-            property: {
-              owner_id: teamMemberInfo.team.creatorId,
-            },
-            status: Not(ServiceRequestStatusEnum.CLOSED),
-          },
-          relations: ['tenant', 'tenant.user', 'property'],
-        });
-
-        if (!serviceRequests.length) {
-          await this.sendText(from, 'No service requests found.');
-          return;
-        }
-
-        let response = 'Here are all service requests:\n\n';
-        serviceRequests.forEach((req: any, i) => {
-          response += `${i + 1}. ${req.description} (${req.property.name})\n\n`;
-        });
-
-        response += 'Reply with a number to view details.';
-
-        await this.sendText(from, response);
-
-        await this.cache.set(
-          `service_request_state_facility_${from}`,
-          `view_request_list:${JSON.stringify(serviceRequests.map((r) => r.id))}`,
-          this.SESSION_TIMEOUT_MS,
-        );
-        break;
-      }
-
-      case 'view_account_info': {
-        const teamMemberAccountInfo = await this.teamMemberRepo.findOne({
-          where: {
-            account: { user: { phone_number: `${from}` } },
-          },
-          relations: ['account', 'account.user'],
-        });
-
-        if (!teamMemberAccountInfo) {
-          await this.sendText(from, 'No account info available.');
-          return;
-        }
-
-        await this.sendText(
-          from,
-          `Account Info for ${this.utilService.toSentenceCase(
-            teamMemberAccountInfo.account.profile_name,
-          )}:\n\n` +
-            `- Email: ${teamMemberAccountInfo.account.email}\n` +
-            `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
-            `- Role: ${this.utilService.toSentenceCase(
-              teamMemberAccountInfo.account.role,
-            )}`,
-        );
-
-        await this.sendText(
-          from,
-          'Type "menu" to see other options or "done" to finish.',
-        );
-        break;
-      }
-      case 'visit_site':
-        await this.sendText(
-          from,
-          'Visit our website: https://propertykraft.africa',
-        );
-        break;
-
-      case 'back_to_list':
-        await this.sendButtons(from, 'What would you like to do?', [
-          { id: 'service_request', title: 'View all requests' },
-          { id: 'view_account_info', title: 'View Account Info' },
-        ]);
-        await this.cache.delete(`service_request_state_facility_${from}`);
-        break;
-
-      default:
-        // Handle dynamic button IDs like "mark_resolved:requestId"
-        if (buttonId.startsWith('mark_resolved:')) {
-          const requestId = buttonId.split('mark_resolved:')[1];
-
-          const serviceRequest = await this.serviceRequestRepo.findOne({
-            where: { id: requestId },
-            relations: ['tenant', 'tenant.user', 'facilityManager'],
-          });
-
-          if (!serviceRequest) {
-            await this.sendText(from, "I couldn't find that request.");
-            await this.cache.delete(`service_request_state_facility_${from}`);
-            return;
-          }
-
-          if (serviceRequest.status === ServiceRequestStatusEnum.CLOSED) {
-            await this.sendText(from, 'This request has already been closed.');
-            await this.cache.delete(`service_request_state_facility_${from}`);
-            return;
-          }
-
-          // Get facility manager info
-          const facilityManager = await this.teamMemberRepo.findOne({
-            where: { account: { user: { phone_number: from } } },
-            relations: ['account', 'account.user'],
-          });
-
-          await this.serviceRequestService.updateStatus(
-            serviceRequest.id,
-            ServiceRequestStatusEnum.RESOLVED,
-            'Facility manager marked as resolved via WhatsApp',
-            {
-              id: facilityManager?.account?.user?.id || 'system',
-              role: 'facility_manager',
-              name:
-                facilityManager?.account?.profile_name || 'Facility Manager',
-            },
-          );
-
-          await this.sendText(
-            from,
-            "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
-          );
-
-          // Trigger Tenant Confirmation
-          console.log(
-            'Sending tenant confirmation to:',
-            serviceRequest.tenant.user.phone_number,
-          );
-          try {
-            await this.sendTenantConfirmationTemplate({
-              phone_number: this.utilService.normalizePhoneNumber(
-                serviceRequest.tenant.user.phone_number,
-              ),
-              tenant_name: this.utilService.toSentenceCase(
-                serviceRequest.tenant.user.first_name,
-              ),
-              request_description: serviceRequest.description,
-              request_id: serviceRequest.request_id,
-            });
-            console.log('Tenant confirmation sent successfully');
-          } catch (error) {
-            console.error('Failed to send tenant confirmation:', error);
-          }
-
-          await this.cache.delete(`service_request_state_facility_${from}`);
-          break;
-        }
-
-        await this.sendText(from, '❓ Unknown option selected.');
-    }
+  async sendToAgentWithTemplate(phone_number: string): Promise<void> {
+    return this.templateSenderService.sendToAgentWithTemplate(phone_number);
   }
 
-  // users
-  async handleText(message: any, from: string) {
-    const text = message.text?.body;
-
-    if (text?.toLowerCase() === 'start flow') {
-      void this.sendFlow(from); // Call the send flow logic
-    }
-
-    console.log('tenant sends:', text);
-
-    // Handle "switch role" command for multi-role users
-    if (
-      text?.toLowerCase() === 'switch role' ||
-      text?.toLowerCase() === 'switch'
-    ) {
-      await this.cache.delete(`selected_role_${from}`);
-      await this.sendText(
-        from,
-        'Role cleared. Send any message to select a new role.',
-      );
-      return;
-    }
-
-    if (text?.toLowerCase() === 'menu') {
-      await this.sendButtons(
-        from,
-        'Menu Options',
-        [
-          { id: 'service_request', title: 'Service request' },
-          { id: 'view_tenancy', title: 'View tenancy details' },
-          // {
-          //   id: 'view_notices_and_documents',
-          //   title: 'See notices and documents',
-          // },
-          { id: 'visit_site', title: 'Visit our website' },
-        ],
-        'Tap on any option to continue.',
-      );
-      return;
-    }
-
-    if (text.toLowerCase() === 'done') {
-      await this.cache.delete(`service_request_state_${from}`);
-      await this.sendText(from, 'Thank you!  Your session has ended.');
-      return;
-    }
-
-    //handle redis cache
-    void this.cachedResponse(from, text);
+  async sendToFacilityManagerWithTemplate(
+    params: FMTemplateParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendToFacilityManagerWithTemplate(params);
   }
 
+<<<<<<< HEAD
   async cachedResponse(from, text) {
     const userState = await this.cache.get(`service_request_state_${from}`);
 
@@ -1354,1418 +1237,319 @@ export class WhatsappBotService {
         );
       }
     }
+=======
+  async sendToPropertiesCreatedTemplate(
+    params: PropertyCreatedParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendToPropertiesCreatedTemplate(params);
+>>>>>>> dev
   }
 
-  async handleInteractive(message: any, from: string) {
-    const buttonReply = message.interactive?.button_reply || message.button;
-    const buttonId = buttonReply?.id || buttonReply?.payload;
-
-    if (!buttonReply) return;
-    console.log(buttonId, 'bID');
-
-    // Handle role selection buttons
-    if (buttonId === 'select_role_fm' || buttonId === 'select_role_landlord') {
-      const selectedRole =
-        buttonId === 'select_role_fm'
-          ? RolesEnum.FACILITY_MANAGER
-          : RolesEnum.LANDLORD;
-
-      console.log('✅ User selected role:', selectedRole);
-      console.log(
-        '💾 Storing in cache:',
-        `selected_role_${from}`,
-        '=',
-        selectedRole,
-      );
-
-      // Store selected role in cache (valid for 24 hours)
-      await this.cache.set(
-        `selected_role_${from}`,
-        selectedRole,
-        24 * 60 * 60 * 1000,
-      );
-
-      // Verify it was stored
-      const verify = await this.cache.get(`selected_role_${from}`);
-      console.log('✅ Verified cache storage:', verify);
-
-      // Route to appropriate handler based on selected role
-      if (selectedRole === RolesEnum.FACILITY_MANAGER) {
-        const user = await this.usersRepo.findOne({
-          where: { phone_number: from },
-          relations: ['accounts'],
-        });
-
-        await this.sendButtons(
-          from,
-          `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
-          [
-            { id: 'service_request', title: 'Service Requests' },
-            { id: 'view_account_info', title: 'Account Info' },
-            { id: 'visit_site', title: 'Visit Website' },
-          ],
-        );
-      } else {
-        const user = await this.usersRepo.findOne({
-          where: { phone_number: from },
-          relations: ['accounts'],
-        });
-
-        await this.sendButtons(
-          from,
-          `Hello ${this.utilService.toSentenceCase(user?.first_name || '')}, What do you want to do today?`,
-          [
-            { id: 'view_properties', title: 'View properties' },
-            { id: 'view_maintenance', title: 'Maintenance requests' },
-            { id: 'generate_kyc_link', title: 'Generate KYC link' },
-          ],
-        );
-      }
-      return;
-    }
-
-    // Handle button IDs with payloads (e.g., "confirm_resolution_yes:request_id")
-    let cleanButtonId = buttonId;
-    if (buttonId?.includes(':')) {
-      const [action] = buttonId.split(':');
-      if (
-        action === 'confirm_resolution_yes' ||
-        action === 'confirm_resolution_no'
-      ) {
-        // Route to the appropriate case by using the action part
-        cleanButtonId = action;
-      }
-    }
-
-    switch (cleanButtonId) {
-      case 'visit_site':
-        await this.sendText(
-          from,
-          'Visit our website: https://propertykraft.africa',
-        );
-        break;
-
-      case 'view_tenancy': {
-        // FIXED: Use multi-format phone lookup
-        const normalizedPhoneViewTenancy =
-          this.utilService.normalizePhoneNumber(from);
-        const localPhoneViewTenancy = from.startsWith('234')
-          ? '0' + from.slice(3)
-          : from;
-
-        const user = await this.usersRepo.findOne({
-          where: [
-            { phone_number: from, accounts: { role: RolesEnum.TENANT } },
-            {
-              phone_number: normalizedPhoneViewTenancy,
-              accounts: { role: RolesEnum.TENANT },
-            },
-            {
-              phone_number: localPhoneViewTenancy,
-              accounts: { role: RolesEnum.TENANT },
-            },
-          ],
-          relations: ['accounts'],
-        });
-
-        if (!user?.accounts?.length) {
-          await this.sendText(from, 'No tenancy info available.');
-          return;
-        }
-
-        const accountId = user.accounts[0].id;
-        console.log('🏠 Looking for properties for account:', accountId);
-
-        const properties = await this.propertyTenantRepo.find({
-          where: { tenant_id: accountId },
-          relations: ['property', 'property.rents'],
-        });
-
-        console.log('🏠 Properties found:', {
-          count: properties?.length || 0,
-          properties: properties?.map((pt) => ({
-            id: pt.id,
-            propertyId: pt.property_id,
-            propertyName: pt.property?.name,
-            status: pt.status,
-            rentsCount: pt.property?.rents?.length || 0,
-          })),
-        });
-
-        if (!properties?.length) {
-          console.log('⚠️ No properties found for tenant account:', accountId);
-          console.log(
-            '   This means no property_tenants record exists for this account.',
-          );
-          console.log(
-            '   Tenant may not have been properly attached to a property.',
-          );
-          await this.sendText(from, 'No properties found.');
-          return;
-        }
-
-        for (const item of properties) {
-          const rent = item.property.rents[0];
-          const startDate = new Date(rent.rent_start_date).toLocaleDateString(
-            'en-GB',
-            {
-              day: '2-digit',
-              month: 'short',
-              year: 'numeric',
-            },
-          );
-          const endDate = new Date(rent.expiry_date).toLocaleDateString(
-            'en-GB',
-            {
-              day: '2-digit',
-              month: 'short',
-              year: 'numeric',
-            },
-          );
-
-          await this.sendText(
-            from,
-            `Here are your tenancy details for ${item.property.name}:\n• Rent: ${rent.rental_price.toLocaleString(
-              'en-NG',
-              {
-                style: 'currency',
-                currency: 'NGN',
-              },
-            )}\n• Tenancy term: ${startDate} to ${endDate}`,
-          );
-
-          await this.cache.set(
-            `service_request_state_${from}`,
-            'other_options',
-            this.SESSION_TIMEOUT_MS, // now in ms,
-          );
-        }
-
-        await this.sendText(
-          from,
-          'Type "menu" to see other options or "done" to finish.',
-        );
-        break;
-      }
-
-      case 'service_request':
-        await this.sendButtons(from, 'What would you like to do?', [
-          {
-            id: 'new_service_request',
-            title: 'Request a service',
-          },
-          {
-            id: 'view_service_request',
-            title: 'View all requests',
-          },
-        ]);
-        break;
-
-      case 'view_service_request': {
-        // FIXED: Use multi-format phone lookup
-        const normalizedPhoneViewService =
-          this.utilService.normalizePhoneNumber(from);
-        const localPhoneViewService = from.startsWith('234')
-          ? '0' + from.slice(3)
-          : from;
-
-        const serviceRequests = await this.serviceRequestRepo.find({
-          where: [
-            {
-              tenant: { user: { phone_number: from } },
-              status: Not(ServiceRequestStatusEnum.CLOSED),
-            },
-            {
-              tenant: { user: { phone_number: normalizedPhoneViewService } },
-              status: Not(ServiceRequestStatusEnum.CLOSED),
-            },
-            {
-              tenant: { user: { phone_number: localPhoneViewService } },
-              status: Not(ServiceRequestStatusEnum.CLOSED),
-            },
-          ],
-          relations: ['tenant'],
-          order: { created_at: 'DESC' },
-        });
-
-        if (!serviceRequests.length) {
-          await this.sendText(from, "You don't have any service requests yet.");
-          return;
-        }
-
-        let response = 'Here are your recent service requests:\n\n';
-        serviceRequests.forEach((req: any) => {
-          const date = new Date(req.created_at);
-          const formattedDate = date.toLocaleDateString('en-GB', {
-            day: '2-digit',
-            month: 'short',
-            year: 'numeric',
-          });
-          const formattedTime = date.toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: true,
-          });
-          response += `• ${formattedDate}, ${formattedTime} – ${req.description}\n\n`;
-        });
-
-        await this.sendText(from, response);
-
-        // Send navigation options after viewing requests
-        await this.sendButtons(from, 'Want to do something else?', [
-          { id: 'new_service_request', title: 'Request a service' },
-          { id: 'main_menu', title: 'Go back to main menu' },
-        ]);
-        break;
-      }
-
-      case 'new_service_request': {
-        // Check if tenant has multiple properties
-        const normalizedPhoneNewRequest =
-          this.utilService.normalizePhoneNumber(from);
-        const localPhoneNewRequest = from.startsWith('234')
-          ? '0' + from.slice(3)
-          : from;
-
-        const userNewRequest = await this.usersRepo.findOne({
-          where: [
-            { phone_number: from, accounts: { role: RolesEnum.TENANT } },
-            {
-              phone_number: normalizedPhoneNewRequest,
-              accounts: { role: RolesEnum.TENANT },
-            },
-            {
-              phone_number: localPhoneNewRequest,
-              accounts: { role: RolesEnum.TENANT },
-            },
-          ],
-          relations: ['accounts'],
-        });
-
-        if (!userNewRequest?.accounts?.length) {
-          await this.sendText(from, 'No tenancy info available.');
-          return;
-        }
-
-        const accountId = userNewRequest.accounts[0].id;
-        const properties = await this.propertyTenantRepo.find({
-          where: {
-            tenant_id: accountId,
-            status: TenantStatusEnum.ACTIVE,
-          },
-          relations: ['property'],
-        });
-
-        if (!properties?.length) {
-          await this.sendText(
-            from,
-            'No active properties found for your account.',
-          );
-          return;
-        }
-
-        // If tenant has multiple properties, ask them to select
-        if (properties.length > 1) {
-          let propertyList = 'Which property is this request for?\n\n';
-          properties.forEach((pt, index) => {
-            propertyList += `${index + 1}. ${pt.property.name}\n`;
-          });
-          propertyList += '\nReply with the number of the property.';
-
-          await this.sendText(from, propertyList);
-
-          // Store property IDs in cache
-          await this.cache.set(
-            `service_request_state_${from}`,
-            `select_property:${JSON.stringify(properties.map((p) => p.property_id))}`,
-            this.SESSION_TIMEOUT_MS,
-          );
-        } else {
-          // Single property - proceed directly to description
-          await this.cache.set(
-            `service_request_state_${from}`,
-            `awaiting_description:${properties[0].property_id}`,
-            this.SESSION_TIMEOUT_MS,
-          );
-          await this.sendText(
-            from,
-            'Sure! Please tell me what needs to be fixed.',
-          );
-        }
-        break;
-      }
-
-      case 'main_menu': {
-        // Clear any cached state and return to main menu
-        await this.cache.delete(`service_request_state_${from}`);
-
-        // FIXED: Use multi-format phone lookup
-        const normalizedPhoneMainMenu =
-          this.utilService.normalizePhoneNumber(from);
-        const localPhoneMainMenu = from.startsWith('234')
-          ? '0' + from.slice(3)
-          : from;
-
-        const userMainMenu = await this.usersRepo.findOne({
-          where: [
-            { phone_number: from, accounts: { role: RolesEnum.TENANT } },
-            {
-              phone_number: normalizedPhoneMainMenu,
-              accounts: { role: RolesEnum.TENANT },
-            },
-            {
-              phone_number: localPhoneMainMenu,
-              accounts: { role: RolesEnum.TENANT },
-            },
-          ],
-          relations: ['accounts'],
-        });
-
-        if (!userMainMenu) {
-          await this.sendToAgentWithTemplate(from);
-        } else {
-          await this.sendButtons(
-            from,
-            `Hello ${this.utilService.toSentenceCase(userMainMenu.first_name)} What would you like to do?`,
-            [
-              { id: 'service_request', title: 'Service request' },
-              { id: 'view_tenancy', title: 'View tenancy details' },
-              { id: 'visit_site', title: 'Visit our website' },
-            ],
-          );
-        }
-        break;
-      }
-
-      case 'confirm_resolution_yes': {
-        // Handle Yes, it's fixed
-        // We need to find the request associated with this interaction.
-        // Since buttons don't carry payload in standard interactive messages easily without context,
-        // we might need to rely on the last resolved request or parse context if available.
-        // However, for simplicity and robustness, we can try to find the latest RESOLVED request for this tenant.
-
-        const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-        const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
-
-        const latestResolvedRequest = await this.serviceRequestRepo.findOne({
-          where: [
-            {
-              tenant: { user: { phone_number: from } },
-              status: ServiceRequestStatusEnum.RESOLVED,
-            },
-            {
-              tenant: { user: { phone_number: normalizedPhone } },
-              status: ServiceRequestStatusEnum.RESOLVED,
-            },
-            {
-              tenant: { user: { phone_number: localPhone } },
-              status: ServiceRequestStatusEnum.RESOLVED,
-            },
-          ],
-          relations: [
-            'tenant',
-            'tenant.user',
-            'facilityManager',
-            'facilityManager.account',
-            'facilityManager.account.user',
-            'property',
-          ],
-          order: { resolution_date: 'DESC' },
-        });
-
-        if (latestResolvedRequest) {
-          await this.serviceRequestService.updateStatus(
-            latestResolvedRequest.id,
-            ServiceRequestStatusEnum.CLOSED,
-            'Tenant confirmed issue is fully resolved via WhatsApp',
-            {
-              id: latestResolvedRequest.tenant.user.id,
-              role: 'tenant',
-              name: `${latestResolvedRequest.tenant.user.first_name} ${latestResolvedRequest.tenant.user.last_name}`,
-            },
-          );
-
-          await this.sendText(from, "Fantastic! Glad that's sorted 😊");
-
-          // Notify FM and Landlord
-          if (
-            latestResolvedRequest.facilityManager?.account?.user?.phone_number
-          ) {
-            await this.sendText(
-              this.utilService.normalizePhoneNumber(
-                latestResolvedRequest.facilityManager.account.user.phone_number,
-              ),
-              `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`,
-            );
-          }
-
-          // Notify landlord
-          const property_tenant = await this.propertyTenantRepo.findOne({
-            where: {
-              property_id: latestResolvedRequest.property_id,
-            },
-            relations: ['property', 'property.owner', 'property.owner.user'],
-          });
-
-          if (property_tenant?.property?.owner?.user?.phone_number) {
-            await this.sendText(
-              this.utilService.normalizePhoneNumber(
-                property_tenant.property.owner.user.phone_number,
-              ),
-              `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`,
-            );
-          }
-        } else {
-          await this.sendText(
-            from,
-            "I couldn't find a pending resolution to confirm.",
-          );
-        }
-        break;
-      }
-
-      case 'confirm_resolution_no': {
-        // Handle No, not yet
-        const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-        const localPhone = from.startsWith('234') ? '0' + from.slice(3) : from;
-
-        const latestResolvedRequest = await this.serviceRequestRepo.findOne({
-          where: [
-            {
-              tenant: { user: { phone_number: from } },
-              status: ServiceRequestStatusEnum.RESOLVED,
-            },
-            {
-              tenant: { user: { phone_number: normalizedPhone } },
-              status: ServiceRequestStatusEnum.RESOLVED,
-            },
-            {
-              tenant: { user: { phone_number: localPhone } },
-              status: ServiceRequestStatusEnum.RESOLVED,
-            },
-          ],
-          relations: [
-            'tenant',
-            'tenant.user',
-            'facilityManager',
-            'facilityManager.account',
-            'facilityManager.account.user',
-            'property',
-          ],
-          order: { resolution_date: 'DESC' },
-        });
-
-        if (latestResolvedRequest) {
-          await this.serviceRequestService.updateStatus(
-            latestResolvedRequest.id,
-            ServiceRequestStatusEnum.REOPENED,
-            'Tenant reported issue is not fully resolved via WhatsApp',
-            {
-              id: latestResolvedRequest.tenant.user.id,
-              role: 'tenant',
-              name: `${latestResolvedRequest.tenant.user.first_name} ${latestResolvedRequest.tenant.user.last_name}`,
-            },
-          );
-
-          await this.sendText(
-            from,
-            "Thanks for letting me know. I'll reopen the request and notify maintenance to check again.",
-          );
-
-          // Notify FM and Landlord
-          if (
-            latestResolvedRequest.facilityManager?.account?.user?.phone_number
-          ) {
-            await this.sendText(
-              this.utilService.normalizePhoneNumber(
-                latestResolvedRequest.facilityManager.account.user.phone_number,
-              ),
-              `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`,
-            );
-          }
-
-          // Notify landlord
-          const property_tenant = await this.propertyTenantRepo.findOne({
-            where: {
-              property_id: latestResolvedRequest.property_id,
-            },
-            relations: ['property', 'property.owner', 'property.owner.user'],
-          });
-
-          if (property_tenant?.property?.owner?.user?.phone_number) {
-            await this.sendText(
-              this.utilService.normalizePhoneNumber(
-                property_tenant.property.owner.user.phone_number,
-              ),
-              `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`,
-            );
-          }
-        } else {
-          await this.sendText(
-            from,
-            "I couldn't find a pending resolution to confirm.",
-          );
-        }
-        break;
-      }
-
-      default:
-        await this.sendText(from, '❓ Unknown option selected.');
-    }
+  async sendUserAddedTemplate(params: UserAddedParams): Promise<void> {
+    return this.templateSenderService.sendUserAddedTemplate(params);
   }
 
-  async sendWhatsappMessageWithTemplate({
-    phone_number,
-    template_name,
-    template_language = 'en',
-    template_parameters = [],
-  }: {
-    phone_number: string;
-    template_name: string;
-    template_language?: string;
-    template_parameters?: Array<{
-      type: 'text';
-      text: string;
-      parameter_name?: string;
-    }>;
-  }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: template_name,
-        language: { code: template_language },
-        components: [
-          {
-            type: 'body',
-            parameters: template_parameters,
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendTenantWelcomeTemplate(params: TenantWelcomeParams): Promise<void> {
+    return this.templateSenderService.sendTenantWelcomeTemplate(params);
   }
 
-  async sendToUserWithTemplate(phone_number: string, customer_name: string) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'main_menu',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                parameter_name: 'name',
-                text: customer_name,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  async sendToAgentWithTemplate(phone_number) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'agent_welcome',
-        language: {
-          code: 'en',
-        },
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-  async sendToFacilityManagerWithTemplate({ phone_number, name, team, role }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'facility_manager', // Your template name
-        language: {
-          code: 'en', // must match the language you set in WhatsApp template
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                parameter_name: 'name',
-                text: name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'team',
-                text: team,
-              },
-              {
-                type: 'text',
-                parameter_name: 'role',
-                text: role,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  async sendToPropertiesCreatedTemplate({ phone_number, name, property_name }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'properties_created', // Your template name
-        language: {
-          code: 'en', // must match the language you set in WhatsApp template
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                parameter_name: 'name',
-                text: name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'property_name',
-                text: property_name,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  async sendUserAddedTemplate({ phone_number, name, user, property_name }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'user_added', // Your template name
-        language: {
-          code: 'en', // must match the language you set in WhatsApp template
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                parameter_name: 'name',
-                text: name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'user',
-                text: user,
-              },
-              {
-                type: 'text',
-                parameter_name: 'property_name',
-                text: property_name,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  async sendTenantWelcomeTemplate({
-    phone_number,
-    tenant_name,
-    landlord_name,
-    apartment_name,
-  }: {
-    phone_number: string;
-    tenant_name: string;
-    landlord_name: string;
-    apartment_name?: string;
-  }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'tenant_welcome', // Your template name
-        language: {
-          code: 'en', // must match the language you set in WhatsApp template
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                parameter_name: 'tenant_name',
-                text: tenant_name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'landlord_name',
-                text: landlord_name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'apartment_name',
-                text: apartment_name || 'your property',
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  async sendTenantConfirmationTemplate({
-    phone_number,
-    tenant_name,
-    request_description,
-    request_id,
-  }: {
-    phone_number: string;
-    tenant_name: string;
-    request_description: string;
-    request_id: string;
-  }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'service_request_confirmation', // Template name
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                parameter_name: 'tenant_name',
-                text: tenant_name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'request_description',
-                text: request_description,
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'quick_reply',
-            index: 0,
-            parameters: [
-              {
-                type: 'payload',
-                payload: `confirm_resolution_yes:${request_id}`,
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'quick_reply',
-            index: 1,
-            parameters: [
-              {
-                type: 'payload',
-                payload: `confirm_resolution_no:${request_id}`,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendTenantConfirmationTemplate(
+    params: TenantConfirmationParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendTenantConfirmationTemplate(params);
   }
 
   /**
    * Send tenant attachment confirmation via WhatsApp
-   * Notifies tenant when they've been successfully attached to a property
-   * Uses existing 'tenant_welcome' template
+   * Delegates to TemplateSenderService
    */
-  async sendTenantAttachmentNotification({
-    phone_number,
-    tenant_name,
-    landlord_name,
-    apartment_name,
-  }: {
-    phone_number: string;
-    tenant_name: string;
-    landlord_name: string;
-    apartment_name: string;
-  }) {
-    // Use the existing tenant welcome template
-    await this.sendTenantWelcomeTemplate({
-      phone_number,
-      tenant_name,
-      landlord_name,
-      apartment_name,
-    });
+  async sendTenantAttachmentNotification(
+    params: TenantAttachmentParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendTenantAttachmentNotification(params);
   }
 
   /**
    * Send KYC application notification to landlord via WhatsApp
-   * Notifies landlord when a tenant submits a KYC application
-   * Uses 'tenant_application_notification' template with one URL button:
-   * - View Application - Opens application details page with download option
-   *
-   * Template body: "{{1}}, a KYC application was submitted by {{2}} for the property {{3}}. Use the link below to view the application."
-   * Variables:
-   * {{1}} = landlord_name
-   * {{2}} = tenant_name
-   * {{3}} = property_name
+   * Delegates to TemplateSenderService
    */
-  async sendKYCApplicationNotification({
-    phone_number,
-    landlord_name,
-    tenant_name,
-    property_name,
-    application_id,
-    frontend_url,
-  }: {
-    phone_number: string;
-    landlord_name: string;
-    tenant_name: string;
-    property_name: string;
-    application_id: string;
-    frontend_url: string;
-  }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'tenant_application_notification',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: landlord_name, // {{1}}
-              },
-              {
-                type: 'text',
-                text: tenant_name, // {{2}}
-              },
-              {
-                type: 'text',
-                text: property_name, // {{3}}
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'url',
-            index: '0',
-            parameters: [
-              {
-                type: 'text',
-                text: application_id, // {{1}} in button URL
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendKYCApplicationNotification(
+    params: KYCApplicationNotificationParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendKYCApplicationNotification(params);
   }
 
   /**
    * Send KYC submission confirmation to tenant via WhatsApp
-   * Notifies tenant when they successfully submit a KYC application
-   * Uses 'kyc_submission_confirmation' template
-   *
-   * Template body: "Hello {{1}}, Your KYC form has been submitted. Your landlord is reviewing your details, and we'll keep you updated."
-   * Variables:
-   * {{1}} = tenant_name
-   *
-   * NOTE: You need to create this template in your WhatsApp Business Manager with the name 'kyc_submission_confirmation'
+   * Delegates to TemplateSenderService
    */
-  async sendKYCSubmissionConfirmation({
-    phone_number,
-    tenant_name,
-  }: {
-    phone_number: string;
-    tenant_name: string;
-  }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'kyc_submission_confirmation',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: tenant_name, // {{1}}
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendKYCSubmissionConfirmation(
+    params: KYCSubmissionConfirmationParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendKYCSubmissionConfirmation(params);
   }
 
-  async sendFacilityServiceRequest({
-    phone_number,
-    manager_name,
-    property_name,
-    property_location,
-    service_request,
-    tenant_name,
-    tenant_phone_number,
-    date_created,
-    is_landlord = false,
-  }: {
-    phone_number: string;
-    manager_name: string;
-    property_name: string;
-    property_location: string;
-    service_request: string;
-    tenant_name: string;
-    tenant_phone_number: string;
-    date_created: string;
-    is_landlord?: boolean;
-  }) {
-    // For landlords, use template with URL button for direct redirect
-    if (is_landlord) {
-      const payload = {
-        messaging_product: 'whatsapp',
-        to: phone_number,
-        type: 'template',
-        template: {
-          name: 'landlord_service_request_notification',
-          language: {
-            code: 'en',
-          },
-          components: [
-            {
-              type: 'body',
-              parameters: [
-                {
-                  type: 'text',
-                  text: tenant_name, // {{1}}
-                },
-                {
-                  type: 'text',
-                  text: property_name, // {{2}}
-                },
-                {
-                  type: 'text',
-                  text: service_request, // {{3}}
-                },
-                {
-                  type: 'text',
-                  text: date_created, // {{4}}
-                },
-              ],
-            },
-          ],
-        },
-      };
+  /**
+   * Send KYC application notification to referral agent via WhatsApp
+   * Delegates to TemplateSenderService
+   */
+  async sendAgentKYCNotification(
+    params: AgentKYCNotificationParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendAgentKYCNotification(params);
+  }
 
-      await this.sendToWhatsappAPI(payload);
-      return;
-    }
-
-    // For facility managers, use the template with quick reply button
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'fm_service_request_notification', // Template name
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: tenant_name, // {{1}}
-              },
-              {
-                type: 'text',
-                text: property_name, // {{2}}
-              },
-              {
-                type: 'text',
-                text: service_request, // {{3}}
-              },
-              {
-                type: 'text',
-                text: date_created, // {{4}}
-              },
-              {
-                type: 'text',
-                text: tenant_phone_number, // {{5}} - Tenant phone number
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'quick_reply',
-            index: 0,
-            parameters: [
-              {
-                type: 'payload',
-                payload: 'view_all_service_requests',
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendFacilityServiceRequest(
+    params: FacilityServiceRequestParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendFacilityServiceRequest(params);
   }
 
   /**
    * Send KYC completion link to existing tenant via WhatsApp
-   * Notifies tenant when landlord creates property with existing tenant
-   * Uses 'kyc_completion_link' template with one URL button:
-   * - Complete KYC - Opens KYC form with pre-filled data
-   *
-   * Template body: "Hello {{1}}, {{2}} has added you as a tenant for {{3}}. Please complete your KYC information using the link below."
-   * Variables:
-   * {{1}} = tenant_name
-   * {{2}} = landlord_name
-   * {{3}} = property_name
-   *
-   * Button URL: {{frontend_url}}/kyc/{{kyc_link_id}}
+   * Delegates to TemplateSenderService
    */
-  async sendKYCCompletionLink({
-    phone_number,
-    tenant_name,
-    landlord_name,
-    property_name,
-    kyc_link_id,
-  }: {
-    phone_number: string;
-    tenant_name: string;
-    landlord_name: string;
-    property_name: string;
-    kyc_link_id: string;
-  }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'kyc_completion_link',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: tenant_name, // {{1}}
-              },
-              {
-                type: 'text',
-                text: landlord_name, // {{2}}
-              },
-              {
-                type: 'text',
-                text: property_name, // {{3}}
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'url',
-            index: '0',
-            parameters: [
-              {
-                type: 'text',
-                text: kyc_link_id, // Dynamic part of URL
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendKYCCompletionLink(params: KYCCompletionLinkParams): Promise<void> {
+    return this.templateSenderService.sendKYCCompletionLink(params);
   }
 
   /**
    * Send KYC completion notification to landlord via WhatsApp
-   * Notifies landlord when tenant completes their pending KYC
-   * Uses 'kyc_completion_notification' template with one URL button:
-   * - View Tenant Details - Opens tenant detail page
-   *
-   * Template body: "Hello {{1}}, {{2}} has completed their KYC information for {{3}}. You can now view their full tenant details."
-   * Variables:
-   * {{1}} = landlord_name
-   * {{2}} = tenant_name
-   * {{3}} = property_name
-   *
-   * Button URL: https://www.lizt.co/landlord/tenant-detail?tenantId={{tenant_id}}
+   * Delegates to TemplateSenderService
    */
-  async sendKYCCompletionNotification({
-    phone_number,
-    landlord_name,
-    tenant_name,
-    property_name,
-    tenant_id,
-  }: {
-    phone_number: string;
-    landlord_name: string;
-    tenant_name: string;
-    property_name: string;
-    tenant_id: string;
-  }) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'kyc_completion_notification',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: landlord_name, // {{1}}
-              },
-              {
-                type: 'text',
-                text: tenant_name, // {{2}}
-              },
-              {
-                type: 'text',
-                text: property_name, // {{3}}
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'url',
-            index: '0',
-            parameters: [
-              {
-                type: 'text',
-                text: tenant_id, // Dynamic part of URL (tenantId query parameter)
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendKYCCompletionNotification(
+    params: KYCCompletionNotificationParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendKYCCompletionNotification(params);
   }
 
-  async sendText(to: string, text: string) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'text',
-      text: {
-        preview_url: false,
-        body: text,
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendText(to: string, text: string): Promise<void> {
+    return this.templateSenderService.sendText(to, text);
   }
 
   async sendButtons(
     to: string,
     text: string = 'Hello, welcome to Property Kraft',
-    buttons: { id: string; title: string }[],
+    buttons: ButtonDefinition[],
     footer?: string,
-  ) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'button',
-        body: { text },
-        ...(footer && { footer: { text: footer } }),
-        action: {
-          buttons: buttons.map((btn) => ({
-            type: 'reply',
-            reply: {
-              id: btn.id,
-              title: btn.title,
-            },
-          })),
-        },
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  ): Promise<void> {
+    return this.templateSenderService.sendButtons(to, text, buttons, footer);
   }
 
   /**
-   * Send landlord main menu with URL buttons (requires approved template)
-   * Template name: landlord_main_menu
-   * This uses a WhatsApp template with URL buttons that redirect directly
+   * Send landlord main menu with URL buttons
+   * Delegates to TemplateSenderService
    */
-  async sendLandlordMainMenu(to: string, landlordName: string) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'template',
-      template: {
-        name: 'landlord_main_menu',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: landlordName,
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'quick_reply',
-            index: 2, // Third button (Generate KYC Link)
-            parameters: [
-              {
-                type: 'payload',
-                payload: 'generate_kyc_link',
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendLandlordMainMenu(to: string, landlordName: string): Promise<void> {
+    return this.templateSenderService.sendLandlordMainMenu(to, landlordName);
   }
 
-  async sendFlow(recipientNumber: string) {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: recipientNumber,
-      type: 'interactive',
-      interactive: {
-        type: 'flow',
-        body: {
-          text: 'Please fill out this form:',
-        },
-        footer: {
-          text: 'Powered by WhatsApp Flows',
-        },
-        action: {
-          name: 'flow',
-          parameters: {
-            flow_id: '1435187147817037', // your flow_id
-            flow_action: 'navigate',
-            flow_message_version: '3',
-            flow_cta: 'Not shown in draft mode',
-            mode: 'draft',
-            // flow_token: 'optional_prefill_token', // optional
-            // flow_navigation: {
-            //   screen: 'SERVICE_REQUEST', // start screen
-            // },
-          },
-        },
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
+  async sendFlow(recipientNumber: string): Promise<void> {
+    return this.templateSenderService.sendFlow(recipientNumber);
   }
 
-  async sendToWhatsappAPI(payload: object) {
-    try {
-      const phoneNumberId = this.config.get('WA_PHONE_NUMBER_ID');
-      if (!phoneNumberId) {
-        throw new Error('WhatsApp phone number ID is not configured.');
-      }
-      const response = await fetch(
-        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.config.get('CLOUD_API_ACCESS_TOKEN')}`,
-          },
-          body: JSON.stringify(payload),
-        },
-      );
+  /**
+   * Core method to send messages to WhatsApp API
+   * Delegates to TemplateSenderService
+   */
+  async sendToWhatsappAPI(payload: object): Promise<unknown> {
+    return this.templateSenderService.sendToWhatsappAPI(payload as any);
+  }
 
-      const data = await response.json();
-      console.log('Response from WhatsApp API:', data);
-      console.log('Response status:', response.status);
-
-      if (!response.ok) {
-        console.error('WhatsApp API Error:', data);
-        throw new Error(`WhatsApp API Error: ${JSON.stringify(data)}`);
-      }
-
-      return data;
-    } catch (error) {
-      console.error('Error sending to WhatsApp API:', error);
-      throw error;
+  /**
+   * Helper method to extract content from incoming messages
+   */
+  private extractMessageContent(message: any): string {
+    if (message.text?.body) {
+      return message.text.body;
     }
+    if (message.interactive?.button_reply?.title) {
+      return `Button: ${message.interactive.button_reply.title}`;
+    }
+    if (message.interactive?.list_reply?.title) {
+      return `List: ${message.interactive.list_reply.title}`;
+    }
+    if (message.button?.text) {
+      return `Button: ${message.button.text}`;
+    }
+    if (message.image) {
+      return `Image message (ID: ${message.image.id || 'unknown'})`;
+    }
+    if (message.document) {
+      return `Document: ${message.document.filename || 'unknown'}`;
+    }
+    if (message.audio) {
+      return `Audio message (ID: ${message.audio.id || 'unknown'})`;
+    }
+    if (message.video) {
+      return `Video message (ID: ${message.video.id || 'unknown'})`;
+    }
+    if (message.location) {
+      return `Location: ${message.location.latitude}, ${message.location.longitude}`;
+    }
+    return 'Unknown message content';
+  }
+
+  /**
+   * Check if an incoming message is from the simulator
+   * Requirements: 7.1 - Update inbound message logging to handle simulator messages
+   */
+  private isSimulatorMessage(message: any): boolean {
+    return message.is_simulated === true;
+  }
+
+  /**
+   * Validates the WHATSAPP_SIMULATOR environment variable
+   * Requirements: 6.1, 6.2
+   */
+  private validateSimulationMode(simulatorValue: string | undefined): boolean {
+    console.log('🔍 Validating simulation mode configuration:', {
+      rawValue: simulatorValue,
+      type: typeof simulatorValue,
+    });
+
+    if (simulatorValue === undefined || simulatorValue === null) {
+      console.log('✅ Simulation mode disabled (undefined/null)');
+      return false;
+    }
+
+    const normalizedValue = simulatorValue.toString().toLowerCase().trim();
+    console.log('🔄 Normalized value:', normalizedValue);
+
+    if (normalizedValue === 'true') {
+      console.log(
+        '⚠️ WARNING: Simulation mode is ENABLED - no real WhatsApp messages will be sent',
+      );
+      return true;
+    }
+
+    if (normalizedValue === 'false' || normalizedValue === '') {
+      console.log('✅ Simulation mode disabled (false/empty)');
+      return false;
+    }
+
+    console.warn(
+      '⚠️ Invalid WHATSAPP_SIMULATOR value:',
+      simulatorValue,
+      'treating as disabled',
+    );
+    return false;
+  }
+
+  /**
+   * Validate and log simulation mode configuration
+   * Requirements: 6.1, 6.2
+   */
+  private async validateAndLogSimulationMode(): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    this.logger.log('📋 Configuration Status:');
+    this.logger.log(`   WHATSAPP_SIMULATOR: ${simulatorMode || 'undefined'}`);
+    this.logger.log(`   Simulation Mode Active: ${isSimulationMode}`);
+
+    if (isSimulationMode) {
+      this.logger.warn('⚠️  WARNING: SIMULATION MODE IS ENABLED');
+      this.logger.warn(
+        '⚠️  No real WhatsApp messages will be sent to WhatsApp Cloud API',
+      );
+      this.logger.warn(
+        '⚠️  All outbound messages will be intercepted and routed to simulator',
+      );
+      this.logger.warn(
+        '⚠️  This should only be used in development/testing environments',
+      );
+    } else {
+      this.logger.log(
+        '✅ Production mode active - messages will be sent to WhatsApp Cloud API',
+      );
+    }
+  }
+
+  /**
+   * Validate simulator dependencies when simulation mode is active
+   * Requirements: 6.3
+   */
+  private async validateSimulatorDependencies(): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    if (!isSimulationMode) {
+      return; // Skip validation if not in simulation mode
+    }
+
+    this.logger.log('🔍 Validating simulator dependencies...');
+
+    // Check if EventEmitter2 is available (required for WebSocket communication)
+    if (!this.eventEmitter) {
+      throw new Error(
+        'EventEmitter2 is required for simulation mode but not available',
+      );
+    }
+
+    // Check if ChatLogService is available (required for message logging)
+    if (!this.chatLogService) {
+      throw new Error(
+        'ChatLogService is required for simulation mode but not available',
+      );
+    }
+
+    // Validate that WebSocket gateway dependencies are available
+    // Note: We can't directly check the gateway here, but we can verify the event emitter works
+    try {
+      // Test event emission capability
+      this.eventEmitter.emit('whatsapp.test', { test: true });
+      this.logger.log('✅ Event emitter is working correctly');
+    } catch (error) {
+      throw new Error(`Event emitter validation failed: ${error.message}`);
+    }
+
+    this.logger.log('✅ All simulator dependencies validated successfully');
+  }
+
+  /**
+   * Validate production dependencies when not in simulation mode
+   * Requirements: 6.4
+   */
+  private async validateProductionDependencies(): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    if (isSimulationMode) {
+      return; // Skip validation if in simulation mode
+    }
+
+    this.logger.log('🔍 Validating production dependencies...');
+
+    const phoneNumberId = this.config.get('WA_PHONE_NUMBER_ID');
+    const accessToken = this.config.get('CLOUD_API_ACCESS_TOKEN');
+
+    const errors: string[] = [];
+
+    if (!phoneNumberId) {
+      errors.push(
+        'WA_PHONE_NUMBER_ID environment variable is required for production mode',
+      );
+    }
+
+    if (!accessToken) {
+      errors.push(
+        'CLOUD_API_ACCESS_TOKEN environment variable is required for production mode',
+      );
+    }
+
+    if (errors.length > 0) {
+      const errorMessage = `Production configuration validation failed:\n${errors.map((err) => `  - ${err}`).join('\n')}`;
+      this.logger.error('❌ ' + errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    this.logger.log('✅ All production dependencies validated successfully');
+    this.logger.log(
+      `   Phone Number ID: ${phoneNumberId ? '***configured***' : 'missing'}`,
+    );
+    this.logger.log(
+      `   Access Token: ${accessToken ? '***configured***' : 'missing'}`,
+    );
   }
 }

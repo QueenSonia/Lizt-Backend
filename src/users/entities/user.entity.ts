@@ -150,8 +150,10 @@ export class Users extends BaseEntity {
     contactInfo?: string;
     footerColor?: string;
     letterhead?: string;
+    signature?: string;
     headingFont?: string;
     bodyFont?: string;
+    updatedAt?: string;
   };
 
   @OneToMany(() => Account, (account) => account.user)

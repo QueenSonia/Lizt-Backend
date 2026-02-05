@@ -70,13 +70,13 @@ export class SyncTenantDataService {
               occupation: account.user.job_title || '——',
               job_title: account.user.job_title || '——',
               employer_name: account.user.employer_name || '',
-              employer_address: account.user.employer_address || '',
+              work_address: account.user.employer_address || '',
               monthly_net_income:
                 account.user.monthly_income?.toString() || '0',
-              reference1_name: '',
-              reference1_address: '',
-              reference1_relationship: '',
-              reference1_phone_number: '',
+              next_of_kin_full_name: '',
+              next_of_kin_address: '',
+              next_of_kin_relationship: '',
+              next_of_kin_phone_number: '',
               user_id: account.user.id,
               admin_id:
                 account.creator_id ||
@@ -111,7 +111,7 @@ export class SyncTenantDataService {
               employer_name:
                 tenantKyc.employer_name || account.user.employer_name,
               employer_address:
-                tenantKyc.employer_address || account.user.employer_address,
+                tenantKyc.work_address || account.user.employer_address,
               monthly_income: tenantKyc.monthly_net_income
                 ? parseFloat(tenantKyc.monthly_net_income)
                 : account.user.monthly_income,

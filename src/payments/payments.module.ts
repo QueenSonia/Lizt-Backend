@@ -7,6 +7,7 @@ import { PaystackService } from './paystack.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { PaymentService } from './payment.service';
 import { PaymentPollingProcessor } from './payment-polling.processor';
+import { WebhookProcessor } from './webhook.processor';
 import { WebhooksController } from './webhooks.controller';
 import { PaymentsController } from './payments.controller';
 import { Payment } from './entities/payment.entity';
@@ -36,9 +37,10 @@ import { InvoicesModule } from '../invoices/invoices.module';
       Users,
       KYCApplication,
     ]),
-    BullModule.registerQueue({
-      name: 'payment-polling',
-    }),
+    BullModule.registerQueue(
+      { name: 'payment-polling' },
+      { name: 'paystack-webhooks' },
+    ),
     ConfigModule,
     AuthModule,
     KYCLinksModule,
@@ -53,7 +55,8 @@ import { InvoicesModule } from '../invoices/invoices.module';
     PaystackLogger,
     PaymentService,
     PaymentPollingProcessor,
+    WebhookProcessor,
   ],
   exports: [PaystackService, PaystackLogger, PaymentService],
 })
-export class PaymentsModule {}
+export class PaymentsModule { }

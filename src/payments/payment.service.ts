@@ -5,6 +5,7 @@ import {
   BadRequestException,
   Inject,
   forwardRef,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, LessThan } from 'typeorm';
@@ -33,8 +34,13 @@ import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
 
+// In-memory lock to prevent concurrent processing of the same payment reference
+const processingLocks = new Map<string, boolean>();
+
 @Injectable()
 export class PaymentService {
+  private readonly logger = new Logger(PaymentService.name);
+
   constructor(
     @InjectRepository(Payment)
     private readonly paymentRepository: Repository<Payment>,
@@ -60,7 +66,7 @@ export class PaymentService {
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
     private readonly dataSource: DataSource,
-  ) { }
+  ) {}
 
   /**
    * Initiate a payment for an offer letter
@@ -240,10 +246,49 @@ export class PaymentService {
 
   /**
    * Process a successful payment (called by webhook or polling)
-   * Uses pessimistic locking to prevent double processing from concurrent webhook/polling
+   * Uses in-memory locking + database locks to prevent double processing
+   * and avoid deadlocks from concurrent webhook/polling calls
    */
   async processSuccessfulPayment(data: any): Promise<void> {
-    this.paystackLogger.info('Starting processSuccessfulPayment', { reference: data.reference });
+    const reference = data.reference;
+    this.paystackLogger.info('Starting processSuccessfulPayment', {
+      reference,
+    });
+
+    // 1. Early idempotency check BEFORE acquiring any locks
+    const existingPayment = await this.paymentRepository.findOne({
+      where: { paystack_reference: reference },
+    });
+
+    if (!existingPayment) {
+      this.paystackLogger.error('Payment not found', { reference });
+      throw new Error(`Payment not found for reference: ${reference}`);
+    }
+
+    if (existingPayment.status === PaymentStatus.COMPLETED) {
+      this.paystackLogger.info(
+        'Payment already completed (early check), skipping',
+        {
+          payment_id: existingPayment.id,
+          reference,
+        },
+      );
+      return;
+    }
+
+    // 2. In-memory lock to prevent concurrent processing of the same reference
+    if (processingLocks.get(reference)) {
+      this.paystackLogger.info(
+        'Payment already being processed by another request, skipping',
+        {
+          reference,
+        },
+      );
+      return;
+    }
+
+    // Acquire in-memory lock
+    processingLocks.set(reference, true);
 
     let processedPaymentId: string | null = null;
     let processedOfferLetterId: string | null = null;
@@ -253,43 +298,49 @@ export class PaymentService {
 
     try {
       await this.dataSource.transaction(async (manager) => {
-        this.paystackLogger.debug('Transaction started', { reference: data.reference });
+        this.paystackLogger.debug('Transaction started', { reference });
 
-        // 1. Lock the payment row first (no joins to avoid "outer join" locking error)
+        // 3. Lock the payment row with NOWAIT to fail fast if locked
         const payment = await manager
           .getRepository(Payment)
           .createQueryBuilder('payment')
-          .where('payment.paystack_reference = :reference', {
-            reference: data.reference,
-          })
-          .setLock('pessimistic_write')
+          .where('payment.paystack_reference = :reference', { reference })
+          .setLock('pessimistic_write_or_fail')
           .getOne();
 
         if (!payment) {
-          throw new Error(`Payment not found for reference: ${data.reference}`);
+          throw new Error(`Payment not found for reference: ${reference}`);
         }
 
+        // Double-check status after acquiring lock
         if (payment.status === PaymentStatus.COMPLETED) {
-          this.paystackLogger.info('Payment already completed, skipping', { payment_id: payment.id });
+          this.paystackLogger.info(
+            'Payment already completed (after lock), skipping',
+            {
+              payment_id: payment.id,
+            },
+          );
           return;
         }
 
-        // 2. Load the offer letter and property relations
+        // 4. Load the offer letter (no lock needed for read)
         const offerLetter = await manager.getRepository(OfferLetter).findOne({
           where: { id: payment.offer_letter_id },
           relations: ['property'],
         });
 
         if (!offerLetter) {
-          throw new Error(`Offer letter ${payment.offer_letter_id} not found for payment ${payment.id}`);
+          throw new Error(
+            `Offer letter ${payment.offer_letter_id} not found for payment ${payment.id}`,
+          );
         }
 
-        // 3. Lock the property row to prevent race conditions
+        // 5. Lock the property row - use NOWAIT to fail fast
         const property = await manager
           .getRepository(Property)
           .createQueryBuilder('property')
           .where('property.id = :id', { id: offerLetter.property_id })
-          .setLock('pessimistic_write')
+          .setLock('pessimistic_write_or_fail')
           .getOne();
 
         if (!property) {
@@ -303,7 +354,9 @@ export class PaymentService {
           paid_at: new Date(data.paid_at || data.paidAt || Date.now()),
           metadata: data,
         });
-        this.paystackLogger.debug('Payment status updated to COMPLETED', { payment_id: payment.id });
+        this.paystackLogger.debug('Payment status updated to COMPLETED', {
+          payment_id: payment.id,
+        });
 
         // Update offer letter amounts
         const amountToAdd = Number(payment.amount);
@@ -327,7 +380,7 @@ export class PaymentService {
           offer_id: offerLetter.id,
           newAmountPaid,
           newOutstandingBalance,
-          isFullyPaid
+          isFullyPaid,
         });
 
         // Get tenant name for history
@@ -341,7 +394,7 @@ export class PaymentService {
         if (isFullyPaid && property.property_status !== 'occupied') {
           this.paystackLogger.info('Securing property for tenant', {
             property_id: property.id,
-            tenant: tenantName
+            tenant: tenantName,
           });
 
           await this.attachTenantAndRejectOthers(
@@ -358,10 +411,15 @@ export class PaymentService {
             'payment',
           );
         } else if (isFullyPaid && property.property_status === 'occupied') {
-          this.paystackLogger.warn('Race condition: Property already occupied', { property_id: property.id });
+          this.paystackLogger.warn(
+            'Race condition: Property already occupied',
+            { property_id: property.id },
+          );
           await this.handleRaceCondition(manager, offerLetter);
         } else {
-          this.paystackLogger.info('Partial payment processed', { outstanding: newOutstandingBalance });
+          this.paystackLogger.info('Partial payment processed', {
+            outstanding: newOutstandingBalance,
+          });
           await this.createPaymentHistoryEvent(
             property.id,
             'payment_completed_partial',
@@ -379,7 +437,9 @@ export class PaymentService {
             isFullyPaid ? 0 : newOutstandingBalance,
           );
         } catch (notifErr) {
-          this.paystackLogger.error('Notification failed but proceeding', { error: notifErr.message });
+          this.paystackLogger.error('Notification failed but proceeding', {
+            error: notifErr.message,
+          });
         }
 
         // Create notification for live feed (wrapped in try/catch to ensure it doesn't fail transaction)
@@ -404,7 +464,9 @@ export class PaymentService {
             isFullyPaid,
           });
         } catch (notifErr) {
-          this.paystackLogger.error('Failed to create live feed notification', { error: notifErr.message });
+          this.paystackLogger.error('Failed to create live feed notification', {
+            error: notifErr.message,
+          });
         }
 
         processedPaymentId = payment.id;
@@ -414,7 +476,9 @@ export class PaymentService {
         processedTotalAmount = totalAmount;
       });
 
-      this.paystackLogger.info('Transaction committed successfully', { reference: data.reference });
+      this.paystackLogger.info('Transaction committed successfully', {
+        reference: data.reference,
+      });
 
       if (processedOfferLetterId && processedPaymentId) {
         try {
@@ -427,22 +491,48 @@ export class PaymentService {
           );
           this.paystackLogger.info('Invoice payment recorded');
         } catch (invErr) {
-          this.paystackLogger.error('Invoice recording failed', { error: invErr.message });
+          this.paystackLogger.error('Invoice recording failed', {
+            error: invErr.message,
+          });
         }
 
-        await this.logPaymentEvent(processedPaymentId, PaymentLogEventType.VERIFICATION, {
-          event: 'charge.success',
-          processed: true,
-          amount: processedAmount,
-        });
+        await this.logPaymentEvent(
+          processedPaymentId,
+          PaymentLogEventType.VERIFICATION,
+          {
+            event: 'charge.success',
+            processed: true,
+            amount: processedAmount,
+          },
+        );
       }
     } catch (error) {
+      // Handle lock acquisition failure gracefully
+      if (
+        error.message?.includes('could not obtain lock') ||
+        error.code === '55P03' || // lock_not_available
+        error.message?.includes('FOR UPDATE')
+      ) {
+        this.paystackLogger.info(
+          'Could not acquire lock, another transaction is processing this payment',
+          {
+            reference: data.reference,
+            error: error.message,
+          },
+        );
+        // Don't rethrow - this is expected when concurrent requests hit
+        return;
+      }
+
       this.paystackLogger.error('processSuccessfulPayment failed', {
         reference: data.reference,
         error: error.message,
         stack: error.stack,
       });
       throw error; // Rethrow to trigger Bull retry if it was a job
+    } finally {
+      // Always release the in-memory lock
+      processingLocks.delete(data.reference);
     }
   }
 
@@ -772,6 +862,15 @@ export class PaymentService {
     }
 
     return payment;
+  }
+
+  /**
+   * Find payment by Paystack reference (returns null if not found)
+   */
+  async findByReference(reference: string): Promise<Payment | null> {
+    return this.paymentRepository.findOne({
+      where: { paystack_reference: reference },
+    });
   }
 
   /**

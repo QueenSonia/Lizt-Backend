@@ -31,6 +31,16 @@ export class PaymentPollingProcessor {
     );
 
     try {
+      // Early check: if payment is already completed, skip verification
+      const existingPayment =
+        await this.paymentService.findByReference(reference);
+      if (existingPayment?.status === 'completed') {
+        this.logger.log(
+          `Payment ${reference} already completed, skipping polling verification`,
+        );
+        return { processed: true };
+      }
+
       // Call Paystack Verify Transaction API
       const verification =
         await this.paystackService.verifyTransaction(reference);
@@ -89,6 +99,17 @@ export class PaymentPollingProcessor {
       );
       throw new Error('Payment still pending');
     } catch (error) {
+      // Don't retry if it's a lock contention error
+      if (
+        error.message?.includes('could not obtain lock') ||
+        error.code === '55P03'
+      ) {
+        this.logger.log(
+          `Lock contention for ${reference}, another process is handling it`,
+        );
+        return { processed: true };
+      }
+
       await this.paystackLogger.error('Polling error', {
         reference,
         payment_id: paymentId,

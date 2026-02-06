@@ -250,11 +250,10 @@ export class PaymentService {
       await this.dataSource.transaction(async (manager) => {
         this.paystackLogger.debug('Transaction started', { reference: data.reference });
 
+        // 1. Lock the payment row first (no joins to avoid "outer join" locking error)
         const payment = await manager
           .getRepository(Payment)
           .createQueryBuilder('payment')
-          .leftJoinAndSelect('payment.offerLetter', 'offerLetter')
-          .leftJoinAndSelect('offerLetter.property', 'property')
           .where('payment.paystack_reference = :reference', {
             reference: data.reference,
           })
@@ -270,15 +269,26 @@ export class PaymentService {
           return;
         }
 
+        // 2. Load the offer letter and property relations
+        const offerLetter = await manager.getRepository(OfferLetter).findOne({
+          where: { id: payment.offer_letter_id },
+          relations: ['property'],
+        });
+
+        if (!offerLetter) {
+          throw new Error(`Offer letter ${payment.offer_letter_id} not found for payment ${payment.id}`);
+        }
+
+        // 3. Lock the property row to prevent race conditions
         const property = await manager
           .getRepository(Property)
           .createQueryBuilder('property')
-          .where('property.id = :id', { id: payment.offerLetter.property_id })
+          .where('property.id = :id', { id: offerLetter.property_id })
           .setLock('pessimistic_write')
           .getOne();
 
         if (!property) {
-          throw new Error(`Property ${payment.offerLetter.property_id} not found`);
+          throw new Error(`Property ${offerLetter.property_id} not found`);
         }
 
         // Update payment status
@@ -292,8 +302,8 @@ export class PaymentService {
 
         // Update offer letter amounts
         const amountToAdd = Number(payment.amount);
-        const currentAmountPaid = Number(payment.offerLetter.amount_paid || 0);
-        const totalAmount = Number(payment.offerLetter.total_amount);
+        const currentAmountPaid = Number(offerLetter.amount_paid || 0);
+        const totalAmount = Number(offerLetter.total_amount);
 
         const newAmountPaid = currentAmountPaid + amountToAdd;
         const newOutstandingBalance = Math.max(0, totalAmount - newAmountPaid);
@@ -301,7 +311,7 @@ export class PaymentService {
         // Use a small epsilon for zero-check to handle floating point
         const isFullyPaid = newOutstandingBalance < 0.01;
 
-        await manager.update(OfferLetter, payment.offerLetter.id, {
+        await manager.update(OfferLetter, offerLetter.id, {
           amount_paid: newAmountPaid,
           outstanding_balance: isFullyPaid ? 0 : newOutstandingBalance,
           payment_status: isFullyPaid
@@ -309,7 +319,7 @@ export class PaymentService {
             : OfferPaymentStatus.PARTIAL,
         });
         this.paystackLogger.debug('Offer letter amounts updated', {
-          offer_id: payment.offerLetter.id,
+          offer_id: offerLetter.id,
           newAmountPaid,
           newOutstandingBalance,
           isFullyPaid
@@ -317,7 +327,7 @@ export class PaymentService {
 
         // Get tenant name for history
         const kycApplication = await manager.findOne(KYCApplication, {
-          where: { id: payment.offerLetter.kyc_application_id },
+          where: { id: offerLetter.kyc_application_id },
         });
         const tenantName = kycApplication
           ? `${kycApplication.first_name} ${kycApplication.last_name}`
@@ -331,7 +341,7 @@ export class PaymentService {
 
           await this.attachTenantAndRejectOthers(
             manager,
-            payment.offerLetter,
+            offerLetter,
             property,
           );
 
@@ -344,7 +354,7 @@ export class PaymentService {
           );
         } else if (isFullyPaid && property.property_status === 'occupied') {
           this.paystackLogger.warn('Race condition: Property already occupied', { property_id: property.id });
-          await this.handleRaceCondition(manager, payment.offerLetter);
+          await this.handleRaceCondition(manager, offerLetter);
         } else {
           this.paystackLogger.info('Partial payment processed', { outstanding: newOutstandingBalance });
           await this.createPaymentHistoryEvent(
@@ -359,7 +369,7 @@ export class PaymentService {
         // Notify landlord (wrapped in try/catch to ensure it doesn't fail transaction)
         try {
           await this.notifyLandlordPaymentReceived(
-            payment.offerLetter,
+            offerLetter,
             payment,
             isFullyPaid ? 0 : newOutstandingBalance,
           );
@@ -368,7 +378,7 @@ export class PaymentService {
         }
 
         processedPaymentId = payment.id;
-        processedOfferLetterId = payment.offerLetter.id;
+        processedOfferLetterId = offerLetter.id;
         processedAmount = amountToAdd;
         processedAmountPaid = newAmountPaid;
         processedTotalAmount = totalAmount;

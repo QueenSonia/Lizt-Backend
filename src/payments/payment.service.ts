@@ -238,173 +238,172 @@ export class PaymentService {
    * Uses pessimistic locking to prevent double processing from concurrent webhook/polling
    */
   async processSuccessfulPayment(data: any): Promise<void> {
-    // Variables to capture data from transaction for post-transaction operations
+    this.paystackLogger.info('Starting processSuccessfulPayment', { reference: data.reference });
+
     let processedPaymentId: string | null = null;
     let processedOfferLetterId: string | null = null;
     let processedAmount: number | null = null;
     let processedAmountPaid: number | null = null;
     let processedTotalAmount: number | null = null;
 
-    // Use transaction with row locking to prevent race conditions between webhook and polling
-    await this.dataSource.transaction(async (manager) => {
-      // Lock the payment row first to prevent double processing
-      const payment = await manager
-        .getRepository(Payment)
-        .createQueryBuilder('payment')
-        .leftJoinAndSelect('payment.offerLetter', 'offerLetter')
-        .leftJoinAndSelect('offerLetter.property', 'property')
-        .where('payment.paystack_reference = :reference', {
-          reference: data.reference,
-        })
-        .setLock('pessimistic_write') // FOR UPDATE lock
-        .getOne();
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        this.paystackLogger.debug('Transaction started', { reference: data.reference });
 
-      if (!payment) {
-        this.paystackLogger.error('Payment not found for reference', {
-          reference: data.reference,
+        const payment = await manager
+          .getRepository(Payment)
+          .createQueryBuilder('payment')
+          .leftJoinAndSelect('payment.offerLetter', 'offerLetter')
+          .leftJoinAndSelect('offerLetter.property', 'property')
+          .where('payment.paystack_reference = :reference', {
+            reference: data.reference,
+          })
+          .setLock('pessimistic_write')
+          .getOne();
+
+        if (!payment) {
+          throw new Error(`Payment not found for reference: ${data.reference}`);
+        }
+
+        if (payment.status === PaymentStatus.COMPLETED) {
+          this.paystackLogger.info('Payment already completed, skipping', { payment_id: payment.id });
+          return;
+        }
+
+        const property = await manager
+          .getRepository(Property)
+          .createQueryBuilder('property')
+          .where('property.id = :id', { id: payment.offerLetter.property_id })
+          .setLock('pessimistic_write')
+          .getOne();
+
+        if (!property) {
+          throw new Error(`Property ${payment.offerLetter.property_id} not found`);
+        }
+
+        // Update payment status
+        await manager.update(Payment, payment.id, {
+          status: PaymentStatus.COMPLETED,
+          payment_method: data.channel,
+          paid_at: new Date(data.paid_at || data.paidAt || Date.now()),
+          metadata: data,
         });
-        return;
-      }
+        this.paystackLogger.debug('Payment status updated to COMPLETED', { payment_id: payment.id });
 
-      // Check if already processed (inside the lock to prevent race condition)
-      if (payment.status === PaymentStatus.COMPLETED) {
-        this.paystackLogger.info('Payment already processed', {
-          payment_id: payment.id,
-          reference: data.reference,
-        });
-        return;
-      }
+        // Update offer letter amounts
+        const amountToAdd = Number(payment.amount);
+        const currentAmountPaid = Number(payment.offerLetter.amount_paid || 0);
+        const totalAmount = Number(payment.offerLetter.total_amount);
 
-      // Lock the property row as well
-      const property = await manager
-        .getRepository(Property)
-        .createQueryBuilder('property')
-        .where('property.id = :id', { id: payment.offerLetter.property_id })
-        .setLock('pessimistic_write') // FOR UPDATE lock
-        .getOne();
+        const newAmountPaid = currentAmountPaid + amountToAdd;
+        const newOutstandingBalance = Math.max(0, totalAmount - newAmountPaid);
 
-      if (!property) {
-        throw new NotFoundException('Property not found');
-      }
+        // Use a small epsilon for zero-check to handle floating point
+        const isFullyPaid = newOutstandingBalance < 0.01;
 
-      // Update payment status
-      await manager.update(Payment, payment.id, {
-        status: PaymentStatus.COMPLETED,
-        payment_method: data.channel,
-        paid_at: new Date(data.paid_at),
-        metadata: data,
-      });
-
-      // Update offer letter amounts
-      const newAmountPaid =
-        Number(payment.offerLetter.amount_paid) + Number(payment.amount);
-      const newOutstandingBalance =
-        Number(payment.offerLetter.total_amount) - newAmountPaid;
-
-      await manager.update(OfferLetter, payment.offerLetter.id, {
-        amount_paid: newAmountPaid,
-        outstanding_balance: newOutstandingBalance,
-        payment_status:
-          newOutstandingBalance === 0
+        await manager.update(OfferLetter, payment.offerLetter.id, {
+          amount_paid: newAmountPaid,
+          outstanding_balance: isFullyPaid ? 0 : newOutstandingBalance,
+          payment_status: isFullyPaid
             ? OfferPaymentStatus.FULLY_PAID
             : OfferPaymentStatus.PARTIAL,
+        });
+        this.paystackLogger.debug('Offer letter amounts updated', {
+          offer_id: payment.offerLetter.id,
+          newAmountPaid,
+          newOutstandingBalance,
+          isFullyPaid
+        });
+
+        // Get tenant name for history
+        const kycApplication = await manager.findOne(KYCApplication, {
+          where: { id: payment.offerLetter.kyc_application_id },
+        });
+        const tenantName = kycApplication
+          ? `${kycApplication.first_name} ${kycApplication.last_name}`
+          : 'Tenant';
+
+        if (isFullyPaid && property.property_status !== 'occupied') {
+          this.paystackLogger.info('Securing property for tenant', {
+            property_id: property.id,
+            tenant: tenantName
+          });
+
+          await this.attachTenantAndRejectOthers(
+            manager,
+            payment.offerLetter,
+            property,
+          );
+
+          await this.createPaymentHistoryEvent(
+            property.id,
+            'payment_completed_full',
+            `${tenantName} completed full payment and secured ${property.name}`,
+            payment.id,
+            'payment',
+          );
+        } else if (isFullyPaid && property.property_status === 'occupied') {
+          this.paystackLogger.warn('Race condition: Property already occupied', { property_id: property.id });
+          await this.handleRaceCondition(manager, payment.offerLetter);
+        } else {
+          this.paystackLogger.info('Partial payment processed', { outstanding: newOutstandingBalance });
+          await this.createPaymentHistoryEvent(
+            property.id,
+            'payment_completed_partial',
+            `${tenantName} paid for ${property.name}. Outstanding: ₦${newOutstandingBalance.toLocaleString()}`,
+            payment.id,
+            'payment',
+          );
+        }
+
+        // Notify landlord (wrapped in try/catch to ensure it doesn't fail transaction)
+        try {
+          await this.notifyLandlordPaymentReceived(
+            payment.offerLetter,
+            payment,
+            isFullyPaid ? 0 : newOutstandingBalance,
+          );
+        } catch (notifErr) {
+          this.paystackLogger.error('Notification failed but proceeding', { error: notifErr.message });
+        }
+
+        processedPaymentId = payment.id;
+        processedOfferLetterId = payment.offerLetter.id;
+        processedAmount = amountToAdd;
+        processedAmountPaid = newAmountPaid;
+        processedTotalAmount = totalAmount;
       });
 
-      // Get tenant name for history events
-      const kycApplication = await manager.findOne(KYCApplication, {
-        where: { id: payment.offerLetter.kyc_application_id },
-      });
-      const tenantName = kycApplication
-        ? `${kycApplication.first_name} ${kycApplication.last_name}`
-        : 'Tenant';
-      const propertyName = property.name;
+      this.paystackLogger.info('Transaction committed successfully', { reference: data.reference });
 
-      // Check if this is first full payment
-      if (
-        newOutstandingBalance === 0 &&
-        property.property_status !== 'occupied'
-      ) {
-        // This tenant wins!
-        await this.attachTenantAndRejectOthers(
-          manager,
-          payment.offerLetter,
-          property,
-        );
+      if (processedOfferLetterId && processedPaymentId) {
+        try {
+          await this.invoicesService.recordPaymentFromOfferLetter(
+            processedOfferLetterId,
+            processedAmount!,
+            data.reference,
+            data.channel || 'card',
+            processedPaymentId,
+          );
+          this.paystackLogger.info('Invoice payment recorded');
+        } catch (invErr) {
+          this.paystackLogger.error('Invoice recording failed', { error: invErr.message });
+        }
 
-        // Create property history event for full payment completion
-        await this.createPaymentHistoryEvent(
-          property.id,
-          'payment_completed_full',
-          `${tenantName} completed full payment of ₦${Number(payment.offerLetter.total_amount).toLocaleString()} and secured ${propertyName}`,
-          payment.id,
-          'payment',
-        );
-      } else if (
-        newOutstandingBalance === 0 &&
-        property.property_status === 'occupied'
-      ) {
-        // Race condition: property already taken
-        await this.handleRaceCondition(manager, payment.offerLetter);
-      } else if (newOutstandingBalance > 0) {
-        // Partial payment completed
-        await this.createPaymentHistoryEvent(
-          property.id,
-          'payment_completed_partial',
-          `${tenantName} paid ₦${Number(payment.amount).toLocaleString()} for ${propertyName}. Outstanding: ₦${newOutstandingBalance.toLocaleString()}`,
-          payment.id,
-          'payment',
-        );
+        await this.logPaymentEvent(processedPaymentId, PaymentLogEventType.VERIFICATION, {
+          event: 'charge.success',
+          processed: true,
+          amount: processedAmount,
+        });
       }
-
-      // Notify landlord of ANY payment (partial or full) - using same template
-      await this.notifyLandlordPaymentReceived(
-        payment.offerLetter,
-        payment,
-        newOutstandingBalance,
-      );
-
-      // Capture data for post-transaction operations
-      processedPaymentId = payment.id;
-      processedOfferLetterId = payment.offerLetter.id;
-      processedAmount = Number(payment.amount);
-      processedAmountPaid = newAmountPaid;
-      processedTotalAmount = Number(payment.offerLetter.total_amount);
-    });
-
-    // Skip post-transaction operations if payment wasn't processed
-    if (!processedPaymentId || !processedOfferLetterId) {
-      return;
-    }
-
-    // Record payment on the invoice (outside transaction - non-critical)
-    try {
-      await this.invoicesService.recordPaymentFromOfferLetter(
-        processedOfferLetterId,
-        processedAmount!,
-        data.reference,
-        data.channel || 'card',
-        processedPaymentId,
-      );
     } catch (error) {
-      // Log but don't fail - invoice update is not critical
-      this.paystackLogger.error('Failed to record payment on invoice', {
-        offer_letter_id: processedOfferLetterId,
-        payment_id: processedPaymentId,
+      this.paystackLogger.error('processSuccessfulPayment failed', {
+        reference: data.reference,
         error: error.message,
+        stack: error.stack,
       });
+      throw error; // Rethrow to trigger Bull retry if it was a job
     }
-
-    // Log successful processing
-    await this.logPaymentEvent(
-      processedPaymentId,
-      PaymentLogEventType.VERIFICATION,
-      {
-        event: 'charge.success',
-        processed: true,
-        new_amount_paid: processedAmountPaid,
-        outstanding_balance: processedTotalAmount! - processedAmountPaid!,
-      },
-    );
   }
 
   /**

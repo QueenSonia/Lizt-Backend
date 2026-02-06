@@ -35,25 +35,28 @@ export const config = {
   // Connection pool settings optimized for Neon
   extra: {
     sslmode: 'require',
-    max: Number(DB_MAX_CONNECTIONS) || 2, // Reduced for Neon's connection limits
-    min: 0, // Allow pool to scale down to 0
-    connectionTimeoutMillis: Number(DB_CONNECTION_TIMEOUT) || 20000,
-    idleTimeoutMillis: Number(DB_IDLE_TIMEOUT) || 10000, // Shorter idle timeout
-    acquireTimeoutMillis: 15000,
-    createTimeoutMillis: 20000,
+    // INCREASED: 2 is too low for an app with background jobs + web requests
+    max: Number(DB_MAX_CONNECTIONS) || 10,
+    min: 1, // Keep at least 1 connection warm
+    connectionTimeoutMillis: Number(DB_CONNECTION_TIMEOUT) || 10000, // Reduced from 20s
+    idleTimeoutMillis: Number(DB_IDLE_TIMEOUT) || 10000,
+    acquireTimeoutMillis: 10000, // Reduced from 15s
+    createTimeoutMillis: 10000, // Reduced from 20s
     destroyTimeoutMillis: 5000,
     reapIntervalMillis: 1000,
     createRetryIntervalMillis: 200,
+    // Statement timeout to prevent long-running queries from blocking
+    statement_timeout: 30000, // 30s max for any query
     // Disable keep-alive for Neon compatibility
     keepAlive: false,
   },
 
   // Additional pool settings
-  maxQueryExecutionTime: 30000, // 30 seconds
+  maxQueryExecutionTime: 10000, // Log slow queries after 10 seconds
 
   // Retry logic for connection issues
-  retryAttempts: 3,
-  retryDelay: 1000,
+  retryAttempts: 5, // Increased from 3
+  retryDelay: 500, // Reduced from 1000ms
 
   // ssl: {
   //   rejectUnauthorized: false,

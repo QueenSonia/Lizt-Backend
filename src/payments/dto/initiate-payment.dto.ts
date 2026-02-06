@@ -1,4 +1,11 @@
-import { IsNumber, IsEmail, IsUrl, Min } from 'class-validator';
+import {
+  IsNumber,
+  IsEmail,
+  IsUrl,
+  Min,
+  IsNotEmpty,
+  IsString,
+} from 'class-validator';
 
 export class InitiatePaymentDto {
   @IsNumber()
@@ -8,6 +15,8 @@ export class InitiatePaymentDto {
   @IsEmail()
   email: string;
 
-  @IsUrl()
+  @IsNotEmpty()
+  @IsString()
+  @IsUrl({ require_tld: false })
   callbackUrl: string;
 }

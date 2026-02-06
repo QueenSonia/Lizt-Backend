@@ -16,7 +16,9 @@ import { PropertyStatusEnum } from '../../properties/dto/create-property.dto';
 export interface BrandingData {
   businessName: string;
   businessAddress: string;
-  contactInfo: string;
+  contactPhone: string;
+  contactEmail: string;
+  websiteLink: string;
   footerColor: string;
   letterhead?: string;
   signature?: string;
@@ -36,6 +38,7 @@ export interface OfferLetterResponse {
   applicantName: string;
   applicantEmail: string;
   applicantPhone: string;
+  applicantGender?: string;
   propertyName: string;
   propertyAddress: string;
   rentAmount: number;
@@ -74,25 +77,27 @@ export function toOfferLetterResponse(
   // If no branding was saved at creation time, return undefined (no branding displayed)
   const branding: BrandingData | undefined = entity.branding
     ? {
-      businessName: entity.branding.businessName || '',
-      businessAddress: entity.branding.businessAddress || '',
-      contactInfo: entity.branding.contactInfo || '',
-      footerColor: entity.branding.footerColor || '#6B6B6B',
-      letterhead: entity.branding.letterhead,
-      signature: entity.branding.signature,
-      headingFont: entity.branding.headingFont || 'Inter',
-      bodyFont: entity.branding.bodyFont || 'Inter',
-    }
+        businessName: entity.branding.businessName || '',
+        businessAddress: entity.branding.businessAddress || '',
+        contactPhone: entity.branding.contactPhone || '',
+        contactEmail: entity.branding.contactEmail || '',
+        websiteLink: entity.branding.websiteLink || '',
+        footerColor: entity.branding.footerColor || '#6B6B6B',
+        letterhead: entity.branding.letterhead,
+        signature: entity.branding.signature,
+        headingFont: entity.branding.headingFont || 'Inter',
+        bodyFont: entity.branding.bodyFont || 'Inter',
+      }
     : undefined;
 
   // Calculate total amount if not set (for backward compatibility)
   const totalAmount = entity.total_amount
     ? Number(entity.total_amount)
     : Number(entity.rent_amount) +
-    (entity.service_charge ? Number(entity.service_charge) : 0) +
-    (entity.caution_deposit ? Number(entity.caution_deposit) : 0) +
-    (entity.legal_fee ? Number(entity.legal_fee) : 0) +
-    (entity.agency_fee ? Number(entity.agency_fee) : 0);
+      (entity.service_charge ? Number(entity.service_charge) : 0) +
+      (entity.caution_deposit ? Number(entity.caution_deposit) : 0) +
+      (entity.legal_fee ? Number(entity.legal_fee) : 0) +
+      (entity.agency_fee ? Number(entity.agency_fee) : 0);
 
   // Calculate outstanding balance if not set
   const amountPaid = Number(entity.amount_paid || 0);
@@ -110,6 +115,7 @@ export function toOfferLetterResponse(
     applicantName: `${kycApplication.first_name} ${kycApplication.last_name}`,
     applicantEmail: kycApplication.email || '',
     applicantPhone: kycApplication.phone_number,
+    applicantGender: kycApplication.gender,
     propertyName: property.name,
     propertyAddress: property.location,
     rentAmount: Number(entity.rent_amount),

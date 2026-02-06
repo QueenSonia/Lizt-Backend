@@ -22,6 +22,11 @@ import {
   KYCApplication,
   ApplicationStatus,
 } from 'src/kyc-links/entities/kyc-application.entity';
+import {
+  OfferLetter,
+  OfferLetterStatus,
+} from 'src/offer-letters/entities/offer-letter.entity';
+import { Payment, PaymentStatus } from 'src/payments/entities/payment.entity';
 import { TenantDetailDto } from '../dto/tenant-detail.dto';
 
 import {
@@ -67,6 +72,10 @@ export class TenantManagementService {
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(KYCApplication)
     private readonly kycApplicationRepository: Repository<KYCApplication>,
+    @InjectRepository(OfferLetter)
+    private readonly offerLetterRepository: Repository<OfferLetter>,
+    @InjectRepository(Payment)
+    private readonly paymentRepository: Repository<Payment>,
     private readonly dataSource: DataSource,
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
@@ -1366,7 +1375,51 @@ export class TenantManagementService {
       order: { created_at: 'DESC' },
     });
 
-    return this.formatTenantData(tenantAccount, kycApplication, adminId);
+    // Query offer letters for this tenant (via KYC applications)
+    const kycApplications = await this.kycApplicationRepository.find({
+      where: { tenant_id: tenantId },
+      select: ['id'],
+    });
+    const kycApplicationIds = kycApplications.map((k) => k.id);
+
+    let offerLetters: OfferLetter[] = [];
+    if (kycApplicationIds.length > 0) {
+      offerLetters = await this.offerLetterRepository
+        .createQueryBuilder('offer')
+        .leftJoinAndSelect('offer.property', 'property')
+        .where('offer.kyc_application_id IN (:...kycIds)', {
+          kycIds: kycApplicationIds,
+        })
+        .andWhere('offer.landlord_id = :adminId', { adminId })
+        .orderBy('offer.created_at', 'DESC')
+        .getMany();
+    }
+
+    // Query payments for these offer letters
+    let payments: Payment[] = [];
+    if (offerLetters.length > 0) {
+      const offerLetterIds = offerLetters.map((o) => o.id);
+      payments = await this.paymentRepository
+        .createQueryBuilder('payment')
+        .leftJoinAndSelect('payment.offerLetter', 'offerLetter')
+        .leftJoinAndSelect('offerLetter.property', 'property')
+        .where('payment.offer_letter_id IN (:...offerIds)', {
+          offerIds: offerLetterIds,
+        })
+        .andWhere('payment.status = :status', {
+          status: PaymentStatus.COMPLETED,
+        })
+        .orderBy('payment.paid_at', 'DESC')
+        .getMany();
+    }
+
+    return this.formatTenantData(
+      tenantAccount,
+      kycApplication,
+      adminId,
+      offerLetters,
+      payments,
+    );
   }
 
   /**
@@ -1402,6 +1455,8 @@ export class TenantManagementService {
     account: Account,
     kycApplication?: KYCApplication | null,
     adminId?: string,
+    offerLetters?: OfferLetter[],
+    payments?: Payment[],
   ): TenantDetailDto {
     const user = account.user;
     const kyc = (user as Users & { kyc?: Record<string, string> }).kyc ?? {};
@@ -1546,10 +1601,95 @@ export class TenantManagementService {
       };
     });
 
+    // Add offer letter events
+    const offerLetterEvents: TimelineEvent[] = (offerLetters || []).map(
+      (offer) => {
+        const eventDate = new Date(offer.created_at || new Date());
+        const totalAmount =
+          Number(offer.rent_amount || 0) +
+          Number(offer.service_charge || 0) +
+          Number(offer.caution_deposit || 0) +
+          Number(offer.legal_fee || 0) +
+          Number(offer.agency_fee || 0);
+
+        let statusText = 'sent';
+        if (offer.status === OfferLetterStatus.ACCEPTED)
+          statusText = 'accepted';
+        else if (offer.status === OfferLetterStatus.REJECTED)
+          statusText = 'declined';
+        else if (offer.status === OfferLetterStatus.SELECTED)
+          statusText = 'completed';
+
+        return {
+          id: `offer-${offer.id}`,
+          type: 'offer_letter' as const,
+          title: 'Offer Letter',
+          description: `Offer letter ${statusText} for ${offer.property?.name || 'property'}`,
+          date: eventDate.toISOString(),
+          time: eventDate.toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          offerLetterData: {
+            id: offer.id,
+            token: offer.token,
+            propertyName: offer.property?.name || 'Property',
+            propertyId: offer.property_id,
+            rentAmount: Number(offer.rent_amount || 0),
+            rentFrequency: offer.rent_frequency,
+            serviceCharge: Number(offer.service_charge || 0),
+            cautionDeposit: Number(offer.caution_deposit || 0),
+            legalFee: Number(offer.legal_fee || 0),
+            agencyFee: Number(offer.agency_fee || 0),
+            totalAmount,
+            tenancyStartDate: offer.tenancy_start_date,
+            tenancyEndDate: offer.tenancy_end_date,
+            status: offer.status,
+            paymentStatus: offer.payment_status,
+            amountPaid: Number(offer.amount_paid || 0),
+            outstandingBalance: Number(offer.outstanding_balance || 0),
+          },
+        };
+      },
+    );
+
+    // Add payment/receipt events
+    const paymentEvents: TimelineEvent[] = (payments || []).map((payment) => {
+      const eventDate = new Date(payment.paid_at || payment.created_at);
+      const isPartPayment = payment.payment_type === 'partial';
+      const propertyName = payment.offerLetter?.property?.name || 'property';
+
+      return {
+        id: `receipt-${payment.id}`,
+        type: 'receipt' as const,
+        title: isPartPayment ? 'Part Payment Received' : 'Payment Received',
+        description: isPartPayment
+          ? `Part payment of ₦${Number(payment.amount).toLocaleString()} received for ${propertyName}`
+          : `Full payment of ₦${Number(payment.amount).toLocaleString()} received for ${propertyName}`,
+        date: eventDate.toISOString(),
+        time: eventDate.toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        receiptData: {
+          id: payment.id,
+          propertyName,
+          propertyId: payment.offerLetter?.property_id,
+          amountPaid: Number(payment.amount),
+          paymentMethod: payment.payment_method,
+          reference: payment.paystack_reference,
+          paidAt: payment.paid_at?.toISOString(),
+          isPartPayment,
+        },
+      };
+    });
+
     // Combine all events and sort by date (newest first)
     const history: TimelineEvent[] = [
       ...tenancyEvents,
       ...serviceRequestEvents,
+      ...offerLetterEvents,
+      ...paymentEvents,
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     return {
@@ -1941,11 +2081,46 @@ interface TenantKycFromApplicationDto {
  */
 interface TimelineEvent {
   id: string;
-  type: 'payment' | 'maintenance' | 'notice' | 'general';
+  type:
+    | 'payment'
+    | 'maintenance'
+    | 'notice'
+    | 'general'
+    | 'offer_letter'
+    | 'receipt';
   title: string;
   description: string;
   date: string;
   time: string;
+  offerLetterData?: {
+    id: string;
+    token: string;
+    propertyName: string;
+    propertyId: string;
+    rentAmount: number;
+    rentFrequency: string;
+    serviceCharge: number;
+    cautionDeposit: number;
+    legalFee: number;
+    agencyFee: number;
+    totalAmount: number;
+    tenancyStartDate: Date;
+    tenancyEndDate: Date;
+    status: string;
+    paymentStatus: string;
+    amountPaid: number;
+    outstandingBalance: number;
+  };
+  receiptData?: {
+    id: string;
+    propertyName: string;
+    propertyId?: string;
+    amountPaid: number;
+    paymentMethod: string | null;
+    reference: string;
+    paidAt?: string;
+    isPartPayment: boolean;
+  };
 }
 
 /**

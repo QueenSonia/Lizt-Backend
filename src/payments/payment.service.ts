@@ -3,6 +3,8 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, LessThan } from 'typeorm';
@@ -26,6 +28,7 @@ import { TenantAttachmentService } from '../kyc-links/tenant-attachment.service'
 import { PropertyHistoryService } from '../property-history/property-history.service';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender/template-sender.service';
 import { InitiatePaymentDto, InitiatePaymentResponseDto } from './dto';
+import { InvoicesService } from '../invoices/invoices.service';
 
 @Injectable()
 export class PaymentService {
@@ -49,8 +52,10 @@ export class PaymentService {
     private readonly tenantAttachmentService: TenantAttachmentService,
     private readonly propertyHistoryService: PropertyHistoryService,
     private readonly templateSenderService: TemplateSenderService,
+    @Inject(forwardRef(() => InvoicesService))
+    private readonly invoicesService: InvoicesService,
     private readonly dataSource: DataSource,
-  ) {}
+  ) { }
 
   /**
    * Initiate a payment for an offer letter
@@ -94,36 +99,70 @@ export class PaymentService {
       throw new BadRequestException('Amount must be greater than zero');
     }
 
-    // Generate unique reference
-    const reference = `LIZT_${Date.now()}_${uuidv4().substring(0, 8)}`;
+    // Generate unique reference with retry logic for collision handling
+    const maxRetries = 3;
+    let reference = '';
+    let payment: Payment | null = null;
+    let paystackResponse: any = null;
 
-    // Initialize Paystack transaction
-    const paystackResponse = await this.paystackService.initializeTransaction({
-      email: dto.email,
-      amount: Math.round(dto.amount * 100), // Convert to kobo
-      reference,
-      callback_url: dto.callbackUrl,
-      metadata: {
-        offer_letter_id: offerLetter.id,
-        property_id: offerLetter.property_id,
-        tenant_name: `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`,
-      },
-      channels: ['card', 'bank_transfer'],
-    });
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      reference = `LIZT_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
-    // Create payment record
-    const payment = await this.paymentRepository.save({
-      offer_letter_id: offerLetter.id,
-      amount: dto.amount,
-      payment_type:
-        dto.amount >= (offerLetter.outstanding_balance ?? 0)
-          ? PaymentType.FULL
-          : PaymentType.PARTIAL,
-      status: PaymentStatus.PENDING,
-      paystack_reference: reference,
-      paystack_access_code: paystackResponse.data.access_code,
-      paystack_authorization_url: paystackResponse.data.authorization_url,
-    });
+      try {
+        // Initialize Paystack transaction
+        paystackResponse = await this.paystackService.initializeTransaction({
+          email: dto.email,
+          amount: Math.round(dto.amount * 100), // Convert to kobo
+          reference,
+          callback_url: dto.callbackUrl,
+          metadata: {
+            offer_letter_id: offerLetter.id,
+            property_id: offerLetter.property_id,
+            tenant_name: `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`,
+          },
+          channels: ['card', 'bank_transfer'],
+        });
+
+        // Create payment record
+        payment = await this.paymentRepository.save({
+          offer_letter_id: offerLetter.id,
+          amount: dto.amount,
+          payment_type:
+            dto.amount >= (offerLetter.outstanding_balance ?? 0)
+              ? PaymentType.FULL
+              : PaymentType.PARTIAL,
+          status: PaymentStatus.PENDING,
+          paystack_reference: reference,
+          paystack_access_code: paystackResponse.data.access_code,
+          paystack_authorization_url: paystackResponse.data.authorization_url,
+        });
+
+        // Success - break out of retry loop
+        break;
+      } catch (error) {
+        // Check if it's a duplicate key error (PostgreSQL error code 23505)
+        const isDuplicateError =
+          error.code === '23505' ||
+          error.message?.includes('duplicate key') ||
+          error.message?.includes('unique constraint');
+
+        if (isDuplicateError && attempt < maxRetries - 1) {
+          this.paystackLogger.warn('Reference collision, retrying', {
+            reference,
+            attempt: attempt + 1,
+          });
+          continue;
+        }
+
+        // Re-throw if not a duplicate error or max retries reached
+        throw error;
+      }
+    }
+
+    // This should never happen due to the throw in the catch block, but TypeScript needs assurance
+    if (!payment || !paystackResponse) {
+      throw new BadRequestException('Failed to create payment after retries');
+    }
 
     // Log initiation
     void this.logPaymentEvent(payment.id, PaymentLogEventType.INITIATION, {
@@ -134,43 +173,56 @@ export class PaymentService {
       paystack_response: paystackResponse,
     });
 
-    // Create property history event for payment initiation
+    // Calculate expiry (Paystack access codes expire after 30 minutes)
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+    // Create property history event for payment initiation (non-blocking)
     const tenantName = `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`;
     const propertyName = property.name;
-    await this.createPaymentHistoryEvent(
+    void this.createPaymentHistoryEvent(
       offerLetter.property_id,
       'payment_initiated',
       `${tenantName} initiated payment of ₦${dto.amount.toLocaleString()} for ${propertyName}`,
       payment.id,
       'payment',
-    );
-
-    // Queue polling job - start after 30 seconds, retry 10 times every 30 seconds
-    await this.pollingQueue.add(
-      'verify-payment',
-      {
-        paymentId: payment.id,
-        reference,
-      },
-      {
-        delay: 30000, // Start after 30 seconds
-        attempts: 10, // Poll 10 times
-        backoff: {
-          type: 'fixed',
-          delay: 30000, // Every 30 seconds
-        },
-      },
-    );
-
-    this.paystackLogger.info('Polling job queued', {
-      payment_id: payment.id,
-      reference,
-      attempts: 10,
-      interval: '30s',
+    ).catch((err) => {
+      this.paystackLogger.error('Failed to create payment history event', {
+        error: err.message,
+        payment_id: payment.id,
+      });
     });
 
-    // Calculate expiry (Paystack access codes expire after 30 minutes)
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    // Queue polling job - start after 30 seconds, retry 10 times every 30 seconds (non-blocking)
+    void this.pollingQueue
+      .add(
+        'verify-payment',
+        {
+          paymentId: payment.id,
+          reference,
+        },
+        {
+          delay: 30000, // Start after 30 seconds
+          attempts: 60, // Poll 60 times (30 minutes total)
+          backoff: {
+            type: 'fixed',
+            delay: 30000, // Every 30 seconds
+          },
+        },
+      )
+      .then(() => {
+        this.paystackLogger.info('Polling job queued', {
+          payment_id: payment.id,
+          reference,
+          attempts: 10,
+          interval: '30s',
+        });
+      })
+      .catch((err) => {
+        this.paystackLogger.error('Failed to queue polling job', {
+          error: err.message,
+          payment_id: payment.id,
+        });
+      });
 
     return {
       paymentId: payment.id,
@@ -183,130 +235,185 @@ export class PaymentService {
 
   /**
    * Process a successful payment (called by webhook or polling)
+   * Uses pessimistic locking to prevent double processing from concurrent webhook/polling
    */
   async processSuccessfulPayment(data: any): Promise<void> {
-    const payment = await this.paymentRepository.findOne({
-      where: { paystack_reference: data.reference },
-      relations: ['offerLetter', 'offerLetter.property'],
-    });
+    this.paystackLogger.info('Starting processSuccessfulPayment', { reference: data.reference });
 
-    if (!payment) {
-      this.paystackLogger.error('Payment not found for reference', {
-        reference: data.reference,
-      });
-      return;
-    }
+    let processedPaymentId: string | null = null;
+    let processedOfferLetterId: string | null = null;
+    let processedAmount: number | null = null;
+    let processedAmountPaid: number | null = null;
+    let processedTotalAmount: number | null = null;
 
-    // Check if already processed
-    if (payment.status === PaymentStatus.COMPLETED) {
-      this.paystackLogger.info('Payment already processed', {
-        payment_id: payment.id,
-        reference: data.reference,
-      });
-      return;
-    }
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        this.paystackLogger.debug('Transaction started', { reference: data.reference });
 
-    // Use transaction with row locking to prevent race conditions
-    await this.dataSource.transaction(async (manager) => {
-      // Lock the property row
-      const property = await manager
-        .getRepository(Property)
-        .createQueryBuilder('property')
-        .where('property.id = :id', { id: payment.offerLetter.property_id })
-        .setLock('pessimistic_write') // FOR UPDATE lock
-        .getOne();
+        // 1. Lock the payment row first (no joins to avoid "outer join" locking error)
+        const payment = await manager
+          .getRepository(Payment)
+          .createQueryBuilder('payment')
+          .where('payment.paystack_reference = :reference', {
+            reference: data.reference,
+          })
+          .setLock('pessimistic_write')
+          .getOne();
 
-      if (!property) {
-        throw new NotFoundException('Property not found');
-      }
+        if (!payment) {
+          throw new Error(`Payment not found for reference: ${data.reference}`);
+        }
 
-      // Update payment status
-      await manager.update(Payment, payment.id, {
-        status: PaymentStatus.COMPLETED,
-        payment_method: data.channel,
-        paid_at: new Date(data.paid_at),
-        metadata: data,
-      });
+        if (payment.status === PaymentStatus.COMPLETED) {
+          this.paystackLogger.info('Payment already completed, skipping', { payment_id: payment.id });
+          return;
+        }
 
-      // Update offer letter amounts
-      const newAmountPaid =
-        Number(payment.offerLetter.amount_paid) + Number(payment.amount);
-      const newOutstandingBalance =
-        Number(payment.offerLetter.total_amount) - newAmountPaid;
+        // 2. Load the offer letter and property relations
+        const offerLetter = await manager.getRepository(OfferLetter).findOne({
+          where: { id: payment.offer_letter_id },
+          relations: ['property'],
+        });
 
-      await manager.update(OfferLetter, payment.offerLetter.id, {
-        amount_paid: newAmountPaid,
-        outstanding_balance: newOutstandingBalance,
-        payment_status:
-          newOutstandingBalance === 0
+        if (!offerLetter) {
+          throw new Error(`Offer letter ${payment.offer_letter_id} not found for payment ${payment.id}`);
+        }
+
+        // 3. Lock the property row to prevent race conditions
+        const property = await manager
+          .getRepository(Property)
+          .createQueryBuilder('property')
+          .where('property.id = :id', { id: offerLetter.property_id })
+          .setLock('pessimistic_write')
+          .getOne();
+
+        if (!property) {
+          throw new Error(`Property ${offerLetter.property_id} not found`);
+        }
+
+        // Update payment status
+        await manager.update(Payment, payment.id, {
+          status: PaymentStatus.COMPLETED,
+          payment_method: data.channel,
+          paid_at: new Date(data.paid_at || data.paidAt || Date.now()),
+          metadata: data,
+        });
+        this.paystackLogger.debug('Payment status updated to COMPLETED', { payment_id: payment.id });
+
+        // Update offer letter amounts
+        const amountToAdd = Number(payment.amount);
+        const currentAmountPaid = Number(offerLetter.amount_paid || 0);
+        const totalAmount = Number(offerLetter.total_amount);
+
+        const newAmountPaid = currentAmountPaid + amountToAdd;
+        const newOutstandingBalance = Math.max(0, totalAmount - newAmountPaid);
+
+        // Use a small epsilon for zero-check to handle floating point
+        const isFullyPaid = newOutstandingBalance < 0.01;
+
+        await manager.update(OfferLetter, offerLetter.id, {
+          amount_paid: newAmountPaid,
+          outstanding_balance: isFullyPaid ? 0 : newOutstandingBalance,
+          payment_status: isFullyPaid
             ? OfferPaymentStatus.FULLY_PAID
             : OfferPaymentStatus.PARTIAL,
+        });
+        this.paystackLogger.debug('Offer letter amounts updated', {
+          offer_id: offerLetter.id,
+          newAmountPaid,
+          newOutstandingBalance,
+          isFullyPaid
+        });
+
+        // Get tenant name for history
+        const kycApplication = await manager.findOne(KYCApplication, {
+          where: { id: offerLetter.kyc_application_id },
+        });
+        const tenantName = kycApplication
+          ? `${kycApplication.first_name} ${kycApplication.last_name}`
+          : 'Tenant';
+
+        if (isFullyPaid && property.property_status !== 'occupied') {
+          this.paystackLogger.info('Securing property for tenant', {
+            property_id: property.id,
+            tenant: tenantName
+          });
+
+          await this.attachTenantAndRejectOthers(
+            manager,
+            offerLetter,
+            property,
+          );
+
+          await this.createPaymentHistoryEvent(
+            property.id,
+            'payment_completed_full',
+            `${tenantName} completed full payment and secured ${property.name}`,
+            payment.id,
+            'payment',
+          );
+        } else if (isFullyPaid && property.property_status === 'occupied') {
+          this.paystackLogger.warn('Race condition: Property already occupied', { property_id: property.id });
+          await this.handleRaceCondition(manager, offerLetter);
+        } else {
+          this.paystackLogger.info('Partial payment processed', { outstanding: newOutstandingBalance });
+          await this.createPaymentHistoryEvent(
+            property.id,
+            'payment_completed_partial',
+            `${tenantName} paid for ${property.name}. Outstanding: ₦${newOutstandingBalance.toLocaleString()}`,
+            payment.id,
+            'payment',
+          );
+        }
+
+        // Notify landlord (wrapped in try/catch to ensure it doesn't fail transaction)
+        try {
+          await this.notifyLandlordPaymentReceived(
+            offerLetter,
+            payment,
+            isFullyPaid ? 0 : newOutstandingBalance,
+          );
+        } catch (notifErr) {
+          this.paystackLogger.error('Notification failed but proceeding', { error: notifErr.message });
+        }
+
+        processedPaymentId = payment.id;
+        processedOfferLetterId = offerLetter.id;
+        processedAmount = amountToAdd;
+        processedAmountPaid = newAmountPaid;
+        processedTotalAmount = totalAmount;
       });
 
-      // Get tenant name for history events
-      const kycApplication = await manager.findOne(KYCApplication, {
-        where: { id: payment.offerLetter.kyc_application_id },
-      });
-      const tenantName = kycApplication
-        ? `${kycApplication.first_name} ${kycApplication.last_name}`
-        : 'Tenant';
-      const propertyName = property.name;
+      this.paystackLogger.info('Transaction committed successfully', { reference: data.reference });
 
-      // Check if this is first full payment
-      if (
-        newOutstandingBalance === 0 &&
-        property.property_status !== 'occupied'
-      ) {
-        // This tenant wins!
-        await this.attachTenantAndRejectOthers(
-          manager,
-          payment.offerLetter,
-          property,
-        );
+      if (processedOfferLetterId && processedPaymentId) {
+        try {
+          await this.invoicesService.recordPaymentFromOfferLetter(
+            processedOfferLetterId,
+            processedAmount!,
+            data.reference,
+            data.channel || 'card',
+            processedPaymentId,
+          );
+          this.paystackLogger.info('Invoice payment recorded');
+        } catch (invErr) {
+          this.paystackLogger.error('Invoice recording failed', { error: invErr.message });
+        }
 
-        // Create property history event for full payment completion
-        await this.createPaymentHistoryEvent(
-          property.id,
-          'payment_completed_full',
-          `${tenantName} completed full payment of ₦${Number(payment.offerLetter.total_amount).toLocaleString()} and secured ${propertyName}`,
-          payment.id,
-          'payment',
-        );
-      } else if (
-        newOutstandingBalance === 0 &&
-        property.property_status === 'occupied'
-      ) {
-        // Race condition: property already taken
-        await this.handleRaceCondition(manager, payment.offerLetter);
-      } else if (newOutstandingBalance > 0) {
-        // Partial payment completed
-        await this.createPaymentHistoryEvent(
-          property.id,
-          'payment_completed_partial',
-          `${tenantName} paid ₦${Number(payment.amount).toLocaleString()} for ${propertyName}. Outstanding: ₦${newOutstandingBalance.toLocaleString()}`,
-          payment.id,
-          'payment',
-        );
+        await this.logPaymentEvent(processedPaymentId, PaymentLogEventType.VERIFICATION, {
+          event: 'charge.success',
+          processed: true,
+          amount: processedAmount,
+        });
       }
-
-      // Notify landlord of ANY payment (partial or full) - using same template
-      await this.notifyLandlordPaymentReceived(
-        payment.offerLetter,
-        payment,
-        newOutstandingBalance,
-      );
-    });
-
-    // Log successful processing
-    await this.logPaymentEvent(payment.id, PaymentLogEventType.VERIFICATION, {
-      event: 'charge.success',
-      processed: true,
-      new_amount_paid:
-        Number(payment.offerLetter.amount_paid) + Number(payment.amount),
-      outstanding_balance:
-        Number(payment.offerLetter.total_amount) -
-        (Number(payment.offerLetter.amount_paid) + Number(payment.amount)),
-    });
+    } catch (error) {
+      this.paystackLogger.error('processSuccessfulPayment failed', {
+        reference: data.reference,
+        error: error.message,
+        stack: error.stack,
+      });
+      throw error; // Rethrow to trigger Bull retry if it was a job
+    }
   }
 
   /**
@@ -509,16 +616,30 @@ export class PaymentService {
       .andWhere('offer.amount_paid > 0');
 
     // Apply status filter
+    // Valid payment_status values: 'unpaid', 'partial', 'fully_paid'
+    // Special cases: 'all' (no filter), 'refund_required' (uses offer status), 'pending' (maps to unpaid/partial)
     if (status !== 'all') {
       if (status === 'refund_required') {
         query.andWhere('offer.status = :status', {
           status: OfferLetterStatus.REJECTED_BY_PAYMENT,
         });
-      } else {
+      } else if (status === 'pending') {
+        // 'pending' means payments that are not fully paid yet (unpaid or partial)
+        query.andWhere('offer.payment_status IN (:...pendingStatuses)', {
+          pendingStatuses: [
+            OfferPaymentStatus.UNPAID,
+            OfferPaymentStatus.PARTIAL,
+          ],
+        });
+      } else if (
+        Object.values(OfferPaymentStatus).includes(status as OfferPaymentStatus)
+      ) {
+        // Only apply filter if it's a valid PaymentStatus enum value
         query.andWhere('offer.payment_status = :paymentStatus', {
           paymentStatus: status,
         });
       }
+      // If status is not recognized, don't apply any filter (treat as 'all')
     }
 
     // Apply search filter

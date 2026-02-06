@@ -7,6 +7,7 @@ import { PaystackService } from './paystack.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { PaymentService } from './payment.service';
 import { PaymentPollingProcessor } from './payment-polling.processor';
+import { WebhookProcessor } from './webhook.processor';
 import { WebhooksController } from './webhooks.controller';
 import { PaymentsController } from './payments.controller';
 import { Payment } from './entities/payment.entity';
@@ -20,6 +21,7 @@ import { PropertyHistoryModule } from '../property-history/property-history.modu
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { AuthModule } from '../auth/auth.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { InvoicesModule } from '../invoices/invoices.module';
 
 @Module({
   imports: [
@@ -35,14 +37,16 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
       Users,
       KYCApplication,
     ]),
-    BullModule.registerQueue({
-      name: 'payment-polling',
-    }),
+    BullModule.registerQueue(
+      { name: 'payment-polling' },
+      { name: 'paystack-webhooks' },
+    ),
     ConfigModule,
     AuthModule,
     KYCLinksModule,
     PropertyHistoryModule,
     forwardRef(() => WhatsappBotModule),
+    forwardRef(() => InvoicesModule),
     EventEmitterModule,
   ],
   controllers: [WebhooksController, PaymentsController],
@@ -51,7 +55,8 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     PaystackLogger,
     PaymentService,
     PaymentPollingProcessor,
+    WebhookProcessor,
   ],
   exports: [PaystackService, PaystackLogger, PaymentService],
 })
-export class PaymentsModule {}
+export class PaymentsModule { }

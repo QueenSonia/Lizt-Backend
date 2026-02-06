@@ -12,4 +12,6 @@ export enum NotificationType {
   OFFER_LETTER_SENT = 'Offer Letter Sent',
   OFFER_LETTER_ACCEPTED = 'Offer Letter Accepted',
   OFFER_LETTER_REJECTED = 'Offer Letter Rejected',
+  PAYMENT_RECEIVED = 'Payment Received',
 }
+

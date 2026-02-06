@@ -29,6 +29,9 @@ import { PropertyHistoryService } from '../property-history/property-history.ser
 import { TemplateSenderService } from '../whatsapp-bot/template-sender/template-sender.service';
 import { InitiatePaymentDto, InitiatePaymentResponseDto } from './dto';
 import { InvoicesService } from '../invoices/invoices.service';
+import { NotificationService } from '../notifications/notification.service';
+import { NotificationType } from '../notifications/enums/notification-type';
+import { EventsGateway } from '../events/events.gateway';
 
 @Injectable()
 export class PaymentService {
@@ -54,6 +57,8 @@ export class PaymentService {
     private readonly templateSenderService: TemplateSenderService,
     @Inject(forwardRef(() => InvoicesService))
     private readonly invoicesService: InvoicesService,
+    private readonly notificationService: NotificationService,
+    private readonly eventsGateway: EventsGateway,
     private readonly dataSource: DataSource,
   ) { }
 
@@ -375,6 +380,31 @@ export class PaymentService {
           );
         } catch (notifErr) {
           this.paystackLogger.error('Notification failed but proceeding', { error: notifErr.message });
+        }
+
+        // Create notification for live feed (wrapped in try/catch to ensure it doesn't fail transaction)
+        try {
+          await this.notificationService.create({
+            date: new Date().toISOString(),
+            type: NotificationType.PAYMENT_RECEIVED,
+            description: isFullyPaid
+              ? `${tenantName} completed full payment of ₦${amountToAdd.toLocaleString()} for ${property.name}`
+              : `${tenantName} paid ₦${amountToAdd.toLocaleString()} for ${property.name}. Outstanding: ₦${newOutstandingBalance.toLocaleString()}`,
+            status: 'Completed',
+            property_id: property.id,
+            user_id: offerLetter.landlord_id,
+          });
+
+          // Emit WebSocket event for real-time notification
+          this.eventsGateway.emitPaymentReceived(offerLetter.landlord_id, {
+            propertyId: property.id,
+            propertyName: property.name,
+            applicantName: tenantName,
+            amount: amountToAdd,
+            isFullyPaid,
+          });
+        } catch (notifErr) {
+          this.paystackLogger.error('Failed to create live feed notification', { error: notifErr.message });
         }
 
         processedPaymentId = payment.id;

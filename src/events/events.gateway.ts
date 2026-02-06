@@ -168,4 +168,25 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       timestamp: new Date().toISOString(),
     });
   }
+
+  // Emit payment received event to landlord
+  emitPaymentReceived(
+    landlordId: string,
+    paymentData: {
+      propertyId: string;
+      propertyName: string;
+      applicantName: string;
+      amount: number;
+      isFullyPaid: boolean;
+    },
+  ) {
+    this.logger.log(
+      `Emitting payment received for property ${paymentData.propertyName} to landlord ${landlordId}`,
+    );
+
+    this.server.to(`landlord:${landlordId}`).emit('payment:received', {
+      ...paymentData,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }

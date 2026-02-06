@@ -1,4 +1,10 @@
-import { Processor, Process } from '@nestjs/bull';
+import {
+  Processor,
+  Process,
+  OnQueueActive,
+  OnQueueCompleted,
+  OnQueueFailed,
+} from '@nestjs/bull';
 import { Job } from 'bull';
 import { Logger } from '@nestjs/common';
 import { PaymentService } from './payment.service';
@@ -16,7 +22,26 @@ export class WebhookProcessor {
   constructor(
     private readonly paymentService: PaymentService,
     private readonly paystackLogger: PaystackLogger,
-  ) {}
+  ) {
+    this.logger.log('WebhookProcessor initialized and ready to process jobs');
+  }
+
+  @OnQueueActive()
+  onActive(job: Job<WebhookJobData>) {
+    this.logger.log(
+      `Job ${job.id} started processing: ${job.data.event} for reference: ${job.data.data?.reference}`,
+    );
+  }
+
+  @OnQueueCompleted()
+  onCompleted(job: Job<WebhookJobData>) {
+    this.logger.log(`Job ${job.id} completed successfully`);
+  }
+
+  @OnQueueFailed()
+  onFailed(job: Job<WebhookJobData>, error: Error) {
+    this.logger.error(`Job ${job.id} failed: ${error.message}`);
+  }
 
   @Process('handle-event')
   async handleWebhookEvent(job: Job<WebhookJobData>): Promise<void> {

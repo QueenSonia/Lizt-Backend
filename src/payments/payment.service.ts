@@ -55,7 +55,7 @@ export class PaymentService {
     @Inject(forwardRef(() => InvoicesService))
     private readonly invoicesService: InvoicesService,
     private readonly dataSource: DataSource,
-  ) {}
+  ) { }
 
   /**
    * Initiate a payment for an offer letter
@@ -202,7 +202,7 @@ export class PaymentService {
         },
         {
           delay: 30000, // Start after 30 seconds
-          attempts: 10, // Poll 10 times
+          attempts: 60, // Poll 60 times (30 minutes total)
           backoff: {
             type: 'fixed',
             delay: 30000, // Every 30 seconds

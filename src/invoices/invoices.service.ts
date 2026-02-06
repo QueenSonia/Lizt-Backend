@@ -291,14 +291,26 @@ export class InvoicesService {
   /**
    * Generate invoice from offer letter
    */
-  async generateFromOfferLetter(offerLetterId: string, landlordId: string) {
+  async generateFromOfferLetter(
+    offerLetterId: string,
+    landlordAccountId: string,
+  ) {
     const offerLetter = await this.offerLetterRepository.findOne({
-      where: { id: offerLetterId, landlord_id: landlordId },
-      relations: ['property', 'kyc_application'],
+      where: { id: offerLetterId, landlord_id: landlordAccountId },
+      relations: ['property', 'kyc_application', 'landlord'],
     });
 
     if (!offerLetter) {
       throw new NotFoundException('Offer letter not found');
+    }
+
+    // Get the User ID from the Account (landlord_id in offer letter is Account ID)
+    // Invoice.landlord_id expects a User ID, not Account ID
+    const landlordUserId = offerLetter.landlord?.userId;
+    if (!landlordUserId) {
+      throw new NotFoundException(
+        'Landlord user not found for this offer letter',
+      );
     }
 
     const existingInvoice = await this.invoiceRepository.findOne({
@@ -357,7 +369,7 @@ export class InvoicesService {
     const invoice = await this.dataSource.transaction(async (manager) => {
       const newInvoice = manager.create(Invoice, {
         invoice_number: invoiceNumber,
-        landlord_id: landlordId,
+        landlord_id: landlordUserId,
         kyc_application_id: offerLetter.kyc_application_id,
         property_id: offerLetter.property_id,
         offer_letter_id: offerLetterId,
@@ -389,7 +401,7 @@ export class InvoicesService {
       return savedInvoice;
     });
 
-    return this.findOne(invoice.id, landlordId);
+    return this.findOne(invoice.id, landlordUserId);
   }
 
   /**

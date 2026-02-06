@@ -13,7 +13,9 @@ import express from 'express';
 import { corsOptions } from './utils/options.cors';
 
 async function bootstrap(): Promise<NestExpressApplication> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
   const configService = app.get(ConfigService);
   const PORT = +(process.env.PORT ?? configService.get('PORT') ?? 3150);
 
@@ -23,14 +25,7 @@ async function bootstrap(): Promise<NestExpressApplication> {
   // });
 
   // =====middlewares start=====
-  app.use(
-    express.json({
-      verify: (req, res, buf, encoding) => {
-        const enc: BufferEncoding = (encoding || 'utf8') as BufferEncoding;
-        req['rawBody'] = buf.toString(enc);
-      },
-    }),
-  );
+  app.getHttpAdapter().getInstance().set('trust proxy', true);
   app.enableCors(corsOptions);
   app.use(helmet());
   app.use(cookieParser());

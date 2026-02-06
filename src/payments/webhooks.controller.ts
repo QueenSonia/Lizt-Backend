@@ -78,15 +78,18 @@ export class WebhooksController {
       // Use native NestJS rawBody if available, fallback to stringified body
       const rawBody = req.rawBody
         ? req.rawBody.toString('utf8')
-        : JSON.stringify(body);
+        : (body ? JSON.stringify(body) : '');
 
-      // Support fallback secret key names
+      // Paystack signs webhooks with the Secret Key (sk_...)
+      // Priorities: 1. Main Secret Key 2. Legacy Webhook Secret fallback
       const secretKey =
-        this.configService.get<string>('PAYSTACK_WEBHOOK_SECRET') ||
-        this.configService.get<string>('PAYSTACK_SECRET_KEY');
+        this.configService.get<string>('PAYSTACK_SECRET_KEY') ||
+        this.configService.get<string>('PAYSTACK_WEBHOOK_SECRET');
 
       if (!secretKey) {
-        this.paystackLogger.error('PAYSTACK_SECRET_KEY not configured', {});
+        this.paystackLogger.error('Paystack secret key not configured in environment', {
+          available_keys: Object.keys(process.env).filter(k => k.includes('PAYSTACK')),
+        });
         throw new Error('Paystack secret key not configured');
       }
 
@@ -96,10 +99,14 @@ export class WebhooksController {
         .digest('hex');
 
       if (hash !== signature) {
-        this.paystackLogger.error('Invalid webhook signature', {
+        this.paystackLogger.error('Invalid webhook signature detected', {
           event: body?.event,
           reference: body?.data?.reference,
-          ip: clientIp,
+          received_sig_prefix: signature?.substring(0, 8),
+          calculated_hash_prefix: hash?.substring(0, 8),
+          using_key: secretKey.substring(0, 7) + '...',
+          raw_body_len: rawBody.length,
+          raw_body_preview: rawBody.substring(0, 50),
           raw_body_present: !!req.rawBody,
         });
         return { status: 'error', message: 'Invalid signature' };

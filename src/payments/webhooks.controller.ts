@@ -41,55 +41,55 @@ export class WebhooksController {
 
   /**
    * Handle Paystack webhook events
-   *
-   * This endpoint receives payment notifications from Paystack.
-   * It validates the webhook signature, whitelists IPs, and queues jobs for processing.
-   *
-   * @Public - This endpoint must be accessible without authentication
    */
   @Public()
   @Post('paystack')
   @HttpCode(HttpStatus.OK)
   async handlePaystackWebhook(
-    @Req() req: Request,
+    @Req() req: any, // Use any to access rawBody without TS errors
     @Headers('x-paystack-signature') signature: string,
     @Body() body: any,
     @Ip() ip: string,
   ): Promise<{ status: string; message?: string }> {
     try {
       // 1. IP Whitelisting (Defense in Depth)
-      const clientIp = req.headers['x-forwarded-for'] || ip;
-      const normalizedIp = Array.isArray(clientIp)
-        ? clientIp[0]
-        : (clientIp as string).split(',')[0].trim();
+      // Since trust proxy is enabled, Nest/Express should handle x-forwarded-for automatically
+      const clientIp = ip;
 
-      if (!PAYSTACK_IPS.includes(normalizedIp) && process.env.NODE_ENV === 'production') {
-        this.paystackLogger.error('Unauthorized webhook IP', {
-          ip: normalizedIp,
-          event: body.event,
+      if (!PAYSTACK_IPS.includes(clientIp) && process.env.NODE_ENV === 'production') {
+        this.paystackLogger.error('Unauthorized webhook IP blocked', {
+          detected_ip: clientIp,
+          all_headers: req.headers,
+          event: body?.event,
         });
-        // We still return 200 OK to avoid leaking information to potential attackers,
-        // but we don't process the request.
+        // We still return 200 OK but don't process. 
+        // NOTE: If this happens in production, check if Paystack added new IPs or if proxy headers are wrong.
         return { status: 'success', message: 'IP check failed (logged)' };
       }
 
       // 2. Signature Validation (Requirement 5.2)
       if (!signature) {
         this.paystackLogger.error('Webhook signature missing', {
-          event: body.event,
+          event: body?.event,
         });
         return { status: 'error', message: 'Signature missing' };
       }
 
-      const secretKey = this.configService.get<string>('PAYSTACK_SECRET_KEY');
+      // Use native NestJS rawBody if available, fallback to stringified body
+      const rawBody = req.rawBody
+        ? req.rawBody.toString('utf8')
+        : JSON.stringify(body);
+
+      // Support fallback secret key names
+      const secretKey =
+        this.configService.get<string>('PAYSTACK_WEBHOOK_SECRET') ||
+        this.configService.get<string>('PAYSTACK_SECRET_KEY');
 
       if (!secretKey) {
         this.paystackLogger.error('PAYSTACK_SECRET_KEY not configured', {});
         throw new Error('Paystack secret key not configured');
       }
 
-      // Paystack recommendation: Use raw body for HMAC verification
-      const rawBody = req['rawBody'] || JSON.stringify(body);
       const hash = crypto
         .createHmac('sha512', secretKey)
         .update(rawBody)
@@ -97,15 +97,15 @@ export class WebhooksController {
 
       if (hash !== signature) {
         this.paystackLogger.error('Invalid webhook signature', {
-          event: body.event,
-          reference: body.data?.reference,
-          ip: normalizedIp,
+          event: body?.event,
+          reference: body?.data?.reference,
+          ip: clientIp,
+          raw_body_present: !!req.rawBody,
         });
         return { status: 'error', message: 'Invalid signature' };
       }
 
-      // 3. Asynchronous Job Queuing (Paystack Recommendation)
-      // We acknowledge immediately (200 OK) and process in the background
+      // 3. Asynchronous Job Queuing
       if (body.event === 'charge.success') {
         this.paystackLogger.info('Queuing charge.success webhook', {
           reference: body.data.reference,
@@ -119,7 +119,7 @@ export class WebhooksController {
             data: body.data,
           },
           {
-            attempts: 3,
+            attempts: 5, // Increased attempts
             backoff: {
               type: 'exponential',
               delay: 5000,
@@ -128,20 +128,17 @@ export class WebhooksController {
           },
         );
       } else {
-        this.paystackLogger.info('Ignored non-critical webhook event', {
+        this.paystackLogger.info('Webhook event received and validated', {
           event: body.event,
         });
       }
 
-      // Return 200 OK immediately
       return { status: 'success' };
     } catch (error) {
-      this.paystackLogger.error('Webhook error', {
+      this.paystackLogger.error('Webhook endpoint error', {
         error: error.message,
-        event: body?.event,
+        stack: error.stack,
       });
-
-      // Always return 200 OK to Paystack
       return { status: 'error', message: error.message };
     }
   }

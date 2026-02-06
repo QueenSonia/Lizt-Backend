@@ -290,13 +290,21 @@ export class PaymentService {
     // Acquire in-memory lock
     processingLocks.set(reference, true);
 
+    // Variables to capture transaction results for post-transaction operations
     let processedPaymentId: string | null = null;
     let processedOfferLetterId: string | null = null;
     let processedAmount: number | null = null;
-    let processedAmountPaid: number | null = null;
-    let processedTotalAmount: number | null = null;
+    let processedPropertyId: string | null = null;
+    let processedPropertyName: string | null = null;
+    let processedTenantName: string | null = null;
+    let processedLandlordId: string | null = null;
+    let processedIsFullyPaid = false;
+    let processedOutstandingBalance = 0;
+    let wasPropertySecured = false;
+    let wasRaceCondition = false;
 
     try {
+      // TRANSACTION: Only critical database updates
       await this.dataSource.transaction(async (manager) => {
         this.paystackLogger.debug('Transaction started', { reference });
 
@@ -391,6 +399,7 @@ export class PaymentService {
           ? `${kycApplication.first_name} ${kycApplication.last_name}`
           : 'Tenant';
 
+        // Handle property securing or race condition (critical - must be in transaction)
         if (isFullyPaid && property.property_status !== 'occupied') {
           this.paystackLogger.info('Securing property for tenant', {
             property_id: property.id,
@@ -402,101 +411,133 @@ export class PaymentService {
             offerLetter,
             property,
           );
-
-          await this.createPaymentHistoryEvent(
-            property.id,
-            'payment_completed_full',
-            `${tenantName} completed full payment and secured ${property.name}`,
-            payment.id,
-            'payment',
-          );
+          wasPropertySecured = true;
         } else if (isFullyPaid && property.property_status === 'occupied') {
           this.paystackLogger.warn(
             'Race condition: Property already occupied',
             { property_id: property.id },
           );
           await this.handleRaceCondition(manager, offerLetter);
-        } else {
-          this.paystackLogger.info('Partial payment processed', {
-            outstanding: newOutstandingBalance,
-          });
-          await this.createPaymentHistoryEvent(
-            property.id,
-            'payment_completed_partial',
-            `${tenantName} paid for ${property.name}. Outstanding: ₦${newOutstandingBalance.toLocaleString()}`,
-            payment.id,
-            'payment',
-          );
+          wasRaceCondition = true;
         }
 
-        // Notify landlord (wrapped in try/catch to ensure it doesn't fail transaction)
-        try {
-          await this.notifyLandlordPaymentReceived(
-            offerLetter,
-            payment,
-            isFullyPaid ? 0 : newOutstandingBalance,
-          );
-        } catch (notifErr) {
-          this.paystackLogger.error('Notification failed but proceeding', {
-            error: notifErr.message,
-          });
-        }
-
-        // Create notification for live feed (wrapped in try/catch to ensure it doesn't fail transaction)
-        try {
-          await this.notificationService.create({
-            date: new Date().toISOString(),
-            type: NotificationType.PAYMENT_RECEIVED,
-            description: isFullyPaid
-              ? `${tenantName} completed full payment of ₦${amountToAdd.toLocaleString()} for ${property.name}`
-              : `${tenantName} paid ₦${amountToAdd.toLocaleString()} for ${property.name}. Outstanding: ₦${newOutstandingBalance.toLocaleString()}`,
-            status: 'Completed',
-            property_id: property.id,
-            user_id: offerLetter.landlord_id,
-          });
-
-          // Emit WebSocket event for real-time notification
-          this.eventsGateway.emitPaymentReceived(offerLetter.landlord_id, {
-            propertyId: property.id,
-            propertyName: property.name,
-            applicantName: tenantName,
-            amount: amountToAdd,
-            isFullyPaid,
-          });
-        } catch (notifErr) {
-          this.paystackLogger.error('Failed to create live feed notification', {
-            error: notifErr.message,
-          });
-        }
-
+        // Capture data for post-transaction operations
         processedPaymentId = payment.id;
         processedOfferLetterId = offerLetter.id;
         processedAmount = amountToAdd;
-        processedAmountPaid = newAmountPaid;
-        processedTotalAmount = totalAmount;
+        processedPropertyId = property.id;
+        processedPropertyName = property.name;
+        processedTenantName = tenantName;
+        processedLandlordId = offerLetter.landlord_id;
+        processedIsFullyPaid = isFullyPaid;
+        processedOutstandingBalance = newOutstandingBalance;
       });
 
       this.paystackLogger.info('Transaction committed successfully', {
         reference: data.reference,
       });
 
-      if (processedOfferLetterId && processedPaymentId) {
-        try {
-          await this.invoicesService.recordPaymentFromOfferLetter(
-            processedOfferLetterId,
+      // POST-TRANSACTION: Non-critical operations (notifications, history, etc.)
+      // These run AFTER the transaction commits, so they won't cause transaction timeouts
+      if (processedPaymentId && processedPropertyId) {
+        // Fire-and-forget: Create history events
+        this.createPaymentHistoryEvent(
+          processedPropertyId,
+          wasPropertySecured
+            ? 'payment_completed_full'
+            : wasRaceCondition
+              ? 'payment_race_condition'
+              : 'payment_completed_partial',
+          wasPropertySecured
+            ? `${processedTenantName} completed full payment and secured ${processedPropertyName}`
+            : wasRaceCondition
+              ? `Payment received from ${processedTenantName} after property was occupied. Refund required.`
+              : `${processedTenantName} paid for ${processedPropertyName}. Outstanding: ₦${processedOutstandingBalance.toLocaleString()}`,
+          processedPaymentId,
+          'payment',
+        ).catch((err) => {
+          this.paystackLogger.error('Failed to create history event', {
+            error: err.message,
+          });
+        });
+
+        // Fire-and-forget: Notify landlord
+        if (processedOfferLetterId) {
+          this.offerLetterRepository
+            .findOne({
+              where: { id: processedOfferLetterId },
+              relations: ['property'],
+            })
+            .then((offerLetter) => {
+              if (offerLetter) {
+                return this.paymentRepository
+                  .findOne({ where: { id: processedPaymentId! } })
+                  .then((payment) => {
+                    if (payment) {
+                      return this.notifyLandlordPaymentReceived(
+                        offerLetter,
+                        payment,
+                        processedOutstandingBalance,
+                      );
+                    }
+                  });
+              }
+            })
+            .catch((err) => {
+              this.paystackLogger.error('Failed to notify landlord', {
+                error: err.message,
+              });
+            });
+        }
+
+        // Fire-and-forget: Create live feed notification
+        this.notificationService
+          .create({
+            date: new Date().toISOString(),
+            type: NotificationType.PAYMENT_RECEIVED,
+            description: processedIsFullyPaid
+              ? `${processedTenantName} completed full payment of ₦${processedAmount!.toLocaleString()} for ${processedPropertyName}`
+              : `${processedTenantName} paid ₦${processedAmount!.toLocaleString()} for ${processedPropertyName}. Outstanding: ₦${processedOutstandingBalance.toLocaleString()}`,
+            status: 'Completed',
+            property_id: processedPropertyId,
+            user_id: processedLandlordId!,
+          })
+          .then(() => {
+            // Emit WebSocket event for real-time notification
+            this.eventsGateway.emitPaymentReceived(processedLandlordId!, {
+              propertyId: processedPropertyId!,
+              propertyName: processedPropertyName!,
+              applicantName: processedTenantName!,
+              amount: processedAmount!,
+              isFullyPaid: processedIsFullyPaid,
+            });
+          })
+          .catch((err) => {
+            this.paystackLogger.error(
+              'Failed to create live feed notification',
+              {
+                error: err.message,
+              },
+            );
+          });
+
+        // Fire-and-forget: Record invoice
+        this.invoicesService
+          .recordPaymentFromOfferLetter(
+            processedOfferLetterId!,
             processedAmount!,
             data.reference,
             data.channel || 'card',
             processedPaymentId,
-          );
-          this.paystackLogger.info('Invoice payment recorded');
-        } catch (invErr) {
-          this.paystackLogger.error('Invoice recording failed', {
-            error: invErr.message,
+          )
+          .catch((err) => {
+            this.paystackLogger.error('Invoice recording failed', {
+              error: err.message,
+            });
           });
-        }
 
-        await this.logPaymentEvent(
+        // Fire-and-forget: Log payment event
+        this.logPaymentEvent(
           processedPaymentId,
           PaymentLogEventType.VERIFICATION,
           {
@@ -504,7 +545,11 @@ export class PaymentService {
             processed: true,
             amount: processedAmount,
           },
-        );
+        ).catch((err) => {
+          this.paystackLogger.error('Failed to log payment event', {
+            error: err.message,
+          });
+        });
       }
     } catch (error) {
       // Handle lock acquisition failure gracefully
@@ -538,6 +583,7 @@ export class PaymentService {
 
   /**
    * Attach winning tenant and reject other offers
+   * Only performs critical database operations - notifications are handled post-transaction
    */
   private async attachTenantAndRejectOthers(
     manager: EntityManager,
@@ -555,27 +601,10 @@ export class PaymentService {
       selected_at: new Date(),
     });
 
-    // Attach tenant to property
+    // Attach tenant to property (critical - must be in transaction)
     await this.tenantAttachmentService.attachTenantFromOffer(
       manager,
       winningOffer,
-    );
-
-    // Get tenant name for history events
-    const kycApplication = await manager.findOne(KYCApplication, {
-      where: { id: winningOffer.kyc_application_id },
-    });
-    const tenantName = kycApplication
-      ? `${kycApplication.first_name} ${kycApplication.last_name}`
-      : 'Tenant';
-
-    // Create property history event for tenant attachment
-    await this.createPaymentHistoryEvent(
-      property.id,
-      'tenant_attached_payment',
-      `${tenantName} was attached to ${property.name} after completing payment`,
-      winningOffer.id,
-      'offer_letter',
     );
 
     // Find all other offers with payments for this property
@@ -587,87 +616,71 @@ export class PaymentService {
       .andWhere('offer.amount_paid > 0')
       .getMany();
 
-    // Update losing offers
+    // Update losing offers (critical - must be in transaction)
     for (const losingOffer of losingOffers) {
       await manager.update(OfferLetter, losingOffer.id, {
         status: OfferLetterStatus.REJECTED_BY_PAYMENT,
       });
-
-      // Get losing tenant name
-      const losingKyc = await manager.findOne(KYCApplication, {
-        where: { id: losingOffer.kyc_application_id },
-      });
-      const losingTenantName = losingKyc
-        ? `${losingKyc.first_name} ${losingKyc.last_name}`
-        : 'Tenant';
-
-      // Create property history event for rejected offer
-      await this.createPaymentHistoryEvent(
-        property.id,
-        'offer_rejected_payment',
-        `Offer for ${losingTenantName} rejected - property secured by another applicant`,
-        losingOffer.id,
-        'offer_letter',
-      );
-
-      // Send WhatsApp notification to losing tenant
-      await this.notifyLosingTenant(losingOffer, property);
     }
-
-    // Send success notifications
-    await this.notifyWinningTenant(winningOffer, property);
 
     this.paystackLogger.info('Tenant attached and others rejected', {
       winning_offer_id: winningOffer.id,
       property_id: property.id,
       losing_offers_count: losingOffers.length,
     });
+
+    // Fire-and-forget: Send notifications AFTER transaction commits
+    // These are scheduled but not awaited to avoid blocking the transaction
+    setImmediate(async () => {
+      try {
+        // Notify winning tenant
+        await this.notifyWinningTenant(winningOffer, property);
+
+        // Notify losing tenants
+        for (const losingOffer of losingOffers) {
+          await this.notifyLosingTenant(losingOffer, property);
+        }
+      } catch (err) {
+        this.paystackLogger.error('Failed to send tenant notifications', {
+          error: err.message,
+        });
+      }
+    });
   }
 
   /**
    * Handle race condition when property is already occupied
+   * Only performs critical database operations - notifications are handled post-transaction
    */
   private async handleRaceCondition(
     manager: EntityManager,
     offerLetter: OfferLetter,
   ): Promise<void> {
-    // Update offer status
+    // Update offer status (critical - must be in transaction)
     await manager.update(OfferLetter, offerLetter.id, {
       status: OfferLetterStatus.PAYMENT_HELD_RACE_CONDITION,
     });
-
-    // Get tenant name for history event
-    const kycApplication = await manager.findOne(KYCApplication, {
-      where: { id: offerLetter.kyc_application_id },
-    });
-    const tenantName = kycApplication
-      ? `${kycApplication.first_name} ${kycApplication.last_name}`
-      : 'Tenant';
-
-    // Get property for name
-    const property = await manager.findOne(Property, {
-      where: { id: offerLetter.property_id },
-    });
-    const propertyName = property?.name || 'Property';
-
-    // Create property history event for race condition
-    await this.createPaymentHistoryEvent(
-      offerLetter.property_id,
-      'payment_race_condition',
-      `Payment of ₦${Number(offerLetter.amount_paid).toLocaleString()} received from ${tenantName} after property was occupied. Refund required.`,
-      offerLetter.id,
-      'offer_letter',
-    );
-
-    // Notify landlord and tenant
-    await this.notifyLandlordRaceCondition(offerLetter);
-    await this.notifyTenantRaceCondition(offerLetter);
 
     // Log race condition
     this.paystackLogger.error('Race condition detected', {
       offer_id: offerLetter.id,
       property_id: offerLetter.property_id,
       amount_paid: offerLetter.amount_paid,
+    });
+
+    // Fire-and-forget: Send notifications AFTER transaction commits
+    setImmediate(async () => {
+      try {
+        await this.notifyLandlordRaceCondition(offerLetter);
+        await this.notifyTenantRaceCondition(offerLetter);
+      } catch (err) {
+        this.paystackLogger.error(
+          'Failed to send race condition notifications',
+          {
+            error: err.message,
+          },
+        );
+      }
     });
   }
 

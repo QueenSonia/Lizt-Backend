@@ -99,36 +99,70 @@ export class PaymentService {
       throw new BadRequestException('Amount must be greater than zero');
     }
 
-    // Generate unique reference
-    const reference = `LIZT_${Date.now()}_${uuidv4().substring(0, 8)}`;
+    // Generate unique reference with retry logic for collision handling
+    const maxRetries = 3;
+    let reference = '';
+    let payment: Payment | null = null;
+    let paystackResponse: any = null;
 
-    // Initialize Paystack transaction
-    const paystackResponse = await this.paystackService.initializeTransaction({
-      email: dto.email,
-      amount: Math.round(dto.amount * 100), // Convert to kobo
-      reference,
-      callback_url: dto.callbackUrl,
-      metadata: {
-        offer_letter_id: offerLetter.id,
-        property_id: offerLetter.property_id,
-        tenant_name: `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`,
-      },
-      channels: ['card', 'bank_transfer'],
-    });
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      reference = `LIZT_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
-    // Create payment record
-    const payment = await this.paymentRepository.save({
-      offer_letter_id: offerLetter.id,
-      amount: dto.amount,
-      payment_type:
-        dto.amount >= (offerLetter.outstanding_balance ?? 0)
-          ? PaymentType.FULL
-          : PaymentType.PARTIAL,
-      status: PaymentStatus.PENDING,
-      paystack_reference: reference,
-      paystack_access_code: paystackResponse.data.access_code,
-      paystack_authorization_url: paystackResponse.data.authorization_url,
-    });
+      try {
+        // Initialize Paystack transaction
+        paystackResponse = await this.paystackService.initializeTransaction({
+          email: dto.email,
+          amount: Math.round(dto.amount * 100), // Convert to kobo
+          reference,
+          callback_url: dto.callbackUrl,
+          metadata: {
+            offer_letter_id: offerLetter.id,
+            property_id: offerLetter.property_id,
+            tenant_name: `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`,
+          },
+          channels: ['card', 'bank_transfer'],
+        });
+
+        // Create payment record
+        payment = await this.paymentRepository.save({
+          offer_letter_id: offerLetter.id,
+          amount: dto.amount,
+          payment_type:
+            dto.amount >= (offerLetter.outstanding_balance ?? 0)
+              ? PaymentType.FULL
+              : PaymentType.PARTIAL,
+          status: PaymentStatus.PENDING,
+          paystack_reference: reference,
+          paystack_access_code: paystackResponse.data.access_code,
+          paystack_authorization_url: paystackResponse.data.authorization_url,
+        });
+
+        // Success - break out of retry loop
+        break;
+      } catch (error) {
+        // Check if it's a duplicate key error (PostgreSQL error code 23505)
+        const isDuplicateError =
+          error.code === '23505' ||
+          error.message?.includes('duplicate key') ||
+          error.message?.includes('unique constraint');
+
+        if (isDuplicateError && attempt < maxRetries - 1) {
+          this.paystackLogger.warn('Reference collision, retrying', {
+            reference,
+            attempt: attempt + 1,
+          });
+          continue;
+        }
+
+        // Re-throw if not a duplicate error or max retries reached
+        throw error;
+      }
+    }
+
+    // This should never happen due to the throw in the catch block, but TypeScript needs assurance
+    if (!payment || !paystackResponse) {
+      throw new BadRequestException('Failed to create payment after retries');
+    }
 
     // Log initiation
     void this.logPaymentEvent(payment.id, PaymentLogEventType.INITIATION, {
@@ -201,32 +235,47 @@ export class PaymentService {
 
   /**
    * Process a successful payment (called by webhook or polling)
+   * Uses pessimistic locking to prevent double processing from concurrent webhook/polling
    */
   async processSuccessfulPayment(data: any): Promise<void> {
-    const payment = await this.paymentRepository.findOne({
-      where: { paystack_reference: data.reference },
-      relations: ['offerLetter', 'offerLetter.property'],
-    });
+    // Variables to capture data from transaction for post-transaction operations
+    let processedPaymentId: string | null = null;
+    let processedOfferLetterId: string | null = null;
+    let processedAmount: number | null = null;
+    let processedAmountPaid: number | null = null;
+    let processedTotalAmount: number | null = null;
 
-    if (!payment) {
-      this.paystackLogger.error('Payment not found for reference', {
-        reference: data.reference,
-      });
-      return;
-    }
-
-    // Check if already processed
-    if (payment.status === PaymentStatus.COMPLETED) {
-      this.paystackLogger.info('Payment already processed', {
-        payment_id: payment.id,
-        reference: data.reference,
-      });
-      return;
-    }
-
-    // Use transaction with row locking to prevent race conditions
+    // Use transaction with row locking to prevent race conditions between webhook and polling
     await this.dataSource.transaction(async (manager) => {
-      // Lock the property row
+      // Lock the payment row first to prevent double processing
+      const payment = await manager
+        .getRepository(Payment)
+        .createQueryBuilder('payment')
+        .leftJoinAndSelect('payment.offerLetter', 'offerLetter')
+        .leftJoinAndSelect('offerLetter.property', 'property')
+        .where('payment.paystack_reference = :reference', {
+          reference: data.reference,
+        })
+        .setLock('pessimistic_write') // FOR UPDATE lock
+        .getOne();
+
+      if (!payment) {
+        this.paystackLogger.error('Payment not found for reference', {
+          reference: data.reference,
+        });
+        return;
+      }
+
+      // Check if already processed (inside the lock to prevent race condition)
+      if (payment.status === PaymentStatus.COMPLETED) {
+        this.paystackLogger.info('Payment already processed', {
+          payment_id: payment.id,
+          reference: data.reference,
+        });
+        return;
+      }
+
+      // Lock the property row as well
       const property = await manager
         .getRepository(Property)
         .createQueryBuilder('property')
@@ -313,36 +362,49 @@ export class PaymentService {
         payment,
         newOutstandingBalance,
       );
+
+      // Capture data for post-transaction operations
+      processedPaymentId = payment.id;
+      processedOfferLetterId = payment.offerLetter.id;
+      processedAmount = Number(payment.amount);
+      processedAmountPaid = newAmountPaid;
+      processedTotalAmount = Number(payment.offerLetter.total_amount);
     });
+
+    // Skip post-transaction operations if payment wasn't processed
+    if (!processedPaymentId || !processedOfferLetterId) {
+      return;
+    }
 
     // Record payment on the invoice (outside transaction - non-critical)
     try {
       await this.invoicesService.recordPaymentFromOfferLetter(
-        payment.offerLetter.id,
-        Number(payment.amount),
+        processedOfferLetterId,
+        processedAmount!,
         data.reference,
         data.channel || 'card',
-        payment.id,
+        processedPaymentId,
       );
     } catch (error) {
       // Log but don't fail - invoice update is not critical
       this.paystackLogger.error('Failed to record payment on invoice', {
-        offer_letter_id: payment.offerLetter.id,
-        payment_id: payment.id,
+        offer_letter_id: processedOfferLetterId,
+        payment_id: processedPaymentId,
         error: error.message,
       });
     }
 
     // Log successful processing
-    await this.logPaymentEvent(payment.id, PaymentLogEventType.VERIFICATION, {
-      event: 'charge.success',
-      processed: true,
-      new_amount_paid:
-        Number(payment.offerLetter.amount_paid) + Number(payment.amount),
-      outstanding_balance:
-        Number(payment.offerLetter.total_amount) -
-        (Number(payment.offerLetter.amount_paid) + Number(payment.amount)),
-    });
+    await this.logPaymentEvent(
+      processedPaymentId,
+      PaymentLogEventType.VERIFICATION,
+      {
+        event: 'charge.success',
+        processed: true,
+        new_amount_paid: processedAmountPaid,
+        outstanding_balance: processedTotalAmount! - processedAmountPaid!,
+      },
+    );
   }
 
   /**

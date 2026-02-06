@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { WebhooksController } from '../../src/payments/webhooks.controller';
 import { PaymentService } from '../../src/payments/payment.service';
 import { PaystackLogger } from '../../src/payments/paystack-logger.service';
+import { getQueueToken } from '@nestjs/bull';
 import * as crypto from 'crypto';
 
 describe('WebhooksController', () => {
@@ -23,6 +24,10 @@ describe('WebhooksController', () => {
     get: jest.fn(),
   };
 
+  const mockWebhookQueue = {
+    add: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [WebhooksController],
@@ -39,6 +44,10 @@ describe('WebhooksController', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
+        {
+          provide: getQueueToken('paystack-webhooks'),
+          useValue: mockWebhookQueue,
+        },
       ],
     }).compile();
 
@@ -53,159 +62,114 @@ describe('WebhooksController', () => {
   });
 
   describe('handlePaystackWebhook', () => {
-    const webhookSecret = 'test_webhook_secret';
+    const secretKey = 'test_secret_key';
     const mockWebhookBody = {
       event: 'charge.success',
       data: {
         reference: 'LIZT_1234567890_abc123',
-        amount: 50000000, // 500,000 NGN in kobo
+        amount: 50000000,
         status: 'success',
-        paid_at: '2026-01-28T10:30:00Z',
-        channel: 'card',
-        customer: {
-          email: 'tenant@example.com',
-        },
       },
     };
 
     beforeEach(() => {
-      mockConfigService.get.mockReturnValue(webhookSecret);
+      mockConfigService.get.mockReturnValue(secretKey);
     });
 
-    it('should process valid webhook with correct signature', async () => {
-      // Generate valid signature
+    it('should queue valid charge.success webhook', async () => {
       const signature = crypto
-        .createHmac('sha512', webhookSecret)
+        .createHmac('sha512', secretKey)
         .update(JSON.stringify(mockWebhookBody))
         .digest('hex');
 
-      const req = {} as any;
+      const req = { rawBody: JSON.stringify(mockWebhookBody), headers: {} } as any;
       const result = await controller.handlePaystackWebhook(
         req,
         signature,
         mockWebhookBody,
+        '127.0.0.1',
       );
 
       expect(result).toEqual({ status: 'success' });
-      expect(mockPaymentService.processSuccessfulPayment).toHaveBeenCalledWith(
-        mockWebhookBody.data,
-      );
-      expect(mockPaystackLogger.info).toHaveBeenCalledWith(
-        'Webhook received',
+      expect(mockWebhookQueue.add).toHaveBeenCalledWith(
+        'handle-event',
+        expect.objectContaining({
+          event: 'charge.success',
+          data: mockWebhookBody.data,
+        }),
         expect.any(Object),
       );
     });
 
     it('should reject webhook with invalid signature', async () => {
       const invalidSignature = 'invalid_signature';
+      const req = { rawBody: JSON.stringify(mockWebhookBody), headers: {} } as any;
 
-      const req = {} as any;
       const result = await controller.handlePaystackWebhook(
         req,
         invalidSignature,
         mockWebhookBody,
+        '127.0.0.1',
       );
 
-      // Should return error status but still 200 OK
       expect(result.status).toBe('error');
-      expect(
-        mockPaymentService.processSuccessfulPayment,
-      ).not.toHaveBeenCalled();
-      expect(mockPaystackLogger.error).toHaveBeenCalledWith(
-        'Invalid webhook signature',
-        expect.any(Object),
-      );
+      expect(mockWebhookQueue.add).not.toHaveBeenCalled();
     });
 
     it('should reject webhook with missing signature', async () => {
-      const req = {} as any;
+      const req = { rawBody: JSON.stringify(mockWebhookBody), headers: {} } as any;
+
       const result = await controller.handlePaystackWebhook(
         req,
         undefined as any,
         mockWebhookBody,
+        '127.0.0.1',
       );
 
-      // Should return error status but still 200 OK
       expect(result.status).toBe('error');
-      expect(
-        mockPaymentService.processSuccessfulPayment,
-      ).not.toHaveBeenCalled();
-      expect(mockPaystackLogger.error).toHaveBeenCalledWith(
-        'Webhook signature missing',
-        expect.any(Object),
-      );
+      expect(mockWebhookQueue.add).not.toHaveBeenCalled();
     });
 
-    it('should ignore non-charge.success events', async () => {
+    it('should skip non-charge.success events', async () => {
       const otherEventBody = {
         event: 'charge.failed',
         data: mockWebhookBody.data,
       };
 
       const signature = crypto
-        .createHmac('sha512', webhookSecret)
+        .createHmac('sha512', secretKey)
         .update(JSON.stringify(otherEventBody))
         .digest('hex');
 
-      const req = {} as any;
+      const req = { rawBody: JSON.stringify(otherEventBody), headers: {} } as any;
       const result = await controller.handlePaystackWebhook(
         req,
         signature,
         otherEventBody,
+        '127.0.0.1',
       );
 
       expect(result).toEqual({ status: 'success' });
-      expect(
-        mockPaymentService.processSuccessfulPayment,
-      ).not.toHaveBeenCalled();
-      expect(mockPaystackLogger.info).toHaveBeenCalledWith(
-        'Webhook event ignored',
-        expect.any(Object),
-      );
+      expect(mockWebhookQueue.add).not.toHaveBeenCalled();
     });
 
-    it('should return 200 OK even when processing fails', async () => {
-      mockPaymentService.processSuccessfulPayment.mockRejectedValue(
-        new Error('Processing failed'),
-      );
-
+    it('should ignore whitelisting in non-production', async () => {
+      process.env.NODE_ENV = 'development';
       const signature = crypto
-        .createHmac('sha512', webhookSecret)
+        .createHmac('sha512', secretKey)
         .update(JSON.stringify(mockWebhookBody))
         .digest('hex');
 
-      const req = {} as any;
+      const req = { rawBody: JSON.stringify(mockWebhookBody), headers: {} } as any;
       const result = await controller.handlePaystackWebhook(
         req,
         signature,
         mockWebhookBody,
+        '1.1.1.1', // Not a Paystack IP
       );
 
-      // Should still return 200 OK with error status
-      expect(result.status).toBe('error');
-      expect(result.message).toBe('Processing failed');
-      expect(mockPaystackLogger.error).toHaveBeenCalledWith(
-        'Webhook processing error',
-        expect.any(Object),
-      );
-    });
-
-    it('should handle missing webhook secret configuration', async () => {
-      mockConfigService.get.mockReturnValue(undefined);
-
-      const signature = 'some_signature';
-      const req = {} as any;
-      const result = await controller.handlePaystackWebhook(
-        req,
-        signature,
-        mockWebhookBody,
-      );
-
-      expect(result.status).toBe('error');
-      expect(mockPaystackLogger.error).toHaveBeenCalledWith(
-        'PAYSTACK_WEBHOOK_SECRET not configured',
-        expect.any(Object),
-      );
+      expect(result.status).toBe('success');
+      expect(mockWebhookQueue.add).toHaveBeenCalled();
     });
   });
 });

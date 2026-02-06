@@ -82,14 +82,23 @@ export class PaymentPollingProcessor {
 
         // Job complete, don't retry
         return { processed: true };
-      } else if (verification.data.status === 'failed') {
-        // Mark payment as failed
+      } else if (
+        verification.data.status === 'failed' ||
+        verification.data.status === 'abandoned'
+      ) {
+        // Mark payment as failed (abandoned is also a terminal failure state)
         await this.paymentService.markAsFailed(paymentId, verification.data);
-        await this.paystackLogger.info('Payment marked as failed via polling', {
-          reference,
-          payment_id: paymentId,
-        });
-        this.logger.log(`Payment ${paymentId} marked as failed`);
+        await this.paystackLogger.info(
+          `Payment marked as failed via polling (status: ${verification.data.status})`,
+          {
+            reference,
+            payment_id: paymentId,
+            paystack_status: verification.data.status,
+          },
+        );
+        this.logger.log(
+          `Payment ${paymentId} marked as failed (Paystack status: ${verification.data.status})`,
+        );
         return { processed: true, failed: true };
       }
 

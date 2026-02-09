@@ -362,20 +362,6 @@ export class KYCApplicationService {
       ) {
         const property = applicationWithRelations.property;
 
-        // Get landlord details for the notification
-        const landlord = await this.propertyRepository
-          .createQueryBuilder('property')
-          .leftJoinAndSelect('property.owner', 'owner')
-          .leftJoinAndSelect('owner.user', 'user')
-          .where('property.id = :propertyId', { propertyId: property.id })
-          .getOne();
-
-        const landlordName =
-          landlord?.owner?.profile_name ||
-          (landlord?.owner?.user
-            ? `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`
-            : 'Property Manager');
-
         const agentPhone = this.utilService.normalizePhoneNumber(
           kycData.referral_agent_phone_number,
         );
@@ -387,7 +373,6 @@ export class KYCApplicationService {
           agent_name: agentName,
           tenant_name: tenantName,
           property_name: property.name,
-          landlord_name: landlordName,
         });
 
         console.log(
@@ -1361,20 +1346,6 @@ export class KYCApplicationService {
         ) {
           const property = updatedKyc.property;
 
-          // Get landlord details for the notification
-          const landlord = await this.propertyRepository
-            .createQueryBuilder('property')
-            .leftJoinAndSelect('property.owner', 'owner')
-            .leftJoinAndSelect('owner.user', 'user')
-            .where('property.id = :propertyId', { propertyId: property.id })
-            .getOne();
-
-          const landlordName =
-            landlord?.owner?.profile_name ||
-            (landlord?.owner?.user
-              ? `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`
-              : 'Property Manager');
-
           const agentPhone = this.utilService.normalizePhoneNumber(
             updatedKyc.referral_agent_phone_number,
           );
@@ -1386,7 +1357,6 @@ export class KYCApplicationService {
             agent_name: agentName,
             tenant_name: tenantName,
             property_name: property.name,
-            landlord_name: landlordName,
           });
 
           console.log(

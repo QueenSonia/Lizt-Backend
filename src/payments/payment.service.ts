@@ -990,6 +990,20 @@ export class PaymentService {
     newOutstandingBalance: number,
   ): Promise<void> {
     try {
+      this.paystackLogger.info('Starting landlord payment notification', {
+        offer_id: offerLetter.id,
+        property_id: offerLetter.property_id,
+        property_owner_id: offerLetter.property?.owner_id,
+      });
+
+      if (!offerLetter.property?.owner_id) {
+        this.paystackLogger.warn('Cannot send landlord payment notification', {
+          offer_id: offerLetter.id,
+          reason: 'Property or owner_id not loaded on offer letter',
+        });
+        return;
+      }
+
       const landlord = await this.usersRepository.findOne({
         where: { id: offerLetter.property.owner_id },
       });
@@ -1002,6 +1016,10 @@ export class PaymentService {
         this.paystackLogger.warn('Cannot send landlord payment notification', {
           offer_id: offerLetter.id,
           reason: 'Missing landlord phone or KYC application',
+          landlord_id: landlord?.id,
+          landlord_phone: landlord?.phone_number ? 'present' : 'missing',
+          kyc_application_id: offerLetter.kyc_application_id,
+          kyc_found: !!kycApplication,
         });
         return;
       }

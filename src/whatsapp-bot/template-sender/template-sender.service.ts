@@ -157,7 +157,6 @@ export interface AgentKYCNotificationParams {
   agent_name: string;
   tenant_name: string;
   property_name: string;
-  landlord_name: string;
 }
 
 /**
@@ -750,13 +749,13 @@ export class TemplateSenderService {
 
   /**
    * Send KYC application notification to referral agent via WhatsApp
+   * Template: "Hi {{1}}, {{2}} has listed you as their agent and has just completed their KYC form for {{3}}Thank you"
    */
   async sendAgentKYCNotification({
     phone_number,
     agent_name,
     tenant_name,
     property_name,
-    landlord_name,
   }: AgentKYCNotificationParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -782,10 +781,6 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: property_name,
-              },
-              {
-                type: 'text',
-                text: landlord_name,
               },
             ],
           },

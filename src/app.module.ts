@@ -33,6 +33,7 @@ import { OfferLettersModule } from './offer-letters/offer-letters.module';
 import { PaymentsModule } from './payments/payments.module';
 import { InvoicesModule } from './invoices/invoices.module';
 import { ApiLogModule } from './common/interceptors/api-log.module';
+import { QueryLogModule } from './common/logger/query-log.module';
 
 config({ default_node_env: 'production' });
 
@@ -111,6 +112,7 @@ config({ default_node_env: 'production' });
     PaymentsModule,
     InvoicesModule,
     ApiLogModule,
+    QueryLogModule,
   ],
   controllers: [AppController],
   providers: [

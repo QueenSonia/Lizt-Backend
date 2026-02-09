@@ -295,93 +295,112 @@ export class KYCApplicationService {
       console.error('Failed to emit KYC submission event:', error);
     }
 
-    // Send WhatsApp notification to landlord
-    try {
-      if (this.whatsappBotService && applicationWithRelations.property) {
-        const property = applicationWithRelations.property;
+    // Send all WhatsApp notifications in parallel (fire-and-forget)
+    // This reduces ~600ms of sequential API calls to ~200ms
+    const whatsappPromises: Promise<void>[] = [];
 
-        // Get landlord details
-        const landlord = await this.propertyRepository
-          .createQueryBuilder('property')
-          .leftJoinAndSelect('property.owner', 'owner')
-          .leftJoinAndSelect('owner.user', 'user')
-          .where('property.id = :propertyId', { propertyId: property.id })
-          .getOne();
+    // WhatsApp notification to landlord
+    if (this.whatsappBotService && applicationWithRelations.property) {
+      const property = applicationWithRelations.property;
 
-        if (landlord?.owner?.user?.phone_number) {
-          const landlordPhone = this.utilService.normalizePhoneNumber(
-            landlord.owner.user.phone_number,
-          );
-          const landlordName =
-            landlord.owner.profile_name ||
-            `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
-          const tenantName = `${kycData.first_name} ${kycData.last_name}`;
-          const frontendUrl =
-            this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
+      whatsappPromises.push(
+        (async () => {
+          try {
+            const landlord = await this.propertyRepository
+              .createQueryBuilder('property')
+              .leftJoinAndSelect('property.owner', 'owner')
+              .leftJoinAndSelect('owner.user', 'user')
+              .where('property.id = :propertyId', { propertyId: property.id })
+              .getOne();
 
-          await this.whatsappBotService.sendKYCApplicationNotification({
-            phone_number: landlordPhone,
-            landlord_name: landlordName,
-            tenant_name: tenantName,
-            property_name: property.name,
-            application_id: savedApplication.id,
-            frontend_url: frontendUrl,
-          });
-        }
-      }
-    } catch (error) {
-      // Log error but don't fail the request if WhatsApp notification fails
-      console.error('Failed to send WhatsApp KYC notification:', error);
+            if (landlord?.owner?.user?.phone_number) {
+              const landlordPhone = this.utilService.normalizePhoneNumber(
+                landlord.owner.user.phone_number,
+              );
+              const landlordName =
+                landlord.owner.profile_name ||
+                `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
+              const tenantName = `${kycData.first_name} ${kycData.last_name}`;
+              const frontendUrl =
+                this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
+
+              await this.whatsappBotService!.sendKYCApplicationNotification({
+                phone_number: landlordPhone,
+                landlord_name: landlordName,
+                tenant_name: tenantName,
+                property_name: property.name,
+                application_id: savedApplication.id,
+                frontend_url: frontendUrl,
+              });
+            }
+          } catch (error) {
+            console.error('Failed to send WhatsApp KYC notification:', error);
+          }
+        })(),
+      );
     }
 
-    // Send WhatsApp confirmation to tenant
-    try {
-      if (this.whatsappBotService && kycData.phone_number) {
-        const tenantPhone = this.utilService.normalizePhoneNumber(
-          kycData.phone_number,
-        );
-        const tenantName = `${kycData.first_name} ${kycData.last_name}`;
+    // WhatsApp confirmation to tenant
+    if (this.whatsappBotService && kycData.phone_number) {
+      whatsappPromises.push(
+        (async () => {
+          try {
+            const tenantPhone = this.utilService.normalizePhoneNumber(
+              kycData.phone_number,
+            );
+            const tenantName = `${kycData.first_name} ${kycData.last_name}`;
 
-        await this.whatsappBotService.sendKYCSubmissionConfirmation({
-          phone_number: tenantPhone,
-          tenant_name: tenantName,
-        });
-      }
-    } catch (error) {
-      // Log error but don't fail the request if WhatsApp notification fails
-      console.error('Failed to send tenant KYC confirmation:', error);
+            await this.whatsappBotService!.sendKYCSubmissionConfirmation({
+              phone_number: tenantPhone,
+              tenant_name: tenantName,
+            });
+          } catch (error) {
+            console.error('Failed to send tenant KYC confirmation:', error);
+          }
+        })(),
+      );
     }
 
-    // Send WhatsApp notification to referral agent (if provided)
-    try {
-      if (
-        this.whatsappBotService &&
-        kycData.referral_agent_phone_number &&
-        kycData.referral_agent_full_name &&
-        applicationWithRelations.property
-      ) {
-        const property = applicationWithRelations.property;
+    // WhatsApp notification to referral agent (if provided)
+    if (
+      this.whatsappBotService &&
+      kycData.referral_agent_phone_number &&
+      kycData.referral_agent_full_name &&
+      applicationWithRelations.property
+    ) {
+      const property = applicationWithRelations.property;
 
-        const agentPhone = this.utilService.normalizePhoneNumber(
-          kycData.referral_agent_phone_number,
-        );
-        const agentName = kycData.referral_agent_full_name;
-        const tenantName = `${kycData.first_name} ${kycData.last_name}`;
+      whatsappPromises.push(
+        (async () => {
+          try {
+            const agentPhone = this.utilService.normalizePhoneNumber(
+              kycData.referral_agent_phone_number!,
+            );
+            const agentName = kycData.referral_agent_full_name!;
+            const tenantName = `${kycData.first_name} ${kycData.last_name}`;
 
-        await this.whatsappBotService.sendAgentKYCNotification({
-          phone_number: agentPhone,
-          agent_name: agentName,
-          tenant_name: tenantName,
-          property_name: property.name,
-        });
+            await this.whatsappBotService!.sendAgentKYCNotification({
+              phone_number: agentPhone,
+              agent_name: agentName,
+              tenant_name: tenantName,
+              property_name: property.name,
+            });
 
-        console.log(
-          `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
-        );
-      }
-    } catch (error) {
-      // Log error but don't fail the request if WhatsApp notification fails
-      console.error('Failed to send agent KYC notification:', error);
+            console.log(
+              `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
+            );
+          } catch (error) {
+            console.error('Failed to send agent KYC notification:', error);
+          }
+        })(),
+      );
+    }
+
+    // Execute all WhatsApp notifications in parallel
+    if (whatsappPromises.length > 0) {
+      Promise.all(whatsappPromises).catch((error) => {
+        console.error('Error in parallel WhatsApp notifications:', error);
+      });
     }
 
     return applicationWithRelations;

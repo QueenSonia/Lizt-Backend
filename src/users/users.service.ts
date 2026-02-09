@@ -674,7 +674,7 @@ export class UsersService {
   }
 
   async loginUser(data: LoginDto, res: Response, req?: any) {
-    const { identifier, password } = data; // Changed from 'email' to 'identifier'
+    const { identifier, password } = data;
 
     // Simple rate limiting check
     const rateLimitKey = `login_attempts:${identifier}`;
@@ -697,157 +697,45 @@ export class UsersService {
 
     // Build query conditions based on identifier type
     const whereCondition = isEmail
-      ? { email: identifier.toLowerCase().trim() }
-      : { user: { phone_number: identifier.replace(/[\s\-()+]/g, '') } };
+      ? { email: identifier.toLowerCase().trim(), role: RolesEnum.LANDLORD }
+      : {
+          user: { phone_number: identifier.replace(/[\s\-()+]/g, '') },
+          role: RolesEnum.LANDLORD,
+        };
 
-    // Fetch accounts with the identifier but different roles
-    const [adminAccount, landlordAccount, tenantAccount, repAccount] =
-      await Promise.all([
-        this.accountRepository.findOne({
-          where: { ...whereCondition, role: RolesEnum.ADMIN },
-          relations: ['user'],
-        }),
-        this.accountRepository.findOne({
-          where: { ...whereCondition, role: RolesEnum.LANDLORD },
-          relations: ['user'],
-        }),
-        this.accountRepository.findOne({
-          where: { ...whereCondition, role: RolesEnum.TENANT },
-          relations: ['user'],
-        }),
-        this.accountRepository.findOne({
-          where: { ...whereCondition, role: RolesEnum.REP },
-          relations: ['user'],
-        }),
-      ]);
+    // Single query for landlord account only
+    const account = await this.accountRepository.findOne({
+      where: whereCondition,
+      relations: ['user'],
+    });
 
-    // Check if any account exists
-    if (!adminAccount && !tenantAccount && !landlordAccount && !repAccount) {
+    if (!account) {
       throw new NotFoundException(
         `User with ${isEmail ? 'email' : 'phone number'}: ${identifier} not found`,
       );
     }
 
-    // Check verification status
-    if (
-      !adminAccount?.is_verified &&
-      !tenantAccount?.is_verified &&
-      !landlordAccount?.is_verified &&
-      !repAccount?.is_verified
-    ) {
+    if (!account.is_verified) {
       throw new NotFoundException(`Your account is not verified`);
     }
 
-    // Validate password for each account
-    const accounts = [
-      adminAccount,
-      landlordAccount,
-      tenantAccount,
-      repAccount,
-    ].filter(Boolean) as any;
+    // Validate password
+    const isPasswordValid = await this.utilService.validatePassword(
+      password,
+      account.password,
+    );
 
-    let matchedAccount = null;
-
-    for (const account of accounts) {
-      if (account.password) {
-        const isPasswordValid = await this.utilService.validatePassword(
-          password,
-          account.password,
-        );
-
-        if (isPasswordValid) {
-          matchedAccount = account;
-          console.log(
-            `SUCCESS: Matched account with role: ${account.role}. Breaking loop.`,
-          );
-          break;
-        }
-      }
-    }
-
-    // Handle no password match
-    if (!matchedAccount) {
+    if (!isPasswordValid) {
       // Increment failed login attempts
       const currentAttempts = await this.cache.get(rateLimitKey);
       const newAttempts = currentAttempts ? parseInt(currentAttempts) + 1 : 1;
-      await this.cache.set(rateLimitKey, newAttempts.toString(), 15 * 60); // 15 minutes TTL
+      await this.cache.set(rateLimitKey, newAttempts.toString(), 15 * 60);
 
       throw new UnauthorizedException('Incorrect password');
     }
 
     // Clear rate limit on successful login
     await this.cache.delete(rateLimitKey);
-
-    const account = matchedAccount as any;
-
-    let sub_access_token: string | null = null;
-    let parent_access_token: string | null = null;
-
-    // Handle LANDLORD with TENANT sub-account
-    if (account.role === RolesEnum.LANDLORD) {
-      const subAccountWhere = isEmail
-        ? { id: Not(account.id), email: account.email, role: RolesEnum.TENANT }
-        : {
-            id: Not(account.id),
-            user: { phone_number: account.user.phone_number },
-            role: RolesEnum.TENANT,
-          };
-
-      const subAccount = (await this.accountRepository.findOne({
-        where: subAccountWhere,
-        relations: ['user', 'property_tenants'],
-      })) as any;
-
-      if (subAccount) {
-        const subTokenPayload = {
-          id: subAccount.id,
-          first_name: subAccount.user.first_name,
-          last_name: subAccount.user.last_name,
-          email: subAccount.email,
-          phone_number: subAccount.user.phone_number,
-          property_id: subAccount.property_tenants[0]?.property_id,
-          role: subAccount.role,
-        } as any;
-
-        sub_access_token =
-          await this.authService.generateAccessToken(subTokenPayload);
-      }
-    }
-
-    // Handle TENANT with LANDLORD parent account
-    if (account.role === RolesEnum.TENANT) {
-      const parentAccountWhere = isEmail
-        ? {
-            id: Not(account.id),
-            email: account.email,
-            role: RolesEnum.LANDLORD,
-          }
-        : {
-            id: Not(account.id),
-            user: { phone_number: account.user.phone_number },
-            role: RolesEnum.LANDLORD,
-          };
-
-      const parentAccount = (await this.accountRepository.findOne({
-        where: parentAccountWhere,
-        relations: ['user', 'property_tenants'],
-      })) as any;
-
-      if (parentAccount) {
-        const subTokenPayload = {
-          id: parentAccount.id,
-          first_name: parentAccount.user.first_name,
-          last_name: parentAccount.user.last_name,
-          email: parentAccount.email,
-          phone_number: parentAccount.user.phone_number,
-          property_id: parentAccount.property_tenants[0]?.property_id,
-          role: parentAccount.role,
-        } as any;
-
-        parent_access_token =
-          await this.authService.generateAccessToken(subTokenPayload);
-      }
-    }
 
     const tokenPayload = {
       id: account.id,
@@ -874,39 +762,19 @@ export class UsersService {
     res.cookie('access_token', access_token, {
       httpOnly: true,
       secure: isProduction,
-      maxAge: 15 * 60 * 1000, // 15 minutes in milliseconds
+      maxAge: 15 * 60 * 1000,
       sameSite: isProduction ? 'none' : 'lax',
-      path: '/', // Available to all paths
+      path: '/',
     });
 
     // Set refresh token cookie (7 days)
     res.cookie('refresh_token', refresh_token, {
       httpOnly: true,
       secure: isProduction,
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
+      maxAge: 7 * 24 * 60 * 60 * 1000,
       sameSite: isProduction ? 'none' : 'lax',
-      path: '/', // Available to all paths
+      path: '/',
     });
-
-    if (sub_access_token) {
-      res.cookie('sub_access_token', sub_access_token, {
-        httpOnly: true,
-        secure: isProduction,
-        maxAge: 15 * 60 * 1000, // 15 minutes
-        sameSite: isProduction ? 'none' : 'lax',
-        path: '/', // Available to all paths
-      });
-    }
-
-    if (parent_access_token) {
-      res.cookie('parent_access_token', parent_access_token, {
-        httpOnly: true,
-        secure: isProduction,
-        maxAge: 15 * 60 * 1000, // 15 minutes
-        sameSite: isProduction ? 'none' : 'lax',
-        path: '/', // Available to all paths
-      });
-    }
 
     return res.status(HttpStatus.OK).json({
       user: {

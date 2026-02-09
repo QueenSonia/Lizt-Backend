@@ -11,6 +11,7 @@ import { AppExceptionsFilter } from './filters/app-exceptions-filter';
 import { HttpExceptionFilter } from './filters/exception-filter';
 import express from 'express';
 import { corsOptions } from './utils/options.cors';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 async function bootstrap(): Promise<NestExpressApplication> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -39,6 +40,7 @@ async function bootstrap(): Promise<NestExpressApplication> {
   );
   const { httpAdapter } = app.get(HttpAdapterHost);
   app.useGlobalFilters(new AppExceptionsFilter(httpAdapter));
+  app.useGlobalInterceptors(app.get(LoggingInterceptor));
   // =====middlewares end=====
 
   // =====swagger config starts=====

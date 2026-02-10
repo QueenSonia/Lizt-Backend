@@ -94,7 +94,7 @@ describe('AuthService', () => {
   });
 
   describe('generateAccessToken', () => {
-    it('should generate an access token with 15 minutes expiry', async () => {
+    it('should generate an access token with 7 days expiry', async () => {
       const expectedToken = 'access-token-123';
       (jwtService.signAsync as jest.Mock).mockResolvedValue(expectedToken);
 
@@ -106,7 +106,7 @@ describe('AuthService', () => {
         {
           secret: 'test-secret',
           issuer: 'PANDA-HOMES',
-          expiresIn: '15m',
+          expiresIn: '7d',
         },
       );
     });
@@ -148,7 +148,7 @@ describe('AuthService', () => {
       );
     });
 
-    it('should set expiry date to 7 days from now', async () => {
+    it('should set expiry date to 30 days from now', async () => {
       const accountId = 'account-123';
       let savedExpiryDate: Date;
 
@@ -160,12 +160,12 @@ describe('AuthService', () => {
       await service.generateRefreshToken(accountId);
 
       const now = new Date();
-      const sevenDaysLater = new Date();
-      sevenDaysLater.setDate(sevenDaysLater.getDate() + 7);
+      const thirtyDaysLater = new Date();
+      thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
 
       expect(savedExpiryDate!.getTime()).toBeGreaterThan(now.getTime());
       expect(savedExpiryDate!.getTime()).toBeLessThanOrEqual(
-        sevenDaysLater.getTime(),
+        thirtyDaysLater.getTime(),
       );
     });
   });

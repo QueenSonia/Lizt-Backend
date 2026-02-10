@@ -31,7 +31,7 @@ export class AuthService {
     return await this.jwtService.signAsync(payload, {
       secret: this.configService.get<string>('JWT_SECRET'),
       issuer: 'PANDA-HOMES',
-      expiresIn: '15m', // 15 minutes for access token
+      expiresIn: '7d', // 7 days for access token
     });
   }
 
@@ -42,7 +42,7 @@ export class AuthService {
   ): Promise<string> {
     const token = uuidv4();
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
+    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days
 
     await this.refreshTokenRepository.save({
       account_id: accountId,

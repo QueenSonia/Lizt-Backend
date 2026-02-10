@@ -58,13 +58,11 @@ export class LandlordFlowService {
       return;
     }
 
+    const lowerText = text.toLowerCase();
     this.logger.log(`Facility text message: ${text}`);
 
     // Handle "switch role" command for multi-role users
-    if (
-      text.toLowerCase() === 'switch role' ||
-      text.toLowerCase() === 'switch'
-    ) {
+    if (lowerText === 'switch role' || lowerText === 'switch') {
       await this.cache.delete(`selected_role_${from}`);
       await this.templateSenderService.sendText(
         from,
@@ -73,7 +71,7 @@ export class LandlordFlowService {
       return;
     }
 
-    if (text.toLowerCase() === 'start flow') {
+    if (lowerText === 'start flow') {
       // Note: sendFlow is not implemented in this service
       // This would need to be handled by the main WhatsappBotService
       this.logger.log(
@@ -82,7 +80,7 @@ export class LandlordFlowService {
       return;
     }
 
-    if (text.toLowerCase() === 'acknowledge request') {
+    if (lowerText === 'acknowledge request') {
       await this.cache.set(
         `service_request_state_facility_${from}`,
         'acknowledged',
@@ -95,7 +93,7 @@ export class LandlordFlowService {
       return;
     }
 
-    if (text.toLowerCase() === 'menu') {
+    if (lowerText === 'menu') {
       await this.templateSenderService.sendButtons(from, 'Menu Options', [
         { id: 'service_request', title: 'Resolve request' },
         { id: 'view_account_info', title: 'View Account Info' },
@@ -104,9 +102,12 @@ export class LandlordFlowService {
       return;
     }
 
-    if (text.toLowerCase() === 'done') {
-      await this.cache.delete(`service_request_state_${from}`);
-      await this.cache.delete(`service_request_state_facility_${from}`);
+    if (lowerText === 'done') {
+      // Batch delete both keys in one call
+      await this.cache.deleteMultiple([
+        `service_request_state_${from}`,
+        `service_request_state_facility_${from}`,
+      ]);
       await this.templateSenderService.sendText(
         from,
         'Thank you!  Your session has ended.',

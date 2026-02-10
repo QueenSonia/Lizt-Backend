@@ -27,10 +27,10 @@ export class InvoicesController {
   @Get()
   @Roles('landlord', 'admin')
   async findAll(
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; userId: string },
     @Query() query: InvoiceQueryDto,
   ) {
-    return this.invoicesService.findAll(user.id, query);
+    return this.invoicesService.findAll(user.userId, query);
   }
 
   /**
@@ -39,10 +39,10 @@ export class InvoicesController {
   @Get('actionable')
   @Roles('landlord', 'admin')
   async findActionable(
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; userId: string },
     @Query() query: InvoiceQueryDto,
   ) {
-    return this.invoicesService.findActionable(user.id, query);
+    return this.invoicesService.findActionable(user.userId, query);
   }
 
   /**
@@ -50,8 +50,11 @@ export class InvoicesController {
    */
   @Get(':id')
   @Roles('landlord', 'admin')
-  async findOne(@CurrentUser() user: { id: string }, @Param('id') id: string) {
-    return this.invoicesService.findOne(id, user.id);
+  async findOne(
+    @CurrentUser() user: { id: string; userId: string },
+    @Param('id') id: string,
+  ) {
+    return this.invoicesService.findOne(id, user.userId);
   }
 
   /**
@@ -60,10 +63,10 @@ export class InvoicesController {
   @Post()
   @Roles('landlord', 'admin')
   async create(
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; userId: string },
     @Body() dto: CreateInvoiceDto,
   ) {
-    return this.invoicesService.create(user.id, dto);
+    return this.invoicesService.create(user.userId, dto);
   }
 
   /**
@@ -72,7 +75,7 @@ export class InvoicesController {
   @Post('from-offer/:offerLetterId')
   @Roles('landlord', 'admin')
   async generateFromOfferLetter(
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; userId: string },
     @Param('offerLetterId') offerLetterId: string,
   ) {
     return this.invoicesService.generateFromOfferLetter(offerLetterId, user.id);
@@ -84,11 +87,11 @@ export class InvoicesController {
   @Put(':id')
   @Roles('landlord', 'admin')
   async update(
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; userId: string },
     @Param('id') id: string,
     @Body() dto: UpdateInvoiceDto,
   ) {
-    return this.invoicesService.update(id, user.id, dto);
+    return this.invoicesService.update(id, user.userId, dto);
   }
 
   /**
@@ -96,8 +99,11 @@ export class InvoicesController {
    */
   @Delete(':id')
   @Roles('landlord', 'admin')
-  async cancel(@CurrentUser() user: { id: string }, @Param('id') id: string) {
-    return this.invoicesService.cancel(id, user.id);
+  async cancel(
+    @CurrentUser() user: { id: string; userId: string },
+    @Param('id') id: string,
+  ) {
+    return this.invoicesService.cancel(id, user.userId);
   }
 
   /**
@@ -106,9 +112,9 @@ export class InvoicesController {
   @Post(':id/send-reminder')
   @Roles('landlord', 'admin')
   async sendReminder(
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; userId: string },
     @Param('id') id: string,
   ) {
-    return this.invoicesService.sendReminder(id, user.id);
+    return this.invoicesService.sendReminder(id, user.userId);
   }
 }

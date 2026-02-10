@@ -391,21 +391,12 @@ export class WhatsappBotService implements OnModuleInit {
               : RolesEnum.TENANT;
 
         console.log('✅ User selected role:', selectedRole);
-        console.log(
-          '💾 Storing in cache:',
-          `selected_role_${from}`,
-          '=',
-          selectedRole,
-        );
 
         await this.cache.set(
           `selected_role_${from}`,
           selectedRole,
           24 * 60 * 60 * 1000,
         );
-
-        const verify = await this.cache.get(`selected_role_${from}`);
-        console.log('✅ Verified cache storage:', verify);
 
         // Now show the appropriate menu
         const user = await this.findUserByPhoneOrEmail(from);
@@ -725,8 +716,11 @@ export class WhatsappBotService implements OnModuleInit {
     const text = message.text?.body;
 
     if (text.toLowerCase() === 'done') {
-      await this.cache.delete(`service_request_state_${from}`);
-      await this.cache.delete(`service_request_state_default_${from}`);
+      // Batch delete both keys in one call
+      await this.cache.deleteMultiple([
+        `service_request_state_${from}`,
+        `service_request_state_default_${from}`,
+      ]);
       await this.sendText(from, 'Thank you!  Your session has ended.');
       return;
     }

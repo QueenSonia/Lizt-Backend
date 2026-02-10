@@ -28,6 +28,60 @@ export class CacheService {
     return value ? this.parseIfNeeded(value) : undefined;
   }
 
+  /**
+   * Get multiple keys in a single Redis call (MGET)
+   * Returns an object with key-value pairs
+   * Missing keys will have undefined values
+   */
+  async getMultiple<T = any>(
+    keys: string[],
+  ): Promise<Record<string, T | undefined>> {
+    if (keys.length === 0) return {};
+
+    const values = await this.cache.mget(...keys);
+    const result: Record<string, T | undefined> = {};
+
+    keys.forEach((key, index) => {
+      const value = values[index];
+      result[key] = value ? this.parseIfNeeded(value) : undefined;
+    });
+
+    return result;
+  }
+
+  /**
+   * Set multiple keys in a single Redis call (MSET)
+   * Note: MSET doesn't support TTL, so use pipeline for TTL support
+   */
+  async setMultiple(
+    entries: Array<{ key: string; value: any; ttl?: number }>,
+  ): Promise<void> {
+    if (entries.length === 0) return;
+
+    const pipeline = this.cache.pipeline();
+
+    for (const { key, value, ttl } of entries) {
+      const stringifiedValue = this.stringifyIfNeeded(value);
+      const ttlInSeconds = millisecondsToSeconds(ttl ?? DEFAULT_TTL);
+
+      if (ttlInSeconds > 0) {
+        pipeline.set(key, stringifiedValue, 'EX', ttlInSeconds);
+      } else {
+        pipeline.set(key, stringifiedValue);
+      }
+    }
+
+    await pipeline.exec();
+  }
+
+  /**
+   * Delete multiple keys in a single Redis call
+   */
+  async deleteMultiple(keys: string[]): Promise<number> {
+    if (keys.length === 0) return 0;
+    return await this.cache.del(...keys);
+  }
+
   async addToSet(key: string, value: any, ttl?: number) {
     const pipeline = this.cache.pipeline();
 

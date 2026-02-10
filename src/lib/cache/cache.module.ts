@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 
 import { REDIS_CLIENT, REDIS_CLOUD_URL } from './constants';
 import { CacheService } from './cache.service';
+import { MemoryCacheService } from './memory-cache.service';
 
 @Global()
 @Module({
@@ -53,16 +54,25 @@ import { CacheService } from './cache.service';
             get: async () => null,
             set: async () => 'OK',
             del: async () => 1,
+            mget: async (...keys: string[]) => keys.map(() => null),
             exists: async () => 0,
             expire: async () => 1,
             ttl: async () => -1,
             keys: async () => [],
             flushall: async () => 'OK',
+            flushdb: async () => 'OK',
             ping: async () => 'PONG',
             quit: async () => 'OK',
             disconnect: () => {},
             on: () => {},
             off: () => {},
+            pipeline: () => ({
+              set: () => ({ exec: async () => [] }),
+              del: () => ({ exec: async () => [] }),
+              sadd: () => ({ exec: async () => [] }),
+              expire: () => ({ exec: async () => [] }),
+              exec: async () => [],
+            }),
           };
         }
 
@@ -71,7 +81,8 @@ import { CacheService } from './cache.service';
       inject: [ConfigService],
     },
     CacheService,
+    MemoryCacheService,
   ],
-  exports: [REDIS_CLIENT, CacheService],
+  exports: [REDIS_CLIENT, CacheService, MemoryCacheService],
 })
 export class AppCacheModule {}

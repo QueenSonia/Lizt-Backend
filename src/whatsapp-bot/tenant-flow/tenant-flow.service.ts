@@ -65,11 +65,10 @@ export class TenantFlowService {
       return;
     }
 
+    const lowerText = text.toLowerCase();
+
     // Handle "switch role" command for multi-role users
-    if (
-      text.toLowerCase() === 'switch role' ||
-      text.toLowerCase() === 'switch'
-    ) {
+    if (lowerText === 'switch role' || lowerText === 'switch') {
       await this.cache.delete(`selected_role_${from}`);
       await this.templateSenderService.sendText(
         from,
@@ -78,7 +77,7 @@ export class TenantFlowService {
       return;
     }
 
-    if (text.toLowerCase() === 'menu') {
+    if (lowerText === 'menu') {
       await this.templateSenderService.sendButtons(
         from,
         'Menu Options',
@@ -88,7 +87,7 @@ export class TenantFlowService {
       return;
     }
 
-    if (text.toLowerCase() === 'done') {
+    if (lowerText === 'done') {
       await this.cache.delete(`service_request_state_${from}`);
       await this.templateSenderService.sendText(
         from,

@@ -19,7 +19,7 @@ import { AccountCacheService } from './account-cache.service';
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         secret: configService.get('JWT_SECRET'),
-        // signOptions: { expiresIn: '15m' }, // Access token: 15 minutes
+        // signOptions: { expiresIn: '7d' }, // Access token: 7 days
         signOptions: { expiresIn: configService.get('JWT_ACCESS_EXPIRY') },
       }),
       inject: [ConfigService],

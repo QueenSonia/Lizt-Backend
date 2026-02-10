@@ -784,15 +784,39 @@ export class KYCApplicationService {
 
   /**
    * Get all KYC applications for a landlord (across all properties)
+   * Optimized: Only select columns needed for frontend transformation
    */
   async getAllApplications(landlordId: string): Promise<any[]> {
     const applications = await this.kycApplicationRepository
       .createQueryBuilder('application')
-      .leftJoinAndSelect('application.property', 'property')
-      .leftJoinAndSelect('application.kyc_link', 'kyc_link')
-      .leftJoinAndSelect('application.tenant', 'tenant')
-      .leftJoinAndSelect('application.offer_letters', 'offer_letters')
+      // Only select needed property columns
+      .leftJoin('application.property', 'property')
+      .addSelect([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+      ])
+      // kyc_link not used in transform, skip it
+      // tenant_id is already on application, skip tenant relation
+      // Only select needed offer_letter columns
+      .leftJoin('application.offer_letters', 'offer_letters')
+      .addSelect([
+        'offer_letters.id',
+        'offer_letters.token',
+        'offer_letters.status',
+        'offer_letters.rent_amount',
+        'offer_letters.rent_frequency',
+        'offer_letters.service_charge',
+        'offer_letters.tenancy_start_date',
+        'offer_letters.tenancy_end_date',
+        'offer_letters.caution_deposit',
+        'offer_letters.legal_fee',
+        'offer_letters.agency_fee',
+        'offer_letters.created_at',
+      ])
       .where('property.owner_id = :landlordId', { landlordId })
+      .andWhere('application.deleted_at IS NULL')
       .orderBy('application.created_at', 'DESC')
       .getMany();
 

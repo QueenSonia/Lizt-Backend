@@ -746,7 +746,7 @@ export class UsersService {
       role: account.role,
     };
 
-    // Generate access token (15 minutes) and refresh token (7 days)
+    // Generate access token (7 days) and refresh token (30 days)
     const access_token =
       await this.authService.generateAccessToken(tokenPayload);
     const refresh_token = await this.authService.generateRefreshToken(
@@ -758,20 +758,20 @@ export class UsersService {
     const isProduction =
       this.configService.get<string>('NODE_ENV') === 'production';
 
-    // Set access token cookie (15 minutes)
+    // Set access token cookie (7 days)
     res.cookie('access_token', access_token, {
       httpOnly: true,
       secure: isProduction,
-      maxAge: 15 * 60 * 1000,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
       sameSite: isProduction ? 'none' : 'lax',
       path: '/',
     });
 
-    // Set refresh token cookie (7 days)
+    // Set refresh token cookie (30 days)
     res.cookie('refresh_token', refresh_token, {
       httpOnly: true,
       secure: isProduction,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
       sameSite: isProduction ? 'none' : 'lax',
       path: '/',
     });

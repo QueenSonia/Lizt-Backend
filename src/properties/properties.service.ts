@@ -778,27 +778,61 @@ export class PropertiesService {
 
     const { query } = await buildPropertyFilter(queryParams);
 
+    // Optimized query: only select columns actually used by frontend
     const qb = this.propertyRepository
       .createQueryBuilder('property')
-      .leftJoinAndSelect(
+      .select([
+        'property.id',
+        'property.name',
+        'property.description',
+        'property.location',
+        'property.property_status',
+        'property.property_type',
+        'property.rental_price',
+        'property.owner_id',
+      ])
+      // Only load active rents with needed columns
+      .leftJoin(
         'property.rents',
         'rents',
-        'rents.rent_status = :activeStatus',
+        'rents.rent_status = :activeStatus AND rents.deleted_at IS NULL',
         { activeStatus: RentStatusEnum.ACTIVE },
       )
-      .leftJoinAndSelect('rents.tenant', 'tenant')
-      .leftJoinAndSelect('tenant.user', 'user')
-      .leftJoinAndSelect(
+      .addSelect([
+        'rents.id',
+        'rents.rent_status',
+        'rents.rental_price',
+        'rents.expiry_date',
+        'rents.payment_frequency',
+        'rents.rent_start_date',
+        'rents.tenant_id',
+      ])
+      // Tenant account - minimal columns
+      .leftJoin('rents.tenant', 'tenant')
+      .addSelect(['tenant.id', 'tenant.userId'])
+      // User - only name/contact fields used by frontend
+      .leftJoin('tenant.user', 'user')
+      .addSelect([
+        'user.id',
+        'user.first_name',
+        'user.last_name',
+        'user.phone_number',
+        'user.email',
+      ])
+      // TenantKyc - only override fields (first_name, last_name, phone, email)
+      .leftJoin(
         'user.tenant_kycs',
         'tenantKyc',
-        'tenantKyc.admin_id = property.owner_id',
+        'tenantKyc.admin_id = property.owner_id AND tenantKyc.deleted_at IS NULL',
       )
-      .leftJoinAndSelect(
-        'property.property_tenants',
-        'property_tenants',
-        'property_tenants.status = :tenantStatus',
-        { tenantStatus: TenantStatusEnum.ACTIVE },
-      )
+      .addSelect([
+        'tenantKyc.id',
+        'tenantKyc.first_name',
+        'tenantKyc.last_name',
+        'tenantKyc.phone_number',
+        'tenantKyc.email',
+      ])
+      // property_tenants not used in list view transformation, skip it
       .loadRelationCountAndMap(
         'property.offer_letter_count',
         'property.offer_letters',

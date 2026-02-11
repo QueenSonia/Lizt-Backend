@@ -102,6 +102,7 @@ export class InvoicesService {
       amountPaid: Number(invoice.amount_paid),
       outstandingBalance: Number(invoice.outstanding_balance),
       lastPaymentDate: lastPayment?.payment_date || null,
+      offerLetterToken: invoice.offer_letter?.token || null,
       lineItems:
         invoice.line_items?.map((item) => ({
           description: item.description,
@@ -131,6 +132,7 @@ export class InvoicesService {
       .leftJoinAndSelect('invoice.tenant', 'tenant')
       .leftJoinAndSelect('invoice.line_items', 'lineItems')
       .leftJoinAndSelect('invoice.payments', 'payments')
+      .leftJoinAndSelect('invoice.offer_letter', 'offerLetter')
       .where('invoice.landlord_id = :landlordId', { landlordId });
 
     if (status) {
@@ -176,6 +178,7 @@ export class InvoicesService {
       .leftJoinAndSelect('invoice.tenant', 'tenant')
       .leftJoinAndSelect('invoice.line_items', 'lineItems')
       .leftJoinAndSelect('invoice.payments', 'payments')
+      .leftJoinAndSelect('invoice.offer_letter', 'offerLetter')
       .where('invoice.landlord_id = :landlordId', { landlordId })
       .andWhere('invoice.status IN (:...statuses)', {
         statuses: [InvoiceStatus.PENDING, InvoiceStatus.PARTIALLY_PAID],

@@ -4,19 +4,15 @@ import {
   Body,
   Headers,
   Req,
-  UnauthorizedException,
   HttpCode,
   HttpStatus,
   Ip,
 } from '@nestjs/common';
-import { Request } from 'express';
 import * as crypto from 'crypto';
 import { Public } from '../auth/public.decorator';
 import { PaymentService } from './payment.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { ConfigService } from '@nestjs/config';
-import { InjectQueue } from '@nestjs/bull';
-import { Queue } from 'bull';
 
 // Paystack's official webhook source IP addresses
 const PAYSTACK_IPS = ['52.31.139.75', '52.49.173.169', '52.214.14.220'];
@@ -35,39 +31,38 @@ export class WebhooksController {
     private readonly paymentService: PaymentService,
     private readonly paystackLogger: PaystackLogger,
     private readonly configService: ConfigService,
-    @InjectQueue('paystack-webhooks')
-    private readonly webhookQueue: Queue,
-  ) { }
+  ) {}
 
   /**
    * Handle Paystack webhook events
+   * Processes webhooks synchronously (no queue)
    */
   @Public()
   @Post('paystack')
   @HttpCode(HttpStatus.OK)
   async handlePaystackWebhook(
-    @Req() req: any, // Use any to access rawBody without TS errors
+    @Req() req: any,
     @Headers('x-paystack-signature') signature: string,
     @Body() body: any,
     @Ip() ip: string,
   ): Promise<{ status: string; message?: string }> {
     try {
       // 1. IP Whitelisting (Defense in Depth)
-      // Since trust proxy is enabled, Nest/Express should handle x-forwarded-for automatically
       const clientIp = ip;
 
-      if (!PAYSTACK_IPS.includes(clientIp) && process.env.NODE_ENV === 'production') {
+      if (
+        !PAYSTACK_IPS.includes(clientIp) &&
+        process.env.NODE_ENV === 'production'
+      ) {
         this.paystackLogger.error('Unauthorized webhook IP blocked', {
           detected_ip: clientIp,
           all_headers: req.headers,
           event: body?.event,
         });
-        // We still return 200 OK but don't process. 
-        // NOTE: If this happens in production, check if Paystack added new IPs or if proxy headers are wrong.
         return { status: 'success', message: 'IP check failed (logged)' };
       }
 
-      // 2. Signature Validation (Requirement 5.2)
+      // 2. Signature Validation
       if (!signature) {
         this.paystackLogger.error('Webhook signature missing', {
           event: body?.event,
@@ -75,21 +70,25 @@ export class WebhooksController {
         return { status: 'error', message: 'Signature missing' };
       }
 
-      // Use native NestJS rawBody if available, fallback to stringified body
       const rawBody = req.rawBody
         ? req.rawBody.toString('utf8')
-        : (body ? JSON.stringify(body) : '');
+        : body
+          ? JSON.stringify(body)
+          : '';
 
-      // Paystack signs webhooks with the Secret Key (sk_...)
-      // Priorities: 1. Main Secret Key 2. Legacy Webhook Secret fallback
       const secretKey =
         this.configService.get<string>('PAYSTACK_SECRET_KEY') ||
         this.configService.get<string>('PAYSTACK_WEBHOOK_SECRET');
 
       if (!secretKey) {
-        this.paystackLogger.error('Paystack secret key not configured in environment', {
-          available_keys: Object.keys(process.env).filter(k => k.includes('PAYSTACK')),
-        });
+        this.paystackLogger.error(
+          'Paystack secret key not configured in environment',
+          {
+            available_keys: Object.keys(process.env).filter((k) =>
+              k.includes('PAYSTACK'),
+            ),
+          },
+        );
         throw new Error('Paystack secret key not configured');
       }
 
@@ -104,38 +103,32 @@ export class WebhooksController {
           reference: body?.data?.reference,
           received_sig_prefix: signature?.substring(0, 8),
           calculated_hash_prefix: hash?.substring(0, 8),
-          using_key: secretKey.substring(0, 7) + '...',
-          raw_body_len: rawBody.length,
-          raw_body_preview: rawBody.substring(0, 50),
-          raw_body_present: !!req.rawBody,
         });
         return { status: 'error', message: 'Invalid signature' };
       }
 
-      // 3. Asynchronous Job Queuing
+      // 3. Process webhook synchronously
       if (body.event === 'charge.success') {
-        this.paystackLogger.info('Queuing charge.success webhook', {
+        this.paystackLogger.info('Processing charge.success webhook', {
           reference: body.data.reference,
           amount: body.data.amount,
         });
 
-        await this.webhookQueue.add(
-          'handle-event',
-          {
-            event: body.event,
-            data: body.data,
-          },
-          {
-            attempts: 5, // Increased attempts
-            backoff: {
-              type: 'exponential',
-              delay: 5000,
-            },
-            removeOnComplete: true,
-          },
-        );
+        try {
+          await this.paymentService.processSuccessfulPayment(body.data);
+          this.paystackLogger.info('Webhook processed successfully', {
+            reference: body.data.reference,
+          });
+        } catch (error) {
+          // Log but don't fail the webhook response
+          // Paystack will retry if we return non-200
+          this.paystackLogger.error('Error processing webhook', {
+            reference: body.data.reference,
+            error: error.message,
+          });
+        }
       } else {
-        this.paystackLogger.info('Webhook event received and validated', {
+        this.paystackLogger.info('Webhook event received', {
           event: body.event,
         });
       }

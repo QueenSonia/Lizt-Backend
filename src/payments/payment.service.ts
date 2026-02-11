@@ -9,8 +9,6 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, LessThan } from 'typeorm';
-import { InjectQueue } from '@nestjs/bull';
-import { Queue } from 'bull';
 import { v4 as uuidv4 } from 'uuid';
 import { Cron } from '@nestjs/schedule';
 import { Payment, PaymentStatus, PaymentType } from './entities/payment.entity';
@@ -54,8 +52,6 @@ export class PaymentService {
     private readonly usersRepository: Repository<Users>,
     @InjectRepository(KYCApplication)
     private readonly kycApplicationRepository: Repository<KYCApplication>,
-    @InjectQueue('payment-polling')
-    private readonly pollingQueue: Queue,
     private readonly paystackService: PaystackService,
     private readonly paystackLogger: PaystackLogger,
     private readonly tenantAttachmentService: TenantAttachmentService,
@@ -203,37 +199,8 @@ export class PaymentService {
       });
     });
 
-    // Queue polling job - start after 30 seconds, retry 10 times every 30 seconds (non-blocking)
-    void this.pollingQueue
-      .add(
-        'verify-payment',
-        {
-          paymentId: payment.id,
-          reference,
-        },
-        {
-          delay: 30000, // Start after 30 seconds
-          attempts: 60, // Poll 60 times (30 minutes total)
-          backoff: {
-            type: 'fixed',
-            delay: 30000, // Every 30 seconds
-          },
-        },
-      )
-      .then(() => {
-        this.paystackLogger.info('Polling job queued', {
-          payment_id: payment.id,
-          reference,
-          attempts: 10,
-          interval: '30s',
-        });
-      })
-      .catch((err) => {
-        this.paystackLogger.error('Failed to queue polling job', {
-          error: err.message,
-          payment_id: payment.id,
-        });
-      });
+    // Payment verification is handled by Paystack webhooks
+    // No polling needed - webhook will call processSuccessfulPayment when payment completes
 
     return {
       paymentId: payment.id,
@@ -574,7 +541,7 @@ export class PaymentService {
         error: error.message,
         stack: error.stack,
       });
-      throw error; // Rethrow to trigger Bull retry if it was a job
+      throw error; // Rethrow to allow proper error handling
     } finally {
       // Always release the in-memory lock
       processingLocks.delete(data.reference);

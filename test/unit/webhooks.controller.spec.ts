@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { WebhooksController } from '../../src/payments/webhooks.controller';
 import { PaymentService } from '../../src/payments/payment.service';
 import { PaystackLogger } from '../../src/payments/paystack-logger.service';
-import { getQueueToken } from '@nestjs/bull';
 import * as crypto from 'crypto';
 
 describe('WebhooksController', () => {
@@ -24,10 +23,6 @@ describe('WebhooksController', () => {
     get: jest.fn(),
   };
 
-  const mockWebhookQueue = {
-    add: jest.fn(),
-  };
-
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [WebhooksController],
@@ -43,10 +38,6 @@ describe('WebhooksController', () => {
         {
           provide: ConfigService,
           useValue: mockConfigService,
-        },
-        {
-          provide: getQueueToken('paystack-webhooks'),
-          useValue: mockWebhookQueue,
         },
       ],
     }).compile();
@@ -76,13 +67,16 @@ describe('WebhooksController', () => {
       mockConfigService.get.mockReturnValue(secretKey);
     });
 
-    it('should queue valid charge.success webhook', async () => {
+    it('should process valid charge.success webhook synchronously', async () => {
       const signature = crypto
         .createHmac('sha512', secretKey)
         .update(JSON.stringify(mockWebhookBody))
         .digest('hex');
 
-      const req = { rawBody: JSON.stringify(mockWebhookBody), headers: {} } as any;
+      const req = {
+        rawBody: JSON.stringify(mockWebhookBody),
+        headers: {},
+      } as any;
       const result = await controller.handlePaystackWebhook(
         req,
         signature,
@@ -91,19 +85,17 @@ describe('WebhooksController', () => {
       );
 
       expect(result).toEqual({ status: 'success' });
-      expect(mockWebhookQueue.add).toHaveBeenCalledWith(
-        'handle-event',
-        expect.objectContaining({
-          event: 'charge.success',
-          data: mockWebhookBody.data,
-        }),
-        expect.any(Object),
+      expect(mockPaymentService.processSuccessfulPayment).toHaveBeenCalledWith(
+        mockWebhookBody.data,
       );
     });
 
     it('should reject webhook with invalid signature', async () => {
       const invalidSignature = 'invalid_signature';
-      const req = { rawBody: JSON.stringify(mockWebhookBody), headers: {} } as any;
+      const req = {
+        rawBody: JSON.stringify(mockWebhookBody),
+        headers: {},
+      } as any;
 
       const result = await controller.handlePaystackWebhook(
         req,
@@ -113,11 +105,16 @@ describe('WebhooksController', () => {
       );
 
       expect(result.status).toBe('error');
-      expect(mockWebhookQueue.add).not.toHaveBeenCalled();
+      expect(
+        mockPaymentService.processSuccessfulPayment,
+      ).not.toHaveBeenCalled();
     });
 
     it('should reject webhook with missing signature', async () => {
-      const req = { rawBody: JSON.stringify(mockWebhookBody), headers: {} } as any;
+      const req = {
+        rawBody: JSON.stringify(mockWebhookBody),
+        headers: {},
+      } as any;
 
       const result = await controller.handlePaystackWebhook(
         req,
@@ -127,7 +124,9 @@ describe('WebhooksController', () => {
       );
 
       expect(result.status).toBe('error');
-      expect(mockWebhookQueue.add).not.toHaveBeenCalled();
+      expect(
+        mockPaymentService.processSuccessfulPayment,
+      ).not.toHaveBeenCalled();
     });
 
     it('should skip non-charge.success events', async () => {
@@ -141,7 +140,10 @@ describe('WebhooksController', () => {
         .update(JSON.stringify(otherEventBody))
         .digest('hex');
 
-      const req = { rawBody: JSON.stringify(otherEventBody), headers: {} } as any;
+      const req = {
+        rawBody: JSON.stringify(otherEventBody),
+        headers: {},
+      } as any;
       const result = await controller.handlePaystackWebhook(
         req,
         signature,
@@ -150,17 +152,22 @@ describe('WebhooksController', () => {
       );
 
       expect(result).toEqual({ status: 'success' });
-      expect(mockWebhookQueue.add).not.toHaveBeenCalled();
+      expect(
+        mockPaymentService.processSuccessfulPayment,
+      ).not.toHaveBeenCalled();
     });
 
-    it('should ignore whitelisting in non-production', async () => {
+    it('should ignore IP whitelisting in non-production', async () => {
       process.env.NODE_ENV = 'development';
       const signature = crypto
         .createHmac('sha512', secretKey)
         .update(JSON.stringify(mockWebhookBody))
         .digest('hex');
 
-      const req = { rawBody: JSON.stringify(mockWebhookBody), headers: {} } as any;
+      const req = {
+        rawBody: JSON.stringify(mockWebhookBody),
+        headers: {},
+      } as any;
       const result = await controller.handlePaystackWebhook(
         req,
         signature,
@@ -169,7 +176,7 @@ describe('WebhooksController', () => {
       );
 
       expect(result.status).toBe('success');
-      expect(mockWebhookQueue.add).toHaveBeenCalled();
+      expect(mockPaymentService.processSuccessfulPayment).toHaveBeenCalled();
     });
   });
 });

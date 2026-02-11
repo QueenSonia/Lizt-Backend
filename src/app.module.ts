@@ -4,7 +4,6 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { config } from 'dotenv-flow';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
-import { BullModule } from '@nestjs/bull';
 
 import typeorm from '../ormconfig';
 import { AppController } from './app.controller';
@@ -53,40 +52,6 @@ config({ default_node_env: 'production' });
         if (!typeOrmConfig) throw new Error('TypeORM configuration not found');
 
         return typeOrmConfig;
-      },
-    }),
-    BullModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: async (configService: ConfigService) => {
-        const redisUrl = configService.get<string>('REDIS_CLOUD_URL');
-
-        if (!redisUrl) {
-          throw new Error('REDIS_CLOUD_URL environment variable is required');
-        }
-
-        // Parse the Redis URL to extract connection details
-        // Bull doesn't properly handle rediss:// URLs for TLS, so we need to parse manually
-        const url = new URL(redisUrl);
-        const isTls = url.protocol === 'rediss:';
-
-        console.log(
-          `[BullModule] Configuring Redis connection: host=${url.hostname}, port=${url.port}, tls=${isTls}`,
-        );
-
-        return {
-          redis: {
-            host: url.hostname,
-            port: parseInt(url.port) || 6379,
-            password: url.password || undefined,
-            username: url.username !== 'default' ? url.username : undefined,
-            // Critical: Enable TLS for rediss:// URLs (Upstash requires this)
-            tls: isTls ? {} : undefined,
-          },
-          defaultJobOptions: {
-            removeOnComplete: 100, // Keep last 100 completed jobs
-            removeOnFail: 500, // Keep last 500 failed jobs
-          },
-        };
       },
     }),
     AppCacheModule,

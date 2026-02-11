@@ -2,12 +2,9 @@ import { Module, forwardRef } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
-import { BullModule } from '@nestjs/bull';
 import { PaystackService } from './paystack.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { PaymentService } from './payment.service';
-import { PaymentPollingProcessor } from './payment-polling.processor';
-import { WebhookProcessor } from './webhook.processor';
 import { WebhooksController } from './webhooks.controller';
 import { PaymentsController } from './payments.controller';
 import { Payment } from './entities/payment.entity';
@@ -39,10 +36,6 @@ import { EventsModule } from '../events/events.module';
       Users,
       KYCApplication,
     ]),
-    BullModule.registerQueue(
-      { name: 'payment-polling' },
-      { name: 'paystack-webhooks' },
-    ),
     ConfigModule,
     AuthModule,
     KYCLinksModule,
@@ -54,13 +47,7 @@ import { EventsModule } from '../events/events.module';
     EventEmitterModule,
   ],
   controllers: [WebhooksController, PaymentsController],
-  providers: [
-    PaystackService,
-    PaystackLogger,
-    PaymentService,
-    PaymentPollingProcessor,
-    WebhookProcessor,
-  ],
+  providers: [PaystackService, PaystackLogger, PaymentService],
   exports: [PaystackService, PaystackLogger, PaymentService],
 })
-export class PaymentsModule { }
+export class PaymentsModule {}

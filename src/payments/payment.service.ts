@@ -8,7 +8,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, EntityManager, LessThan } from 'typeorm';
+import { Repository, DataSource, EntityManager, LessThan, In } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { Cron } from '@nestjs/schedule';
 import { Payment, PaymentStatus, PaymentType } from './entities/payment.entity';
@@ -759,46 +759,58 @@ export class PaymentService {
       .take(limit)
       .getMany();
 
-    // Get payment history for each offer
-    const payments = await Promise.all(
-      offers.map(async (offer) => {
-        const paymentHistory = await this.paymentRepository.find({
-          where: { offer_letter_id: offer.id },
-          order: { created_at: 'DESC' },
-        });
+    // Get payment history for all offers in a single query (avoid N+1)
+    const offerIds = offers.map((o) => o.id);
+    let allPaymentHistory: any[] = [];
+    if (offerIds.length > 0) {
+      allPaymentHistory = await this.paymentRepository.find({
+        where: { offer_letter_id: In(offerIds) },
+        order: { created_at: 'DESC' },
+      });
+    }
 
-        return {
-          id: offer.id,
-          offerLetterId: offer.id,
-          tenantName: `${offer.kyc_application.first_name} ${offer.kyc_application.last_name}`,
-          tenantEmail: offer.kyc_application.email,
-          tenantPhone: offer.kyc_application.phone_number,
-          propertyName: offer.property.name,
-          propertyId: offer.property_id,
-          totalAmount: Number(offer.total_amount),
-          amountPaid: Number(offer.amount_paid),
-          outstandingBalance: Number(offer.outstanding_balance),
-          paymentStatus: offer.payment_status,
-          offerStatus: offer.status,
-          requiresRefund:
-            offer.status === OfferLetterStatus.REJECTED_BY_PAYMENT ||
-            offer.status === OfferLetterStatus.PAYMENT_HELD_RACE_CONDITION,
-          lastPaymentDate:
-            paymentHistory.length > 0 ? paymentHistory[0].paid_at : null,
-          paymentHistory: paymentHistory.map((p) => ({
-            id: p.id,
-            amount: Number(p.amount),
-            status: p.status,
-            paymentMethod: p.payment_method,
-            paidAt: p.paid_at,
-            reference: p.paystack_reference,
-            date: p.paid_at
-              ? p.paid_at.toISOString().split('T')[0]
-              : p.created_at.toISOString().split('T')[0],
-          })),
-        };
-      }),
-    );
+    // Group payment history by offer_letter_id
+    const paymentsByOffer = new Map<string, any[]>();
+    for (const payment of allPaymentHistory) {
+      const existing = paymentsByOffer.get(payment.offer_letter_id) || [];
+      existing.push(payment);
+      paymentsByOffer.set(payment.offer_letter_id, existing);
+    }
+
+    const payments = offers.map((offer) => {
+      const paymentHistory = paymentsByOffer.get(offer.id) || [];
+
+      return {
+        id: offer.id,
+        offerLetterId: offer.id,
+        tenantName: `${offer.kyc_application.first_name} ${offer.kyc_application.last_name}`,
+        tenantEmail: offer.kyc_application.email,
+        tenantPhone: offer.kyc_application.phone_number,
+        propertyName: offer.property.name,
+        propertyId: offer.property_id,
+        totalAmount: Number(offer.total_amount),
+        amountPaid: Number(offer.amount_paid),
+        outstandingBalance: Number(offer.outstanding_balance),
+        paymentStatus: offer.payment_status,
+        offerStatus: offer.status,
+        requiresRefund:
+          offer.status === OfferLetterStatus.REJECTED_BY_PAYMENT ||
+          offer.status === OfferLetterStatus.PAYMENT_HELD_RACE_CONDITION,
+        lastPaymentDate:
+          paymentHistory.length > 0 ? paymentHistory[0].paid_at : null,
+        paymentHistory: paymentHistory.map((p) => ({
+          id: p.id,
+          amount: Number(p.amount),
+          status: p.status,
+          paymentMethod: p.payment_method,
+          paidAt: p.paid_at,
+          reference: p.paystack_reference,
+          date: p.paid_at
+            ? p.paid_at.toISOString().split('T')[0]
+            : p.created_at.toISOString().split('T')[0],
+        })),
+      };
+    });
 
     // Separate refunds required
     const refundsRequired = payments

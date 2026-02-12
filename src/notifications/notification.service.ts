@@ -3,17 +3,30 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Notification } from './entities/notification.entity';
 import { CreateNotificationDto } from './dto/create-notification.dto';
+import { PushNotificationService } from './push-notification.service';
 
 @Injectable()
 export class NotificationService {
   constructor(
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
-  ) {}
+    private readonly pushNotificationService: PushNotificationService,
+  ) { }
 
   async create(dto: CreateNotificationDto): Promise<Notification> {
     const notification = this.notificationRepository.create(dto);
-    return await this.notificationRepository.save(notification);
+    const saved = await this.notificationRepository.save(notification);
+
+    // Trigger push notification
+    if (dto.user_id) {
+      this.pushNotificationService.sendToUser(dto.user_id, {
+        title: 'New Notification',
+        body: dto.description,
+        url: '/', // Or deep link based on type
+      });
+    }
+
+    return saved;
   }
 
   async findAll(): Promise<Notification[]> {

@@ -930,43 +930,112 @@ export class PropertiesService {
   }
 
   async getPropertyById(id: string): Promise<any> {
-    // Use query builder for better performance - only load active relationships
+    // Use query builder for better performance - only load needed columns
     const property = await this.propertyRepository
       .createQueryBuilder('property')
-      .leftJoinAndSelect('property.rents', 'rent')
-      .leftJoinAndSelect('rent.tenant', 'rentTenant')
-      .leftJoinAndSelect('rentTenant.user', 'rentTenantUser')
-      .leftJoinAndSelect('property.property_tenants', 'propertyTenant')
-      .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
-      .leftJoinAndSelect('tenant.user', 'tenantUser')
-      .leftJoinAndSelect(
+      .leftJoin('property.rents', 'rent')
+      .addSelect([
+        'rent.id',
+        'rent.tenant_id',
+        'rent.property_id',
+        'rent.amount_paid',
+        'rent.expiry_date',
+        'rent.rent_start_date',
+        'rent.rental_price',
+        'rent.payment_frequency',
+        'rent.payment_status',
+        'rent.rent_status',
+        'rent.created_at',
+      ])
+      .leftJoin('rent.tenant', 'rentTenant')
+      .addSelect(['rentTenant.id', 'rentTenant.userId'])
+      .leftJoin('rentTenant.user', 'rentTenantUser')
+      .addSelect([
+        'rentTenantUser.id',
+        'rentTenantUser.first_name',
+        'rentTenantUser.last_name',
+        'rentTenantUser.email',
+        'rentTenantUser.phone_number',
+      ])
+      .leftJoin('property.property_tenants', 'propertyTenant')
+      .addSelect([
+        'propertyTenant.id',
+        'propertyTenant.tenant_id',
+        'propertyTenant.property_id',
+        'propertyTenant.status',
+      ])
+      .leftJoin('propertyTenant.tenant', 'tenant')
+      .addSelect(['tenant.id', 'tenant.userId'])
+      .leftJoin('tenant.user', 'tenantUser')
+      .addSelect([
+        'tenantUser.id',
+        'tenantUser.first_name',
+        'tenantUser.last_name',
+        'tenantUser.email',
+        'tenantUser.phone_number',
+      ])
+      .leftJoin(
         'tenantUser.tenant_kycs',
         'tenantKyc',
         'tenantKyc.admin_id = property.owner_id',
       )
-      .leftJoinAndSelect('property.service_requests', 'serviceRequest')
-      .leftJoinAndSelect('serviceRequest.tenant', 'srTenant')
-      .leftJoinAndSelect('srTenant.user', 'srTenantUser')
-      .leftJoinAndSelect(
+      .addSelect([
+        'tenantKyc.id',
+        'tenantKyc.first_name',
+        'tenantKyc.last_name',
+        'tenantKyc.email',
+        'tenantKyc.phone_number',
+      ])
+      .leftJoin('property.service_requests', 'serviceRequest')
+      .addSelect([
+        'serviceRequest.id',
+        'serviceRequest.description',
+        'serviceRequest.status',
+        'serviceRequest.date_reported',
+      ])
+      .leftJoin('serviceRequest.tenant', 'srTenant')
+      .addSelect(['srTenant.id', 'srTenant.userId'])
+      .leftJoin('srTenant.user', 'srTenantUser')
+      .addSelect([
+        'srTenantUser.id',
+        'srTenantUser.first_name',
+        'srTenantUser.last_name',
+      ])
+      .leftJoin(
         'srTenantUser.tenant_kycs',
         'srTenantKyc',
         'srTenantKyc.admin_id = property.owner_id',
       )
-      .leftJoinAndSelect('property.owner', 'owner')
-      .leftJoinAndSelect('owner.user', 'ownerUser')
-      .leftJoinAndSelect(
+      .addSelect([
+        'srTenantKyc.id',
+        'srTenantKyc.first_name',
+        'srTenantKyc.last_name',
+      ])
+      .leftJoin('property.owner', 'owner')
+      .addSelect(['owner.id', 'owner.userId'])
+      .leftJoin('owner.user', 'ownerUser')
+      .addSelect([
+        'ownerUser.id',
+        'ownerUser.first_name',
+        'ownerUser.last_name',
+      ])
+      .leftJoin(
         'property.kyc_applications',
         'kycApplication',
         'kycApplication.status = :pendingStatus',
         { pendingStatus: 'pending' },
       )
-      // KYC links are now general per landlord, not property-specific
-      // .leftJoinAndSelect(
-      //   'property.kyc_links',
-      //   'kycLink',
-      //   'kycLink.is_active = :isActive',
-      //   { isActive: true },
-      // )
+      .addSelect([
+        'kycApplication.id',
+        'kycApplication.status',
+        'kycApplication.first_name',
+        'kycApplication.last_name',
+        'kycApplication.email',
+        'kycApplication.phone_number',
+        'kycApplication.tenant_id',
+        'kycApplication.passport_photo_url',
+        'kycApplication.created_at',
+      ])
       .where('property.id = :id', { id })
       .getOne();
     if (!property?.id) {
@@ -1092,43 +1161,109 @@ export class PropertiesService {
     // Use query builder for better performance and selective loading
     const property = await this.propertyRepository
       .createQueryBuilder('property')
-      .leftJoinAndSelect(
-        'property.rents',
-        'rent',
-        'rent.rent_status = :activeStatus',
-        { activeStatus: 'active' },
-      )
-      .leftJoinAndSelect('rent.tenant', 'rentTenant')
-      .leftJoinAndSelect('rentTenant.user', 'rentTenantUser')
-      .leftJoinAndSelect(
+      .leftJoin('property.rents', 'rent', 'rent.rent_status = :activeStatus', {
+        activeStatus: 'active',
+      })
+      .addSelect([
+        'rent.id',
+        'rent.tenant_id',
+        'rent.property_id',
+        'rent.amount_paid',
+        'rent.expiry_date',
+        'rent.rent_start_date',
+        'rent.rental_price',
+        'rent.payment_frequency',
+        'rent.payment_status',
+        'rent.rent_status',
+        'rent.created_at',
+      ])
+      .leftJoin('rent.tenant', 'rentTenant')
+      .addSelect(['rentTenant.id', 'rentTenant.userId'])
+      .leftJoin('rentTenant.user', 'rentTenantUser')
+      .addSelect([
+        'rentTenantUser.id',
+        'rentTenantUser.first_name',
+        'rentTenantUser.last_name',
+        'rentTenantUser.email',
+        'rentTenantUser.phone_number',
+      ])
+      .leftJoin(
         'property.property_tenants',
         'propertyTenant',
         'propertyTenant.status = :tenantStatus',
         { tenantStatus: 'active' },
       )
-      .leftJoinAndSelect('propertyTenant.tenant', 'tenant')
-      .leftJoinAndSelect('tenant.user', 'tenantUser')
-      .leftJoinAndSelect(
+      .addSelect([
+        'propertyTenant.id',
+        'propertyTenant.tenant_id',
+        'propertyTenant.property_id',
+        'propertyTenant.status',
+      ])
+      .leftJoin('propertyTenant.tenant', 'tenant')
+      .addSelect(['tenant.id', 'tenant.userId'])
+      .leftJoin('tenant.user', 'tenantUser')
+      .addSelect([
+        'tenantUser.id',
+        'tenantUser.first_name',
+        'tenantUser.last_name',
+        'tenantUser.email',
+        'tenantUser.phone_number',
+      ])
+      .leftJoin(
         'tenantUser.tenant_kycs',
         'tenantKyc',
         'tenantKyc.admin_id = property.owner_id',
       )
-      .leftJoinAndSelect('property.property_histories', 'history')
-      .leftJoinAndSelect('history.tenant', 'historyTenant')
-      .leftJoinAndSelect('historyTenant.user', 'historyTenantUser')
-      .leftJoinAndSelect(
+      .addSelect([
+        'tenantKyc.id',
+        'tenantKyc.first_name',
+        'tenantKyc.last_name',
+        'tenantKyc.email',
+        'tenantKyc.phone_number',
+      ])
+      .leftJoin('property.property_histories', 'history')
+      .addSelect([
+        'history.id',
+        'history.event_type',
+        'history.event_description',
+        'history.move_in_date',
+        'history.move_out_date',
+        'history.move_out_reason',
+        'history.monthly_rent',
+        'history.created_at',
+      ])
+      .leftJoin('history.tenant', 'historyTenant')
+      .addSelect(['historyTenant.id', 'historyTenant.userId'])
+      .leftJoin('historyTenant.user', 'historyTenantUser')
+      .addSelect([
+        'historyTenantUser.id',
+        'historyTenantUser.first_name',
+        'historyTenantUser.last_name',
+      ])
+      .leftJoin(
         'historyTenantUser.tenant_kycs',
         'historyTenantKyc',
         'historyTenantKyc.admin_id = property.owner_id',
       )
-      .leftJoinAndSelect('property.kyc_applications', 'kycApplication')
-      // KYC links are now general per landlord, not property-specific
-      // .leftJoinAndSelect(
-      //   'property.kyc_links',
-      //   'kycLink',
-      //   'kycLink.is_active = :isActive',
-      //   { isActive: true },
-      // )
+      .addSelect([
+        'historyTenantKyc.id',
+        'historyTenantKyc.first_name',
+        'historyTenantKyc.last_name',
+      ])
+      .leftJoin('property.kyc_applications', 'kycApplication')
+      .addSelect([
+        'kycApplication.id',
+        'kycApplication.status',
+        'kycApplication.first_name',
+        'kycApplication.last_name',
+        'kycApplication.email',
+        'kycApplication.phone_number',
+        'kycApplication.employment_status',
+        'kycApplication.monthly_net_income',
+        'kycApplication.tenant_id',
+        'kycApplication.passport_photo_url',
+        'kycApplication.created_at',
+      ])
       .where('property.id = :id', { id })
       .getOne();
 

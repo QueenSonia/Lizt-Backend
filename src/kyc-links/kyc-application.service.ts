@@ -422,23 +422,55 @@ export class KYCApplicationService {
     );
 
     // Determine which applications to show based on property status
-    const whereCondition: any = { property_id: propertyId };
+    const qb = this.kycApplicationRepository
+      .createQueryBuilder('application')
+      // Only select needed property columns
+      .leftJoin('application.property', 'property')
+      .addSelect([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+      ])
+      // Only select needed kyc_link columns
+      .leftJoin('application.kyc_link', 'kyc_link')
+      .addSelect(['kyc_link.id', 'kyc_link.landlord_id', 'kyc_link.is_active'])
+      // Tenant - only id needed for reference
+      .leftJoin('application.tenant', 'tenant')
+      .addSelect(['tenant.id'])
+      // Only select needed offer_letter columns
+      .leftJoin('application.offer_letters', 'offer_letters')
+      .addSelect([
+        'offer_letters.id',
+        'offer_letters.token',
+        'offer_letters.status',
+        'offer_letters.rent_amount',
+        'offer_letters.rent_frequency',
+        'offer_letters.service_charge',
+        'offer_letters.tenancy_start_date',
+        'offer_letters.tenancy_end_date',
+        'offer_letters.caution_deposit',
+        'offer_letters.legal_fee',
+        'offer_letters.agency_fee',
+        'offer_letters.created_at',
+      ])
+      .where('application.property_id = :propertyId', { propertyId })
+      .andWhere('application.deleted_at IS NULL');
 
     // If property is vacant or ready for marketing, only show pending applications
     const allowedStatuses = ['vacant', 'ready_for_marketing'];
     if (allowedStatuses.includes(property.property_status)) {
-      whereCondition.status = ApplicationStatus.PENDING;
+      qb.andWhere('application.status = :pendingStatus', {
+        pendingStatus: ApplicationStatus.PENDING,
+      });
     }
 
-    // Get applications for the property with sorting
-    const applications = await this.kycApplicationRepository.find({
-      where: whereCondition,
-      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
-      order: {
-        created_at: 'DESC', // Most recent applications first
-        status: 'ASC', // Pending applications first within same date
-      },
-    });
+    qb.orderBy('application.created_at', 'DESC').addOrderBy(
+      'application.status',
+      'ASC',
+    );
+
+    const applications = await qb.getMany();
 
     return applications.map((app) => this.transformApplicationForFrontend(app));
   }
@@ -465,10 +497,32 @@ export class KYCApplicationService {
 
     const queryBuilder = this.kycApplicationRepository
       .createQueryBuilder('application')
-      .leftJoinAndSelect('application.property', 'property')
-      .leftJoinAndSelect('application.kyc_link', 'kyc_link')
-      .leftJoinAndSelect('application.tenant', 'tenant')
-      .leftJoinAndSelect('application.offer_letters', 'offer_letters')
+      .leftJoin('application.property', 'property')
+      .addSelect([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+      ])
+      .leftJoin('application.kyc_link', 'kyc_link')
+      .addSelect(['kyc_link.id', 'kyc_link.landlord_id', 'kyc_link.is_active'])
+      .leftJoin('application.tenant', 'tenant')
+      .addSelect(['tenant.id'])
+      .leftJoin('application.offer_letters', 'offer_letters')
+      .addSelect([
+        'offer_letters.id',
+        'offer_letters.token',
+        'offer_letters.status',
+        'offer_letters.rent_amount',
+        'offer_letters.rent_frequency',
+        'offer_letters.service_charge',
+        'offer_letters.tenancy_start_date',
+        'offer_letters.tenancy_end_date',
+        'offer_letters.caution_deposit',
+        'offer_letters.legal_fee',
+        'offer_letters.agency_fee',
+        'offer_letters.created_at',
+      ])
       .where('application.property_id = :propertyId', { propertyId });
 
     // If property is vacant or ready for marketing, only show pending applications (override any status filter)
@@ -640,10 +694,37 @@ export class KYCApplicationService {
       landlordId,
     });
 
-    const application = await this.kycApplicationRepository.findOne({
-      where: { id: applicationId },
-      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
-    });
+    const application = await this.kycApplicationRepository
+      .createQueryBuilder('application')
+      .leftJoin('application.property', 'property')
+      .addSelect([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+      ])
+      .leftJoin('application.kyc_link', 'kyc_link')
+      .addSelect(['kyc_link.id', 'kyc_link.landlord_id', 'kyc_link.is_active'])
+      .leftJoin('application.tenant', 'tenant')
+      .addSelect(['tenant.id'])
+      .leftJoin('application.offer_letters', 'offer_letters')
+      .addSelect([
+        'offer_letters.id',
+        'offer_letters.token',
+        'offer_letters.status',
+        'offer_letters.rent_amount',
+        'offer_letters.rent_frequency',
+        'offer_letters.service_charge',
+        'offer_letters.tenancy_start_date',
+        'offer_letters.tenancy_end_date',
+        'offer_letters.caution_deposit',
+        'offer_letters.legal_fee',
+        'offer_letters.agency_fee',
+        'offer_letters.created_at',
+      ])
+      .where('application.id = :applicationId', { applicationId })
+      .andWhere('application.deleted_at IS NULL')
+      .getOne();
 
     if (!application) {
       console.log('❌ KYC application not found:', applicationId);

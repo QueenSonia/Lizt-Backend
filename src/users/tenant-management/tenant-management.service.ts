@@ -1239,14 +1239,38 @@ export class TenantManagementService {
     // Only return tenants who have active rents (currently assigned to properties)
     const qb = this.accountRepository
       .createQueryBuilder('accounts')
-      .leftJoinAndSelect('accounts.user', 'user')
-      .innerJoinAndSelect(
+      .leftJoin('accounts.user', 'user')
+      .addSelect([
+        'user.id',
+        'user.first_name',
+        'user.last_name',
+        'user.email',
+        'user.phone_number',
+        'user.logo_urls',
+      ])
+      .innerJoin(
         'accounts.rents',
         'rents',
-        'rents.rent_status = :activeStatus',
+        'rents.rent_status = :activeStatus AND rents.deleted_at IS NULL',
         { activeStatus: 'active' },
       )
-      .leftJoinAndSelect('rents.property', 'property')
+      .addSelect([
+        'rents.id',
+        'rents.rental_price',
+        'rents.expiry_date',
+        'rents.rent_start_date',
+        'rents.payment_frequency',
+        'rents.rent_status',
+        'rents.tenant_id',
+        'rents.property_id',
+      ])
+      .leftJoin('rents.property', 'property')
+      .addSelect([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+      ])
       .where('accounts.creator_id = :creator_id', { creator_id });
 
     // Apply sorting
@@ -1307,21 +1331,119 @@ export class TenantManagementService {
 
     const tenantAccount = await this.accountRepository
       .createQueryBuilder('account')
-      .innerJoinAndSelect('account.user', 'user')
-      .leftJoinAndSelect('user.kyc', 'kyc')
-      .leftJoinAndSelect(
+      .innerJoin('account.user', 'user')
+      .addSelect([
+        'user.id',
+        'user.first_name',
+        'user.last_name',
+        'user.email',
+        'user.phone_number',
+        'user.logo_urls',
+        'user.date_of_birth',
+        'user.gender',
+        'user.state_of_origin',
+        'user.nationality',
+        'user.employment_status',
+        'user.employer_name',
+        'user.job_title',
+        'user.monthly_income',
+        'user.marital_status',
+      ])
+      .leftJoin('user.kyc', 'kyc')
+      .addSelect([
+        'kyc.id',
+        'kyc.occupation',
+        'kyc.employers_name',
+        'kyc.state_of_origin',
+        'kyc.nationality',
+        'kyc.marital_status',
+        'kyc.next_of_kin',
+        'kyc.next_of_kin_address',
+        'kyc.guarantor',
+        'kyc.guarantor_address',
+        'kyc.guarantor_phone_number',
+        'kyc.monthly_income',
+      ])
+      .leftJoin(
         'user.tenant_kycs',
         'tenant_kyc',
         'tenant_kyc.admin_id = :adminId',
       )
-      .leftJoinAndSelect('account.rents', 'rents')
-      .leftJoinAndSelect('rents.property', 'property')
-      .leftJoinAndSelect('account.service_requests', 'service_requests')
-      .leftJoinAndSelect('service_requests.property', 'sr_property')
-      .leftJoinAndSelect('account.property_histories', 'property_histories')
-      .leftJoinAndSelect('property_histories.property', 'past_property')
-      .leftJoinAndSelect('account.notice_agreements', 'notice_agreements')
-      .leftJoinAndSelect('notice_agreements.property', 'notice_property')
+      .addSelect([
+        'tenant_kyc.id',
+        'tenant_kyc.first_name',
+        'tenant_kyc.last_name',
+        'tenant_kyc.email',
+        'tenant_kyc.phone_number',
+        'tenant_kyc.date_of_birth',
+        'tenant_kyc.gender',
+        'tenant_kyc.nationality',
+        'tenant_kyc.state_of_origin',
+        'tenant_kyc.marital_status',
+        'tenant_kyc.employment_status',
+        'tenant_kyc.occupation',
+        'tenant_kyc.employer_name',
+        'tenant_kyc.monthly_net_income',
+        'tenant_kyc.contact_address',
+        'tenant_kyc.next_of_kin_full_name',
+        'tenant_kyc.next_of_kin_address',
+        'tenant_kyc.next_of_kin_phone_number',
+        'tenant_kyc.next_of_kin_relationship',
+      ])
+      .leftJoin('account.rents', 'rents')
+      .addSelect([
+        'rents.id',
+        'rents.property_id',
+        'rents.tenant_id',
+        'rents.amount_paid',
+        'rents.expiry_date',
+        'rents.rent_start_date',
+        'rents.rental_price',
+        'rents.payment_frequency',
+        'rents.payment_status',
+        'rents.rent_status',
+        'rents.created_at',
+      ])
+      .leftJoin('rents.property', 'property')
+      .addSelect([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+        'property.property_type',
+        'property.owner_id',
+      ])
+      .leftJoin('account.service_requests', 'service_requests')
+      .addSelect([
+        'service_requests.id',
+        'service_requests.description',
+        'service_requests.status',
+        'service_requests.date_reported',
+        'service_requests.created_at',
+      ])
+      .leftJoin('service_requests.property', 'sr_property')
+      .addSelect(['sr_property.id', 'sr_property.name', 'sr_property.location'])
+      .leftJoin('account.property_histories', 'property_histories')
+      .addSelect([
+        'property_histories.id',
+        'property_histories.event_type',
+        'property_histories.event_description',
+        'property_histories.move_in_date',
+        'property_histories.move_out_date',
+        'property_histories.move_out_reason',
+        'property_histories.monthly_rent',
+        'property_histories.created_at',
+      ])
+      .leftJoin('property_histories.property', 'past_property')
+      .addSelect([
+        'past_property.id',
+        'past_property.name',
+        'past_property.location',
+      ])
+      .leftJoin('account.notice_agreements', 'notice_agreements')
+      .addSelect(['notice_agreements.id', 'notice_agreements.created_at'])
+      .leftJoin('notice_agreements.property', 'notice_property')
+      .addSelect(['notice_property.id', 'notice_property.name'])
       .where('account.id = :tenantId', { tenantId })
       .andWhere((qb) => {
         // Check for current tenancy OR past tenancy (property history)

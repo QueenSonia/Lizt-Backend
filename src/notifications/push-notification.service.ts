@@ -16,8 +16,8 @@ export class PushNotificationService {
         // I will set them here temporarily or fetch from env
         webpush.setVapidDetails(
             'mailto:support@lizt.co',
-            process.env.VAPID_PUBLIC_KEY || 'BOf2JyymmRn82GdlqLqPKh698u4_5xou-wtXeHmrRtZszI8QcE_eVFihN2ALKK2dL1c8sBz6MkaEd0i1zjILj10',
-            process.env.VAPID_PRIVATE_KEY || 'pfFd2AjJFYu3W8v6vKorpZLPxJbpv0ExSfB_dzUvIfU',
+            process.env.VAPID_PUBLIC_KEY!,
+            process.env.VAPID_PRIVATE_KEY!,
         );
     }
 

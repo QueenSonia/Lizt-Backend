@@ -52,6 +52,7 @@
     "@types/cookie-parser": "^1.4.9",
     "@types/express": "^5.0.3",
     "@types/multer": "^2.0.0",
+    "@types/web-push": "^3.6.4",
     "axios": "^1.13.4",
     "bcryptjs": "^3.0.2",
     "bull": "^4.16.5",
@@ -85,6 +86,7 @@
     "twilio": "^5.6.0",
     "typeorm": "^0.3.21",
     "uuid": "^11.1.0",
+    "web-push": "^3.6.7",
     "whatsapp": "^0.0.5-Alpha",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0"

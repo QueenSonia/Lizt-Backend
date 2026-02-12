@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Notification } from './entities/notification.entity';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { PushNotificationService } from './push-notification.service';
+import { NotificationType } from './enums/notification-type';
 
 @Injectable()
 export class NotificationService {
@@ -11,22 +12,52 @@ export class NotificationService {
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
     private readonly pushNotificationService: PushNotificationService,
-  ) { }
+  ) {}
 
   async create(dto: CreateNotificationDto): Promise<Notification> {
     const notification = this.notificationRepository.create(dto);
     const saved = await this.notificationRepository.save(notification);
 
-    // Trigger push notification
+    // Trigger push notification to the user's subscribed devices
     if (dto.user_id) {
+      const pushTitle = this.getPushTitle(dto.type);
       this.pushNotificationService.sendToUser(dto.user_id, {
-        title: 'New Notification',
+        title: pushTitle,
         body: dto.description,
-        url: '/', // Or deep link based on type
+        url: dto.property_id
+          ? `/landlord/property-detail?propertyId=${dto.property_id}`
+          : '/',
       });
     }
 
     return saved;
+  }
+
+  private getPushTitle(type?: string): string {
+    switch (type) {
+      case NotificationType.KYC_SUBMITTED:
+        return 'New KYC Application';
+      case NotificationType.SERVICE_REQUEST:
+        return 'Service Request';
+      case NotificationType.OFFER_LETTER_SENT:
+        return 'Offer Letter Sent';
+      case NotificationType.OFFER_LETTER_ACCEPTED:
+        return 'Offer Letter Accepted';
+      case NotificationType.OFFER_LETTER_REJECTED:
+        return 'Offer Letter Declined';
+      case NotificationType.PROPERTY_CREATED:
+        return 'Property Created';
+      case NotificationType.TENANT_ATTACHED:
+        return 'Tenant Added';
+      case NotificationType.TENANCY_ENDED:
+        return 'Tenancy Ended';
+      case NotificationType.NOTICE_AGREEMENT:
+        return 'Notice Agreement';
+      case NotificationType.PAYMENT_RECEIVED:
+        return 'Payment Received';
+      default:
+        return 'Panda Homes';
+    }
   }
 
   async findAll(): Promise<Notification[]> {

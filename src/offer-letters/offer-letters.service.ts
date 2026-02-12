@@ -378,24 +378,19 @@ export class OfferLettersService {
       throw new NotFoundException('Offer letter not found');
     }
 
-    // Load related entities
-    const kycApplication = await this.kycApplicationRepository.findOne({
-      where: { id: offerLetter.kyc_application_id },
-    });
-
-    const property = await this.propertyRepository.findOne({
-      where: { id: offerLetter.property_id },
-    });
-
-    // Load landlord account and user to get branding data
-    const landlordAccount = await this.propertyRepository.manager
-      .getRepository('Account')
-      .findOne({
+    // Load related entities in parallel (independent queries)
+    const [kycApplication, property, landlordAccount] = await Promise.all([
+      this.kycApplicationRepository.findOne({
+        where: { id: offerLetter.kyc_application_id },
+      }),
+      this.propertyRepository.findOne({
+        where: { id: offerLetter.property_id },
+      }),
+      this.propertyRepository.manager.getRepository('Account').findOne({
         where: { id: offerLetter.landlord_id },
         relations: ['user'],
-      });
-
-    const landlord = landlordAccount?.user;
+      }),
+    ]);
 
     if (!kycApplication || !property) {
       throw new NotFoundException('Offer letter data incomplete');
@@ -405,7 +400,7 @@ export class OfferLettersService {
       offerLetter,
       kycApplication,
       property,
-      landlord ?? undefined,
+      landlordAccount?.user ?? undefined,
     );
   }
 
@@ -560,6 +555,29 @@ export class OfferLettersService {
         error.stack,
       );
       // Don't throw - invoice generation failure shouldn't block offer acceptance
+    }
+
+    // Send invoice link to tenant via WhatsApp
+    try {
+      const frontendUrl =
+        this.configService.get<string>('FRONTEND_URL') || 'https://lizt.co';
+      const invoiceUrl = `${frontendUrl}/offer-letters/invoice/${offerLetter.token}`;
+
+      await this.templateSenderService.sendPaymentInvoiceLink({
+        phone_number: kycApplication.phone_number,
+        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+        property_name: property.name,
+        invoice_url: invoiceUrl,
+      });
+      this.logger.log(
+        `Invoice link sent to tenant for offer letter ${offerLetter.id}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to send invoice link to tenant for offer letter ${offerLetter.id}: ${error.message}`,
+        error.stack,
+      );
+      // Don't throw - notification failure shouldn't block offer acceptance
     }
 
     return toOfferLetterResponse(

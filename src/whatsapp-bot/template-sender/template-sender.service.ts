@@ -228,6 +228,16 @@ export interface OfferLetterStatusNotificationParams {
 }
 
 /**
+ * Parameters for payment invoice link notification to tenant
+ */
+export interface PaymentInvoiceLinkParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  invoice_url: string;
+}
+
+/**
  * Parameters for landlord payment received notification
  * Used for ALL payment notifications (partial and full)
  */
@@ -1159,6 +1169,57 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: property_id,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send payment invoice link to tenant via WhatsApp after offer acceptance
+   * Template: payment_invoice_link
+   */
+  async sendPaymentInvoiceLink({
+    phone_number,
+    tenant_name,
+    property_name,
+    invoice_url,
+  }: PaymentInvoiceLinkParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_invoice_link',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: invoice_url,
               },
             ],
           },

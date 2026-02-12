@@ -63,6 +63,9 @@ export class Property extends BaseEntity {
   @Column({ type: 'int', nullable: true })
   service_charge: number;
 
+  @Column({ type: 'boolean', default: false })
+  is_marketing_ready: boolean;
+
   @Column({ nullable: true, type: 'text' })
   comment?: string | null;
 

@@ -895,12 +895,12 @@ export class PropertiesService {
         'property.location',
         'property.property_status',
         'property.rental_price',
+        'property.is_marketing_ready',
       ])
       .where('property.owner_id = :ownerId', { ownerId })
       .andWhere('property.property_status IN (:...statuses)', {
         statuses: [
           PropertyStatusEnum.VACANT,
-          PropertyStatusEnum.READY_FOR_MARKETING,
           PropertyStatusEnum.OFFER_PENDING,
           PropertyStatusEnum.OFFER_ACCEPTED,
         ],
@@ -921,11 +921,10 @@ export class PropertiesService {
         'property.location',
         'property.property_status',
         'property.rental_price',
+        'property.is_marketing_ready',
       ])
       .where('property.owner_id = :ownerId', { ownerId })
-      .andWhere('property.property_status = :status', {
-        status: PropertyStatusEnum.READY_FOR_MARKETING,
-      })
+      .andWhere('property.is_marketing_ready = :isReady', { isReady: true })
       .getMany();
   }
 
@@ -1530,6 +1529,7 @@ export class PropertiesService {
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
       rentalPrice: property.rental_price || null, // Marketing price for vacant properties
+      isMarketingReady: property.is_marketing_ready || false,
       description: property.description || computedDescription,
       currentTenant,
       history,
@@ -1638,6 +1638,18 @@ export class PropertiesService {
         property_id: id,
         event_type: 'property_activated',
         event_description: `Property activated with marketing price of ${property.rental_price}`,
+      });
+    } else if (updatePropertyDto.is_marketing_ready === true) {
+      await this.propertyHistoryRepository.save({
+        property_id: id,
+        event_type: 'property_marketing_enabled',
+        event_description: `Property marked as ready for marketing with price of ${property.rental_price}`,
+      });
+    } else if (updatePropertyDto.is_marketing_ready === false) {
+      await this.propertyHistoryRepository.save({
+        property_id: id,
+        event_type: 'property_marketing_disabled',
+        event_description: 'Property removed from marketing.',
       });
     } else {
       await this.propertyHistoryRepository.save({

@@ -81,8 +81,11 @@ export class KYCApplicationService {
       );
     }
 
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
-    if (!allowedStatuses.includes(selectedProperty.property_status)) {
+    const allowedStatuses = ['vacant', 'offer_accepted'];
+    if (
+      !allowedStatuses.includes(selectedProperty.property_status) &&
+      !selectedProperty.is_marketing_ready
+    ) {
       throw new BadRequestException(
         'Selected property is no longer available for applications',
       );
@@ -457,9 +460,11 @@ export class KYCApplicationService {
       .where('application.property_id = :propertyId', { propertyId })
       .andWhere('application.deleted_at IS NULL');
 
-    // If property is vacant or ready for marketing, only show pending applications
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
-    if (allowedStatuses.includes(property.property_status)) {
+    // If property is vacant or marketing-ready, only show pending applications
+    const isVacantLike =
+      ['vacant'].includes(property.property_status) ||
+      property.is_marketing_ready;
+    if (isVacantLike) {
       qb.andWhere('application.status = :pendingStatus', {
         pendingStatus: ApplicationStatus.PENDING,
       });
@@ -525,9 +530,11 @@ export class KYCApplicationService {
       ])
       .where('application.property_id = :propertyId', { propertyId });
 
-    // If property is vacant or ready for marketing, only show pending applications (override any status filter)
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
-    if (allowedStatuses.includes(property.property_status)) {
+    // If property is vacant or marketing-ready, only show pending applications (override any status filter)
+    const isVacantLike =
+      ['vacant'].includes(property.property_status) ||
+      property.is_marketing_ready;
+    if (isVacantLike) {
       queryBuilder.andWhere('application.status = :pendingStatus', {
         pendingStatus: ApplicationStatus.PENDING,
       });
@@ -823,8 +830,11 @@ export class KYCApplicationService {
       landlordId,
     );
 
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
-    if (allowedStatuses.includes(property.property_status)) {
+    const allowedStatuses = ['vacant'];
+    if (
+      allowedStatuses.includes(property.property_status) ||
+      property.is_marketing_ready
+    ) {
       // For vacant and ready for marketing properties, only show pending applications count
       const pending = await this.kycApplicationRepository.count({
         where: { property_id: propertyId, status: ApplicationStatus.PENDING },

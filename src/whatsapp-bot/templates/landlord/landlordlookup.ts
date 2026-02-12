@@ -130,10 +130,6 @@ export class LandlordLookup {
         },
         {
           owner_id: landlordAccount.id,
-          property_status: PropertyStatusEnum.READY_FOR_MARKETING,
-        },
-        {
-          owner_id: landlordAccount.id,
           property_status: PropertyStatusEnum.OFFER_PENDING,
         },
         {

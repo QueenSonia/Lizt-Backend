@@ -8,6 +8,7 @@ import {
   IsNumber,
   IsDateString,
   IsEnum,
+  IsBoolean,
   ValidateNested,
   IsArray,
 } from 'class-validator';
@@ -55,6 +56,14 @@ export class UpdatePropertyDto extends PartialType(CreatePropertyDto) {
   @IsNumber()
   @Type(() => Number)
   service_charge?: number;
+
+  @ApiPropertyOptional({
+    example: true,
+    description: 'Whether the property is ready for marketing',
+  })
+  @IsOptional()
+  @IsBoolean()
+  is_marketing_ready?: boolean;
 }
 
 // export class UpdatePropertyDto {

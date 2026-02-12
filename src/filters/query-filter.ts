@@ -123,11 +123,10 @@ export const buildPropertyFilter = async (
     query['location'] = queryParams.location.toLowerCase();
   if (queryParams?.property_status) {
     const status = queryParams.property_status.toLowerCase();
-    // When filtering for vacant properties, include vacant, ready_for_marketing, offer_pending, and offer_accepted
+    // When filtering for vacant properties, include vacant, offer_pending, and offer_accepted
     if (status === 'vacant') {
       query['property_status'] = In([
         'vacant',
-        'ready_for_marketing',
         'offer_pending',
         'offer_accepted',
       ]);

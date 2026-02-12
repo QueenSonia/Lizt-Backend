@@ -475,6 +475,7 @@ export class OfferLettersService {
     });
 
     // Update property status to offer_accepted
+    // Marketing readiness is independent — don't touch is_marketing_ready
     await this.propertyRepository.update(offerLetter.property_id, {
       property_status: PropertyStatusEnum.OFFER_ACCEPTED,
     });

@@ -308,10 +308,10 @@ export class TenantManagementService {
 
         if (
           property.property_status !== PropertyStatusEnum.VACANT &&
-          property.property_status !== PropertyStatusEnum.READY_FOR_MARKETING
+          property.property_status !== PropertyStatusEnum.OFFER_ACCEPTED
         ) {
           throw new ConflictException(
-            'Tenant can only be attached to properties that are Vacant or Ready for Marketing.',
+            'Tenant can only be attached to properties that are Vacant or have an accepted offer.',
           );
         }
 

@@ -211,12 +211,12 @@ export class KYCLinksService {
       }
 
       // Get properties for this landlord:
-      // 1. Properties ready for marketing
+      // 1. Properties marked as marketing ready (independent boolean)
       // 2. Properties with pending KYC applications (for existing tenants)
       const marketingReadyProperties = await this.propertyRepository.find({
         where: {
           owner_id: kycLink.landlord_id,
-          property_status: PropertyStatusEnum.READY_FOR_MARKETING,
+          is_marketing_ready: true,
         },
         order: {
           created_at: 'DESC',
@@ -235,10 +235,9 @@ export class KYCLinksService {
           status: ApplicationStatus.PENDING_COMPLETION,
         })
         .andWhere(
-          '(property.property_status = :vacantStatus OR property.property_status = :readyStatus OR property.property_status = :offerPendingStatus OR property.property_status = :offerAcceptedStatus)',
+          '(property.property_status = :vacantStatus OR property.property_status = :offerPendingStatus OR property.property_status = :offerAcceptedStatus)',
           {
             vacantStatus: PropertyStatusEnum.VACANT,
-            readyStatus: PropertyStatusEnum.READY_FOR_MARKETING,
             offerPendingStatus: PropertyStatusEnum.OFFER_PENDING,
             offerAcceptedStatus: PropertyStatusEnum.OFFER_ACCEPTED,
           },
@@ -277,17 +276,15 @@ export class KYCLinksService {
                 property.id,
                 kycLink.landlord_id,
               );
-            // For vacant and ready for marketing properties, only show pending applications count
+            // For vacant properties or marketing-ready properties, only show pending applications count
             // For occupied properties, show total count
-            const allowedStatuses = [
-              PropertyStatusEnum.VACANT,
-              PropertyStatusEnum.READY_FOR_MARKETING,
-            ];
-            applicationsCount = allowedStatuses.includes(
-              property.property_status as PropertyStatusEnum,
-            )
-              ? stats.pending
-              : stats.total;
+            const allowedStatuses = [PropertyStatusEnum.VACANT];
+            applicationsCount =
+              allowedStatuses.includes(
+                property.property_status as PropertyStatusEnum,
+              ) || property.is_marketing_ready
+                ? stats.pending
+                : stats.total;
           } catch (error) {
             console.warn(
               `Failed to get application count for property ${property.id}:`,

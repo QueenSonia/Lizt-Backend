@@ -47,8 +47,9 @@ export const config = {
     createRetryIntervalMillis: 200,
     // Statement timeout to prevent long-running queries from blocking
     statement_timeout: 30000, // 30s max for any query
-    // Disable keep-alive for Neon compatibility
-    keepAlive: false,
+    // Enable keep-alive so Neon's pooler doesn't drop idle connections
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000, // Send first keepalive after 10s idle
   },
 
   // Additional pool settings

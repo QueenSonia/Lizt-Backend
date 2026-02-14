@@ -29,6 +29,7 @@ import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 import { TemplateSenderService } from './template-sender';
 import { TenantFlowService } from './tenant-flow';
 import { LandlordFlowService } from './landlord-flow';
+import { AiProspectModule } from './ai-prospect/ai-prospect.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { LandlordFlowService } from './landlord-flow';
     UtilsModule,
     forwardRef(() => KYCLinksModule),
     ChatHistoryModule,
+    forwardRef(() => AiProspectModule),
   ],
   controllers: [WhatsappBotController],
   providers: [
@@ -74,4 +76,4 @@ import { LandlordFlowService } from './landlord-flow';
     SimulatorGateway,
   ],
 })
-export class WhatsappBotModule {}
+export class WhatsappBotModule { }

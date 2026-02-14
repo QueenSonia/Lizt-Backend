@@ -47,6 +47,7 @@ export enum RolesEnum {
   REP = 'rep',
   FACILITY_MANAGER = 'facility_manager',
   LANDLORD = 'landlord',
+  PROSPECT_AGENT = 'prospect_agent',
 }
 
 // const a = '';

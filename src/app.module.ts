@@ -33,6 +33,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { InvoicesModule } from './invoices/invoices.module';
 import { ApiLogModule } from './common/interceptors/api-log.module';
 import { QueryLogModule } from './common/logger/query-log.module';
+import { AiProspectModule } from './whatsapp-bot/ai-prospect/ai-prospect.module';
 
 config({ default_node_env: 'production' });
 
@@ -78,6 +79,7 @@ config({ default_node_env: 'production' });
     InvoicesModule,
     ApiLogModule,
     QueryLogModule,
+    AiProspectModule,
   ],
   controllers: [AppController],
   providers: [
@@ -88,4 +90,4 @@ config({ default_node_env: 'production' });
     UtilService,
   ],
 })
-export class AppModule {}
+export class AppModule { }

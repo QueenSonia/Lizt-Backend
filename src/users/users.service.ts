@@ -28,7 +28,7 @@ import {
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
-import { DataSource, Not, QueryRunner, Repository } from 'typeorm';
+import { DataSource, In, Not, QueryRunner, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
 import { RolesEnum } from 'src/base.entity';
@@ -115,7 +115,7 @@ export class UsersService {
 
     private readonly utilService: UtilService,
     private readonly dataSource: DataSource,
-  ) {}
+  ) { }
 
   /**
    * Add a new tenant with basic information
@@ -696,14 +696,22 @@ export class UsersService {
     }
 
     // Build query conditions based on identifier type
-    const whereCondition = isEmail
-      ? { email: identifier.toLowerCase().trim(), role: RolesEnum.LANDLORD }
-      : {
-          user: { phone_number: identifier.replace(/[\s\-()+]/g, '') },
-          role: RolesEnum.LANDLORD,
-        };
+    // Support Landlords, Admins, and Agents in the same login flow
+    const roles = [
+      RolesEnum.LANDLORD,
+      RolesEnum.ADMIN,
+      RolesEnum.PROSPECT_AGENT,
+      RolesEnum.FACILITY_MANAGER,
+    ];
 
-    // Single query for landlord account only
+    const whereCondition = isEmail
+      ? { email: identifier.toLowerCase().trim(), role: In(roles) }
+      : {
+        user: { phone_number: identifier.replace(/[\s\-()+]/g, '') },
+        role: In(roles),
+      };
+
+    // Single query for valid account roles
     const account = await this.accountRepository.findOne({
       where: whereCondition,
       relations: ['user'],

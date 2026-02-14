@@ -76,12 +76,28 @@ export class UtilService {
     }
   };
 
-  generatePassword = async () => {
-    const plainPassword = randomBytes(8).toString('hex'); // e.g., 16 chars random password
+  generatePassword = async (): Promise<{ plain: string; hashed: string }> => {
+    const chars =
+      'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const specials = '!@#$%&*';
+    // Guarantee at least one of each required type
+    let password =
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[randomInt(0, 26)] +
+      'abcdefghijklmnopqrstuvwxyz'[randomInt(0, 26)] +
+      '0123456789'[randomInt(0, 10)] +
+      specials[randomInt(0, specials.length)];
+    // Fill remaining with random chars
+    for (let i = 0; i < 8; i++) {
+      password += chars[randomInt(0, chars.length)];
+    }
+    // Shuffle
+    const plainPassword = password
+      .split('')
+      .sort(() => Math.random() - 0.5)
+      .join('');
     const hashedPassword = await this.hashPassword(plainPassword);
-    return hashedPassword;
+    return { plain: plainPassword, hashed: hashedPassword };
   };
-
   hashPassword = async (password: string) => {
     const saltRounds = 10;
     const salt = await bcrypt.genSalt(saltRounds);

@@ -54,6 +54,7 @@ export interface FMTemplateParams {
   name: string;
   team: string;
   role: string;
+  password?: string;
 }
 
 export interface TenantWelcomeParams {

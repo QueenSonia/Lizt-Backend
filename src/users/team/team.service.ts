@@ -72,6 +72,18 @@ export class TeamService {
       throw new ForbiddenException('Only landlords can manage teams');
     }
   }
+  /**
+   * Converts a role enum value to a human-readable display name.
+   */
+  private getRoleDisplayName(role: RolesEnum): string {
+    const roleMap: Record<string, string> = {
+      [RolesEnum.FACILITY_MANAGER]: 'Facility Manager',
+      [RolesEnum.PROSPECT_AGENT]: 'Prospect Agent',
+      [RolesEnum.LANDLORD]: 'Landlord',
+      [RolesEnum.ADMIN]: 'Admin',
+    };
+    return roleMap[role] || role;
+  }
 
   /**
    * Assigns a collaborator to a landlord's team.
@@ -86,12 +98,16 @@ export class TeamService {
   ): Promise<TeamMember> {
     return await this.dataSource.transaction(async (manager) => {
       try {
-        // Ensure only LANDLORD can add to team
+        // Ensure only LANDLORD or ADMIN can add to team
         const account = await manager
           .getRepository(Account)
           .findOne({ where: { id: userId } });
 
-        if (!account || account.role !== RolesEnum.LANDLORD) {
+        if (
+          !account ||
+          (account.role !== RolesEnum.LANDLORD &&
+            account.role !== RolesEnum.ADMIN)
+        ) {
           throw new HttpException(
             `${account ? account.role : 'Unknown role'} cannot add to team`,
             HttpStatus.FORBIDDEN,
@@ -173,17 +189,26 @@ export class TeamService {
           },
         });
 
+        let plainPassword: string | undefined;
+
         if (!userAccount) {
           const generatedPassword = await this.utilService.generatePassword();
+          plainPassword = generatedPassword.plain;
           userAccount = manager.getRepository(Account).create({
             user,
             email: teamMember.email,
-            password: generatedPassword,
+            password: generatedPassword.hashed,
             role: teamMember.role,
             profile_name: `${teamMember.first_name} ${teamMember.last_name}`,
             is_verified: true,
           });
 
+          await manager.getRepository(Account).save(userAccount);
+        } else {
+          // Account exists — reset password so the agent can sign in
+          const generatedPassword = await this.utilService.generatePassword();
+          plainPassword = generatedPassword.plain;
+          userAccount.password = generatedPassword.hashed;
           await manager.getRepository(Account).save(userAccount);
         }
 
@@ -199,11 +224,13 @@ export class TeamService {
         await manager.getRepository(TeamMember).save(newTeamMember);
 
         // 8. Send WhatsApp notification to the new team member
+        const roleDisplayName = this.getRoleDisplayName(teamMember.role);
         await this.whatsappBotService.sendToFacilityManagerWithTemplate({
           phone_number: normalizedPhoneNumber,
           name: this.utilService.toSentenceCase(teamMember.first_name),
           team: team.name,
-          role: 'Facility Manager',
+          role: roleDisplayName,
+          password: plainPassword,
         });
 
         return newTeamMember;

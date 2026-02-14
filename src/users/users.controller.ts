@@ -70,7 +70,7 @@ export class UsersController {
   constructor(
     private readonly usersService: UsersService,
     private readonly syncTenantDataService: SyncTenantDataService,
-  ) {}
+  ) { }
 
   // @SkipAuth()
   // @Get('/test-dev')
@@ -590,7 +590,32 @@ export class UsersController {
     });
   }
 
+  @ApiOperation({ summary: 'Create a Prospect Agent' })
+  @Post('prospect-agents')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  async createProspectAgent(
+    @Body()
+    body: {
+      email: string;
+      first_name: string;
+      last_name: string;
+      phone_number: string;
+    },
+    @Req() req: any,
+  ) {
+    const team_member = {
+      ...body,
+      role: RolesEnum.PROSPECT_AGENT,
+      permissions: ['read_conversations', 'write_messages'],
+    };
+    return this.usersService.assignCollaboratorToTeam(req.user.id, team_member);
+  }
+
+  @ApiOperation({ summary: 'Assign a collaborator to team' })
   @Post('assign-collaborator')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   async assignCollaborator(
     @Body()
     team_member: {

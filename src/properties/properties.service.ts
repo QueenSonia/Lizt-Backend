@@ -790,6 +790,7 @@ export class PropertiesService {
         'property.property_type',
         'property.rental_price',
         'property.owner_id',
+        'property.is_marketing_ready',
       ])
       // Only load active rents with needed columns
       .leftJoin(

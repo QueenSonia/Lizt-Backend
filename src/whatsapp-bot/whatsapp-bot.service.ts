@@ -51,6 +51,8 @@ import {
 } from './template-sender';
 import { TenantFlowService } from './tenant-flow';
 import { LandlordFlowService } from './landlord-flow';
+import { AiProspectService } from './ai-prospect/ai-prospect.service';
+import { ProspectChannel } from './entities/prospect-conversation.entity';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -103,7 +105,8 @@ export class WhatsappBotService implements OnModuleInit {
     private readonly templateSenderService: TemplateSenderService,
     private readonly tenantFlowService: TenantFlowService,
     private readonly landlordFlowService: LandlordFlowService,
-  ) {}
+    private readonly aiProspectService: AiProspectService,
+  ) { }
 
   /**
    * Module initialization - Add configuration validation and startup logging
@@ -663,13 +666,16 @@ export class WhatsappBotService implements OnModuleInit {
           return;
         }
 
-        if (message.type === 'interactive') {
-          void this.handleDefaultInteractive(message, defaultPhone);
-        }
+        const messageText =
+          message.text?.body ||
+          message.interactive?.button_reply?.title ||
+          'Hello';
 
-        if (message.type === 'text') {
-          void this.handleDefaultText(message, defaultPhone);
-        }
+        await this.aiProspectService.handleProspectMessage(
+          defaultPhone,
+          messageText,
+          ProspectChannel.WHATSAPP,
+        );
       }
     }
   }

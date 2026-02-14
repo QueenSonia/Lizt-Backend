@@ -31,6 +31,7 @@
     "restore:tenants": "ts-node -r tsconfig-paths/register scripts/restore-deactivated-tenants.ts"
   },
   "dependencies": {
+    "@google/genai": "^1.41.0",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/bull": "^11.0.4",
     "@nestjs/cli": "^11.0.10",
@@ -63,6 +64,7 @@
     "crypto-js": "^4.2.0",
     "date-fns": "^4.1.0",
     "dotenv-flow": "^4.1.0",
+    "groq-sdk": "^0.37.0",
     "helmet": "^8.1.0",
     "html-pdf": "^3.0.1",
     "ioredis": "^5.6.1",

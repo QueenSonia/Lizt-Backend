@@ -169,7 +169,7 @@ export class TenantManagementService {
         const userAccount = manager.getRepository(Account).create({
           user: tenantUser,
           email,
-          password: generatedPassword,
+          password: generatedPassword.hashed,
           is_verified: true,
           profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
           role: RolesEnum.TENANT,
@@ -663,7 +663,7 @@ export class TenantManagementService {
         const userAccount = manager.getRepository(Account).create({
           user: tenantUser,
           email,
-          password: generatedPassword,
+          password: generatedPassword.hashed,
           is_verified: true,
           profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
           role: RolesEnum.TENANT,

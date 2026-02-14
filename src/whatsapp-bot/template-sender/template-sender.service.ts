@@ -78,6 +78,7 @@ export interface FMTemplateParams {
   name: string;
   team: string;
   role: string;
+  password?: string;
 }
 
 /**
@@ -418,7 +419,20 @@ export class TemplateSenderService {
     name,
     team,
     role,
+    password,
   }: FMTemplateParams): Promise<void> {
+    // In simulator mode, send a plain text message that includes the password
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    if (isSimulationMode && password) {
+      const text =
+        `Hello ${name}, You have been added to the ${team} team as a ${role}. Welcome aboard!\n\n` +
+        `Your login password is: ${password}`;
+      await this.sendText(phone_number, text);
+      return;
+    }
+
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,

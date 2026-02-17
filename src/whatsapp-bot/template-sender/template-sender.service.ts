@@ -107,6 +107,7 @@ export interface TenantWelcomeParams {
   tenant_name: string;
   landlord_name: string;
   apartment_name?: string;
+  receipt_link?: string;
 }
 
 /**
@@ -127,6 +128,7 @@ export interface TenantAttachmentParams {
   tenant_name: string;
   landlord_name: string;
   apartment_name: string;
+  receipt_link?: string;
 }
 
 /**
@@ -550,6 +552,7 @@ export class TemplateSenderService {
     tenant_name,
     landlord_name,
     apartment_name,
+    receipt_link,
   }: TenantWelcomeParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -586,6 +589,25 @@ export class TemplateSenderService {
     };
 
     await this.sendToWhatsappAPI(payload);
+
+    // Send receipt link as a follow-up message if available
+    if (receipt_link) {
+      const receiptPayload: WhatsAppPayload = {
+        messaging_product: 'whatsapp',
+        to: phone_number,
+        type: 'text',
+        text: {
+          preview_url: true,
+          body: `View your payment receipt: ${receipt_link}`,
+        },
+      };
+      await this.sendToWhatsappAPI(receiptPayload).catch((err) => {
+        console.warn(
+          'Failed to send receipt link follow-up message:',
+          err.message,
+        );
+      });
+    }
   }
 
   /**
@@ -660,12 +682,14 @@ export class TemplateSenderService {
     tenant_name,
     landlord_name,
     apartment_name,
+    receipt_link,
   }: TenantAttachmentParams): Promise<void> {
     await this.sendTenantWelcomeTemplate({
       phone_number,
       tenant_name,
       landlord_name,
       apartment_name,
+      receipt_link,
     });
   }
 

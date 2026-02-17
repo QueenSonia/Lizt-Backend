@@ -21,6 +21,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { InvoicesModule } from '../invoices/invoices.module';
 import { NotificationModule } from '../notifications/notification.module';
 import { EventsModule } from '../events/events.module';
+import { ReceiptsModule } from '../receipts/receipts.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { EventsModule } from '../events/events.module';
     NotificationModule,
     EventsModule,
     EventEmitterModule,
+    forwardRef(() => ReceiptsModule),
   ],
   controllers: [WebhooksController, PaymentsController],
   providers: [PaystackService, PaystackLogger, PaymentService],

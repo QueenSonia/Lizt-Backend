@@ -627,7 +627,13 @@ export class UsersService {
     }
 
     // Separate account fields from user fields
-    const { profile_name, preferences, branding, ...userFields } = data;
+    const {
+      profile_name,
+      preferences,
+      branding,
+      offer_letter_template,
+      ...userFields
+    } = data;
 
     // Update account table fields
     const accountUpdates: any = {};
@@ -652,6 +658,10 @@ export class UsersService {
 
     if (branding !== undefined) {
       userUpdates.branding = branding;
+    }
+
+    if (offer_letter_template !== undefined) {
+      userUpdates.offer_letter_template = offer_letter_template;
     }
 
     // Only update if there are user fields to update

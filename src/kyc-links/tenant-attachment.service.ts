@@ -33,6 +33,7 @@ import { DateService } from '../utils/date.helper';
 import { RolesEnum } from '../base.entity';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
 import { UtilService } from '../utils/utility-service';
+import { ReceiptsService } from '../receipts/receipts.service';
 
 @Injectable()
 export class TenantAttachmentService {
@@ -58,6 +59,7 @@ export class TenantAttachmentService {
     private readonly dataSource: DataSource,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
+    private readonly receiptsService: ReceiptsService,
   ) {}
 
   /**
@@ -501,6 +503,7 @@ export class TenantAttachmentService {
           serviceCharge: Number(offerLetter.service_charge || 0),
         },
         rentStartDate,
+        offerLetter.id,
       );
     } catch (whatsappError) {
       console.error(
@@ -1241,6 +1244,7 @@ export class TenantAttachmentService {
     application: KYCApplication,
     tenancyDetails: AttachTenantDto,
     tenancyStartDate: Date,
+    offerLetterId?: string,
   ): Promise<void> {
     try {
       // Validate phone number
@@ -1281,11 +1285,34 @@ export class TenantAttachmentService {
       // Property name
       const propertyName = application.property.name;
 
+      // Look up receipt link if offer letter ID is available
+      let receiptLink: string | undefined;
+      if (offerLetterId) {
+        try {
+          const receipt =
+            await this.receiptsService.findMostRecentByOfferLetterId(
+              offerLetterId,
+            );
+          if (receipt) {
+            const frontendUrl =
+              process.env.FRONTEND_URL || 'https://www.lizt.co';
+            receiptLink = `${frontendUrl}/receipt/${receipt.token}`;
+          }
+        } catch (receiptError) {
+          console.warn(
+            'Failed to look up receipt for WhatsApp notification:',
+            receiptError.message,
+          );
+          // Continue without receipt link
+        }
+      }
+
       console.log('Sending tenant attachment WhatsApp notification:', {
         phoneNumber: normalizedPhone,
         tenantName,
         propertyName,
         agencyName,
+        receiptLink: receiptLink || 'none',
       });
 
       // Send WhatsApp notification using existing tenant_welcome template
@@ -1294,6 +1321,7 @@ export class TenantAttachmentService {
         tenant_name: tenantName,
         landlord_name: agencyName,
         apartment_name: propertyName,
+        receipt_link: receiptLink,
       });
 
       console.log(

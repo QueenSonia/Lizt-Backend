@@ -2,29 +2,61 @@ import {
   OfferLetter,
   OfferLetterStatus,
   PaymentStatus,
-  TermsOfTenancy,
 } from '../entities/offer-letter.entity';
 import { KYCApplication } from '../../kyc-links/entities/kyc-application.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { Users } from '../../users/entities/user.entity';
 import { PropertyStatusEnum } from '../../properties/dto/create-property.dto';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
  * Branding data for offer letters
  * Matches the frontend BrandingData interface
  */
-export interface BrandingData {
+export class BrandingData {
+  @ApiProperty({ example: 'Property Kraft' })
   businessName: string;
+
+  @ApiProperty({ example: '123 Lekki, Lagos' })
   businessAddress: string;
+
+  @ApiProperty({ example: '+234 901 234 5678' })
   contactPhone: string;
+
+  @ApiProperty({ example: 'contact@propertykraft.com' })
   contactEmail: string;
+
+  @ApiProperty({ example: 'https://propertykraft.com' })
   websiteLink: string;
+
+  @ApiProperty({ example: '#6B6B6B' })
   footerColor: string;
+
+  @ApiPropertyOptional({ example: 'https://cloudinary.com/letterhead.png' })
   letterhead?: string;
+
+  @ApiPropertyOptional({ example: 'https://cloudinary.com/signature.png' })
   signature?: string;
+
+  @ApiProperty({ example: 'Inter' })
   headingFont: string;
+
+  @ApiProperty({ example: 'Inter' })
   bodyFont: string;
+
+  @ApiPropertyOptional({ example: '2024-01-01T12:00:00Z' })
   updatedAt?: string;
+}
+
+/**
+ * Terms of Tenancy Response DTO
+ */
+export class TermsOfTenancyResponseDto {
+  @ApiProperty({ example: 'Permitted Use' })
+  title: string;
+
+  @ApiProperty({ example: 'Residential' })
+  content: string;
 }
 
 /**
@@ -32,34 +64,86 @@ export interface BrandingData {
  * Matches the frontend OfferLetterResponse interface
  * Requirements: 10.2
  */
-export interface OfferLetterResponse {
+export class OfferLetterResponse {
+  @ApiProperty({ example: '00000000-0000-0000-0000-000000000000' })
   id: string;
+
+  @ApiProperty({ example: 'abc-123-token' })
   token: string;
+
+  @ApiProperty({ example: 'John Doe' })
   applicantName: string;
+
+  @ApiProperty({ example: 'john@example.com' })
   applicantEmail: string;
+
+  @ApiProperty({ example: '+234 810 123 4567' })
   applicantPhone: string;
+
+  @ApiPropertyOptional({ example: 'male' })
   applicantGender?: string;
+
+  @ApiProperty({ example: 'Studio Apartment' })
   propertyName: string;
+
+  @ApiProperty({ example: '123 Lekki, Lagos' })
   propertyAddress: string;
+
+  @ApiProperty({ example: 1000000 })
   rentAmount: number;
+
+  @ApiProperty({ example: 'Annually' })
   rentFrequency: string;
+
+  @ApiPropertyOptional({ example: 100000 })
   serviceCharge?: number;
+
+  @ApiProperty({ example: '2024-01-01' })
   tenancyStartDate: string;
+
+  @ApiProperty({ example: '2024-12-31' })
   tenancyEndDate: string;
+
+  @ApiPropertyOptional({ example: 50000 })
   cautionDeposit?: number;
+
+  @ApiPropertyOptional({ example: 20000 })
   legalFee?: number;
+
+  @ApiPropertyOptional({ example: 30000 })
   agencyFee?: number;
+
+  @ApiProperty({ enum: OfferLetterStatus, example: OfferLetterStatus.PENDING })
   status: OfferLetterStatus;
-  termsOfTenancy: TermsOfTenancy[];
+
+  @ApiProperty({ type: () => [TermsOfTenancyResponseDto] })
+  termsOfTenancy: TermsOfTenancyResponseDto[];
+
+  @ApiProperty({ example: '2024-01-01T12:00:00Z' })
   createdAt: string;
+
+  @ApiPropertyOptional({ type: () => BrandingData })
   branding?: BrandingData;
-  // Payment-related fields (Task 2.2)
+
+  @ApiProperty({ example: 1200000 })
   totalAmount: number;
+
+  @ApiProperty({ example: 0 })
   amountPaid: number;
+
+  @ApiProperty({ example: 1200000 })
   outstandingBalance: number;
+
+  @ApiProperty({ enum: PaymentStatus, example: PaymentStatus.UNPAID })
   paymentStatus: PaymentStatus;
+
+  @ApiProperty({ example: true })
   isPropertyAvailable: boolean;
+
+  @ApiPropertyOptional({ example: '456 Tenant St' })
   tenantAddress?: string;
+
+  @ApiPropertyOptional({ example: 'https://cloudinary.com/offer-letter.pdf' })
   pdfUrl?: string;
 }
 
@@ -77,27 +161,27 @@ export function toOfferLetterResponse(
   // If no branding was saved at creation time, return undefined (no branding displayed)
   const branding: BrandingData | undefined = entity.branding
     ? {
-        businessName: entity.branding.businessName || '',
-        businessAddress: entity.branding.businessAddress || '',
-        contactPhone: entity.branding.contactPhone || '',
-        contactEmail: entity.branding.contactEmail || '',
-        websiteLink: entity.branding.websiteLink || '',
-        footerColor: entity.branding.footerColor || '#6B6B6B',
-        letterhead: entity.branding.letterhead,
-        signature: entity.branding.signature,
-        headingFont: entity.branding.headingFont || 'Inter',
-        bodyFont: entity.branding.bodyFont || 'Inter',
-      }
+      businessName: entity.branding.businessName || '',
+      businessAddress: entity.branding.businessAddress || '',
+      contactPhone: entity.branding.contactPhone || '',
+      contactEmail: entity.branding.contactEmail || '',
+      websiteLink: entity.branding.websiteLink || '',
+      footerColor: entity.branding.footerColor || '#6B6B6B',
+      letterhead: entity.branding.letterhead,
+      signature: entity.branding.signature,
+      headingFont: entity.branding.headingFont || 'Inter',
+      bodyFont: entity.branding.bodyFont || 'Inter',
+    }
     : undefined;
 
   // Calculate total amount if not set (for backward compatibility)
   const totalAmount = entity.total_amount
     ? Number(entity.total_amount)
     : Number(entity.rent_amount) +
-      (entity.service_charge ? Number(entity.service_charge) : 0) +
-      (entity.caution_deposit ? Number(entity.caution_deposit) : 0) +
-      (entity.legal_fee ? Number(entity.legal_fee) : 0) +
-      (entity.agency_fee ? Number(entity.agency_fee) : 0);
+    (entity.service_charge ? Number(entity.service_charge) : 0) +
+    (entity.caution_deposit ? Number(entity.caution_deposit) : 0) +
+    (entity.legal_fee ? Number(entity.legal_fee) : 0) +
+    (entity.agency_fee ? Number(entity.agency_fee) : 0);
 
   // Calculate outstanding balance if not set
   const amountPaid = Number(entity.amount_paid || 0);
@@ -131,7 +215,7 @@ export function toOfferLetterResponse(
     legalFee: entity.legal_fee ? Number(entity.legal_fee) : undefined,
     agencyFee: entity.agency_fee ? Number(entity.agency_fee) : undefined,
     status: entity.status,
-    termsOfTenancy: entity.terms_of_tenancy,
+    termsOfTenancy: entity.terms_of_tenancy as TermsOfTenancyResponseDto[],
     createdAt:
       entity.created_at instanceof Date
         ? entity.created_at.toISOString()
@@ -167,7 +251,10 @@ function formatDate(date: Date | string): string {
  * Acceptance initiation response
  * Requirements: 10.5
  */
-export interface AcceptanceInitiationResponse {
+export class AcceptanceInitiationResponse {
+  @ApiProperty({ example: 'OTP sent to your phone number' })
   message: string;
+
+  @ApiProperty({ example: '1234' })
   phoneLastFour: string;
 }

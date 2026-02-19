@@ -38,7 +38,7 @@ export const config = {
     // INCREASED: 2 is too low for an app with background jobs + web requests
     max: Number(DB_MAX_CONNECTIONS) || 10,
     min: 1, // Keep at least 1 connection warm
-    connectionTimeoutMillis: Number(DB_CONNECTION_TIMEOUT) || 10000, // Reduced from 20s
+    connectionTimeoutMillis: Number(DB_CONNECTION_TIMEOUT) || 15000, // 15s for Neon cold starts
     idleTimeoutMillis: Number(DB_IDLE_TIMEOUT) || 10000,
     acquireTimeoutMillis: 10000, // Reduced from 15s
     createTimeoutMillis: 10000, // Reduced from 20s
@@ -47,8 +47,9 @@ export const config = {
     createRetryIntervalMillis: 200,
     // Statement timeout to prevent long-running queries from blocking
     statement_timeout: 30000, // 30s max for any query
-    // Disable keep-alive for Neon compatibility
-    keepAlive: false,
+    // Enable keep-alive to prevent Neon from killing idle connections
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 30000, // Probe idle connections every 30s
   },
 
   // Additional pool settings

@@ -31,6 +31,7 @@ import { InvoicesService } from '../invoices/invoices.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
+import { ReceiptGeneratorService } from '../receipts/receipt-generator.service';
 
 // In-memory lock to prevent concurrent processing of the same payment reference
 const processingLocks = new Map<string, boolean>();
@@ -62,6 +63,8 @@ export class PaymentService {
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
     private readonly dataSource: DataSource,
+    @Inject(forwardRef(() => ReceiptGeneratorService))
+    private readonly receiptGeneratorService: ReceiptGeneratorService,
   ) {}
 
   /**
@@ -499,6 +502,22 @@ export class PaymentService {
           )
           .catch((err) => {
             this.paystackLogger.error('Invoice recording failed', {
+              error: err.message,
+            });
+          });
+
+        // Fire-and-forget: Generate receipt
+        this.receiptGeneratorService
+          .generateReceipt({
+            paymentId: processedPaymentId,
+            offerLetterId: processedOfferLetterId!,
+            amount: processedAmount!,
+            paymentMethod: data.channel || 'card',
+            paymentReference: data.reference,
+            paidAt: new Date(data.paid_at || data.paidAt || Date.now()),
+          })
+          .catch((err) => {
+            this.paystackLogger.error('Receipt generation failed', {
               error: err.message,
             });
           });

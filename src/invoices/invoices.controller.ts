@@ -7,19 +7,25 @@ import {
   Body,
   Param,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { InvoicesService } from './invoices.service';
+import { InvoicePDFService } from './invoice-pdf.service';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
 
 @Controller('invoices')
 @UseGuards(JwtAuthGuard, RoleGuard)
 export class InvoicesController {
-  constructor(private readonly invoicesService: InvoicesService) {}
+  constructor(
+    private readonly invoicesService: InvoicesService,
+    private readonly invoicePDFService: InvoicePDFService,
+  ) {}
 
   /**
    * Get all invoices for landlord
@@ -55,6 +61,30 @@ export class InvoicesController {
     @Param('id') id: string,
   ) {
     return this.invoicesService.findOne(id, user.userId);
+  }
+
+  /**
+   * Download invoice as PDF
+   */
+  @Get(':id/pdf')
+  @Roles('landlord', 'admin')
+  async downloadPDF(
+    @CurrentUser() user: { id: string; userId: string },
+    @Param('id') id: string,
+    @Res() res: Response,
+  ) {
+    const pdfBuffer = await this.invoicePDFService.generateInvoicePDF(
+      id,
+      user.userId,
+    );
+
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="invoice-${id.substring(0, 8)}.pdf"`,
+      'Content-Length': pdfBuffer.length,
+    });
+
+    res.send(pdfBuffer);
   }
 
   /**

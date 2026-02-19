@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { InvoicesController } from './invoices.controller';
 import { InvoicesService } from './invoices.service';
+import { InvoicePDFService } from './invoice-pdf.service';
 import { Invoice } from './entities/invoice.entity';
 import { InvoiceLineItem } from './entities/invoice-line-item.entity';
 import { InvoicePayment } from './entities/invoice-payment.entity';
@@ -27,7 +28,7 @@ import { AuthModule } from '../auth/auth.module';
     AuthModule,
   ],
   controllers: [InvoicesController],
-  providers: [InvoicesService],
+  providers: [InvoicesService, InvoicePDFService],
   exports: [InvoicesService],
 })
 export class InvoicesModule {}

@@ -20,6 +20,7 @@ import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { EventsModule } from '../events/events.module';
 import { UtilsModule } from 'src/utils/utils.module';
 import { NotificationModule } from '../notifications/notification.module';
+import { ReceiptsModule } from '../receipts/receipts.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { NotificationModule } from '../notifications/notification.module';
     forwardRef(() => EventsModule),
     forwardRef(() => NotificationModule),
     UtilsModule,
+    forwardRef(() => ReceiptsModule),
   ],
   controllers: [KYCApplicationController, KYCLinksController],
   providers: [KYCLinksService, KYCApplicationService, TenantAttachmentService],

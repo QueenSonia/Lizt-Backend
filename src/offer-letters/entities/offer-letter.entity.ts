@@ -1,4 +1,5 @@
 import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { ApiHideProperty } from '@nestjs/swagger';
 import { BaseEntity } from '../../base.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { Account } from '../../users/entities/account.entity';
@@ -88,6 +89,7 @@ export class OfferLetter extends BaseEntity {
   @Column({ type: 'varchar', length: 64, unique: true })
   token: string;
 
+  @ApiHideProperty()
   @Column({ type: 'jsonb' })
   terms_of_tenancy: TermsOfTenancy[];
 

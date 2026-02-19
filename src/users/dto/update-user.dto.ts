@@ -6,14 +6,16 @@ import {
   IsEmail,
   IsIn,
   IsDateString,
+  ValidateNested,
 } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   Gender,
   MaritalStatus,
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
 import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
+import { OfferLetterTemplateDto } from './offer-letter-template.dto';
 
 export class UpdateUserDto {
   @ApiProperty({
@@ -273,6 +275,16 @@ export class UpdateUserDto {
     bodyFont?: string;
     updatedAt?: string;
   };
+
+  @ApiProperty({
+    required: false,
+    description: 'Offer letter template settings',
+    type: () => OfferLetterTemplateDto,
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => OfferLetterTemplateDto)
+  offer_letter_template?: OfferLetterTemplateDto;
 }
 
 export class UpdateUserResponseDto {

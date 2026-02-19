@@ -9,6 +9,7 @@ import {
   OneToOne,
   Unique,
 } from 'typeorm';
+import { ApiHideProperty } from '@nestjs/swagger';
 import { BaseEntity, RolesEnum } from '../../base.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
@@ -156,6 +157,22 @@ export class Users extends BaseEntity {
     headingFont?: string;
     bodyFont?: string;
     updatedAt?: string;
+  };
+
+  @ApiHideProperty()
+  @Column({ nullable: true, type: 'jsonb' })
+  offer_letter_template?: {
+    offerTitlePattern: string;
+    introTextPattern: string;
+    agreementText: string;
+    closingText: string;
+    forLandlordText: string;
+    footnotes: string[];
+    termsOfTenancy: Array<{
+      title: string;
+      content: string | string[];
+      intro?: string;
+    }>;
   };
 
   @OneToMany(() => Account, (account) => account.user)

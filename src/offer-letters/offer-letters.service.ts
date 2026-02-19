@@ -469,9 +469,21 @@ export class OfferLettersService {
     // Requirements: 9.3
     await this.otpService.verifyOTP(token, otp);
 
-    // Update status to accepted
+    // Get KYC application to retrieve phone number
+    const kycApplication = await this.kycApplicationRepository.findOne({
+      where: { id: offerLetter.kyc_application_id },
+    });
+
+    if (!kycApplication) {
+      throw new NotFoundException('KYC application not found');
+    }
+
+    // Update status to accepted and save acceptance details
     await this.offerLetterRepository.update(offerLetter.id, {
       status: OfferLetterStatus.ACCEPTED,
+      accepted_at: new Date(),
+      accepted_by_phone: kycApplication.phone_number,
+      acceptance_otp: otp,
     });
 
     // Update property status to offer_accepted
@@ -485,11 +497,7 @@ export class OfferLettersService {
       where: { id: offerLetter.id },
     });
 
-    // Load related entities
-    const kycApplication = await this.kycApplicationRepository.findOne({
-      where: { id: offerLetter.kyc_application_id },
-    });
-
+    // Load property (kycApplication already loaded above)
     const property = await this.propertyRepository.findOne({
       where: { id: offerLetter.property_id },
     });

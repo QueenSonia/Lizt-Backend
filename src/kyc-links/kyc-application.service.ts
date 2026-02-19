@@ -696,6 +696,13 @@ export class KYCApplicationService {
                 amountPaid: latestOffer.amount_paid,
                 outstandingBalance: latestOffer.outstanding_balance,
                 paymentStatus: latestOffer.payment_status,
+                acceptedAt: latestOffer.accepted_at
+                  ? latestOffer.accepted_at instanceof Date
+                    ? latestOffer.accepted_at.toISOString()
+                    : latestOffer.accepted_at
+                  : undefined,
+                acceptedByPhone: latestOffer.accepted_by_phone || undefined,
+                acceptanceOtp: latestOffer.acceptance_otp || undefined,
                 createdAt:
                   latestOffer.created_at instanceof Date
                     ? latestOffer.created_at.toISOString()

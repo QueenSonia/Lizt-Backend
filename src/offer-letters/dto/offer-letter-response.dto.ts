@@ -145,6 +145,18 @@ export class OfferLetterResponse {
 
   @ApiPropertyOptional({ example: 'https://cloudinary.com/offer-letter.pdf' })
   pdfUrl?: string;
+
+  @ApiPropertyOptional({ example: '2024-01-15T15:32:45Z' })
+  acceptedAt?: string;
+
+  @ApiPropertyOptional({ example: '+234 901 234 5678' })
+  acceptedByPhone?: string;
+
+  @ApiPropertyOptional({ example: '748392' })
+  acceptanceOtp?: string;
+
+  @ApiPropertyOptional({ example: 'Ibrahim Mohammed' })
+  acceptedByName?: string;
 }
 
 /**
@@ -161,27 +173,27 @@ export function toOfferLetterResponse(
   // If no branding was saved at creation time, return undefined (no branding displayed)
   const branding: BrandingData | undefined = entity.branding
     ? {
-      businessName: entity.branding.businessName || '',
-      businessAddress: entity.branding.businessAddress || '',
-      contactPhone: entity.branding.contactPhone || '',
-      contactEmail: entity.branding.contactEmail || '',
-      websiteLink: entity.branding.websiteLink || '',
-      footerColor: entity.branding.footerColor || '#6B6B6B',
-      letterhead: entity.branding.letterhead,
-      signature: entity.branding.signature,
-      headingFont: entity.branding.headingFont || 'Inter',
-      bodyFont: entity.branding.bodyFont || 'Inter',
-    }
+        businessName: entity.branding.businessName || '',
+        businessAddress: entity.branding.businessAddress || '',
+        contactPhone: entity.branding.contactPhone || '',
+        contactEmail: entity.branding.contactEmail || '',
+        websiteLink: entity.branding.websiteLink || '',
+        footerColor: entity.branding.footerColor || '#6B6B6B',
+        letterhead: entity.branding.letterhead,
+        signature: entity.branding.signature,
+        headingFont: entity.branding.headingFont || 'Inter',
+        bodyFont: entity.branding.bodyFont || 'Inter',
+      }
     : undefined;
 
   // Calculate total amount if not set (for backward compatibility)
   const totalAmount = entity.total_amount
     ? Number(entity.total_amount)
     : Number(entity.rent_amount) +
-    (entity.service_charge ? Number(entity.service_charge) : 0) +
-    (entity.caution_deposit ? Number(entity.caution_deposit) : 0) +
-    (entity.legal_fee ? Number(entity.legal_fee) : 0) +
-    (entity.agency_fee ? Number(entity.agency_fee) : 0);
+      (entity.service_charge ? Number(entity.service_charge) : 0) +
+      (entity.caution_deposit ? Number(entity.caution_deposit) : 0) +
+      (entity.legal_fee ? Number(entity.legal_fee) : 0) +
+      (entity.agency_fee ? Number(entity.agency_fee) : 0);
 
   // Calculate outstanding balance if not set
   const amountPaid = Number(entity.amount_paid || 0);
@@ -229,6 +241,16 @@ export function toOfferLetterResponse(
     isPropertyAvailable,
     tenantAddress: kycApplication.contact_address,
     pdfUrl: entity.pdf_url,
+    acceptedAt: entity.accepted_at
+      ? entity.accepted_at instanceof Date
+        ? entity.accepted_at.toISOString()
+        : entity.accepted_at
+      : undefined,
+    acceptedByPhone: entity.accepted_by_phone || undefined,
+    acceptanceOtp: entity.acceptance_otp || undefined,
+    acceptedByName: entity.accepted_at
+      ? `${kycApplication.first_name} ${kycApplication.last_name}`
+      : undefined,
   };
 }
 

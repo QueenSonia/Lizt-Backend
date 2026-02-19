@@ -128,6 +128,16 @@ export class OfferLetter extends BaseEntity {
   @Column({ type: 'timestamp', nullable: true })
   selected_at?: Date;
 
+  // Acceptance tracking fields (added in migration 1771505084495)
+  @Column({ type: 'timestamp', nullable: true })
+  accepted_at?: Date;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  accepted_by_phone?: string;
+
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  acceptance_otp?: string;
+
   // PDF caching fields (added in migration 1738252800000)
   @Column({ type: 'text', nullable: true })
   pdf_url?: string;

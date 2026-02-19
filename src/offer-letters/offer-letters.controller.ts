@@ -115,7 +115,27 @@ export class OfferLettersController {
 
       if (offerLetter && offerLetter.pdf_url) {
         console.log('PDF URL exists, redirecting to:', offerLetter.pdf_url);
-        return res.redirect(offerLetter.pdf_url);
+
+        // Try to verify the URL is accessible before redirecting
+        try {
+          const response = await fetch(offerLetter.pdf_url, { method: 'HEAD' });
+          if (response.ok) {
+            console.log('PDF URL is accessible, redirecting...');
+            return res.redirect(offerLetter.pdf_url);
+          } else {
+            console.log(
+              'PDF URL returned status:',
+              response.status,
+              '- regenerating PDF',
+            );
+          }
+        } catch (urlError) {
+          console.log(
+            'PDF URL is not accessible:',
+            urlError.message,
+            '- regenerating PDF',
+          );
+        }
       }
 
       console.log('No PDF URL found, generating PDF from template...');

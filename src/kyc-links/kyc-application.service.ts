@@ -441,7 +441,7 @@ export class KYCApplicationService {
       // Tenant - only id needed for reference
       .leftJoin('application.tenant', 'tenant')
       .addSelect(['tenant.id'])
-      // Only select needed offer_letter columns
+      // Only select needed offer_letter columns (including payment fields)
       .leftJoin('application.offer_letters', 'offer_letters')
       .addSelect([
         'offer_letters.id',
@@ -455,7 +455,12 @@ export class KYCApplicationService {
         'offer_letters.caution_deposit',
         'offer_letters.legal_fee',
         'offer_letters.agency_fee',
+        'offer_letters.total_amount',
+        'offer_letters.amount_paid',
+        'offer_letters.outstanding_balance',
+        'offer_letters.payment_status',
         'offer_letters.created_at',
+        'offer_letters.updated_at',
       ])
       .where('application.property_id = :propertyId', { propertyId })
       .andWhere('application.deleted_at IS NULL');
@@ -526,7 +531,12 @@ export class KYCApplicationService {
         'offer_letters.caution_deposit',
         'offer_letters.legal_fee',
         'offer_letters.agency_fee',
+        'offer_letters.total_amount',
+        'offer_letters.amount_paid',
+        'offer_letters.outstanding_balance',
+        'offer_letters.payment_status',
         'offer_letters.created_at',
+        'offer_letters.updated_at',
       ])
       .where('application.property_id = :propertyId', { propertyId });
 
@@ -682,9 +692,40 @@ export class KYCApplicationService {
                 cautionDeposit: latestOffer.caution_deposit,
                 legalFee: latestOffer.legal_fee,
                 agencyFee: latestOffer.agency_fee,
+                totalAmount: latestOffer.total_amount,
+                amountPaid: latestOffer.amount_paid,
+                outstandingBalance: latestOffer.outstanding_balance,
+                paymentStatus: latestOffer.payment_status,
+                createdAt:
+                  latestOffer.created_at instanceof Date
+                    ? latestOffer.created_at.toISOString()
+                    : latestOffer.created_at,
+                updatedAt:
+                  latestOffer.updated_at instanceof Date
+                    ? latestOffer.updated_at.toISOString()
+                    : latestOffer.updated_at,
               };
             })()
           : undefined,
+
+      // Invoice data (from manual join, attached via __invoiceData)
+      invoice: (application as any).__invoiceData
+        ? {
+            id: (application as any).__invoiceData.id,
+            createdAt:
+              (application as any).__invoiceData.created_at instanceof Date
+                ? (application as any).__invoiceData.created_at.toISOString()
+                : (application as any).__invoiceData.created_at,
+            status: (application as any).__invoiceData.status,
+          }
+        : undefined,
+
+      // Most recent payment date (from manual join, attached via __paymentDate)
+      paymentDate: (application as any).__paymentDate
+        ? (application as any).__paymentDate instanceof Date
+          ? (application as any).__paymentDate.toISOString()
+          : (application as any).__paymentDate
+        : undefined,
     };
   }
 
@@ -701,7 +742,7 @@ export class KYCApplicationService {
       landlordId,
     });
 
-    const application = await this.kycApplicationRepository
+    const result = await this.kycApplicationRepository
       .createQueryBuilder('application')
       .leftJoin('application.property', 'property')
       .addSelect([
@@ -728,15 +769,60 @@ export class KYCApplicationService {
         'offer_letters.legal_fee',
         'offer_letters.agency_fee',
         'offer_letters.created_at',
+        'offer_letters.updated_at',
+      ])
+      .leftJoin(
+        'invoices',
+        'invoices',
+        'offer_letters.id = invoices.offer_letter_id',
+      )
+      .addSelect(['invoices.id', 'invoices.created_at', 'invoices.status'])
+      .leftJoin(
+        'invoice_payments',
+        'invoice_payments',
+        'invoices.id = invoice_payments.invoice_id',
+      )
+      .addSelect([
+        'invoice_payments.payment_date',
+        'invoice_payments.created_at',
       ])
       .where('application.id = :applicationId', { applicationId })
       .andWhere('application.deleted_at IS NULL')
-      .getOne();
+      .getRawAndEntities();
+
+    const application = result.entities[0];
 
     if (!application) {
       console.log('❌ KYC application not found:', applicationId);
       throw new NotFoundException('KYC application not found');
     }
+
+    // Extract raw invoice and payment data from the manual joins
+    // (manual joins aren't hydrated by getOne, so we use getRawAndEntities)
+    const rawRows = result.raw;
+    const invoiceData = rawRows[0]?.invoices_id
+      ? {
+          id: rawRows[0].invoices_id,
+          created_at: rawRows[0].invoices_created_at,
+          status: rawRows[0].invoices_status,
+        }
+      : undefined;
+
+    // Find the most recent payment_date across all raw rows
+    const paymentDates = rawRows
+      .filter((row: any) => row.invoice_payments_payment_date)
+      .map((row: any) => row.invoice_payments_payment_date);
+    const mostRecentPaymentDate =
+      paymentDates.length > 0
+        ? paymentDates.sort(
+            (a: string, b: string) =>
+              new Date(b).getTime() - new Date(a).getTime(),
+          )[0]
+        : undefined;
+
+    // Attach invoice and payment data to the application for the transform
+    (application as any).__invoiceData = invoiceData;
+    (application as any).__paymentDate = mostRecentPaymentDate;
 
     console.log('✅ Found application:', {
       id: application.id,

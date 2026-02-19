@@ -94,18 +94,6 @@ export class ReceiptsService {
     });
   }
 
-  /**
-   * Find the most recent receipt by offer letter ID (internal use, no auth check)
-   */
-  async findMostRecentByOfferLetterId(
-    offerLetterId: string,
-  ): Promise<Receipt | null> {
-    return this.receiptRepository.findOne({
-      where: { offer_letter_id: offerLetterId },
-      order: { created_at: 'DESC' },
-    });
-  }
-
   async downloadPDF(id: string, landlordId: string): Promise<Buffer> {
     const receipt = await this.findById(id, landlordId);
 

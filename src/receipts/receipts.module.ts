@@ -11,6 +11,7 @@ import { Property } from '../properties/entities/property.entity';
 import { Invoice } from '../invoices/entities/invoice.entity';
 import { FileUploadService } from '../utils/cloudinary';
 import { InvoicesModule } from '../invoices/invoices.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { InvoicesModule } from '../invoices/invoices.module';
     ]),
     ConfigModule,
     forwardRef(() => InvoicesModule),
+    AuthModule,
   ],
   controllers: [ReceiptsController],
   providers: [ReceiptGeneratorService, ReceiptsService, FileUploadService],

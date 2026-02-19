@@ -181,6 +181,7 @@ export class PDFGeneratorService {
     let browser: puppeteer.Browser | null = null;
 
     try {
+      console.log('Launching Puppeteer browser...');
       browser = await puppeteer.launch({
         headless: true,
         args: [
@@ -190,12 +191,16 @@ export class PDFGeneratorService {
           '--disable-gpu',
         ],
       });
+      console.log('Browser launched successfully');
 
       const page = await browser.newPage();
+      console.log('New page created, setting content...');
+
       await page.setContent(html, {
         waitUntil: 'domcontentloaded',
         timeout: 10000,
       });
+      console.log('Content set, generating PDF...');
 
       const pdfBuffer = await page.pdf({
         format: 'A4',
@@ -207,9 +212,15 @@ export class PDFGeneratorService {
           left: '15mm',
         },
       });
+      console.log('PDF generated, buffer size:', pdfBuffer.length);
 
       return Buffer.from(pdfBuffer);
     } catch (error) {
+      console.error('=== PUPPETEER ERROR ===');
+      console.error('Error type:', error.constructor.name);
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+
       this.logger.error(
         `Failed to generate PDF: ${error.message}`,
         error.stack,
@@ -217,6 +228,7 @@ export class PDFGeneratorService {
       throw error;
     } finally {
       if (browser) {
+        console.log('Closing browser...');
         await browser.close();
       }
     }

@@ -96,23 +96,50 @@ export class OfferLettersController {
     @Param('token') token: string,
     @Res() res: Response,
   ): Promise<any> {
-    const offerLetter =
-      await this.offerLettersService.getOfferLetterByToken(token);
+    console.log('=== OFFER LETTER PDF DOWNLOAD DEBUG (Controller) ===');
+    console.log('Token received:', token);
+    console.log('Request timestamp:', new Date().toISOString());
 
-    if (offerLetter && offerLetter.pdf_url) {
-      return res.redirect(offerLetter.pdf_url);
+    try {
+      console.log('Fetching offer letter by token...');
+      const offerLetter =
+        await this.offerLettersService.getOfferLetterByToken(token);
+
+      console.log('Offer letter found:', {
+        id: offerLetter?.id,
+        status: offerLetter?.status,
+        pdf_url: offerLetter?.pdf_url,
+        kycApplicationId: offerLetter?.kyc_application_id,
+        createdAt: offerLetter?.created_at,
+      });
+
+      if (offerLetter && offerLetter.pdf_url) {
+        console.log('PDF URL exists, redirecting to:', offerLetter.pdf_url);
+        return res.redirect(offerLetter.pdf_url);
+      }
+
+      console.log('No PDF URL found, generating PDF from template...');
+      const pdfBuffer =
+        await this.pdfGeneratorService.generateOfferLetterPDF(token);
+
+      console.log('PDF generated successfully, buffer size:', pdfBuffer.length);
+
+      res.set({
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="offer-letter-${token.substring(0, 8)}.pdf"`,
+        'Content-Length': pdfBuffer.length,
+      });
+
+      console.log('Sending PDF response...');
+      res.send(pdfBuffer);
+      console.log('PDF sent successfully');
+    } catch (error) {
+      console.error('=== ERROR IN PDF DOWNLOAD ===');
+      console.error('Error details:', error);
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+      throw error;
     }
-
-    const pdfBuffer =
-      await this.pdfGeneratorService.generateOfferLetterPDF(token);
-
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="offer-letter-${token.substring(0, 8)}.pdf"`,
-      'Content-Length': pdfBuffer.length,
-    });
-
-    res.send(pdfBuffer);
   }
 
   /**

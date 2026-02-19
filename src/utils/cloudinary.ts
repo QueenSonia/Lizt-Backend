@@ -82,4 +82,42 @@ export class FileUploadService {
       streamifier.createReadStream(buffer).pipe(uploadStream);
     });
   }
+
+  /**
+   * Delete a file from Cloudinary by public_id
+   * @param publicId - The public_id of the file to delete (e.g., 'notices/offer-letter-abc123-1234567890')
+   * @param resourceType - The resource type ('image', 'raw', 'video')
+   */
+  async deleteFile(
+    publicId: string,
+    resourceType: 'image' | 'raw' | 'video' = 'raw',
+  ): Promise<void> {
+    try {
+      await cloudinary.uploader.destroy(publicId, {
+        resource_type: resourceType,
+      });
+    } catch (error) {
+      // Log error but don't throw - deletion failure shouldn't block the main operation
+      console.error(
+        `Failed to delete file from Cloudinary: ${publicId}`,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Extract public_id from Cloudinary URL
+   * @param url - Full Cloudinary URL
+   * @returns public_id or null if extraction fails
+   */
+  extractPublicId(url: string): string | null {
+    try {
+      // Example URL: https://res.cloudinary.com/cloud-name/raw/upload/v1234567890/notices/offer-letter-abc123-1234567890.pdf
+      const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.\w+$/);
+      return match ? match[1] : null;
+    } catch (error) {
+      console.error('Failed to extract public_id from URL:', url, error);
+      return null;
+    }
+  }
 }

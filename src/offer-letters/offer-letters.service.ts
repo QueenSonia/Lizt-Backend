@@ -748,9 +748,32 @@ export class OfferLettersService {
    * Get offer letter entity by token (internal use)
    */
   async getOfferLetterByToken(token: string): Promise<OfferLetter | null> {
-    return this.offerLetterRepository.findOne({
-      where: { token },
-    });
+    console.log('=== OFFER LETTER SERVICE: getOfferLetterByToken ===');
+    console.log('Token:', token);
+
+    try {
+      const offerLetter = await this.offerLetterRepository.findOne({
+        where: { token },
+      });
+
+      console.log(
+        'Query result:',
+        offerLetter
+          ? {
+              id: offerLetter.id,
+              token: offerLetter.token,
+              status: offerLetter.status,
+              pdf_url: offerLetter.pdf_url,
+              kyc_application_id: offerLetter.kyc_application_id,
+            }
+          : 'null (not found)',
+      );
+
+      return offerLetter;
+    } catch (error) {
+      console.error('Error fetching offer letter by token:', error);
+      throw error;
+    }
   }
 
   /**

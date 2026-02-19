@@ -789,6 +789,7 @@ export class PropertiesService {
         'property.property_status',
         'property.property_type',
         'property.rental_price',
+        'property.is_marketing_ready',
         'property.owner_id',
       ])
       // Only load active rents with needed columns

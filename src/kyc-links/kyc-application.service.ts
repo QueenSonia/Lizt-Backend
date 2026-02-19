@@ -733,6 +733,35 @@ export class KYCApplicationService {
           ? (application as any).__paymentDate.toISOString()
           : (application as any).__paymentDate
         : undefined,
+
+      // Top-level timestamp fields for timeline events (easier frontend access)
+      offerLetterCreatedAt:
+        application.offer_letters && application.offer_letters.length > 0
+          ? (() => {
+              const latestOffer = application.offer_letters.sort((a, b) => {
+                const dateA = new Date(a.created_at || 0).getTime();
+                const dateB = new Date(b.created_at || 0).getTime();
+                return dateB - dateA;
+              })[0];
+              return latestOffer.created_at instanceof Date
+                ? latestOffer.created_at.toISOString()
+                : latestOffer.created_at;
+            })()
+          : undefined,
+
+      offerLetterUpdatedAt:
+        application.offer_letters && application.offer_letters.length > 0
+          ? (() => {
+              const latestOffer = application.offer_letters.sort((a, b) => {
+                const dateA = new Date(a.created_at || 0).getTime();
+                const dateB = new Date(b.created_at || 0).getTime();
+                return dateB - dateA;
+              })[0];
+              return latestOffer.updated_at instanceof Date
+                ? latestOffer.updated_at.toISOString()
+                : latestOffer.updated_at;
+            })()
+          : undefined,
     };
   }
 

@@ -1726,7 +1726,10 @@ export class TenantManagementService {
     // Add offer letter events
     const offerLetterEvents: TimelineEvent[] = (offerLetters || []).map(
       (offer) => {
-        const eventDate = new Date(offer.created_at || new Date());
+        // Use updated_at to reflect when offer was last sent/modified, fallback to created_at
+        const eventDate = new Date(
+          offer.updated_at || offer.created_at || new Date(),
+        );
         const totalAmount =
           Number(offer.rent_amount || 0) +
           Number(offer.service_charge || 0) +

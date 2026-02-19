@@ -2,7 +2,12 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as puppeteer from 'puppeteer';
-import { OfferLetter, TermsOfTenancy } from './entities/offer-letter.entity';
+import {
+  OfferLetter,
+  TermsOfTenancy,
+  OfferLetterStatus,
+} from './entities/offer-letter.entity';
+
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { FileUploadService } from '../utils/cloudinary';
@@ -31,32 +36,88 @@ export class PDFGeneratorService {
    * Requirements: 4.1, 4.3, 4.4
    */
   async generateOfferLetterPDF(token: string): Promise<Buffer> {
-    const offerLetter = await this.offerLetterRepository.findOne({
-      where: { token },
-    });
+    console.log('=== PDF GENERATOR SERVICE: generateOfferLetterPDF ===');
+    console.log('Token:', token);
 
-    if (!offerLetter) {
-      throw new NotFoundException('Offer letter not found');
+    try {
+      console.log('Fetching offer letter from database...');
+      const offerLetter = await this.offerLetterRepository.findOne({
+        where: { token },
+      });
+
+      if (!offerLetter) {
+        console.error('Offer letter not found for token:', token);
+        throw new NotFoundException('Offer letter not found');
+      }
+
+      console.log('Offer letter found:', {
+        id: offerLetter.id,
+        kyc_application_id: offerLetter.kyc_application_id,
+        property_id: offerLetter.property_id,
+        status: offerLetter.status,
+      });
+
+      console.log('Fetching KYC application...');
+      const kycApplication = await this.kycApplicationRepository.findOne({
+        where: { id: offerLetter.kyc_application_id },
+      });
+
+      console.log(
+        'KYC application found:',
+        kycApplication
+          ? {
+              id: kycApplication.id,
+              name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+              email: kycApplication.email,
+            }
+          : 'null (not found)',
+      );
+
+      console.log('Fetching property...');
+      const property = await this.propertyRepository.findOne({
+        where: { id: offerLetter.property_id },
+      });
+
+      console.log(
+        'Property found:',
+        property
+          ? {
+              id: property.id,
+              name: property.name,
+              address: property.location,
+            }
+          : 'null (not found)',
+      );
+
+      if (!kycApplication || !property) {
+        console.error('Offer letter data incomplete:', {
+          hasKycApplication: !!kycApplication,
+          hasProperty: !!property,
+        });
+        throw new NotFoundException('Offer letter data incomplete');
+      }
+
+      console.log('Generating HTML for PDF...');
+      const html = this.generateOfferLetterHTML(
+        offerLetter,
+        kycApplication,
+        property,
+      );
+
+      console.log('HTML generated, length:', html.length);
+      console.log('Converting HTML to PDF...');
+
+      const pdfBuffer = await this.htmlToPDF(html);
+
+      console.log('PDF generated successfully, buffer size:', pdfBuffer.length);
+      return pdfBuffer;
+    } catch (error) {
+      console.error('=== ERROR IN PDF GENERATION ===');
+      console.error('Error details:', error);
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+      throw error;
     }
-
-    const kycApplication = await this.kycApplicationRepository.findOne({
-      where: { id: offerLetter.kyc_application_id },
-    });
-
-    const property = await this.propertyRepository.findOne({
-      where: { id: offerLetter.property_id },
-    });
-
-    if (!kycApplication || !property) {
-      throw new NotFoundException('Offer letter data incomplete');
-    }
-
-    const html = this.generateOfferLetterHTML(
-      offerLetter,
-      kycApplication,
-      property,
-    );
-    return this.htmlToPDF(html);
   }
 
   /**
@@ -73,6 +134,17 @@ export class PDFGeneratorService {
           `Cannot generate PDF: Offer letter with token ${token} not found`,
         );
         return;
+      }
+
+      // Delete old PDF from Cloudinary if it exists
+      if (offerLetter.pdf_url) {
+        const publicId = this.fileUploadService.extractPublicId(
+          offerLetter.pdf_url,
+        );
+        if (publicId) {
+          this.logger.log(`Deleting old PDF from Cloudinary: ${publicId}`);
+          await this.fileUploadService.deleteFile(publicId, 'raw');
+        }
       }
 
       // Generate the PDF
@@ -525,12 +597,21 @@ export class PDFGeneratorService {
         </div>
       </div>
 
+      ${
+        (snapshot?.service_charge_formatted &&
+          snapshot.service_charge_formatted !== '₦0' &&
+          snapshot.service_charge_formatted !== '') ||
+        (offerLetter.service_charge && offerLetter.service_charge > 0)
+          ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
-          <strong>Service Charge:</strong> ${snapshot?.service_charge_formatted || (offerLetter.service_charge ? this.formatCurrency(offerLetter.service_charge) : '₦0')}
+          <strong>Service Charge:</strong> ${snapshot?.service_charge_formatted || this.formatCurrency(offerLetter.service_charge)}
         </div>
       </div>
+      `
+          : ''
+      }
 
       ${
         (snapshot?.caution_deposit_formatted &&
@@ -564,12 +645,22 @@ export class PDFGeneratorService {
           : ''
       }
 
+      ${
+        (snapshot?.agency_fee_formatted &&
+          snapshot.agency_fee_formatted !== '' &&
+          snapshot.agency_fee_formatted !==
+            'As agreed between tenant and agent (paid directly to agent)') ||
+        (offerLetter.agency_fee && offerLetter.agency_fee.toString() !== '')
+          ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
           <strong>Agency Fee:</strong> ${snapshot?.agency_fee_formatted || this.escapeHtml(offerLetter.agency_fee?.toString() || 'N/A')}
         </div>
       </div>
+      `
+          : ''
+      }
 
       <div class="term-item">
         <span class="bullet">•</span>
@@ -601,6 +692,8 @@ export class PDFGeneratorService {
     <div class="for-landlord">
       <p><em>${this.escapeHtml(cleanForLandlordText)}</em></p>
     </div>
+
+    ${this.generateDigitalSignatureHtml(offerLetter, applicantName)}
 
     <div class="page-divider"></div>
 
@@ -732,14 +825,102 @@ export class PDFGeneratorService {
   /**
    * Escape HTML special characters
    */
-  private escapeHtml(text: string): string {
-    const htmlEntities: Record<string, string> = {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    };
-    return text.replace(/[&<>"']/g, (char) => htmlEntities[char]);
+  private escapeHtml(unsafe: string): string {
+    if (!unsafe) return '';
+    return unsafe
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  /**
+   * Generate HTML for digital signature section
+   */
+  private generateDigitalSignatureHtml(
+    offerLetter: OfferLetter,
+    applicantName: string,
+  ): string {
+    const status = offerLetter.status;
+    const isAccepted =
+      status === OfferLetterStatus.ACCEPTED ||
+      status === OfferLetterStatus.SELECTED;
+    const isRejected = status === OfferLetterStatus.REJECTED;
+
+    if (!isAccepted && !isRejected) {
+      return '';
+    }
+
+    const color = isAccepted
+      ? 'rgba(30, 30, 30, 0.45)'
+      : 'rgba(211, 47, 47, 0.45)';
+    const borderColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.4)'
+      : 'rgba(211, 47, 47, 0.4)';
+    const text = isAccepted ? 'ACCEPTED' : 'REJECTED';
+
+    // Format date
+    let signedDateStr = 'Recorded';
+    if (offerLetter.accepted_at) {
+      const date = new Date(offerLetter.accepted_at);
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      const seconds = String(date.getSeconds()).padStart(2, '0');
+      signedDateStr = `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
+    }
+
+    return `
+    <div style="margin-top: 48px; margin-bottom: 48px; position: relative; page-break-inside: avoid;">
+      <h2 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">Digital Signature :</h2>
+
+      <!-- Distressed Rubber Stamp Container -->
+      <div style="position: absolute; left: 0; top: -10px; pointer-events: none; z-index: 10; transform: rotate(-22deg) translateY(-40px); padding-left: 2rem;">
+         <div style="
+            border: 6px solid ${borderColor};
+            padding: 10px 20px;
+            display: inline-block;
+            opacity: 0.8;
+            mask-image: url('data:image/svg+xml;utf8,<svg viewBox=%220 0 200 60%22 xmlns=%22http://www.w3.org/2000/svg%22><filter id=%22noise%22><feTurbulence type=%22fractalNoise%22 baseFrequency=%220.8%22 numOctaves=%223%22 stitchTiles=%22stitch%22/></filter><rect width=%22100%25%22 height=%22100%25%22 filter=%22url(%23noise)%22 opacity=%220.5%22/></svg>');
+            -webkit-mask-image: url('data:image/svg+xml;utf8,<svg viewBox=%220 0 200 60%22 xmlns=%22http://www.w3.org/2000/svg%22><filter id=%22noise%22><feTurbulence type=%22fractalNoise%22 baseFrequency=%220.8%22 numOctaves=%223%22 stitchTiles=%22stitch%22/></filter><rect width=%22100%25%22 height=%22100%25%22 filter=%22url(%23noise)%22 opacity=%220.5%22/></svg>');
+         ">
+            <div style="
+              font-family: Impact, 'Arial Black', sans-serif;
+              font-size: 36px;
+              font-weight: 900;
+              letter-spacing: 0.1em;
+              color: ${color};
+              text-transform: uppercase;
+              text-align: center;
+            ">
+              ${text}
+            </div>
+         </div>
+      </div>
+
+      <!-- Signature Details Table -->
+      <table style="width: 100%; border-collapse: collapse; font-size: 14px; position: relative; z-index: 1;">
+        <tr>
+          <td style="width: 200px; padding: 4px 0;">Sign Name</td>
+          <td style="padding: 4px 0;">${this.escapeHtml(applicantName)}</td>
+        </tr>
+        <tr>
+          <td style="width: 200px; padding: 4px 0;">OTP</td>
+          <td style="padding: 4px 0;">${this.escapeHtml(offerLetter.acceptance_otp || 'Recorded')}</td>
+        </tr>
+        <tr>
+          <td style="width: 200px; padding: 4px 0;">Date and Time Signed</td>
+          <td style="padding: 4px 0;">${this.escapeHtml(signedDateStr)}</td>
+        </tr>
+        <tr>
+          <td style="width: 200px; padding: 4px 0;">Phone</td>
+          <td style="padding: 4px 0;">${this.escapeHtml(offerLetter.accepted_by_phone || 'Recorded')}</td>
+        </tr>
+      </table>
+    </div>
+    `;
   }
 }

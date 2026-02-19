@@ -157,6 +157,24 @@ export class OfferLetterResponse {
 
   @ApiPropertyOptional({ example: 'Ibrahim Mohammed' })
   acceptedByName?: string;
+
+  @ApiPropertyOptional({ description: 'Content snapshot with customized text' })
+  contentSnapshot?: {
+    offer_title: string;
+    intro_text: string;
+    agreement_text: string;
+    closing_text: string;
+    for_landlord_text: string;
+    tenant_address: string;
+    permitted_use: string;
+    rent_amount_formatted?: string;
+    service_charge_formatted?: string;
+    caution_deposit_formatted?: string;
+    legal_fee_formatted?: string;
+    agency_fee_formatted?: string;
+    tenancy_term?: string;
+    tenancy_period?: string;
+  };
 }
 
 /**
@@ -241,6 +259,7 @@ export function toOfferLetterResponse(
     isPropertyAvailable,
     tenantAddress: kycApplication.contact_address,
     pdfUrl: entity.pdf_url,
+    contentSnapshot: entity.content_snapshot,
     acceptedAt: entity.accepted_at
       ? entity.accepted_at instanceof Date
         ? entity.accepted_at.toISOString()

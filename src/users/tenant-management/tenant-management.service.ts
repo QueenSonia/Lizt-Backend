@@ -179,6 +179,7 @@ export class TenantManagementService {
         await manager.getRepository(Account).save(userAccount);
 
         property.property_status = PropertyStatusEnum.OCCUPIED;
+        property.is_marketing_ready = false;
         await manager.getRepository(Property).save(property);
 
         // 4. create rent record
@@ -375,9 +376,10 @@ export class TenantManagementService {
 
         await manager.getRepository(PropertyTenant).save(propertyTenant);
 
-        // 9. Update property status to OCCUPIED
+        // 9. Update property status to OCCUPIED and remove from marketing
         await manager.getRepository(Property).update(propertyId, {
           property_status: PropertyStatusEnum.OCCUPIED,
+          is_marketing_ready: false,
         });
 
         // 10. Create property history record
@@ -673,6 +675,7 @@ export class TenantManagementService {
         await manager.getRepository(Account).save(userAccount);
 
         property.property_status = PropertyStatusEnum.OCCUPIED;
+        property.is_marketing_ready = false;
         await manager.getRepository(Property).save(property);
 
         // 4. create rent record
@@ -1095,9 +1098,10 @@ export class TenantManagementService {
 
       await manager.getRepository(PropertyTenant).save(propertyTenant);
 
-      // 8. Update property status to occupied
+      // 8. Update property status to occupied and remove from marketing
       await manager.getRepository(Property).update(property_id, {
         property_status: PropertyStatusEnum.OCCUPIED,
+        is_marketing_ready: false,
       });
 
       // 9. Create property history record

@@ -306,6 +306,7 @@ export class UsersService {
         }),
         queryRunner.manager.update(Property, property.id, {
           property_status: PropertyStatusEnum.OCCUPIED,
+          is_marketing_ready: false,
         }),
         queryRunner.manager.save(PropertyHistory, {
           property_id: property.id,
@@ -467,6 +468,7 @@ export class UsersService {
 
       await queryRunner.manager.update(Property, property.id, {
         property_status: PropertyStatusEnum.OCCUPIED,
+        is_marketing_ready: false,
       });
 
       await queryRunner.manager.save(PropertyHistory, {

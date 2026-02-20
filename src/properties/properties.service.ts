@@ -926,6 +926,13 @@ export class PropertiesService {
       ])
       .where('property.owner_id = :ownerId', { ownerId })
       .andWhere('property.is_marketing_ready = :isReady', { isReady: true })
+      .andWhere('property.property_status IN (:...statuses)', {
+        statuses: [
+          PropertyStatusEnum.VACANT,
+          PropertyStatusEnum.OFFER_PENDING,
+          PropertyStatusEnum.OFFER_ACCEPTED,
+        ],
+      })
       .getMany();
   }
 
@@ -1918,6 +1925,7 @@ export class PropertiesService {
 
       await queryRunner.manager.update(Property, property_id, {
         property_status: PropertyStatusEnum.OCCUPIED,
+        is_marketing_ready: false,
       });
 
       await queryRunner.manager.save(PropertyHistory, {
@@ -2668,6 +2676,7 @@ export class PropertiesService {
         }),
         queryRunner.manager.update(Property, property.id, {
           property_status: PropertyStatusEnum.OCCUPIED,
+          is_marketing_ready: false,
         }),
         queryRunner.manager.save(PropertyHistory, {
           property_id: property.id,

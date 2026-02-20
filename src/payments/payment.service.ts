@@ -576,9 +576,10 @@ export class PaymentService {
     winningOffer: OfferLetter,
     property: Property,
   ): Promise<void> {
-    // Update property to occupied
+    // Update property to occupied and remove from marketing
     await manager.update(Property, property.id, {
       property_status: 'occupied',
+      is_marketing_ready: false,
     });
 
     // Update winning offer

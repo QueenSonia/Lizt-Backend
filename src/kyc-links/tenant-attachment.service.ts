@@ -187,9 +187,10 @@ export class TenantAttachmentService {
 
       await queryRunner.manager.save(propertyTenant);
 
-      // Update property status to OCCUPIED
+      // Update property status to OCCUPIED and remove from marketing
       await queryRunner.manager.update(Property, application.property_id, {
         property_status: PropertyStatusEnum.OCCUPIED,
+        is_marketing_ready: false,
       });
 
       // Create property history record

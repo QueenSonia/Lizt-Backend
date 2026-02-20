@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  BadRequestException,
   Logger,
   Inject,
   forwardRef,
@@ -107,6 +108,11 @@ export class OfferLettersService {
         'Not authorized to create offer for this property',
       );
     }
+
+    // MULTI-PROPERTY OFFERS: Validation removed
+    // Previously blocked creating offers for properties different from KYC application
+    // Now allows landlords to send offers for any of their properties to any applicant
+    // The offer_letter.property_id is the single source of truth for tenant attachment
 
     // Validate property is available (not occupied)
     // Requirements: 2.1 - Allow multiple offers when property is NOT occupied

@@ -149,7 +149,8 @@ export class KYCApplicationService {
     // Handle optional fields properly to avoid undefined errors (relaxed validation)
     const applicationData: Partial<KYCApplication> = {
       kyc_link_id: kycLink.id,
-      property_id: kycData.property_id, // Use the selected property from form data
+      initial_property_id: kycData.property_id, // NEW: Store as initial property (historical context)
+      property_id: kycData.property_id, // DEPRECATED: Keep for backward compatibility
       status: ApplicationStatus.PENDING,
       // Required fields
       first_name: kycData.first_name,

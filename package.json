@@ -28,7 +28,8 @@
     "migration:generate": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js -d src/data-source.ts migration:generate",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js",
     "migration:run": "npm run typeorm -- migration:run -d src/data-source.ts",
-    "restore:tenants": "ts-node -r tsconfig-paths/register scripts/restore-deactivated-tenants.ts"
+    "restore:tenants": "ts-node -r tsconfig-paths/register scripts/restore-deactivated-tenants.ts",
+    "diagnose-kyc": "ts-node -r tsconfig-paths/register scripts/diagnose-missing-kyc.ts"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.1",

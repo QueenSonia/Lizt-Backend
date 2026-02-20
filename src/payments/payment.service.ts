@@ -689,6 +689,18 @@ export class PaymentService {
       order: { created_at: 'DESC' },
     });
 
+    // Get receipts for these payments
+    const paymentIds = payments.map((p) => p.id);
+    const receipts = await this.dataSource
+      .getRepository('receipts')
+      .createQueryBuilder('receipt')
+      .where('receipt.payment_id IN (:...paymentIds)', { paymentIds })
+      .getMany();
+
+    const receiptsByPaymentId = new Map(
+      receipts.map((r: any) => [r.payment_id, r.token]),
+    );
+
     const paymentHistory = payments.map((payment) => ({
       id: payment.id,
       amount: Number(payment.amount),
@@ -696,6 +708,7 @@ export class PaymentService {
       paymentMethod: payment.payment_method,
       paidAt: payment.paid_at,
       reference: payment.paystack_reference,
+      receiptToken: receiptsByPaymentId.get(payment.id) || undefined,
       date: payment.paid_at
         ? payment.paid_at.toISOString().split('T')[0]
         : payment.created_at.toISOString().split('T')[0],
@@ -710,6 +723,132 @@ export class PaymentService {
       propertyStatus: offerLetter.property.property_status,
       isPropertyAvailable: offerLetter.property.property_status !== 'occupied',
     };
+  }
+
+  /**
+   * Verify payment with Paystack directly (Hybrid approach)
+   *
+   * This method provides a hybrid verification:
+   * 1. First checks database (fast, webhook may have already processed)
+   * 2. If still pending, verifies directly with Paystack API
+   * 3. Processes payment if Paystack confirms success
+   *
+   * This eliminates the need to wait for cron job and provides
+   * immediate confirmation even if webhook failed.
+   */
+  async verifyPaymentWithPaystack(reference: string): Promise<any> {
+    this.paystackLogger.info('Hybrid verification started', { reference });
+
+    // Step 1: Find payment in database
+    const payment = await this.paymentRepository.findOne({
+      where: { paystack_reference: reference },
+      relations: ['offerLetter', 'offerLetter.property'],
+    });
+
+    if (!payment) {
+      this.paystackLogger.error('Payment not found for verification', {
+        reference,
+      });
+      throw new NotFoundException(
+        `Payment not found for reference: ${reference}`,
+      );
+    }
+
+    // Step 2: If already completed, return immediately (webhook worked)
+    if (payment.status === PaymentStatus.COMPLETED) {
+      this.paystackLogger.info(
+        'Payment already completed (webhook processed)',
+        {
+          payment_id: payment.id,
+          reference,
+        },
+      );
+
+      return {
+        status: 'success',
+        verified: true,
+        alreadyProcessed: true,
+        payment: {
+          id: payment.id,
+          amount: Number(payment.amount),
+          paidAt: payment.paid_at,
+          paymentMethod: payment.payment_method,
+        },
+        message: 'Payment already processed',
+      };
+    }
+
+    // Step 3: Payment still pending - verify with Paystack directly
+    this.paystackLogger.info('Payment pending, verifying with Paystack', {
+      payment_id: payment.id,
+      reference,
+    });
+
+    try {
+      const verification =
+        await this.paystackService.verifyTransaction(reference);
+
+      this.paystackLogger.info('Paystack verification response', {
+        reference,
+        status: verification.data.status,
+        amount: verification.data.amount,
+      });
+
+      // Step 4: If Paystack says success, process it now
+      if (verification.data.status === 'success') {
+        this.paystackLogger.info(
+          'Payment successful on Paystack, processing now',
+          {
+            payment_id: payment.id,
+            reference,
+          },
+        );
+
+        // Process the payment (this updates database, generates receipt, etc.)
+        await this.processSuccessfulPayment(verification.data);
+
+        return {
+          status: 'success',
+          verified: true,
+          alreadyProcessed: false,
+          payment: {
+            id: payment.id,
+            amount: verification.data.amount / 100, // Convert from kobo
+            paidAt: verification.data.paid_at,
+            paymentMethod: verification.data.channel,
+          },
+          message: 'Payment verified and processed successfully',
+        };
+      }
+
+      // Step 5: Payment not successful yet
+      this.paystackLogger.info('Payment not yet successful on Paystack', {
+        payment_id: payment.id,
+        reference,
+        paystack_status: verification.data.status,
+      });
+
+      return {
+        status: verification.data.status,
+        verified: true,
+        alreadyProcessed: false,
+        message: `Payment status: ${verification.data.status}`,
+      };
+    } catch (error) {
+      this.paystackLogger.error('Error verifying with Paystack', {
+        reference,
+        error: error.message,
+        stack: error.stack,
+      });
+
+      // Return error but don't throw - let frontend handle gracefully
+      return {
+        status: 'error',
+        verified: false,
+        message: 'Failed to verify with Paystack',
+        error: error.message,
+      };
+    }
   }
 
   /**
@@ -1120,16 +1259,33 @@ export class PaymentService {
         return;
       }
 
+      // Get the most recent receipt for this offer letter
+      const receipt = await this.dataSource
+        .getRepository('receipts')
+        .createQueryBuilder('receipt')
+        .where('receipt.offer_letter_id = :offerLetterId', {
+          offerLetterId: offerLetter.id,
+        })
+        .orderBy('receipt.created_at', 'DESC')
+        .getOne();
+
+      const frontendUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
+      const receiptLink = receipt
+        ? `${frontendUrl}/receipt/${receipt.token}`
+        : undefined;
+
       await this.templateSenderService.sendTenantPaymentSuccess({
         phone_number: kycApplication.phone_number,
         tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
         property_name: property.name,
         total_amount: Number(offerLetter.total_amount),
+        receipt_link: receiptLink,
       });
 
       this.paystackLogger.info('Winning tenant notification sent', {
         offer_id: offerLetter.id,
         kyc_application_id: kycApplication.id,
+        receipt_link: receiptLink,
       });
     } catch (error) {
       this.paystackLogger.error('Failed to send winning tenant notification', {
@@ -1273,9 +1429,12 @@ export class PaymentService {
   }
 
   /**
-   * Check for expired payments (runs every 5 minutes)
+   * Check for expired payments (runs every 30 minutes)
+   *
+   * Reduced frequency since hybrid verification handles most cases.
+   * This is now just a safety net for edge cases.
    */
-  @Cron('*/5 * * * *')
+  @Cron('*/30 * * * *')
   async checkExpiredPayments(): Promise<void> {
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
@@ -1308,10 +1467,35 @@ export class PaymentService {
           await this.processSuccessfulPayment(verification.data);
         }
       } catch (error) {
-        this.paystackLogger.error('Error checking expired payment', {
-          payment_id: payment.id,
-          error: error.message,
-        });
+        // Handle "transaction not found" errors gracefully
+        const isTransactionNotFound =
+          error.message?.includes('Transaction reference not found') ||
+          error.message?.includes('transaction_not_found');
+
+        if (isTransactionNotFound) {
+          // Payment was created in DB but never initiated on Paystack
+          // Mark as failed with specific reason
+          await this.markAsFailed(payment.id, {
+            reason: 'never_initiated',
+            error: 'Transaction not found on Paystack',
+            note: 'Payment record exists in database but was never initiated on Paystack checkout',
+          });
+
+          this.paystackLogger.info(
+            'Payment marked as failed - never initiated on Paystack',
+            {
+              payment_id: payment.id,
+              reference: payment.paystack_reference,
+            },
+          );
+        } else {
+          // Other errors (network issues, etc.) - log but don't mark as failed yet
+          this.paystackLogger.error('Error checking expired payment', {
+            payment_id: payment.id,
+            reference: payment.paystack_reference,
+            error: error.message,
+          });
+        }
       }
     }
   }

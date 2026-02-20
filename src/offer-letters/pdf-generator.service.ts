@@ -29,7 +29,7 @@ export class PDFGeneratorService {
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
     private readonly fileUploadService: FileUploadService,
-  ) {}
+  ) { }
 
   /**
    * Generate PDF for an offer letter by token
@@ -66,10 +66,10 @@ export class PDFGeneratorService {
         'KYC application found:',
         kycApplication
           ? {
-              id: kycApplication.id,
-              name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-              email: kycApplication.email,
-            }
+            id: kycApplication.id,
+            name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            email: kycApplication.email,
+          }
           : 'null (not found)',
       );
 
@@ -82,10 +82,10 @@ export class PDFGeneratorService {
         'Property found:',
         property
           ? {
-              id: property.id,
-              name: property.name,
-              address: property.location,
-            }
+            id: property.id,
+            name: property.name,
+            address: property.location,
+          }
           : 'null (not found)',
       );
 
@@ -338,8 +338,8 @@ export class PDFGeneratorService {
     const termsHtml =
       terms.length > 0
         ? terms
-            .map(
-              (term, index) => `
+          .map(
+            (term, index) => `
       <div style="margin-bottom: 24px;">
         <h3 style="font-weight: 700; font-size: 14px; margin-bottom: 12px; font-family: ${headingFont}, sans-serif;">
           ${index + 1}. ${this.escapeHtml(term.title)}
@@ -349,8 +349,8 @@ export class PDFGeneratorService {
         </div>
       </div>
     `,
-            )
-            .join('')
+          )
+          .join('')
         : '<p>Standard terms of tenancy apply.</p>';
 
     const offerTitle =
@@ -395,9 +395,9 @@ export class PDFGeneratorService {
     }
     body {
       font-family: ${bodyFont === 'Inter' ? "'Inter', sans-serif" : bodyFont}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 14px;
-      line-height: 1.428;
-      color: #000;
+      font-size: 14.6px;
+      line-height: 1.5;
+      color: #1a1b23;
       background: #fff;
     }
     .container {
@@ -420,7 +420,7 @@ export class PDFGeneratorService {
     
     .date-section {
       margin-bottom: 32px;
-      font-size: 14px;
+      font-size: 14.6px;
     }
     
     .recipient-section {
@@ -443,14 +443,14 @@ export class PDFGeneratorService {
     .main-heading h1 {
       font-family: ${headingFont === 'Inter' ? "'Inter', sans-serif" : headingFont}, sans-serif;
       font-weight: 700;
-      font-size: 14px;
+      font-size: 14.6px;
       text-transform: uppercase;
       text-decoration: underline;
     }
     
     .intro-text {
       margin-bottom: 32px;
-      font-size: 14px;
+      font-size: 14.6px;
       text-align: justify;
     }
     .intro-text p {
@@ -459,7 +459,8 @@ export class PDFGeneratorService {
     
     .terms-bullets {
       margin-bottom: 32px;
-      font-size: 14px;
+      font-size: 14.6px;
+      text-align: justify;
     }
     .terms-bullets .term-item {
       display: flex;
@@ -478,7 +479,7 @@ export class PDFGeneratorService {
     
     .agreement-text {
       margin-bottom: 32px;
-      font-size: 14px;
+      font-size: 14.6px;
       text-align: justify;
     }
     .agreement-text p {
@@ -487,7 +488,7 @@ export class PDFGeneratorService {
     
     .closing-section {
       margin-bottom: 8px;
-      font-size: 14px;
+      font-size: 14.6px;
     }
     
     .signature-space {
@@ -504,7 +505,7 @@ export class PDFGeneratorService {
     
     .for-landlord {
       margin-bottom: 48px;
-      font-size: 14px;
+      font-size: 14.6px;
     }
     .for-landlord em {
       font-style: italic;
@@ -548,10 +549,9 @@ export class PDFGeneratorService {
     }
     
     .footer-section {
-      margin-top: 64px;
-      padding-top: 32px;
-      border-top: 1px solid #e5e7eb;
-      text-align: right;
+      margin-top: 48px;
+      padding-top: 16px;
+      text-align: center;
       color: ${footerColor};
     }
     .footer-section p {
@@ -609,12 +609,11 @@ export class PDFGeneratorService {
         </div>
       </div>
 
-      ${
-        (snapshot?.service_charge_formatted &&
-          snapshot.service_charge_formatted !== '₦0' &&
-          snapshot.service_charge_formatted !== '') ||
+      ${(snapshot?.service_charge_formatted &&
+        snapshot.service_charge_formatted !== '₦0' &&
+        snapshot.service_charge_formatted !== '') ||
         (offerLetter.service_charge && offerLetter.service_charge > 0)
-          ? `
+        ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
@@ -622,15 +621,14 @@ export class PDFGeneratorService {
         </div>
       </div>
       `
-          : ''
+        : ''
       }
 
-      ${
-        (snapshot?.caution_deposit_formatted &&
-          snapshot.caution_deposit_formatted !== '₦0' &&
-          snapshot.caution_deposit_formatted !== '') ||
+      ${(snapshot?.caution_deposit_formatted &&
+        snapshot.caution_deposit_formatted !== '₦0' &&
+        snapshot.caution_deposit_formatted !== '') ||
         (offerLetter.caution_deposit && offerLetter.caution_deposit > 0)
-          ? `
+        ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
@@ -638,15 +636,14 @@ export class PDFGeneratorService {
         </div>
       </div>
       `
-          : ''
+        : ''
       }
 
-      ${
-        (snapshot?.legal_fee_formatted &&
-          snapshot.legal_fee_formatted !== '₦0' &&
-          snapshot.legal_fee_formatted !== '') ||
+      ${(snapshot?.legal_fee_formatted &&
+        snapshot.legal_fee_formatted !== '₦0' &&
+        snapshot.legal_fee_formatted !== '') ||
         (offerLetter.legal_fee && offerLetter.legal_fee > 0)
-          ? `
+        ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
@@ -654,16 +651,15 @@ export class PDFGeneratorService {
         </div>
       </div>
       `
-          : ''
+        : ''
       }
 
-      ${
-        (snapshot?.agency_fee_formatted &&
-          snapshot.agency_fee_formatted !== '' &&
-          snapshot.agency_fee_formatted !==
-            'As agreed between tenant and agent (paid directly to agent)') ||
+      ${(snapshot?.agency_fee_formatted &&
+        snapshot.agency_fee_formatted !== '' &&
+        snapshot.agency_fee_formatted !==
+        'As agreed between tenant and agent (paid directly to agent)') ||
         (offerLetter.agency_fee && offerLetter.agency_fee.toString() !== '')
-          ? `
+        ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
@@ -671,7 +667,7 @@ export class PDFGeneratorService {
         </div>
       </div>
       `
-          : ''
+        : ''
       }
 
       <div class="term-item">
@@ -886,31 +882,95 @@ export class PDFGeneratorService {
     }
 
     return `
+    <svg width="0" height="0" style="position: absolute;">
+      <defs>
+        <filter id="distressed-stamp-\${status}">
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="0.8"
+            numOctaves="4"
+            result="noise"
+          />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="noise"
+            scale="3"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+          <feGaussianBlur stdDeviation="0.3" />
+        </filter>
+      </defs>
+    </svg>
     <div style="margin-top: 48px; margin-bottom: 48px; position: relative; page-break-inside: avoid;">
       <h2 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">Digital Signature :</h2>
 
       <!-- Distressed Rubber Stamp Container -->
-      <div style="position: absolute; left: 0; top: -10px; pointer-events: none; z-index: 10; transform: rotate(-22deg) translateY(-40px); padding-left: 2rem;">
-         <div style="
-            border: 6px solid ${borderColor};
-            padding: 10px 20px;
-            display: inline-block;
-            opacity: 0.8;
-            mask-image: url('data:image/svg+xml;utf8,<svg viewBox=%220 0 200 60%22 xmlns=%22http://www.w3.org/2000/svg%22><filter id=%22noise%22><feTurbulence type=%22fractalNoise%22 baseFrequency=%220.8%22 numOctaves=%223%22 stitchTiles=%22stitch%22/></filter><rect width=%22100%25%22 height=%22100%25%22 filter=%22url(%23noise)%22 opacity=%220.5%22/></svg>');
-            -webkit-mask-image: url('data:image/svg+xml;utf8,<svg viewBox=%220 0 200 60%22 xmlns=%22http://www.w3.org/2000/svg%22><filter id=%22noise%22><feTurbulence type=%22fractalNoise%22 baseFrequency=%220.8%22 numOctaves=%223%22 stitchTiles=%22stitch%22/></filter><rect width=%22100%25%22 height=%22100%25%22 filter=%22url(%23noise)%22 opacity=%220.5%22/></svg>');
-         ">
-            <div style="
-              font-family: Impact, 'Arial Black', sans-serif;
-              font-size: 36px;
-              font-weight: 900;
-              letter-spacing: 0.1em;
-              color: ${color};
-              text-transform: uppercase;
-              text-align: center;
-            ">
-              ${text}
-            </div>
-         </div>
+      <div style="position: absolute; left: 0; top: 0; bottom: 0; display: flex; align-items: center; justify-content: flex-start; pointer-events: none; z-index: 10; transform: rotate(-22deg) translateY(-40px); padding-left: 2rem;">
+        <div style="
+          border: 6px solid ${borderColor};
+          background-color: transparent;
+          filter: url(#distressed-stamp-\${status});
+          position: relative;
+          padding: 10px 20px;
+        ">
+          <!-- Inner border for depth -->
+          <div style="
+            position: absolute;
+            top: 3px; right: 3px; bottom: 3px; left: 3px;
+            border: 1.5px solid ${isAccepted ? 'rgba(30, 30, 30, 0.3)' : 'rgba(211, 47, 47, 0.3)'};
+            pointer-events: none;
+          "></div>
+
+          <!-- Stamp text -->
+          <div style="
+            font-family: Impact, 'Arial Black', 'Franklin Gothic Bold', sans-serif;
+            font-size: 36px;
+            font-weight: 900;
+            letter-spacing: 0.25em;
+            color: ${color};
+            text-shadow: ${isAccepted
+        ? '2px 2px 0px rgba(30, 30, 30, 0.2), -1px -1px 0px rgba(30, 30, 30, 0.15), 1px 0px 2px rgba(30, 30, 30, 0.1)'
+        : '2px 2px 0px rgba(211, 47, 47, 0.2), -1px -1px 0px rgba(211, 47, 47, 0.15), 1px 0px 2px rgba(211, 47, 47, 0.1)'};
+            -webkit-text-stroke: ${isAccepted ? '0.8px rgba(30, 30, 30, 0.25)' : '0.8px rgba(211, 47, 47, 0.25)'};
+            position: relative;
+          ">
+            ${text}
+          </div>
+
+          <!-- Grunge overlay spots -->
+          <div style="
+            position: absolute;
+            top: 0; right: 0; bottom: 0; left: 0;
+            background: ${isAccepted
+        ? 'radial-gradient(circle at 20% 30%, transparent 0%, transparent 40%, rgba(30, 30, 30, 0.06) 50%, transparent 60%), radial-gradient(circle at 80% 70%, transparent 0%, transparent 35%, rgba(30, 30, 30, 0.07) 45%, transparent 55%), radial-gradient(circle at 50% 90%, transparent 0%, transparent 30%, rgba(30, 30, 30, 0.05) 40%, transparent 50%), radial-gradient(circle at 10% 80%, transparent 0%, transparent 25%, rgba(30, 30, 30, 0.06) 35%, transparent 45%)'
+        : 'radial-gradient(circle at 20% 30%, transparent 0%, transparent 40%, rgba(211, 47, 47, 0.06) 50%, transparent 60%), radial-gradient(circle at 80% 70%, transparent 0%, transparent 35%, rgba(211, 47, 47, 0.07) 45%, transparent 55%), radial-gradient(circle at 50% 90%, transparent 0%, transparent 30%, rgba(211, 47, 47, 0.05) 40%, transparent 50%), radial-gradient(circle at 10% 80%, transparent 0%, transparent 25%, rgba(211, 47, 47, 0.06) 35%, transparent 45%)'};
+            pointer-events: none;
+            mix-blend-mode: multiply;
+          "></div>
+
+          <!-- Edge wear effect top -->
+          <div style="
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: ${isAccepted
+        ? 'linear-gradient(90deg, transparent 0%, rgba(30, 30, 30, 0.15) 10%, transparent 25%, rgba(30, 30, 30, 0.1) 40%, transparent 60%, rgba(30, 30, 30, 0.12) 80%, transparent 100%)'
+        : 'linear-gradient(90deg, transparent 0%, rgba(211, 47, 47, 0.15) 10%, transparent 25%, rgba(211, 47, 47, 0.1) 40%, transparent 60%, rgba(211, 47, 47, 0.12) 80%, transparent 100%)'};
+            pointer-events: none;
+          "></div>
+          
+          <!-- Edge wear effect bottom -->
+          <div style="
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 2px;
+            background: ${isAccepted
+        ? 'linear-gradient(90deg, transparent 0%, rgba(30, 30, 30, 0.1) 15%, transparent 35%, rgba(30, 30, 30, 0.15) 55%, transparent 70%, rgba(30, 30, 30, 0.12) 90%, transparent 100%)'
+        : 'linear-gradient(90deg, transparent 0%, rgba(211, 47, 47, 0.1) 15%, transparent 35%, rgba(211, 47, 47, 0.15) 55%, transparent 70%, rgba(211, 47, 47, 0.12) 90%, transparent 100%)'};
+            pointer-events: none;
+          "></div>
+        </div>
       </div>
 
       <!-- Signature Details Table -->

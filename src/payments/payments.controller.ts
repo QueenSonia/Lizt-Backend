@@ -13,6 +13,7 @@ import { Roles } from '../auth/role.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Account } from '../users/entities/account.entity';
 import { PaymentService } from './payment.service';
+import { Public } from '../auth/public.decorator';
 
 /**
  * PaymentsController
@@ -55,5 +56,24 @@ export class PaymentsController {
   @Get(':offerId')
   async getPaymentByOfferId(@Param('offerId') offerId: string): Promise<any> {
     return this.paymentService.getPaymentStatus(offerId);
+  }
+
+  /**
+   * Verify payment directly with Paystack
+   * GET /payments/verify/:reference
+   *
+   * This endpoint provides a hybrid verification approach:
+   * 1. Checks database first (fast)
+   * 2. If still pending, verifies with Paystack directly
+   * 3. Processes payment if Paystack confirms success
+   *
+   * Requirements: US-5, TR-4
+   */
+  @Public()
+  @Get('verify/:reference')
+  async verifyPaymentWithPaystack(
+    @Param('reference') reference: string,
+  ): Promise<any> {
+    return this.paymentService.verifyPaymentWithPaystack(reference);
   }
 }

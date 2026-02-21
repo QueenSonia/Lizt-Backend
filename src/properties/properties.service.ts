@@ -1369,8 +1369,8 @@ export class PropertiesService {
               id: hist.id,
               date: hist.created_at || hist.move_in_date,
               eventType: 'tenancy_started',
-              title: 'Tenant Attached',
-              description: `${tenantName} started tenancy for this property on ${moveInDate}.`,
+              title: 'Tenant moved in',
+              description: `${tenantName} moved into this property on ${moveInDate}.`,
               details: hist.monthly_rent
                 ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
                 : null,

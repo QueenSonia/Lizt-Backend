@@ -56,6 +56,95 @@ import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { AttachResult } from 'src/common/interfaces';
 
 /**
+ * Internal interface for timeline events
+ * Matches TenantDetailDto's TimeLineEvent interface
+ */
+interface TimelineEvent {
+  id: string;
+  type:
+    | 'payment'
+    | 'maintenance'
+    | 'notice'
+    | 'general'
+    | 'offer_letter'
+    | 'receipt';
+  title: string;
+  description: string;
+  date: string;
+  time: string;
+  details?: string; // Additional details like property name or amount
+  offerLetterData?: {
+    id: string;
+    token: string;
+    propertyName: string;
+    propertyId: string;
+    rentAmount: number;
+    rentFrequency: string;
+    serviceCharge: number;
+    cautionDeposit: number;
+    legalFee: number;
+    agencyFee: number;
+    totalAmount: number;
+    tenancyStartDate: Date;
+    tenancyEndDate: Date;
+    status: string;
+    paymentStatus: string;
+    amountPaid: number;
+    outstandingBalance: number;
+  };
+  receiptData?: {
+    id: string;
+    propertyName: string;
+    propertyId?: string;
+    amountPaid: number;
+    paymentMethod: string | null;
+    reference: string;
+    paidAt?: string;
+    isPartPayment: boolean;
+  };
+}
+
+/**
+ * Internal interface for tenant KYC record
+ */
+interface TenantKycRecord {
+  id?: string;
+  first_name?: string;
+  last_name?: string;
+  phone_number?: string;
+  email?: string;
+  date_of_birth?: string | Date;
+  gender?: string;
+  state_of_origin?: string;
+  nationality?: string;
+  marital_status?: string;
+  religion?: string;
+  employment_status?: string;
+  employer_name?: string;
+  work_address?: string;
+  job_title?: string;
+  monthly_net_income?: string;
+  work_phone_number?: string;
+  length_of_employment?: string;
+  nature_of_business?: string;
+  business_name?: string;
+  business_address?: string;
+  business_duration?: string;
+  current_address?: string;
+  next_of_kin_full_name?: string;
+  next_of_kin_address?: string;
+  next_of_kin_relationship?: string;
+  next_of_kin_phone_number?: string;
+  next_of_kin_email?: string;
+  guarantor_full_name?: string;
+  guarantor_phone_number?: string;
+  guarantor_email?: string;
+  guarantor_address?: string;
+  guarantor_relationship?: string;
+  guarantor_occupation?: string;
+}
+
+/**
  * TenantManagementService handles all tenant-specific operations
  * Extracted from UsersService to follow Single Responsibility Principle
  */
@@ -1437,6 +1526,8 @@ export class TenantManagementService {
         'property_histories.move_out_reason',
         'property_histories.monthly_rent',
         'property_histories.created_at',
+        'property_histories.related_entity_id',
+        'property_histories.related_entity_type',
       ])
       .leftJoin('property_histories.property', 'past_property')
       .addSelect([
@@ -1647,14 +1738,19 @@ export class TenantManagementService {
               })
             : 'an unspecified date';
 
+          const rentAmount = ph.monthly_rent
+            ? ` — Rent: ₦${Number(ph.monthly_rent).toLocaleString()}`
+            : '';
+
           const eventDate = new Date(
             ph.created_at || ph.move_in_date || new Date(),
           );
           tenancyEvents.push({
             id: `tenancy-start-${ph.id}`,
             type: 'general' as const,
-            title: 'Tenant Attached',
-            description: `Tenancy began for ${prop?.name || 'property'} on ${moveInDate}.`,
+            title: 'Tenant moved in',
+            description: `Moved into ${prop?.name || 'property'} on ${moveInDate}${rentAmount}.`,
+            details: prop?.name || undefined,
             date: eventDate.toISOString(),
             time: eventDate.toLocaleTimeString('en-US', {
               hour: '2-digit',
@@ -1665,6 +1761,14 @@ export class TenantManagementService {
 
         if (ph.event_type === 'tenancy_ended') {
           const prop = ph.property;
+          const moveOutDate = ph.move_out_date
+            ? new Date(ph.move_out_date).toLocaleDateString('en-US', {
+                month: 'long',
+                day: 'numeric',
+                year: 'numeric',
+              })
+            : 'an unspecified date';
+
           const eventDate = new Date(
             ph.created_at || ph.move_out_date || new Date(),
           );
@@ -1672,7 +1776,25 @@ export class TenantManagementService {
             id: `tenancy-end-${ph.id}`,
             type: 'general' as const,
             title: 'Tenancy Ended',
-            description: `Tenant moved out of ${prop?.name || 'property'}.`,
+            description: `Tenant moved out of ${prop?.name || 'property'} on ${moveOutDate}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          });
+        }
+
+        if (ph.event_type === 'kyc_application_submitted') {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `kyc-submitted-${ph.id}`,
+            type: 'general' as const,
+            title: 'KYC Application Submitted',
+            description: `KYC application submitted for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
             date: eventDate.toISOString(),
             time: eventDate.toLocaleTimeString('en-US', {
               hour: '2-digit',
@@ -1684,6 +1806,7 @@ export class TenantManagementService {
         if (ph.event_type === 'service_request_updated') {
           const parts = ph.event_description?.split('|||') || [];
           const status = parts[0] || 'updated';
+          const prop = ph.property;
 
           let title = 'Service Request Updated';
 
@@ -1701,6 +1824,7 @@ export class TenantManagementService {
             type: 'maintenance' as const,
             title: title,
             description: this.getServiceRequestUpdateDescription(status),
+            details: prop?.name || undefined,
             date: eventDate.toISOString(),
             time: eventDate.toLocaleTimeString('en-US', {
               hour: '2-digit',
@@ -1714,11 +1838,13 @@ export class TenantManagementService {
     // Add service request events
     const serviceRequestEvents = serviceRequests.map((sr) => {
       const eventDate = new Date(sr.date_reported);
+      const prop = sr.property;
       return {
         id: `service-${sr.id}`,
         type: 'maintenance' as const,
         title: 'Service Request Created',
         description: `Issue reported by tenant: "${sr.description}".`,
+        details: prop?.name || undefined,
         date: eventDate.toISOString(),
         time: eventDate.toLocaleTimeString('en-US', {
           hour: '2-digit',
@@ -1749,11 +1875,15 @@ export class TenantManagementService {
         else if (offer.status === OfferLetterStatus.SELECTED)
           statusText = 'completed';
 
+        const propertyName = offer.property?.name || 'property';
+        const amountText = ` — ₦${totalAmount.toLocaleString()}`;
+
         return {
           id: `offer-${offer.id}`,
           type: 'offer_letter' as const,
           title: 'Offer Letter',
-          description: `Offer letter ${statusText} for ${offer.property?.name || 'property'}`,
+          description: `Offer letter ${statusText} for ${propertyName}${amountText}`,
+          details: propertyName,
           date: eventDate.toISOString(),
           time: eventDate.toLocaleTimeString('en-US', {
             hour: '2-digit',
@@ -1787,14 +1917,16 @@ export class TenantManagementService {
       const eventDate = new Date(payment.paid_at || payment.created_at);
       const isPartPayment = payment.payment_type === 'partial';
       const propertyName = payment.offerLetter?.property?.name || 'property';
+      const amountFormatted = `₦${Number(payment.amount).toLocaleString()}`;
 
       return {
         id: `receipt-${payment.id}`,
         type: 'receipt' as const,
         title: isPartPayment ? 'Part Payment Received' : 'Payment Received',
         description: isPartPayment
-          ? `Part payment of ₦${Number(payment.amount).toLocaleString()} received for ${propertyName}`
-          : `Full payment of ₦${Number(payment.amount).toLocaleString()} received for ${propertyName}`,
+          ? `Part payment of ${amountFormatted} received for ${propertyName}`
+          : `Full payment of ${amountFormatted} received for ${propertyName}`,
+        details: `${propertyName} — ${amountFormatted}`,
         date: eventDate.toISOString(),
         time: eventDate.toLocaleTimeString('en-US', {
           hour: '2-digit',
@@ -2202,89 +2334,4 @@ interface TenantKycFromApplicationDto {
   spouse_occupation?: string;
   spouse_employer?: string;
   service_charge?: number;
-}
-
-/**
- * Internal interface for timeline events
- * Matches TenantDetailDto's TimeLineEvent interface
- */
-interface TimelineEvent {
-  id: string;
-  type:
-    | 'payment'
-    | 'maintenance'
-    | 'notice'
-    | 'general'
-    | 'offer_letter'
-    | 'receipt';
-  title: string;
-  description: string;
-  date: string;
-  time: string;
-  offerLetterData?: {
-    id: string;
-    token: string;
-    propertyName: string;
-    propertyId: string;
-    rentAmount: number;
-    rentFrequency: string;
-    serviceCharge: number;
-    cautionDeposit: number;
-    legalFee: number;
-    agencyFee: number;
-    totalAmount: number;
-    tenancyStartDate: Date;
-    tenancyEndDate: Date;
-    status: string;
-    paymentStatus: string;
-    amountPaid: number;
-    outstandingBalance: number;
-  };
-  receiptData?: {
-    id: string;
-    propertyName: string;
-    propertyId?: string;
-    amountPaid: number;
-    paymentMethod: string | null;
-    reference: string;
-    paidAt?: string;
-    isPartPayment: boolean;
-  };
-}
-
-/**
- * Internal interface for tenant KYC record
- */
-interface TenantKycRecord {
-  id?: string;
-  first_name?: string;
-  last_name?: string;
-  phone_number?: string;
-  email?: string;
-  date_of_birth?: string | Date;
-  gender?: string;
-  state_of_origin?: string;
-  nationality?: string;
-  marital_status?: string;
-  religion?: string;
-  employment_status?: string;
-  employer_name?: string;
-  work_address?: string;
-  job_title?: string;
-  monthly_net_income?: string;
-  work_phone_number?: string;
-  length_of_employment?: string;
-  nature_of_business?: string;
-  business_name?: string;
-  business_address?: string;
-  business_duration?: string;
-  occupation?: string;
-  current_residence?: string;
-  next_of_kin_full_name?: string;
-  next_of_kin_relationship?: string;
-  next_of_kin_phone_number?: string;
-  next_of_kin_email?: string;
-  next_of_kin_address?: string;
-  referral_agent_full_name?: string;
-  referral_agent_phone_number?: string;
 }

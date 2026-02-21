@@ -220,4 +220,9 @@ export class CreateKYCApplicationDto {
   @IsString()
   @IsNotEmpty()
   business_proof_url?: string;
+
+  // Tracking Information (optional - captured from request)
+  @IsOptional()
+  @IsString()
+  decision_ip?: string;
 }

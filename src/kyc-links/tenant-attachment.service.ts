@@ -197,6 +197,7 @@ export class TenantAttachmentService {
       const propertyHistory = queryRunner.manager.create(PropertyHistory, {
         property_id: application.property_id,
         tenant_id: tenantAccount.id,
+        event_type: 'tenancy_started',
         move_in_date: DateService.getStartOfTheDay(rentStartDate),
         monthly_rent: tenancyDetails.rentAmount,
         owner_comment: `Tenant attached via KYC application ${applicationId}. Rent: ₦${tenancyDetails.rentAmount.toLocaleString()}, Frequency: ${tenancyDetails.rentFrequency}, Next due: ${nextRentDueDate.toLocaleDateString()}`,
@@ -460,6 +461,7 @@ export class TenantAttachmentService {
     const propertyHistory = manager.create(PropertyHistory, {
       property_id: offerLetter.property_id,
       tenant_id: tenantAccount.id,
+      event_type: 'tenancy_started',
       move_in_date: DateService.getStartOfTheDay(rentStartDate),
       monthly_rent: Number(offerLetter.rent_amount),
       owner_comment: `Tenant attached via offer letter payment. Rent: ₦${Number(offerLetter.rent_amount).toLocaleString()}, Frequency: ${offerLetter.rent_frequency}, Lease ends: ${leaseEndDate.toLocaleDateString()}`,

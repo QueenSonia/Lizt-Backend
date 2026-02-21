@@ -59,6 +59,23 @@ export class KYCApplicationController {
   }
 
   /**
+   * Track when a user opens the KYC form
+   * POST /api/kyc/:token/track-open
+   * Public endpoint - records timestamp and IP address
+   */
+  @SkipAuth()
+  @Post('kyc/:token/track-open')
+  async trackFormOpen(
+    @Param('token') token: string,
+    @Body('ipAddress') ipAddress?: string,
+  ): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    return await this.kycApplicationService.trackFormOpen(token, ipAddress);
+  }
+
+  /**
    * Get KYC applications for a property (landlord only)
    * GET /api/properties/:propertyId/kyc-applications
    * Requirements: 4.1, 4.2, 4.3
@@ -347,6 +364,32 @@ export class KYCApplicationController {
     return {
       success: true,
       message: 'KYC completion link sent successfully',
+    };
+  }
+
+  /**
+   * Get property history events for a KYC application (landlord only)
+   * GET /api/kyc-applications/:applicationId/history
+   * Returns tracking events like form views and submissions
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('kyc-applications/:applicationId/history')
+  async getApplicationHistory(
+    @Param('applicationId', ParseUUIDPipe) applicationId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    history: any[];
+  }> {
+    const history = await this.kycApplicationService.getApplicationHistory(
+      applicationId,
+      user.id,
+    );
+
+    return {
+      success: true,
+      history,
     };
   }
 }

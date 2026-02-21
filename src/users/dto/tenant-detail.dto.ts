@@ -52,6 +52,7 @@ interface TimeLineEvent {
   description: string;
   time: string;
   title: string;
+  details?: string; // Additional details like property name or amount
   offerLetterData?: {
     id: string;
     token: string;

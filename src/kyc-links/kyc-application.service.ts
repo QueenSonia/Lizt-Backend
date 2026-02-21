@@ -245,11 +245,48 @@ export class KYCApplicationService {
     if (kycData.business_proof_url)
       applicationData.business_proof_url = kycData.business_proof_url;
 
+    // Tracking Information - Record when decision was made
+    applicationData.decision_made_at = new Date();
+    if (kycData.decision_ip) {
+      applicationData.decision_made_ip = kycData.decision_ip;
+    }
+
     const kycApplication =
       this.kycApplicationRepository.create(applicationData);
 
     const savedApplication =
       await this.kycApplicationRepository.save(kycApplication);
+
+    // Create history entry for KYC submission/acceptance
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      await propertyHistoryRepo.save({
+        property_id: kycData.property_id,
+        tenant_id: null,
+        event_type: 'kyc_application_submitted',
+        event_description: `KYC application submitted — ${kycData.decision_ip || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: savedApplication.id,
+        related_entity_type: 'kyc_application',
+      });
+    } catch (error) {
+      console.error('Failed to create KYC submission history:', error);
+    }
 
     // Return the application with relations loaded
     const applicationWithRelations =
@@ -413,7 +450,7 @@ export class KYCApplicationService {
   /**
    * Get all KYC applications for a specific property (landlord access only)
    * Requirements: 4.1, 4.2, 4.3
-   * When property is vacant, only show pending applications
+   * Shows all applications regardless of property status to support multi-property offers
    */
   async getApplicationsByProperty(
     propertyId: string,
@@ -466,15 +503,9 @@ export class KYCApplicationService {
       .where('application.property_id = :propertyId', { propertyId })
       .andWhere('application.deleted_at IS NULL');
 
-    // If property is vacant or marketing-ready, only show pending applications
-    const isVacantLike =
-      ['vacant'].includes(property.property_status) ||
-      property.is_marketing_ready;
-    if (isVacantLike) {
-      qb.andWhere('application.status = :pendingStatus', {
-        pendingStatus: ApplicationStatus.PENDING,
-      });
-    }
+    // REMOVED: Filter that hid rejected applications for vacant properties
+    // This allows landlords to see all applications and reuse rejected ones for other properties
+    // Supporting multi-property offers where rejected applicants can be offered different properties
 
     qb.orderBy('application.created_at', 'DESC').addOrderBy(
       'application.status',
@@ -489,7 +520,7 @@ export class KYCApplicationService {
   /**
    * Get applications by property with filtering and sorting options
    * Requirements: 4.1, 4.2, 4.3
-   * When property is vacant, only show pending applications
+   * Shows all applications regardless of property status to support multi-property offers
    */
   async getApplicationsByPropertyWithFilters(
     propertyId: string,
@@ -541,16 +572,12 @@ export class KYCApplicationService {
       ])
       .where('application.property_id = :propertyId', { propertyId });
 
-    // If property is vacant or marketing-ready, only show pending applications (override any status filter)
-    const isVacantLike =
-      ['vacant'].includes(property.property_status) ||
-      property.is_marketing_ready;
-    if (isVacantLike) {
-      queryBuilder.andWhere('application.status = :pendingStatus', {
-        pendingStatus: ApplicationStatus.PENDING,
-      });
-    } else if (filters?.status) {
-      // Apply status filter only if property is not vacant
+    // REMOVED: Filter that hid rejected applications for vacant properties
+    // This allows landlords to see all applications and reuse rejected ones for other properties
+    // Supporting multi-property offers where rejected applicants can be offered different properties
+
+    // Apply status filter if provided
+    if (filters?.status) {
       queryBuilder.andWhere('application.status = :status', {
         status: filters.status,
       });
@@ -763,6 +790,20 @@ export class KYCApplicationService {
                 : latestOffer.updated_at;
             })()
           : undefined,
+
+      // Tracking Information
+      formOpenedAt: application.form_opened_at
+        ? application.form_opened_at instanceof Date
+          ? application.form_opened_at.toISOString()
+          : application.form_opened_at
+        : undefined,
+      formOpenedIp: application.form_opened_ip,
+      decisionMadeAt: application.decision_made_at
+        ? application.decision_made_at instanceof Date
+          ? application.decision_made_at.toISOString()
+          : application.decision_made_at
+        : undefined,
+      decisionMadeIp: application.decision_made_ip,
     };
   }
 
@@ -1092,6 +1133,77 @@ export class KYCApplicationService {
     }
 
     return kycLink;
+  }
+
+  /**
+   * Track when a user opens the KYC form
+   * Records timestamp and IP address, and creates history entry
+   * Tracks EVERY open, not just the first time
+   */
+  async trackFormOpen(
+    token: string,
+    ipAddress?: string,
+  ): Promise<{ success: boolean; message: string }> {
+    // Validate the token
+    const kycLink = await this.validateKYCToken(token);
+
+    // Get the property and landlord info for history tracking
+    const property = await this.propertyRepository.findOne({
+      where: { owner_id: kycLink.landlord_id },
+      order: { created_at: 'DESC' },
+    });
+
+    // Check if there's already a pending_completion application for this link
+    const existingApplication = await this.kycApplicationRepository.findOne({
+      where: {
+        kyc_link_id: kycLink.id,
+        status: ApplicationStatus.PENDING_COMPLETION,
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    // Always update the form_opened_at timestamp (track every open)
+    if (existingApplication) {
+      existingApplication.form_opened_at = new Date();
+      existingApplication.form_opened_ip = ipAddress;
+      await this.kycApplicationRepository.save(existingApplication);
+    }
+
+    // Create history entry for this form open event
+    if (property) {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      await propertyHistoryRepo.save({
+        property_id: property.id,
+        tenant_id: existingApplication?.tenant_id || null,
+        event_type: 'kyc_form_viewed',
+        event_description: `KYC form viewed — ${ipAddress || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: existingApplication?.id || kycLink.id,
+        related_entity_type: existingApplication
+          ? 'kyc_application'
+          : 'kyc_link',
+      });
+    }
+
+    return {
+      success: true,
+      message: 'Form open tracked successfully',
+    };
   }
 
   /**
@@ -1833,5 +1945,57 @@ export class KYCApplicationService {
     }
 
     return property;
+  }
+
+  /**
+   * Get property history events for a KYC application
+   * Returns tracking events like form views and submissions
+   */
+  async getApplicationHistory(
+    applicationId: string,
+    landlordId: string,
+  ): Promise<any[]> {
+    // Get the application and validate ownership
+    const application = await this.kycApplicationRepository.findOne({
+      where: { id: applicationId },
+      relations: ['property'],
+    });
+
+    if (!application) {
+      throw new NotFoundException('KYC application not found');
+    }
+
+    await this.validatePropertyOwnership(application.property_id, landlordId);
+
+    // Get property history events related to this application
+    const { PropertyHistory } = await import(
+      '../property-history/entities/property-history.entity'
+    );
+    const propertyHistoryRepo =
+      this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+    const historyEvents = await propertyHistoryRepo.find({
+      where: [
+        {
+          related_entity_id: applicationId,
+          related_entity_type: 'kyc_application',
+        },
+        {
+          property_id: application.property_id,
+          event_type: 'kyc_form_viewed',
+        },
+      ],
+      order: { created_at: 'DESC' },
+    });
+
+    return historyEvents.map((event) => ({
+      id: event.id,
+      eventType: event.event_type,
+      eventDescription: event.event_description,
+      createdAt:
+        event.created_at instanceof Date
+          ? event.created_at.toISOString()
+          : event.created_at,
+    }));
   }
 }

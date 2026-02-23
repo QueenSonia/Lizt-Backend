@@ -1,4 +1,4 @@
-import { IsString, Length } from 'class-validator';
+import { IsString, Length, IsOptional } from 'class-validator';
 
 /**
  * Verify OTP DTO
@@ -9,4 +9,8 @@ export class VerifyOfferOtpDto {
   @IsString()
   @Length(6, 6, { message: 'OTP must be exactly 6 digits' })
   otp: string;
+
+  @IsString()
+  @IsOptional()
+  ipAddress?: string;
 }

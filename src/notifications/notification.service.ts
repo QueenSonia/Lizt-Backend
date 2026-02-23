@@ -55,6 +55,18 @@ export class NotificationService {
         return 'Notice Agreement';
       case NotificationType.PAYMENT_RECEIVED:
         return 'Payment Received';
+      case NotificationType.INVOICE_GENERATED:
+        return 'Invoice Generated';
+      case NotificationType.INVOICE_SENT:
+        return 'Invoice Sent';
+      case NotificationType.INVOICE_VIEWED:
+        return 'Invoice Viewed';
+      case NotificationType.RECEIPT_ISSUED:
+        return 'Receipt Issued';
+      case NotificationType.RECEIPT_SENT:
+        return 'Receipt Sent';
+      case NotificationType.RECEIPT_VIEWED:
+        return 'Receipt Viewed';
       default:
         return 'Panda Homes';
     }

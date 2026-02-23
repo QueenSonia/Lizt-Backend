@@ -1,4 +1,12 @@
-import { Controller, Get, Param, Res, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Param,
+  Body,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
@@ -21,6 +29,20 @@ export class ReceiptsController {
   @Get('public/:token')
   async findByToken(@Param('token') token: string) {
     return this.receiptsService.findByToken(token);
+  }
+
+  /**
+   * Track when tenant views a receipt (public endpoint)
+   * POST /receipts/public/:token/track-view
+   * Requirements: 6.1, 6.2, 6.3, 6.4, 12.6
+   */
+  @SkipAuth()
+  @Post('public/:token/track-view')
+  async trackReceiptView(
+    @Param('token') token: string,
+    @Body('ipAddress') ipAddress?: string,
+  ) {
+    return this.receiptsService.trackReceiptView(token, ipAddress);
   }
 
   /**

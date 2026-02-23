@@ -47,6 +47,7 @@ interface TimeLineEvent {
     | 'notice'
     | 'general'
     | 'offer_letter'
+    | 'invoice'
     | 'receipt';
   date: string;
   description: string;
@@ -82,6 +83,8 @@ interface TimeLineEvent {
     paidAt?: string;
     isPartPayment: boolean;
   };
+  relatedEntityId?: string;
+  relatedEntityType?: string;
 }
 
 interface KycInfo {

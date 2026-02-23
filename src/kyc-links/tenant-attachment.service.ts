@@ -208,11 +208,60 @@ export class TenantAttachmentService {
 
       await queryRunner.manager.save(propertyHistory);
 
+      // Create property history event for KYC application approval
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      const applicantName = `${application.first_name} ${application.last_name}`;
+      const kycApprovalHistory = queryRunner.manager.create(PropertyHistory, {
+        property_id: application.property_id,
+        tenant_id: tenantAccount.id,
+        event_type: 'kyc_application_approved',
+        event_description: `KYC application approved for ${applicantName} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: applicationId,
+        related_entity_type: 'kyc_application',
+      });
+
+      await queryRunner.manager.save(kycApprovalHistory);
+
       // Update application status to APPROVED and link to tenant
       await queryRunner.manager.update(KYCApplication, applicationId, {
         status: ApplicationStatus.APPROVED,
         tenant_id: tenantAccount.id,
       });
+
+      // Backfill tenant_id on applicant-phase property history records
+      // These events (KYC submitted, offer letter sent/accepted, invoice generated/sent, etc.)
+      // were created before the tenant account existed, so they have tenant_id = NULL
+      try {
+        const backfillResult = await queryRunner.manager
+          .createQueryBuilder()
+          .update(PropertyHistory)
+          .set({ tenant_id: tenantAccount.id })
+          .where('property_id = :propertyId', {
+            propertyId: application.property_id,
+          })
+          .andWhere('tenant_id IS NULL')
+          .execute();
+
+        console.log(
+          `Backfilled tenant_id on ${backfillResult.affected} applicant-phase property history records`,
+        );
+      } catch (backfillError) {
+        console.error(
+          'Failed to backfill tenant_id on property history records:',
+          backfillError,
+        );
+        // Don't fail the attachment — backfill is best-effort
+      }
 
       // Reject all other pending applications for this property
       await this.rejectOtherApplications(
@@ -476,6 +525,30 @@ export class TenantAttachmentService {
       propertyHistoryId: propertyHistory.id,
     });
 
+    // Create property history event for KYC application approval
+    const formattedDate = new Date().toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const formattedTime = new Date().toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    const applicantName = `${application.first_name} ${application.last_name}`;
+    const kycApprovalHistory = manager.create(PropertyHistory, {
+      property_id: offerLetter.property_id,
+      tenant_id: tenantAccount.id,
+      event_type: 'kyc_application_approved',
+      event_description: `KYC application approved for ${applicantName} — ${formattedDate} at ${formattedTime}`,
+      related_entity_id: application.id,
+      related_entity_type: 'kyc_application',
+    });
+
+    await manager.save(kycApprovalHistory);
+
     // Update application status to APPROVED and link to tenant
     await manager.update(KYCApplication, application.id, {
       status: ApplicationStatus.APPROVED,
@@ -483,6 +556,31 @@ export class TenantAttachmentService {
     });
 
     console.log('KYC application updated to APPROVED');
+
+    // Backfill tenant_id on applicant-phase property history records
+    // These events (KYC submitted, offer letter sent/accepted, invoice generated/sent, etc.)
+    // were created before the tenant account existed, so they have tenant_id = NULL
+    try {
+      const backfillResult = await manager
+        .createQueryBuilder()
+        .update(PropertyHistory)
+        .set({ tenant_id: tenantAccount.id })
+        .where('property_id = :propertyId', {
+          propertyId: offerLetter.property_id,
+        })
+        .andWhere('tenant_id IS NULL')
+        .execute();
+
+      console.log(
+        `Backfilled tenant_id on ${backfillResult.affected} applicant-phase property history records`,
+      );
+    } catch (backfillError) {
+      console.error(
+        'Failed to backfill tenant_id on property history records:',
+        backfillError,
+      );
+      // Don't fail the attachment — backfill is best-effort
+    }
 
     // Reject all other pending applications for this property
     await this.rejectOtherApplications(
@@ -554,6 +652,20 @@ export class TenantAttachmentService {
     excludeApplicationId: string,
     manager: any,
   ): Promise<void> {
+    // Get all applications that will be rejected
+    const applicationsToReject = await manager.find(KYCApplication, {
+      where: {
+        property_id: propertyId,
+        status: ApplicationStatus.PENDING,
+      },
+    });
+
+    // Filter out the approved application
+    const rejectedApplications = applicationsToReject.filter(
+      (app: KYCApplication) => app.id !== excludeApplicationId,
+    );
+
+    // Update status to rejected
     await manager
       .createQueryBuilder()
       .update(KYCApplication)
@@ -562,6 +674,42 @@ export class TenantAttachmentService {
       .andWhere('status = :status', { status: ApplicationStatus.PENDING })
       .andWhere('id != :excludeApplicationId', { excludeApplicationId })
       .execute();
+
+    // Create property history events for each rejected application
+    const formattedDate = new Date().toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const formattedTime = new Date().toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    for (const application of rejectedApplications) {
+      try {
+        const applicantName = `${application.first_name} ${application.last_name}`;
+        const propertyHistory = manager.create(PropertyHistory, {
+          property_id: propertyId,
+          tenant_id: application.tenant_id || null,
+          event_type: 'kyc_application_rejected',
+          event_description: `KYC application rejected for ${applicantName} — ${formattedDate} at ${formattedTime}`,
+          related_entity_id: application.id,
+          related_entity_type: 'kyc_application',
+        });
+
+        await manager.save(propertyHistory);
+        console.log(
+          `Property history created for rejected application: ${application.id}`,
+        );
+      } catch (error) {
+        console.error(
+          `Failed to create property history for rejected application ${application.id}:`,
+          error,
+        );
+      }
+    }
   }
 
   /**

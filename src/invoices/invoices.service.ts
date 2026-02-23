@@ -15,9 +15,15 @@ import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Users } from '../users/entities/user.entity';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender/template-sender.service';
+import { PropertyHistoryService } from '../property-history/property-history.service';
+import { NotificationService } from '../notifications/notification.service';
+import { NotificationType } from '../notifications/enums/notification-type';
+import { Logger } from '@nestjs/common';
 
 @Injectable()
 export class InvoicesService {
+  private readonly logger = new Logger(InvoicesService.name);
+
   constructor(
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
@@ -35,6 +41,8 @@ export class InvoicesService {
     private readonly usersRepository: Repository<Users>,
     private readonly templateSenderService: TemplateSenderService,
     private readonly dataSource: DataSource,
+    private readonly propertyHistoryService: PropertyHistoryService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   /**
@@ -288,6 +296,57 @@ export class InvoicesService {
       return savedInvoice;
     });
 
+    // Create property history record and notification for invoice generation
+    try {
+      let tenantName = 'Unknown';
+      let tenantId: string | null = null;
+
+      if (dto.tenantId) {
+        const tenant = await this.usersRepository.findOne({
+          where: { id: dto.tenantId },
+        });
+        if (tenant) {
+          tenantName = `${tenant.first_name} ${tenant.last_name}`;
+          tenantId = tenant.id;
+        }
+      }
+
+      if (tenantName === 'Unknown' && dto.kycApplicationId) {
+        const kycApplication = await this.kycApplicationRepository.findOne({
+          where: { id: dto.kycApplicationId },
+        });
+        if (kycApplication) {
+          tenantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+          tenantId = kycApplication.tenant_id || null;
+        }
+      }
+
+      const propertyName = property.name || 'Property';
+
+      await this.propertyHistoryService.createPropertyHistory({
+        property_id: dto.propertyId,
+        tenant_id: tenantId,
+        event_type: 'invoice_generated',
+        event_description: `Invoice generated for ${tenantName} — ₦${totalAmount.toLocaleString()}`,
+        related_entity_id: invoice.id,
+        related_entity_type: 'invoice',
+      });
+
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.INVOICE_GENERATED,
+        description: `Invoice of ₦${totalAmount.toLocaleString()} generated for ${tenantName} — ${propertyName}`,
+        status: 'Completed',
+        property_id: dto.propertyId,
+        user_id: landlordId,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create invoice_generated history/notification:',
+        error,
+      );
+    }
+
     return this.findOne(invoice.id, landlordId);
   }
 
@@ -403,6 +462,37 @@ export class InvoicesService {
 
       return savedInvoice;
     });
+
+    // Create property history record and notification for invoice generation
+    try {
+      const tenantName = offerLetter.kyc_application
+        ? `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`
+        : 'Unknown';
+      const propertyName = offerLetter.property?.name || 'Property';
+
+      await this.propertyHistoryService.createPropertyHistory({
+        property_id: offerLetter.property_id,
+        tenant_id: offerLetter.kyc_application?.tenant_id || null,
+        event_type: 'invoice_generated',
+        event_description: `Invoice generated for ${tenantName} — ₦${totalAmount.toLocaleString()}`,
+        related_entity_id: invoice.id,
+        related_entity_type: 'invoice',
+      });
+
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.INVOICE_GENERATED,
+        description: `Invoice of ₦${totalAmount.toLocaleString()} generated for ${tenantName} — ${propertyName}`,
+        status: 'Completed',
+        property_id: offerLetter.property_id,
+        user_id: landlordUserId,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create invoice_generated history/notification:',
+        error,
+      );
+    }
 
     return this.findOne(invoice.id, landlordUserId);
   }
@@ -619,5 +709,82 @@ export class InvoicesService {
       reference,
       paymentId,
     );
+  }
+
+  /**
+   * Track when a tenant views an invoice via the public page.
+   * Looks up the invoice via the offer letter token, creates a property history
+   * record with event_type `invoice_viewed` and a notification.
+   */
+  async trackInvoiceView(
+    token: string,
+    ipAddress?: string,
+  ): Promise<{ success: boolean; message: string }> {
+    // Find the offer letter by token
+    const offerLetter = await this.offerLetterRepository.findOne({
+      where: { token },
+      relations: ['property', 'kyc_application'],
+    });
+
+    if (!offerLetter) {
+      throw new NotFoundException('Offer letter not found');
+    }
+
+    // Find the invoice linked to this offer letter
+    const invoice = await this.invoiceRepository.findOne({
+      where: { offer_letter_id: offerLetter.id },
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Invoice not found for this offer letter');
+    }
+
+    // Create history entry for invoice view
+    try {
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      await this.propertyHistoryService.createPropertyHistory({
+        property_id: invoice.property_id,
+        tenant_id: offerLetter.kyc_application?.tenant_id || null,
+        event_type: 'invoice_viewed',
+        event_description: `Invoice viewed — ${ipAddress || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: invoice.id,
+        related_entity_type: 'invoice',
+      });
+
+      this.logger.log(
+        `Invoice ${invoice.id} viewed from IP ${ipAddress || 'Unknown'}`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to create invoice_viewed history:', error);
+    }
+
+    // Create notification separately so history isn't blocked by notification failures
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.INVOICE_VIEWED,
+        description: `Invoice viewed — ${ipAddress || 'Unknown IP'} — ${offerLetter.property?.name || 'Property'}`,
+        status: 'Completed',
+        property_id: invoice.property_id,
+        user_id: offerLetter.landlord_id,
+      });
+    } catch (error) {
+      this.logger.error('Failed to create invoice_viewed notification:', error);
+    }
+
+    return {
+      success: true,
+      message: 'Invoice view tracked successfully',
+    };
   }
 }

@@ -15,6 +15,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { SkipAuth } from '../auth/auth.decorator';
 import { InvoicesService } from './invoices.service';
 import { InvoicePDFService } from './invoice-pdf.service';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
@@ -146,5 +147,19 @@ export class InvoicesController {
     @Param('id') id: string,
   ) {
     return this.invoicesService.sendReminder(id, user.userId);
+  }
+
+  /**
+   * Track when tenant views an invoice (public endpoint)
+   * POST /invoices/public/:token/track-view
+   * Requirements: 3.1, 3.2, 3.3, 3.4
+   */
+  @SkipAuth()
+  @Post('public/:token/track-view')
+  async trackInvoiceView(
+    @Param('token') token: string,
+    @Body('ipAddress') ipAddress?: string,
+  ) {
+    return this.invoicesService.trackInvoiceView(token, ipAddress);
   }
 }

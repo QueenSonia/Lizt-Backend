@@ -506,7 +506,7 @@ export class PaymentService {
             });
           });
 
-        // Fire-and-forget: Generate receipt
+        // Fire-and-forget: Generate receipt, then create receipt_sent event and notify winning tenant
         this.receiptGeneratorService
           .generateReceipt({
             paymentId: processedPaymentId,
@@ -515,6 +515,60 @@ export class PaymentService {
             paymentMethod: data.channel || 'card',
             paymentReference: data.reference,
             paidAt: new Date(data.paid_at || data.paidAt || Date.now()),
+          })
+          .then(async (savedReceipt) => {
+            // After receipt is generated and shareable link is available, create receipt_sent event
+            try {
+              await this.propertyHistoryService.createPropertyHistory({
+                property_id: savedReceipt.property_id,
+                tenant_id: savedReceipt.kyc_application_id
+                  ? (
+                      await this.kycApplicationRepository.findOne({
+                        where: { id: savedReceipt.kyc_application_id },
+                      })
+                    )?.tenant_id || null
+                  : null,
+                event_type: 'receipt_sent',
+                event_description: `Receipt sent to ${savedReceipt.tenant_name} for ${savedReceipt.property_name}`,
+                related_entity_id: savedReceipt.id,
+                related_entity_type: 'receipt',
+              });
+
+              await this.notificationService.create({
+                date: new Date().toISOString(),
+                type: NotificationType.RECEIPT_SENT,
+                description: `Receipt sent to ${savedReceipt.tenant_name} for ${savedReceipt.property_name}`,
+                status: 'Completed',
+                property_id: savedReceipt.property_id,
+                user_id: processedLandlordId!,
+              });
+            } catch (error) {
+              this.paystackLogger.error(
+                'Failed to create receipt_sent history/notification:',
+                { error: error.message },
+              );
+            }
+
+            // Notify winning tenant AFTER receipt is generated so receipt link is available
+            if (wasPropertySecured && processedOfferLetterId) {
+              try {
+                const offerLetter = await this.offerLetterRepository.findOne({
+                  where: { id: processedOfferLetterId },
+                  relations: ['property'],
+                });
+                if (offerLetter?.property) {
+                  await this.notifyWinningTenant(
+                    offerLetter,
+                    offerLetter.property,
+                  );
+                }
+              } catch (error) {
+                this.paystackLogger.error(
+                  'Failed to send winning tenant notification after receipt:',
+                  { error: error.message },
+                );
+              }
+            }
           })
           .catch((err) => {
             this.paystackLogger.error('Receipt generation failed', {
@@ -620,8 +674,8 @@ export class PaymentService {
     // These are scheduled but not awaited to avoid blocking the transaction
     setImmediate(async () => {
       try {
-        // Notify winning tenant
-        await this.notifyWinningTenant(winningOffer, property);
+        // Note: Winning tenant notification is sent after receipt generation
+        // in processSuccessfulPayment to ensure receipt link is available
 
         // Notify losing tenants
         for (const losingOffer of losingOffers) {
@@ -1063,6 +1117,55 @@ export class PaymentService {
         'payment',
       );
     }
+  }
+
+  /**
+   * Track when a tenant cancels a payment from the Paystack popup
+   */
+  async trackPaymentCancelled(
+    token: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const offerLetter = await this.offerLetterRepository.findOne({
+      where: { token },
+      relations: ['property', 'kyc_application'],
+    });
+
+    if (!offerLetter) {
+      throw new NotFoundException('Offer letter not found');
+    }
+
+    const tenantName = offerLetter.kyc_application
+      ? `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`
+      : 'Unknown';
+    const propertyName = offerLetter.property?.name || 'Property';
+
+    const formattedDate = new Date().toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const formattedTime = new Date().toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    try {
+      await this.propertyHistoryService.createPropertyHistory({
+        property_id: offerLetter.property_id,
+        tenant_id: offerLetter.kyc_application?.tenant_id || null,
+        event_type: 'payment_cancelled',
+        event_description: `${tenantName} cancelled payment for ${propertyName} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: offerLetter.id,
+        related_entity_type: 'offer_letter',
+      });
+    } catch (error) {
+      this.paystackLogger.error('Failed to create payment_cancelled history:', {
+        error: error.message,
+      });
+    }
+
+    return { success: true, message: 'Payment cancellation tracked' };
   }
 
   /**

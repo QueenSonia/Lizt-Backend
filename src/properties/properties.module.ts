@@ -25,6 +25,7 @@ import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
+import { NotificationModule } from 'src/notifications/notification.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { DatabaseErrorHandlerService } from 'src/database/database-error-handler
     KYCLinksModule,
     UtilsModule,
     forwardRef(() => WhatsappBotModule),
+    NotificationModule,
   ],
   controllers: [PropertiesController],
   providers: [

@@ -4,6 +4,9 @@ import { Repository } from 'typeorm';
 import { Receipt } from './entities/receipt.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { ReceiptGeneratorService } from './receipt-generator.service';
+import { PropertyHistoryService } from '../property-history/property-history.service';
+import { NotificationService } from '../notifications/notification.service';
+import { NotificationType } from '../notifications/enums/notification-type';
 
 @Injectable()
 export class ReceiptsService {
@@ -15,6 +18,8 @@ export class ReceiptsService {
     @InjectRepository(OfferLetter)
     private readonly offerLetterRepository: Repository<OfferLetter>,
     private readonly receiptGeneratorService: ReceiptGeneratorService,
+    private readonly propertyHistoryService: PropertyHistoryService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async findByOfferLetterId(
@@ -115,5 +120,75 @@ export class ReceiptsService {
 
     // Generate on-the-fly
     return this.receiptGeneratorService.generateReceiptPDF(id);
+  }
+
+  /**
+   * Track when a tenant views a receipt (public endpoint)
+   * Requirements: 6.1, 6.2, 6.3, 6.4, 12.6
+   */
+  async trackReceiptView(
+    token: string,
+    ipAddress?: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const receipt = await this.receiptRepository.findOne({
+      where: { token },
+      relations: ['offer_letter'],
+    });
+
+    if (!receipt) {
+      throw new NotFoundException('Receipt not found');
+    }
+
+    try {
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      // Look up tenant_id from the KYC application linked to the offer letter
+      let tenantId: string | null = null;
+      if (receipt.offer_letter?.id) {
+        const offerLetter = await this.offerLetterRepository.findOne({
+          where: { id: receipt.offer_letter.id },
+          relations: ['kyc_application'],
+        });
+        tenantId = offerLetter?.kyc_application?.tenant_id || null;
+      }
+
+      await this.propertyHistoryService.createPropertyHistory({
+        property_id: receipt.property_id,
+        tenant_id: tenantId,
+        event_type: 'receipt_viewed',
+        event_description: `Receipt viewed — ${ipAddress || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: receipt.id,
+        related_entity_type: 'receipt',
+      });
+
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.RECEIPT_VIEWED,
+        description: `Receipt viewed — ${ipAddress || 'Unknown IP'} — ${receipt.property_name || 'Property'}`,
+        status: 'Completed',
+        property_id: receipt.property_id,
+        user_id: receipt.offer_letter?.landlord_id,
+      });
+
+      this.logger.log(
+        `Receipt ${receipt.id} viewed from IP ${ipAddress || 'Unknown'}`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to create receipt_viewed history:', error);
+    }
+
+    return {
+      success: true,
+      message: 'Receipt view tracked successfully',
+    };
   }
 }

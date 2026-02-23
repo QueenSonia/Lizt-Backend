@@ -9,6 +9,9 @@ import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { Invoice } from '../invoices/entities/invoice.entity';
 import { FileUploadService } from '../utils/cloudinary';
+import { PropertyHistoryService } from '../property-history/property-history.service';
+import { NotificationService } from '../notifications/notification.service';
+import { NotificationType } from '../notifications/enums/notification-type';
 
 export interface GenerateReceiptParams {
   paymentId: string;
@@ -35,6 +38,8 @@ export class ReceiptGeneratorService {
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
     private readonly fileUploadService: FileUploadService,
+    private readonly propertyHistoryService: PropertyHistoryService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async generateReceipt(params: GenerateReceiptParams): Promise<Receipt> {
@@ -102,6 +107,36 @@ export class ReceiptGeneratorService {
     });
 
     const savedReceipt = await this.receiptRepository.save(receipt);
+
+    // Create property history record and notification for receipt issuance
+    try {
+      const tenantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+      const propertyName = property.name || 'Property';
+      const landlordId = offerLetter.landlord_id;
+
+      await this.propertyHistoryService.createPropertyHistory({
+        property_id: savedReceipt.property_id,
+        tenant_id: kycApplication.tenant_id || null,
+        event_type: 'receipt_issued',
+        event_description: `Receipt issued for ${tenantName} — ₦${amount.toLocaleString()}`,
+        related_entity_id: savedReceipt.id,
+        related_entity_type: 'receipt',
+      });
+
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.RECEIPT_ISSUED,
+        description: `Receipt of ₦${amount.toLocaleString()} issued for ${tenantName} — ${propertyName}`,
+        status: 'Completed',
+        property_id: savedReceipt.property_id,
+        user_id: landlordId,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create receipt_issued history/notification:',
+        error,
+      );
+    }
 
     // Fire-and-forget PDF generation
     this.generateReceiptPDF(savedReceipt.id).catch((err) => {

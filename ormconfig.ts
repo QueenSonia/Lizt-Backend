@@ -39,12 +39,13 @@ export const config = {
     max: Number(DB_MAX_CONNECTIONS) || 10,
     min: 1, // Keep at least 1 connection warm
     connectionTimeoutMillis: Number(DB_CONNECTION_TIMEOUT) || 15000, // 15s for Neon cold starts
-    idleTimeoutMillis: Number(DB_IDLE_TIMEOUT) || 20000,
+    idleTimeoutMillis: Number(DB_IDLE_TIMEOUT) || 10000, // 10s - drop idle connections before Neon does
     acquireTimeoutMillis: 10000, // Reduced from 15s
     createTimeoutMillis: 10000, // Reduced from 20s
     destroyTimeoutMillis: 5000,
     reapIntervalMillis: 1000,
     createRetryIntervalMillis: 200,
+    allowExitOnIdle: true, // Let pool shrink to 0 when idle instead of holding stale connections
     // Statement timeout to prevent long-running queries from blocking
     statement_timeout: 30000, // 30s max for any query
     // Enable keep-alive to prevent Neon from killing idle connections

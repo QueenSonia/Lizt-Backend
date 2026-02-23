@@ -280,7 +280,7 @@ export class KYCApplicationService {
         property_id: kycData.property_id,
         tenant_id: null,
         event_type: 'kyc_application_submitted',
-        event_description: `KYC application submitted — ${kycData.decision_ip || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
+        event_description: `KYC application submitted by ${kycData.first_name} ${kycData.last_name} — ${kycData.decision_ip || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
         related_entity_id: savedApplication.id,
         related_entity_type: 'kyc_application',
       });
@@ -497,6 +497,7 @@ export class KYCApplicationService {
         'offer_letters.amount_paid',
         'offer_letters.outstanding_balance',
         'offer_letters.payment_status',
+        'offer_letters.sent_at',
         'offer_letters.created_at',
         'offer_letters.updated_at',
       ])
@@ -567,6 +568,7 @@ export class KYCApplicationService {
         'offer_letters.amount_paid',
         'offer_letters.outstanding_balance',
         'offer_letters.payment_status',
+        'offer_letters.sent_at',
         'offer_letters.created_at',
         'offer_letters.updated_at',
       ])
@@ -724,6 +726,11 @@ export class KYCApplicationService {
                 amountPaid: latestOffer.amount_paid,
                 outstandingBalance: latestOffer.outstanding_balance,
                 paymentStatus: latestOffer.payment_status,
+                sentAt: latestOffer.sent_at
+                  ? latestOffer.sent_at instanceof Date
+                    ? latestOffer.sent_at.toISOString()
+                    : latestOffer.sent_at
+                  : undefined,
                 acceptedAt: latestOffer.accepted_at
                   ? latestOffer.accepted_at instanceof Date
                     ? latestOffer.accepted_at.toISOString()
@@ -846,6 +853,7 @@ export class KYCApplicationService {
         'offer_letters.caution_deposit',
         'offer_letters.legal_fee',
         'offer_letters.agency_fee',
+        'offer_letters.sent_at',
         'offer_letters.created_at',
         'offer_letters.updated_at',
       ])
@@ -1068,6 +1076,7 @@ export class KYCApplicationService {
         'offer_letters.caution_deposit',
         'offer_letters.legal_fee',
         'offer_letters.agency_fee',
+        'offer_letters.sent_at',
         'offer_letters.created_at',
       ])
       .where('property.owner_id = :landlordId', { landlordId })
@@ -1949,7 +1958,7 @@ export class KYCApplicationService {
 
   /**
    * Get property history events for a KYC application
-   * Returns tracking events like form views and submissions
+   * Returns tracking events like form views, submissions, and offer letter events
    */
   async getApplicationHistory(
     applicationId: string,
@@ -1958,7 +1967,7 @@ export class KYCApplicationService {
     // Get the application and validate ownership
     const application = await this.kycApplicationRepository.findOne({
       where: { id: applicationId },
-      relations: ['property'],
+      relations: ['property', 'offer_letters'],
     });
 
     if (!application) {
@@ -1974,17 +1983,94 @@ export class KYCApplicationService {
     const propertyHistoryRepo =
       this.kycApplicationRepository.manager.getRepository(PropertyHistory);
 
+    // Build query conditions to include:
+    // 1. KYC application events (form views, submissions)
+    // 2. Offer letter events (views, acceptances, rejections) for this application's offer letters
+    // 3. Invoice events (generated, sent, viewed) linked to this application's offer letters
+    // 4. Receipt events (issued, sent, viewed) linked to this application's offer letters
+    // 5. Payment events linked to this application's offer letters
+    const whereConditions: any[] = [
+      {
+        related_entity_id: applicationId,
+        related_entity_type: 'kyc_application',
+      },
+      {
+        property_id: application.property_id,
+        event_type: 'kyc_form_viewed',
+      },
+    ];
+
+    // Add offer letter tracking events if offer letters exist
+    if (application.offer_letters && application.offer_letters.length > 0) {
+      const offerLetterIds = application.offer_letters.map((ol) => ol.id);
+
+      for (const offerLetter of application.offer_letters) {
+        whereConditions.push({
+          related_entity_id: offerLetter.id,
+          related_entity_type: 'offer_letter',
+        });
+      }
+
+      // Find invoices linked to these offer letters and include their history events
+      try {
+        const invoices = await this.kycApplicationRepository.manager
+          .getRepository('invoices')
+          .find({
+            where: offerLetterIds.map((id) => ({ offer_letter_id: id })),
+            select: ['id'],
+          });
+
+        for (const invoice of invoices) {
+          whereConditions.push({
+            related_entity_id: invoice.id,
+            related_entity_type: 'invoice',
+          });
+        }
+
+        // Find receipts linked to these offer letters and include their history events
+        const receipts = await this.kycApplicationRepository.manager
+          .getRepository('receipts')
+          .find({
+            where: offerLetterIds.map((id) => ({ offer_letter_id: id })),
+            select: ['id'],
+          });
+
+        for (const receipt of receipts) {
+          whereConditions.push({
+            related_entity_id: receipt.id,
+            related_entity_type: 'receipt',
+          });
+        }
+      } catch (error) {
+        // Non-critical: if invoice/receipt lookup fails, we still show other events
+        console.error(
+          'Failed to look up invoices/receipts for history:',
+          error,
+        );
+      }
+
+      // Find payments linked to these offer letters and include their history events
+      try {
+        const payments = await this.kycApplicationRepository.manager
+          .getRepository('payments')
+          .find({
+            where: offerLetterIds.map((id) => ({ offer_letter_id: id })),
+            select: ['id'],
+          });
+
+        for (const payment of payments) {
+          whereConditions.push({
+            related_entity_id: payment.id,
+            related_entity_type: 'payment',
+          });
+        }
+      } catch (error) {
+        console.error('Failed to look up payments for history:', error);
+      }
+    }
+
     const historyEvents = await propertyHistoryRepo.find({
-      where: [
-        {
-          related_entity_id: applicationId,
-          related_entity_type: 'kyc_application',
-        },
-        {
-          property_id: application.property_id,
-          event_type: 'kyc_form_viewed',
-        },
-      ],
+      where: whereConditions,
       order: { created_at: 'DESC' },
     });
 

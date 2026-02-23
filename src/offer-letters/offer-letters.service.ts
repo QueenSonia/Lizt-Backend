@@ -200,6 +200,8 @@ export class OfferLettersService {
       amount_paid: 0,
       outstanding_balance: totalAmount,
       payment_status: PaymentStatus.UNPAID,
+      // Set sent_at if notification will be sent immediately
+      sent_at: dto.sendNotification ? new Date() : undefined,
     });
 
     // Save offer letter
@@ -223,10 +225,12 @@ export class OfferLettersService {
     try {
       await this.notificationService.create({
         date: new Date().toISOString(),
-        type: NotificationType.OFFER_LETTER_SENT,
+        type: dto.sendNotification
+          ? NotificationType.OFFER_LETTER_SENT
+          : NotificationType.OFFER_LETTER_GENERATED,
         description: dto.sendNotification
           ? `Offer letter sent to ${applicantName} for ${property.name}`
-          : `Offer letter created for ${applicantName} for ${property.name}`,
+          : `Offer letter generated for ${applicantName} for ${property.name}`,
         status: 'Completed',
         property_id: property.id,
         user_id: landlordId,
@@ -246,6 +250,41 @@ export class OfferLettersService {
         property,
         savedOfferLetter.token,
       );
+
+      // Create property history event for offer letter sent
+      try {
+        const { PropertyHistory } = await import(
+          '../property-history/entities/property-history.entity'
+        );
+        const propertyHistoryRepo =
+          this.offerLetterRepository.manager.getRepository(PropertyHistory);
+
+        const formattedDate = new Date().toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        });
+        const formattedTime = new Date().toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        });
+
+        await propertyHistoryRepo.save({
+          property_id: savedOfferLetter.property_id,
+          tenant_id: kycApplication.tenant_id || null,
+          event_type: 'offer_letter_sent',
+          event_description: `Offer letter sent to ${applicantName} — ${formattedDate} at ${formattedTime}`,
+          related_entity_id: savedOfferLetter.id,
+          related_entity_type: 'offer_letter',
+        });
+
+        this.logger.log(
+          `Property history created for offer letter sent: ${savedOfferLetter.id}`,
+        );
+      } catch (error) {
+        this.logger.error('Failed to create offer letter sent history:', error);
+      }
 
       // Emit WebSocket event for real-time notification only when sent
       this.eventsGateway.emitOfferLetterSent(landlordId, {
@@ -337,6 +376,47 @@ export class OfferLettersService {
       throw new NotFoundException('Related data not found');
     }
 
+    // Update sent_at timestamp to track when offer was actually sent
+    offerLetter.sent_at = new Date();
+    await this.offerLetterRepository.save(offerLetter);
+
+    // Create property history event for offer letter sent
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.offerLetterRepository.manager.getRepository(PropertyHistory);
+
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+
+      await propertyHistoryRepo.save({
+        property_id: offerLetter.property_id,
+        tenant_id: kycApplication.tenant_id || null,
+        event_type: 'offer_letter_sent',
+        event_description: `Offer letter sent to ${applicantName} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: offerLetter.id,
+        related_entity_type: 'offer_letter',
+      });
+
+      this.logger.log(
+        `Property history created for offer letter sent: ${offerLetter.id}`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to create offer letter sent history:', error);
+    }
+
     // Send WhatsApp notification
     await this.sendOfferLetterNotification(
       kycApplication,
@@ -369,6 +449,57 @@ export class OfferLettersService {
         error.stack,
       );
     }
+  }
+
+  /**
+   * Find offer letter by KYC application and property
+   * Used to check if an offer already exists for a specific property+tenant combination
+   */
+  async findByKycApplicationAndProperty(
+    kycApplicationId: string,
+    propertyId: string,
+    landlordId: string,
+  ): Promise<OfferLetterResponse | null> {
+    // Find the most recent offer letter for this KYC application and property
+    const offerLetter = await this.offerLetterRepository.findOne({
+      where: {
+        kyc_application_id: kycApplicationId,
+        property_id: propertyId,
+        landlord_id: landlordId,
+      },
+      order: {
+        created_at: 'DESC',
+      },
+    });
+
+    if (!offerLetter) {
+      return null;
+    }
+
+    // Load related entities in parallel
+    const [kycApplication, property, landlordAccount] = await Promise.all([
+      this.kycApplicationRepository.findOne({
+        where: { id: kycApplicationId },
+      }),
+      this.propertyRepository.findOne({
+        where: { id: propertyId },
+      }),
+      this.propertyRepository.manager.getRepository('Account').findOne({
+        where: { id: landlordId },
+        relations: ['user'],
+      }),
+    ]);
+
+    if (!kycApplication || !property) {
+      return null;
+    }
+
+    return toOfferLetterResponse(
+      offerLetter,
+      kycApplication,
+      property,
+      landlordAccount?.user ?? undefined,
+    );
   }
 
   /**
@@ -458,6 +589,7 @@ export class OfferLettersService {
   async verifyOTPAndAccept(
     token: string,
     otp: string,
+    ipAddress?: string,
   ): Promise<OfferLetterResponse> {
     const offerLetter = await this.offerLetterRepository.findOne({
       where: { token },
@@ -484,12 +616,14 @@ export class OfferLettersService {
       throw new NotFoundException('KYC application not found');
     }
 
-    // Update status to accepted and save acceptance details
+    // Update status to accepted and save acceptance details with tracking
     await this.offerLetterRepository.update(offerLetter.id, {
       status: OfferLetterStatus.ACCEPTED,
       accepted_at: new Date(),
       accepted_by_phone: kycApplication.phone_number,
       acceptance_otp: otp,
+      decision_made_at: new Date(),
+      decision_made_ip: ipAddress,
     });
 
     // Update property status to offer_accepted
@@ -558,8 +692,9 @@ export class OfferLettersService {
     }
 
     // Generate invoice for the accepted offer letter
+    let generatedInvoice: any = null;
     try {
-      await this.invoicesService.generateFromOfferLetter(
+      generatedInvoice = await this.invoicesService.generateFromOfferLetter(
         offerLetter.id,
         offerLetter.landlord_id,
       );
@@ -593,6 +728,72 @@ export class OfferLettersService {
         error.stack,
       );
       // Don't throw - notification failure shouldn't block offer acceptance
+    }
+
+    // Create history entry for invoice sent
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.offerLetterRepository.manager.getRepository(PropertyHistory);
+
+      await propertyHistoryRepo.save({
+        property_id: offerLetter.property_id,
+        tenant_id: kycApplication.tenant_id || null,
+        event_type: 'invoice_sent',
+        event_description: `Invoice sent to ${applicantName} for ${property.name}`,
+        related_entity_id: generatedInvoice?.id || null,
+        related_entity_type: 'invoice',
+      });
+
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.INVOICE_SENT,
+        description: `Invoice sent to ${applicantName} for ${property.name}`,
+        status: 'Completed',
+        property_id: offerLetter.property_id,
+        user_id: offerLetter.landlord_id,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create invoice_sent history/notification:',
+        error,
+      );
+    }
+
+    // Create history entry for offer letter acceptance
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.offerLetterRepository.manager.getRepository(PropertyHistory);
+
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      await propertyHistoryRepo.save({
+        property_id: offerLetter.property_id,
+        tenant_id: kycApplication.tenant_id || null,
+        event_type: 'offer_letter_accepted',
+        event_description: `Offer letter accepted — ${ipAddress || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: offerLetter.id,
+        related_entity_type: 'offer_letter',
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create offer letter acceptance history:',
+        error,
+      );
     }
 
     return toOfferLetterResponse(
@@ -656,7 +857,10 @@ export class OfferLettersService {
    * Reject offer letter
    * Requirements: 9.6, 9.7, 9.8, 10.7
    */
-  async reject(token: string): Promise<OfferLetterResponse> {
+  async reject(
+    token: string,
+    ipAddress?: string,
+  ): Promise<OfferLetterResponse> {
     const offerLetter = await this.offerLetterRepository.findOne({
       where: { token },
     });
@@ -669,9 +873,11 @@ export class OfferLettersService {
       throw new ConflictException('Offer letter has already been processed');
     }
 
-    // Update offer letter status to rejected
+    // Update offer letter status to rejected with tracking
     await this.offerLetterRepository.update(offerLetter.id, {
       status: OfferLetterStatus.REJECTED,
+      decision_made_at: new Date(),
+      decision_made_ip: ipAddress,
     });
 
     // Revert property status to vacant
@@ -705,6 +911,40 @@ export class OfferLettersService {
 
     if (!updatedOfferLetter || !kycApplication || !property) {
       throw new NotFoundException('Offer letter data incomplete');
+    }
+
+    // Create history entry for offer letter rejection
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.offerLetterRepository.manager.getRepository(PropertyHistory);
+
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      await propertyHistoryRepo.save({
+        property_id: offerLetter.property_id,
+        tenant_id: kycApplication.tenant_id || null,
+        event_type: 'offer_letter_rejected',
+        event_description: `Offer letter rejected — ${ipAddress || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: offerLetter.id,
+        related_entity_type: 'offer_letter',
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create offer letter rejection history:',
+        error,
+      );
     }
 
     // Send notification to landlord
@@ -928,5 +1168,125 @@ export class OfferLettersService {
       property,
       landlord ?? undefined,
     );
+  }
+
+  /**
+   * Track when a tenant opens/views the offer letter
+   * Records timestamp and IP address, and creates history entry
+   * Tracks EVERY open, not just the first time (similar to KYC tracking)
+   */
+  async trackOfferOpen(
+    token: string,
+    ipAddress?: string,
+  ): Promise<{ success: boolean; message: string }> {
+    // Get the offer letter
+    const offerLetter = await this.offerLetterRepository.findOne({
+      where: { token },
+      relations: ['property', 'kyc_application'],
+    });
+
+    if (!offerLetter) {
+      throw new NotFoundException('Offer letter not found');
+    }
+
+    // Always update the form_opened_at timestamp (track every open)
+    offerLetter.form_opened_at = new Date();
+    offerLetter.form_opened_ip = ipAddress;
+    await this.offerLetterRepository.save(offerLetter);
+
+    // Create history entry for this offer letter view event
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.offerLetterRepository.manager.getRepository(PropertyHistory);
+
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
+      await propertyHistoryRepo.save({
+        property_id: offerLetter.property_id,
+        tenant_id: offerLetter.kyc_application?.tenant_id || null,
+        event_type: 'offer_letter_viewed',
+        event_description: `Offer letter viewed — ${ipAddress || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
+        related_entity_id: offerLetter.id,
+        related_entity_type: 'offer_letter',
+      });
+
+      this.logger.log(
+        `Offer letter ${offerLetter.id} viewed from IP ${ipAddress || 'Unknown'}`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to create offer letter view history:', error);
+    }
+
+    return {
+      success: true,
+      message: 'Offer letter view tracked successfully',
+    };
+  }
+
+  /**
+   * Get tracking history for an offer letter
+   * Returns all property history events related to this offer letter
+   */
+  async getOfferLetterHistory(
+    offerLetterId: string,
+    landlordId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      eventType: string;
+      eventDescription: string;
+      createdAt: string;
+    }>
+  > {
+    // Verify landlord owns this offer letter
+    const offerLetter = await this.offerLetterRepository.findOne({
+      where: { id: offerLetterId },
+    });
+
+    if (!offerLetter) {
+      throw new NotFoundException('Offer letter not found');
+    }
+
+    if (offerLetter.landlord_id !== landlordId) {
+      throw new ForbiddenException(
+        'Not authorized to view this offer letter history',
+      );
+    }
+
+    // Get property history events for this offer letter
+    const { PropertyHistory } = await import(
+      '../property-history/entities/property-history.entity'
+    );
+    const propertyHistoryRepo =
+      this.offerLetterRepository.manager.getRepository(PropertyHistory);
+
+    const historyEvents = await propertyHistoryRepo.find({
+      where: {
+        related_entity_id: offerLetterId,
+        related_entity_type: 'offer_letter',
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    return historyEvents.map((event) => ({
+      id: event.id,
+      eventType: event.event_type,
+      eventDescription: event.event_description || '',
+      createdAt: event.created_at
+        ? new Date(event.created_at).toISOString()
+        : new Date().toISOString(),
+    }));
   }
 }

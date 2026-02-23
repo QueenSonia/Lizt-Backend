@@ -73,6 +73,26 @@ export class OfferLettersController {
   }
 
   /**
+   * Check if offer letter exists for KYC application and property
+   * GET /offer-letters/check/:kycApplicationId/:propertyId
+   * Returns the existing offer letter if found, or null
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('check/:kycApplicationId/:propertyId')
+  async checkExistingOffer(
+    @Param('kycApplicationId') kycApplicationId: string,
+    @Param('propertyId') propertyId: string,
+    @CurrentUser() user: Account,
+  ): Promise<OfferLetterResponse | null> {
+    return this.offerLettersService.findByKycApplicationAndProperty(
+      kycApplicationId,
+      propertyId,
+      user.id,
+    );
+  }
+
+  /**
    * Get offer letter by token (public endpoint)
    * GET /offer-letters/:token
    * Requirements: 10.2
@@ -83,6 +103,23 @@ export class OfferLettersController {
     @Param('token') token: string,
   ): Promise<OfferLetterResponse> {
     return this.offerLettersService.findByToken(token);
+  }
+
+  /**
+   * Track when tenant opens/views the offer letter
+   * POST /offer-letters/:token/track-open
+   * Public endpoint - no authentication required
+   */
+  @SkipAuth()
+  @Post(':token/track-open')
+  async trackOfferOpen(
+    @Param('token') token: string,
+    @Body('ipAddress') ipAddress?: string,
+  ): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    return await this.offerLettersService.trackOfferOpen(token, ipAddress);
   }
 
   /**
@@ -186,7 +223,11 @@ export class OfferLettersController {
     @Param('token') token: string,
     @Body(ValidationPipe) body: VerifyOfferOtpDto,
   ): Promise<OfferLetterResponse> {
-    return this.offerLettersService.verifyOTPAndAccept(token, body.otp);
+    return this.offerLettersService.verifyOTPAndAccept(
+      token,
+      body.otp,
+      body.ipAddress,
+    );
   }
 
   /**
@@ -196,8 +237,32 @@ export class OfferLettersController {
    */
   @SkipAuth()
   @Post(':token/reject')
-  async reject(@Param('token') token: string): Promise<OfferLetterResponse> {
-    return this.offerLettersService.reject(token);
+  async reject(
+    @Param('token') token: string,
+    @Body('ipAddress') ipAddress?: string,
+  ): Promise<OfferLetterResponse> {
+    return this.offerLettersService.reject(token, ipAddress);
+  }
+
+  /**
+   * Get offer letter tracking history (landlord only)
+   * GET /offer-letters/:id/history
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get(':id/history')
+  async getOfferLetterHistory(
+    @Param('id') id: string,
+    @CurrentUser() user: Account,
+  ): Promise<
+    Array<{
+      id: string;
+      eventType: string;
+      eventDescription: string;
+      createdAt: string;
+    }>
+  > {
+    return this.offerLettersService.getOfferLetterHistory(id, user.id);
   }
 
   /**
@@ -212,6 +277,19 @@ export class OfferLettersController {
     @Body(ValidationPipe) dto: InitiatePaymentDto,
   ): Promise<any> {
     return this.paymentService.initiatePayment(token, dto);
+  }
+
+  /**
+   * Track payment cancellation
+   * POST /offer-letters/:token/payment-cancelled
+   * Public endpoint - called when tenant cancels Paystack popup
+   */
+  @SkipAuth()
+  @Post(':token/payment-cancelled')
+  async trackPaymentCancelled(
+    @Param('token') token: string,
+  ): Promise<{ success: boolean; message: string }> {
+    return this.paymentService.trackPaymentCancelled(token);
   }
 
   /**

@@ -12,6 +12,8 @@ import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Users } from '../users/entities/user.entity';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { AuthModule } from '../auth/auth.module';
+import { PropertyHistoryModule } from '../property-history/property-history.module';
+import { NotificationModule } from '../notifications/notification.module';
 
 @Module({
   imports: [
@@ -26,6 +28,8 @@ import { AuthModule } from '../auth/auth.module';
     ]),
     forwardRef(() => WhatsappBotModule),
     AuthModule,
+    PropertyHistoryModule,
+    NotificationModule,
   ],
   controllers: [InvoicesController],
   providers: [InvoicesService, InvoicePDFService],

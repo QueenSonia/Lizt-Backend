@@ -122,6 +122,9 @@ export class OfferLetterResponse {
   @ApiProperty({ example: '2024-01-01T12:00:00Z' })
   createdAt: string;
 
+  @ApiPropertyOptional({ example: '2024-01-02T10:30:00Z' })
+  sentAt?: string;
+
   @ApiPropertyOptional({ type: () => BrandingData })
   branding?: BrandingData;
 
@@ -250,6 +253,11 @@ export function toOfferLetterResponse(
       entity.created_at instanceof Date
         ? entity.created_at.toISOString()
         : entity.created_at || new Date().toISOString(),
+    sentAt: entity.sent_at
+      ? entity.sent_at instanceof Date
+        ? entity.sent_at.toISOString()
+        : entity.sent_at
+      : undefined,
     branding,
     // Payment-related fields (Task 2.2)
     totalAmount,

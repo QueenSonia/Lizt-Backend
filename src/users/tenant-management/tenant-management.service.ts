@@ -67,6 +67,7 @@ interface TimelineEvent {
     | 'notice'
     | 'general'
     | 'offer_letter'
+    | 'invoice'
     | 'receipt';
   title: string;
   description: string;
@@ -102,6 +103,8 @@ interface TimelineEvent {
     paidAt?: string;
     isPartPayment: boolean;
   };
+  relatedEntityId?: string;
+  relatedEntityType?: string;
 }
 
 /**
@@ -917,6 +920,33 @@ export class TenantManagementService {
       tenant_id: result.tenantAccount.id,
     });
 
+    // 5. Backfill tenant_id on applicant-phase property history records
+    // These events (KYC submitted, offer letter sent/accepted, invoice generated/sent, etc.)
+    // were created before the tenant account existed, so they have tenant_id = NULL
+    try {
+      const propertyHistoryRepo =
+        this.dataSource.getRepository(PropertyHistory);
+      const backfillResult = await propertyHistoryRepo
+        .createQueryBuilder()
+        .update(PropertyHistory)
+        .set({ tenant_id: result.tenantAccount.id })
+        .where('property_id = :propertyId', {
+          propertyId: dto.propertyId,
+        })
+        .andWhere('tenant_id IS NULL')
+        .execute();
+
+      console.log(
+        `Backfilled tenant_id on ${backfillResult.affected} applicant-phase property history records`,
+      );
+    } catch (backfillError) {
+      console.error(
+        'Failed to backfill tenant_id on property history records:',
+        backfillError,
+      );
+      // Don't fail the attachment — backfill is best-effort
+    }
+
     return result;
   }
 
@@ -1534,6 +1564,7 @@ export class TenantManagementService {
         'past_property.id',
         'past_property.name',
         'past_property.location',
+        'past_property.owner_id',
       ])
       .leftJoin('account.notice_agreements', 'notice_agreements')
       .addSelect(['notice_agreements.id', 'notice_agreements.created_at'])
@@ -1748,8 +1779,8 @@ export class TenantManagementService {
           tenancyEvents.push({
             id: `tenancy-start-${ph.id}`,
             type: 'general' as const,
-            title: 'Tenant moved in',
-            description: `Moved into ${prop?.name || 'property'} on ${moveInDate}${rentAmount}.`,
+            title: 'Tenant attached',
+            description: `Attached to ${prop?.name || 'property'} on ${moveInDate}${rentAmount}.`,
             details: prop?.name || undefined,
             date: eventDate.toISOString(),
             time: eventDate.toLocaleTimeString('en-US', {
@@ -1806,16 +1837,17 @@ export class TenantManagementService {
         if (ph.event_type === 'service_request_updated') {
           const parts = ph.event_description?.split('|||') || [];
           const status = parts[0] || 'updated';
+          const issueDescription = parts[1] || 'Service Request';
           const prop = ph.property;
 
-          let title = 'Service Request Updated';
+          let title = issueDescription;
 
           if (status.toLowerCase() === 'resolved') {
-            title = 'Service Request Resolved';
+            title = issueDescription || 'Service Request Resolved';
           } else if (status.toLowerCase() === 'closed') {
-            title = 'Service Request Closed';
+            title = issueDescription || 'Service Request Closed';
           } else if (status.toLowerCase() === 'reopened') {
-            title = 'Service Request Reopened';
+            title = issueDescription || 'Service Request Reopened';
           }
 
           const eventDate = new Date(ph.created_at || new Date());
@@ -1832,6 +1864,182 @@ export class TenantManagementService {
             }),
           });
         }
+
+        // Applicant-phase and financial events from property_histories
+        if (ph.event_type === 'kyc_application_approved') {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `kyc-approved-${ph.id}`,
+            type: 'general' as const,
+            title: 'KYC Application Approved',
+            description:
+              ph.event_description ||
+              `KYC application approved for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          });
+        }
+
+        if (ph.event_type === 'kyc_application_rejected') {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `kyc-rejected-${ph.id}`,
+            type: 'general' as const,
+            title: 'KYC Application Rejected',
+            description:
+              ph.event_description ||
+              `KYC application rejected for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          });
+        }
+
+        if (
+          ph.event_type === 'offer_letter_sent' ||
+          ph.event_type === 'offer_letter_accepted' ||
+          ph.event_type === 'offer_letter_rejected' ||
+          ph.event_type === 'offer_letter_viewed'
+        ) {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          const titleMap: Record<string, string> = {
+            offer_letter_sent: 'Offer Letter Sent',
+            offer_letter_accepted: 'Offer Letter Accepted',
+            offer_letter_rejected: 'Offer Letter Rejected',
+            offer_letter_viewed: 'Offer Letter Viewed',
+          };
+          tenancyEvents.push({
+            id: `${ph.event_type}-${ph.id}`,
+            type: 'offer_letter' as const,
+            title: titleMap[ph.event_type] || 'Offer Letter',
+            description:
+              ph.event_description ||
+              `${titleMap[ph.event_type]} for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          });
+        }
+
+        if (
+          ph.event_type === 'invoice_generated' ||
+          ph.event_type === 'invoice_sent' ||
+          ph.event_type === 'invoice_viewed'
+        ) {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          const titleMap: Record<string, string> = {
+            invoice_generated: 'Invoice Generated',
+            invoice_sent: 'Invoice Sent',
+            invoice_viewed: 'Invoice Viewed',
+          };
+          tenancyEvents.push({
+            id: `${ph.event_type}-${ph.id}`,
+            type: 'invoice' as const,
+            title: titleMap[ph.event_type] || 'Invoice',
+            description:
+              ph.event_description ||
+              `${titleMap[ph.event_type]} for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: ph.related_entity_type || undefined,
+          });
+        }
+
+        if (
+          ph.event_type === 'receipt_issued' ||
+          ph.event_type === 'receipt_sent' ||
+          ph.event_type === 'receipt_viewed'
+        ) {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          const titleMap: Record<string, string> = {
+            receipt_issued: 'Receipt Issued',
+            receipt_sent: 'Receipt Sent',
+            receipt_viewed: 'Receipt Viewed',
+          };
+          tenancyEvents.push({
+            id: `${ph.event_type}-${ph.id}`,
+            type: 'receipt' as const,
+            title: titleMap[ph.event_type] || 'Receipt',
+            description:
+              ph.event_description ||
+              `${titleMap[ph.event_type]} for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: ph.related_entity_type || undefined,
+          });
+        }
+
+        if (
+          ph.event_type === 'payment_initiated' ||
+          ph.event_type === 'payment_completed_full' ||
+          ph.event_type === 'payment_completed_partial'
+        ) {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          const titleMap: Record<string, string> = {
+            payment_initiated: 'Payment Initiated',
+            payment_completed_full: 'Full Payment Received',
+            payment_completed_partial: 'Partial Payment Received',
+          };
+          tenancyEvents.push({
+            id: `${ph.event_type}-${ph.id}`,
+            type: 'receipt' as const,
+            title: titleMap[ph.event_type] || 'Payment',
+            description:
+              ph.event_description ||
+              `${titleMap[ph.event_type]} for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          });
+        }
+
+        if (ph.event_type === 'kyc_form_viewed') {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `kyc-form-viewed-${ph.id}`,
+            type: 'general' as const,
+            title: 'KYC Form Viewed',
+            description:
+              ph.event_description ||
+              `KYC form viewed for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          });
+        }
       });
     }
 
@@ -1839,10 +2047,11 @@ export class TenantManagementService {
     const serviceRequestEvents = serviceRequests.map((sr) => {
       const eventDate = new Date(sr.date_reported);
       const prop = sr.property;
+      const issueTitle = sr.description || 'Service Request';
       return {
         id: `service-${sr.id}`,
         type: 'maintenance' as const,
-        title: 'Service Request Created',
+        title: issueTitle,
         description: `Issue reported by tenant: "${sr.description}".`,
         details: prop?.name || undefined,
         date: eventDate.toISOString(),
@@ -1946,12 +2155,25 @@ export class TenantManagementService {
     });
 
     // Combine all events and sort by date (newest first)
-    const history: TimelineEvent[] = [
+    // Deduplicate by event ID to prevent the same event appearing twice
+    // when applicant-phase events are merged with tenant-phase events
+    const allEvents: TimelineEvent[] = [
       ...tenancyEvents,
       ...serviceRequestEvents,
       ...offerLetterEvents,
       ...paymentEvents,
-    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    ];
+
+    const seenIds = new Set<string>();
+    const history: TimelineEvent[] = allEvents
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .filter((event) => {
+        if (seenIds.has(event.id)) {
+          return false;
+        }
+        seenIds.add(event.id);
+        return true;
+      });
 
     return {
       id: account.id,

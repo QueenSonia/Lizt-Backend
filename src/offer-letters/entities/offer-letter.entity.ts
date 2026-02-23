@@ -138,12 +138,29 @@ export class OfferLetter extends BaseEntity {
   @Column({ type: 'varchar', length: 10, nullable: true })
   acceptance_otp?: string;
 
+  // Sent tracking field - tracks when offer letter was sent to tenant
+  @Column({ type: 'timestamp', nullable: true })
+  sent_at?: Date;
+
   // PDF caching fields (added in migration 1738252800000)
   @Column({ type: 'text', nullable: true })
   pdf_url?: string;
 
   @Column({ type: 'timestamp', nullable: true })
   pdf_generated_at?: Date;
+
+  // Tracking fields (added in migration 1740240000000) - similar to KYC tracking
+  @Column({ type: 'timestamp', nullable: true })
+  form_opened_at?: Date;
+
+  @Column({ type: 'varchar', length: 45, nullable: true })
+  form_opened_ip?: string;
+
+  @Column({ type: 'timestamp', nullable: true })
+  decision_made_at?: Date;
+
+  @Column({ type: 'varchar', length: 45, nullable: true })
+  decision_made_ip?: string;
 
   // New field to store snapshot of all editable text content
   @Column({ type: 'jsonb', nullable: true })

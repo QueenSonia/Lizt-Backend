@@ -52,6 +52,8 @@ import { RolesEnum } from 'src/base.entity';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
 import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
+import { NotificationService } from 'src/notifications/notification.service';
+import { NotificationType } from 'src/notifications/enums/notification-type';
 
 @Injectable()
 export class PropertiesService {
@@ -87,6 +89,7 @@ export class PropertiesService {
     private readonly utilService: UtilService,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly databaseErrorHandler: DatabaseErrorHandlerService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async createProperty(
@@ -1340,11 +1343,44 @@ export class PropertiesService {
       .map((hist) => {
         const tenantUser = hist.tenant?.user;
         const tenantKyc = tenantUser?.tenant_kycs?.[0];
-        const tenantName = tenantUser
-          ? `${tenantKyc?.first_name ?? tenantUser.first_name} ${
-              tenantKyc?.last_name ?? tenantUser.last_name
-            }`
-          : 'A tenant';
+        let tenantName: string;
+
+        if (tenantUser) {
+          tenantName = `${tenantKyc?.first_name ?? tenantUser.first_name} ${
+            tenantKyc?.last_name ?? tenantUser.last_name
+          }`;
+        } else {
+          // Try to extract tenant name from event_description (e.g. "Invoice generated for John Doe — ₦500,000")
+          const descMatch = hist.event_description?.match(
+            /(?:for|to|by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/,
+          );
+          if (descMatch) {
+            tenantName = descMatch[1];
+          } else {
+            // Try to find the KYC application linked to this event
+            const linkedKycApp =
+              hist.related_entity_type === 'kyc_application' &&
+              hist.related_entity_id
+                ? property.kyc_applications?.find(
+                    (app) => app.id === hist.related_entity_id,
+                  )
+                : null;
+
+            if (linkedKycApp) {
+              tenantName = `${linkedKycApp.first_name} ${linkedKycApp.last_name}`;
+            } else {
+              // Fall back to the most recent KYC application for this property
+              const kycApp = property.kyc_applications?.sort(
+                (a, b) =>
+                  new Date(b.created_at || 0).getTime() -
+                  new Date(a.created_at || 0).getTime(),
+              )?.[0];
+              tenantName = kycApp
+                ? `${kycApp.first_name} ${kycApp.last_name}`
+                : currentTenant?.name || 'Unknown';
+            }
+          }
+        }
 
         switch (hist.event_type) {
           case 'property_created':
@@ -1369,8 +1405,8 @@ export class PropertiesService {
               id: hist.id,
               date: hist.created_at || hist.move_in_date,
               eventType: 'tenancy_started',
-              title: 'Tenant moved in',
-              description: `${tenantName} moved into this property on ${moveInDate}.`,
+              title: 'Tenant attached',
+              description: `${tenantName} attached to this property on ${moveInDate}.`,
               details: hist.monthly_rent
                 ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
                 : null,
@@ -1456,9 +1492,31 @@ export class PropertiesService {
               id: hist.id,
               date: hist.created_at,
               eventType: 'property_edited',
-              title: 'Property Edited',
-              description: 'Property details were updated.',
-              details: hist.event_description,
+              title: 'Property Updated',
+              description:
+                hist.event_description || 'Property details were updated.',
+              details: null,
+            };
+          case 'property_marketing_enabled':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'property_marketing_enabled',
+              title: 'Ready for Marketing',
+              description:
+                hist.event_description ||
+                'Property marked as ready for marketing.',
+              details: null,
+            };
+          case 'property_marketing_disabled':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'property_marketing_disabled',
+              title: 'Removed from Marketing',
+              description:
+                hist.event_description || 'Property removed from marketing.',
+              details: null,
             };
           case 'property_deleted':
             return {
@@ -1468,6 +1526,224 @@ export class PropertiesService {
               title: 'Property Deleted',
               description: 'Property removed from the system.',
               details: null,
+            };
+          case 'kyc_application_submitted':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'kyc_application_submitted',
+              title: 'Tenant application received',
+              description:
+                hist.event_description ||
+                `${tenantName} submitted a KYC application for this property.`,
+              details: tenantName,
+            };
+          case 'kyc_application_approved':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'kyc_application_approved',
+              title: 'KYC application approved',
+              description:
+                hist.event_description ||
+                `KYC application approved for ${tenantName}`,
+              details: tenantName,
+            };
+          case 'kyc_application_rejected':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'kyc_application_rejected',
+              title: 'KYC application rejected',
+              description:
+                hist.event_description ||
+                `KYC application rejected for ${tenantName}`,
+              details: tenantName,
+            };
+          case 'offer_letter_sent':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'offer_letter_sent',
+              title: 'Offer letter sent',
+              description:
+                hist.event_description || `Offer letter sent to ${tenantName}`,
+              details: tenantName,
+            };
+          case 'offer_letter_viewed':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'offer_letter_viewed',
+              title: 'Offer letter viewed',
+              description:
+                hist.event_description ||
+                `Offer letter viewed by ${tenantName}`,
+              details: tenantName,
+            };
+          case 'offer_letter_accepted':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'offer_letter_accepted',
+              title: 'Offer letter accepted',
+              description:
+                hist.event_description ||
+                `Offer letter accepted by ${tenantName}`,
+              details: tenantName,
+            };
+          case 'offer_letter_rejected':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'offer_letter_rejected',
+              title: 'Offer letter rejected',
+              description:
+                hist.event_description ||
+                `Offer letter rejected by ${tenantName}`,
+              details: tenantName,
+            };
+          case 'invoice_generated': {
+            const invoiceAmountMatch =
+              hist.event_description?.match(/₦([\d,]+)/);
+            const invoiceAmount = invoiceAmountMatch
+              ? invoiceAmountMatch[1]
+              : null;
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'invoice_generated',
+              title: 'Invoice generated',
+              description:
+                hist.event_description || `Invoice generated for ${tenantName}`,
+              details: tenantName,
+              amount: invoiceAmount,
+            };
+          }
+          case 'invoice_sent':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'invoice_sent',
+              title: 'Invoice sent',
+              description:
+                hist.event_description || `Invoice sent to ${tenantName}`,
+              details: tenantName,
+              amount: null,
+            };
+          case 'invoice_viewed':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'invoice_viewed',
+              title: 'Invoice viewed',
+              description:
+                hist.event_description || `Invoice viewed by ${tenantName}`,
+              details: tenantName !== 'Unknown' ? tenantName : null,
+              amount: null,
+            };
+          case 'receipt_issued': {
+            const receiptAmountMatch =
+              hist.event_description?.match(/₦([\d,]+)/);
+            const receiptAmount = receiptAmountMatch
+              ? receiptAmountMatch[1]
+              : null;
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'receipt_issued',
+              title: 'Receipt issued',
+              description:
+                hist.event_description || `Receipt issued for ${tenantName}`,
+              details: tenantName,
+              amount: receiptAmount,
+            };
+          }
+          case 'receipt_sent':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'receipt_sent',
+              title: 'Receipt sent',
+              description:
+                hist.event_description || `Receipt sent to ${tenantName}`,
+              details: tenantName,
+              amount: null,
+            };
+          case 'receipt_viewed':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'receipt_viewed',
+              title: 'Receipt viewed',
+              description:
+                hist.event_description || `Receipt viewed by ${tenantName}`,
+              details: tenantName !== 'Unknown' ? tenantName : null,
+              amount: null,
+            };
+          case 'payment_initiated': {
+            const paymentAmountMatch =
+              hist.event_description?.match(/₦([\d,]+)/);
+            const paymentAmount = paymentAmountMatch
+              ? paymentAmountMatch[1]
+              : null;
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'payment_initiated',
+              title: 'Payment initiated',
+              description:
+                hist.event_description || `${tenantName} initiated a payment`,
+              details: tenantName,
+              amount: paymentAmount,
+            };
+          }
+          case 'payment_completed_full': {
+            const fullPayAmountMatch =
+              hist.event_description?.match(/₦([\d,]+)/);
+            const fullPayAmount = fullPayAmountMatch
+              ? fullPayAmountMatch[1]
+              : null;
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'payment_completed_full',
+              title: 'Payment completed',
+              description:
+                hist.event_description ||
+                `${tenantName} completed full payment`,
+              details: tenantName,
+              amount: fullPayAmount,
+            };
+          }
+          case 'payment_completed_partial': {
+            const partialAmountMatch =
+              hist.event_description?.match(/₦([\d,]+)/);
+            const partialAmount = partialAmountMatch
+              ? partialAmountMatch[1]
+              : null;
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'payment_completed_partial',
+              title: 'Partial payment received',
+              description:
+                hist.event_description ||
+                `${tenantName} made a partial payment`,
+              details: tenantName,
+              amount: partialAmount,
+            };
+          }
+          case 'payment_cancelled':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'payment_cancelled',
+              title: 'Payment cancelled',
+              description:
+                hist.event_description || `${tenantName} cancelled a payment`,
+              details: tenantName,
+              amount: null,
             };
           default:
             return null;
@@ -1641,30 +1917,137 @@ export class PropertiesService {
         event_type: 'property_deactivated',
         event_description: 'Property is no longer active.',
       });
+
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PROPERTY_CREATED,
+          description: `Property "${property.name}" has been deactivated`,
+          status: 'Completed',
+          property_id: id,
+          user_id: requesterId,
+        });
+      } catch (error) {
+        console.error(
+          'Failed to create property_deactivated notification:',
+          error,
+        );
+      }
     } else if (updatePropertyDto.property_status === 'vacant') {
       await this.propertyHistoryRepository.save({
         property_id: id,
         event_type: 'property_activated',
         event_description: `Property activated with marketing price of ${property.rental_price}`,
       });
+
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PROPERTY_CREATED,
+          description: `Property "${property.name}" has been activated`,
+          status: 'Completed',
+          property_id: id,
+          user_id: requesterId,
+        });
+      } catch (error) {
+        console.error(
+          'Failed to create property_activated notification:',
+          error,
+        );
+      }
     } else if (updatePropertyDto.is_marketing_ready === true) {
       await this.propertyHistoryRepository.save({
         property_id: id,
         event_type: 'property_marketing_enabled',
-        event_description: `Property marked as ready for marketing with price of ${property.rental_price}`,
+        event_description: `Property marked as ready for marketing with price of ₦${(property.rental_price || 0).toLocaleString()}`,
       });
+
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PROPERTY_CREATED,
+          description: `"${property.name}" is now ready for marketing — ₦${(property.rental_price || 0).toLocaleString()}`,
+          status: 'Completed',
+          property_id: id,
+          user_id: requesterId,
+        });
+      } catch (error) {
+        console.error(
+          'Failed to create marketing_enabled notification:',
+          error,
+        );
+      }
     } else if (updatePropertyDto.is_marketing_ready === false) {
       await this.propertyHistoryRepository.save({
         property_id: id,
         event_type: 'property_marketing_disabled',
-        event_description: 'Property removed from marketing.',
+        event_description: `"${property.name}" removed from marketing`,
       });
+
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PROPERTY_CREATED,
+          description: `"${property.name}" has been removed from marketing`,
+          status: 'Completed',
+          property_id: id,
+          user_id: requesterId,
+        });
+      } catch (error) {
+        console.error(
+          'Failed to create marketing_disabled notification:',
+          error,
+        );
+      }
     } else {
+      // Build a description of what specifically changed
+      const changes: string[] = [];
+      if (updatePropertyDto.name !== undefined)
+        changes.push(`name to "${updatePropertyDto.name}"`);
+      if (updatePropertyDto.location !== undefined)
+        changes.push(`location to "${updatePropertyDto.location}"`);
+      if (updatePropertyDto.rental_price !== undefined)
+        changes.push(
+          `rental price to ₦${updatePropertyDto.rental_price.toLocaleString()}`,
+        );
+      if (updatePropertyDto.service_charge !== undefined)
+        changes.push(
+          `service charge to ₦${updatePropertyDto.service_charge.toLocaleString()}`,
+        );
+      if (updatePropertyDto.security_deposit !== undefined)
+        changes.push(
+          `security deposit to ₦${updatePropertyDto.security_deposit.toLocaleString()}`,
+        );
+      if (updatePropertyDto.no_of_bedrooms !== undefined)
+        changes.push(`bedrooms to ${updatePropertyDto.no_of_bedrooms}`);
+      if (updatePropertyDto.property_type !== undefined)
+        changes.push(`property type to "${updatePropertyDto.property_type}"`);
+      if (updatePropertyDto.description !== undefined)
+        changes.push('description');
+
+      const changeDescription =
+        changes.length > 0
+          ? `Updated ${changes.join(', ')}`
+          : 'Property details were updated.';
+
       await this.propertyHistoryRepository.save({
         property_id: id,
         event_type: 'property_edited',
-        event_description: 'Property details were updated.',
+        event_description: changeDescription,
       });
+
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PROPERTY_CREATED,
+          description: `"${property.name}" — ${changeDescription}`,
+          status: 'Completed',
+          property_id: id,
+          user_id: requesterId,
+        });
+      } catch (error) {
+        console.error('Failed to create property_edited notification:', error);
+      }
     }
 
     return updatedProperty;
@@ -1705,6 +2088,20 @@ export class PropertiesService {
 
       // Only vacant properties with no history can be deleted
       await this.propertyRepository.softDelete(propertyId);
+
+      // Create a livefeed notification for the deletion
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PROPERTY_CREATED,
+          description: `Property "${property.name}" has been deleted`,
+          status: 'Completed',
+          property_id: propertyId,
+          user_id: ownerId,
+        });
+      } catch (error) {
+        console.error('Failed to create property_deleted notification:', error);
+      }
     } catch (error) {
       // Handle known HttpExceptions separately
       if (error instanceof HttpException) {

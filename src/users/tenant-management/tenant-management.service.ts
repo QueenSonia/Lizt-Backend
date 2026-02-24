@@ -92,6 +92,9 @@ interface TimelineEvent {
     paymentStatus: string;
     amountPaid: number;
     outstandingBalance: number;
+    acceptedAt?: Date;
+    acceptanceOtp?: string;
+    acceptedByPhone?: string;
   };
   receiptData?: {
     id: string;
@@ -1831,6 +1834,8 @@ export class TenantManagementService {
               hour: '2-digit',
               minute: '2-digit',
             }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'kyc_application',
           });
         }
 
@@ -1882,6 +1887,8 @@ export class TenantManagementService {
               hour: '2-digit',
               minute: '2-digit',
             }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'kyc_application',
           });
         }
 
@@ -1901,6 +1908,8 @@ export class TenantManagementService {
               hour: '2-digit',
               minute: '2-digit',
             }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'kyc_application',
           });
         }
 
@@ -1931,6 +1940,8 @@ export class TenantManagementService {
               hour: '2-digit',
               minute: '2-digit',
             }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'offer_letter',
           });
         }
 
@@ -2006,9 +2017,14 @@ export class TenantManagementService {
             payment_completed_full: 'Full Payment Received',
             payment_completed_partial: 'Partial Payment Received',
           };
+
+          // payment_initiated should open the invoice modal; payment_completed should open receipt
+          const isPaymentInitiated = ph.event_type === 'payment_initiated';
           tenancyEvents.push({
             id: `${ph.event_type}-${ph.id}`,
-            type: 'receipt' as const,
+            type: isPaymentInitiated
+              ? ('invoice' as const)
+              : ('receipt' as const),
             title: titleMap[ph.event_type] || 'Payment',
             description:
               ph.event_description ||
@@ -2019,6 +2035,8 @@ export class TenantManagementService {
               hour: '2-digit',
               minute: '2-digit',
             }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: ph.related_entity_type || undefined,
           });
         }
 
@@ -2038,6 +2056,8 @@ export class TenantManagementService {
               hour: '2-digit',
               minute: '2-digit',
             }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'kyc_application',
           });
         }
       });
@@ -2077,12 +2097,17 @@ export class TenantManagementService {
           Number(offer.agency_fee || 0);
 
         let statusText = 'sent';
-        if (offer.status === OfferLetterStatus.ACCEPTED)
+        let titleStatus = 'Sent';
+        if (offer.status === OfferLetterStatus.ACCEPTED) {
           statusText = 'accepted';
-        else if (offer.status === OfferLetterStatus.REJECTED)
+          titleStatus = 'Accepted';
+        } else if (offer.status === OfferLetterStatus.REJECTED) {
           statusText = 'declined';
-        else if (offer.status === OfferLetterStatus.SELECTED)
+          titleStatus = 'Declined';
+        } else if (offer.status === OfferLetterStatus.SELECTED) {
           statusText = 'completed';
+          titleStatus = 'Accepted';
+        }
 
         const propertyName = offer.property?.name || 'property';
         const amountText = ` — ₦${totalAmount.toLocaleString()}`;
@@ -2090,7 +2115,7 @@ export class TenantManagementService {
         return {
           id: `offer-${offer.id}`,
           type: 'offer_letter' as const,
-          title: 'Offer Letter',
+          title: `Offer Letter ${titleStatus}`,
           description: `Offer letter ${statusText} for ${propertyName}${amountText}`,
           details: propertyName,
           date: eventDate.toISOString(),
@@ -2116,6 +2141,9 @@ export class TenantManagementService {
             paymentStatus: offer.payment_status,
             amountPaid: Number(offer.amount_paid || 0),
             outstandingBalance: Number(offer.outstanding_balance || 0),
+            acceptedAt: offer.accepted_at,
+            acceptanceOtp: offer.acceptance_otp,
+            acceptedByPhone: offer.accepted_by_phone,
           },
         };
       },

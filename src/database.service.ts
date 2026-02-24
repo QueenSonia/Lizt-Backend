@@ -18,8 +18,21 @@ export class DatabaseService implements OnApplicationBootstrap {
       // Set up connection error handlers for PostgreSQL
       const pool = (this.dataSource.driver as any).master;
       if (pool && typeof pool.on === 'function') {
-        pool.on('error', (err: Error) => {
-          console.error('Unexpected database pool error:', err);
+        pool.on('error', (err: Error, client: any) => {
+          console.error('Unexpected database pool error:', err.message);
+          // Remove the dead client from the pool so it doesn't get reused
+          if (client) {
+            try {
+              client.release(true); // true = destroy, don't return to pool
+            } catch {
+              // client may already be released
+            }
+          }
+        });
+
+        pool.on('connect', (client: any) => {
+          // Set statement_timeout per connection to guard against Neon killing long queries
+          client.query('SET statement_timeout = 30000').catch(() => {});
         });
       }
 

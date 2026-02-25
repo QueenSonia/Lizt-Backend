@@ -242,34 +242,26 @@ export class OfferLettersService {
       );
     }
 
-    // Send WhatsApp notification to tenant only if requested
-    // Requirements: 7.1, 7.2
-    if (dto.sendNotification) {
-      await this.sendOfferLetterNotification(
-        kycApplication,
-        property,
-        savedOfferLetter.token,
+    // Create property history event
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
       );
+      const propertyHistoryRepo =
+        this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
-      // Create property history event for offer letter sent
-      try {
-        const { PropertyHistory } = await import(
-          '../property-history/entities/property-history.entity'
-        );
-        const propertyHistoryRepo =
-          this.offerLetterRepository.manager.getRepository(PropertyHistory);
+      const formattedDate = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const formattedTime = new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
 
-        const formattedDate = new Date().toLocaleDateString('en-US', {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        });
-        const formattedTime = new Date().toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-          hour12: true,
-        });
-
+      if (dto.sendNotification) {
         await propertyHistoryRepo.save({
           property_id: savedOfferLetter.property_id,
           tenant_id: kycApplication.tenant_id || null,
@@ -282,9 +274,32 @@ export class OfferLettersService {
         this.logger.log(
           `Property history created for offer letter sent: ${savedOfferLetter.id}`,
         );
-      } catch (error) {
-        this.logger.error('Failed to create offer letter sent history:', error);
+      } else {
+        await propertyHistoryRepo.save({
+          property_id: savedOfferLetter.property_id,
+          tenant_id: kycApplication.tenant_id || null,
+          event_type: 'offer_letter_saved',
+          event_description: `Offer letter saved for ${applicantName} — ${formattedDate} at ${formattedTime}`,
+          related_entity_id: savedOfferLetter.id,
+          related_entity_type: 'offer_letter',
+        });
+
+        this.logger.log(
+          `Property history created for offer letter saved: ${savedOfferLetter.id}`,
+        );
       }
+    } catch (error) {
+      this.logger.error('Failed to create offer letter history:', error);
+    }
+
+    // Send WhatsApp notification to tenant only if requested
+    // Requirements: 7.1, 7.2
+    if (dto.sendNotification) {
+      await this.sendOfferLetterNotification(
+        kycApplication,
+        property,
+        savedOfferLetter.token,
+      );
 
       // Emit WebSocket event for real-time notification only when sent
       this.eventsGateway.emitOfferLetterSent(landlordId, {

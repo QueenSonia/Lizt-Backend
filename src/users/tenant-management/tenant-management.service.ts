@@ -1915,6 +1915,7 @@ export class TenantManagementService {
 
         if (
           ph.event_type === 'offer_letter_sent' ||
+          ph.event_type === 'offer_letter_saved' ||
           ph.event_type === 'offer_letter_accepted' ||
           ph.event_type === 'offer_letter_rejected' ||
           ph.event_type === 'offer_letter_viewed'
@@ -1923,6 +1924,7 @@ export class TenantManagementService {
           const eventDate = new Date(ph.created_at || new Date());
           const titleMap: Record<string, string> = {
             offer_letter_sent: 'Offer Letter Sent',
+            offer_letter_saved: 'Offer Letter Saved',
             offer_letter_accepted: 'Offer Letter Accepted',
             offer_letter_rejected: 'Offer Letter Rejected',
             offer_letter_viewed: 'Offer Letter Viewed',

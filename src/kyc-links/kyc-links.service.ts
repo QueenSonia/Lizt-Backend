@@ -1,6 +1,5 @@
 import {
   Injectable,
-  NotFoundException,
   BadRequestException,
   HttpException,
   HttpStatus,
@@ -23,7 +22,6 @@ import { KYCApplicationService } from './kyc-application.service';
 export interface KYCLinkResponse {
   token: string;
   link: string;
-  expiresAt: Date | null; // null means no expiration
 }
 
 export interface PropertyKYCData {
@@ -65,6 +63,14 @@ export class KYCLinksService {
    * Links remain active permanently and never expire
    */
   async generateKYCLink(landlordId: string): Promise<KYCLinkResponse> {
+    const baseUrl = this.configService.get<string>('FRONTEND_URL');
+    if (!baseUrl) {
+      throw new HttpException(
+        'FRONTEND_URL is not configured',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+
     // Check if there's already an active KYC link for this landlord
     const existingLink = await this.kycLinkRepository.findOne({
       where: {
@@ -73,42 +79,27 @@ export class KYCLinksService {
       },
     });
 
-    if (existingLink && existingLink.token) {
-      // Return existing active link (no expiration check needed)
-      const baseUrl = this.configService.get('FRONTEND_URL');
+    if (existingLink?.token) {
       return {
         token: existingLink.token,
         link: `${baseUrl}/kyc/${existingLink.token}`,
-        expiresAt: null, // No expiration
       };
     }
 
-    // Generate new token (no expiration date needed)
+    // Generate new token
     const token = uuidv4();
 
-    console.log('🔗 Generating new general KYC link:', {
-      landlordId,
-      token: token.substring(0, 8) + '...',
-      noExpiration: true,
-    });
-
-    // Create new KYC link without expiration
     const kycLink = this.kycLinkRepository.create({
       token,
       landlord_id: landlordId,
-      expires_at: undefined, // No expiration (use undefined instead of null for TypeORM)
       is_active: true,
     });
 
     await this.kycLinkRepository.save(kycLink);
 
-    const baseUrl = this.configService.get('FRONTEND_URL');
-    const link = `${baseUrl}/kyc/${token}`;
-
     return {
       token,
-      link,
-      expiresAt: null, // No expiration
+      link: `${baseUrl}/kyc/${token}`,
     };
   }
 
@@ -344,7 +335,7 @@ export class KYCLinksService {
     ) {
       return {
         isValid: false,
-        error: 'Enter a valid phone number to send via WhatsApp',
+        error: 'Enter a valid phone number',
       };
     }
 
@@ -659,20 +650,6 @@ export class KYCLinksService {
     } catch (error) {
       console.error('Error checking phone verification status:', error);
       return false;
-    }
-  }
-
-  /**
-   * Validate landlord exists and has properties
-   * Private helper method
-   */
-  private async validateLandlord(landlordId: string): Promise<void> {
-    const landlord = await this.propertyRepository.findOne({
-      where: { owner_id: landlordId },
-    });
-
-    if (!landlord) {
-      throw new NotFoundException('Landlord not found or has no properties');
     }
   }
 }

@@ -3,6 +3,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { KYCLinksController } from '../../kyc-links/kyc-links.controller';
 import { KYCLinksService } from '../../kyc-links/kyc-links.service';
 import { TenantAttachmentService } from '../../kyc-links/tenant-attachment.service';
+import { KYCApplicationService } from '../../kyc-links/kyc-application.service';
 import {
   AttachTenantDto,
   RentFrequency,
@@ -11,8 +12,6 @@ import { Account } from '../../users/entities/account.entity';
 
 describe('KYCLinksController', () => {
   let controller: KYCLinksController;
-  let kycLinksService: KYCLinksService;
-  let tenantAttachmentService: TenantAttachmentService;
 
   const mockKycLinksService = {
     generateKYCLink: jest.fn(),
@@ -22,6 +21,8 @@ describe('KYCLinksController', () => {
   const mockTenantAttachmentService = {
     attachTenantToProperty: jest.fn(),
   };
+
+  const mockKycApplicationService = {};
 
   const mockUser: Account = {
     id: 'landlord-123',
@@ -41,14 +42,14 @@ describe('KYCLinksController', () => {
           provide: TenantAttachmentService,
           useValue: mockTenantAttachmentService,
         },
+        {
+          provide: KYCApplicationService,
+          useValue: mockKycApplicationService,
+        },
       ],
     }).compile();
 
     controller = module.get<KYCLinksController>(KYCLinksController);
-    kycLinksService = module.get<KYCLinksService>(KYCLinksService);
-    tenantAttachmentService = module.get<TenantAttachmentService>(
-      TenantAttachmentService,
-    );
   });
 
   afterEach(() => {
@@ -60,26 +61,19 @@ describe('KYCLinksController', () => {
   });
 
   describe('generateKYCLink', () => {
-    const propertyId = 'property-123';
     const mockKycLinkResponse = {
       token: 'mock-token-123',
       link: 'http://localhost:3000/kyc/mock-token-123',
-      expiresAt: new Date(),
-      propertyId,
     };
 
     it('should generate KYC link successfully', async () => {
-      // Arrange
       mockKycLinksService.generateKYCLink.mockResolvedValue(
         mockKycLinkResponse,
       );
 
-      // Act
-      const result = await controller.generateKYCLink(propertyId, mockUser);
+      const result = await controller.generateKYCLink(mockUser);
 
-      // Assert
       expect(mockKycLinksService.generateKYCLink).toHaveBeenCalledWith(
-        propertyId,
         mockUser.id,
       );
       expect(result).toEqual({
@@ -90,15 +84,13 @@ describe('KYCLinksController', () => {
     });
 
     it('should handle service errors', async () => {
-      // Arrange
       mockKycLinksService.generateKYCLink.mockRejectedValue(
         new BadRequestException('Property is already occupied'),
       );
 
-      // Act & Assert
-      await expect(
-        controller.generateKYCLink(propertyId, mockUser),
-      ).rejects.toThrow(BadRequestException);
+      await expect(controller.generateKYCLink(mockUser)).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -106,7 +98,6 @@ describe('KYCLinksController', () => {
     const token = 'valid-token-123';
 
     it('should validate KYC token successfully', async () => {
-      // Arrange
       const mockValidationResult = {
         valid: true,
         propertyInfo: {
@@ -122,10 +113,8 @@ describe('KYCLinksController', () => {
         mockValidationResult,
       );
 
-      // Act
       const result = await controller.validateKYCToken(token);
 
-      // Assert
       expect(mockKycLinksService.validateKYCToken).toHaveBeenCalledWith(token);
       expect(result).toEqual({
         success: true,
@@ -135,7 +124,6 @@ describe('KYCLinksController', () => {
     });
 
     it('should return error for invalid token', async () => {
-      // Arrange
       const mockValidationResult = {
         valid: false,
         error: 'This KYC form has expired',
@@ -144,10 +132,8 @@ describe('KYCLinksController', () => {
         mockValidationResult,
       );
 
-      // Act
       const result = await controller.validateKYCToken(token);
 
-      // Assert
       expect(result).toEqual({
         success: false,
         message: 'This KYC form has expired',
@@ -155,22 +141,19 @@ describe('KYCLinksController', () => {
     });
 
     it('should handle validation errors gracefully', async () => {
-      // Arrange
       const mockValidationResult = {
         valid: false,
-        error: undefined, // No specific error message
+        error: undefined,
       };
       mockKycLinksService.validateKYCToken.mockResolvedValue(
         mockValidationResult,
       );
 
-      // Act
       const result = await controller.validateKYCToken(token);
 
-      // Assert
       expect(result).toEqual({
         success: false,
-        message: 'Invalid KYC token', // Default message
+        message: 'Invalid KYC token',
       });
     });
   });
@@ -179,7 +162,6 @@ describe('KYCLinksController', () => {
     const applicationId = 'application-123';
     const attachTenantDto: AttachTenantDto = {
       rentAmount: 500000,
-      rentDueDate: 15,
       rentFrequency: RentFrequency.MONTHLY,
       tenancyStartDate: '2024-01-01',
       securityDeposit: 100000,
@@ -194,19 +176,16 @@ describe('KYCLinksController', () => {
     };
 
     it('should attach tenant to property successfully', async () => {
-      // Arrange
       mockTenantAttachmentService.attachTenantToProperty.mockResolvedValue(
         mockAttachmentResult,
       );
 
-      // Act
       const result = await controller.attachTenantToProperty(
         applicationId,
         attachTenantDto,
         mockUser,
       );
 
-      // Assert
       expect(
         mockTenantAttachmentService.attachTenantToProperty,
       ).toHaveBeenCalledWith(applicationId, attachTenantDto, mockUser.id);
@@ -221,12 +200,10 @@ describe('KYCLinksController', () => {
     });
 
     it('should handle attachment service errors', async () => {
-      // Arrange
       mockTenantAttachmentService.attachTenantToProperty.mockRejectedValue(
         new NotFoundException('KYC application not found'),
       );
 
-      // Act & Assert
       await expect(
         controller.attachTenantToProperty(
           applicationId,
@@ -237,23 +214,20 @@ describe('KYCLinksController', () => {
     });
 
     it('should handle validation errors in DTO', async () => {
-      // Arrange
       const invalidDto = {
         ...attachTenantDto,
-        rentAmount: -1000, // Invalid negative amount
+        rentAmount: -1000,
       };
       mockTenantAttachmentService.attachTenantToProperty.mockRejectedValue(
         new BadRequestException('Rent amount must be greater than 0'),
       );
 
-      // Act & Assert
       await expect(
         controller.attachTenantToProperty(applicationId, invalidDto, mockUser),
       ).rejects.toThrow(BadRequestException);
     });
 
     it('should handle attachment failure', async () => {
-      // Arrange
       const failureResult = {
         success: false,
         tenantId: '',
@@ -264,14 +238,12 @@ describe('KYCLinksController', () => {
         failureResult,
       );
 
-      // Act
       const result = await controller.attachTenantToProperty(
         applicationId,
         attachTenantDto,
         mockUser,
       );
 
-      // Assert
       expect(result).toEqual({
         success: false,
         message: 'Property is already occupied',
@@ -284,20 +256,7 @@ describe('KYCLinksController', () => {
   });
 
   describe('Input Validation', () => {
-    it('should validate UUID format for propertyId in generateKYCLink', async () => {
-      // This test would be handled by the ParseUUIDPipe in the actual implementation
-      // The pipe would throw a BadRequestException for invalid UUIDs
-      const invalidPropertyId = 'invalid-uuid';
-
-      // In a real scenario, the ParseUUIDPipe would prevent this from reaching the controller
-      // This is more of a documentation of expected behavior
-      expect(invalidPropertyId).not.toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-      );
-    });
-
     it('should validate UUID format for applicationId in attachTenantToProperty', async () => {
-      // Similar to above, this would be handled by ParseUUIDPipe
       const invalidApplicationId = 'not-a-uuid';
 
       expect(invalidApplicationId).not.toMatch(
@@ -308,58 +267,41 @@ describe('KYCLinksController', () => {
 
   describe('Authentication and Authorization', () => {
     it('should require landlord role for generateKYCLink', () => {
-      // This test documents that the endpoint requires landlord role
-      // The actual authorization is handled by the RoleGuard and @Roles decorator
-      const controllerMetadata = Reflect.getMetadata(
-        'roles',
-        controller.generateKYCLink,
-      );
-      // In a real implementation, you would check the decorator metadata
       expect(typeof controller.generateKYCLink).toBe('function');
     });
 
     it('should require landlord role for attachTenantToProperty', () => {
-      // Similar to above, documents the authorization requirement
       expect(typeof controller.attachTenantToProperty).toBe('function');
     });
 
     it('should allow public access for validateKYCToken', () => {
-      // This endpoint should be public (no authentication required)
       expect(typeof controller.validateKYCToken).toBe('function');
     });
   });
 
   describe('Error Response Format', () => {
     it('should return consistent error format for validation failures', async () => {
-      // Arrange
       mockKycLinksService.validateKYCToken.mockResolvedValue({
         valid: false,
         error: 'Token has expired',
       });
 
-      // Act
       const result = await controller.validateKYCToken('expired-token');
 
-      // Assert
       expect(result).toHaveProperty('success', false);
       expect(result).toHaveProperty('message', 'Token has expired');
       expect(result).not.toHaveProperty('data');
     });
 
     it('should return consistent success format for successful operations', async () => {
-      // Arrange
       const mockResponse = {
         token: 'new-token',
         link: 'http://localhost:3000/kyc/new-token',
-        expiresAt: new Date(),
-        propertyId: 'property-123',
       };
       mockKycLinksService.generateKYCLink.mockResolvedValue(mockResponse);
 
-      // Act
-      const result = await controller.generateKYCLink('property-123', mockUser);
+      const result = await controller.generateKYCLink(mockUser);
 
-      // Assert
       expect(result).toHaveProperty('success', true);
       expect(result).toHaveProperty('message');
       expect(result).toHaveProperty('data');

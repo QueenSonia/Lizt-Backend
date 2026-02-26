@@ -81,11 +81,8 @@ export class KYCApplicationService {
       );
     }
 
-    const allowedStatuses = ['vacant', 'offer_accepted'];
-    if (
-      !allowedStatuses.includes(selectedProperty.property_status) &&
-      !selectedProperty.is_marketing_ready
-    ) {
+    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    if (!allowedStatuses.includes(selectedProperty.property_status)) {
       throw new BadRequestException(
         'Selected property is no longer available for applications',
       );
@@ -149,8 +146,7 @@ export class KYCApplicationService {
     // Handle optional fields properly to avoid undefined errors (relaxed validation)
     const applicationData: Partial<KYCApplication> = {
       kyc_link_id: kycLink.id,
-      initial_property_id: kycData.property_id, // NEW: Store as initial property (historical context)
-      property_id: kycData.property_id, // DEPRECATED: Keep for backward compatibility
+      property_id: kycData.property_id, // Use the selected property from form data
       status: ApplicationStatus.PENDING,
       // Required fields
       first_name: kycData.first_name,
@@ -245,48 +241,11 @@ export class KYCApplicationService {
     if (kycData.business_proof_url)
       applicationData.business_proof_url = kycData.business_proof_url;
 
-    // Tracking Information - Record when decision was made
-    applicationData.decision_made_at = new Date();
-    if (kycData.decision_ip) {
-      applicationData.decision_made_ip = kycData.decision_ip;
-    }
-
     const kycApplication =
       this.kycApplicationRepository.create(applicationData);
 
     const savedApplication =
       await this.kycApplicationRepository.save(kycApplication);
-
-    // Create history entry for KYC submission/acceptance
-    try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
-      const propertyHistoryRepo =
-        this.kycApplicationRepository.manager.getRepository(PropertyHistory);
-
-      const formattedDate = new Date().toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
-      const formattedTime = new Date().toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-      });
-
-      await propertyHistoryRepo.save({
-        property_id: kycData.property_id,
-        tenant_id: null,
-        event_type: 'kyc_application_submitted',
-        event_description: `KYC application submitted by ${kycData.first_name} ${kycData.last_name} — ${kycData.decision_ip || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
-        related_entity_id: savedApplication.id,
-        related_entity_type: 'kyc_application',
-      });
-    } catch (error) {
-      console.error('Failed to create KYC submission history:', error);
-    }
 
     // Return the application with relations loaded
     const applicationWithRelations =
@@ -450,7 +409,7 @@ export class KYCApplicationService {
   /**
    * Get all KYC applications for a specific property (landlord access only)
    * Requirements: 4.1, 4.2, 4.3
-   * Shows all applications regardless of property status to support multi-property offers
+   * When property is vacant, only show pending applications
    */
   async getApplicationsByProperty(
     propertyId: string,
@@ -463,57 +422,23 @@ export class KYCApplicationService {
     );
 
     // Determine which applications to show based on property status
-    const qb = this.kycApplicationRepository
-      .createQueryBuilder('application')
-      // Only select needed property columns
-      .leftJoin('application.property', 'property')
-      .addSelect([
-        'property.id',
-        'property.name',
-        'property.location',
-        'property.property_status',
-      ])
-      // Only select needed kyc_link columns
-      .leftJoin('application.kyc_link', 'kyc_link')
-      .addSelect(['kyc_link.id', 'kyc_link.landlord_id', 'kyc_link.is_active'])
-      // Tenant - only id needed for reference
-      .leftJoin('application.tenant', 'tenant')
-      .addSelect(['tenant.id'])
-      // Only select needed offer_letter columns (including payment fields)
-      .leftJoin('application.offer_letters', 'offer_letters')
-      .addSelect([
-        'offer_letters.id',
-        'offer_letters.token',
-        'offer_letters.status',
-        'offer_letters.rent_amount',
-        'offer_letters.rent_frequency',
-        'offer_letters.service_charge',
-        'offer_letters.tenancy_start_date',
-        'offer_letters.tenancy_end_date',
-        'offer_letters.caution_deposit',
-        'offer_letters.legal_fee',
-        'offer_letters.agency_fee',
-        'offer_letters.total_amount',
-        'offer_letters.amount_paid',
-        'offer_letters.outstanding_balance',
-        'offer_letters.payment_status',
-        'offer_letters.sent_at',
-        'offer_letters.created_at',
-        'offer_letters.updated_at',
-      ])
-      .where('application.property_id = :propertyId', { propertyId })
-      .andWhere('application.deleted_at IS NULL');
+    const whereCondition: any = { property_id: propertyId };
 
-    // REMOVED: Filter that hid rejected applications for vacant properties
-    // This allows landlords to see all applications and reuse rejected ones for other properties
-    // Supporting multi-property offers where rejected applicants can be offered different properties
+    // If property is vacant or ready for marketing, only show pending applications
+    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    if (allowedStatuses.includes(property.property_status)) {
+      whereCondition.status = ApplicationStatus.PENDING;
+    }
 
-    qb.orderBy('application.created_at', 'DESC').addOrderBy(
-      'application.status',
-      'ASC',
-    );
-
-    const applications = await qb.getMany();
+    // Get applications for the property with sorting
+    const applications = await this.kycApplicationRepository.find({
+      where: whereCondition,
+      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
+      order: {
+        created_at: 'DESC', // Most recent applications first
+        status: 'ASC', // Pending applications first within same date
+      },
+    });
 
     return applications.map((app) => this.transformApplicationForFrontend(app));
   }
@@ -521,7 +446,7 @@ export class KYCApplicationService {
   /**
    * Get applications by property with filtering and sorting options
    * Requirements: 4.1, 4.2, 4.3
-   * Shows all applications regardless of property status to support multi-property offers
+   * When property is vacant, only show pending applications
    */
   async getApplicationsByPropertyWithFilters(
     propertyId: string,
@@ -540,46 +465,20 @@ export class KYCApplicationService {
 
     const queryBuilder = this.kycApplicationRepository
       .createQueryBuilder('application')
-      .leftJoin('application.property', 'property')
-      .addSelect([
-        'property.id',
-        'property.name',
-        'property.location',
-        'property.property_status',
-      ])
-      .leftJoin('application.kyc_link', 'kyc_link')
-      .addSelect(['kyc_link.id', 'kyc_link.landlord_id', 'kyc_link.is_active'])
-      .leftJoin('application.tenant', 'tenant')
-      .addSelect(['tenant.id'])
-      .leftJoin('application.offer_letters', 'offer_letters')
-      .addSelect([
-        'offer_letters.id',
-        'offer_letters.token',
-        'offer_letters.status',
-        'offer_letters.rent_amount',
-        'offer_letters.rent_frequency',
-        'offer_letters.service_charge',
-        'offer_letters.tenancy_start_date',
-        'offer_letters.tenancy_end_date',
-        'offer_letters.caution_deposit',
-        'offer_letters.legal_fee',
-        'offer_letters.agency_fee',
-        'offer_letters.total_amount',
-        'offer_letters.amount_paid',
-        'offer_letters.outstanding_balance',
-        'offer_letters.payment_status',
-        'offer_letters.sent_at',
-        'offer_letters.created_at',
-        'offer_letters.updated_at',
-      ])
+      .leftJoinAndSelect('application.property', 'property')
+      .leftJoinAndSelect('application.kyc_link', 'kyc_link')
+      .leftJoinAndSelect('application.tenant', 'tenant')
+      .leftJoinAndSelect('application.offer_letters', 'offer_letters')
       .where('application.property_id = :propertyId', { propertyId });
 
-    // REMOVED: Filter that hid rejected applications for vacant properties
-    // This allows landlords to see all applications and reuse rejected ones for other properties
-    // Supporting multi-property offers where rejected applicants can be offered different properties
-
-    // Apply status filter if provided
-    if (filters?.status) {
+    // If property is vacant or ready for marketing, only show pending applications (override any status filter)
+    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    if (allowedStatuses.includes(property.property_status)) {
+      queryBuilder.andWhere('application.status = :pendingStatus', {
+        pendingStatus: ApplicationStatus.PENDING,
+      });
+    } else if (filters?.status) {
+      // Apply status filter only if property is not vacant
       queryBuilder.andWhere('application.status = :status', {
         status: filters.status,
       });
@@ -722,95 +621,9 @@ export class KYCApplicationService {
                 cautionDeposit: latestOffer.caution_deposit,
                 legalFee: latestOffer.legal_fee,
                 agencyFee: latestOffer.agency_fee,
-                totalAmount: latestOffer.total_amount,
-                amountPaid: latestOffer.amount_paid,
-                outstandingBalance: latestOffer.outstanding_balance,
-                paymentStatus: latestOffer.payment_status,
-                sentAt: latestOffer.sent_at
-                  ? latestOffer.sent_at instanceof Date
-                    ? latestOffer.sent_at.toISOString()
-                    : latestOffer.sent_at
-                  : undefined,
-                acceptedAt: latestOffer.accepted_at
-                  ? latestOffer.accepted_at instanceof Date
-                    ? latestOffer.accepted_at.toISOString()
-                    : latestOffer.accepted_at
-                  : undefined,
-                acceptedByPhone: latestOffer.accepted_by_phone || undefined,
-                acceptanceOtp: latestOffer.acceptance_otp || undefined,
-                createdAt:
-                  latestOffer.created_at instanceof Date
-                    ? latestOffer.created_at.toISOString()
-                    : latestOffer.created_at,
-                updatedAt:
-                  latestOffer.updated_at instanceof Date
-                    ? latestOffer.updated_at.toISOString()
-                    : latestOffer.updated_at,
               };
             })()
           : undefined,
-
-      // Invoice data (from manual join, attached via __invoiceData)
-      invoice: (application as any).__invoiceData
-        ? {
-            id: (application as any).__invoiceData.id,
-            createdAt:
-              (application as any).__invoiceData.created_at instanceof Date
-                ? (application as any).__invoiceData.created_at.toISOString()
-                : (application as any).__invoiceData.created_at,
-            status: (application as any).__invoiceData.status,
-          }
-        : undefined,
-
-      // Most recent payment date (from manual join, attached via __paymentDate)
-      paymentDate: (application as any).__paymentDate
-        ? (application as any).__paymentDate instanceof Date
-          ? (application as any).__paymentDate.toISOString()
-          : (application as any).__paymentDate
-        : undefined,
-
-      // Top-level timestamp fields for timeline events (easier frontend access)
-      offerLetterCreatedAt:
-        application.offer_letters && application.offer_letters.length > 0
-          ? (() => {
-              const latestOffer = application.offer_letters.sort((a, b) => {
-                const dateA = new Date(a.created_at || 0).getTime();
-                const dateB = new Date(b.created_at || 0).getTime();
-                return dateB - dateA;
-              })[0];
-              return latestOffer.created_at instanceof Date
-                ? latestOffer.created_at.toISOString()
-                : latestOffer.created_at;
-            })()
-          : undefined,
-
-      offerLetterUpdatedAt:
-        application.offer_letters && application.offer_letters.length > 0
-          ? (() => {
-              const latestOffer = application.offer_letters.sort((a, b) => {
-                const dateA = new Date(a.created_at || 0).getTime();
-                const dateB = new Date(b.created_at || 0).getTime();
-                return dateB - dateA;
-              })[0];
-              return latestOffer.updated_at instanceof Date
-                ? latestOffer.updated_at.toISOString()
-                : latestOffer.updated_at;
-            })()
-          : undefined,
-
-      // Tracking Information
-      formOpenedAt: application.form_opened_at
-        ? application.form_opened_at instanceof Date
-          ? application.form_opened_at.toISOString()
-          : application.form_opened_at
-        : undefined,
-      formOpenedIp: application.form_opened_ip,
-      decisionMadeAt: application.decision_made_at
-        ? application.decision_made_at instanceof Date
-          ? application.decision_made_at.toISOString()
-          : application.decision_made_at
-        : undefined,
-      decisionMadeIp: application.decision_made_ip,
     };
   }
 
@@ -827,88 +640,15 @@ export class KYCApplicationService {
       landlordId,
     });
 
-    const result = await this.kycApplicationRepository
-      .createQueryBuilder('application')
-      .leftJoin('application.property', 'property')
-      .addSelect([
-        'property.id',
-        'property.name',
-        'property.location',
-        'property.property_status',
-      ])
-      .leftJoin('application.kyc_link', 'kyc_link')
-      .addSelect(['kyc_link.id', 'kyc_link.landlord_id', 'kyc_link.is_active'])
-      .leftJoin('application.tenant', 'tenant')
-      .addSelect(['tenant.id'])
-      .leftJoin('application.offer_letters', 'offer_letters')
-      .addSelect([
-        'offer_letters.id',
-        'offer_letters.token',
-        'offer_letters.status',
-        'offer_letters.rent_amount',
-        'offer_letters.rent_frequency',
-        'offer_letters.service_charge',
-        'offer_letters.tenancy_start_date',
-        'offer_letters.tenancy_end_date',
-        'offer_letters.caution_deposit',
-        'offer_letters.legal_fee',
-        'offer_letters.agency_fee',
-        'offer_letters.sent_at',
-        'offer_letters.created_at',
-        'offer_letters.updated_at',
-      ])
-      .leftJoin(
-        'invoices',
-        'invoices',
-        'offer_letters.id = invoices.offer_letter_id',
-      )
-      .addSelect(['invoices.id', 'invoices.created_at', 'invoices.status'])
-      .leftJoin(
-        'invoice_payments',
-        'invoice_payments',
-        'invoices.id = invoice_payments.invoice_id',
-      )
-      .addSelect([
-        'invoice_payments.payment_date',
-        'invoice_payments.created_at',
-      ])
-      .where('application.id = :applicationId', { applicationId })
-      .andWhere('application.deleted_at IS NULL')
-      .getRawAndEntities();
-
-    const application = result.entities[0];
+    const application = await this.kycApplicationRepository.findOne({
+      where: { id: applicationId },
+      relations: ['property', 'kyc_link', 'tenant', 'offer_letters'],
+    });
 
     if (!application) {
       console.log('❌ KYC application not found:', applicationId);
       throw new NotFoundException('KYC application not found');
     }
-
-    // Extract raw invoice and payment data from the manual joins
-    // (manual joins aren't hydrated by getOne, so we use getRawAndEntities)
-    const rawRows = result.raw;
-    const invoiceData = rawRows[0]?.invoices_id
-      ? {
-          id: rawRows[0].invoices_id,
-          created_at: rawRows[0].invoices_created_at,
-          status: rawRows[0].invoices_status,
-        }
-      : undefined;
-
-    // Find the most recent payment_date across all raw rows
-    const paymentDates = rawRows
-      .filter((row: any) => row.invoice_payments_payment_date)
-      .map((row: any) => row.invoice_payments_payment_date);
-    const mostRecentPaymentDate =
-      paymentDates.length > 0
-        ? paymentDates.sort(
-            (a: string, b: string) =>
-              new Date(b).getTime() - new Date(a).getTime(),
-          )[0]
-        : undefined;
-
-    // Attach invoice and payment data to the application for the transform
-    (application as any).__invoiceData = invoiceData;
-    (application as any).__paymentDate = mostRecentPaymentDate;
 
     console.log('✅ Found application:', {
       id: application.id,
@@ -1002,11 +742,8 @@ export class KYCApplicationService {
       landlordId,
     );
 
-    const allowedStatuses = ['vacant'];
-    if (
-      allowedStatuses.includes(property.property_status) ||
-      property.is_marketing_ready
-    ) {
+    const allowedStatuses = ['vacant', 'ready_for_marketing'];
+    if (allowedStatuses.includes(property.property_status)) {
       // For vacant and ready for marketing properties, only show pending applications count
       const pending = await this.kycApplicationRepository.count({
         where: { property_id: propertyId, status: ApplicationStatus.PENDING },
@@ -1076,7 +813,6 @@ export class KYCApplicationService {
         'offer_letters.caution_deposit',
         'offer_letters.legal_fee',
         'offer_letters.agency_fee',
-        'offer_letters.sent_at',
         'offer_letters.created_at',
       ])
       .where('property.owner_id = :landlordId', { landlordId })
@@ -1142,77 +878,6 @@ export class KYCApplicationService {
     }
 
     return kycLink;
-  }
-
-  /**
-   * Track when a user opens the KYC form
-   * Records timestamp and IP address, and creates history entry
-   * Tracks EVERY open, not just the first time
-   */
-  async trackFormOpen(
-    token: string,
-    ipAddress?: string,
-  ): Promise<{ success: boolean; message: string }> {
-    // Validate the token
-    const kycLink = await this.validateKYCToken(token);
-
-    // Get the property and landlord info for history tracking
-    const property = await this.propertyRepository.findOne({
-      where: { owner_id: kycLink.landlord_id },
-      order: { created_at: 'DESC' },
-    });
-
-    // Check if there's already a pending_completion application for this link
-    const existingApplication = await this.kycApplicationRepository.findOne({
-      where: {
-        kyc_link_id: kycLink.id,
-        status: ApplicationStatus.PENDING_COMPLETION,
-      },
-      order: { created_at: 'DESC' },
-    });
-
-    // Always update the form_opened_at timestamp (track every open)
-    if (existingApplication) {
-      existingApplication.form_opened_at = new Date();
-      existingApplication.form_opened_ip = ipAddress;
-      await this.kycApplicationRepository.save(existingApplication);
-    }
-
-    // Create history entry for this form open event
-    if (property) {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
-      const propertyHistoryRepo =
-        this.kycApplicationRepository.manager.getRepository(PropertyHistory);
-
-      const formattedDate = new Date().toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
-      const formattedTime = new Date().toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-      });
-
-      await propertyHistoryRepo.save({
-        property_id: property.id,
-        tenant_id: existingApplication?.tenant_id || null,
-        event_type: 'kyc_form_viewed',
-        event_description: `KYC form viewed — ${ipAddress || 'Unknown IP'} — ${formattedDate} at ${formattedTime}`,
-        related_entity_id: existingApplication?.id || kycLink.id,
-        related_entity_type: existingApplication
-          ? 'kyc_application'
-          : 'kyc_link',
-      });
-    }
-
-    return {
-      success: true,
-      message: 'Form open tracked successfully',
-    };
   }
 
   /**
@@ -1954,134 +1619,5 @@ export class KYCApplicationService {
     }
 
     return property;
-  }
-
-  /**
-   * Get property history events for a KYC application
-   * Returns tracking events like form views, submissions, and offer letter events
-   */
-  async getApplicationHistory(
-    applicationId: string,
-    landlordId: string,
-  ): Promise<any[]> {
-    // Get the application and validate ownership
-    const application = await this.kycApplicationRepository.findOne({
-      where: { id: applicationId },
-      relations: ['property', 'offer_letters'],
-    });
-
-    if (!application) {
-      throw new NotFoundException('KYC application not found');
-    }
-
-    await this.validatePropertyOwnership(application.property_id, landlordId);
-
-    // Get property history events related to this application
-    const { PropertyHistory } = await import(
-      '../property-history/entities/property-history.entity'
-    );
-    const propertyHistoryRepo =
-      this.kycApplicationRepository.manager.getRepository(PropertyHistory);
-
-    // Build query conditions to include:
-    // 1. KYC application events (form views, submissions)
-    // 2. Offer letter events (views, acceptances, rejections) for this application's offer letters
-    // 3. Invoice events (generated, sent, viewed) linked to this application's offer letters
-    // 4. Receipt events (issued, sent, viewed) linked to this application's offer letters
-    // 5. Payment events linked to this application's offer letters
-    const whereConditions: any[] = [
-      {
-        related_entity_id: applicationId,
-        related_entity_type: 'kyc_application',
-      },
-      {
-        property_id: application.property_id,
-        event_type: 'kyc_form_viewed',
-      },
-    ];
-
-    // Add offer letter tracking events if offer letters exist
-    if (application.offer_letters && application.offer_letters.length > 0) {
-      const offerLetterIds = application.offer_letters.map((ol) => ol.id);
-
-      for (const offerLetter of application.offer_letters) {
-        whereConditions.push({
-          related_entity_id: offerLetter.id,
-          related_entity_type: 'offer_letter',
-        });
-      }
-
-      // Find invoices linked to these offer letters and include their history events
-      try {
-        const invoices = await this.kycApplicationRepository.manager
-          .getRepository('invoices')
-          .find({
-            where: offerLetterIds.map((id) => ({ offer_letter_id: id })),
-            select: ['id'],
-          });
-
-        for (const invoice of invoices) {
-          whereConditions.push({
-            related_entity_id: invoice.id,
-            related_entity_type: 'invoice',
-          });
-        }
-
-        // Find receipts linked to these offer letters and include their history events
-        const receipts = await this.kycApplicationRepository.manager
-          .getRepository('receipts')
-          .find({
-            where: offerLetterIds.map((id) => ({ offer_letter_id: id })),
-            select: ['id'],
-          });
-
-        for (const receipt of receipts) {
-          whereConditions.push({
-            related_entity_id: receipt.id,
-            related_entity_type: 'receipt',
-          });
-        }
-      } catch (error) {
-        // Non-critical: if invoice/receipt lookup fails, we still show other events
-        console.error(
-          'Failed to look up invoices/receipts for history:',
-          error,
-        );
-      }
-
-      // Find payments linked to these offer letters and include their history events
-      try {
-        const payments = await this.kycApplicationRepository.manager
-          .getRepository('payments')
-          .find({
-            where: offerLetterIds.map((id) => ({ offer_letter_id: id })),
-            select: ['id'],
-          });
-
-        for (const payment of payments) {
-          whereConditions.push({
-            related_entity_id: payment.id,
-            related_entity_type: 'payment',
-          });
-        }
-      } catch (error) {
-        console.error('Failed to look up payments for history:', error);
-      }
-    }
-
-    const historyEvents = await propertyHistoryRepo.find({
-      where: whereConditions,
-      order: { created_at: 'DESC' },
-    });
-
-    return historyEvents.map((event) => ({
-      id: event.id,
-      eventType: event.event_type,
-      eventDescription: event.event_description,
-      createdAt:
-        event.created_at instanceof Date
-          ? event.created_at.toISOString()
-          : event.created_at,
-    }));
   }
 }

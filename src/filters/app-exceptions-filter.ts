@@ -3,95 +3,278 @@ import {
   ArgumentsHost,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import { BaseExceptionFilter } from '@nestjs/core';
 import { Request, Response } from 'express';
 import { QueryFailedError } from 'typeorm';
+import { SentryExceptionCaptured } from '@sentry/nestjs';
+import { randomUUID } from 'crypto';
 
-/** Catches and handles all exceptions thrown within the app, including validation errors and maintains consistency in the type of error message by ensuring all error messages, whether objects or arrays are transformed into a string type */
+import { AppException } from '../common/errors/app-exception';
+import { AppErrorCode } from '../common/errors/app-error-codes.enum';
+import { KYCException } from '../common/errors/kyc-exception';
+
+/**
+ * Single, global exception filter.
+ *
+ * Responsibilities:
+ *  1. Generate a requestId for every error (for log correlation).
+ *  2. Classify the exception → extract errorCode, message, status.
+ *  3. Log a structured JSON line with { requestId, userId, method, path, statusCode, errorCode, source }.
+ *  4. Forward unhandled errors to Sentry via @SentryExceptionCaptured().
+ *  5. Send a consistent JSON response to the client.
+ */
 @Catch()
 export class AppExceptionsFilter extends BaseExceptionFilter {
+  private readonly logger = new Logger(AppExceptionsFilter.name);
+
+  @SentryExceptionCaptured()
   catch(exception: any, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
-    const isHttp = exception instanceof HttpException;
+    // ── 1. Request ID ──────────────────────────────────────────────
+    const requestId =
+      (request.headers['x-request-id'] as string) || randomUUID();
 
-    const status = isHttp
-      ? exception.getStatus()
-      : HttpStatus.INTERNAL_SERVER_ERROR;
+    // ── 2. Classify ────────────────────────────────────────────────
+    const { status, message, errorCode, details, source } =
+      this.classify(exception, request);
 
-    let message =
-      status === HttpStatus.TOO_MANY_REQUESTS
-        ? 'Too many requests, try again later'
-        : status === HttpStatus.REQUEST_TIMEOUT
-          ? 'Request timed out. Try again'
-          : 'Something unexpected happened'; // Just making a placeholder message first considering different exception status
+    // ── 3. Structured log ──────────────────────────────────────────
+    const userId = (request as any).user?.id ?? null;
 
-    if (isHttp) {
-      const data = exception.getResponse();
+    const logPayload = {
+      requestId,
+      userId,
+      method: request.method,
+      path: request.url,
+      statusCode: status,
+      errorCode,
+      source,
+      stack: exception?.stack,
+    };
 
-      if (typeof data === 'string') {
-        message =
-          status === HttpStatus.TOO_MANY_REQUESTS // Note to Ajiri: Throttling will be implemented so I'm taking account of such case with a more friendly message here
-            ? 'Too many requests, try again later'
-            : data;
-      }
-
-      if (typeof data === 'object' && data !== null && 'message' in data) {
-        const errorMessage = data.message;
-
-        if (typeof errorMessage === 'string') message = errorMessage;
-
-        if (Array.isArray(errorMessage)) {
-          if (errorMessage.every((item) => typeof item === 'string')) {
-            message = errorMessage.join(', ');
-          } else if (
-            errorMessage.every(
-              (item) =>
-                typeof item === 'object' &&
-                item !== null &&
-                'message' in item &&
-                typeof item.message === 'string',
-            )
-          ) {
-            message = errorMessage.map((item) => item.message).join(', ');
-          } else {
-            message = 'An unknown error occurred';
-          }
-        }
-      }
+    if (status >= 500) {
+      this.logger.error(message, JSON.stringify(logPayload));
+    } else {
+      this.logger.warn(message, JSON.stringify(logPayload));
     }
 
-    if (exception instanceof QueryFailedError) {
-      const driverError = (exception as any)?.driverError;
-
-      switch (driverError?.code) {
-        case '23505': // unique violation. I'm handling this here just in case at any point we forget to check for existing document before inserting so as to get a more friendly error message
-          message = 'Duplicate entry';
-          break;
-        case '23503': // foreign key violation
-          message = 'Invalid reference';
-          break;
-        case '23502': // not null violation
-          message = 'Missing required field';
-          break;
-        default:
-          message = driverError?.message || 'Database error';
-          break;
-      }
-    }
-
+    // ── 4. Response ────────────────────────────────────────────────
     const errorResponse = {
       success: false,
       message,
+      errorCode,
       statusCode: status,
+      requestId,
+      timestamp: new Date().toISOString(),
       path: request.url,
+      ...(details && { details }),
     };
 
-    response.status(status).json(errorResponse);
+    // Guard against double-write (headers already sent by streaming, SSE, etc.)
+    if (!response.headersSent) {
+      response.status(status).json(errorResponse);
+    }
+  }
 
-    super.catch(exception, host);
+  // ────────────────────────────────────────────────────────────────
+  // Classification helpers
+  // ────────────────────────────────────────────────────────────────
+
+  private classify(
+    exception: any,
+    request: Request,
+  ): {
+    status: number;
+    message: string;
+    errorCode: string;
+    details?: Record<string, any>;
+    source: string;
+  } {
+    // ── AppException (our base class) ──────────────────────────────
+    if (exception instanceof AppException) {
+      const exRes = exception.getResponse() as any;
+      return {
+        status: exception.getStatus(),
+        message: exRes.message,
+        errorCode: exception.errorCode,
+        details: exception.details,
+        source: 'AppException',
+      };
+    }
+
+    // ── KYCException (domain-specific, also extends HttpException) ─
+    if (exception instanceof KYCException) {
+      const exRes = exception.getResponse() as any;
+      return {
+        status: exception.getStatus(),
+        message: exRes.message,
+        errorCode: exception.errorCode,
+        details: exception.details,
+        source: 'KYCException',
+      };
+    }
+
+    // ── TypeORM QueryFailedError ───────────────────────────────────
+    if (exception instanceof QueryFailedError) {
+      return this.classifyDatabaseError(exception);
+    }
+
+    // ── Standard NestJS HttpException ──────────────────────────────
+    if (exception instanceof HttpException) {
+      return this.classifyHttpException(exception);
+    }
+
+    // ── Network / timeout errors ──────────────────────────────────
+    if (this.isNetworkError(exception)) {
+      return this.classifyNetworkError(exception);
+    }
+
+    // ── Unknown / unhandled ───────────────────────────────────────
+    return {
+      status: HttpStatus.INTERNAL_SERVER_ERROR,
+      message: 'An unexpected error occurred. Please try again',
+      errorCode: AppErrorCode.INTERNAL_ERROR,
+      source: 'Unhandled',
+    };
+  }
+
+  private classifyHttpException(exception: HttpException) {
+    const status = exception.getStatus();
+    const data = exception.getResponse();
+
+    let message: string;
+
+    if (typeof data === 'string') {
+      message =
+        status === HttpStatus.TOO_MANY_REQUESTS
+          ? 'Too many requests, try again later'
+          : data;
+    } else if (
+      typeof data === 'object' &&
+      data !== null &&
+      'message' in data
+    ) {
+      const errorMessage = (data as any).message;
+
+      if (typeof errorMessage === 'string') {
+        message = errorMessage;
+      } else if (Array.isArray(errorMessage)) {
+        // ValidationPipe returns string arrays
+        message = errorMessage
+          .map((item: any) =>
+            typeof item === 'string' ? item : item?.message ?? '',
+          )
+          .join(', ');
+      } else {
+        message = 'An error occurred';
+      }
+    } else {
+      message = 'An error occurred';
+    }
+
+    const errorCode = this.httpStatusToErrorCode(status);
+
+    return { status, message, errorCode, source: 'HttpException' };
+  }
+
+  private classifyDatabaseError(exception: QueryFailedError) {
+    const driverError = (exception as any)?.driverError;
+
+    switch (driverError?.code) {
+      case '23505': // unique violation
+        return {
+          status: HttpStatus.CONFLICT,
+          message: 'Duplicate entry',
+          errorCode: AppErrorCode.DUPLICATE_ENTRY,
+          source: 'TypeORM',
+        };
+      case '23503': // foreign key violation
+        return {
+          status: HttpStatus.BAD_REQUEST,
+          message: 'Invalid reference',
+          errorCode: AppErrorCode.INVALID_INPUT,
+          source: 'TypeORM',
+        };
+      case '23502': // not null violation
+        return {
+          status: HttpStatus.BAD_REQUEST,
+          message: 'Missing required field',
+          errorCode: AppErrorCode.VALIDATION_FAILED,
+          source: 'TypeORM',
+        };
+      default:
+        return {
+          status: HttpStatus.INTERNAL_SERVER_ERROR,
+          message: 'Database error',
+          errorCode: AppErrorCode.DATABASE_ERROR,
+          source: 'TypeORM',
+        };
+    }
+  }
+
+  private classifyNetworkError(exception: any) {
+    if (
+      exception.code === 'ECONNREFUSED' ||
+      exception.code === 'ENOTFOUND'
+    ) {
+      return {
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'Service connection failed. Please try again later',
+        errorCode: AppErrorCode.SERVICE_UNAVAILABLE,
+        source: 'Network',
+      };
+    }
+    if (exception.code === 'ETIMEDOUT') {
+      return {
+        status: HttpStatus.REQUEST_TIMEOUT,
+        message: 'Request timed out. Please try again',
+        errorCode: AppErrorCode.TIMEOUT,
+        source: 'Network',
+      };
+    }
+    return {
+      status: HttpStatus.BAD_GATEWAY,
+      message: 'Network error occurred',
+      errorCode: AppErrorCode.NETWORK_ERROR,
+      source: 'Network',
+    };
+  }
+
+  private isNetworkError(exception: any): boolean {
+    return ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE'].includes(
+      exception?.code,
+    );
+  }
+
+  private httpStatusToErrorCode(status: number): string {
+    switch (status) {
+      case HttpStatus.NOT_FOUND:
+        return AppErrorCode.NOT_FOUND;
+      case HttpStatus.UNAUTHORIZED:
+        return AppErrorCode.UNAUTHORIZED;
+      case HttpStatus.FORBIDDEN:
+        return AppErrorCode.FORBIDDEN;
+      case HttpStatus.CONFLICT:
+        return AppErrorCode.DUPLICATE_ENTRY;
+      case HttpStatus.UNPROCESSABLE_ENTITY:
+        return AppErrorCode.VALIDATION_FAILED;
+      case HttpStatus.TOO_MANY_REQUESTS:
+        return AppErrorCode.RATE_LIMITED;
+      case HttpStatus.REQUEST_TIMEOUT:
+        return AppErrorCode.TIMEOUT;
+      case HttpStatus.SERVICE_UNAVAILABLE:
+        return AppErrorCode.SERVICE_UNAVAILABLE;
+      case HttpStatus.BAD_GATEWAY:
+        return AppErrorCode.NETWORK_ERROR;
+      default:
+        return status >= 500
+          ? AppErrorCode.INTERNAL_ERROR
+          : AppErrorCode.INVALID_INPUT;
+    }
   }
 }

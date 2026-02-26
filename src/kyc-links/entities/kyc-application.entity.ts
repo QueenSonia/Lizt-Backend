@@ -23,22 +23,12 @@ export enum ApplicationStatus {
  * NOTE: Most fields have been made nullable for relaxed validation.
  * Only first_name, last_name, and phone_number are required.
  * Fields can be made required again by removing nullable: true and running a migration.
- *
- * MULTI-PROPERTY OFFERS:
- * - initial_property_id: The property the applicant originally applied for (historical context)
- * - property_id: DEPRECATED - Kept for backward compatibility, will be removed in future
- * - Actual property tenant is attached to is determined by offer_letters.property_id
  */
 @Entity({ name: 'kyc_applications' })
 export class KYCApplication extends BaseEntity {
   @Column({ type: 'uuid' })
   kyc_link_id: string;
 
-  // NEW: Historical context - which property they originally applied for
-  @Column({ type: 'uuid' })
-  initial_property_id: string;
-
-  // DEPRECATED: Kept for backward compatibility during transition
   @Column({ type: 'uuid' })
   property_id: string;
 
@@ -188,29 +178,10 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   available_property_ids?: string;
 
-  // Tracking Information
-  @Column({ type: 'timestamp', nullable: true })
-  form_opened_at?: Date;
-
-  @Column({ type: 'varchar', nullable: true })
-  form_opened_ip?: string;
-
-  @Column({ type: 'timestamp', nullable: true })
-  decision_made_at?: Date;
-
-  @Column({ type: 'varchar', nullable: true })
-  decision_made_ip?: string;
-
   @ManyToOne(() => KYCLink, (kycLink) => kycLink.applications)
   @JoinColumn({ name: 'kyc_link_id' })
   kyc_link: KYCLink;
 
-  // NEW: Relation to the property they originally applied for
-  @ManyToOne(() => Property)
-  @JoinColumn({ name: 'initial_property_id' })
-  initial_property: Property;
-
-  // DEPRECATED: Kept for backward compatibility
   @ManyToOne(() => Property, (property) => property.kyc_applications)
   @JoinColumn({ name: 'property_id' })
   property: Property;

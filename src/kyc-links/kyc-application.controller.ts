@@ -27,7 +27,7 @@ import { CompleteKYCDto } from './dto/complete-kyc.dto';
 
 @Controller('api')
 export class KYCApplicationController {
-  constructor(private readonly kycApplicationService: KYCApplicationService) {}
+  constructor(private readonly kycApplicationService: KYCApplicationService) { }
 
   /**
    * Submit KYC application (public endpoint - no authentication required)
@@ -58,22 +58,7 @@ export class KYCApplicationController {
     };
   }
 
-  /**
-   * Track when a user opens the KYC form
-   * POST /api/kyc/:token/track-open
-   * Public endpoint - records timestamp and IP address
-   */
-  @SkipAuth()
-  @Post('kyc/:token/track-open')
-  async trackFormOpen(
-    @Param('token') token: string,
-    @Body('ipAddress') ipAddress?: string,
-  ): Promise<{
-    success: boolean;
-    message: string;
-  }> {
-    return await this.kycApplicationService.trackFormOpen(token, ipAddress);
-  }
+
 
   /**
    * Get KYC applications for a property (landlord only)
@@ -367,29 +352,4 @@ export class KYCApplicationController {
     };
   }
 
-  /**
-   * Get property history events for a KYC application (landlord only)
-   * GET /api/kyc-applications/:applicationId/history
-   * Returns tracking events like form views and submissions
-   */
-  @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
-  @Get('kyc-applications/:applicationId/history')
-  async getApplicationHistory(
-    @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @CurrentUser() user: Account,
-  ): Promise<{
-    success: boolean;
-    history: any[];
-  }> {
-    const history = await this.kycApplicationService.getApplicationHistory(
-      applicationId,
-      user.id,
-    );
-
-    return {
-      success: true,
-      history,
-    };
-  }
 }

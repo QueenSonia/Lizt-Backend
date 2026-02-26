@@ -2,12 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as puppeteer from 'puppeteer';
-import {
-  OfferLetter,
-  TermsOfTenancy,
-  OfferLetterStatus,
-} from './entities/offer-letter.entity';
-
+import { OfferLetter, TermsOfTenancy } from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { FileUploadService } from '../utils/cloudinary';
@@ -29,95 +24,39 @@ export class PDFGeneratorService {
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
     private readonly fileUploadService: FileUploadService,
-  ) { }
+  ) {}
 
   /**
    * Generate PDF for an offer letter by token
    * Requirements: 4.1, 4.3, 4.4
    */
   async generateOfferLetterPDF(token: string): Promise<Buffer> {
-    console.log('=== PDF GENERATOR SERVICE: generateOfferLetterPDF ===');
-    console.log('Token:', token);
+    const offerLetter = await this.offerLetterRepository.findOne({
+      where: { token },
+    });
 
-    try {
-      console.log('Fetching offer letter from database...');
-      const offerLetter = await this.offerLetterRepository.findOne({
-        where: { token },
-      });
-
-      if (!offerLetter) {
-        console.error('Offer letter not found for token:', token);
-        throw new NotFoundException('Offer letter not found');
-      }
-
-      console.log('Offer letter found:', {
-        id: offerLetter.id,
-        kyc_application_id: offerLetter.kyc_application_id,
-        property_id: offerLetter.property_id,
-        status: offerLetter.status,
-      });
-
-      console.log('Fetching KYC application...');
-      const kycApplication = await this.kycApplicationRepository.findOne({
-        where: { id: offerLetter.kyc_application_id },
-      });
-
-      console.log(
-        'KYC application found:',
-        kycApplication
-          ? {
-            id: kycApplication.id,
-            name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-            email: kycApplication.email,
-          }
-          : 'null (not found)',
-      );
-
-      console.log('Fetching property...');
-      const property = await this.propertyRepository.findOne({
-        where: { id: offerLetter.property_id },
-      });
-
-      console.log(
-        'Property found:',
-        property
-          ? {
-            id: property.id,
-            name: property.name,
-            address: property.location,
-          }
-          : 'null (not found)',
-      );
-
-      if (!kycApplication || !property) {
-        console.error('Offer letter data incomplete:', {
-          hasKycApplication: !!kycApplication,
-          hasProperty: !!property,
-        });
-        throw new NotFoundException('Offer letter data incomplete');
-      }
-
-      console.log('Generating HTML for PDF...');
-      const html = this.generateOfferLetterHTML(
-        offerLetter,
-        kycApplication,
-        property,
-      );
-
-      console.log('HTML generated, length:', html.length);
-      console.log('Converting HTML to PDF...');
-
-      const pdfBuffer = await this.htmlToPDF(html);
-
-      console.log('PDF generated successfully, buffer size:', pdfBuffer.length);
-      return pdfBuffer;
-    } catch (error) {
-      console.error('=== ERROR IN PDF GENERATION ===');
-      console.error('Error details:', error);
-      console.error('Error message:', error.message);
-      console.error('Error stack:', error.stack);
-      throw error;
+    if (!offerLetter) {
+      throw new NotFoundException('Offer letter not found');
     }
+
+    const kycApplication = await this.kycApplicationRepository.findOne({
+      where: { id: offerLetter.kyc_application_id },
+    });
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: offerLetter.property_id },
+    });
+
+    if (!kycApplication || !property) {
+      throw new NotFoundException('Offer letter data incomplete');
+    }
+
+    const html = this.generateOfferLetterHTML(
+      offerLetter,
+      kycApplication,
+      property,
+    );
+    return this.htmlToPDF(html);
   }
 
   /**
@@ -134,17 +73,6 @@ export class PDFGeneratorService {
           `Cannot generate PDF: Offer letter with token ${token} not found`,
         );
         return;
-      }
-
-      // Delete old PDF from Cloudinary if it exists
-      if (offerLetter.pdf_url) {
-        const publicId = this.fileUploadService.extractPublicId(
-          offerLetter.pdf_url,
-        );
-        if (publicId) {
-          this.logger.log(`Deleting old PDF from Cloudinary: ${publicId}`);
-          await this.fileUploadService.deleteFile(publicId, 'raw');
-        }
       }
 
       // Generate the PDF
@@ -181,7 +109,6 @@ export class PDFGeneratorService {
     let browser: puppeteer.Browser | null = null;
 
     try {
-      console.log('Launching Puppeteer browser...');
       browser = await puppeteer.launch({
         headless: true,
         args: [
@@ -191,16 +118,12 @@ export class PDFGeneratorService {
           '--disable-gpu',
         ],
       });
-      console.log('Browser launched successfully');
 
       const page = await browser.newPage();
-      console.log('New page created, setting content...');
-
       await page.setContent(html, {
         waitUntil: 'domcontentloaded',
         timeout: 10000,
       });
-      console.log('Content set, generating PDF...');
 
       const pdfBuffer = await page.pdf({
         format: 'A4',
@@ -212,15 +135,9 @@ export class PDFGeneratorService {
           left: '15mm',
         },
       });
-      console.log('PDF generated, buffer size:', pdfBuffer.length);
 
       return Buffer.from(pdfBuffer);
     } catch (error) {
-      console.error('=== PUPPETEER ERROR ===');
-      console.error('Error type:', error.constructor.name);
-      console.error('Error message:', error.message);
-      console.error('Error stack:', error.stack);
-
       this.logger.error(
         `Failed to generate PDF: ${error.message}`,
         error.stack,
@@ -228,7 +145,6 @@ export class PDFGeneratorService {
       throw error;
     } finally {
       if (browser) {
-        console.log('Closing browser...');
         await browser.close();
       }
     }
@@ -338,8 +254,8 @@ export class PDFGeneratorService {
     const termsHtml =
       terms.length > 0
         ? terms
-          .map(
-            (term, index) => `
+            .map(
+              (term, index) => `
       <div style="margin-bottom: 24px;">
         <h3 style="font-weight: 700; font-size: 14px; margin-bottom: 12px; font-family: ${headingFont}, sans-serif;">
           ${index + 1}. ${this.escapeHtml(term.title)}
@@ -349,8 +265,8 @@ export class PDFGeneratorService {
         </div>
       </div>
     `,
-          )
-          .join('')
+            )
+            .join('')
         : '<p>Standard terms of tenancy apply.</p>';
 
     const offerTitle =
@@ -395,9 +311,9 @@ export class PDFGeneratorService {
     }
     body {
       font-family: ${bodyFont === 'Inter' ? "'Inter', sans-serif" : bodyFont}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 14.6px;
-      line-height: 1.5;
-      color: #1a1b23;
+      font-size: 14px;
+      line-height: 1.428;
+      color: #000;
       background: #fff;
     }
     .container {
@@ -420,7 +336,7 @@ export class PDFGeneratorService {
     
     .date-section {
       margin-bottom: 32px;
-      font-size: 14.6px;
+      font-size: 14px;
     }
     
     .recipient-section {
@@ -443,14 +359,14 @@ export class PDFGeneratorService {
     .main-heading h1 {
       font-family: ${headingFont === 'Inter' ? "'Inter', sans-serif" : headingFont}, sans-serif;
       font-weight: 700;
-      font-size: 14.6px;
+      font-size: 14px;
       text-transform: uppercase;
       text-decoration: underline;
     }
     
     .intro-text {
       margin-bottom: 32px;
-      font-size: 14.6px;
+      font-size: 14px;
       text-align: justify;
     }
     .intro-text p {
@@ -459,8 +375,7 @@ export class PDFGeneratorService {
     
     .terms-bullets {
       margin-bottom: 32px;
-      font-size: 14.6px;
-      text-align: justify;
+      font-size: 14px;
     }
     .terms-bullets .term-item {
       display: flex;
@@ -479,7 +394,7 @@ export class PDFGeneratorService {
     
     .agreement-text {
       margin-bottom: 32px;
-      font-size: 14.6px;
+      font-size: 14px;
       text-align: justify;
     }
     .agreement-text p {
@@ -488,7 +403,7 @@ export class PDFGeneratorService {
     
     .closing-section {
       margin-bottom: 8px;
-      font-size: 14.6px;
+      font-size: 14px;
     }
     
     .signature-space {
@@ -505,7 +420,7 @@ export class PDFGeneratorService {
     
     .for-landlord {
       margin-bottom: 48px;
-      font-size: 14.6px;
+      font-size: 14px;
     }
     .for-landlord em {
       font-style: italic;
@@ -549,9 +464,10 @@ export class PDFGeneratorService {
     }
     
     .footer-section {
-      margin-top: 48px;
-      padding-top: 16px;
-      text-align: center;
+      margin-top: 64px;
+      padding-top: 32px;
+      border-top: 1px solid #e5e7eb;
+      text-align: right;
       color: ${footerColor};
     }
     .footer-section p {
@@ -609,26 +525,19 @@ export class PDFGeneratorService {
         </div>
       </div>
 
-      ${(snapshot?.service_charge_formatted &&
-        snapshot.service_charge_formatted !== '₦0' &&
-        snapshot.service_charge_formatted !== '') ||
-        (offerLetter.service_charge && offerLetter.service_charge > 0)
-        ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
-          <strong>Service Charge:</strong> ${snapshot?.service_charge_formatted || this.formatCurrency(offerLetter.service_charge)}
+          <strong>Service Charge:</strong> ${snapshot?.service_charge_formatted || (offerLetter.service_charge ? this.formatCurrency(offerLetter.service_charge) : '₦0')}
         </div>
       </div>
-      `
-        : ''
-      }
 
-      ${(snapshot?.caution_deposit_formatted &&
-        snapshot.caution_deposit_formatted !== '₦0' &&
-        snapshot.caution_deposit_formatted !== '') ||
+      ${
+        (snapshot?.caution_deposit_formatted &&
+          snapshot.caution_deposit_formatted !== '₦0' &&
+          snapshot.caution_deposit_formatted !== '') ||
         (offerLetter.caution_deposit && offerLetter.caution_deposit > 0)
-        ? `
+          ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
@@ -636,14 +545,15 @@ export class PDFGeneratorService {
         </div>
       </div>
       `
-        : ''
+          : ''
       }
 
-      ${(snapshot?.legal_fee_formatted &&
-        snapshot.legal_fee_formatted !== '₦0' &&
-        snapshot.legal_fee_formatted !== '') ||
+      ${
+        (snapshot?.legal_fee_formatted &&
+          snapshot.legal_fee_formatted !== '₦0' &&
+          snapshot.legal_fee_formatted !== '') ||
         (offerLetter.legal_fee && offerLetter.legal_fee > 0)
-        ? `
+          ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
@@ -651,24 +561,15 @@ export class PDFGeneratorService {
         </div>
       </div>
       `
-        : ''
+          : ''
       }
 
-      ${(snapshot?.agency_fee_formatted &&
-        snapshot.agency_fee_formatted !== '' &&
-        snapshot.agency_fee_formatted !==
-        'As agreed between tenant and agent (paid directly to agent)') ||
-        (offerLetter.agency_fee && offerLetter.agency_fee.toString() !== '')
-        ? `
       <div class="term-item">
         <span class="bullet">•</span>
         <div class="term-content">
           <strong>Agency Fee:</strong> ${snapshot?.agency_fee_formatted || this.escapeHtml(offerLetter.agency_fee?.toString() || 'N/A')}
         </div>
       </div>
-      `
-        : ''
-      }
 
       <div class="term-item">
         <span class="bullet">•</span>
@@ -700,8 +601,6 @@ export class PDFGeneratorService {
     <div class="for-landlord">
       <p><em>${this.escapeHtml(cleanForLandlordText)}</em></p>
     </div>
-
-    ${this.generateDigitalSignatureHtml(offerLetter, applicantName)}
 
     <div class="page-divider"></div>
 
@@ -833,166 +732,14 @@ export class PDFGeneratorService {
   /**
    * Escape HTML special characters
    */
-  private escapeHtml(unsafe: string): string {
-    if (!unsafe) return '';
-    return unsafe
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
-  /**
-   * Generate HTML for digital signature section
-   */
-  private generateDigitalSignatureHtml(
-    offerLetter: OfferLetter,
-    applicantName: string,
-  ): string {
-    const status = offerLetter.status;
-    const isAccepted =
-      status === OfferLetterStatus.ACCEPTED ||
-      status === OfferLetterStatus.SELECTED;
-    const isRejected = status === OfferLetterStatus.REJECTED;
-
-    if (!isAccepted && !isRejected) {
-      return '';
-    }
-
-    const color = isAccepted
-      ? 'rgba(30, 30, 30, 0.45)'
-      : 'rgba(211, 47, 47, 0.45)';
-    const borderColor = isAccepted
-      ? 'rgba(30, 30, 30, 0.4)'
-      : 'rgba(211, 47, 47, 0.4)';
-    const text = isAccepted ? 'ACCEPTED' : 'REJECTED';
-
-    // Format date
-    let signedDateStr = 'Recorded';
-    if (offerLetter.accepted_at) {
-      const date = new Date(offerLetter.accepted_at);
-      const day = String(date.getDate()).padStart(2, '0');
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const year = date.getFullYear();
-      const hours = String(date.getHours()).padStart(2, '0');
-      const minutes = String(date.getMinutes()).padStart(2, '0');
-      const seconds = String(date.getSeconds()).padStart(2, '0');
-      signedDateStr = `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
-    }
-
-    return `
-    <svg width="0" height="0" style="position: absolute;">
-      <defs>
-        <filter id="distressed-stamp-\${status}">
-          <feTurbulence
-            type="fractalNoise"
-            baseFrequency="0.8"
-            numOctaves="4"
-            result="noise"
-          />
-          <feDisplacementMap
-            in="SourceGraphic"
-            in2="noise"
-            scale="3"
-            xChannelSelector="R"
-            yChannelSelector="G"
-          />
-          <feGaussianBlur stdDeviation="0.3" />
-        </filter>
-      </defs>
-    </svg>
-    <div style="margin-top: 48px; margin-bottom: 48px; position: relative; page-break-inside: avoid;">
-      <h2 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">Digital Signature :</h2>
-
-      <!-- Distressed Rubber Stamp Container -->
-      <div style="position: absolute; left: 0; top: 0; bottom: 0; display: flex; align-items: center; justify-content: flex-start; pointer-events: none; z-index: 10; transform: rotate(-22deg) translateY(-40px); padding-left: 2rem;">
-        <div style="
-          border: 6px solid ${borderColor};
-          background-color: transparent;
-          filter: url(#distressed-stamp-\${status});
-          position: relative;
-          padding: 10px 20px;
-        ">
-          <!-- Inner border for depth -->
-          <div style="
-            position: absolute;
-            top: 3px; right: 3px; bottom: 3px; left: 3px;
-            border: 1.5px solid ${isAccepted ? 'rgba(30, 30, 30, 0.3)' : 'rgba(211, 47, 47, 0.3)'};
-            pointer-events: none;
-          "></div>
-
-          <!-- Stamp text -->
-          <div style="
-            font-family: Impact, 'Arial Black', 'Franklin Gothic Bold', sans-serif;
-            font-size: 36px;
-            font-weight: 900;
-            letter-spacing: 0.25em;
-            color: ${color};
-            text-shadow: ${isAccepted
-        ? '2px 2px 0px rgba(30, 30, 30, 0.2), -1px -1px 0px rgba(30, 30, 30, 0.15), 1px 0px 2px rgba(30, 30, 30, 0.1)'
-        : '2px 2px 0px rgba(211, 47, 47, 0.2), -1px -1px 0px rgba(211, 47, 47, 0.15), 1px 0px 2px rgba(211, 47, 47, 0.1)'};
-            -webkit-text-stroke: ${isAccepted ? '0.8px rgba(30, 30, 30, 0.25)' : '0.8px rgba(211, 47, 47, 0.25)'};
-            position: relative;
-          ">
-            ${text}
-          </div>
-
-          <!-- Grunge overlay spots -->
-          <div style="
-            position: absolute;
-            top: 0; right: 0; bottom: 0; left: 0;
-            background: ${isAccepted
-        ? 'radial-gradient(circle at 20% 30%, transparent 0%, transparent 40%, rgba(30, 30, 30, 0.06) 50%, transparent 60%), radial-gradient(circle at 80% 70%, transparent 0%, transparent 35%, rgba(30, 30, 30, 0.07) 45%, transparent 55%), radial-gradient(circle at 50% 90%, transparent 0%, transparent 30%, rgba(30, 30, 30, 0.05) 40%, transparent 50%), radial-gradient(circle at 10% 80%, transparent 0%, transparent 25%, rgba(30, 30, 30, 0.06) 35%, transparent 45%)'
-        : 'radial-gradient(circle at 20% 30%, transparent 0%, transparent 40%, rgba(211, 47, 47, 0.06) 50%, transparent 60%), radial-gradient(circle at 80% 70%, transparent 0%, transparent 35%, rgba(211, 47, 47, 0.07) 45%, transparent 55%), radial-gradient(circle at 50% 90%, transparent 0%, transparent 30%, rgba(211, 47, 47, 0.05) 40%, transparent 50%), radial-gradient(circle at 10% 80%, transparent 0%, transparent 25%, rgba(211, 47, 47, 0.06) 35%, transparent 45%)'};
-            pointer-events: none;
-            mix-blend-mode: multiply;
-          "></div>
-
-          <!-- Edge wear effect top -->
-          <div style="
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 2px;
-            background: ${isAccepted
-        ? 'linear-gradient(90deg, transparent 0%, rgba(30, 30, 30, 0.15) 10%, transparent 25%, rgba(30, 30, 30, 0.1) 40%, transparent 60%, rgba(30, 30, 30, 0.12) 80%, transparent 100%)'
-        : 'linear-gradient(90deg, transparent 0%, rgba(211, 47, 47, 0.15) 10%, transparent 25%, rgba(211, 47, 47, 0.1) 40%, transparent 60%, rgba(211, 47, 47, 0.12) 80%, transparent 100%)'};
-            pointer-events: none;
-          "></div>
-          
-          <!-- Edge wear effect bottom -->
-          <div style="
-            position: absolute;
-            bottom: 0; left: 0; right: 0;
-            height: 2px;
-            background: ${isAccepted
-        ? 'linear-gradient(90deg, transparent 0%, rgba(30, 30, 30, 0.1) 15%, transparent 35%, rgba(30, 30, 30, 0.15) 55%, transparent 70%, rgba(30, 30, 30, 0.12) 90%, transparent 100%)'
-        : 'linear-gradient(90deg, transparent 0%, rgba(211, 47, 47, 0.1) 15%, transparent 35%, rgba(211, 47, 47, 0.15) 55%, transparent 70%, rgba(211, 47, 47, 0.12) 90%, transparent 100%)'};
-            pointer-events: none;
-          "></div>
-        </div>
-      </div>
-
-      <!-- Signature Details Table -->
-      <table style="width: 100%; border-collapse: collapse; font-size: 14px; position: relative; z-index: 1;">
-        <tr>
-          <td style="width: 200px; padding: 4px 0;">Sign Name</td>
-          <td style="padding: 4px 0;">${this.escapeHtml(applicantName)}</td>
-        </tr>
-        <tr>
-          <td style="width: 200px; padding: 4px 0;">OTP</td>
-          <td style="padding: 4px 0;">${this.escapeHtml(offerLetter.acceptance_otp || 'Recorded')}</td>
-        </tr>
-        <tr>
-          <td style="width: 200px; padding: 4px 0;">Date and Time Signed</td>
-          <td style="padding: 4px 0;">${this.escapeHtml(signedDateStr)}</td>
-        </tr>
-        <tr>
-          <td style="width: 200px; padding: 4px 0;">Phone</td>
-          <td style="padding: 4px 0;">${this.escapeHtml(offerLetter.accepted_by_phone || 'Recorded')}</td>
-        </tr>
-      </table>
-    </div>
-    `;
+  private escapeHtml(text: string): string {
+    const htmlEntities: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    };
+    return text.replace(/[&<>"']/g, (char) => htmlEntities[char]);
   }
 }

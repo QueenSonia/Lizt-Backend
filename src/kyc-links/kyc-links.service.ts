@@ -1,7 +1,6 @@
 import {
   Injectable,
   NotFoundException,
-  ForbiddenException,
   BadRequestException,
   HttpException,
   HttpStatus,
@@ -9,7 +8,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, MoreThan, Not, IsNull, In } from 'typeorm';
+import { Repository, MoreThan, In } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { KYCLink } from './entities/kyc-link.entity';
@@ -25,7 +24,6 @@ export interface KYCLinkResponse {
   token: string;
   link: string;
   expiresAt: Date | null; // null means no expiration
-  propertyId: string | null; // null for general landlord links
 }
 
 export interface PropertyKYCData {
@@ -43,22 +41,6 @@ export interface PropertyKYCData {
     applicationsCount?: number;
   }>;
   error?: string;
-}
-
-export interface WhatsAppResponse {
-  success: boolean;
-  message: string;
-  errorCode?: string;
-  retryAfter?: number;
-}
-
-export enum WhatsAppErrorCode {
-  RATE_LIMITED = 'RATE_LIMITED',
-  INVALID_PHONE = 'INVALID_PHONE',
-  SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
-  NETWORK_ERROR = 'NETWORK_ERROR',
-  AUTHENTICATION_ERROR = 'AUTHENTICATION_ERROR',
-  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
 }
 
 @Injectable()
@@ -81,7 +63,6 @@ export class KYCLinksService {
   /**
    * Generate a unique KYC link for a landlord (general link for all properties)
    * Links remain active permanently and never expire
-   * Requirements: 1.1, 1.2, 2.1, 2.2
    */
   async generateKYCLink(landlordId: string): Promise<KYCLinkResponse> {
     // Check if there's already an active KYC link for this landlord
@@ -94,22 +75,11 @@ export class KYCLinksService {
 
     if (existingLink && existingLink.token) {
       // Return existing active link (no expiration check needed)
-      console.log('✅ Returning existing active KYC link:', {
-        token: existingLink.token.substring(0, 8) + '...',
-        landlordId,
-        createdAt:
-          existingLink.created_at instanceof Date
-            ? existingLink.created_at.toISOString()
-            : existingLink.created_at || 'unknown',
-      });
-
-      const baseUrl =
-        this.configService.get('FRONTEND_URL') || 'http://localhost:3000';
+      const baseUrl = this.configService.get('FRONTEND_URL');
       return {
         token: existingLink.token,
         link: `${baseUrl}/kyc/${existingLink.token}`,
         expiresAt: null, // No expiration
-        propertyId: null, // No specific property
       };
     }
 
@@ -132,15 +102,13 @@ export class KYCLinksService {
 
     await this.kycLinkRepository.save(kycLink);
 
-    const baseUrl =
-      this.configService.get('FRONTEND_URL') || 'http://localhost:3000';
+    const baseUrl = this.configService.get('FRONTEND_URL');
     const link = `${baseUrl}/kyc/${token}`;
 
     return {
       token,
       link,
       expiresAt: null, // No expiration
-      propertyId: null, // No specific property
     };
   }
 
@@ -361,62 +329,6 @@ export class KYCLinksService {
   }
 
   /**
-   * Send KYC link via WhatsApp with enhanced validation and formatting
-   * Requirements: 1.5, 7.2, 7.3
-   */
-  async sendKYCLinkViaWhatsApp(
-    phoneNumber: string,
-    kycLink: string,
-    propertyName: string,
-  ): Promise<WhatsAppResponse> {
-    try {
-      // Enhanced phone number validation
-      const validationResult = this.validatePhoneNumber(phoneNumber);
-      if (!validationResult.isValid) {
-        return {
-          success: false,
-          message: validationResult.error || 'Invalid phone number',
-          errorCode: WhatsAppErrorCode.INVALID_PHONE,
-        };
-      }
-
-      const normalizedPhone = validationResult.normalizedPhone!;
-
-      // Check rate limiting
-      const rateLimitResult = await this.checkRateLimit(normalizedPhone);
-      if (!rateLimitResult.allowed) {
-        return {
-          success: false,
-          message: 'Rate limit exceeded. Please try again later.',
-          errorCode: WhatsAppErrorCode.RATE_LIMITED,
-          retryAfter: rateLimitResult.retryAfter,
-        };
-      }
-
-      // Send message using a pre-approved template
-      await this.whatsappBotService.sendWhatsappMessageWithTemplate({
-        phone_number: normalizedPhone,
-        template_name: 'kyc_link_invitation', // **IMPORTANT: This template must be created in your WhatsApp Business Manager**
-        template_parameters: [
-          { type: 'text', text: propertyName },
-          { type: 'text', text: kycLink },
-        ],
-      });
-
-      // Update rate limiting counter
-      await this.updateRateLimit(normalizedPhone);
-
-      return {
-        success: true,
-        message: 'KYC link sent successfully via WhatsApp',
-      };
-    } catch (error) {
-      console.error('Error sending WhatsApp message:', error);
-      return this.handleWhatsAppError(error);
-    }
-  }
-
-  /**
    * Enhanced phone number validation and formatting
    * Requirements: 7.2, 7.3
    */
@@ -488,125 +400,6 @@ export class KYCLinksService {
         error: 'Failed to process phone number. Please check the format',
       };
     }
-  }
-
-  /**
-   * Check rate limiting for WhatsApp messages
-   * Requirements: 7.2, 7.3
-   */
-  private async checkRateLimit(phoneNumber: string): Promise<{
-    allowed: boolean;
-    retryAfter?: number;
-  }> {
-    const rateLimitKey = `whatsapp_rate_limit:${phoneNumber}`;
-    const maxMessages = this.configService.get('WHATSAPP_RATE_LIMIT_MAX') || 5;
-    const windowMinutes =
-      this.configService.get('WHATSAPP_RATE_LIMIT_WINDOW') || 60;
-
-    try {
-      // This would typically use Redis or another cache service
-      // For now, we'll implement a simple in-memory rate limiting
-      const currentTime = Date.now();
-      const windowStart = currentTime - windowMinutes * 60 * 1000;
-
-      // In a production environment, you would use a proper cache service
-      // This is a simplified implementation for demonstration
-      console.log(
-        `Rate limit check for ${phoneNumber}: ${maxMessages} messages per ${windowMinutes} minutes`,
-      );
-
-      // For now, always allow (would implement proper rate limiting with Redis)
-      return { allowed: true };
-    } catch (error) {
-      console.warn('Rate limiting check failed, allowing message send:', error);
-      return { allowed: true };
-    }
-  }
-
-  /**
-   * Update rate limiting counter
-   * Requirements: 7.2, 7.3
-   */
-  private async updateRateLimit(phoneNumber: string): Promise<void> {
-    const rateLimitKey = `whatsapp_rate_limit:${phoneNumber}`;
-
-    try {
-      // In a production environment, you would increment the counter in your cache service
-      console.log(`Updated rate limit counter for ${phoneNumber}`);
-    } catch (error) {
-      console.warn('Failed to update rate limit counter:', error);
-    }
-  }
-
-  /**
-   * Handle WhatsApp errors and provide appropriate responses
-   * Requirements: 7.2, 7.3
-   */
-  private handleWhatsAppError(error: any): WhatsAppResponse {
-    // Handle specific error types
-    if (error instanceof BadRequestException) {
-      return {
-        success: false,
-        message: error.message,
-        errorCode: WhatsAppErrorCode.INVALID_PHONE,
-      };
-    }
-
-    if (error instanceof HttpException) {
-      const status = error.getStatus();
-
-      if (status === HttpStatus.TOO_MANY_REQUESTS || status === 429) {
-        return {
-          success: false,
-          message: 'Rate limit exceeded. Please try again in a few minutes.',
-          errorCode: WhatsAppErrorCode.RATE_LIMITED,
-          retryAfter: 300, // 5 minutes
-        };
-      }
-
-      if (status === HttpStatus.UNAUTHORIZED || status === 401) {
-        return {
-          success: false,
-          message:
-            'WhatsApp service authentication failed. Please contact support.',
-          errorCode: WhatsAppErrorCode.AUTHENTICATION_ERROR,
-        };
-      }
-
-      if (status === HttpStatus.SERVICE_UNAVAILABLE || status >= 500) {
-        return {
-          success: false,
-          message:
-            'WhatsApp service is temporarily unavailable. Please try again later.',
-          errorCode: WhatsAppErrorCode.SERVICE_UNAVAILABLE,
-          retryAfter: 60, // 1 minute
-        };
-      }
-    }
-
-    // Handle network errors
-    if (
-      error.code === 'ECONNREFUSED' ||
-      error.code === 'ENOTFOUND' ||
-      error.code === 'ETIMEDOUT'
-    ) {
-      return {
-        success: false,
-        message:
-          'Network error occurred. Please check your connection and try again.',
-        errorCode: WhatsAppErrorCode.NETWORK_ERROR,
-        retryAfter: 30, // 30 seconds
-      };
-    }
-
-    // Handle unknown errors
-    console.error('Unknown WhatsApp error:', error);
-    return {
-      success: false,
-      message:
-        'An unexpected error occurred. Please try again or copy the link manually.',
-      errorCode: WhatsAppErrorCode.UNKNOWN_ERROR,
-    };
   }
 
   /**

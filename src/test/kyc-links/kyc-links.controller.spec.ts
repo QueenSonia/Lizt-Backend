@@ -3,7 +3,6 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { KYCLinksController } from '../../kyc-links/kyc-links.controller';
 import { KYCLinksService } from '../../kyc-links/kyc-links.service';
 import { TenantAttachmentService } from '../../kyc-links/tenant-attachment.service';
-import { SendWhatsAppDto } from '../../kyc-links/dto/send-whatsapp.dto';
 import {
   AttachTenantDto,
   RentFrequency,
@@ -18,7 +17,6 @@ describe('KYCLinksController', () => {
   const mockKycLinksService = {
     generateKYCLink: jest.fn(),
     validateKYCToken: jest.fn(),
-    sendKYCLinkViaWhatsApp: jest.fn(),
   };
 
   const mockTenantAttachmentService = {
@@ -101,174 +99,6 @@ describe('KYCLinksController', () => {
       await expect(
         controller.generateKYCLink(propertyId, mockUser),
       ).rejects.toThrow(BadRequestException);
-    });
-  });
-
-  describe('sendKYCLinkViaWhatsApp', () => {
-    const token = 'valid-token-123';
-    const sendWhatsAppDto: SendWhatsAppDto = {
-      phoneNumber: '+2348012345678',
-    };
-
-    const mockTokenValidation = {
-      valid: true,
-      propertyInfo: {
-        id: 'property-123',
-        name: 'Test Property',
-        location: 'Lagos',
-        propertyType: 'Apartment',
-        bedrooms: 2,
-        bathrooms: 1,
-      },
-    };
-
-    const mockWhatsAppResponse = {
-      success: true,
-      message: 'KYC link sent successfully via WhatsApp',
-    };
-
-    beforeEach(() => {
-      // Mock environment variable
-      process.env.FRONTEND_URL = 'http://localhost:3000';
-    });
-
-    it('should send KYC link via WhatsApp successfully', async () => {
-      // Arrange
-      mockKycLinksService.validateKYCToken.mockResolvedValue(
-        mockTokenValidation,
-      );
-      mockKycLinksService.sendKYCLinkViaWhatsApp.mockResolvedValue(
-        mockWhatsAppResponse,
-      );
-
-      // Act
-      const result = await controller.sendKYCLinkViaWhatsApp(
-        token,
-        sendWhatsAppDto,
-        mockUser,
-      );
-
-      // Assert
-      expect(mockKycLinksService.validateKYCToken).toHaveBeenCalledWith(token);
-      expect(mockKycLinksService.sendKYCLinkViaWhatsApp).toHaveBeenCalledWith(
-        sendWhatsAppDto.phoneNumber,
-        `http://localhost:3000/kyc/${token}`,
-        'Test Property',
-      );
-      expect(result).toEqual({
-        success: true,
-        message: 'KYC link sent successfully via WhatsApp',
-      });
-    });
-
-    it('should return error when token validation fails', async () => {
-      // Arrange
-      const invalidTokenValidation = {
-        valid: false,
-        error: 'Invalid KYC token',
-      };
-      mockKycLinksService.validateKYCToken.mockResolvedValue(
-        invalidTokenValidation,
-      );
-
-      // Act
-      const result = await controller.sendKYCLinkViaWhatsApp(
-        token,
-        sendWhatsAppDto,
-        mockUser,
-      );
-
-      // Assert
-      expect(result).toEqual({
-        success: false,
-        message: 'Invalid KYC token',
-      });
-      expect(mockKycLinksService.sendKYCLinkViaWhatsApp).not.toHaveBeenCalled();
-    });
-
-    it('should handle WhatsApp sending failure with error code', async () => {
-      // Arrange
-      mockKycLinksService.validateKYCToken.mockResolvedValue(
-        mockTokenValidation,
-      );
-      const whatsAppError = {
-        success: false,
-        message: 'Rate limit exceeded. Please try again later.',
-        errorCode: 'RATE_LIMITED',
-        retryAfter: 300,
-      };
-      mockKycLinksService.sendKYCLinkViaWhatsApp.mockResolvedValue(
-        whatsAppError,
-      );
-
-      // Act
-      const result = await controller.sendKYCLinkViaWhatsApp(
-        token,
-        sendWhatsAppDto,
-        mockUser,
-      );
-
-      // Assert
-      expect(result).toEqual({
-        success: false,
-        message: 'Rate limit exceeded. Please try again later.',
-        data: {
-          errorCode: 'RATE_LIMITED',
-          retryAfter: 300,
-        },
-      });
-    });
-
-    it('should use default property name when property info is missing', async () => {
-      // Arrange
-      const tokenValidationWithoutName = {
-        valid: true,
-        propertyInfo: {
-          id: 'property-123',
-          name: undefined,
-          location: 'Lagos',
-          propertyType: 'Apartment',
-          bedrooms: 2,
-          bathrooms: 1,
-        },
-      };
-      mockKycLinksService.validateKYCToken.mockResolvedValue(
-        tokenValidationWithoutName,
-      );
-      mockKycLinksService.sendKYCLinkViaWhatsApp.mockResolvedValue(
-        mockWhatsAppResponse,
-      );
-
-      // Act
-      await controller.sendKYCLinkViaWhatsApp(token, sendWhatsAppDto, mockUser);
-
-      // Assert
-      expect(mockKycLinksService.sendKYCLinkViaWhatsApp).toHaveBeenCalledWith(
-        sendWhatsAppDto.phoneNumber,
-        `http://localhost:3000/kyc/${token}`,
-        'Property', // Default name
-      );
-    });
-
-    it('should use default frontend URL when environment variable is not set', async () => {
-      // Arrange
-      delete process.env.FRONTEND_URL;
-      mockKycLinksService.validateKYCToken.mockResolvedValue(
-        mockTokenValidation,
-      );
-      mockKycLinksService.sendKYCLinkViaWhatsApp.mockResolvedValue(
-        mockWhatsAppResponse,
-      );
-
-      // Act
-      await controller.sendKYCLinkViaWhatsApp(token, sendWhatsAppDto, mockUser);
-
-      // Assert
-      expect(mockKycLinksService.sendKYCLinkViaWhatsApp).toHaveBeenCalledWith(
-        sendWhatsAppDto.phoneNumber,
-        `http://localhost:3000/kyc/${token}`, // Default URL
-        'Test Property',
-      );
     });
   });
 
@@ -486,11 +316,6 @@ describe('KYCLinksController', () => {
       );
       // In a real implementation, you would check the decorator metadata
       expect(typeof controller.generateKYCLink).toBe('function');
-    });
-
-    it('should require landlord role for sendKYCLinkViaWhatsApp', () => {
-      // Similar to above, documents the authorization requirement
-      expect(typeof controller.sendKYCLinkViaWhatsApp).toBe('function');
     });
 
     it('should require landlord role for attachTenantToProperty', () => {

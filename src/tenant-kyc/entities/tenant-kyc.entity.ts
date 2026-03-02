@@ -64,16 +64,16 @@ export class TenantKyc extends BaseEntity {
   @Column({ type: 'varchar' })
   nationality: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   current_residence: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   state_of_origin: string;
 
   @Column({ type: 'enum', enum: MaritalStatus })
   marital_status: `${MaritalStatus}`;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   religion: string;
 
   @Column({ type: 'varchar', nullable: true })
@@ -82,7 +82,7 @@ export class TenantKyc extends BaseEntity {
   @Column({ type: 'enum', enum: EmploymentStatus })
   employment_status: `${EmploymentStatus}`;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   occupation: string;
 
   @Column({ type: 'varchar', nullable: true })
@@ -100,10 +100,10 @@ export class TenantKyc extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   length_of_employment: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   monthly_net_income: string;
 
-  // Self-employed fields
+  // Self-employed fields (conditionally required)
   @Column({ type: 'varchar', nullable: true })
   nature_of_business: string;
 
@@ -119,22 +119,22 @@ export class TenantKyc extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   estimated_monthly_income: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   contact_address: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   next_of_kin_full_name: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   next_of_kin_address: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   next_of_kin_relationship: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   next_of_kin_phone_number: string;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar' })
   next_of_kin_email: string;
 
   @Column({ type: 'varchar', nullable: true })

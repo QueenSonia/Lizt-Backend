@@ -21,6 +21,9 @@ import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
  * DTO for completing a pending KYC application
  * Used when a tenant completes their KYC after landlord has pre-filled basic information
  * SECURITY: Requires KYC token and OTP verification to prevent unauthorized completion
+ *
+ * All user-facing fields are required except referral_agent and additional_notes.
+ * Employment-specific fields are conditionally required based on employment_status.
  */
 export class CompleteKYCDto {
   // SECURITY: KYC token (in body, not URL to prevent exposure)
@@ -39,14 +42,13 @@ export class CompleteKYCDto {
   @NormalizePhoneNumber()
   phone_number: string;
 
-  // Email is optional and editable even if pre-filled
-  @IsOptional()
+  @IsNotEmpty()
   @IsEmail()
-  email?: string;
+  email: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  contact_address?: string;
+  contact_address: string;
 
   /**
    * @example 1996-04-22T11:03:13.157Z
@@ -116,12 +118,12 @@ export class CompleteKYCDto {
   @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  @IsOptional()
+  @IsNotEmpty()
   work_phone_number?: string;
 
   @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   length_of_employment?: string;
 
   // Self-Employed Specific Fields - Required if self-employed
@@ -142,32 +144,32 @@ export class CompleteKYCDto {
 
   @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   business_duration?: string;
 
-  // Next of Kin - Optional
-  @IsOptional()
+  // Next of Kin
+  @IsNotEmpty()
   @IsString()
-  next_of_kin_full_name?: string;
+  next_of_kin_full_name: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  next_of_kin_phone_number?: string;
+  next_of_kin_phone_number: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  next_of_kin_relationship?: string;
+  next_of_kin_relationship: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  next_of_kin_address?: string;
+  next_of_kin_address: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsEmail()
-  next_of_kin_email?: string;
+  next_of_kin_email: string;
 
-  // Referral Agent - Optional
+  // Referral Agent (optional)
   @IsOptional()
   @IsString()
   referral_agent_full_name?: string;
@@ -178,32 +180,32 @@ export class CompleteKYCDto {
   referral_agent_phone_number?: string;
 
   // Additional Personal Information
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  religion?: string;
+  religion: string;
 
   // Tenancy Information
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  intended_use_of_property?: string;
+  intended_use_of_property: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsNumberString()
-  number_of_occupants?: string;
+  number_of_occupants: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsNumberString()
-  proposed_rent_amount?: string;
+  proposed_rent_amount: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  rent_payment_frequency?: string;
+  rent_payment_frequency: string;
 
   @IsOptional()
   @IsString()
   additional_notes?: string;
 
-  // Document URLs (from Cloudinary) - Required documents
+  // Document URLs (from Cloudinary)
   @IsString()
   @IsNotEmpty()
   passport_photo_url: string;

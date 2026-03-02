@@ -20,8 +20,8 @@ import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 /**
  * DTO for KYC Application submission
  *
- * NOTE: Validation has been relaxed - only names and phone number are required.
- * Most fields have been made optional and can be re-enabled later by removing @IsOptional decorators.
+ * All user-facing fields are required except referral_agent and additional_notes.
+ * Employment-specific fields are conditionally required based on employment_status.
  * SECURITY: KYC token is now in request body to prevent exposure in logs
  */
 export class CreateKYCApplicationDto {
@@ -30,12 +30,12 @@ export class CreateKYCApplicationDto {
   @IsNotEmpty()
   kyc_token: string;
 
-  // Property Selection - Required field for new general link system
+  // Property Selection
   @IsString()
   @IsNotEmpty()
   property_id: string;
 
-  // Personal Information - Only names and phone are required for relaxed validation
+  // Personal Information
   @IsString()
   @IsNotEmpty()
   first_name: string;
@@ -44,13 +44,13 @@ export class CreateKYCApplicationDto {
   @IsNotEmpty()
   last_name: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsEmail()
-  email?: string;
+  email: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  contact_address?: string;
+  contact_address: string;
 
   @IsPhoneNumber('NG')
   @IsNotEmpty()
@@ -60,96 +60,102 @@ export class CreateKYCApplicationDto {
   /**
    * @example 1996-04-22T11:03:13.157Z
    */
-  @IsOptional()
+  @IsNotEmpty()
   @IsDateString()
-  date_of_birth?: string;
+  date_of_birth: string;
 
   /**
    * Can either be: "male", "female", or "other".
    * @example male
    */
-  @IsOptional()
+  @IsNotEmpty()
   @IsIn(Object.values(Gender))
-  gender?: Gender;
+  gender: Gender;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  nationality?: string;
+  nationality: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  state_of_origin?: string;
+  state_of_origin: string;
 
   /**
    * Can either be: "single", "married", "divorced", or "widowed".
    * @example single
    */
-  @IsOptional()
+  @IsNotEmpty()
   @IsIn(Object.values(MaritalStatus))
-  marital_status?: MaritalStatus;
+  marital_status: MaritalStatus;
 
-  // Employment Information - All made optional for relaxed validation
   /**
    * Can either be: "employed", "self-employed", "unemployed", or "student".
    * @example employed
    */
-  @IsOptional()
+  @IsNotEmpty()
   @IsIn(Object.values(EmploymentStatus))
-  employment_status?: EmploymentStatus;
+  employment_status: EmploymentStatus;
 
-  @IsOptional()
+  // Employment fields - required if employed
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   occupation?: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   job_title?: string;
 
-  // Employment Information - All made optional
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   employer_name?: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   work_address?: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
   @IsNumberString()
   monthly_net_income?: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
   work_phone_number?: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   length_of_employment?: string;
 
   // Next of Kin Information
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  next_of_kin_full_name?: string;
+  next_of_kin_full_name: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  next_of_kin_address?: string;
+  next_of_kin_address: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  next_of_kin_relationship?: string;
+  next_of_kin_relationship: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  next_of_kin_phone_number?: string;
+  next_of_kin_phone_number: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsEmail()
-  next_of_kin_email?: string;
+  next_of_kin_email: string;
 
-  // Referral Agent Information
+  // Referral Agent Information (optional)
   @IsOptional()
   @IsString()
   referral_agent_full_name?: string;
@@ -160,53 +166,57 @@ export class CreateKYCApplicationDto {
   referral_agent_phone_number?: string;
 
   // Additional Personal Information
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  religion?: string;
+  religion: string;
 
-  // Self-Employed Specific Fields
-  @IsOptional()
+  // Self-Employed Specific Fields - required if self-employed
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   nature_of_business?: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   business_name?: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   business_address?: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.employment_status === EmploymentStatus.SELF_EMPLOYED)
+  @IsNotEmpty()
   @IsString()
   business_duration?: string;
 
   // Tenancy Information
+  @IsNotEmpty()
+  @IsString()
+  intended_use_of_property: string;
+
+  @IsNotEmpty()
+  @IsNumberString()
+  number_of_occupants: string;
+
   @IsOptional()
   @IsString()
-  intended_use_of_property?: string;
-
-  @IsOptional()
-  @IsNumberString()
-  number_of_occupants?: string;
-
-  @IsOptional()
-  @IsString() // Changed from number string to string as per schema/entity
   parking_needs?: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsNumberString()
-  proposed_rent_amount?: string;
+  proposed_rent_amount: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  rent_payment_frequency?: string;
+  rent_payment_frequency: string;
 
   @IsOptional()
   @IsString()
   additional_notes?: string;
 
-  // Document URLs (from Cloudinary) - Required documents
+  // Document URLs (from Cloudinary)
   @IsString()
   @IsNotEmpty()
   passport_photo_url: string;

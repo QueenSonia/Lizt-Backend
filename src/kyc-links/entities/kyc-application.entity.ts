@@ -20,9 +20,8 @@ export enum ApplicationStatus {
 /**
  * KYC Application Entity
  *
- * NOTE: Most fields have been made nullable for relaxed validation.
- * Only first_name, last_name, and phone_number are required.
- * Fields can be made required again by removing nullable: true and running a migration.
+ * All user-facing fields are required except referral_agent, additional_notes, and parking_needs.
+ * Employment-specific fields are nullable (conditionally required based on employment_status).
  */
 @Entity({ name: 'kyc_applications' })
 export class KYCApplication extends BaseEntity {
@@ -42,40 +41,40 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'uuid', nullable: true })
   tenant_id?: string;
 
-  // Personal Information - Only names and phone are required for relaxed validation
+  // Personal Information
   @Column({ type: 'varchar' })
   first_name: string;
 
   @Column({ type: 'varchar' })
   last_name: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  email?: string;
+  @Column({ type: 'varchar' })
+  email: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  contact_address?: string;
+  @Column({ type: 'varchar' })
+  contact_address: string;
 
   @Column({ type: 'varchar' })
   phone_number: string;
 
-  @Column({ type: 'date', nullable: true })
-  date_of_birth?: Date;
+  @Column({ type: 'date' })
+  date_of_birth: Date;
 
-  @Column({ type: 'enum', enum: Gender, nullable: true })
-  gender?: Gender;
+  @Column({ type: 'enum', enum: Gender })
+  gender: Gender;
 
-  @Column({ type: 'varchar', nullable: true })
-  nationality?: string;
+  @Column({ type: 'varchar' })
+  nationality: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  state_of_origin?: string;
+  @Column({ type: 'varchar' })
+  state_of_origin: string;
 
-  @Column({ type: 'enum', enum: MaritalStatus, nullable: true })
-  marital_status?: MaritalStatus;
+  @Column({ type: 'enum', enum: MaritalStatus })
+  marital_status: MaritalStatus;
 
-  // Employment Information - All made optional for relaxed validation
-  @Column({ type: 'enum', enum: EmploymentStatus, nullable: true })
-  employment_status?: EmploymentStatus;
+  // Employment Information
+  @Column({ type: 'enum', enum: EmploymentStatus })
+  employment_status: EmploymentStatus;
 
   @Column({ type: 'varchar', nullable: true })
   occupation?: string;
@@ -99,22 +98,22 @@ export class KYCApplication extends BaseEntity {
   length_of_employment?: string;
 
   // Next of Kin Information
-  @Column({ type: 'varchar', nullable: true })
-  next_of_kin_full_name?: string;
+  @Column({ type: 'varchar' })
+  next_of_kin_full_name: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  next_of_kin_address?: string;
+  @Column({ type: 'varchar' })
+  next_of_kin_address: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  next_of_kin_relationship?: string;
+  @Column({ type: 'varchar' })
+  next_of_kin_relationship: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  next_of_kin_phone_number?: string;
+  @Column({ type: 'varchar' })
+  next_of_kin_phone_number: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  next_of_kin_email?: string;
+  @Column({ type: 'varchar' })
+  next_of_kin_email: string;
 
-  // Referral Agent Information
+  // Referral Agent Information (optional)
   @Column({ type: 'varchar', nullable: true })
   referral_agent_full_name?: string;
 
@@ -122,10 +121,10 @@ export class KYCApplication extends BaseEntity {
   referral_agent_phone_number?: string;
 
   // Additional Personal Information
-  @Column({ type: 'varchar', nullable: true })
-  religion?: string;
+  @Column({ type: 'varchar' })
+  religion: string;
 
-  // Self-Employed Specific Fields
+  // Self-Employed Specific Fields (conditionally required)
   @Column({ type: 'varchar', nullable: true })
   nature_of_business?: string;
 
@@ -139,30 +138,30 @@ export class KYCApplication extends BaseEntity {
   business_duration?: string;
 
   // Tenancy Information
-  @Column({ type: 'varchar', nullable: true })
-  intended_use_of_property?: string;
+  @Column({ type: 'varchar' })
+  intended_use_of_property: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  number_of_occupants?: string;
+  @Column({ type: 'varchar' })
+  number_of_occupants: string;
 
   @Column({ type: 'varchar', nullable: true })
   parking_needs?: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  proposed_rent_amount?: string;
+  @Column({ type: 'varchar' })
+  proposed_rent_amount: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  rent_payment_frequency?: string;
+  @Column({ type: 'varchar' })
+  rent_payment_frequency: string;
 
   @Column({ type: 'text', nullable: true })
   additional_notes?: string;
 
   // Document URLs (from Cloudinary)
-  @Column({ type: 'varchar', nullable: true })
-  passport_photo_url?: string;
+  @Column({ type: 'varchar' })
+  passport_photo_url: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  id_document_url?: string;
+  @Column({ type: 'varchar' })
+  id_document_url: string;
 
   @Column({ type: 'varchar', nullable: true })
   employment_proof_url?: string;

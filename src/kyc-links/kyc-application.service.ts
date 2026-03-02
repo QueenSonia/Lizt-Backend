@@ -187,31 +187,40 @@ export class KYCApplicationService {
     }
 
     // Create new KYC application with automatic pending status
-    // Handle optional fields properly to avoid undefined errors (relaxed validation)
     const applicationData: Partial<KYCApplication> = {
       kyc_link_id: kycLink.id,
-      property_id: kycData.property_id, // Use the selected property from form data
+      property_id: kycData.property_id,
       status: ApplicationStatus.PENDING,
-      // Required fields
+      // Required fields (DTO validation guarantees presence)
       first_name: kycData.first_name,
       last_name: kycData.last_name,
       phone_number: kycData.phone_number,
+      email: kycData.email,
+      contact_address: kycData.contact_address,
+      date_of_birth: new Date(kycData.date_of_birth),
+      gender: kycData.gender,
+      nationality: kycData.nationality,
+      state_of_origin: kycData.state_of_origin,
+      marital_status: kycData.marital_status,
+      employment_status: kycData.employment_status,
+      religion: kycData.religion,
+      // Next of Kin
+      next_of_kin_full_name: kycData.next_of_kin_full_name,
+      next_of_kin_address: kycData.next_of_kin_address,
+      next_of_kin_relationship: kycData.next_of_kin_relationship,
+      next_of_kin_phone_number: kycData.next_of_kin_phone_number,
+      next_of_kin_email: kycData.next_of_kin_email,
+      // Tenancy Info
+      intended_use_of_property: kycData.intended_use_of_property,
+      number_of_occupants: kycData.number_of_occupants,
+      proposed_rent_amount: kycData.proposed_rent_amount,
+      rent_payment_frequency: kycData.rent_payment_frequency,
+      // Documents
+      passport_photo_url: kycData.passport_photo_url,
+      id_document_url: kycData.id_document_url,
     };
 
-    // Add optional fields only if they exist
-    if (kycData.email) applicationData.email = kycData.email;
-    if (kycData.contact_address)
-      applicationData.contact_address = kycData.contact_address;
-    if (kycData.date_of_birth)
-      applicationData.date_of_birth = new Date(kycData.date_of_birth);
-    if (kycData.gender) applicationData.gender = kycData.gender;
-    if (kycData.nationality) applicationData.nationality = kycData.nationality;
-    if (kycData.state_of_origin)
-      applicationData.state_of_origin = kycData.state_of_origin;
-    if (kycData.marital_status)
-      applicationData.marital_status = kycData.marital_status;
-    if (kycData.employment_status)
-      applicationData.employment_status = kycData.employment_status;
+    // Employment-conditional fields (only if employed)
     if (kycData.occupation) applicationData.occupation = kycData.occupation;
     if (kycData.job_title) applicationData.job_title = kycData.job_title;
     if (kycData.employer_name)
@@ -225,32 +234,7 @@ export class KYCApplicationService {
     if (kycData.length_of_employment)
       applicationData.length_of_employment = kycData.length_of_employment;
 
-    // Next of Kin
-    if (kycData.next_of_kin_full_name)
-      applicationData.next_of_kin_full_name = kycData.next_of_kin_full_name;
-    if (kycData.next_of_kin_address)
-      applicationData.next_of_kin_address = kycData.next_of_kin_address;
-    if (kycData.next_of_kin_relationship)
-      applicationData.next_of_kin_relationship =
-        kycData.next_of_kin_relationship;
-    if (kycData.next_of_kin_phone_number)
-      applicationData.next_of_kin_phone_number =
-        kycData.next_of_kin_phone_number;
-    if (kycData.next_of_kin_email)
-      applicationData.next_of_kin_email = kycData.next_of_kin_email;
-
-    // Referral Agent
-    if (kycData.referral_agent_full_name)
-      applicationData.referral_agent_full_name =
-        kycData.referral_agent_full_name;
-    if (kycData.referral_agent_phone_number)
-      applicationData.referral_agent_phone_number =
-        kycData.referral_agent_phone_number;
-
-    // Add new fields
-    if (kycData.religion) applicationData.religion = kycData.religion;
-
-    // Self-employed specific fields
+    // Self-employed specific fields (only if self-employed)
     if (kycData.nature_of_business)
       applicationData.nature_of_business = kycData.nature_of_business;
     if (kycData.business_name)
@@ -260,26 +244,17 @@ export class KYCApplicationService {
     if (kycData.business_duration)
       applicationData.business_duration = kycData.business_duration;
 
-    // Tenancy Info
-    if (kycData.intended_use_of_property)
-      applicationData.intended_use_of_property =
-        kycData.intended_use_of_property;
-    if (kycData.number_of_occupants)
-      applicationData.number_of_occupants = kycData.number_of_occupants;
+    // Optional fields
+    if (kycData.referral_agent_full_name)
+      applicationData.referral_agent_full_name =
+        kycData.referral_agent_full_name;
+    if (kycData.referral_agent_phone_number)
+      applicationData.referral_agent_phone_number =
+        kycData.referral_agent_phone_number;
     if (kycData.parking_needs)
       applicationData.parking_needs = kycData.parking_needs;
-    if (kycData.proposed_rent_amount)
-      applicationData.proposed_rent_amount = kycData.proposed_rent_amount;
-    if (kycData.rent_payment_frequency)
-      applicationData.rent_payment_frequency = kycData.rent_payment_frequency;
     if (kycData.additional_notes)
       applicationData.additional_notes = kycData.additional_notes;
-
-    // Documents
-    if (kycData.passport_photo_url)
-      applicationData.passport_photo_url = kycData.passport_photo_url;
-    if (kycData.id_document_url)
-      applicationData.id_document_url = kycData.id_document_url;
     if (kycData.employment_proof_url)
       applicationData.employment_proof_url = kycData.employment_proof_url;
     if (kycData.business_proof_url)
@@ -1254,29 +1229,34 @@ export class KYCApplicationService {
 
       // Update KYC with completion data
       const updateData: Partial<KYCApplication> = {
-        status: ApplicationStatus.APPROVED, // Auto-approve on completion
         updated_at: new Date(),
+        // Required fields (DTO validation guarantees presence)
+        email: completionData.email,
+        contact_address: completionData.contact_address,
+        date_of_birth: new Date(completionData.date_of_birth),
+        gender: completionData.gender,
+        state_of_origin: completionData.state_of_origin,
+        nationality: completionData.nationality,
+        employment_status: completionData.employment_status,
+        marital_status: completionData.marital_status,
+        religion: completionData.religion,
+        // Next of Kin
+        next_of_kin_full_name: completionData.next_of_kin_full_name,
+        next_of_kin_phone_number: completionData.next_of_kin_phone_number,
+        next_of_kin_relationship: completionData.next_of_kin_relationship,
+        next_of_kin_address: completionData.next_of_kin_address,
+        next_of_kin_email: completionData.next_of_kin_email,
+        // Tenancy information
+        intended_use_of_property: completionData.intended_use_of_property,
+        number_of_occupants: completionData.number_of_occupants,
+        proposed_rent_amount: completionData.proposed_rent_amount,
+        rent_payment_frequency: completionData.rent_payment_frequency,
+        // Documents
+        passport_photo_url: completionData.passport_photo_url,
+        id_document_url: completionData.id_document_url,
       };
 
-      // Add all completion data fields
-      if (completionData.email !== undefined)
-        updateData.email = completionData.email;
-      if (completionData.contact_address !== undefined)
-        updateData.contact_address = completionData.contact_address;
-      if (completionData.date_of_birth)
-        updateData.date_of_birth = new Date(completionData.date_of_birth);
-      if (completionData.gender !== undefined)
-        updateData.gender = completionData.gender;
-      if (completionData.state_of_origin !== undefined)
-        updateData.state_of_origin = completionData.state_of_origin;
-      if (completionData.nationality !== undefined)
-        updateData.nationality = completionData.nationality;
-      if (completionData.employment_status !== undefined)
-        updateData.employment_status = completionData.employment_status;
-      if (completionData.marital_status !== undefined)
-        updateData.marital_status = completionData.marital_status;
-
-      // Employment fields
+      // Employment-conditional fields (only if employed)
       if (completionData.occupation !== undefined)
         updateData.occupation = completionData.occupation;
       if (completionData.job_title !== undefined)
@@ -1292,7 +1272,7 @@ export class KYCApplicationService {
       if (completionData.length_of_employment !== undefined)
         updateData.length_of_employment = completionData.length_of_employment;
 
-      // Self-employed fields
+      // Self-employed fields (only if self-employed)
       if (completionData.nature_of_business !== undefined)
         updateData.nature_of_business = completionData.nature_of_business;
       if (completionData.business_name !== undefined)
@@ -1302,55 +1282,56 @@ export class KYCApplicationService {
       if (completionData.business_duration !== undefined)
         updateData.business_duration = completionData.business_duration;
 
-      // Next of Kin
-      if (completionData.next_of_kin_full_name !== undefined)
-        updateData.next_of_kin_full_name = completionData.next_of_kin_full_name;
-      if (completionData.next_of_kin_phone_number !== undefined)
-        updateData.next_of_kin_phone_number =
-          completionData.next_of_kin_phone_number;
-      if (completionData.next_of_kin_relationship !== undefined)
-        updateData.next_of_kin_relationship =
-          completionData.next_of_kin_relationship;
-      if (completionData.next_of_kin_address !== undefined)
-        updateData.next_of_kin_address = completionData.next_of_kin_address;
-      if (completionData.next_of_kin_email !== undefined)
-        updateData.next_of_kin_email = completionData.next_of_kin_email;
-
-      // Referral Agent
+      // Optional fields
       if (completionData.referral_agent_full_name !== undefined)
         updateData.referral_agent_full_name =
           completionData.referral_agent_full_name;
       if (completionData.referral_agent_phone_number !== undefined)
         updateData.referral_agent_phone_number =
           completionData.referral_agent_phone_number;
-
-      // Additional personal information
-      if (completionData.religion !== undefined)
-        updateData.religion = completionData.religion;
-
-      // Tenancy information
-      if (completionData.intended_use_of_property !== undefined)
-        updateData.intended_use_of_property =
-          completionData.intended_use_of_property;
-      if (completionData.number_of_occupants !== undefined)
-        updateData.number_of_occupants = completionData.number_of_occupants;
-      if (completionData.proposed_rent_amount !== undefined)
-        updateData.proposed_rent_amount = completionData.proposed_rent_amount;
-      if (completionData.rent_payment_frequency !== undefined)
-        updateData.rent_payment_frequency =
-          completionData.rent_payment_frequency;
       if (completionData.additional_notes !== undefined)
         updateData.additional_notes = completionData.additional_notes;
-
-      // Document URLs
-      if (completionData.passport_photo_url !== undefined)
-        updateData.passport_photo_url = completionData.passport_photo_url;
-      if (completionData.id_document_url !== undefined)
-        updateData.id_document_url = completionData.id_document_url;
       if (completionData.employment_proof_url !== undefined)
         updateData.employment_proof_url = completionData.employment_proof_url;
       if (completionData.business_proof_url !== undefined)
         updateData.business_proof_url = completionData.business_proof_url;
+
+      // Service-level validation: verify all required fields are present before approving
+      const requiredFields = [
+        'email',
+        'contact_address',
+        'date_of_birth',
+        'gender',
+        'state_of_origin',
+        'nationality',
+        'employment_status',
+        'marital_status',
+        'religion',
+        'next_of_kin_full_name',
+        'next_of_kin_phone_number',
+        'next_of_kin_relationship',
+        'next_of_kin_address',
+        'next_of_kin_email',
+        'intended_use_of_property',
+        'number_of_occupants',
+        'proposed_rent_amount',
+        'rent_payment_frequency',
+        'passport_photo_url',
+        'id_document_url',
+      ];
+
+      const missingFields = requiredFields.filter(
+        (field) => !updateData[field as keyof typeof updateData],
+      );
+
+      if (missingFields.length > 0) {
+        throw new BadRequestException(
+          `Cannot approve KYC application. Missing required fields: ${missingFields.join(', ')}`,
+        );
+      }
+
+      // All required fields validated — set status to APPROVED
+      updateData.status = ApplicationStatus.APPROVED;
 
       // Save the updated KYC
       await this.kycApplicationRepository.update(kyc.id, updateData);

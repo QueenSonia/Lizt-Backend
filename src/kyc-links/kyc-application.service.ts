@@ -1155,25 +1155,66 @@ export class KYCApplicationService {
   /**
    * Complete a pending KYC application
    * Requirements: 5.1, 5.2, 5.3
+   * SECURITY: Validates KYC token (from body) and verifies OTP before allowing completion
    */
   async completePendingKYC(
-    kycId: string,
+    token: string,
     completionData: CompleteKYCDto,
   ): Promise<KYCApplication> {
     try {
       // Validate input
-      if (!kycId) {
-        throw new BadRequestException('KYC ID is required');
+      if (!token) {
+        throw new BadRequestException('KYC token is required');
       }
 
       console.log('📝 Completing pending KYC:', {
-        kycId,
+        token: '***', // Don't log full token
         timestamp: new Date().toISOString(),
       });
 
+      // SECURITY: Validate the KYC token first
+      const kycLink = await this.kycLinkRepository.findOne({
+        where: { token, is_active: true },
+      });
+
+      if (!kycLink) {
+        throw new NotFoundException('Invalid or expired KYC token');
+      }
+
+      // SECURITY: Verify OTP before allowing completion
+      const verifiedOtp = await this.kycOtpRepository.findOne({
+        where: {
+          phone_number: completionData.phone_number,
+          kyc_token: token,
+          is_verified: true,
+        },
+        order: {
+          created_at: 'DESC',
+        },
+      });
+
+      if (!verifiedOtp) {
+        throw new BadRequestException(
+          'Phone number must be verified before completing KYC application. Please request and verify an OTP code.',
+        );
+      }
+
+      // SECURITY: Check if the OTP verification is still recent (within last 30 minutes)
+      const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+      if (verifiedOtp.updated_at < thirtyMinutesAgo) {
+        throw new BadRequestException(
+          'Phone verification has expired. Please request a new OTP code and verify again.',
+        );
+      }
+
       // Fetch existing KYC with status pending_completion
+      // SECURITY: Match by kyc_link_id and phone_number to ensure ownership
       const kyc = await this.kycApplicationRepository.findOne({
-        where: { id: kycId, status: ApplicationStatus.PENDING_COMPLETION },
+        where: {
+          kyc_link_id: kycLink.id,
+          phone_number: completionData.phone_number,
+          status: ApplicationStatus.PENDING_COMPLETION,
+        },
         relations: ['property', 'tenant'],
       });
 
@@ -1284,11 +1325,11 @@ export class KYCApplicationService {
         updateData.business_proof_url = completionData.business_proof_url;
 
       // Save the updated KYC
-      await this.kycApplicationRepository.update(kycId, updateData);
+      await this.kycApplicationRepository.update(kyc.id, updateData);
 
       // Fetch the updated KYC with relations
       const updatedKyc = await this.kycApplicationRepository.findOne({
-        where: { id: kycId },
+        where: { id: kyc.id },
         relations: ['property', 'tenant', 'kyc_link'],
       });
 
@@ -1451,7 +1492,6 @@ export class KYCApplicationService {
       console.error('❌ Error completing pending KYC:', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
-        kycId,
         timestamp: new Date().toISOString(),
       });
 

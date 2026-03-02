@@ -418,19 +418,21 @@ export class KYCLinksService {
 
       const normalizedPhone = phoneValidation.normalizedPhone!;
 
-      // Check for existing active OTP
-      const existingOtp = await this.kycOtpRepository.findOne({
+      // Check for ANY recent OTP attempt (active, expired, or verified)
+      // This prevents rate limit bypass by checking regardless of OTP status
+      const recentOtp = await this.kycOtpRepository.findOne({
         where: {
           phone_number: normalizedPhone,
           kyc_token: kycToken,
-          is_active: true,
-          expires_at: MoreThan(new Date()),
+        },
+        order: {
+          created_at: 'DESC',
         },
       });
 
-      // If there's a recent OTP (less than 1 minute old), prevent spam
-      if (existingOtp) {
-        const timeDiff = Date.now() - existingOtp.created_at.getTime();
+      // Rate limit: prevent OTP requests within 60 seconds of last attempt
+      if (recentOtp) {
+        const timeDiff = Date.now() - recentOtp.created_at.getTime();
         if (timeDiff < 60000) {
           // 1 minute
           throw new BadRequestException(

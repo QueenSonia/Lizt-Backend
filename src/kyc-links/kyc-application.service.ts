@@ -17,6 +17,7 @@ import {
   ApplicationStatus,
 } from './entities/kyc-application.entity';
 import { KYCLink } from './entities/kyc-link.entity';
+import { KYCOtp } from './entities/kyc-otp.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from '../properties/dto/create-property.dto';
@@ -37,6 +38,8 @@ export class KYCApplicationService {
     private readonly kycApplicationRepository: Repository<KYCApplication>,
     @InjectRepository(KYCLink)
     private readonly kycLinkRepository: Repository<KYCLink>,
+    @InjectRepository(KYCOtp)
+    private readonly kycOtpRepository: Repository<KYCOtp>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyTenant)
@@ -66,6 +69,33 @@ export class KYCApplicationService {
   ): Promise<KYCApplication> {
     // Validate the KYC token and get the associated link
     const kycLink = await this.validateKYCToken(token);
+
+    // SECURITY: Verify that the phone number was actually verified via OTP
+    const verifiedOtp = await this.kycOtpRepository.findOne({
+      where: {
+        phone_number: kycData.phone_number,
+        kyc_token: token,
+        is_verified: true,
+      },
+      order: {
+        created_at: 'DESC',
+      },
+    });
+
+    if (!verifiedOtp) {
+      throw new BadRequestException(
+        'Phone number must be verified before submitting KYC application. Please request and verify an OTP code.',
+      );
+    }
+
+    // Check if the OTP verification is still recent (within last 30 minutes)
+    // This prevents someone from verifying once and then submitting days later
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    if (verifiedOtp.updated_at < thirtyMinutesAgo) {
+      throw new BadRequestException(
+        'Phone verification has expired. Please request a new OTP code and verify again.',
+      );
+    }
 
     // Validate the selected property belongs to the landlord and is vacant
     const selectedProperty = await this.propertyRepository.findOne({

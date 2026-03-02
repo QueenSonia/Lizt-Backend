@@ -224,5 +224,5 @@ export class CreateKYCApplicationDto {
   // Tracking Information (optional - captured from request)
   @IsOptional()
   @IsString()
-  decision_ip?: string;
+  decision_made_ip?: string;
 }

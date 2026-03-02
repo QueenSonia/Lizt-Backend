@@ -148,6 +148,23 @@ export class KYCLinksController {
   }
 
   /**
+   * Track when a user opens the KYC form (public endpoint)
+   * POST /api/kyc/:token/track-open
+   * Records timestamp and IP address
+   */
+  @SkipAuth()
+  @Post('kyc/:token/track-open')
+  async trackFormOpen(
+    @Param('token') token: string,
+    @Body('ipAddress') ipAddress?: string,
+  ): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    return this.kycApplicationService.trackFormOpen(token, ipAddress);
+  }
+
+  /**
    * Submit KYC application (public endpoint)
    * POST /api/kyc/:token/submit
    * Requirements: 3.1, 3.2, 3.4

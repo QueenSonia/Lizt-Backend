@@ -8,6 +8,7 @@ import {
   ValidationPipe,
   Res,
   StreamableFile,
+  NotFoundException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -126,6 +127,7 @@ export class OfferLettersController {
    * Download offer letter as PDF (public endpoint)
    * GET /offer-letters/:token/pdf
    * Requirements: 4.2, 10.3
+   * OPTIMIZED: Uses cached PDF if available and recent
    */
   @SkipAuth()
   @Get(':token/pdf')
@@ -133,70 +135,48 @@ export class OfferLettersController {
     @Param('token') token: string,
     @Res() res: Response,
   ): Promise<any> {
-    console.log('=== OFFER LETTER PDF DOWNLOAD DEBUG (Controller) ===');
-    console.log('Token received:', token);
-    console.log('Request timestamp:', new Date().toISOString());
+    const offerLetter =
+      await this.offerLettersService.getOfferLetterByToken(token);
 
-    try {
-      console.log('Fetching offer letter by token...');
-      const offerLetter =
-        await this.offerLettersService.getOfferLetterByToken(token);
+    if (!offerLetter) {
+      throw new NotFoundException('Offer letter not found');
+    }
 
-      console.log('Offer letter found:', {
-        id: offerLetter?.id,
-        status: offerLetter?.status,
-        pdf_url: offerLetter?.pdf_url,
-        kycApplicationId: offerLetter?.kyc_application_id,
-        createdAt: offerLetter?.created_at,
-      });
+    // OPTIMIZATION: Check if cached PDF exists and is recent (within 24 hours)
+    if (offerLetter.pdf_url && offerLetter.pdf_generated_at) {
+      const hoursSinceGeneration =
+        (Date.now() - new Date(offerLetter.pdf_generated_at).getTime()) /
+        (1000 * 60 * 60);
 
-      if (offerLetter && offerLetter.pdf_url) {
-        console.log('PDF URL exists, redirecting to:', offerLetter.pdf_url);
-
-        // Try to verify the URL is accessible before redirecting
+      // Use cached PDF if less than 24 hours old
+      if (hoursSinceGeneration < 24) {
         try {
-          const response = await fetch(offerLetter.pdf_url, { method: 'HEAD' });
+          // Verify URL is accessible
+          const response = await fetch(offerLetter.pdf_url, {
+            method: 'HEAD',
+          });
           if (response.ok) {
-            console.log('PDF URL is accessible, redirecting...');
+            // Redirect to cached PDF (instant response!)
             return res.redirect(offerLetter.pdf_url);
-          } else {
-            console.log(
-              'PDF URL returned status:',
-              response.status,
-              '- regenerating PDF',
-            );
           }
-        } catch (urlError) {
-          console.log(
-            'PDF URL is not accessible:',
-            urlError.message,
-            '- regenerating PDF',
-          );
+        } catch (error) {
+          // If URL check fails, fall through to regenerate
+          console.log('Cached PDF not accessible, regenerating...');
         }
       }
-
-      console.log('No PDF URL found, generating PDF from template...');
-      const pdfBuffer =
-        await this.pdfGeneratorService.generateOfferLetterPDF(token);
-
-      console.log('PDF generated successfully, buffer size:', pdfBuffer.length);
-
-      res.set({
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="offer-letter-${token.substring(0, 8)}.pdf"`,
-        'Content-Length': pdfBuffer.length,
-      });
-
-      console.log('Sending PDF response...');
-      res.send(pdfBuffer);
-      console.log('PDF sent successfully');
-    } catch (error) {
-      console.error('=== ERROR IN PDF DOWNLOAD ===');
-      console.error('Error details:', error);
-      console.error('Error message:', error.message);
-      console.error('Error stack:', error.stack);
-      throw error;
     }
+
+    // Generate new PDF if cache is stale or doesn't exist
+    const pdfBuffer =
+      await this.pdfGeneratorService.generateOfferLetterPDF(token);
+
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="offer-letter-${token.substring(0, 8)}.pdf"`,
+      'Content-Length': pdfBuffer.length,
+    });
+
+    res.send(pdfBuffer);
   }
 
   /**

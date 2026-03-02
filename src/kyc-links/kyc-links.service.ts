@@ -148,7 +148,7 @@ export class KYCLinksService {
       if (!kycLink.is_active) {
         return {
           valid: false,
-          error: 'This KYC form is no longer available',
+          error: 'This KYC form is no longer active',
         };
       }
 
@@ -156,12 +156,6 @@ export class KYCLinksService {
       if (kycLink.expires_at && new Date() > kycLink.expires_at) {
         // Deactivate expired token
         await this.kycLinkRepository.update(kycLink.id, { is_active: false });
-
-        console.log('🚫 KYC link expired (legacy link):', {
-          token: token.substring(0, 8) + '...',
-          expiresAt: kycLink.expires_at.toISOString(),
-          currentTime: new Date().toISOString(),
-        });
 
         return {
           valid: false,
@@ -473,7 +467,6 @@ export class KYCLinksService {
       });
 
       await this.kycOtpRepository.save(kycOtp);
-      console.log(otpCode);
 
       // Send OTP via WhatsApp using authentication template
       // Template: kyc_otp_verification (must be registered in WhatsApp Business Manager)

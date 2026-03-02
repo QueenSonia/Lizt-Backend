@@ -8,6 +8,7 @@ import {
   IsNumberString,
   ValidateIf,
   IsIn,
+  Length,
 } from 'class-validator';
 import {
   EmploymentStatus,
@@ -19,8 +20,25 @@ import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 /**
  * DTO for completing a pending KYC application
  * Used when a tenant completes their KYC after landlord has pre-filled basic information
+ * SECURITY: Requires KYC token and OTP verification to prevent unauthorized completion
  */
 export class CompleteKYCDto {
+  // SECURITY: KYC token (in body, not URL to prevent exposure)
+  @IsNotEmpty()
+  @IsString()
+  kyc_token: string;
+
+  // SECURITY: OTP verification required
+  @IsNotEmpty()
+  @IsString()
+  @Length(6, 6, { message: 'OTP must be exactly 6 digits' })
+  otp: string;
+
+  @IsNotEmpty()
+  @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
+  phone_number: string;
+
   // Email is optional and editable even if pre-filled
   @IsOptional()
   @IsEmail()

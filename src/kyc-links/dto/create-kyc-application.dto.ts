@@ -22,8 +22,14 @@ import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
  *
  * NOTE: Validation has been relaxed - only names and phone number are required.
  * Most fields have been made optional and can be re-enabled later by removing @IsOptional decorators.
+ * SECURITY: KYC token is now in request body to prevent exposure in logs
  */
 export class CreateKYCApplicationDto {
+  // SECURITY: KYC token (in body, not URL to prevent exposure)
+  @IsString()
+  @IsNotEmpty()
+  kyc_token: string;
+
   // Property Selection - Required field for new general link system
   @IsString()
   @IsNotEmpty()

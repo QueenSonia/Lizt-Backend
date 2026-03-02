@@ -166,13 +166,13 @@ export class KYCLinksController {
 
   /**
    * Submit KYC application (public endpoint)
-   * POST /api/kyc/:token/submit
+   * POST /api/kyc/submit
    * Requirements: 3.1, 3.2, 3.4
+   * SECURITY: Token in request body to prevent exposure in logs
    */
   @Public()
-  @Post('kyc/:token/submit')
+  @Post('kyc/submit')
   async submitKYCApplication(
-    @Param('token') token: string,
     @Body(ValidationPipe) kycData: CreateKYCApplicationDto,
   ): Promise<{
     success: boolean;
@@ -184,7 +184,7 @@ export class KYCLinksController {
   }> {
     try {
       const application = await this.kycApplicationService.submitKYCApplication(
-        token,
+        kycData.kyc_token,
         kycData,
       );
 

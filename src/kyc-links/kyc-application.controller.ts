@@ -27,17 +27,17 @@ import { CompleteKYCDto } from './dto/complete-kyc.dto';
 
 @Controller('api')
 export class KYCApplicationController {
-  constructor(private readonly kycApplicationService: KYCApplicationService) { }
+  constructor(private readonly kycApplicationService: KYCApplicationService) {}
 
   /**
    * Submit KYC application (public endpoint - no authentication required)
-   * POST /api/kyc/:token/submit
+   * POST /api/kyc/submit
    * Requirements: 3.1, 3.2, 3.4
+   * SECURITY: Token in request body to prevent exposure in logs
    */
   @SkipAuth()
-  @Post('kyc/:token/submit')
+  @Post('kyc/submit')
   async submitKYCApplication(
-    @Param('token') token: string,
     @Body(ValidationPipe) createKYCApplicationDto: CreateKYCApplicationDto,
   ): Promise<{
     success: boolean;
@@ -46,7 +46,7 @@ export class KYCApplicationController {
     status: ApplicationStatus;
   }> {
     const application = await this.kycApplicationService.submitKYCApplication(
-      token,
+      createKYCApplicationDto.kyc_token,
       createKYCApplicationDto,
     );
 
@@ -57,8 +57,6 @@ export class KYCApplicationController {
       status: application.status,
     };
   }
-
-
 
   /**
    * Get KYC applications for a property (landlord only)
@@ -275,13 +273,13 @@ export class KYCApplicationController {
 
   /**
    * Complete a pending KYC application
-   * PUT /api/kyc/complete-pending/:kycId
+   * PUT /api/kyc/complete-pending
    * Requirements: 5.1
+   * SECURITY: Requires valid KYC token (in body) and OTP verification
    */
   @Public()
-  @Put('kyc/complete-pending/:kycId')
+  @Put('kyc/complete-pending')
   async completePendingKYC(
-    @Param('kycId', ParseUUIDPipe) kycId: string,
     @Body(ValidationPipe) completionData: CompleteKYCDto,
   ): Promise<{
     success: boolean;
@@ -289,7 +287,7 @@ export class KYCApplicationController {
     application: KYCApplication;
   }> {
     const application = await this.kycApplicationService.completePendingKYC(
-      kycId,
+      completionData.kyc_token,
       completionData,
     );
 
@@ -351,5 +349,4 @@ export class KYCApplicationController {
       message: 'KYC completion link sent successfully',
     };
   }
-
 }

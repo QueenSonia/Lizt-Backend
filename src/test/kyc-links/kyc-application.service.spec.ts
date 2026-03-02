@@ -864,8 +864,13 @@ describe('KYCApplicationService', () => {
   });
 
   describe('completePendingKYC', () => {
-    const kycId = 'kyc-123';
+    const token = 'valid-kyc-token';
+    const phoneNumber = '+2348012345678';
+    const otp = '123456';
     const mockCompletionData = {
+      kyc_token: token,
+      phone_number: phoneNumber,
+      otp,
       email: 'updated@example.com',
       contact_address: '123 Main St',
       date_of_birth: '1990-01-01',
@@ -884,13 +889,30 @@ describe('KYCApplicationService', () => {
       employment_proof_url: 'https://cloudinary.com/employment.jpg',
     };
 
+    const mockKycLink = {
+      id: 'kyc-link-123',
+      token,
+      is_active: true,
+      landlord_id: 'landlord-123',
+    };
+
+    const mockVerifiedOtp = {
+      id: 'otp-123',
+      phone_number: phoneNumber,
+      kyc_token: token,
+      is_verified: true,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
     const mockPendingKyc = {
-      id: kycId,
+      id: 'kyc-123',
+      kyc_link_id: 'kyc-link-123',
       property_id: 'property-123',
       status: ApplicationStatus.PENDING_COMPLETION,
       first_name: 'John',
       last_name: 'Doe',
-      phone_number: '+2348012345678',
+      phone_number: phoneNumber,
       property: {
         id: 'property-123',
         name: 'Test Property',
@@ -898,8 +920,10 @@ describe('KYCApplicationService', () => {
       },
     };
 
-    it('should complete pending KYC successfully', async () => {
+    it('should complete pending KYC successfully with valid token and OTP', async () => {
       // Arrange
+      mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockKycOtpRepository.findOne.mockResolvedValue(mockVerifiedOtp);
       mockKycApplicationRepository.findOne
         .mockResolvedValueOnce(mockPendingKyc)
         .mockResolvedValueOnce({
@@ -910,40 +934,79 @@ describe('KYCApplicationService', () => {
 
       // Act
       const result = await service.completePendingKYC(
-        kycId,
+        token,
         mockCompletionData as any,
       );
 
       // Assert
+      expect(mockKycLinkRepository.findOne).toHaveBeenCalledWith({
+        where: { token, is_active: true },
+      });
+      expect(mockKycOtpRepository.findOne).toHaveBeenCalledWith({
+        where: {
+          phone_number: phoneNumber,
+          kyc_token: token,
+          is_verified: true,
+        },
+        order: { created_at: 'DESC' },
+      });
       expect(mockKycApplicationRepository.findOne).toHaveBeenCalledWith({
-        where: { id: kycId, status: ApplicationStatus.PENDING_COMPLETION },
+        where: {
+          kyc_link_id: mockKycLink.id,
+          phone_number: phoneNumber,
+          status: ApplicationStatus.PENDING_COMPLETION,
+        },
         relations: ['property', 'tenant'],
       });
       expect(mockKycApplicationRepository.update).toHaveBeenCalled();
       expect(result.status).toBe(ApplicationStatus.APPROVED);
     });
 
+    it('should throw NotFoundException when KYC token is invalid', async () => {
+      // Arrange
+      mockKycLinkRepository.findOne.mockResolvedValue(null);
+
+      // Act & Assert
+      await expect(
+        service.completePendingKYC(token, mockCompletionData as any),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw BadRequestException when OTP is not verified', async () => {
+      // Arrange
+      mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockKycOtpRepository.findOne.mockResolvedValue(null);
+
+      // Act & Assert
+      await expect(
+        service.completePendingKYC(token, mockCompletionData as any),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when OTP verification is expired', async () => {
+      // Arrange
+      const expiredOtp = {
+        ...mockVerifiedOtp,
+        updated_at: new Date(Date.now() - 31 * 60 * 1000), // 31 minutes ago
+      };
+      mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockKycOtpRepository.findOne.mockResolvedValue(expiredOtp);
+
+      // Act & Assert
+      await expect(
+        service.completePendingKYC(token, mockCompletionData as any),
+      ).rejects.toThrow(BadRequestException);
+    });
+
     it('should throw NotFoundException when KYC not found', async () => {
       // Arrange
+      mockKycLinkRepository.findOne.mockResolvedValue(mockKycLink);
+      mockKycOtpRepository.findOne.mockResolvedValue(mockVerifiedOtp);
       mockKycApplicationRepository.findOne.mockResolvedValue(null);
 
       // Act & Assert
       await expect(
-        service.completePendingKYC(kycId, mockCompletionData as any),
-      ).rejects.toThrow(NotFoundException);
-    });
-
-    it('should throw NotFoundException when KYC already completed', async () => {
-      // Arrange
-      const completedKyc = {
-        ...mockPendingKyc,
-        status: ApplicationStatus.APPROVED,
-      };
-      mockKycApplicationRepository.findOne.mockResolvedValue(null); // Query filters by PENDING_COMPLETION status
-
-      // Act & Assert
-      await expect(
-        service.completePendingKYC(kycId, mockCompletionData as any),
+        service.completePendingKYC(token, mockCompletionData as any),
       ).rejects.toThrow(NotFoundException);
     });
   });

@@ -158,10 +158,24 @@ export class KYCApplicationService {
         // This ensures a fresh application process
         await this.kycApplicationRepository.delete(existingApplication.id);
       } else {
-        // If existing application has no tenant_id, check if it's still pending
+        // If existing application has no tenant_id, check its status
         if (existingApplication.status === ApplicationStatus.PENDING) {
           throw new ConflictException(
             `User with phone number ${kycData.phone_number} has a pending application for this property`,
+          );
+        }
+
+        if (
+          existingApplication.status === ApplicationStatus.PENDING_COMPLETION
+        ) {
+          throw new ConflictException(
+            `User with phone number ${kycData.phone_number} has an incomplete application for this property. Please complete the existing application instead.`,
+          );
+        }
+
+        if (existingApplication.status === ApplicationStatus.APPROVED) {
+          throw new ConflictException(
+            `User with phone number ${kycData.phone_number} already has an approved application for this property`,
           );
         }
 
@@ -274,8 +288,22 @@ export class KYCApplicationService {
     const kycApplication =
       this.kycApplicationRepository.create(applicationData);
 
-    const savedApplication =
-      await this.kycApplicationRepository.save(kycApplication);
+    let savedApplication: KYCApplication;
+    try {
+      savedApplication =
+        await this.kycApplicationRepository.save(kycApplication);
+    } catch (error: any) {
+      // Catch unique constraint violation (PostgreSQL error 23505) from the
+      // partial unique index on (phone_number, property_id). This is the
+      // database-level safety net for the race condition where two concurrent
+      // requests both pass the findOne duplicate check above.
+      if (error?.code === '23505') {
+        throw new ConflictException(
+          `A KYC application for this phone number and property is already being processed`,
+        );
+      }
+      throw error;
+    }
 
     // Return the application with relations loaded
     const applicationWithRelations =

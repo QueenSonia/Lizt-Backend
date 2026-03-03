@@ -21,12 +21,14 @@ import { KYCOtp } from './entities/kyc-otp.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from '../properties/dto/create-property.dto';
+import { BaseKYCApplicationFieldsDto } from './dto/base-kyc-application-fields.dto';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { CompleteKYCDto } from './dto/complete-kyc.dto';
 import { EventsGateway } from '../events/events.gateway';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
+import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../utils/utility-service';
 import { ConfigService } from '@nestjs/config';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
@@ -57,6 +59,9 @@ export class KYCApplicationService {
     @Optional()
     @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService?: WhatsappBotService,
+    @Optional()
+    @Inject(forwardRef(() => WhatsAppNotificationLogService))
+    private readonly whatsappNotificationLog?: WhatsAppNotificationLogService,
   ) {}
 
   /**
@@ -111,15 +116,14 @@ export class KYCApplicationService {
       );
     }
 
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
-    if (!allowedStatuses.includes(selectedProperty.property_status)) {
+    if (selectedProperty.property_status !== 'vacant') {
       throw new BadRequestException(
         'Selected property is no longer available for applications',
       );
     }
 
-    // Check if property is ready for marketing (has rental_price set)
-    if (!selectedProperty.rental_price) {
+    // Check if property is ready for marketing
+    if (!selectedProperty.is_marketing_ready) {
       throw new BadRequestException(
         'Selected property is not ready for marketing. Please contact the landlord.',
       );
@@ -132,6 +136,9 @@ export class KYCApplicationService {
         phone_number: kycData.phone_number,
       },
     });
+
+    // Track whether we need to delete the old application before saving the new one
+    let applicationToDelete: string | null = null;
 
     if (existingApplication) {
       // If there's an existing application, check if the user currently has an active tenancy
@@ -154,9 +161,8 @@ export class KYCApplicationService {
           );
         }
 
-        // If tenant is not active (tenancy ended), allow reapplication by deleting old application
-        // This ensures a fresh application process
-        await this.kycApplicationRepository.delete(existingApplication.id);
+        // If tenant is not active (tenancy ended), mark old application for deletion
+        applicationToDelete = existingApplication.id;
       } else {
         // If existing application has no tenant_id, check its status
         if (existingApplication.status === ApplicationStatus.PENDING) {
@@ -179,94 +185,39 @@ export class KYCApplicationService {
           );
         }
 
-        // If it's rejected, allow reapplication by deleting old application
+        // If it's rejected, mark old application for deletion
         if (existingApplication.status === ApplicationStatus.REJECTED) {
-          await this.kycApplicationRepository.delete(existingApplication.id);
+          applicationToDelete = existingApplication.id;
         }
       }
     }
 
     // Create new KYC application with automatic pending status
     const applicationData: Partial<KYCApplication> = {
+      ...this.mapCommonFieldsToEntity(kycData),
       kyc_link_id: kycLink.id,
       property_id: kycData.property_id,
       status: ApplicationStatus.PENDING,
-      // Required fields (DTO validation guarantees presence)
       first_name: kycData.first_name,
       last_name: kycData.last_name,
-      phone_number: kycData.phone_number,
-      email: kycData.email,
-      contact_address: kycData.contact_address,
-      date_of_birth: new Date(kycData.date_of_birth),
-      gender: kycData.gender,
-      nationality: kycData.nationality,
-      state_of_origin: kycData.state_of_origin,
-      marital_status: kycData.marital_status,
-      employment_status: kycData.employment_status,
-      religion: kycData.religion,
-      // Next of Kin
-      next_of_kin_full_name: kycData.next_of_kin_full_name,
-      next_of_kin_address: kycData.next_of_kin_address,
-      next_of_kin_relationship: kycData.next_of_kin_relationship,
-      next_of_kin_phone_number: kycData.next_of_kin_phone_number,
-      next_of_kin_email: kycData.next_of_kin_email,
-      // Tenancy Info
-      intended_use_of_property: kycData.intended_use_of_property,
-      number_of_occupants: kycData.number_of_occupants,
-      proposed_rent_amount: kycData.proposed_rent_amount,
-      rent_payment_frequency: kycData.rent_payment_frequency,
-      // Documents
-      passport_photo_url: kycData.passport_photo_url,
-      id_document_url: kycData.id_document_url,
     };
-
-    // Employment-conditional fields (only if employed)
-    if (kycData.occupation) applicationData.occupation = kycData.occupation;
-    if (kycData.job_title) applicationData.job_title = kycData.job_title;
-    if (kycData.employer_name)
-      applicationData.employer_name = kycData.employer_name;
-    if (kycData.work_address)
-      applicationData.work_address = kycData.work_address;
-    if (kycData.monthly_net_income)
-      applicationData.monthly_net_income = kycData.monthly_net_income;
-    if (kycData.work_phone_number)
-      applicationData.work_phone_number = kycData.work_phone_number;
-    if (kycData.length_of_employment)
-      applicationData.length_of_employment = kycData.length_of_employment;
-
-    // Self-employed specific fields (only if self-employed)
-    if (kycData.nature_of_business)
-      applicationData.nature_of_business = kycData.nature_of_business;
-    if (kycData.business_name)
-      applicationData.business_name = kycData.business_name;
-    if (kycData.business_address)
-      applicationData.business_address = kycData.business_address;
-    if (kycData.business_duration)
-      applicationData.business_duration = kycData.business_duration;
-
-    // Optional fields
-    if (kycData.referral_agent_full_name)
-      applicationData.referral_agent_full_name =
-        kycData.referral_agent_full_name;
-    if (kycData.referral_agent_phone_number)
-      applicationData.referral_agent_phone_number =
-        kycData.referral_agent_phone_number;
-    if (kycData.parking_needs)
-      applicationData.parking_needs = kycData.parking_needs;
-    if (kycData.additional_notes)
-      applicationData.additional_notes = kycData.additional_notes;
-    if (kycData.employment_proof_url)
-      applicationData.employment_proof_url = kycData.employment_proof_url;
-    if (kycData.business_proof_url)
-      applicationData.business_proof_url = kycData.business_proof_url;
 
     const kycApplication =
       this.kycApplicationRepository.create(applicationData);
 
+    // Use a transaction to atomically delete the old application (if any) and save the new one.
+    // This prevents a limbo state where the old application is deleted but the new one fails to save.
     let savedApplication: KYCApplication;
     try {
       savedApplication =
-        await this.kycApplicationRepository.save(kycApplication);
+        await this.kycApplicationRepository.manager.transaction(
+          async (manager) => {
+            if (applicationToDelete) {
+              await manager.delete(KYCApplication, applicationToDelete);
+            }
+            return await manager.save(KYCApplication, kycApplication);
+          },
+        );
     } catch (error: any) {
       // Catch unique constraint violation (PostgreSQL error 23505) from the
       // partial unique index on (phone_number, property_id). This is the
@@ -328,112 +279,73 @@ export class KYCApplicationService {
       console.error('Failed to emit KYC submission event:', error);
     }
 
-    // Send all WhatsApp notifications in parallel (fire-and-forget)
-    // This reduces ~600ms of sequential API calls to ~200ms
-    const whatsappPromises: Promise<void>[] = [];
-
-    // WhatsApp notification to landlord
-    if (this.whatsappBotService && applicationWithRelations.property) {
+    // Queue WhatsApp notifications (logged to DB, sent async with retries)
+    if (this.whatsappNotificationLog && applicationWithRelations.property) {
       const property = applicationWithRelations.property;
 
-      whatsappPromises.push(
-        (async () => {
-          try {
-            const landlord = await this.propertyRepository
-              .createQueryBuilder('property')
-              .leftJoinAndSelect('property.owner', 'owner')
-              .leftJoinAndSelect('owner.user', 'user')
-              .where('property.id = :propertyId', { propertyId: property.id })
-              .getOne();
+      // Notification to landlord — need to look up landlord phone first
+      try {
+        const landlord = await this.propertyRepository
+          .createQueryBuilder('property')
+          .leftJoinAndSelect('property.owner', 'owner')
+          .leftJoinAndSelect('owner.user', 'user')
+          .where('property.id = :propertyId', { propertyId: property.id })
+          .getOne();
 
-            if (landlord?.owner?.user?.phone_number) {
-              const landlordPhone = this.utilService.normalizePhoneNumber(
-                landlord.owner.user.phone_number,
-              );
-              const landlordName =
-                landlord.owner.profile_name ||
-                `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
-              const tenantName = `${kycData.first_name} ${kycData.last_name}`;
-              const frontendUrl =
-                this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
+        if (landlord?.owner?.user?.phone_number) {
+          const landlordPhone = this.utilService.normalizePhoneNumber(
+            landlord.owner.user.phone_number,
+          );
+          const landlordName =
+            landlord.owner.profile_name ||
+            `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
+          const frontendUrl =
+            this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
 
-              await this.whatsappBotService!.sendKYCApplicationNotification({
-                phone_number: landlordPhone,
-                landlord_name: landlordName,
-                tenant_name: tenantName,
-                property_name: property.name,
-                application_id: savedApplication.id,
-                frontend_url: frontendUrl,
-              });
-            }
-          } catch (error) {
-            console.error('Failed to send WhatsApp KYC notification:', error);
-          }
-        })(),
-      );
-    }
-
-    // WhatsApp confirmation to tenant
-    if (this.whatsappBotService && kycData.phone_number) {
-      whatsappPromises.push(
-        (async () => {
-          try {
-            const tenantPhone = this.utilService.normalizePhoneNumber(
-              kycData.phone_number,
-            );
-            const tenantName = `${kycData.first_name} ${kycData.last_name}`;
-
-            await this.whatsappBotService!.sendKYCSubmissionConfirmation({
-              phone_number: tenantPhone,
-              tenant_name: tenantName,
-            });
-          } catch (error) {
-            console.error('Failed to send tenant KYC confirmation:', error);
-          }
-        })(),
-      );
-    }
-
-    // WhatsApp notification to referral agent (if provided)
-    if (
-      this.whatsappBotService &&
-      kycData.referral_agent_phone_number &&
-      kycData.referral_agent_full_name &&
-      applicationWithRelations.property
-    ) {
-      const property = applicationWithRelations.property;
-
-      whatsappPromises.push(
-        (async () => {
-          try {
-            const agentPhone = this.utilService.normalizePhoneNumber(
-              kycData.referral_agent_phone_number!,
-            );
-            const agentName = kycData.referral_agent_full_name!;
-            const tenantName = `${kycData.first_name} ${kycData.last_name}`;
-
-            await this.whatsappBotService!.sendAgentKYCNotification({
-              phone_number: agentPhone,
-              agent_name: agentName,
-              tenant_name: tenantName,
+          await this.whatsappNotificationLog.queue(
+            'sendKYCApplicationNotification',
+            {
+              phone_number: landlordPhone,
+              landlord_name: landlordName,
+              tenant_name: `${kycData.first_name} ${kycData.last_name}`,
               property_name: property.name,
-            });
+              application_id: savedApplication.id,
+              frontend_url: frontendUrl,
+            },
+            savedApplication.id,
+          );
+        }
+      } catch (error) {
+        console.error('Failed to queue landlord KYC notification:', error);
+      }
 
-            console.log(
-              `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
-            );
-          } catch (error) {
-            console.error('Failed to send agent KYC notification:', error);
-          }
-        })(),
-      );
-    }
+      // Confirmation to tenant
+      if (kycData.phone_number) {
+        await this.whatsappNotificationLog.queue(
+          'sendKYCSubmissionConfirmation',
+          {
+            phone_number: this.utilService.normalizePhoneNumber(kycData.phone_number),
+            tenant_name: `${kycData.first_name} ${kycData.last_name}`,
+          },
+          savedApplication.id,
+        );
+      }
 
-    // Execute all WhatsApp notifications in parallel
-    if (whatsappPromises.length > 0) {
-      Promise.all(whatsappPromises).catch((error) => {
-        console.error('Error in parallel WhatsApp notifications:', error);
-      });
+      // Notification to referral agent (if provided)
+      if (kycData.referral_agent_phone_number && kycData.referral_agent_full_name) {
+        await this.whatsappNotificationLog.queue(
+          'sendAgentKYCNotification',
+          {
+            phone_number: this.utilService.normalizePhoneNumber(
+              kycData.referral_agent_phone_number,
+            ),
+            agent_name: kycData.referral_agent_full_name,
+            tenant_name: `${kycData.first_name} ${kycData.last_name}`,
+            property_name: property.name,
+          },
+          savedApplication.id,
+        );
+      }
     }
 
     return applicationWithRelations;
@@ -457,9 +369,8 @@ export class KYCApplicationService {
     // Determine which applications to show based on property status
     const whereCondition: any = { property_id: propertyId };
 
-    // If property is vacant or ready for marketing, only show pending applications
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
-    if (allowedStatuses.includes(property.property_status)) {
+    // If property is vacant, only show pending applications
+    if (property.property_status === 'vacant') {
       whereCondition.status = ApplicationStatus.PENDING;
     }
 
@@ -504,9 +415,8 @@ export class KYCApplicationService {
       .leftJoinAndSelect('application.offer_letters', 'offer_letters')
       .where('application.property_id = :propertyId', { propertyId });
 
-    // If property is vacant or ready for marketing, only show pending applications (override any status filter)
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
-    if (allowedStatuses.includes(property.property_status)) {
+    // If property is vacant, only show pending applications (override any status filter)
+    if (property.property_status === 'vacant') {
       queryBuilder.andWhere('application.status = :pendingStatus', {
         pendingStatus: ApplicationStatus.PENDING,
       });
@@ -535,6 +445,78 @@ export class KYCApplicationService {
    * Transform KYC application entity to frontend-compatible format
    * Converts snake_case to camelCase and structures references properly
    */
+  /**
+   * Maps common tenant-submitted fields from a DTO to a partial KYCApplication entity.
+   * Used by both submitKYCApplication and completePendingKYC to avoid duplication.
+   */
+  private mapCommonFieldsToEntity(
+    dto: BaseKYCApplicationFieldsDto,
+  ): Partial<KYCApplication> {
+    const data: Partial<KYCApplication> = {
+      // Required fields
+      phone_number: dto.phone_number,
+      email: dto.email,
+      contact_address: dto.contact_address,
+      date_of_birth: new Date(dto.date_of_birth),
+      gender: dto.gender,
+      nationality: dto.nationality,
+      state_of_origin: dto.state_of_origin,
+      marital_status: dto.marital_status,
+      employment_status: dto.employment_status,
+      religion: dto.religion,
+      // Next of Kin
+      next_of_kin_full_name: dto.next_of_kin_full_name,
+      next_of_kin_address: dto.next_of_kin_address,
+      next_of_kin_relationship: dto.next_of_kin_relationship,
+      next_of_kin_phone_number: dto.next_of_kin_phone_number,
+      next_of_kin_email: dto.next_of_kin_email,
+      // Tenancy Info
+      intended_use_of_property: dto.intended_use_of_property,
+      number_of_occupants: dto.number_of_occupants,
+      proposed_rent_amount: dto.proposed_rent_amount,
+      rent_payment_frequency: dto.rent_payment_frequency,
+      // Documents
+      passport_photo_url: dto.passport_photo_url,
+      id_document_url: dto.id_document_url,
+    };
+
+    // Employment-conditional fields
+    if (dto.occupation !== undefined) data.occupation = dto.occupation;
+    if (dto.job_title !== undefined) data.job_title = dto.job_title;
+    if (dto.employer_name !== undefined) data.employer_name = dto.employer_name;
+    if (dto.work_address !== undefined) data.work_address = dto.work_address;
+    if (dto.monthly_net_income !== undefined)
+      data.monthly_net_income = dto.monthly_net_income;
+    if (dto.work_phone_number !== undefined)
+      data.work_phone_number = dto.work_phone_number;
+    if (dto.length_of_employment !== undefined)
+      data.length_of_employment = dto.length_of_employment;
+
+    // Self-employed fields
+    if (dto.nature_of_business !== undefined)
+      data.nature_of_business = dto.nature_of_business;
+    if (dto.business_name !== undefined) data.business_name = dto.business_name;
+    if (dto.business_address !== undefined)
+      data.business_address = dto.business_address;
+    if (dto.business_duration !== undefined)
+      data.business_duration = dto.business_duration;
+
+    // Optional fields
+    if (dto.referral_agent_full_name !== undefined)
+      data.referral_agent_full_name = dto.referral_agent_full_name;
+    if (dto.referral_agent_phone_number !== undefined)
+      data.referral_agent_phone_number = dto.referral_agent_phone_number;
+    if (dto.parking_needs !== undefined) data.parking_needs = dto.parking_needs;
+    if (dto.additional_notes !== undefined)
+      data.additional_notes = dto.additional_notes;
+    if (dto.employment_proof_url !== undefined)
+      data.employment_proof_url = dto.employment_proof_url;
+    if (dto.business_proof_url !== undefined)
+      data.business_proof_url = dto.business_proof_url;
+
+    return data;
+  }
+
   /**
    * Transform KYC application entity to frontend-compatible format
    * No complex mapping needed anymore, just formatting
@@ -702,42 +684,6 @@ export class KYCApplicationService {
   }
 
   /**
-   * Update application status (internal method for tenant attachment)
-   * Requirements: 3.2, 3.4
-   */
-  async updateApplicationStatus(
-    applicationId: string,
-    status: ApplicationStatus,
-    tenantId?: string,
-  ): Promise<KYCApplication> {
-    const application = await this.kycApplicationRepository.findOne({
-      where: { id: applicationId },
-    });
-
-    if (!application) {
-      throw new NotFoundException('KYC application not found');
-    }
-
-    // Update the application
-    await this.kycApplicationRepository.update(applicationId, {
-      status,
-      tenant_id: tenantId,
-    });
-
-    // Return updated application
-    const updatedApplication = await this.kycApplicationRepository.findOne({
-      where: { id: applicationId },
-      relations: ['property', 'kyc_link', 'tenant'],
-    });
-
-    if (!updatedApplication) {
-      throw new NotFoundException('Updated KYC application not found');
-    }
-
-    return updatedApplication;
-  }
-
-  /**
    * Reject all other applications for a property when one is approved
    * Requirements: 3.2, 3.4
    */
@@ -775,9 +721,8 @@ export class KYCApplicationService {
       landlordId,
     );
 
-    const allowedStatuses = ['vacant', 'ready_for_marketing'];
-    if (allowedStatuses.includes(property.property_status)) {
-      // For vacant and ready for marketing properties, only show pending applications count
+    if (property.property_status === 'vacant') {
+      // For vacant properties, only show pending applications count
       const pending = await this.kycApplicationRepository.count({
         where: { property_id: propertyId, status: ApplicationStatus.PENDING },
       });
@@ -944,8 +889,10 @@ export class KYCApplicationService {
       // Search for both formats since database might store without + prefix
       let kycApplication = await this.kycApplicationRepository
         .createQueryBuilder('kyc')
-        .where('kyc.phone_number = :phone1', { phone1: normalizedPhone })
-        .orWhere('kyc.phone_number = :phone2', { phone2: phoneWithoutPlus })
+        .where('(kyc.phone_number = :phone1 OR kyc.phone_number = :phone2)', {
+          phone1: normalizedPhone,
+          phone2: phoneWithoutPlus,
+        })
         .orderBy('kyc.created_at', 'DESC')
         .getOne();
 
@@ -967,12 +914,19 @@ export class KYCApplicationService {
       }
 
       // If no KYC application found, check tenant_kyc table
-      const tenantKyc = await this.tenantKycRepository
+      const tenantKycQuery = this.tenantKycRepository
         .createQueryBuilder('kyc')
         .leftJoinAndSelect('kyc.user', 'user')
-        .where('kyc.phone_number = :phone1', { phone1: normalizedPhone })
-        .orWhere('kyc.phone_number = :phone2', { phone2: phoneWithoutPlus })
-        .orWhere('kyc.email = :email', { email: email || null })
+        .where('(kyc.phone_number = :phone1 OR kyc.phone_number = :phone2)', {
+          phone1: normalizedPhone,
+          phone2: phoneWithoutPlus,
+        });
+
+      if (email) {
+        tenantKycQuery.orWhere('kyc.email = :email', { email });
+      }
+
+      const tenantKyc = await tenantKycQuery
         .orderBy('kyc.created_at', 'DESC')
         .getOne();
 
@@ -1073,6 +1027,21 @@ export class KYCApplicationService {
         ? normalizedPhone.substring(1)
         : normalizedPhone;
 
+      // Build identifier condition (phone OR email) as a grouped clause
+      // so that landlord isolation via andWhere is never bypassed
+      let identifierCondition =
+        '(kyc.phone_number = :phone1 OR kyc.phone_number = :phone2';
+      const identifierParams: Record<string, string> = {
+        phone1: normalizedPhone,
+        phone2: phoneWithoutPlus,
+      };
+
+      if (email) {
+        identifierCondition += ' OR kyc.email = :email';
+        identifierParams.email = email;
+      }
+      identifierCondition += ')';
+
       // Build query to find pending completion KYCs
       const queryBuilder = this.kycApplicationRepository
         .createQueryBuilder('kyc')
@@ -1082,21 +1051,7 @@ export class KYCApplicationService {
           status: ApplicationStatus.PENDING_COMPLETION,
         })
         .andWhere('property.owner_id = :landlordId', { landlordId })
-        .andWhere(
-          '(kyc.phone_number = :phone1 OR kyc.phone_number = :phone2)',
-          {
-            phone1: normalizedPhone,
-            phone2: phoneWithoutPlus,
-          },
-        );
-
-      // Also match by email if provided
-      if (email) {
-        queryBuilder.orWhere(
-          'kyc.email = :email AND kyc.status = :status AND property.owner_id = :landlordId',
-          { email, status: ApplicationStatus.PENDING_COMPLETION, landlordId },
-        );
-      }
+        .andWhere(identifierCondition, identifierParams);
 
       const pendingKycs = await queryBuilder.getMany();
 
@@ -1229,72 +1184,9 @@ export class KYCApplicationService {
 
       // Update KYC with completion data
       const updateData: Partial<KYCApplication> = {
+        ...this.mapCommonFieldsToEntity(completionData),
         updated_at: new Date(),
-        // Required fields (DTO validation guarantees presence)
-        email: completionData.email,
-        contact_address: completionData.contact_address,
-        date_of_birth: new Date(completionData.date_of_birth),
-        gender: completionData.gender,
-        state_of_origin: completionData.state_of_origin,
-        nationality: completionData.nationality,
-        employment_status: completionData.employment_status,
-        marital_status: completionData.marital_status,
-        religion: completionData.religion,
-        // Next of Kin
-        next_of_kin_full_name: completionData.next_of_kin_full_name,
-        next_of_kin_phone_number: completionData.next_of_kin_phone_number,
-        next_of_kin_relationship: completionData.next_of_kin_relationship,
-        next_of_kin_address: completionData.next_of_kin_address,
-        next_of_kin_email: completionData.next_of_kin_email,
-        // Tenancy information
-        intended_use_of_property: completionData.intended_use_of_property,
-        number_of_occupants: completionData.number_of_occupants,
-        proposed_rent_amount: completionData.proposed_rent_amount,
-        rent_payment_frequency: completionData.rent_payment_frequency,
-        // Documents
-        passport_photo_url: completionData.passport_photo_url,
-        id_document_url: completionData.id_document_url,
       };
-
-      // Employment-conditional fields (only if employed)
-      if (completionData.occupation !== undefined)
-        updateData.occupation = completionData.occupation;
-      if (completionData.job_title !== undefined)
-        updateData.job_title = completionData.job_title;
-      if (completionData.employer_name !== undefined)
-        updateData.employer_name = completionData.employer_name;
-      if (completionData.work_address !== undefined)
-        updateData.work_address = completionData.work_address;
-      if (completionData.monthly_net_income !== undefined)
-        updateData.monthly_net_income = completionData.monthly_net_income;
-      if (completionData.work_phone_number !== undefined)
-        updateData.work_phone_number = completionData.work_phone_number;
-      if (completionData.length_of_employment !== undefined)
-        updateData.length_of_employment = completionData.length_of_employment;
-
-      // Self-employed fields (only if self-employed)
-      if (completionData.nature_of_business !== undefined)
-        updateData.nature_of_business = completionData.nature_of_business;
-      if (completionData.business_name !== undefined)
-        updateData.business_name = completionData.business_name;
-      if (completionData.business_address !== undefined)
-        updateData.business_address = completionData.business_address;
-      if (completionData.business_duration !== undefined)
-        updateData.business_duration = completionData.business_duration;
-
-      // Optional fields
-      if (completionData.referral_agent_full_name !== undefined)
-        updateData.referral_agent_full_name =
-          completionData.referral_agent_full_name;
-      if (completionData.referral_agent_phone_number !== undefined)
-        updateData.referral_agent_phone_number =
-          completionData.referral_agent_phone_number;
-      if (completionData.additional_notes !== undefined)
-        updateData.additional_notes = completionData.additional_notes;
-      if (completionData.employment_proof_url !== undefined)
-        updateData.employment_proof_url = completionData.employment_proof_url;
-      if (completionData.business_proof_url !== undefined)
-        updateData.business_proof_url = completionData.business_proof_url;
 
       // Service-level validation: verify all required fields are present before approving
       const requiredFields = [

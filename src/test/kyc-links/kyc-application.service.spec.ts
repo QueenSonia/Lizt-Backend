@@ -623,58 +623,6 @@ describe('KYCApplicationService', () => {
     });
   });
 
-  describe('updateApplicationStatus', () => {
-    const applicationId = 'app-123';
-    const tenantId = 'tenant-123';
-
-    it('should update application status successfully', async () => {
-      // Arrange
-      const mockApplication = {
-        id: applicationId,
-        status: ApplicationStatus.PENDING,
-      };
-      const updatedApplication = {
-        ...mockApplication,
-        status: ApplicationStatus.APPROVED,
-        tenant_id: tenantId,
-      };
-
-      mockKycApplicationRepository.findOne
-        .mockResolvedValueOnce(mockApplication)
-        .mockResolvedValueOnce(updatedApplication);
-
-      // Act
-      const result = await service.updateApplicationStatus(
-        applicationId,
-        ApplicationStatus.APPROVED,
-        tenantId,
-      );
-
-      // Assert
-      expect(mockKycApplicationRepository.update).toHaveBeenCalledWith(
-        applicationId,
-        {
-          status: ApplicationStatus.APPROVED,
-          tenant_id: tenantId,
-        },
-      );
-      expect(result).toEqual(updatedApplication);
-    });
-
-    it('should throw NotFoundException when application does not exist', async () => {
-      // Arrange
-      mockKycApplicationRepository.findOne.mockResolvedValue(null);
-
-      // Act & Assert
-      await expect(
-        service.updateApplicationStatus(
-          applicationId,
-          ApplicationStatus.APPROVED,
-        ),
-      ).rejects.toThrow(NotFoundException);
-    });
-  });
-
   describe('rejectOtherApplications', () => {
     const propertyId = 'property-123';
     const excludeApplicationId = 'app-123';

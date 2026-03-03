@@ -16,7 +16,6 @@ import { BaseEntity } from 'src/base.entity';
 export enum Gender {
   MALE = 'male',
   FEMALE = 'female',
-  OTHER = 'other',
 }
 
 export enum MaritalStatus {
@@ -29,8 +28,6 @@ export enum MaritalStatus {
 export enum EmploymentStatus {
   EMPLOYED = 'employed',
   SELF_EMPLOYED = 'self-employed',
-  UNEMPLOYED = 'unemployed',
-  STUDENT = 'student',
 }
 
 // @Index(

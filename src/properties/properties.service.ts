@@ -37,6 +37,7 @@ import {
 } from 'src/rents/dto/create-rent.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
+import { WhatsAppNotificationLogService } from 'src/whatsapp-bot/whatsapp-notification-log.service';
 import { PerformanceMonitor } from 'src/utils/performance-monitor';
 import { KYCApplicationService } from 'src/kyc-links/kyc-application.service';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
@@ -90,6 +91,7 @@ export class PropertiesService {
     private readonly whatsappBotService: WhatsappBotService,
     private readonly databaseErrorHandler: DatabaseErrorHandlerService,
     private readonly notificationService: NotificationService,
+    private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
   ) {}
 
   async createProperty(
@@ -558,9 +560,8 @@ export class PropertiesService {
       // Commit transaction before sending WhatsApp (non-critical operation)
       await queryRunner.commitTransaction();
 
-      // 13. Send WhatsApp notification based on KYC status (async, don't block on failure)
+      // 13. Queue WhatsApp notification based on KYC status (logged to DB, sent async with retries)
       try {
-        // Fetch landlord information for the notification
         const landlord = await this.usersRepository.findOne({
           where: { id: ownerId },
         });
@@ -570,69 +571,42 @@ export class PropertiesService {
           : 'Your landlord';
 
         const tenantName = this.utilService.toSentenceCase(firstName);
-
-        // Send appropriate notification based on KYC status
         const status = kycApplication.status;
 
-        if (status === ApplicationStatus.PENDING_COMPLETION) {
-          // Send KYC completion link for incomplete applications
-          await this.whatsappBotService.sendKYCCompletionLink({
-            phone_number: normalizedPhone,
-            tenant_name: tenantName,
-            landlord_name: landlordName,
-            property_name: savedProperty.name,
-            kyc_link_id: kycLink.token,
-          });
-          console.log(
-            `✅ WhatsApp KYC completion link sent to ${normalizedPhone} (PENDING_COMPLETION)`,
-          );
-        } else if (status === ApplicationStatus.APPROVED) {
-          // Send welcome message for approved tenants being attached to new property
-          await this.whatsappBotService.sendTenantAttachmentNotification({
-            phone_number: normalizedPhone,
-            tenant_name: tenantName,
-            landlord_name: landlordName,
-            apartment_name: savedProperty.name,
-          });
-          console.log(
-            `✅ WhatsApp welcome message sent to ${normalizedPhone} (APPROVED KYC)`,
-          );
-        } else if (status === ApplicationStatus.PENDING) {
-          console.log(
-            `⏳ Tenant has KYC AWAITING APPROVAL, no new KYC link needed for ${normalizedPhone}`,
-          );
-          // TODO: Send notification about property assignment while KYC is pending approval
-        } else if (status === ApplicationStatus.REJECTED) {
-          // Send KYC completion link for rejected applications (they need to resubmit)
-          await this.whatsappBotService.sendKYCCompletionLink({
-            phone_number: normalizedPhone,
-            tenant_name: tenantName,
-            landlord_name: landlordName,
-            property_name: savedProperty.name,
-            kyc_link_id: kycLink.token,
-          });
-          console.log(
-            `🔄 WhatsApp KYC completion link sent to ${normalizedPhone} (REJECTED - resubmission needed)`,
-          );
-
-          // Also send welcome message for rejected tenants being attached to new property
-          await this.whatsappBotService.sendTenantAttachmentNotification({
-            phone_number: normalizedPhone,
-            tenant_name: tenantName,
-            landlord_name: landlordName,
-            apartment_name: savedProperty.name,
-          });
-          console.log(
-            `✅ WhatsApp welcome message sent to ${normalizedPhone} (REJECTED KYC - property attachment)`,
-          );
-        } else {
-          console.log(
-            `🔍 Tenant has KYC status: ${status}, no notification sent to ${normalizedPhone}`,
+        if (
+          status === ApplicationStatus.PENDING_COMPLETION ||
+          status === ApplicationStatus.REJECTED
+        ) {
+          await this.whatsappNotificationLog.queue(
+            'sendKYCCompletionLink',
+            {
+              phone_number: normalizedPhone,
+              tenant_name: tenantName,
+              landlord_name: landlordName,
+              property_name: savedProperty.name,
+              kyc_link_id: kycLink.token,
+            },
+            savedProperty.id,
           );
         }
-      } catch (whatsappError) {
-        // Log but don't fail the entire operation
-        console.error('Failed to send WhatsApp notification:', whatsappError);
+
+        if (
+          status === ApplicationStatus.APPROVED ||
+          status === ApplicationStatus.REJECTED
+        ) {
+          await this.whatsappNotificationLog.queue(
+            'sendTenantAttachmentNotification',
+            {
+              phone_number: normalizedPhone,
+              tenant_name: tenantName,
+              landlord_name: landlordName,
+              apartment_name: savedProperty.name,
+            },
+            savedProperty.id,
+          );
+        }
+      } catch (error) {
+        console.error('Failed to queue WhatsApp notification:', error);
       }
 
       // Emit event after property is created

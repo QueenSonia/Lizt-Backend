@@ -26,6 +26,7 @@ import { PaystackLogger } from './paystack-logger.service';
 import { TenantAttachmentService } from '../kyc-links/tenant-attachment.service';
 import { PropertyHistoryService } from '../property-history/property-history.service';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender/template-sender.service';
+import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { InitiatePaymentDto, InitiatePaymentResponseDto } from './dto';
 import { InvoicesService } from '../invoices/invoices.service';
 import { NotificationService } from '../notifications/notification.service';
@@ -65,6 +66,7 @@ export class PaymentService {
     private readonly dataSource: DataSource,
     @Inject(forwardRef(() => ReceiptGeneratorService))
     private readonly receiptGeneratorService: ReceiptGeneratorService,
+    private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
   ) {}
 
   /**
@@ -670,23 +672,32 @@ export class PaymentService {
       losing_offers_count: losingOffers.length,
     });
 
-    // Fire-and-forget: Send notifications AFTER transaction commits
-    // These are scheduled but not awaited to avoid blocking the transaction
-    setImmediate(async () => {
+    // Queue losing tenant notifications (logged to DB, sent async with retries)
+    for (const losingOffer of losingOffers) {
       try {
-        // Note: Winning tenant notification is sent after receipt generation
-        // in processSuccessfulPayment to ensure receipt link is available
+        const kycApplication = await this.kycApplicationRepository.findOne({
+          where: { id: losingOffer.kyc_application_id },
+        });
 
-        // Notify losing tenants
-        for (const losingOffer of losingOffers) {
-          await this.notifyLosingTenant(losingOffer, property);
+        if (kycApplication?.phone_number) {
+          await this.whatsappNotificationLog.queue(
+            'sendTenantPaymentRefund',
+            {
+              phone_number: kycApplication.phone_number,
+              tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+              property_name: property.name,
+              amount_paid: Number(losingOffer.amount_paid),
+            },
+            losingOffer.id,
+          );
         }
       } catch (err) {
-        this.paystackLogger.error('Failed to send tenant notifications', {
+        this.paystackLogger.error('Failed to queue losing tenant notification', {
+          offer_id: losingOffer.id,
           error: err.message,
         });
       }
-    });
+    }
   }
 
   /**
@@ -709,20 +720,47 @@ export class PaymentService {
       amount_paid: offerLetter.amount_paid,
     });
 
-    // Fire-and-forget: Send notifications AFTER transaction commits
-    setImmediate(async () => {
-      try {
-        await this.notifyLandlordRaceCondition(offerLetter);
-        await this.notifyTenantRaceCondition(offerLetter);
-      } catch (err) {
-        this.paystackLogger.error(
-          'Failed to send race condition notifications',
+    // Queue race condition notifications (logged to DB, sent async with retries)
+    try {
+      const landlord = await this.usersRepository.findOne({
+        where: { id: offerLetter.property.owner_id },
+      });
+      const kycApplication = await this.kycApplicationRepository.findOne({
+        where: { id: offerLetter.kyc_application_id },
+      });
+
+      if (landlord?.phone_number && kycApplication) {
+        await this.whatsappNotificationLog.queue(
+          'sendLandlordRaceCondition',
           {
-            error: err.message,
+            phone_number: landlord.phone_number,
+            landlord_name: `${landlord.first_name} ${landlord.last_name}`,
+            tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            property_name: offerLetter.property.name,
+            amount: Number(offerLetter.amount_paid),
           },
+          offerLetter.id,
         );
       }
-    });
+
+      if (kycApplication?.phone_number) {
+        await this.whatsappNotificationLog.queue(
+          'sendTenantRaceCondition',
+          {
+            phone_number: kycApplication.phone_number,
+            tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            property_name: offerLetter.property.name,
+            amount: Number(offerLetter.amount_paid),
+          },
+          offerLetter.id,
+        );
+      }
+    } catch (err) {
+      this.paystackLogger.error(
+        'Failed to queue race condition notifications',
+        { offer_id: offerLetter.id, error: err.message },
+      );
+    }
   }
 
   /**

@@ -32,9 +32,9 @@ export class MakeKycFieldsRequired1772200000000 implements MigrationInterface {
         await queryRunner.query(`
             DO $$ BEGIN
                 UPDATE "kyc_applications" SET "date_of_birth" = '1900-01-01' WHERE "date_of_birth" IS NULL;
-                UPDATE "kyc_applications" SET "gender" = 'other' WHERE "gender" IS NULL;
+                UPDATE "kyc_applications" SET "gender" = 'male' WHERE "gender" IS NULL;
                 UPDATE "kyc_applications" SET "marital_status" = 'single' WHERE "marital_status" IS NULL;
-                UPDATE "kyc_applications" SET "employment_status" = 'unemployed' WHERE "employment_status" IS NULL;
+                UPDATE "kyc_applications" SET "employment_status" = 'employed' WHERE "employment_status" IS NULL;
             END $$;
         `);
 

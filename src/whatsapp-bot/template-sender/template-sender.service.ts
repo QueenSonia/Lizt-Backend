@@ -2049,6 +2049,67 @@ export class TemplateSenderService {
   }
 
   /**
+   * Map of WhatsApp template names to their exact message bodies from Meta.
+   * Uses {{1}}, {{2}}, etc. as placeholders for body parameters.
+   */
+  private static readonly TEMPLATE_CONTENT_MAP: Record<string, string> = {
+    main_menu:
+      'Hi {{1}},\n\nYour landlord Panda Homes is now managing your apartment with Lizt by Property Kraft — a platform designed to make renting smooth and stress-free.\n\nWith Lizt, you can:\n\t•\tGet timely rent reminders\n\t•\tView tenancy details\n\t•\tRequest maintenance\n\t•\tAccess important documents\n\t•\tReach support anytime\n\nMore features coming soon: flexible rent payments, loans, and access to a vetted artisan network.\n\nReply "Hi" to get started.\n\n— The Lizt team',
+    agent_welcome:
+      'Hi, thanks for connecting with Property Kraft!\n\nYou\'re now plugged in to receive the latest property updates, sweet deals, and housing opportunities directly on WhatsApp. ✨\n\nIn the meantime, you can also visit our website here: https://propertykraft.africa 🌍\n\nStay ahead with Property Kraft! 🚀',
+    facility_manager:
+      'Hello {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\nWelcome aboard!',
+    properties_created:
+      'Hello {{1}}\n\nA new property with name {{2}} was created.\n\nThank you.\n-The Lizt Team',
+    user_added:
+      'Hello {{1}}\n\n{{2}} was added to your {{3}} property.\nThank you.\n- The Lizt Team',
+    tenant_welcome:
+      'Hi {{1}},\n\nYour landlord, {{2}}, is using Lizt by Property Kraft — a tenancy management app — to manage {{3}} and make your rental experience smooth and stress-free.\n\nWith Lizt, you can handle everything about your home in one place — from getting important updates, tracking rent, reporting issues easily, and staying connected throughout your tenancy.\n\nReply Hi to get started.\n\n— The Lizt Team',
+    service_request_confirmation:
+      'Hi {{1}} 👋🏽\n\nYour service request about "{{2}}" has been marked as resolved.\n\nCan you confirm if everything is fixed?',
+    tenant_application_notification:
+      'A KYC application was submitted by {{2}} for the property {{3}}, assigned to {{1}}.\n\nUse the link below to view the application.',
+    kyc_submission_confirmation:
+      'Hello {{1}}, Your KYC form has been submitted. Your landlord is reviewing your details, and we\'ll keep you updated.',
+    agent_kyc_notification:
+      'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
+    landlord_service_request_notification:
+      'Service Request Notification\n\nA new service request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}} on record.',
+    fm_service_request_notification:
+      'A new service request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nPhone: {{5}}\nProperty: {{2}}\nReported: {{4}} on record.',
+    kyc_completion_link:
+      'Hello {{1}}, {{2}} has added you as a tenant for {{3}}.\n\nPlease complete your KYC information using the link below.',
+    kyc_completion_notification:
+      'Hello {{1}}, {{2}} has completed their KYC information for {{3}}.\n\nYou can now view their full tenant details.',
+    offer_letter_notification:
+      'Hello {{1}}, you have received an offer letter for {{2}}.\n\nPlease review and respond.',
+    offer_letter_otp:
+      '{{1}} is your verification code.\nExpires in 10 minutes.',
+    kyc_otp_verification:
+      '{{1}} is your verification code. For your security, do not share this code.\nExpires in 10 minutes.',
+    offer_letter_status_notification:
+      'Hi {{1}}, {{2}} has {{4}} your offer letter for {{3}}.\n\nLog in to your dashboard to view details and take next steps.',
+    payment_invoice_link:
+      'Hi {{1}}, your offer for {{2}} has been accepted successfully.\n\nAn invoice has been prepared for you. Please complete your payment to secure the property and proceed with your tenancy.',
+    ll_payment_received:
+      'Hello {{1}}, {{2}} has made a payment of {{3}} for {{4}}.\n\nOutstanding balance: {{5}}. View details in your dashboard.',
+    ll_payment_complete:
+      'Hello {{1}}, {{2}} has completed their full payment of {{3}} for {{4}}.\n\nThe property is now secured!',
+    tenant_payment_success:
+      'Congratulations {{1}}! Your payment of {{2}} for {{3}} has been confirmed.\nYou have successfully secured the property.\n\nThe landlord will contact you shortly with next steps.',
+    tenant_payment_refund:
+      'Hello {{1}}, unfortunately another applicant has secured {{2}}.\nYour payment of {{3}} is eligible for refund.\n\nPlease contact the landlord to process your refund. We apologize for any inconvenience.',
+    ll_payment_race:
+      'Hello {{1}}, {{2}} completed payment of {{3}} for {{4}}, but the property was already secured by another tenant.\n\nThe payment is being held. Please process a refund through your dashboard.',
+    tenant_payment_race:
+      'Hello {{1}}, your payment of {{2}} for {{3}} was received, but the property was secured by another applicant moments earlier.\n\nYour payment is being held and the landlord will process your refund shortly.\n\nWe apologize for this situation.',
+    invoice_reminder:
+      'Hi {{1}}, this is a reminder from {{2}} regarding invoice {{3}}. Outstanding balance: {{4}} for {{5}}.',
+    landlord_main_menu:
+      'Hello {{1}}, What do you want to do today?',
+  };
+
+  /**
    * Helper method to extract content from outbound payload
    */
   private extractPayloadContent(payload: WhatsAppPayload): string {
@@ -2059,16 +2120,31 @@ export class TemplateSenderService {
       return payload.interactive.body.text;
     }
     if (payload.template?.name) {
-      // Extract template parameters for better simulator display
       const templateName = payload.template.name;
-      const params = payload.template.components
-        ?.flatMap((c) => c.parameters || [])
-        .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-        .map((p) => p.text)
-        .join(', ');
+      const bodyParams =
+        payload.template.components
+          ?.filter((c) => c.type === 'body')
+          .flatMap((c) => c.parameters || [])
+          .filter(
+            (p): p is { type: 'text'; text: string } => p.type === 'text',
+          )
+          .map((p) => p.text) || [];
 
-      if (params) {
-        return `Template: ${templateName} [${params}]`;
+      const templateBody =
+        TemplateSenderService.TEMPLATE_CONTENT_MAP[templateName];
+
+      if (templateBody) {
+        // Replace {{1}}, {{2}}, etc. with actual parameter values
+        let content = templateBody;
+        bodyParams.forEach((param, index) => {
+          content = content.replace(`{{${index + 1}}}`, param);
+        });
+        return content;
+      }
+
+      // Fallback for unknown/new templates
+      if (bodyParams.length > 0) {
+        return `Template: ${templateName} [${bodyParams.join(', ')}]`;
       }
       return `Template: ${templateName}`;
     }

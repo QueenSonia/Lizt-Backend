@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { config } from 'dotenv-flow';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
+import { SentryModule } from '@sentry/nestjs/setup';
 
 import typeorm from '../ormconfig';
 import { AppController } from './app.controller';
@@ -39,6 +40,7 @@ config({ default_node_env: 'production' });
 
 @Module({
   imports: [
+    SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
       load: [typeorm],
@@ -90,4 +92,4 @@ config({ default_node_env: 'production' });
     UtilService,
   ],
 })
-export class AppModule {}
+export class AppModule { }

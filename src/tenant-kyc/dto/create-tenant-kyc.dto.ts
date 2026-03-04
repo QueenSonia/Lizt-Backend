@@ -33,7 +33,6 @@ export class CreateTenantKycDto {
    */
   @ValidateIf((o) => !o.phone_number?.trim())
   @IsEmail()
-  @IsOptional()
   email?: string;
 
   /**
@@ -42,47 +41,50 @@ export class CreateTenantKycDto {
    */
   @ValidateIf((o) => !o.email?.trim())
   @IsPhoneNumber('NG')
-  @IsOptional()
   @NormalizePhoneNumber()
   phone_number?: string;
 
   /**
    * @example 1996-04-22T11:03:13.157Z
    */
-  @IsOptional()
+  @IsNotEmpty()
   @IsDateString()
-  date_of_birth?: string;
+  date_of_birth: string;
 
   /**
    * Can either be: "male", "female", or "other".
    * @example male
    */
+  @IsNotEmpty()
   @IsIn(Object.values(Gender))
   gender: `${Gender}`;
 
+  @IsNotEmpty()
   @IsString()
   nationality: string;
 
+  @IsNotEmpty()
   @IsString()
-  @IsOptional()
-  current_residence?: string;
+  current_residence: string;
 
+  @IsNotEmpty()
   @IsString()
-  @IsOptional()
-  state_of_origin?: string;
+  state_of_origin: string;
 
   /**
    * Can either be: "single", "married", "divorced", or "widowed".
    * @example single
    */
+  @IsNotEmpty()
   @IsIn(Object.values(MaritalStatus))
   marital_status: `${MaritalStatus}`;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  religion?: string;
+  religion: string;
 
-  @IsOptional()
+  @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
+  @IsNotEmpty()
   @IsString()
   spouse_name_and_contact?: string;
 
@@ -90,102 +92,102 @@ export class CreateTenantKycDto {
    * Can either be: "employed", "self-employed", "unemployed", or "student".
    * @example employed
    */
+  @IsNotEmpty()
   @IsIn(Object.values(EmploymentStatus))
   employment_status: `${EmploymentStatus}`;
 
+  @IsNotEmpty()
   @IsString()
-  @IsOptional()
-  occupation?: string;
+  occupation: string;
 
   /** Only required when `employment_status` is `employed` */
   @ValidateIf((o) => o.employment_status === 'employed')
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   job_title?: string;
 
   /** Only required when `employment_status` is `employed` */
   @ValidateIf((o) => o.employment_status === 'employed')
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   employer_name?: string;
 
   /** Only required when `employment_status` is `employed` */
   @ValidateIf((o) => o.employment_status === 'employed')
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   work_address?: string;
 
   /** Only required when `employment_status` is `employed` */
   @ValidateIf((o) => o.employment_status === 'employed')
-  @IsOptional()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
+  @IsNotEmpty()
   work_phone_number?: string;
 
+  @IsNotEmpty()
   @IsNumberString()
-  @IsOptional()
-  monthly_net_income?: string;
+  monthly_net_income: string;
 
   /** Only required when `employment_status` is `self-employed` */
   @ValidateIf((o) => o.employment_status === 'self-employed')
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   nature_of_business?: string;
 
   /** Only required when `employment_status` is `self-employed` */
   @ValidateIf((o) => o.employment_status === 'self-employed')
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   business_name?: string;
 
   /** Only required when `employment_status` is `self-employed` */
   @ValidateIf((o) => o.employment_status === 'self-employed')
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   business_address?: string;
 
   /** Only required when `employment_status` is `self-employed` */
   @ValidateIf((o) => o.employment_status === 'self-employed')
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   business_duration?: string;
 
   @ValidateIf((o) => o.employment_status === 'self-employed')
   @IsString()
-  @IsOptional()
+  @IsNotEmpty()
   estimated_monthly_income?: string;
 
+  @IsNotEmpty()
   @IsString()
-  @IsOptional()
-  contact_address?: string;
+  contact_address: string;
 
+  @IsNotEmpty()
   @IsString()
-  @IsOptional()
-  next_of_kin_full_name?: string;
+  next_of_kin_full_name: string;
 
+  @IsNotEmpty()
   @IsString()
-  @IsOptional()
-  next_of_kin_address?: string;
+  next_of_kin_address: string;
 
+  @IsNotEmpty()
   @IsString()
-  @IsOptional()
-  next_of_kin_relationship?: string;
+  next_of_kin_relationship: string;
 
+  @IsNotEmpty()
   @IsPhoneNumber('NG')
-  @IsOptional()
   @NormalizePhoneNumber()
-  next_of_kin_phone_number?: string;
+  next_of_kin_phone_number: string;
 
+  @IsNotEmpty()
   @IsEmail()
-  @IsOptional()
-  next_of_kin_email?: string;
+  next_of_kin_email: string;
 
   @IsOptional()
   @IsString()
   referral_agent_full_name?: string;
 
   @IsOptional()
-  // @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
   referral_agent_phone_number?: string;
 

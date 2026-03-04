@@ -37,10 +37,14 @@ describe('KYCApplicationController', () => {
   } as Account;
 
   const mockKycApplicationDto: CreateKYCApplicationDto = {
+    kyc_token: 'valid-token-123',
+    property_id: 'property-123',
     first_name: 'John',
     last_name: 'Doe',
     email: 'john.doe@example.com',
     phone_number: '+2348012345678',
+    passport_photo_url: 'https://cloudinary.com/passport.jpg',
+    id_document_url: 'https://cloudinary.com/id.jpg',
     date_of_birth: '1990-01-01',
     gender: Gender.MALE,
     nationality: 'Nigerian',
@@ -131,7 +135,6 @@ describe('KYCApplicationController', () => {
 
       // Act
       const result = await controller.submitKYCApplication(
-        token,
         mockKycApplicationDto,
       );
 
@@ -149,14 +152,18 @@ describe('KYCApplicationController', () => {
 
     it('should handle invalid token error', async () => {
       // Arrange
+      const invalidDto = {
+        ...mockKycApplicationDto,
+        kyc_token: 'invalid-token',
+      };
       mockKycApplicationService.submitKYCApplication.mockRejectedValue(
         new NotFoundException('Invalid KYC token'),
       );
 
       // Act & Assert
-      await expect(
-        controller.submitKYCApplication('invalid-token', mockKycApplicationDto),
-      ).rejects.toThrow(NotFoundException);
+      await expect(controller.submitKYCApplication(invalidDto)).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('should handle duplicate application error', async () => {
@@ -169,7 +176,7 @@ describe('KYCApplicationController', () => {
 
       // Act & Assert
       await expect(
-        controller.submitKYCApplication(token, mockKycApplicationDto),
+        controller.submitKYCApplication(mockKycApplicationDto),
       ).rejects.toThrow(ConflictException);
     });
 
@@ -181,7 +188,7 @@ describe('KYCApplicationController', () => {
 
       // Act & Assert
       await expect(
-        controller.submitKYCApplication(token, mockKycApplicationDto),
+        controller.submitKYCApplication(mockKycApplicationDto),
       ).rejects.toThrow(BadRequestException);
     });
 

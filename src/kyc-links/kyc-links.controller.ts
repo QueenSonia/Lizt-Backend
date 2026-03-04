@@ -18,11 +18,9 @@ import {
   KYCLinksService,
   KYCLinkResponse,
   PropertyKYCData,
-  WhatsAppResponse,
 } from './kyc-links.service';
 import { TenantAttachmentService } from './tenant-attachment.service';
 import { AttachTenantDto } from './dto/attach-tenant.dto';
-import { SendWhatsAppDto } from './dto/send-whatsapp.dto';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { SendOTPDto } from './dto/send-otp.dto';
 import { VerifyOTPDto } from './dto/verify-otp.dto';
@@ -40,104 +38,23 @@ export class KYCLinksController {
   /**
    * Generate general KYC link for landlord (not tied to specific property)
    * POST /api/kyc-links/generate
-   * Requirements: 1.1, 1.2, 2.1, 2.2
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
   @Roles('landlord')
   @Post('kyc-links/generate')
-  async generateKYCLink(@CurrentUser() user: Account): Promise<{
+  async generateKYCLink(@CurrentUser() account: Account): Promise<{
     success: boolean;
     message: string;
     data: KYCLinkResponse;
   }> {
-    const kycLinkResponse = await this.kycLinksService.generateKYCLink(user.id);
-
-    console.log('Backend kycLinkResponse:', kycLinkResponse);
-
-    return {
-      success: true,
-      message: 'KYC link generated successfully',
-      data: kycLinkResponse,
-    };
-  }
-
-  /**
-   * Generate KYC link for property (landlord only) - DEPRECATED, use /api/kyc-links/generate instead
-   * POST /api/properties/:propertyId/kyc-link
-   * Requirements: 1.1, 1.2, 2.1, 2.2
-   * @deprecated This endpoint is kept for backward compatibility but propertyId is ignored
-   */
-  @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
-  @Post('properties/:propertyId/kyc-link')
-  async generateKYCLinkLegacy(
-    @Param('propertyId', ParseUUIDPipe) propertyId: string,
-    @CurrentUser() user: Account,
-  ): Promise<{
-    success: boolean;
-    message: string;
-    data: KYCLinkResponse;
-  }> {
-    const kycLinkResponse = await this.kycLinksService.generateKYCLink(user.id);
-
-    console.log('Backend kycLinkResponse:', kycLinkResponse);
-
-    return {
-      success: true,
-      message: 'KYC link generated successfully',
-      data: kycLinkResponse,
-    };
-  }
-
-  /**
-   * Send KYC link via WhatsApp
-   * POST /api/kyc-links/:token/send-whatsapp
-   * Requirements: 1.5, 7.2, 7.3
-   */
-  @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
-  @Post('kyc-links/:token/send-whatsapp')
-  async sendKYCLinkViaWhatsApp(
-    @Param('token') token: string,
-    @Body(ValidationPipe) sendWhatsAppDto: SendWhatsAppDto,
-    @CurrentUser() user: Account,
-  ): Promise<{
-    success: boolean;
-    message: string;
-    data?: any;
-  }> {
-    // First validate that the token belongs to a property owned by this landlord
-    const tokenValidation = await this.kycLinksService.validateKYCToken(token);
-
-    if (!tokenValidation.valid) {
-      return {
-        success: false,
-        message: tokenValidation.error || 'Invalid KYC token',
-      };
-    }
-
-    // Generate the full KYC link
-    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const kycLink = `${baseUrl}/kyc/${token}`;
-
-    const propertyName =
-      tokenValidation.vacantProperties?.[0]?.name || 'Properties';
-
-    const whatsAppResponse = await this.kycLinksService.sendKYCLinkViaWhatsApp(
-      sendWhatsAppDto.phoneNumber,
-      kycLink,
-      propertyName,
+    const kycLinkResponse = await this.kycLinksService.generateKYCLink(
+      account.id,
     );
 
     return {
-      success: whatsAppResponse.success,
-      message: whatsAppResponse.message,
-      data: whatsAppResponse.errorCode
-        ? {
-            errorCode: whatsAppResponse.errorCode,
-            retryAfter: whatsAppResponse.retryAfter,
-          }
-        : undefined,
+      success: true,
+      message: 'KYC link generated successfully',
+      data: kycLinkResponse,
     };
   }
 
@@ -231,14 +148,31 @@ export class KYCLinksController {
   }
 
   /**
+   * Track when a user opens the KYC form (public endpoint)
+   * POST /api/kyc/:token/track-open
+   * Records timestamp and IP address
+   */
+  @SkipAuth()
+  @Post('kyc/:token/track-open')
+  async trackFormOpen(
+    @Param('token') token: string,
+    @Body('ipAddress') ipAddress?: string,
+  ): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    return this.kycApplicationService.trackFormOpen(token, ipAddress);
+  }
+
+  /**
    * Submit KYC application (public endpoint)
-   * POST /api/kyc/:token/submit
+   * POST /api/kyc/submit
    * Requirements: 3.1, 3.2, 3.4
+   * SECURITY: Token in request body to prevent exposure in logs
    */
   @Public()
-  @Post('kyc/:token/submit')
+  @Post('kyc/submit')
   async submitKYCApplication(
-    @Param('token') token: string,
     @Body(ValidationPipe) kycData: CreateKYCApplicationDto,
   ): Promise<{
     success: boolean;
@@ -250,7 +184,7 @@ export class KYCLinksController {
   }> {
     try {
       const application = await this.kycApplicationService.submitKYCApplication(
-        token,
+        kycData.kyc_token,
         kycData,
       );
 

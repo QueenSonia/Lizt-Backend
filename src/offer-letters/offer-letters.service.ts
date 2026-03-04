@@ -520,51 +520,46 @@ export class OfferLettersService {
   /**
    * Find offer letter by token (public endpoint)
    * Requirements: 10.2
+   * OPTIMIZED: Uses eager loading to reduce queries from 4 to 1
    */
   async findByToken(token: string): Promise<OfferLetterResponse> {
-    const offerLetter = await this.offerLetterRepository.findOne({
-      where: { token },
-    });
+    // OPTIMIZATION: Load all relations in a single query instead of 4 separate queries
+    const offerLetter = await this.offerLetterRepository
+      .createQueryBuilder('offer')
+      .leftJoinAndSelect('offer.kyc_application', 'kyc')
+      .leftJoinAndSelect('offer.property', 'property')
+      .leftJoinAndSelect('offer.landlord', 'landlord')
+      .leftJoinAndSelect('landlord.user', 'user')
+      .where('offer.token = :token', { token })
+      .getOne();
 
     if (!offerLetter) {
       throw new NotFoundException('Offer letter not found');
     }
 
-    // Load related entities in parallel (independent queries)
-    const [kycApplication, property, landlordAccount] = await Promise.all([
-      this.kycApplicationRepository.findOne({
-        where: { id: offerLetter.kyc_application_id },
-      }),
-      this.propertyRepository.findOne({
-        where: { id: offerLetter.property_id },
-      }),
-      this.propertyRepository.manager.getRepository('Account').findOne({
-        where: { id: offerLetter.landlord_id },
-        relations: ['user'],
-      }),
-    ]);
-
-    if (!kycApplication || !property) {
+    if (!offerLetter.kyc_application || !offerLetter.property) {
       throw new NotFoundException('Offer letter data incomplete');
     }
 
     return toOfferLetterResponse(
       offerLetter,
-      kycApplication,
-      property,
-      landlordAccount?.user ?? undefined,
+      offerLetter.kyc_application,
+      offerLetter.property,
+      offerLetter.landlord?.user ?? undefined,
     );
   }
 
   /**
    * Initiate acceptance process (sends OTP)
    * Requirements: 9.1, 10.5
+   * OPTIMIZED: Sends OTP asynchronously to avoid blocking response
    */
   async initiateAcceptance(
     token: string,
   ): Promise<AcceptanceInitiationResponse> {
     const offerLetter = await this.offerLetterRepository.findOne({
       where: { token },
+      relations: ['kyc_application'],
     });
 
     if (!offerLetter) {
@@ -575,24 +570,23 @@ export class OfferLettersService {
       throw new ConflictException('Offer letter has already been processed');
     }
 
-    // Get applicant phone number and name
-    const kycApplication = await this.kycApplicationRepository.findOne({
-      where: { id: offerLetter.kyc_application_id },
-    });
-
-    if (!kycApplication) {
+    if (!offerLetter.kyc_application) {
       throw new NotFoundException('KYC application not found');
     }
 
-    const phoneNumber = kycApplication.phone_number;
+    const phoneNumber = offerLetter.kyc_application.phone_number;
     const phoneLastFour = phoneNumber.slice(-4);
 
-    // Generate, store, and send OTP via WhatsApp
-    // Requirements: 9.1
-    await this.otpService.initiateOTPVerification(token, phoneNumber);
+    // OPTIMIZATION: Send OTP asynchronously (fire and forget)
+    // This returns response immediately instead of waiting 10+ seconds for WhatsApp API
+    this.otpService.initiateOTPVerification(token, phoneNumber).catch((err) => {
+      this.logger.error(
+        `Failed to send OTP for token ${token.substring(0, 8)}: ${err.message}`,
+      );
+    });
 
     return {
-      message: 'OTP sent to your phone number',
+      message: 'OTP is being sent to your phone number',
       phoneLastFour,
     };
   }

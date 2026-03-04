@@ -11,21 +11,15 @@ import {
   Req,
   UseInterceptors,
   UploadedFiles,
-  HttpStatus,
-  HttpException,
-  RawBodyRequest,
-  Headers as HeadersDecorator,
 } from '@nestjs/common';
 import {
   ServiceRequestsService,
-  TawkWebhookPayload,
 } from './service-requests.service';
 import {
   CreateServiceRequestDto,
   ServiceRequestFilter,
 } from './dto/create-service-request.dto';
 import {
-  UpdateServiceRequestDto,
   UpdateServiceRequestResponseDto,
 } from './dto/update-service-request.dto';
 import {
@@ -43,7 +37,6 @@ import {
 import { ServiceRequestPaginationResponseDto } from './dto/paginate.dto';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import * as crypto from 'crypto';
 
 @ApiTags('Service-Requests')
 @Controller('service-requests')
@@ -60,24 +53,10 @@ export class ServiceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  // @UseInterceptors(FilesInterceptor('issue_images', 20))
   async createServiceRequest(
     @Body() body: CreateServiceRequestDto,
-    // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
-    try {
-      // if (files?.length) {
-      //   const uploadedUrls = await Promise.all(
-      //     files.map((file) =>
-      //       this.fileUploadService.uploadFile(file, 'service-requests'),
-      //     ),
-      //   );
-      //   body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
-      // }
-      return this.serviceRequestsService.createServiceRequest(body);
-    } catch (error) {
-      throw error;
-    }
+    return this.serviceRequestsService.createServiceRequest(body);
   }
 
   @ApiOperation({ summary: 'Get All Service Requests' })
@@ -96,13 +75,8 @@ export class ServiceRequestsController {
   @ApiSecurity('access_token')
   @Get()
   getAllServiceRequests(@Query() query: ServiceRequestFilter, @Req() req: any) {
-    try {
-      const user_id = req?.user?.id;
-
-      return this.serviceRequestsService.getAllServiceRequests(user_id, query);
-    } catch (error) {
-      throw error;
-    }
+    const user_id = req?.user?.id;
+    return this.serviceRequestsService.getAllServiceRequests(user_id, query);
   }
 
   @ApiOperation({ summary: 'Get Pending and Urgent Requests' })
@@ -119,17 +93,13 @@ export class ServiceRequestsController {
     @Query() query: ServiceRequestFilter,
     @Req() req: any,
   ) {
-    try {
-      return this.serviceRequestsService.getPendingAndUrgentRequests(
-        query,
-        req?.user.id,
-      );
-    } catch (error) {
-      throw error;
-    }
+    return this.serviceRequestsService.getPendingAndUrgentRequests(
+      query,
+      req?.user.id,
+    );
   }
 
-  @ApiOperation({ summary: 'Get One Service Request' })
+  @ApiOperation({ summary: 'Get Service Requests by Tenant' })
   @ApiOkResponse({
     type: CreateServiceRequestDto,
     description: 'Service request successfully fetched',
@@ -139,15 +109,11 @@ export class ServiceRequestsController {
   @ApiSecurity('access_token')
   @Get('/tenant')
   getServiceRequestByTenant(@Req() req: any) {
-    try {
-      const status = req?.query?.status || '';
-      return this.serviceRequestsService.getServiceRequestByTenant(
-        req?.user.id,
-        status,
-      );
-    } catch (error) {
-      throw error;
-    }
+    const status = req?.query?.status || '';
+    return this.serviceRequestsService.getServiceRequestByTenant(
+      req?.user.id,
+      status,
+    );
   }
 
   @ApiOperation({ summary: 'Get One Service Request' })
@@ -163,14 +129,10 @@ export class ServiceRequestsController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
   ) {
-    try {
-      return this.serviceRequestsService.getServiceRequestById(
-        id,
-        req?.user?.id,
-      );
-    } catch (error) {
-      throw error;
-    }
+    return this.serviceRequestsService.getServiceRequestById(
+      id,
+      req?.user?.id,
+    );
   }
 
   @ApiOperation({ summary: 'Update Service Request' })
@@ -187,23 +149,19 @@ export class ServiceRequestsController {
     @Req() req: any,
     @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
-    try {
-      if (files?.length) {
-        const uploadedUrls = await Promise.all(
-          files.map((file) =>
-            this.fileUploadService.uploadFile(file, 'service-requests'),
-          ),
-        );
-        body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
-      }
-      return this.serviceRequestsService.updateServiceRequestById(
-        id,
-        body,
-        req?.user?.id,
+    if (files?.length) {
+      const uploadedUrls = await Promise.all(
+        files.map((file) =>
+          this.fileUploadService.uploadFile(file, 'service-requests'),
+        ),
       );
-    } catch (error) {
-      throw error;
+      body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
     }
+    return this.serviceRequestsService.updateServiceRequestById(
+      id,
+      body,
+      req?.user?.id,
+    );
   }
 
   @ApiOperation({ summary: 'Delete Service Request' })
@@ -215,18 +173,10 @@ export class ServiceRequestsController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
   ) {
-    try {
-      return this.serviceRequestsService.deleteServiceRequestById(
-        id,
-        req?.user?.id,
-      );
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  private isSupportedEvent(event: string): boolean {
-    return ['chat:start', 'chat:end', 'ticket:create'].includes(event);
+    return this.serviceRequestsService.deleteServiceRequestById(
+      id,
+      req?.user?.id,
+    );
   }
 
   // Health check endpoint for Tawk.to to verify webhook is working

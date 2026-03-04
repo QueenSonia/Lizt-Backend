@@ -1,10 +1,14 @@
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ChatLogService } from '../chat-log.service';
 
 export class WhatsappUtils {
   private static globalEventEmitter: EventEmitter2;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly chatLogService?: ChatLogService,
+  ) {}
 
   static setEventEmitter(eventEmitter: EventEmitter2) {
     WhatsappUtils.globalEventEmitter = eventEmitter;
@@ -22,7 +26,9 @@ export class WhatsappUtils {
       },
     };
 
-    await this.sendToWhatsappAPI(payload);
+    const result = await this.sendToWhatsappAPI(payload);
+    await this.logOutbound(to, 'text', text, payload, result);
+    return result;
   }
 
   async sendButtons(
@@ -50,7 +56,9 @@ export class WhatsappUtils {
       },
     };
 
-    await this.sendToWhatsappAPI(payload);
+    const result = await this.sendToWhatsappAPI(payload);
+    await this.logOutbound(to, 'interactive', text, payload, result);
+    return result;
   }
 
   /**
@@ -93,7 +101,54 @@ export class WhatsappUtils {
       },
     };
 
-    await this.sendToWhatsappAPI(payload);
+    const result = await this.sendToWhatsappAPI(payload);
+    await this.logOutbound(
+      to,
+      'template',
+      `Hello ${landlordName}, What do you want to do today?`,
+      payload,
+      result,
+    );
+    return result;
+  }
+
+  /**
+   * Log outbound message to chat history if ChatLogService is available
+   */
+  private async logOutbound(
+    phoneNumber: string,
+    messageType: string,
+    content: string,
+    payload: object,
+    apiResult: any,
+  ): Promise<void> {
+    if (!this.chatLogService) return;
+
+    try {
+      const wamid = apiResult?.messages?.[0]?.id;
+      const isSimulated =
+        process.env.WHATSAPP_SIMULATOR === 'true';
+
+      await this.chatLogService.logOutboundMessage(
+        phoneNumber,
+        messageType,
+        content,
+        {
+          ...payload,
+          is_simulated: isSimulated,
+          simulation_status: isSimulated
+            ? 'simulator_message'
+            : 'production_message',
+          message_source: 'whatsapp_utils',
+        },
+        wamid,
+      );
+    } catch (error) {
+      console.warn(
+        '⚠️ WhatsappUtils: Failed to log outbound message (continuing):',
+        (error as Error).message,
+      );
+    }
   }
 
   private async sendToWhatsappAPI(payload: object) {

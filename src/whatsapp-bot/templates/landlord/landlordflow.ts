@@ -22,6 +22,7 @@ import {
 } from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
+import { ChatLogService } from 'src/whatsapp-bot/chat-log.service';
 
 @Injectable()
 export class LandlordFlow {
@@ -50,9 +51,10 @@ export class LandlordFlow {
     private readonly utilService: UtilService,
     @Inject(forwardRef(() => KYCLinksService))
     private readonly kycLinksService: KYCLinksService,
+    private readonly chatLogService: ChatLogService,
   ) {
     const config = new ConfigService();
-    this.whatsappUtil = new WhatsappUtils(config);
+    this.whatsappUtil = new WhatsappUtils(config, chatLogService);
     this.lookup = new LandlordLookup(
       cache,
       propertyRepo,
@@ -62,6 +64,7 @@ export class LandlordFlow {
       serviceRequestRepo,
       utilService,
       kycLinksService,
+      chatLogService,
     );
   }
 

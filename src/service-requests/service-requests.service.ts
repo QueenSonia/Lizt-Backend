@@ -2,6 +2,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -58,6 +59,8 @@ export interface TawkWebhookPayload {
 
 @Injectable()
 export class ServiceRequestsService {
+  private readonly logger = new Logger(ServiceRequestsService.name);
+
   constructor(
     @InjectRepository(ServiceRequest)
     private readonly serviceRequestRepository: Repository<ServiceRequest>,
@@ -125,25 +128,15 @@ export class ServiceRequestsService {
       relations: ['team', 'account', 'account.user'],
     });
 
-    if (!facilityManagers.length) {
-      throw new HttpException(
-        'No facility manager assigned to this property yet',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-
-    // 2. Pick a random facility manager
-    // const randomIndex = Math.floor(Math.random() * facilityManagers.length);
-    const selected_managers = facilityManagers.map((manager) => {
-      return {
+    // Fix #5: If no FMs exist, continue — landlord will still be notified
+    const selected_managers = facilityManagers
+      .filter((manager) => manager.account?.user?.phone_number)
+      .map((manager) => ({
         phone_number: this.utilService.normalizePhoneNumber(
           manager.account.user.phone_number,
         ),
         name: this.utilService.toSentenceCase(manager.account.user.first_name),
-      };
-    });
-
-    console.log('Selected', selected_managers);
+      }));
 
     const requestId = this.utilService.generateServiceRequestId();
 
@@ -300,7 +293,7 @@ export class ServiceRequestsService {
       ? status
       : status
         ? [status]
-        : ['pending', 'in_progress', 'urgent', 'resolved'];
+        : ['pending', 'open', 'in_progress', 'urgent', 'resolved', 'reopened'];
 
     const serviceRequest = await this.serviceRequestRepository.find({
       where: {
@@ -343,13 +336,25 @@ export class ServiceRequestsService {
         HttpStatus.NOT_FOUND,
       );
     }
-    // Only landlord can update via this method (usually status updates)
-    // Tenants might update via a different endpoint or if we allow them to edit description
-    // For now, let's assume this is for general updates and restrict to landlord or tenant
-    if (
-      serviceRequest.tenant_id !== userId &&
-      serviceRequest.property.owner_id !== userId
-    ) {
+
+    // Fix #7: Allow tenant, landlord, or facility manager to update
+    const isOwner = serviceRequest.property.owner_id === userId;
+    const isTenant = serviceRequest.tenant_id === userId;
+    let isFacilityManager = false;
+
+    if (!isOwner && !isTenant) {
+      const fm = await this.teamMemberRepository.findOne({
+        where: {
+          team: { creatorId: serviceRequest.property.owner_id },
+          account: { user: { id: userId } },
+          role: RolesEnum.FACILITY_MANAGER,
+        },
+        relations: ['team', 'account', 'account.user'],
+      });
+      isFacilityManager = !!fm;
+    }
+
+    if (!isOwner && !isTenant && !isFacilityManager) {
       throw new HttpException(
         'You do not have permission to update this service request',
         HttpStatus.FORBIDDEN,
@@ -358,10 +363,22 @@ export class ServiceRequestsService {
 
     const previousStatus = serviceRequest.status;
 
-    // Update the service request
-    await this.serviceRequestRepository.update(id, data);
+    // Fix #8: Only allow safe fields to be updated — never tenant_id, property_id, etc.
+    const safeUpdate: Partial<ServiceRequest> = {};
+    if (data.status !== undefined) safeUpdate.status = data.status;
+    if (data.description !== undefined)
+      safeUpdate.description = data.description;
+    if (data.issue_category !== undefined)
+      safeUpdate.issue_category = data.issue_category;
+    if (data.date_reported !== undefined)
+      safeUpdate.date_reported = data.date_reported;
+    if (data.resolution_date !== undefined)
+      safeUpdate.resolution_date = data.resolution_date;
+    if (data.issue_images !== undefined)
+      safeUpdate.issue_images = data.issue_images;
 
-    // Fetch the updated service request to get the new values
+    await this.serviceRequestRepository.update(id, safeUpdate);
+
     const updatedServiceRequest = await this.serviceRequestRepository.findOne({
       where: { id },
       relations: ['property'],
@@ -369,8 +386,11 @@ export class ServiceRequestsService {
 
     // Create status history entry if status changed
     if (data.status && data.status !== previousStatus) {
-      const userRole =
-        serviceRequest.tenant_id === userId ? 'tenant' : 'landlord';
+      const userRole = isTenant
+        ? 'tenant'
+        : isFacilityManager
+          ? 'facility_manager'
+          : 'landlord';
       await this.createStatusHistoryEntry(
         id,
         previousStatus,
@@ -394,7 +414,7 @@ export class ServiceRequestsService {
         tenant_id: updatedServiceRequest.tenant_id,
         description: updatedServiceRequest.description,
         updated_at: new Date(),
-        actor: { id: userId, role: 'user', name: 'System' },
+        actor: { id: userId, role: isTenant ? 'tenant' : isFacilityManager ? 'facility_manager' : 'landlord' },
       });
     }
 
@@ -421,7 +441,8 @@ export class ServiceRequestsService {
         HttpStatus.FORBIDDEN,
       );
     }
-    return this.serviceRequestRepository.delete(id);
+    // Fix #9: Soft delete preserves history, notifications, and chat messages
+    return this.serviceRequestRepository.softDelete(id);
   }
 
   async getPendingAndUrgentRequests(
@@ -558,7 +579,7 @@ export class ServiceRequestsService {
 
     const savedRequest = await this.serviceRequestRepository.save(request);
 
-    // Create status history entry
+    // Fix #14: Create status history entry, warn if actor is missing
     if (actor?.id) {
       await this.createStatusHistoryEntry(
         savedRequest.id,
@@ -568,6 +589,10 @@ export class ServiceRequestsService {
         actor.role || 'system',
         `Status changed from ${previousStatus} to ${status}`,
         notes,
+      );
+    } else {
+      this.logger.warn(
+        `Status history entry skipped for request ${savedRequest.id}: no actor.id provided (${previousStatus} → ${status})`,
       );
     }
 
@@ -609,5 +634,19 @@ export class ServiceRequestsService {
     });
 
     return await this.statusHistoryRepository.save(historyEntry);
+  }
+
+  /**
+   * Find all facility managers belonging to a landlord's team.
+   * Used by tenant-flow to notify all FMs on resolution confirmation.
+   */
+  async findFacilityManagersForOwner(ownerId: string): Promise<TeamMember[]> {
+    return this.teamMemberRepository.find({
+      where: {
+        team: { creatorId: ownerId },
+        role: RolesEnum.FACILITY_MANAGER,
+      },
+      relations: ['account', 'account.user'],
+    });
   }
 }

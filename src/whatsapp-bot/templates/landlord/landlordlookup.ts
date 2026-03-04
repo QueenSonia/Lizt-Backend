@@ -12,6 +12,7 @@ import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
 import { Repository } from 'typeorm/repository/Repository';
 import { Not, IsNull } from 'typeorm';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
+import { ChatLogService } from 'src/whatsapp-bot/chat-log.service';
 
 // --- landlordLookup.ts ---
 export class LandlordLookup {
@@ -29,9 +30,10 @@ export class LandlordLookup {
     private readonly serviceRequestRepo: Repository<ServiceRequest>,
     private readonly utilService: UtilService,
     private readonly kycLinksService: KYCLinksService,
+    private readonly chatLogService?: ChatLogService,
   ) {
     const config = new ConfigService();
-    this.whatsappUtil = new WhatsappUtils(config);
+    this.whatsappUtil = new WhatsappUtils(config, chatLogService);
   }
 
   private key(from: string) {

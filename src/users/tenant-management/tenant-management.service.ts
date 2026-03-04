@@ -1839,15 +1839,37 @@ export class TenantManagementService {
           });
         }
 
+        if (ph.event_type === 'service_request_created') {
+          const prop = ph.property;
+          const issueDescription = ph.event_description || 'Service Request';
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `service-created-${ph.id}`,
+            type: 'maintenance' as const,
+            title: 'Service Request Created',
+            description: `Issue: "${issueDescription}" — Status: pending`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'service_request',
+          });
+        }
+
         if (ph.event_type === 'service_request_updated') {
           // Fix #19: Parse JSON format (backward compatible with old ||| delimiter)
           let status = 'updated';
+          let previousStatus = '';
           let issueDescription = 'Service Request';
 
           if (ph.event_description) {
             try {
               const parsed = JSON.parse(ph.event_description);
               status = parsed.status || 'updated';
+              previousStatus = parsed.previous_status || '';
               issueDescription = parsed.description || 'Service Request';
             } catch {
               // Fallback: legacy ||| delimiter format
@@ -1858,22 +1880,31 @@ export class TenantManagementService {
           }
 
           const prop = ph.property;
-          let title = issueDescription;
+          const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+          let title = `Service Request ${statusLabel}`;
 
           if (status.toLowerCase() === 'resolved') {
-            title = issueDescription || 'Service Request Resolved';
+            title = 'Service Request Resolved';
           } else if (status.toLowerCase() === 'closed') {
-            title = issueDescription || 'Service Request Closed';
+            title = 'Service Request Closed';
           } else if (status.toLowerCase() === 'reopened') {
-            title = issueDescription || 'Service Request Reopened';
+            title = 'Service Request Reopened';
+          } else if (status.toLowerCase() === 'in_progress') {
+            title = 'Service Request In Progress';
+          } else if (status.toLowerCase() === 'open') {
+            title = 'Service Request Opened';
           }
+
+          const statusTransition = previousStatus
+            ? `${previousStatus} → ${status}`
+            : status;
 
           const eventDate = new Date(ph.created_at || new Date());
           tenancyEvents.push({
             id: `service-update-${ph.id}`,
             type: 'maintenance' as const,
             title: title,
-            description: this.getServiceRequestUpdateDescription(status),
+            description: `Issue: "${issueDescription}" — Status: ${statusTransition}`,
             details: prop?.name || undefined,
             date: eventDate.toISOString(),
             time: eventDate.toLocaleTimeString('en-US', {
@@ -2080,26 +2111,38 @@ export class TenantManagementService {
       });
     }
 
-    // Add service request events
-    const serviceRequestEvents = serviceRequests.map((sr) => {
-      const eventDate = new Date(sr.date_reported);
-      const prop = sr.property;
-      const issueTitle = sr.description || 'Service Request';
-      return {
-        id: `service-${sr.id}`,
-        type: 'maintenance' as const,
-        title: issueTitle,
-        description: `Issue reported by tenant: "${sr.description}".`,
-        details: prop?.name || undefined,
-        date: eventDate.toISOString(),
-        time: eventDate.toLocaleTimeString('en-US', {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
-        relatedEntityId: sr.id,
-        relatedEntityType: 'service_request',
-      };
-    });
+    // Add service request events (only for SRs that don't already have a
+    // service_request_created property_history event, to avoid duplicates)
+    const srIdsWithHistoryEvent = new Set(
+      tenancyEvents
+        .filter(
+          (e) =>
+            e.relatedEntityType === 'service_request' &&
+            e.id.startsWith('service-created-'),
+        )
+        .map((e) => e.relatedEntityId),
+    );
+    const serviceRequestEvents = serviceRequests
+      .filter((sr) => !srIdsWithHistoryEvent.has(sr.id))
+      .map((sr) => {
+        const eventDate = new Date(sr.date_reported);
+        const prop = sr.property;
+        const issueTitle = sr.description || 'Service Request';
+        return {
+          id: `service-${sr.id}`,
+          type: 'maintenance' as const,
+          title: 'Service Request Created',
+          description: `Issue: "${issueTitle}" — Status: ${sr.status || 'pending'}`,
+          details: prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: eventDate.toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          relatedEntityId: sr.id,
+          relatedEntityType: 'service_request',
+        };
+      });
 
     // Add offer letter events
     const offerLetterEvents: TimelineEvent[] = (offerLetters || []).map(

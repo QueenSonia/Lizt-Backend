@@ -412,10 +412,12 @@ export class TenantFlowService {
   ): Promise<void> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
 
+    // Fix #18: Escape LIKE special characters to prevent pattern injection
+    const escapedText = text.replace(/[%_]/g, '\\$&');
     const serviceRequests = await this.serviceRequestRepo.find({
       where: {
         tenant: { user: { phone_number: normalizedPhone } },
-        description: ILike(`%${text}%`),
+        description: ILike(`%${escapedText}%`),
       },
       relations: ['tenant'],
     });
@@ -902,14 +904,7 @@ export class TenantFlowService {
         tenant: { user: { phone_number: normalizedPhone } },
         status: ServiceRequestStatusEnum.RESOLVED,
       },
-      relations: [
-        'tenant',
-        'tenant.user',
-        'facilityManager',
-        'facilityManager.account',
-        'facilityManager.account.user',
-        'property',
-      ],
+      relations: ['tenant', 'tenant.user', 'property'],
       order: { resolution_date: 'DESC' },
     });
 
@@ -930,32 +925,11 @@ export class TenantFlowService {
         "Fantastic! Glad that's sorted 😊",
       );
 
-      // Notify FM
-      if (latestResolvedRequest.facilityManager?.account?.user?.phone_number) {
-        await this.templateSenderService.sendText(
-          this.utilService.normalizePhoneNumber(
-            latestResolvedRequest.facilityManager.account.user.phone_number,
-          ),
-          `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`,
-        );
-      }
-
-      // Notify landlord
-      const propertyTenant = await this.propertyTenantRepo.findOne({
-        where: {
-          property_id: latestResolvedRequest.property_id,
-        },
-        relations: ['property', 'property.owner', 'property.owner.user'],
-      });
-
-      if (propertyTenant?.property?.owner?.user?.phone_number) {
-        await this.templateSenderService.sendText(
-          this.utilService.normalizePhoneNumber(
-            propertyTenant.property.owner.user.phone_number,
-          ),
-          `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`,
-        );
-      }
+      const statusMessage = `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`;
+      await this.notifyPropertyStakeholders(
+        latestResolvedRequest.property_id,
+        statusMessage,
+      );
     } else {
       await this.templateSenderService.sendText(
         from,
@@ -975,14 +949,7 @@ export class TenantFlowService {
         tenant: { user: { phone_number: normalizedPhone } },
         status: ServiceRequestStatusEnum.RESOLVED,
       },
-      relations: [
-        'tenant',
-        'tenant.user',
-        'facilityManager',
-        'facilityManager.account',
-        'facilityManager.account.user',
-        'property',
-      ],
+      relations: ['tenant', 'tenant.user', 'property'],
       order: { resolution_date: 'DESC' },
     });
 
@@ -1003,37 +970,60 @@ export class TenantFlowService {
         "Thanks for letting me know. I'll reopen the request and notify maintenance to check again.",
       );
 
-      // Notify FM
-      if (latestResolvedRequest.facilityManager?.account?.user?.phone_number) {
-        await this.templateSenderService.sendText(
-          this.utilService.normalizePhoneNumber(
-            latestResolvedRequest.facilityManager.account.user.phone_number,
-          ),
-          `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`,
-        );
-      }
-
-      // Notify landlord
-      const propertyTenant = await this.propertyTenantRepo.findOne({
-        where: {
-          property_id: latestResolvedRequest.property_id,
-        },
-        relations: ['property', 'property.owner', 'property.owner.user'],
-      });
-
-      if (propertyTenant?.property?.owner?.user?.phone_number) {
-        await this.templateSenderService.sendText(
-          this.utilService.normalizePhoneNumber(
-            propertyTenant.property.owner.user.phone_number,
-          ),
-          `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`,
-        );
-      }
+      const statusMessage = `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`;
+      await this.notifyPropertyStakeholders(
+        latestResolvedRequest.property_id,
+        statusMessage,
+      );
     } else {
       await this.templateSenderService.sendText(
         from,
         "I couldn't find a pending resolution to confirm.",
       );
+    }
+  }
+
+  /**
+   * Notify all facility managers and the landlord for a given property with a text message.
+   * Fix #2: All FMs are notified (no single assignment).
+   * Fix #4: Queries Property directly for landlord info.
+   */
+  private async notifyPropertyStakeholders(
+    propertyId: string,
+    message: string,
+  ): Promise<void> {
+    try {
+      const property = await this.propertyRepo.findOne({
+        where: { id: propertyId },
+        relations: ['owner', 'owner.user'],
+      });
+
+      if (!property) return;
+
+      // Notify landlord
+      if (property.owner?.user?.phone_number) {
+        await this.templateSenderService.sendText(
+          this.utilService.normalizePhoneNumber(
+            property.owner.user.phone_number,
+          ),
+          message,
+        );
+      }
+
+      // Notify all FMs for this landlord's team
+      const fms = await this.serviceRequestService.findFacilityManagersForOwner(
+        property.owner_id,
+      );
+      for (const fm of fms) {
+        if (fm.account?.user?.phone_number) {
+          await this.templateSenderService.sendText(
+            this.utilService.normalizePhoneNumber(fm.account.user.phone_number),
+            message,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to notify property stakeholders:', error);
     }
   }
 

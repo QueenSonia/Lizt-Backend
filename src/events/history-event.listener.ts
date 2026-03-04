@@ -47,13 +47,16 @@ export class HistoryEventListener {
     );
 
     try {
-      // Create history entry
-      // Store status and description separately using a delimiter
+      // Fix #19: Store status and description as JSON instead of fragile delimiter
       const historyEntry = this.propertyHistoryRepository.create({
         property_id: payload.property_id,
         tenant_id: payload.tenant_id,
         event_type: 'service_request_updated',
-        event_description: `${payload.status}|||${payload.description}`, // Use delimiter to separate status and description
+        event_description: JSON.stringify({
+          status: payload.status,
+          description: payload.description,
+          previous_status: payload.previous_status,
+        }),
         related_entity_id: payload.request_id,
         related_entity_type: 'service_request',
         created_at: payload.updated_at || new Date(),
@@ -61,9 +64,9 @@ export class HistoryEventListener {
 
       await this.propertyHistoryRepository.save(historyEntry);
 
-      // Emit WebSocket event to notify property viewers and landlord
+      // Fix #6: Emit the correct WebSocket event for updates
       if (this.eventsGateway) {
-        this.eventsGateway.emitServiceRequestCreated(
+        this.eventsGateway.emitServiceRequestUpdated(
           payload.property_id,
           payload.landlord_id,
           {
@@ -71,7 +74,8 @@ export class HistoryEventListener {
             description: payload.description,
             tenantName: payload.tenant_name,
             propertyName: payload.property_name,
-            // status: payload.status, // Ideally update gateway to accept status
+            status: payload.status,
+            previousStatus: payload.previous_status,
           },
         );
       }

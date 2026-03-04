@@ -1840,11 +1840,24 @@ export class TenantManagementService {
         }
 
         if (ph.event_type === 'service_request_updated') {
-          const parts = ph.event_description?.split('|||') || [];
-          const status = parts[0] || 'updated';
-          const issueDescription = parts[1] || 'Service Request';
-          const prop = ph.property;
+          // Fix #19: Parse JSON format (backward compatible with old ||| delimiter)
+          let status = 'updated';
+          let issueDescription = 'Service Request';
 
+          if (ph.event_description) {
+            try {
+              const parsed = JSON.parse(ph.event_description);
+              status = parsed.status || 'updated';
+              issueDescription = parsed.description || 'Service Request';
+            } catch {
+              // Fallback: legacy ||| delimiter format
+              const parts = ph.event_description.split('|||');
+              status = parts[0] || 'updated';
+              issueDescription = parts[1] || 'Service Request';
+            }
+          }
+
+          const prop = ph.property;
           let title = issueDescription;
 
           if (status.toLowerCase() === 'resolved') {
@@ -1867,6 +1880,8 @@ export class TenantManagementService {
               hour: '2-digit',
               minute: '2-digit',
             }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'service_request',
           });
         }
 
@@ -2081,6 +2096,8 @@ export class TenantManagementService {
           hour: '2-digit',
           minute: '2-digit',
         }),
+        relatedEntityId: sr.id,
+        relatedEntityType: 'service_request',
       };
     });
 

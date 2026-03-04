@@ -324,7 +324,9 @@ export class KYCApplicationService {
         await this.whatsappNotificationLog.queue(
           'sendKYCSubmissionConfirmation',
           {
-            phone_number: this.utilService.normalizePhoneNumber(kycData.phone_number),
+            phone_number: this.utilService.normalizePhoneNumber(
+              kycData.phone_number,
+            ),
             tenant_name: `${kycData.first_name} ${kycData.last_name}`,
           },
           savedApplication.id,
@@ -332,7 +334,10 @@ export class KYCApplicationService {
       }
 
       // Notification to referral agent (if provided)
-      if (kycData.referral_agent_phone_number && kycData.referral_agent_full_name) {
+      if (
+        kycData.referral_agent_phone_number &&
+        kycData.referral_agent_full_name
+      ) {
         await this.whatsappNotificationLog.queue(
           'sendAgentKYCNotification',
           {
@@ -856,6 +861,56 @@ export class KYCApplicationService {
     }
 
     return kycLink;
+  }
+  /**
+   * Track when a KYC form is opened by a tenant
+   * Records the timestamp and IP address
+   */
+  async trackFormOpen(
+    token: string,
+    ipAddress?: string,
+  ): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    try {
+      // Validate the token
+      const kycLink = await this.validateKYCToken(token);
+
+      // Find the most recent pending or pending_completion application for this token
+      const application = await this.kycApplicationRepository.findOne({
+        where: {
+          kyc_link_id: kycLink.id,
+          status: ApplicationStatus.PENDING_COMPLETION,
+        },
+        order: {
+          created_at: 'DESC',
+        },
+      });
+
+      // If there's a pending completion application, track the form open
+      if (application && !application.form_opened_at) {
+        const updateData: any = {
+          form_opened_at: new Date(),
+        };
+        if (ipAddress) {
+          updateData.form_opened_ip = ipAddress;
+        }
+        await this.kycApplicationRepository.update(application.id, updateData);
+      }
+
+      return {
+        success: true,
+        message: 'Form open tracked successfully',
+      };
+    } catch (error) {
+      // Don't throw errors for tracking - just log and return success
+      console.error('Error tracking form open:', error);
+      return {
+        success: true,
+        message: 'Form open tracking skipped',
+      };
+    }
   }
 
   /**

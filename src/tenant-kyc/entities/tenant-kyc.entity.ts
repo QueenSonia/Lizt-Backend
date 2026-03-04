@@ -28,6 +28,7 @@ export enum MaritalStatus {
 export enum EmploymentStatus {
   EMPLOYED = 'employed',
   SELF_EMPLOYED = 'self-employed',
+  UNEMPLOYED = 'unemployed',
 }
 
 // @Index(

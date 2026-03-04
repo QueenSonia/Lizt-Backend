@@ -177,6 +177,19 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   available_property_ids?: string;
 
+  // Tracking fields
+  @Column({ type: 'timestamp', nullable: true })
+  form_opened_at?: Date;
+
+  @Column({ type: 'varchar', nullable: true })
+  form_opened_ip?: string;
+
+  @Column({ type: 'timestamp', nullable: true })
+  decision_made_at?: Date;
+
+  @Column({ type: 'varchar', nullable: true })
+  decision_made_ip?: string;
+
   @ManyToOne(() => KYCLink, (kycLink) => kycLink.applications)
   @JoinColumn({ name: 'kyc_link_id' })
   kyc_link: KYCLink;

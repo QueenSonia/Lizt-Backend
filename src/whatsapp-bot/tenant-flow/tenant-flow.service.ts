@@ -5,6 +5,7 @@ import { Repository, ILike, Not } from 'typeorm';
 import { Users } from 'src/users/entities/user.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { Property } from 'src/properties/entities/property.entity';
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
@@ -17,6 +18,7 @@ import {
   FacilityServiceRequestParams,
 } from '../template-sender';
 import { IncomingMessage } from '../utils';
+import { WhatsAppNotificationLogService } from '../whatsapp-notification-log.service';
 
 /**
  * TenantFlowService handles all tenant-specific WhatsApp message interactions.
@@ -48,10 +50,14 @@ export class TenantFlowService {
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
 
+    @InjectRepository(Property)
+    private readonly propertyRepo: Repository<Property>,
+
     private readonly cache: CacheService,
     private readonly utilService: UtilService,
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly templateSenderService: TemplateSenderService,
+    private readonly notificationLogService: WhatsAppNotificationLogService,
   ) {}
 
   /**
@@ -193,6 +199,19 @@ export class TenantFlowService {
       return;
     }
 
+    // Fix #20: Prevent duplicate submissions within a short window
+    const dedupeKey = `service_request_dedup_${from}`;
+    const existingSubmission = await this.cache.get(dedupeKey);
+    if (existingSubmission) {
+      await this.templateSenderService.sendText(
+        from,
+        'Your request was already submitted. Please wait a moment.',
+      );
+      return;
+    }
+    // Set a 30-second dedup window
+    await this.cache.set(dedupeKey, '1', 30 * 1000);
+
     try {
       const new_service_request =
         await this.serviceRequestService.createServiceRequest({
@@ -227,52 +246,69 @@ export class TenantFlowService {
 
         await this.cache.delete(`service_request_state_${from}`);
 
-        // Send notifications to facility managers
-        await this.notifyFacilityManagers(
-          facility_managers,
-          user,
-          property_name,
-          property_location,
-          text,
-          created_at,
-        );
+        // Fix #11: Notifications are queued independently — failures don't affect the tenant
+        try {
+          await this.queueFacilityManagerNotifications(
+            facility_managers,
+            user,
+            property_name,
+            property_location,
+            text,
+            created_at,
+            new_service_request.id,
+          );
+        } catch (err) {
+          this.logger.error('Failed to queue FM notifications:', err);
+        }
 
-        // Send notification to landlord
-        await this.notifyLandlord(
-          property_id,
-          user,
-          property_name,
-          property_location,
-          text,
-          created_at,
-        );
+        try {
+          await this.queueLandlordNotification(
+            property_id,
+            user,
+            property_name,
+            property_location,
+            text,
+            created_at,
+            new_service_request.id,
+          );
+        } catch (err) {
+          this.logger.error('Failed to queue landlord notification:', err);
+        }
       }
       await this.cache.delete(`service_request_state_${from}`);
     } catch (error) {
+      // Fix #10: Never expose raw error messages to tenants
+      this.logger.error(
+        'Service request creation failed:',
+        (error as Error).message,
+      );
       await this.templateSenderService.sendText(
         from,
-        (error as Error).message ||
-          'An error occurred while logging your request.',
+        'Sorry, we could not log your request right now. Please try again shortly.',
       );
       await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(dedupeKey);
     }
   }
 
   /**
-   * Notify facility managers about a new service request
+   * Queue WhatsApp notifications for all facility managers via the notification log service.
+   * Notifications are persisted and retried automatically on failure.
    */
-  private async notifyFacilityManagers(
+  private async queueFacilityManagerNotifications(
     facilityManagers: Array<{ phone_number: string; name: string }>,
     user: Users,
     propertyName: string,
     propertyLocation: string,
     serviceRequest: string,
     createdAt: Date,
+    serviceRequestId?: string,
   ): Promise<void> {
-    // Convert tenant phone to local format (e.g., 09016469693)
-    const tenantLocalPhone = user.phone_number.startsWith('234')
-      ? '0' + user.phone_number.slice(3)
-      : user.phone_number.replace(/^\+234/, '0');
+    if (!facilityManagers?.length) return;
+
+    const tenantLocalPhone = this.toLocalPhone(user.phone_number);
+    const tenantName = `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`;
+    const formattedDate = this.formatDateLagos(createdAt);
 
     for (const manager of facilityManagers) {
       const params: FacilityServiceRequestParams = {
@@ -281,83 +317,90 @@ export class TenantFlowService {
         property_name: propertyName,
         property_location: propertyLocation,
         service_request: serviceRequest,
-        tenant_name: `${this.utilService.toSentenceCase(
-          user.first_name,
-        )} ${this.utilService.toSentenceCase(user.last_name)}`,
+        tenant_name: tenantName,
         tenant_phone_number: tenantLocalPhone,
-        date_created: new Date(createdAt).toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-          timeZone: 'Africa/Lagos',
-        }),
+        date_created: formattedDate,
         is_landlord: false,
       };
 
-      await this.templateSenderService.sendFacilityServiceRequest(params);
-
-      // Add delay (e.g., 2 seconds)
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await this.notificationLogService.queue(
+        'sendFacilityServiceRequest',
+        params,
+        serviceRequestId,
+      );
     }
   }
 
   /**
-   * Notify landlord about a new service request
+   * Queue WhatsApp notification for the landlord via the notification log service.
+   * Fix #4: Queries Property directly instead of going through PropertyTenant.
+   * Fix #12: Full null-safety on the owner chain.
    */
-  private async notifyLandlord(
+  private async queueLandlordNotification(
     propertyId: string,
     user: Users,
     propertyName: string,
     propertyLocation: string,
     serviceRequest: string,
     createdAt: Date,
+    serviceRequestId?: string,
   ): Promise<void> {
-    const propertyTenant = await this.propertyTenantRepo.findOne({
-      where: {
-        property_id: propertyId,
-      },
-      relations: ['property', 'property.owner', 'property.owner.user'],
+    const property = await this.propertyRepo.findOne({
+      where: { id: propertyId },
+      relations: ['owner', 'owner.user'],
     });
 
-    if (propertyTenant) {
-      const adminPhoneNumber = this.utilService.normalizePhoneNumber(
-        propertyTenant?.property.owner.user.phone_number,
+    if (!property?.owner?.user?.phone_number) {
+      this.logger.warn(
+        `Cannot notify landlord: owner data missing for property ${propertyId}`,
       );
-
-      // Convert tenant phone to local format
-      const tenantLocalPhone = user.phone_number.startsWith('234')
-        ? '0' + user.phone_number.slice(3)
-        : user.phone_number.replace(/^\+234/, '0');
-
-      const params: FacilityServiceRequestParams = {
-        phone_number: adminPhoneNumber,
-        manager_name: this.utilService.toSentenceCase(
-          propertyTenant.property.owner.user.first_name,
-        ),
-        property_name: propertyName,
-        property_location: propertyLocation,
-        service_request: serviceRequest,
-        tenant_name: `${this.utilService.toSentenceCase(
-          user.first_name,
-        )} ${this.utilService.toSentenceCase(user.last_name)}`,
-        tenant_phone_number: tenantLocalPhone,
-        date_created: new Date(createdAt).toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-          timeZone: 'Africa/Lagos',
-        }),
-        is_landlord: true,
-      };
-
-      await this.templateSenderService.sendFacilityServiceRequest(params);
+      return;
     }
+
+    const adminPhoneNumber = this.utilService.normalizePhoneNumber(
+      property.owner.user.phone_number,
+    );
+
+    const tenantLocalPhone = this.toLocalPhone(user.phone_number);
+
+    const params: FacilityServiceRequestParams = {
+      phone_number: adminPhoneNumber,
+      manager_name: this.utilService.toSentenceCase(
+        property.owner.user.first_name,
+      ),
+      property_name: propertyName,
+      property_location: propertyLocation,
+      service_request: serviceRequest,
+      tenant_name: `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`,
+      tenant_phone_number: tenantLocalPhone,
+      date_created: this.formatDateLagos(createdAt),
+      is_landlord: true,
+    };
+
+    await this.notificationLogService.queue(
+      'sendFacilityServiceRequest',
+      params,
+      serviceRequestId,
+    );
+  }
+
+  /** Convert a phone number to Nigerian local format (0xxx) */
+  private toLocalPhone(phone: string): string {
+    if (phone.startsWith('234')) return '0' + phone.slice(3);
+    return phone.replace(/^\+234/, '0');
+  }
+
+  /** Format a date in Africa/Lagos timezone */
+  private formatDateLagos(date: Date): string {
+    return new Date(date).toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Africa/Lagos',
+    });
   }
 
   /**

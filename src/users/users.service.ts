@@ -1065,16 +1065,25 @@ export class UsersService {
   }
 
   async uploadBrandingAsset(
-    userId: string,
+    accountId: string,
     file: Express.Multer.File,
     assetType: 'letterhead' | 'signature',
   ): Promise<{ url: string; assetType: string }> {
-    const user = await this.usersRepository.findOne({
-      where: { id: userId },
+    console.log('uploadBrandingAsset called with accountId:', accountId);
+    console.log('File received:', file ? 'Yes' : 'No');
+    console.log('Asset type:', assetType);
+
+    // Find account with user relation
+    const account = await this.accountRepository.findOne({
+      where: { id: accountId },
+      relations: ['user'],
     });
 
-    if (!user) {
-      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+    console.log('Account found:', account ? 'Yes' : 'No');
+    console.log('User in account:', account?.user ? 'Yes' : 'No');
+
+    if (!account || !account.user) {
+      throw new HttpException('Account not found', HttpStatus.NOT_FOUND);
     }
 
     if (!file) {
@@ -1088,22 +1097,27 @@ export class UsersService {
         `branding/${assetType}`,
       );
 
+      console.log('Upload successful, URL:', uploadResult.secure_url);
+
       // Update user's branding data with the Cloudinary URL
       const updatedBranding = {
-        ...user.branding,
+        ...account.user.branding,
         [assetType]: uploadResult.secure_url,
         updatedAt: new Date().toISOString(),
       };
 
-      await this.usersRepository.update(userId, {
+      await this.usersRepository.update(account.user.id, {
         branding: updatedBranding,
       });
+
+      console.log('Branding updated successfully');
 
       return {
         url: uploadResult.secure_url,
         assetType,
       };
     } catch (error) {
+      console.error('Error in uploadBrandingAsset:', error);
       throw new HttpException(
         `Error uploading ${assetType}`,
         HttpStatus.INTERNAL_SERVER_ERROR,

@@ -524,13 +524,18 @@ export class UsersController {
     @Req() req: any,
   ) {
     try {
-      const userId = req?.user?.id;
+      const accountId = req?.user?.id; // This is the account ID from JWT
+      console.log('Controller - accountId from JWT:', accountId);
+      console.log('Controller - file received:', file ? 'Yes' : 'No');
+      console.log('Controller - assetType:', assetType);
+
       return await this.usersService.uploadBrandingAsset(
-        userId,
+        accountId,
         file,
         assetType,
       );
     } catch (error) {
+      console.error('Controller error:', error);
       throw error;
     }
   }

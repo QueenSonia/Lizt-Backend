@@ -1023,27 +1023,10 @@ export class TenantAttachmentService {
         `Creating new TenantKyc record for user ${userId} and landlord ${application.property.owner_id}`,
       );
 
-      // Generate a shorter identity hash
-      // Format: first 20 chars of name + last 10 of phone + date (max 64 chars total)
-      const nameHash = `${application.first_name}_${application.last_name}`
-        .toLowerCase()
-        .replace(/\s+/g, '_')
-        .substring(0, 20); // Limit name to 20 chars
-      const phoneHash = application.phone_number.slice(-10); // Last 10 digits
-      const dateStr = application.date_of_birth
-        ? application.date_of_birth.toString()
-        : '1990-01-01';
-      const dateHash = dateStr.replace(/-/g, ''); // YYYYMMDD format
-      const identityHash = `${nameHash}_${phoneHash}_${dateHash}`.substring(
-        0,
-        64,
-      ); // Ensure max 64 chars
-
       const tenantKyc = manager.create(TenantKyc, {
         ...tenantKycData,
         user_id: userId,
         admin_id: application.property.owner_id,
-        identity_hash: identityHash,
       });
 
       await manager.save(tenantKyc);

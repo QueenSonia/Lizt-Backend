@@ -7,9 +7,10 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan, In } from 'typeorm';
+import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
+import { JwtService } from '@nestjs/jwt';
 import { KYCLink } from './entities/kyc-link.entity';
 import { KYCOtp } from './entities/kyc-otp.entity';
 import { ApplicationStatus } from './entities/kyc-application.entity';
@@ -17,7 +18,6 @@ import { Property } from '../properties/entities/property.entity';
 import { PropertyStatusEnum } from '../properties/dto/create-property.dto';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
 import { UtilService } from '../utils/utility-service';
-import { KYCApplicationService } from './kyc-application.service';
 
 export interface KYCLinkResponse {
   token: string;
@@ -36,7 +36,6 @@ export interface PropertyKYCData {
     bathrooms: number;
     description?: string;
     hasPendingKyc?: boolean;
-    applicationsCount?: number;
   }>;
   error?: string;
 }
@@ -51,11 +50,10 @@ export class KYCLinksService {
     @InjectRepository(KYCOtp)
     private readonly kycOtpRepository: Repository<KYCOtp>,
     private readonly configService: ConfigService,
+    private readonly jwtService: JwtService,
     @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
-    @Inject(forwardRef(() => KYCApplicationService))
-    private readonly kycApplicationService: KYCApplicationService,
   ) {}
 
   /**
@@ -120,7 +118,6 @@ export class KYCLinksService {
       description?: string;
       rentalPrice?: number;
       hasPendingKyc?: boolean;
-      applicationsCount?: number;
     }>;
     error?: string;
   }> {
@@ -197,20 +194,24 @@ export class KYCLinksService {
         )
         .getMany();
 
-      // Combine and deduplicate properties
-      const allPropertyIds = new Set([
-        ...marketingReadyProperties.map((p) => p.id),
-        ...propertiesWithPendingKYC.map((p) => p.id),
-      ]);
-
-      const allProperties = await this.propertyRepository.find({
-        where: {
-          id: In([...allPropertyIds]),
-        },
-        order: {
-          created_at: 'DESC',
-        },
-      });
+      // Combine and deduplicate properties in memory (avoids a third DB query)
+      const propertyMap = new Map<
+        string,
+        (typeof marketingReadyProperties)[0]
+      >();
+      for (const p of marketingReadyProperties) {
+        propertyMap.set(p.id, p);
+      }
+      for (const p of propertiesWithPendingKYC) {
+        if (!propertyMap.has(p.id)) {
+          propertyMap.set(p.id, p);
+        }
+      }
+      const allProperties = Array.from(propertyMap.values()).sort(
+        (a, b) =>
+          new Date(b.created_at || 0).getTime() -
+          new Date(a.created_at || 0).getTime(),
+      );
 
       if (allProperties.length === 0) {
         return {
@@ -219,54 +220,24 @@ export class KYCLinksService {
         };
       }
 
-      // Get applications count for each property
-      const propertiesWithCounts = await Promise.all(
-        allProperties.map(async (property) => {
-          let applicationsCount = 0;
-          try {
-            const stats =
-              await this.kycApplicationService.getApplicationStatistics(
-                property.id,
-                kycLink.landlord_id,
-              );
-            // For vacant properties or marketing-ready properties, only show pending applications count
-            // For occupied properties, show total count
-            const allowedStatuses = [PropertyStatusEnum.VACANT];
-            applicationsCount =
-              allowedStatuses.includes(
-                property.property_status as PropertyStatusEnum,
-              ) || property.is_marketing_ready
-                ? stats.pending
-                : stats.total;
-          } catch (error) {
-            console.warn(
-              `Failed to get application count for property ${property.id}:`,
-              error,
-            );
-            // Continue with 0 count if there's an error
-          }
-
-          return {
-            id: property.id,
-            name: property.name,
-            location: property.location,
-            propertyType: property.property_type,
-            bedrooms: property.no_of_bedrooms,
-            bathrooms: property.no_of_bathrooms,
-            description: `${property.location}`,
-            rentalPrice: property.rental_price,
-            hasPendingKyc: propertiesWithPendingKYC.some(
-              (p) => p.id === property.id,
-            ),
-            applicationsCount,
-          };
-        }),
-      );
+      const vacantProperties = allProperties.map((property) => ({
+        id: property.id,
+        name: property.name,
+        location: property.location,
+        propertyType: property.property_type,
+        bedrooms: property.no_of_bedrooms,
+        bathrooms: property.no_of_bathrooms,
+        description: `${property.location}`,
+        rentalPrice: property.rental_price,
+        hasPendingKyc: propertiesWithPendingKYC.some(
+          (p) => p.id === property.id,
+        ),
+      }));
 
       return {
         valid: true,
         landlordId: kycLink.landlord_id,
-        vacantProperties: propertiesWithCounts,
+        vacantProperties,
       };
     } catch (error) {
       console.error('Error validating KYC token:', error);
@@ -544,6 +515,7 @@ export class KYCLinksService {
     success: boolean;
     message: string;
     verified?: boolean;
+    verificationToken?: string;
   }> {
     try {
       // Validate KYC token first
@@ -600,10 +572,25 @@ export class KYCLinksService {
         is_active: false,
       });
 
+      // Generate short-lived KYC verification JWT
+      const verificationToken = await this.jwtService.signAsync(
+        {
+          phone: normalizedPhone,
+          kycToken: kycToken,
+          type: 'kyc-verification',
+        },
+        {
+          secret: this.configService.get<string>('JWT_SECRET'),
+          expiresIn: '15m',
+          issuer: 'PANDA-HOMES',
+        },
+      );
+
       return {
         success: true,
         message: 'Phone number verified successfully',
         verified: true,
+        verificationToken,
       };
     } catch (error) {
       console.error('Error verifying OTP:', error);

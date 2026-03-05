@@ -43,7 +43,6 @@ INSERT INTO tenant_kyc (
     reference2_address,
     reference2_relationship,
     reference2_phone_number,
-    identity_hash,
     created_at,
     updated_at
 )
@@ -77,7 +76,6 @@ SELECT
     '',
     '',
     '',
-    'sonia_akpati_2347062639647_19971028_bq', -- Unique identity hash
     NOW(),
     NOW()
 WHERE NOT EXISTS (

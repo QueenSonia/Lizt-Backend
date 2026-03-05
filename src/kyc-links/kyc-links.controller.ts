@@ -4,10 +4,12 @@ import {
   Get,
   Body,
   Param,
+  Req,
   UseGuards,
   ValidationPipe,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
@@ -130,6 +132,7 @@ export class KYCLinksController {
     success: boolean;
     message: string;
     verified?: boolean;
+    verificationToken?: string;
   }> {
     try {
       const result = await this.kycLinksService.verifyOTPForKYC(
@@ -150,18 +153,20 @@ export class KYCLinksController {
   /**
    * Track when a user opens the KYC form (public endpoint)
    * POST /api/kyc/:token/track-open
-   * Records timestamp and IP address
+   * Records timestamp, IP address, and device info
    */
   @SkipAuth()
   @Post('kyc/:token/track-open')
   async trackFormOpen(
     @Param('token') token: string,
     @Body('ipAddress') ipAddress?: string,
+    @Req() req?: Request,
   ): Promise<{
     success: boolean;
     message: string;
   }> {
-    return this.kycApplicationService.trackFormOpen(token, ipAddress);
+    const userAgent = req?.headers['user-agent'];
+    return this.kycApplicationService.trackFormOpen(token, ipAddress, userAgent);
   }
 
   /**

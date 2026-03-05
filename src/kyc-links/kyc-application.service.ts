@@ -863,34 +863,31 @@ export class KYCApplicationService {
     return kycLink;
   }
   /**
-   * Track when a KYC form is opened by a tenant
-   * Records the timestamp and IP address
+   * Track when a KYC form is opened by a visitor.
+   * Records timestamp, IP address, and device info.
+   * Creates a PropertyHistory record on every open (with 30s spam cooldown).
+   * Tracks all visitors — if an application exists, ties history to the property.
    */
   async trackFormOpen(
     token: string,
     ipAddress?: string,
+    userAgent?: string,
   ): Promise<{
     success: boolean;
     message: string;
   }> {
     try {
-      // Validate the token
       const kycLink = await this.validateKYCToken(token);
 
-      // Find the most recent pending or pending_completion application for this token
+      // Find any application for this token (not just PENDING_COMPLETION)
       const application = await this.kycApplicationRepository.findOne({
-        where: {
-          kyc_link_id: kycLink.id,
-          status: ApplicationStatus.PENDING_COMPLETION,
-        },
-        order: {
-          created_at: 'DESC',
-        },
+        where: { kyc_link_id: kycLink.id },
+        order: { created_at: 'DESC' },
       });
 
-      // If there's a pending completion application, track the form open
-      if (application && !application.form_opened_at) {
-        const updateData: any = {
+      // Update form_opened_at on the application if one exists (always overwrite)
+      if (application) {
+        const updateData: Record<string, unknown> = {
           form_opened_at: new Date(),
         };
         if (ipAddress) {
@@ -899,18 +896,239 @@ export class KYCApplicationService {
         await this.kycApplicationRepository.update(application.id, updateData);
       }
 
-      return {
-        success: true,
-        message: 'Form open tracked successfully',
-      };
+      // Parse device info from User-Agent
+      let deviceInfo = 'Unknown Device';
+      if (userAgent) {
+        const os = /iPhone/i.test(userAgent)
+          ? 'iPhone'
+          : /iPad/i.test(userAgent)
+            ? 'iPad'
+            : /Android/i.test(userAgent)
+              ? 'Android'
+              : /Windows/i.test(userAgent)
+                ? 'Windows'
+                : /Macintosh/i.test(userAgent)
+                  ? 'Mac'
+                  : /Linux/i.test(userAgent)
+                    ? 'Linux'
+                    : 'Unknown OS';
+
+        const browser = /Edg/i.test(userAgent)
+          ? 'Edge'
+          : /Chrome/i.test(userAgent)
+            ? 'Chrome'
+            : /Firefox/i.test(userAgent)
+              ? 'Firefox'
+              : /Safari/i.test(userAgent)
+                ? 'Safari'
+                : 'Unknown Browser';
+
+        deviceInfo = `${browser} on ${os}`;
+      }
+
+      // Create PropertyHistory record only if we have an application (need property_id)
+      if (application?.property_id) {
+        try {
+          const { PropertyHistory } = await import(
+            '../property-history/entities/property-history.entity'
+          );
+          const propertyHistoryRepo =
+            this.kycApplicationRepository.manager.getRepository(
+              PropertyHistory,
+            );
+
+          // Spam prevention: skip if a record was created within the last 30 seconds
+          const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
+          const recentRecord = await propertyHistoryRepo.findOne({
+            where: {
+              related_entity_id: application.id,
+              related_entity_type: 'kyc_application',
+              event_type: 'kyc_form_viewed',
+            },
+            order: { created_at: 'DESC' },
+          });
+
+          if (
+            recentRecord &&
+            new Date(recentRecord.created_at) > thirtySecondsAgo
+          ) {
+            return {
+              success: true,
+              message: 'Form open tracked (cooldown active)',
+            };
+          }
+
+          const formattedDate = new Date().toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          });
+          const formattedTime = new Date().toLocaleTimeString('en-US', {
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true,
+          });
+
+          await propertyHistoryRepo.save({
+            property_id: application.property_id,
+            tenant_id: application.tenant_id || null,
+            event_type: 'kyc_form_viewed',
+            event_description: `KYC form viewed — ${ipAddress || 'Unknown IP'} — ${deviceInfo} — ${formattedDate} at ${formattedTime}`,
+            related_entity_id: application.id,
+            related_entity_type: 'kyc_application',
+          });
+        } catch (historyError) {
+          console.error(
+            'Failed to create KYC form view history:',
+            historyError,
+          );
+        }
+      }
+
+      return { success: true, message: 'Form open tracked successfully' };
     } catch (error) {
-      // Don't throw errors for tracking - just log and return success
       console.error('Error tracking form open:', error);
-      return {
-        success: true,
-        message: 'Form open tracking skipped',
-      };
+      return { success: true, message: 'Form open tracking skipped' };
     }
+  }
+
+  /**
+   * Get property history events for a KYC application (landlord only)
+   */
+  async getKYCApplicationHistory(
+    applicationId: string,
+    landlordId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      eventType: string;
+      eventDescription: string;
+      createdAt: string;
+    }>
+  > {
+    const application = await this.kycApplicationRepository.findOne({
+      where: { id: applicationId },
+      relations: ['kyc_link'],
+    });
+
+    if (!application) {
+      throw new NotFoundException('KYC application not found');
+    }
+
+    if (application.kyc_link?.landlord_id !== landlordId) {
+      throw new ForbiddenException(
+        'Not authorized to view this application history',
+      );
+    }
+
+    const { PropertyHistory } = await import(
+      '../property-history/entities/property-history.entity'
+    );
+    const propertyHistoryRepo =
+      this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+    const historyEvents = await propertyHistoryRepo.find({
+      where: {
+        related_entity_id: applicationId,
+        related_entity_type: 'kyc_application',
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    return historyEvents.map((event) => ({
+      id: event.id,
+      eventType: event.event_type,
+      eventDescription: event.event_description || '',
+      createdAt: event.created_at
+        ? new Date(event.created_at).toISOString()
+        : new Date().toISOString(),
+    }));
+  }
+
+  /**
+   * Strip a KYC record to only the fields needed for frontend autofill.
+   * Prevents leaking internal fields (kyc_link_id, tenant_id, status, tracking IPs, etc.)
+   */
+  private stripToAutofillFields(
+    application: Partial<KYCApplication>,
+  ): Partial<KYCApplication> {
+    const {
+      id,
+      first_name,
+      last_name,
+      email,
+      contact_address,
+      phone_number,
+      date_of_birth,
+      gender,
+      nationality,
+      state_of_origin,
+      marital_status,
+      religion,
+      employment_status,
+      occupation,
+      job_title,
+      employer_name,
+      work_address,
+      work_phone_number,
+      monthly_net_income,
+      length_of_employment,
+      nature_of_business,
+      business_name,
+      business_address,
+      business_duration,
+      next_of_kin_full_name,
+      next_of_kin_address,
+      next_of_kin_relationship,
+      next_of_kin_phone_number,
+      next_of_kin_email,
+      referral_agent_full_name,
+      referral_agent_phone_number,
+      passport_photo_url,
+      id_document_url,
+      employment_proof_url,
+      business_proof_url,
+      updated_at,
+    } = application as any;
+
+    return {
+      id,
+      first_name,
+      last_name,
+      email,
+      contact_address,
+      phone_number,
+      date_of_birth,
+      gender,
+      nationality,
+      state_of_origin,
+      marital_status,
+      religion,
+      employment_status,
+      occupation,
+      job_title,
+      employer_name,
+      work_address,
+      work_phone_number,
+      monthly_net_income,
+      length_of_employment,
+      nature_of_business,
+      business_name,
+      business_address,
+      business_duration,
+      next_of_kin_full_name,
+      next_of_kin_address,
+      next_of_kin_relationship,
+      next_of_kin_phone_number,
+      next_of_kin_email,
+      referral_agent_full_name,
+      referral_agent_phone_number,
+      passport_photo_url,
+      id_document_url,
+      employment_proof_url,
+      business_proof_url,
+      updated_at,
+    };
   }
 
   /**
@@ -963,7 +1181,7 @@ export class KYCApplicationService {
       if (kycApplication) {
         return {
           hasExisting: true,
-          kycData: kycApplication,
+          kycData: this.stripToAutofillFields(kycApplication),
           source: 'kyc_application',
         };
       }
@@ -1023,7 +1241,7 @@ export class KYCApplicationService {
 
         return {
           hasExisting: true,
-          kycData: convertedKyc,
+          kycData: this.stripToAutofillFields(convertedKyc),
           source: 'tenant_kyc',
         };
       }
@@ -1139,7 +1357,7 @@ export class KYCApplicationService {
 
       return {
         hasPending: true,
-        kycData: oldestKyc,
+        kycData: this.stripToAutofillFields(oldestKyc),
         propertyIds: pendingKycs.map((kyc) => kyc.property_id),
       };
     } catch (error) {

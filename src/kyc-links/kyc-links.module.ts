@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
 import { KYCLinksService } from './kyc-links.service';
 import { KYCApplicationService } from './kyc-application.service';
 import { TenantAttachmentService } from './tenant-attachment.service';
@@ -37,6 +38,13 @@ import { ReceiptsModule } from '../receipts/receipts.module';
       TenantKyc,
     ]),
     ConfigModule,
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      useFactory: async (configService: ConfigService) => ({
+        secret: configService.get('JWT_SECRET'),
+      }),
+      inject: [ConfigService],
+    }),
     forwardRef(() => WhatsappBotModule),
     forwardRef(() => EventsModule),
     forwardRef(() => NotificationModule),

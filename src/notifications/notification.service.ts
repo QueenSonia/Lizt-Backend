@@ -51,6 +51,8 @@ export class NotificationService {
         return 'Tenant Added';
       case NotificationType.TENANCY_ENDED:
         return 'Tenancy Ended';
+      case NotificationType.TENANCY_RENEWED:
+        return 'Tenancy Renewed';
       case NotificationType.NOTICE_AGREEMENT:
         return 'Notice Agreement';
       case NotificationType.PAYMENT_RECEIVED:

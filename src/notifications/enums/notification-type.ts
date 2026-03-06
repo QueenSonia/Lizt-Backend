@@ -9,6 +9,7 @@ export enum NotificationType {
   KYC_SUBMITTED = 'KYC Submitted',
   TENANT_ATTACHED = 'Tenant Attached',
   TENANCY_ENDED = 'Tenancy Ended',
+  TENANCY_RENEWED = 'Tenancy Renewed',
   OFFER_LETTER_GENERATED = 'Offer Letter Generated',
   OFFER_LETTER_SENT = 'Offer Letter Sent',
   OFFER_LETTER_ACCEPTED = 'Offer Letter Accepted',

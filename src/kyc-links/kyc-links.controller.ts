@@ -25,7 +25,7 @@ import { TenantAttachmentService } from './tenant-attachment.service';
 import { AttachTenantDto } from './dto/attach-tenant.dto';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { SendOTPDto } from './dto/send-otp.dto';
-import { VerifyOTPDto } from './dto/verify-otp.dto';
+import { KycVerifyOTPDto } from './dto/verify-otp.dto';
 import { Account } from '../users/entities/account.entity';
 import { KYCApplicationService } from './kyc-application.service';
 
@@ -127,7 +127,7 @@ export class KYCLinksController {
   @Post('kyc/:token/verify-otp')
   async verifyOTPForKYC(
     @Param('token') token: string,
-    @Body(ValidationPipe) verifyOTPDto: VerifyOTPDto,
+    @Body(ValidationPipe) verifyOTPDto: KycVerifyOTPDto,
   ): Promise<{
     success: boolean;
     message: string;

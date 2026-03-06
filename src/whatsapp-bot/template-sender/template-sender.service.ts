@@ -308,6 +308,37 @@ export interface TenantRaceConditionParams {
 }
 
 /**
+ * Parameters for renewal link notification to tenant
+ */
+export interface RenewalLinkParams {
+  phone_number: string;
+  tenant_name: string;
+  renewal_token: string;
+  frontend_url: string;
+}
+
+/**
+ * Parameters for renewal payment confirmation to tenant
+ */
+export interface RenewalPaymentTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  amount: number;
+  property_name: string;
+}
+
+/**
+ * Parameters for renewal payment notification to landlord
+ */
+export interface RenewalPaymentLandlordParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  amount: number;
+  property_name: string;
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -1624,6 +1655,152 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send renewal link to tenant via WhatsApp
+   * Uses a template message with a URL button to access the renewal invoice
+   * Requirements: 1.2, 1.4, 1.5
+   * Template: renewal_link
+   */
+  async sendRenewalLink({
+    phone_number,
+    tenant_name,
+    renewal_token,
+    frontend_url,
+  }: RenewalLinkParams): Promise<void> {
+    const renewalUrl = `${frontend_url}/renewal-invoice/${renewal_token}/verify`;
+
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_link',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: renewalUrl,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send renewal payment confirmation to tenant
+   * Requirements: 7.1, 7.3
+   * Template: renewal_payment_tenant
+   */
+  async sendRenewalPaymentTenant({
+    phone_number,
+    tenant_name,
+    amount,
+    property_name,
+  }: RenewalPaymentTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_payment_tenant',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send renewal payment notification to landlord
+   * Requirements: 7.2, 7.4
+   * Template: renewal_payment_landlord
+   */
+  async sendRenewalPaymentLandlord({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    amount,
+    property_name,
+  }: RenewalPaymentLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_payment_landlord',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlord_name,
+              },
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send plain text message
    */
   async sendText(to: string, text: string): Promise<void> {
@@ -2056,7 +2233,7 @@ export class TemplateSenderService {
     main_menu:
       'Hi {{1}},\n\nYour landlord Panda Homes is now managing your apartment with Lizt by Property Kraft — a platform designed to make renting smooth and stress-free.\n\nWith Lizt, you can:\n\t•\tGet timely rent reminders\n\t•\tView tenancy details\n\t•\tRequest maintenance\n\t•\tAccess important documents\n\t•\tReach support anytime\n\nMore features coming soon: flexible rent payments, loans, and access to a vetted artisan network.\n\nReply "Hi" to get started.\n\n— The Lizt team',
     agent_welcome:
-      'Hi, thanks for connecting with Property Kraft!\n\nYou\'re now plugged in to receive the latest property updates, sweet deals, and housing opportunities directly on WhatsApp. ✨\n\nIn the meantime, you can also visit our website here: https://propertykraft.africa 🌍\n\nStay ahead with Property Kraft! 🚀',
+      "Hi, thanks for connecting with Property Kraft!\n\nYou're now plugged in to receive the latest property updates, sweet deals, and housing opportunities directly on WhatsApp. ✨\n\nIn the meantime, you can also visit our website here: https://propertykraft.africa 🌍\n\nStay ahead with Property Kraft! 🚀",
     facility_manager:
       'Hello {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\nWelcome aboard!',
     properties_created:
@@ -2070,7 +2247,7 @@ export class TemplateSenderService {
     tenant_application_notification:
       'A KYC application was submitted by {{2}} for the property {{3}}, assigned to {{1}}.\n\nUse the link below to view the application.',
     kyc_submission_confirmation:
-      'Hello {{1}}, Your KYC form has been submitted. Your landlord is reviewing your details, and we\'ll keep you updated.',
+      "Hello {{1}}, Your KYC form has been submitted. Your landlord is reviewing your details, and we'll keep you updated.",
     agent_kyc_notification:
       'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
     landlord_service_request_notification:
@@ -2105,8 +2282,13 @@ export class TemplateSenderService {
       'Hello {{1}}, your payment of {{2}} for {{3}} was received, but the property was secured by another applicant moments earlier.\n\nYour payment is being held and the landlord will process your refund shortly.\n\nWe apologize for this situation.',
     invoice_reminder:
       'Hi {{1}}, this is a reminder from {{2}} regarding invoice {{3}}. Outstanding balance: {{4}} for {{5}}.',
-    landlord_main_menu:
-      'Hello {{1}}, What do you want to do today?',
+    landlord_main_menu: 'Hello {{1}}, What do you want to do today?',
+    renewal_link:
+      'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
+    renewal_payment_tenant:
+      'Congratulations {{1}}! Your renewal payment of {{2}} for {{3}} has been confirmed.\n\nYou can download your receipt from the renewal page.',
+    renewal_payment_landlord:
+      'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThe tenancy has been successfully renewed!',
   };
 
   /**
@@ -2125,9 +2307,7 @@ export class TemplateSenderService {
         payload.template.components
           ?.filter((c) => c.type === 'body')
           .flatMap((c) => c.parameters || [])
-          .filter(
-            (p): p is { type: 'text'; text: string } => p.type === 'text',
-          )
+          .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
           .map((p) => p.text) || [];
 
       const templateBody =

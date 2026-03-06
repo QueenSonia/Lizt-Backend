@@ -3025,6 +3025,14 @@ export class PropertiesService {
       const tenant = await this.userService.getAccountById(data.tenant_id);
       if (!tenant) throw new NotFoundException('Tenant not found');
 
+      // Calculate next rent due date (expiry_date)
+      const rentStartDate = new Date(data.rent_start_date);
+      const rentFrequency = data.payment_frequency || 'Monthly';
+      const expiryDate = this.calculateNextRentDate(
+        rentStartDate,
+        rentFrequency,
+      );
+
       await queryRunner.manager.save(Rent, {
         tenant_id: data.tenant_id,
         rent_start_date: data.rent_start_date,
@@ -3034,9 +3042,10 @@ export class PropertiesService {
         rental_price: data.rental_price,
         security_deposit: data.security_deposit,
         service_charge: data.service_charge,
-        payment_frequency: data.payment_frequency || 'Monthly',
+        payment_frequency: rentFrequency,
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
+        expiry_date: expiryDate,
       });
 
       await Promise.all([
@@ -3079,6 +3088,48 @@ export class PropertiesService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  /**
+   * Calculate next rent due date based on start date and frequency
+   * This matches the logic used in tenant-attachment.service.ts
+   */
+  private calculateNextRentDate(startDate: Date, frequency: string): Date {
+    const nextDate = new Date(startDate);
+    const dueDay = startDate.getDate();
+
+    // Add frequency duration to get to the next period
+    switch (frequency) {
+      case 'Monthly':
+        nextDate.setMonth(nextDate.getMonth() + 1);
+        break;
+      case 'Quarterly':
+        nextDate.setMonth(nextDate.getMonth() + 3);
+        break;
+      case 'Bi-Annually':
+        nextDate.setMonth(nextDate.getMonth() + 6);
+        break;
+      case 'Annually':
+        nextDate.setFullYear(nextDate.getFullYear() + 1);
+        break;
+      default:
+        nextDate.setMonth(nextDate.getMonth() + 1);
+    }
+
+    // Set the specific due day
+    // Handle cases where the due day doesn't exist in the target month
+    const targetMonth = nextDate.getMonth();
+    nextDate.setDate(dueDay);
+
+    // If setting the day pushed us to the next month, backtrack to the last day of the previous month
+    if (nextDate.getMonth() !== targetMonth) {
+      nextDate.setDate(0);
+    }
+
+    // Subtract 1 day to get the day BEFORE the next cycle starts
+    nextDate.setDate(nextDate.getDate() - 1);
+
+    return nextDate;
   }
 
   /**

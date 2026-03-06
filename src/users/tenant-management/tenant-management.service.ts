@@ -2108,6 +2108,70 @@ export class TenantManagementService {
             relatedEntityType: 'kyc_application',
           });
         }
+
+        // Renewal events
+        if (ph.event_type === 'renewal_link_sent') {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `renewal-link-sent-${ph.id}`,
+            type: 'general' as const,
+            title: 'Renewal Link Sent',
+            description:
+              ph.event_description ||
+              `Tenancy renewal link sent for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'renewal_invoice',
+          });
+        }
+
+        if (ph.event_type === 'renewal_payment_received') {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `renewal-payment-received-${ph.id}`,
+            type: 'payment' as const,
+            title: 'Renewal Payment Received',
+            description:
+              ph.event_description ||
+              `Renewal payment received for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'renewal_invoice',
+          });
+        }
+
+        if (ph.event_type === 'renewal_payment_made') {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `renewal-payment-made-${ph.id}`,
+            type: 'payment' as const,
+            title: 'Renewal Payment Made',
+            description:
+              ph.event_description ||
+              `Payment made for tenancy renewal for property ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'renewal_invoice',
+          });
+        }
       });
     }
 

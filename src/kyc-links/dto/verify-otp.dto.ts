@@ -1,7 +1,7 @@
 import { IsString, IsNotEmpty, Length } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
-export class VerifyOTPDto {
+export class KycVerifyOTPDto {
   @ApiProperty({
     example: '123456',
     description: 'The 6-digit OTP code received via SMS',

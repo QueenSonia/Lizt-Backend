@@ -214,4 +214,35 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       timestamp: new Date().toISOString(),
     });
   }
+
+  // Emit tenancy renewed event to landlord
+  emitTenancyRenewed(
+    landlordId: string,
+    propertyId: string,
+    tenancyData: {
+      propertyName: string;
+      tenantName: string;
+      rentAmount: number;
+      paymentFrequency: string;
+      startDate: string;
+      endDate: string;
+    },
+  ) {
+    this.logger.log(
+      `Emitting tenancy renewed for property ${tenancyData.propertyName} to landlord ${landlordId}`,
+    );
+
+    this.server.to(`landlord:${landlordId}`).emit('tenancy:renewed', {
+      propertyId,
+      ...tenancyData,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Also emit to property-specific room
+    this.server.to(`property:${propertyId}`).emit('tenancy:renewed', {
+      propertyId,
+      ...tenancyData,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }

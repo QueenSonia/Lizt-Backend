@@ -1,5 +1,12 @@
 import { Type } from 'class-transformer';
-import { IsString, IsOptional, IsNumber } from 'class-validator';
+import { IsString, IsOptional, IsNumber, IsEnum } from 'class-validator';
+
+export enum RentFrequency {
+  MONTHLY = 'Monthly',
+  QUARTERLY = 'Quarterly',
+  BI_ANNUALLY = 'Bi-Annually',
+  ANNUALLY = 'Annually',
+}
 
 export class AssignTenantDto {
   @IsString()
@@ -23,9 +30,9 @@ export class AssignTenantDto {
   @IsString()
   lease_agreement_end_date: string;
 
-  @IsString()
+  @IsEnum(RentFrequency)
   @IsOptional()
-  payment_frequency?: string;
+  payment_frequency?: RentFrequency;
 
   @IsString()
   rent_status: string;

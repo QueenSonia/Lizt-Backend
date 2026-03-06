@@ -20,6 +20,18 @@ export interface TenancyEndedEvent {
   move_out_date: string;
 }
 
+export interface TenancyRenewedEvent {
+  property_id: string;
+  property_name: string;
+  tenant_id: string;
+  tenant_name: string;
+  user_id: string; // landlord/owner id
+  rent_amount: number;
+  payment_frequency: string;
+  start_date: string;
+  end_date: string;
+}
+
 @Injectable()
 export class TenantAttachmentListener {
   constructor(private readonly notificationService: NotificationService) {}
@@ -42,6 +54,18 @@ export class TenantAttachmentListener {
       date: new Date().toISOString(),
       type: NotificationType.TENANCY_ENDED,
       description: `${event.tenant_name} has moved out of ${event.property_name}.`,
+      status: 'Completed',
+      property_id: event.property_id,
+      user_id: event.user_id,
+    });
+  }
+
+  @OnEvent('tenancy.renewed')
+  async handleTenancyRenewed(event: TenancyRenewedEvent) {
+    await this.notificationService.create({
+      date: new Date().toISOString(),
+      type: NotificationType.TENANCY_RENEWED,
+      description: `Tenancy renewed for ${event.tenant_name} at ${event.property_name}. New rent: ₦${event.rent_amount.toLocaleString()}, Period: ${event.start_date} to ${event.end_date}.`,
       status: 'Completed',
       property_id: event.property_id,
       user_id: event.user_id,

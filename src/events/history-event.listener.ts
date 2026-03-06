@@ -16,6 +16,18 @@ export interface ServiceCreatedEvent {
   created_at?: Date; // Timestamp
 }
 
+export interface TenancyRenewedEvent {
+  property_id: string;
+  property_name: string;
+  tenant_id: string;
+  tenant_name: string;
+  user_id: string; // landlord/owner id
+  rent_amount: number;
+  payment_frequency: string;
+  start_date: string;
+  end_date: string;
+}
+
 @Injectable()
 export class HistoryEventListener {
   private readonly logger = new Logger(HistoryEventListener.name);
@@ -82,6 +94,40 @@ export class HistoryEventListener {
     } catch (error) {
       this.logger.error(
         `Failed to create history entry for update: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  @OnEvent('tenancy.renewed')
+  async handleTenancyRenewed(payload: TenancyRenewedEvent): Promise<void> {
+    this.logger.log(
+      `Received tenancy.renewed event for property ${payload.property_id}`,
+    );
+
+    try {
+      // Emit WebSocket event to notify landlord and property viewers
+      if (this.eventsGateway) {
+        this.eventsGateway.emitTenancyRenewed(
+          payload.user_id,
+          payload.property_id,
+          {
+            propertyName: payload.property_name,
+            tenantName: payload.tenant_name,
+            rentAmount: payload.rent_amount,
+            paymentFrequency: payload.payment_frequency,
+            startDate: payload.start_date,
+            endDate: payload.end_date,
+          },
+        );
+      }
+
+      this.logger.log(
+        `Successfully emitted tenancy renewed WebSocket event for property ${payload.property_id}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to emit tenancy renewed event: ${error.message}`,
         error.stack,
       );
     }

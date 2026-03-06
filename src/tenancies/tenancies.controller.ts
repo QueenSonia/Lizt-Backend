@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import {
   ApiOperation,
@@ -39,7 +40,8 @@ export class TenanciesController {
   async renewTenancy(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() renewTenancyDto: RenewTenancyDto,
+    @Req() req: any,
   ) {
-    return this.tenanciesService.renewTenancy(id, renewTenancyDto);
+    return this.tenanciesService.renewTenancy(id, renewTenancyDto, req.user.id);
   }
 }

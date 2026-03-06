@@ -7,6 +7,7 @@ import { Rent } from 'src/rents/entities/rent.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { Users } from 'src/users/entities/user.entity';
+import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { UsersModule } from 'src/users/users.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
@@ -20,6 +21,7 @@ import { UtilsModule } from 'src/utils/utils.module';
       Property,
       PropertyHistory,
       Users,
+      RentIncrease,
     ]),
     UsersModule,
     AuthModule,

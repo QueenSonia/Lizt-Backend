@@ -379,9 +379,8 @@ export class TenanciesService {
     ]);
 
     // 11. Generate renewal link
-    const baseUrl =
-      process.env.RENEWAL_LINK_BASE_URL ||
-      'http://localhost:3000/renewal-invoice';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const baseUrl = `${frontendUrl}/renewal-invoice`;
     const link = `${baseUrl}/${token}`;
 
     // 12. Queue WhatsApp notification asynchronously (fire and forget)
@@ -395,8 +394,7 @@ export class TenanciesService {
           phone_number: tenantPhone,
           tenant_name: tenantName,
           renewal_token: token,
-          frontend_url:
-            process.env.RENEWAL_LINK_BASE_URL || 'http://localhost:3000',
+          frontend_url: frontendUrl,
         });
 
         console.log(`Renewal link queued for ${tenantPhone}: ${link}`);

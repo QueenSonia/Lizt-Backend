@@ -9,6 +9,7 @@ import {
   Index,
 } from 'typeorm';
 import { OfferLetter } from '../../offer-letters/entities/offer-letter.entity';
+import { RenewalInvoice } from '../../tenancies/entities/renewal-invoice.entity';
 
 export enum PaymentType {
   PARTIAL = 'partial',
@@ -29,6 +30,7 @@ export enum PaymentMethod {
 
 @Entity('payments')
 @Index(['offer_letter_id'])
+@Index(['renewal_invoice_id'])
 @Index(['paystack_reference'])
 @Index(['status'])
 @Index(['created_at'])
@@ -42,6 +44,13 @@ export class Payment {
   @ManyToOne(() => OfferLetter, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'offer_letter_id' })
   offerLetter: OfferLetter;
+
+  @Column({ type: 'uuid', nullable: true })
+  renewal_invoice_id: string | null;
+
+  @ManyToOne(() => RenewalInvoice, { onDelete: 'CASCADE', nullable: true })
+  @JoinColumn({ name: 'renewal_invoice_id' })
+  renewalInvoice: RenewalInvoice | null;
 
   @Column({ type: 'decimal', precision: 12, scale: 2 })
   amount: number;

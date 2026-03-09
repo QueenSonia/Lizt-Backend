@@ -12,7 +12,7 @@ export class NotificationService {
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
     private readonly pushNotificationService: PushNotificationService,
-  ) {}
+  ) { }
 
   async create(dto: CreateNotificationDto): Promise<Notification> {
     const notification = this.notificationRepository.create(dto);
@@ -69,6 +69,12 @@ export class NotificationService {
         return 'Receipt Sent';
       case NotificationType.RECEIPT_VIEWED:
         return 'Receipt Viewed';
+      case NotificationType.RENT_REMINDER:
+        return 'Rent Reminder';
+      case NotificationType.RENEWAL_LINK_SENT:
+        return 'Renewal Link Sent';
+      case NotificationType.RENEWAL_PAYMENT_RECEIVED:
+        return 'Renewal Payment Received';
       default:
         return 'Panda Homes';
     }

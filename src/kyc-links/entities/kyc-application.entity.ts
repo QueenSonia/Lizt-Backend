@@ -31,6 +31,9 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'uuid' })
   property_id: string;
 
+  @Column({ type: 'uuid' })
+  initial_property_id: string;
+
   @Column({
     type: 'enum',
     enum: ApplicationStatus,

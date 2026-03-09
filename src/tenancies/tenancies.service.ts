@@ -29,6 +29,8 @@ import {
 } from './entities/renewal-invoice.entity';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { NotificationService } from 'src/notifications/notification.service';
+import { NotificationType } from 'src/notifications/enums/notification-type';
 
 @Injectable()
 export class TenanciesService {
@@ -51,6 +53,7 @@ export class TenanciesService {
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly notificationService: NotificationService,
     private dataSource: DataSource,
   ) {}
 
@@ -378,6 +381,17 @@ export class TenanciesService {
       this.propertyHistoryRepository.save(historyEntry),
     ]);
 
+    // Emit event for livefeed (listener will create the detailed notification)
+    this.eventEmitter.emit('renewal.link.sent', {
+      property_id: propertyTenant.property_id,
+      property_name: propertyTenant.property.name,
+      tenant_id: propertyTenant.tenant_id,
+      tenant_name: tenantName,
+      user_id: userId,
+      amount: totalAmount,
+      timestamp: new Date().toISOString(),
+    });
+
     // 11. Generate renewal link
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const baseUrl = `${frontendUrl}/renewal-invoice`;
@@ -416,7 +430,13 @@ export class TenanciesService {
   async getRenewalInvoice(token: string): Promise<any> {
     const invoice = await this.renewalInvoiceRepository.findOne({
       where: { token },
-      relations: ['property', 'tenant', 'tenant.user'],
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
     });
 
     if (!invoice) {
@@ -431,7 +451,36 @@ export class TenanciesService {
       );
     }
 
-    // Helper to format dates
+    return this.formatRenewalInvoiceResponse(invoice);
+  }
+
+  /**
+   * Get renewal invoice by its database ID (for landlord dashboard)
+   */
+  async getRenewalInvoiceById(id: string): Promise<any> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { id },
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    // Reuse the same formatting as getRenewalInvoice
+    return this.formatRenewalInvoiceResponse(invoice);
+  }
+
+  /**
+   * Format renewal invoice entity into API response
+   */
+  private formatRenewalInvoiceResponse(invoice: RenewalInvoice): any {
     const formatDate = (date: any): string => {
       if (typeof date === 'string') {
         return date.split('T')[0];
@@ -439,7 +488,13 @@ export class TenanciesService {
       return date.toISOString().split('T')[0];
     };
 
-    // Format response
+    const landlordUser = invoice.property.owner?.user;
+    const landlordBranding = landlordUser?.branding || null;
+    const landlordLogoUrl =
+      landlordUser?.logo_urls?.[0] ||
+      landlordBranding?.letterhead ||
+      null;
+
     return {
       id: invoice.id,
       token: invoice.token,
@@ -465,6 +520,8 @@ export class TenanciesService {
           : invoice.paid_at.toISOString()
         : null,
       paymentReference: invoice.payment_reference,
+      landlordBranding: landlordBranding,
+      landlordLogoUrl: landlordLogoUrl,
     };
   }
 
@@ -535,6 +592,39 @@ export class TenanciesService {
     invoice.paid_at = new Date();
 
     await this.renewalInvoiceRepository.save(invoice);
+
+    // Update the active rent record with the new rental period
+    const activeRent = await this.rentRepository.findOne({
+      where: {
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+
+    if (activeRent) {
+      // Mark old rent as inactive
+      activeRent.rent_status = RentStatusEnum.INACTIVE;
+      activeRent.updated_at = new Date();
+      await this.rentRepository.save(activeRent);
+
+      // Create new rent record with the renewal period dates
+      const newRent = this.rentRepository.create({
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        rent_start_date: invoice.start_date,
+        lease_agreement_end_date: invoice.end_date,
+        expiry_date: invoice.end_date,
+        rental_price: parseFloat(invoice.rent_amount.toString()),
+        amount_paid: parseFloat(invoice.rent_amount.toString()),
+        security_deposit: activeRent.security_deposit,
+        service_charge: parseFloat(invoice.service_charge.toString()) || activeRent.service_charge,
+        payment_frequency: activeRent.payment_frequency,
+        payment_status: RentPaymentStatusEnum.PAID,
+        rent_status: RentStatusEnum.ACTIVE,
+      });
+      await this.rentRepository.save(newRent);
+    }
 
     // Send WhatsApp notifications (non-blocking)
     try {
@@ -607,16 +697,69 @@ export class TenanciesService {
 
     await this.propertyHistoryRepository.save(tenantHistoryEntry);
 
-    // Emit event for livefeed
-    this.eventEmitter.emit('renewal.payment.received', {
-      property_id: invoice.property_id,
-      property_name: invoice.property.name,
-      tenant_id: invoice.tenant_id,
-      tenant_name: tenantName,
-      user_id: invoice.property.owner_id,
-      amount,
-      payment_reference: paymentReference,
-      timestamp: new Date().toISOString(),
+    // Create notification for livefeed
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.RENEWAL_PAYMENT_RECEIVED,
+        description: `Renewal payment received from ${tenantName} — ₦${amount.toLocaleString()}`,
+        status: 'Completed',
+        property_id: invoice.property_id,
+        user_id: invoice.property.owner_id,
+      });
+    } catch (error) {
+      console.error(
+        'Failed to create renewal_payment_received notification:',
+        error,
+      );
+    }
+  }
+
+  /**
+   * Log renewal payment initiated event to property history
+   */
+  async logRenewalPaymentInitiated(
+    invoiceId: string,
+    propertyId: string,
+    tenantId: string,
+    tenantName: string,
+    propertyName: string,
+  ): Promise<void> {
+    const entry = this.propertyHistoryRepository.create({
+      property_id: propertyId,
+      tenant_id: tenantId,
+      event_type: 'renewal_payment_initiated',
+      event_description: `Renewal payment initiated by ${tenantName} for property ${propertyName}.`,
+      related_entity_id: invoiceId,
+      related_entity_type: 'renewal_invoice',
     });
+    await this.propertyHistoryRepository.save(entry);
+  }
+
+  /**
+   * Log renewal payment cancelled event to property history
+   */
+  async logRenewalPaymentCancelled(token: string): Promise<void> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+      relations: ['property', 'tenant', 'tenant.user'],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+    const propertyName = invoice.property.name;
+
+    const entry = this.propertyHistoryRepository.create({
+      property_id: invoice.property_id,
+      tenant_id: invoice.tenant_id,
+      event_type: 'renewal_payment_cancelled',
+      event_description: `Renewal payment cancelled by ${tenantName} for property ${propertyName}.`,
+      related_entity_id: invoice.id,
+      related_entity_type: 'renewal_invoice',
+    });
+    await this.propertyHistoryRepository.save(entry);
   }
 }

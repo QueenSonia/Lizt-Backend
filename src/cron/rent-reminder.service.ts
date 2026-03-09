@@ -5,6 +5,9 @@ import { Repository } from 'typeorm';
 import { Rent } from '../rents/entities/rent.entity';
 import { RentStatusEnum } from '../rents/dto/create-rent.dto';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
+import { NotificationService } from '../notifications/notification.service';
+import { NotificationType } from '../notifications/enums/notification-type';
+import { PropertyHistory } from '../property-history/entities/property-history.entity';
 
 const RENT_REMINDER_SCHEDULE = {
     monthly: [14, 7, 3],
@@ -20,7 +23,10 @@ export class RentReminderService {
     constructor(
         @InjectRepository(Rent)
         private readonly rentRepository: Repository<Rent>,
+        @InjectRepository(PropertyHistory)
+        private readonly propertyHistoryRepository: Repository<PropertyHistory>,
         private readonly whatsAppNotificationLogService: WhatsAppNotificationLogService,
+        private readonly notificationService: NotificationService,
     ) { }
 
     @Cron(CronExpression.EVERY_DAY_AT_8AM)
@@ -140,6 +146,41 @@ export class RentReminderService {
         }, rent.id);
 
         this.logger.log(`Queued rent reminder for rent ${rent.id} (${daysUntilExpiry} days before expiry).`);
+
+        // Log to live feed and property/tenant history
+        await this.logReminderSent(rent, formattedAmount, expiryDateStr, daysUntilExpiry);
+    }
+
+    private async logReminderSent(rent: Rent, formattedAmount: string, expiryDateStr: string, daysUntilExpiry: number) {
+        const tenantName = rent.tenant.user.first_name;
+        const propertyName = rent.property.name;
+
+        try {
+            // Live feed notification (for landlord)
+            await this.notificationService.create({
+                date: new Date().toISOString(),
+                type: NotificationType.RENT_REMINDER,
+                description: `Rent reminder sent to ${tenantName} for ${propertyName}. ${formattedAmount} due on ${expiryDateStr}.`,
+                status: 'Completed',
+                property_id: rent.property_id,
+                user_id: rent.property.owner_id,
+            });
+
+            // Property & tenant history entry
+            await this.propertyHistoryRepository.save(
+                this.propertyHistoryRepository.create({
+                    property_id: rent.property_id,
+                    tenant_id: rent.tenant_id,
+                    event_type: 'rent_reminder_sent',
+                    event_description: `Rent reminder sent to ${tenantName}. ${formattedAmount} due in ${daysUntilExpiry} days (${expiryDateStr}).`,
+                    related_entity_id: rent.id,
+                    related_entity_type: 'rent',
+                }),
+            );
+        } catch (error) {
+            // Don't let logging failures break the reminder flow
+            this.logger.error(`Failed to log rent reminder for rent ${rent.id}`, error);
+        }
     }
 
     private async sendOverdueReminderIfNotSent(rent: Rent) {

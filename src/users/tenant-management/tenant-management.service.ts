@@ -2131,16 +2131,16 @@ export class TenantManagementService {
           });
         }
 
-        if (ph.event_type === 'renewal_payment_received') {
+        if (ph.event_type === 'renewal_payment_made') {
           const prop = ph.property;
           const eventDate = new Date(ph.created_at || new Date());
           tenancyEvents.push({
-            id: `renewal-payment-received-${ph.id}`,
+            id: `renewal-payment-made-${ph.id}`,
             type: 'payment' as const,
-            title: 'Renewal Payment Received',
+            title: 'Renewal Payment Made',
             description:
               ph.event_description ||
-              `Renewal payment received for ${prop?.name || 'property'}.`,
+              `Payment made for tenancy renewal for property ${prop?.name || 'property'}.`,
             details: prop?.name || undefined,
             date: eventDate.toISOString(),
             time: eventDate.toLocaleTimeString('en-US', {
@@ -2152,16 +2152,37 @@ export class TenantManagementService {
           });
         }
 
-        if (ph.event_type === 'renewal_payment_made') {
+        if (ph.event_type === 'renewal_payment_initiated') {
           const prop = ph.property;
           const eventDate = new Date(ph.created_at || new Date());
           tenancyEvents.push({
-            id: `renewal-payment-made-${ph.id}`,
+            id: `renewal-payment-initiated-${ph.id}`,
             type: 'payment' as const,
-            title: 'Renewal Payment Made',
+            title: 'Renewal Payment Initiated',
             description:
               ph.event_description ||
-              `Payment made for tenancy renewal for property ${prop?.name || 'property'}.`,
+              `Renewal payment initiated for ${prop?.name || 'property'}.`,
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'renewal_invoice',
+          });
+        }
+
+        if (ph.event_type === 'renewal_payment_cancelled') {
+          const prop = ph.property;
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `renewal-payment-cancelled-${ph.id}`,
+            type: 'payment' as const,
+            title: 'Renewal Payment Cancelled',
+            description:
+              ph.event_description ||
+              `Renewal payment cancelled for ${prop?.name || 'property'}.`,
             details: prop?.name || undefined,
             date: eventDate.toISOString(),
             time: eventDate.toLocaleTimeString('en-US', {

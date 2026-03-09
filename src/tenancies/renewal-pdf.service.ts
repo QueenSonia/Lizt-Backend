@@ -25,7 +25,14 @@ export class RenewalPDFService {
   async generateRenewalInvoicePDF(token: string): Promise<Buffer> {
     const invoice = await this.renewalInvoiceRepository.findOne({
       where: { token },
-      relations: ['property', 'tenant', 'tenant.user', 'propertyTenant'],
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+        'propertyTenant',
+      ],
     });
 
     if (!invoice) {
@@ -77,8 +84,8 @@ export class RenewalPDFService {
 
       const page = await browser.newPage();
       await page.setContent(html, {
-        waitUntil: 'domcontentloaded',
-        timeout: 10000,
+        waitUntil: 'networkidle0',
+        timeout: 15000,
       });
 
       const pdfBuffer = await page.pdf({
@@ -145,6 +152,7 @@ export class RenewalPDFService {
 
   /**
    * Generate HTML template for renewal invoice PDF
+   * Matches the frontend UI at /renewal-invoice/[token]
    * Requirements: 9.3, 9.4
    */
   private generateInvoiceHTML(invoice: RenewalInvoice): string {
@@ -154,19 +162,32 @@ export class RenewalPDFService {
       ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
       : 'Tenant';
 
-    const today = this.formatDate(new Date());
     const startDate = this.formatDate(invoice.start_date);
     const endDate = this.formatDate(invoice.end_date);
     const paymentDate = invoice.paid_at
       ? this.formatDate(invoice.paid_at)
-      : 'N/A';
-    const paymentReference = invoice.payment_reference || 'N/A';
+      : null;
+    const paymentReference = invoice.payment_reference || null;
 
     const rentAmount = this.formatCurrency(Number(invoice.rent_amount));
-    const serviceCharge = this.formatCurrency(Number(invoice.service_charge));
-    const legalFee = this.formatCurrency(Number(invoice.legal_fee));
-    const otherCharges = this.formatCurrency(Number(invoice.other_charges));
+    const serviceCharge = Number(invoice.service_charge);
+    const legalFee = Number(invoice.legal_fee);
+    const otherCharges = Number(invoice.other_charges);
     const totalAmount = this.formatCurrency(Number(invoice.total_amount));
+
+    const isPaid = invoice.payment_status === 'paid';
+
+    // Get landlord logo URL
+    const landlordUser = (invoice.property as any)?.owner?.user;
+    const landlordLogoUrl =
+      landlordUser?.logo_urls?.[0] ||
+      landlordUser?.branding?.letterhead ||
+      null;
+    const landlordName =
+      landlordUser?.branding?.businessName ||
+      (landlordUser
+        ? `${landlordUser.first_name} ${landlordUser.last_name}`
+        : 'Landlord');
 
     return `
 <!DOCTYPE html>
@@ -186,286 +207,280 @@ export class RenewalPDFService {
     }
     body {
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
-      color: #1f2937;
-      background: #fff;
-    }
-    .container {
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 48px 60px;
-    }
-    
-    .header {
-      text-align: center;
-      margin-bottom: 40px;
-      padding-bottom: 24px;
-      border-bottom: 3px solid #10b981;
-    }
-    .header h1 {
-      font-size: 28px;
-      font-weight: 700;
-      color: #10b981;
-      margin-bottom: 8px;
-    }
-    .header .subtitle {
-      font-size: 16px;
-      color: #6b7280;
-      font-weight: 600;
-    }
-    
-    .invoice-info {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 32px;
-      padding: 20px;
       background: #f9fafb;
-      border-radius: 8px;
+      color: #1a1b23;
     }
-    .invoice-info .section {
-      flex: 1;
+    .invoice-wrapper {
+      display: flex;
+      justify-content: center;
     }
-    .invoice-info .label {
-      font-size: 12px;
-      color: #6b7280;
+    .invoice-card {
+      background: #fff;
+      box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+      max-width: 850px;
+      width: 100%;
+      padding: 48px;
+    }
+    .landlord-logo {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 32px;
+    }
+    .landlord-logo img {
+      height: 50px;
+      width: auto;
+      object-fit: contain;
+    }
+    .invoice-title {
+      font-size: 16px;
+      line-height: 22px;
+      font-weight: 700;
+      color: #1a1b23;
+      margin-bottom: 32px;
       text-transform: uppercase;
-      font-weight: 600;
-      margin-bottom: 4px;
+      text-align: center;
     }
-    .invoice-info .value {
-      font-size: 14px;
-      color: #1f2937;
-      font-weight: 600;
-    }
-    
-    .property-section,
-    .tenant-section {
+    .paid-badge {
+      display: flex;
+      justify-content: center;
       margin-bottom: 24px;
     }
-    .section-title {
+    .paid-badge-inner {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      background: #dcfce7;
+      color: #166534;
+      border-radius: 9999px;
       font-size: 14px;
-      font-weight: 700;
-      color: #374151;
-      text-transform: uppercase;
-      margin-bottom: 12px;
-      padding-bottom: 8px;
-      border-bottom: 2px solid #e5e7eb;
+      font-weight: 500;
     }
-    .section-content {
-      padding-left: 16px;
+    .paid-dot {
+      width: 8px;
+      height: 8px;
+      background: #16a34a;
+      border-radius: 50%;
     }
-    .section-content p {
-      margin-bottom: 4px;
-      font-size: 14px;
+    .info-section {
+      margin-bottom: 32px;
     }
-    .section-content .label {
-      font-weight: 600;
+    .info-group {
+      margin-bottom: 16px;
+    }
+    .info-label {
+      font-size: 11px;
+      line-height: 15px;
       color: #6b7280;
-      display: inline-block;
-      width: 140px;
+      margin-bottom: 4px;
     }
-    
-    .charges-section {
+    .info-value {
+      font-size: 11px;
+      line-height: 15px;
+      color: #1a1b23;
+    }
+    .info-value-bold {
+      font-size: 11px;
+      line-height: 15px;
+      color: #1a1b23;
+      font-weight: 700;
+    }
+    .gradient-separator {
+      height: 1px;
+      background: linear-gradient(to right, transparent, #d1d5db, transparent);
       margin: 32px 0;
     }
-    .charges-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 16px;
-    }
-    .charges-table thead {
-      background: #f3f4f6;
-    }
-    .charges-table th {
-      text-align: left;
-      padding: 12px 16px;
-      font-size: 13px;
+    .charges-title {
+      font-size: 12px;
+      line-height: 16px;
       font-weight: 700;
-      color: #374151;
+      color: #1a1b23;
+      margin-bottom: 24px;
       text-transform: uppercase;
-      border-bottom: 2px solid #d1d5db;
     }
-    .charges-table td {
-      padding: 12px 16px;
-      font-size: 14px;
+    .charge-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
       border-bottom: 1px solid #e5e7eb;
     }
-    .charges-table .amount {
-      text-align: right;
-      font-weight: 600;
+    .charge-label {
+      font-size: 11px;
+      line-height: 15px;
+      color: #1a1b23;
     }
-    .charges-table .total-row {
-      background: #f9fafb;
+    .charge-amount {
+      font-size: 11px;
+      line-height: 15px;
+      color: #1a1b23;
       font-weight: 700;
     }
-    .charges-table .total-row td {
-      padding: 16px;
-      font-size: 16px;
-      border-top: 2px solid #10b981;
-      border-bottom: 2px solid #10b981;
-    }
-    
-    .payment-confirmation {
-      margin: 32px 0;
-      padding: 24px;
-      background: #d1fae5;
-      border-left: 4px solid #10b981;
-      border-radius: 8px;
-    }
-    .payment-confirmation h2 {
-      font-size: 16px;
-      font-weight: 700;
-      color: #065f46;
-      margin-bottom: 16px;
+    .total-row {
       display: flex;
+      justify-content: space-between;
       align-items: center;
+      padding-top: 16px;
+      margin-top: 8px;
+      border-top: 2px solid #111827;
     }
-    .payment-confirmation h2::before {
-      content: "✓";
-      display: inline-block;
-      width: 24px;
-      height: 24px;
-      background: #10b981;
-      color: white;
-      border-radius: 50%;
-      text-align: center;
-      line-height: 24px;
-      margin-right: 12px;
-      font-size: 16px;
-    }
-    .payment-confirmation .detail {
-      margin-bottom: 8px;
+    .total-label {
       font-size: 14px;
+      line-height: 18px;
+      color: #1a1b23;
+      font-weight: 700;
+      text-transform: uppercase;
     }
-    .payment-confirmation .detail .label {
-      font-weight: 600;
-      color: #065f46;
-      display: inline-block;
-      width: 160px;
+    .total-amount {
+      font-size: 18px;
+      line-height: 24px;
+      color: #1a1b23;
+      font-weight: 700;
     }
-    .payment-confirmation .detail .value {
-      color: #047857;
+    .payment-box {
+      margin-bottom: 32px;
+      padding: 16px;
+      background: #f0fdf4;
+      border-radius: 8px;
+      border: 1px solid #bbf7d0;
     }
-    
-    .footer {
-      margin-top: 48px;
-      padding-top: 24px;
-      border-top: 1px solid #e5e7eb;
-      text-align: center;
-      color: #6b7280;
+    .payment-box-title {
       font-size: 12px;
+      line-height: 16px;
+      font-weight: 700;
+      color: #14532d;
+      margin-bottom: 8px;
+      text-transform: uppercase;
     }
-    .footer p {
+    .payment-detail {
+      font-size: 11px;
+      line-height: 15px;
+      color: #166534;
       margin-bottom: 4px;
+    }
+    .payment-detail-bold {
+      font-weight: 700;
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>RENEWAL INVOICE</h1>
-      <div class="subtitle">Payment Receipt</div>
-    </div>
+  <div class="invoice-wrapper">
+    <div class="invoice-card">
 
-    <div class="invoice-info">
-      <div class="section">
-        <div class="label">Invoice Date</div>
-        <div class="value">${today}</div>
-      </div>
-      <div class="section">
-        <div class="label">Invoice ID</div>
-        <div class="value">${this.escapeHtml(invoice.token.substring(0, 8).toUpperCase())}</div>
-      </div>
-    </div>
+      ${
+        landlordLogoUrl
+          ? `<!-- Landlord logo -->
+      <div class="landlord-logo">
+        <img alt="${this.escapeHtml(landlordName)}" src="${this.escapeHtml(landlordLogoUrl)}" />
+      </div>`
+          : ''
+      }
 
-    <div class="property-section">
-      <div class="section-title">Property Details</div>
-      <div class="section-content">
-        <p><span class="label">Property Name:</span> ${this.escapeHtml(propertyName)}</p>
-        <p><span class="label">Property Address:</span> ${this.escapeHtml(propertyAddress)}</p>
-        <p><span class="label">Renewal Period:</span> ${startDate} to ${endDate}</p>
-      </div>
-    </div>
+      <!-- Title -->
+      <h1 class="invoice-title">Tenancy Renewal Invoice</h1>
 
-    <div class="tenant-section">
-      <div class="section-title">Tenant Information</div>
-      <div class="section-content">
-        <p><span class="label">Tenant Name:</span> ${this.escapeHtml(tenantName)}</p>
-      </div>
-    </div>
+      ${
+        isPaid
+          ? `<!-- Paid badge -->
+      <div class="paid-badge">
+        <div class="paid-badge-inner">
+          <span class="paid-dot"></span>
+          Paid
+        </div>
+      </div>`
+          : ''
+      }
 
-    <div class="charges-section">
-      <div class="section-title">Charges Breakdown</div>
-      <table class="charges-table">
-        <thead>
-          <tr>
-            <th>Description</th>
-            <th class="amount">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Rent Amount</td>
-            <td class="amount">${rentAmount}</td>
-          </tr>
-          ${
-            Number(invoice.service_charge) > 0
-              ? `
-          <tr>
-            <td>Service Charge</td>
-            <td class="amount">${serviceCharge}</td>
-          </tr>
-          `
-              : ''
-          }
-          ${
-            Number(invoice.legal_fee) > 0
-              ? `
-          <tr>
-            <td>Legal Fee</td>
-            <td class="amount">${legalFee}</td>
-          </tr>
-          `
-              : ''
-          }
-          ${
-            Number(invoice.other_charges) > 0
-              ? `
-          <tr>
-            <td>Other Charges</td>
-            <td class="amount">${otherCharges}</td>
-          </tr>
-          `
-              : ''
-          }
-          <tr class="total-row">
-            <td>Total Amount</td>
-            <td class="amount">${totalAmount}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+      <!-- Property and Tenant Information -->
+      <div class="info-section">
+        <div class="info-group">
+          <p class="info-label">Property Name</p>
+          <p class="info-value-bold">${this.escapeHtml(propertyName)}</p>
+          <p class="info-value">${this.escapeHtml(propertyAddress)}</p>
+        </div>
 
-    <div class="payment-confirmation">
-      <h2>Payment Confirmed</h2>
-      <div class="detail">
-        <span class="label">Payment Date:</span>
-        <span class="value">${paymentDate}</span>
-      </div>
-      <div class="detail">
-        <span class="label">Transaction Reference:</span>
-        <span class="value">${this.escapeHtml(paymentReference)}</span>
-      </div>
-      <div class="detail">
-        <span class="label">Amount Paid:</span>
-        <span class="value">${totalAmount}</span>
-      </div>
-    </div>
+        <div class="info-group">
+          <p class="info-label">Tenant Name</p>
+          <p class="info-value-bold">${this.escapeHtml(tenantName)}</p>
+        </div>
 
-    <div class="footer">
-      <p>This is an automatically generated invoice.</p>
-      <p>Thank you for your payment.</p>
+        <div class="info-group">
+          <p class="info-label">Renewal Period</p>
+          <p class="info-value">${startDate} to ${endDate}</p>
+        </div>
+      </div>
+
+      <!-- Gradient separator -->
+      <div class="gradient-separator"></div>
+
+      <!-- Breakdown of Charges -->
+      <div style="margin-bottom: 32px;">
+        <h2 class="charges-title">Breakdown of Charges</h2>
+
+        <div class="charge-row">
+          <span class="charge-label">Rent</span>
+          <span class="charge-amount">${rentAmount}</span>
+        </div>
+
+        ${
+          serviceCharge > 0
+            ? `<div class="charge-row">
+          <span class="charge-label">Service Charge</span>
+          <span class="charge-amount">${this.formatCurrency(serviceCharge)}</span>
+        </div>`
+            : ''
+        }
+
+        ${
+          legalFee > 0
+            ? `<div class="charge-row">
+          <span class="charge-label">Legal Fee</span>
+          <span class="charge-amount">${this.formatCurrency(legalFee)}</span>
+        </div>`
+            : ''
+        }
+
+        ${
+          otherCharges > 0
+            ? `<div class="charge-row">
+          <span class="charge-label">Other Charges</span>
+          <span class="charge-amount">${this.formatCurrency(otherCharges)}</span>
+        </div>`
+            : ''
+        }
+
+        <!-- Total -->
+        <div class="total-row">
+          <span class="total-label">Total Amount Payable</span>
+          <span class="total-amount">${totalAmount}</span>
+        </div>
+      </div>
+
+      ${
+        isPaid && paymentDate
+          ? `<!-- Gradient separator -->
+      <div class="gradient-separator"></div>
+
+      <!-- Payment Confirmed -->
+      <div class="payment-box">
+        <h3 class="payment-box-title">Payment Confirmed</h3>
+        <p class="payment-detail">
+          <span class="payment-detail-bold">Payment Date:</span> ${paymentDate}
+        </p>
+        ${
+          paymentReference
+            ? `<p class="payment-detail">
+          <span class="payment-detail-bold">Reference:</span> ${this.escapeHtml(paymentReference)}
+        </p>`
+            : ''
+        }
+      </div>`
+          : ''
+      }
+
+      <!-- Gradient separator -->
+      <div class="gradient-separator"></div>
+
     </div>
   </div>
 </body>

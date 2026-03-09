@@ -339,6 +339,28 @@ export interface RenewalPaymentLandlordParams {
 }
 
 /**
+ * Parameters for rent reminder to tenant
+ */
+export interface RentReminderParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  rent_amount: string;
+  expiry_date: string;
+}
+
+/**
+ * Parameters for rent overdue reminder to tenant
+ */
+export interface RentOverdueParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  rent_amount: string;
+  expiry_date: string;
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -360,7 +382,7 @@ export class TemplateSenderService {
     private readonly config: ConfigService,
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
-  ) {}
+  ) { }
 
   /**
    * Send a message using a WhatsApp template with custom parameters
@@ -1442,11 +1464,11 @@ export class TemplateSenderService {
               },
               ...(receipt_link
                 ? [
-                    {
-                      type: 'text' as const,
-                      text: receipt_link,
-                    },
-                  ]
+                  {
+                    type: 'text' as const,
+                    text: receipt_link,
+                  },
+                ]
                 : []),
             ],
           },
@@ -2075,9 +2097,8 @@ export class TemplateSenderService {
         console.error('❌ WhatsApp API Error:', apiErrorContext);
 
         const errorData = data as { error?: { message?: string } };
-        const errorMessage = `WhatsApp API Error (${response.status}): ${
-          errorData?.error?.message || response.statusText
-        }`;
+        const errorMessage = `WhatsApp API Error (${response.status}): ${errorData?.error?.message || response.statusText
+          }`;
 
         throw new Error(errorMessage);
       }
@@ -2215,6 +2236,107 @@ export class TemplateSenderService {
     return simulatedResponse;
   }
 
+  /**
+   * Send rent reminder template to tenant via WhatsApp
+   * Requirements: 1.2
+   */
+  async sendRentReminderTemplate({
+    phone_number,
+    tenant_name,
+    property_name,
+    rent_amount,
+    expiry_date,
+  }: RentReminderParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'rent_reminders',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: expiry_date,
+              },
+              {
+                type: 'text',
+                text: rent_amount,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send rent overdue reminder template to tenant via WhatsApp
+   * Requirements: 1.2
+   */
+  async sendRentOverdueTemplate({
+    phone_number,
+    tenant_name,
+    property_name,
+    rent_amount,
+    expiry_date,
+  }: RentOverdueParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'rent_overdue',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: expiry_date,
+              },
+              {
+                type: 'text',
+                text: rent_amount,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  // ----------------------------------------------------------------------
+  // Internal API method
+  // ----------------------------------------------------------------------
   /**
    * Helper method to extract message type from outbound payload
    */

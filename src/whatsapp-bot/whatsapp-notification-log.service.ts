@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan } from 'typeorm';
+import { Repository, LessThan, In, Raw } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron } from '@nestjs/schedule';
 import {
@@ -20,7 +20,7 @@ export class WhatsAppNotificationLogService {
     private readonly logRepository: Repository<WhatsAppNotificationLog>,
     private readonly templateSenderService: TemplateSenderService,
     private readonly eventEmitter: EventEmitter2,
-  ) {}
+  ) { }
 
   /**
    * Queue a WhatsApp notification: save to DB, then emit event for immediate send.
@@ -128,5 +128,54 @@ export class WhatsAppNotificationLogService {
     }
 
     await method.call(this.templateSenderService, payload);
+  }
+
+  /**
+   * Check if a specific reminder type was already sent for a given reference (rent ID) and days difference (for early reminders).
+   */
+  async existsForDaysBeforeExpiry(
+    referenceId: string,
+    type: string,
+    daysBeforeExpiry: number,
+  ): Promise<boolean> {
+    const count = await this.logRepository.count({
+      where: {
+        reference_id: referenceId,
+        type,
+        status: In([
+          WhatsAppNotificationStatus.PENDING,
+          WhatsAppNotificationStatus.SENT,
+        ]),
+        payload: Raw((alias) => `${alias}->>'days_before_expiry' = '${daysBeforeExpiry}'`),
+      },
+    });
+    return count > 0;
+  }
+
+  /**
+   * Check if a specific reminder type was already sent for a given reference (rent ID) today (for overdue reminders).
+   */
+  async existsToday(referenceId: string, type: string): Promise<boolean> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const count = await this.logRepository
+      .createQueryBuilder('log')
+      .where('log.reference_id = :referenceId', { referenceId })
+      .andWhere('log.type = :type', { type })
+      .andWhere('log.status IN (:...statuses)', {
+        statuses: [
+          WhatsAppNotificationStatus.PENDING,
+          WhatsAppNotificationStatus.SENT,
+        ],
+      })
+      .andWhere('log.created_at >= :today', { today })
+      .andWhere('log.created_at < :tomorrow', { tomorrow })
+      .getCount();
+
+    return count > 0;
   }
 }

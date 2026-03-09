@@ -1,0 +1,174 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Rent } from '../rents/entities/rent.entity';
+import { RentStatusEnum } from '../rents/dto/create-rent.dto';
+import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
+
+const RENT_REMINDER_SCHEDULE = {
+    monthly: [14, 7, 3],
+    quarterly: [30, 14, 7, 3],
+    'bi-annually': [45, 30, 14, 7, 3],
+    annually: [60, 30, 14, 7, 3],
+};
+
+@Injectable()
+export class RentReminderService {
+    private readonly logger = new Logger(RentReminderService.name);
+
+    constructor(
+        @InjectRepository(Rent)
+        private readonly rentRepository: Repository<Rent>,
+        private readonly whatsAppNotificationLogService: WhatsAppNotificationLogService,
+    ) { }
+
+    @Cron(CronExpression.EVERY_DAY_AT_8AM)
+    async runDailyReminderCheck() {
+        this.logger.log('Starting daily rent reminder check...');
+        try {
+            await this.processUpcomingReminders();
+            await this.processOverdueReminders();
+            this.logger.log('Completed daily rent reminder check.');
+        } catch (error) {
+            this.logger.error('Failed to process daily rent reminders', error);
+        }
+    }
+
+    private async processUpcomingReminders() {
+        this.logger.log('Processing upcoming rent reminders...');
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        // Collect all valid reminder days across all frequencies
+        const allReminderDays = new Set<number>();
+        Object.values(RENT_REMINDER_SCHEDULE).forEach((days) => {
+            days.forEach((day) => allReminderDays.add(day));
+        });
+
+        // Determine target dates corresponding to those exact gaps
+        const targetDates = Array.from(allReminderDays).map((d) => {
+            const date = new Date(today);
+            date.setDate(today.getDate() + d);
+            return date.toISOString().split('T')[0]; // YYYY-MM-DD format
+        });
+
+        if (targetDates.length === 0) return;
+
+        // Optimized DB Query: Fetch only rents expiring exactly on one of the target dates
+        const rents = await this.rentRepository
+            .createQueryBuilder('rent')
+            .leftJoinAndSelect('rent.tenant', 'tenant')
+            .leftJoinAndSelect('tenant.user', 'user')
+            .leftJoinAndSelect('rent.property', 'property')
+            .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
+            .andWhere('DATE(rent.expiry_date) IN (:...dates)', { dates: targetDates })
+            .getMany();
+
+        this.logger.log(`Found ${rents.length} potential upcoming rents to remind.`);
+
+        for (const rent of rents) {
+            if (!rent.expiry_date) continue;
+
+            const expiryDate = new Date(rent.expiry_date);
+            expiryDate.setHours(0, 0, 0, 0);
+
+            const daysUntilExpiry = Math.floor(
+                (expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+            );
+
+            // Normalize string (e.g. 'Bi-Annually' -> 'bi-annually')
+            const frequency = (rent.payment_frequency || 'monthly').toLowerCase();
+            const schedule = RENT_REMINDER_SCHEDULE[frequency] || RENT_REMINDER_SCHEDULE.monthly;
+
+            if (!schedule.includes(daysUntilExpiry)) continue;
+
+            await this.sendReminderIfNotSent(rent, daysUntilExpiry);
+        }
+    }
+
+    private async processOverdueReminders() {
+        this.logger.log('Processing overdue rent reminders...');
+        const todayStr = new Date().toISOString().split('T')[0];
+
+        // Optimized query for overdue rents (happens daily after expiry)
+        const overdueRents = await this.rentRepository
+            .createQueryBuilder('rent')
+            .leftJoinAndSelect('rent.tenant', 'tenant')
+            .leftJoinAndSelect('tenant.user', 'user')
+            .leftJoinAndSelect('rent.property', 'property')
+            .where('DATE(rent.expiry_date) < :today', { today: todayStr })
+            .andWhere('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
+            .getMany();
+
+        this.logger.log(`Found ${overdueRents.length} overdue rents.`);
+
+        for (const rent of overdueRents) {
+            if (!rent.expiry_date) continue;
+
+            await this.sendOverdueReminderIfNotSent(rent);
+        }
+    }
+
+    private async sendReminderIfNotSent(rent: Rent, daysUntilExpiry: number) {
+        if (!rent.tenant?.user?.phone_number || !rent.property?.name) return;
+
+        const alreadySent = await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
+            rent.id,
+            'sendRentReminderTemplate',
+            daysUntilExpiry,
+        );
+
+        if (alreadySent) {
+            this.logger.debug(`Rent reminder already sent for rent ${rent.id} at ${daysUntilExpiry} days.`);
+            return;
+        }
+
+        const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString('en-GB'); // dd/mm/yyyy
+
+        // Use rental_price if defined, fallback to amount_paid
+        const amountToPay = rent.rental_price || rent.amount_paid;
+        const formattedAmount = amountToPay.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
+
+        await this.whatsAppNotificationLogService.queue('sendRentReminderTemplate', {
+            phone_number: rent.tenant.user.phone_number,
+            tenant_name: rent.tenant.user.first_name,
+            property_name: rent.property.name,
+            rent_amount: formattedAmount,
+            expiry_date: expiryDateStr,
+            days_before_expiry: daysUntilExpiry,
+        }, rent.id);
+
+        this.logger.log(`Queued rent reminder for rent ${rent.id} (${daysUntilExpiry} days before expiry).`);
+    }
+
+    private async sendOverdueReminderIfNotSent(rent: Rent) {
+        if (!rent.tenant?.user?.phone_number || !rent.property?.name) return;
+
+        // Only send one overdue reminder per day
+        const alreadySentToday = await this.whatsAppNotificationLogService.existsToday(
+            rent.id,
+            'sendRentOverdueTemplate',
+        );
+
+        if (alreadySentToday) {
+            this.logger.debug(`Overdue reminder already sent today for rent ${rent.id}.`);
+            return;
+        }
+
+        const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString('en-GB');
+
+        const amountToPay = rent.rental_price || rent.amount_paid;
+        const formattedAmount = amountToPay.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
+
+        await this.whatsAppNotificationLogService.queue('sendRentOverdueTemplate', {
+            phone_number: rent.tenant.user.phone_number,
+            tenant_name: rent.tenant.user.first_name,
+            property_name: rent.property.name,
+            rent_amount: formattedAmount,
+            expiry_date: expiryDateStr,
+        }, rent.id);
+
+        this.logger.log(`Queued daily overdue reminder for rent ${rent.id}.`);
+    }
+}

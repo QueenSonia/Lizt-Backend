@@ -16,6 +16,7 @@ import { Account } from 'src/users/entities/account.entity';
 import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
 import { MoveOutSchedulerService } from './tasks/move-out-scheduler.service';
 import { RentConsistencyService } from '../cron/rent-consistency.service';
+import { RentReminderService } from '../cron/rent-reminder.service';
 import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
 import { Users } from 'src/users/entities/user.entity';
@@ -56,8 +57,9 @@ import { NotificationModule } from 'src/notifications/notification.module';
     RentsService,
     MoveOutSchedulerService,
     RentConsistencyService,
+    RentReminderService,
     FixEmptyLastnameService,
     DatabaseErrorHandlerService,
   ],
 })
-export class PropertiesModule {}
+export class PropertiesModule { }

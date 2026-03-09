@@ -114,6 +114,7 @@ export class RentsService {
       where: {
         ...query,
         expiry_date: Between(startDate, endDate),
+        rent_status: RentStatusEnum.ACTIVE,
       },
       relations: ['tenant', 'property'],
       skip,
@@ -149,7 +150,8 @@ export class RentsService {
     const [rents, count] = await this.rentRepository.findAndCount({
       where: {
         ...query,
-        // expiry_date: LessThanOrEqual(currentDate),
+        expiry_date: LessThanOrEqual(currentDate),
+        rent_status: RentStatusEnum.ACTIVE,
       },
       relations: ['tenant', 'property'],
       skip,
@@ -173,7 +175,7 @@ export class RentsService {
   async sendRentReminder(id: string, userId: string) {
     const rent = await this.rentRepository.findOne({
       where: { id },
-      relations: ['tenant', 'property'],
+      relations: ['tenant', 'tenant.user', 'property'],
     });
 
     if (!rent?.id) {
@@ -188,8 +190,8 @@ export class RentsService {
     }
 
     const emailContent = rentReminderEmailTemplate(
-      `${rent?.tenant?.user.first_name} ${rent?.tenant?.user.last_name}`,
-      rent?.property?.rental_price,
+      `${rent?.tenant?.user?.first_name} ${rent?.tenant?.user?.last_name}`,
+      rent?.rental_price ?? rent?.amount_paid ?? 0,
       DateService.getDateNormalFormat(rent?.expiry_date),
     );
 

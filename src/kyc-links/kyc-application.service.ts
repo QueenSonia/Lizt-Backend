@@ -93,15 +93,6 @@ export class KYCApplicationService {
       );
     }
 
-    // Check if the OTP verification is still recent (within last 30 minutes)
-    // This prevents someone from verifying once and then submitting days later
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-    if (verifiedOtp.updated_at < thirtyMinutesAgo) {
-      throw new BadRequestException(
-        'Phone verification has expired. Please request a new OTP code and verify again.',
-      );
-    }
-
     // Validate the selected property belongs to the landlord and is vacant
     const selectedProperty = await this.propertyRepository.findOne({
       where: {
@@ -1209,14 +1200,6 @@ export class KYCApplicationService {
       if (!verifiedOtp) {
         throw new BadRequestException(
           'Phone number must be verified before completing KYC application. Please request and verify an OTP code.',
-        );
-      }
-
-      // SECURITY: Check if the OTP verification is still recent (within last 30 minutes)
-      const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-      if (verifiedOtp.updated_at < thirtyMinutesAgo) {
-        throw new BadRequestException(
-          'Phone verification has expired. Please request a new OTP code and verify again.',
         );
       }
 

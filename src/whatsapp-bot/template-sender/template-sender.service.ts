@@ -382,7 +382,7 @@ export class TemplateSenderService {
     private readonly config: ConfigService,
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
-  ) { }
+  ) {}
 
   /**
    * Send a message using a WhatsApp template with custom parameters
@@ -1464,11 +1464,11 @@ export class TemplateSenderService {
               },
               ...(receipt_link
                 ? [
-                  {
-                    type: 'text' as const,
-                    text: receipt_link,
-                  },
-                ]
+                    {
+                      type: 'text' as const,
+                      text: receipt_link,
+                    },
+                  ]
                 : []),
             ],
           },
@@ -1688,7 +1688,7 @@ export class TemplateSenderService {
     renewal_token,
     frontend_url,
   }: RenewalLinkParams): Promise<void> {
-    const renewalUrl = `${frontend_url}/renewal-invoice/${renewal_token}/verify`;
+    const renewalUrl = `${frontend_url}/renewal-invoice/verify/${renewal_token}`;
 
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -2097,8 +2097,9 @@ export class TemplateSenderService {
         console.error('❌ WhatsApp API Error:', apiErrorContext);
 
         const errorData = data as { error?: { message?: string } };
-        const errorMessage = `WhatsApp API Error (${response.status}): ${errorData?.error?.message || response.statusText
-          }`;
+        const errorMessage = `WhatsApp API Error (${response.status}): ${
+          errorData?.error?.message || response.statusText
+        }`;
 
         throw new Error(errorMessage);
       }

@@ -135,6 +135,20 @@ export class RenewalPaymentService {
       );
     }
 
+    // Log payment initiated event to property history
+    try {
+      const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+      await this.tenanciesService.logRenewalPaymentInitiated(
+        invoice.id,
+        invoice.property_id,
+        invoice.tenant_id,
+        tenantName,
+        invoice.property.name,
+      );
+    } catch (error) {
+      this.logger.error('Failed to log payment initiated event:', error);
+    }
+
     return {
       accessCode: paystackResponse.data.access_code,
       reference,

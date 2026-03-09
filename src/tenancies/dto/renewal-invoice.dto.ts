@@ -115,4 +115,36 @@ export class RenewalInvoiceDto {
     required: false,
   })
   paymentReference?: string;
+
+  @ApiProperty({
+    description: 'Landlord branding information',
+    required: false,
+    example: {
+      businessName: 'Property Kraft',
+      businessAddress: '123 Business Street, Lagos',
+      contactPhone: '+2348012345678',
+      contactEmail: 'info@propertykraft.com',
+      websiteLink: 'https://propertykraft.com',
+    },
+  })
+  landlordBranding?: {
+    businessName?: string;
+    businessAddress?: string;
+    contactPhone?: string;
+    contactEmail?: string;
+    websiteLink?: string;
+    footerColor?: string;
+    letterhead?: string;
+    signature?: string;
+    headingFont?: string;
+    bodyFont?: string;
+    updatedAt?: string;
+  };
+
+  @ApiProperty({
+    description: 'Landlord logo URL',
+    example: 'https://example.com/logo.png',
+    required: false,
+  })
+  landlordLogoUrl?: string;
 }

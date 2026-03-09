@@ -98,7 +98,7 @@ export class TenanciesController {
         message: 'Renewal link sent successfully',
         data: {
           token: '123e4567-e89b-12d3-a456-426614174000',
-          link: 'http://localhost:3000/renewal-invoice/123e4567-e89b-12d3-a456-426614174000',
+          link: 'http://localhost:3000/renewal-invoice/verify/123e4567-e89b-12d3-a456-426614174000',
           sentAt: '2025-01-15T10:30:00Z',
         },
       },
@@ -128,6 +128,34 @@ export class TenanciesController {
         link,
         sentAt: new Date().toISOString(),
       },
+    };
+  }
+
+  /**
+   * GET /api/tenancies/renewal-invoice/by-id/:id
+   * Get renewal invoice data by database ID (authenticated, for landlord dashboard)
+   */
+  @ApiOperation({
+    summary: 'Get Renewal Invoice by ID',
+    description: 'Retrieve renewal invoice details by database ID',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Renewal invoice UUID',
+    type: 'string',
+  })
+  @ApiOkResponse({
+    description: 'Renewal invoice retrieved successfully',
+    type: RenewalInvoiceDto,
+  })
+  @ApiNotFoundResponse({ description: 'Renewal invoice not found' })
+  @Get('renewal-invoice/by-id/:id')
+  async getRenewalInvoiceById(@Param('id', ParseUUIDPipe) id: string) {
+    const invoice = await this.tenanciesService.getRenewalInvoiceById(id);
+
+    return {
+      success: true,
+      data: invoice,
     };
   }
 
@@ -388,6 +416,29 @@ export class TenanciesController {
       success: true,
       data: result,
     };
+  }
+
+  /**
+   * POST /api/tenancies/renewal-invoice/:token/payment-cancelled
+   * Log payment cancellation event
+   * Note: This endpoint does NOT require authentication (public access via token)
+   */
+  @Public()
+  @ApiOperation({
+    summary: 'Log Payment Cancelled',
+    description: 'Log that the tenant cancelled the payment flow',
+  })
+  @ApiParam({
+    name: 'token',
+    description: 'Renewal invoice token',
+    type: 'string',
+  })
+  @ApiOkResponse({ description: 'Cancellation logged' })
+  @ApiNotFoundResponse({ description: 'Renewal invoice not found' })
+  @Post('renewal-invoice/:token/payment-cancelled')
+  async paymentCancelled(@Param('token') token: string) {
+    await this.tenanciesService.logRenewalPaymentCancelled(token);
+    return { success: true };
   }
 
   /**

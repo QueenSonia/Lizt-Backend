@@ -107,7 +107,8 @@ export class KYCApplicationService {
       );
     }
 
-    if (selectedProperty.property_status !== 'vacant') {
+    const availableStatuses = ['vacant', 'offer_pending', 'offer_accepted'];
+    if (!availableStatuses.includes(selectedProperty.property_status)) {
       throw new BadRequestException(
         'Selected property is no longer available for applications',
       );
@@ -188,6 +189,7 @@ export class KYCApplicationService {
       ...this.mapCommonFieldsToEntity(kycData),
       kyc_link_id: kycLink.id,
       property_id: kycData.property_id,
+      initial_property_id: kycData.property_id,
       status: ApplicationStatus.PENDING,
       first_name: kycData.first_name,
       last_name: kycData.last_name,
@@ -632,6 +634,11 @@ export class KYCApplicationService {
                 cautionDeposit: latestOffer.caution_deposit,
                 legalFee: latestOffer.legal_fee,
                 agencyFee: latestOffer.agency_fee,
+                sentAt: latestOffer.sent_at
+                  ? latestOffer.sent_at instanceof Date
+                    ? latestOffer.sent_at.toISOString()
+                    : latestOffer.sent_at
+                  : undefined,
               };
             })()
           : undefined,
@@ -788,6 +795,7 @@ export class KYCApplicationService {
         'offer_letters.legal_fee',
         'offer_letters.agency_fee',
         'offer_letters.created_at',
+        'offer_letters.sent_at',
       ])
       .where('property.owner_id = :landlordId', { landlordId })
       .andWhere('application.deleted_at IS NULL')

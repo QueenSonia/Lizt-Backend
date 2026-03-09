@@ -18,6 +18,7 @@ import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { UtilsModule } from 'src/utils/utils.module';
 import { AppCacheModule } from 'src/lib/cache';
 import { PaymentsModule } from 'src/payments/payments.module';
+import { NotificationModule } from 'src/notifications/notification.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { PaymentsModule } from 'src/payments/payments.module';
     UtilsModule,
     AppCacheModule,
     forwardRef(() => PaymentsModule),
+    NotificationModule,
   ],
   controllers: [TenanciesController],
   providers: [
@@ -51,4 +53,4 @@ import { PaymentsModule } from 'src/payments/payments.module';
     RenewalPDFService,
   ],
 })
-export class TenanciesModule {}
+export class TenanciesModule { }

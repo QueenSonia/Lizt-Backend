@@ -10,6 +10,8 @@ export enum NotificationType {
   TENANT_ATTACHED = 'Tenant Attached',
   TENANCY_ENDED = 'Tenancy Ended',
   TENANCY_RENEWED = 'Tenancy Renewed',
+  RENEWAL_LINK_SENT = 'Renewal Link Sent',
+  RENEWAL_PAYMENT_RECEIVED = 'Renewal Payment Received',
   OFFER_LETTER_GENERATED = 'Offer Letter Generated',
   OFFER_LETTER_SENT = 'Offer Letter Sent',
   OFFER_LETTER_ACCEPTED = 'Offer Letter Accepted',
@@ -21,4 +23,5 @@ export enum NotificationType {
   RECEIPT_ISSUED = 'Receipt Issued',
   RECEIPT_SENT = 'Receipt Sent',
   RECEIPT_VIEWED = 'Receipt Viewed',
+  RENT_REMINDER = 'Rent reminder',
 }

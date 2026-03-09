@@ -1140,114 +1140,18 @@ export class PropertiesService {
     };
   }
 
-  @PerformanceMonitor.MonitorPerformance(2000) // Alert if takes more than 2 seconds
   async getPropertyDetails(id: string): Promise<any> {
-    // Use query builder for better performance and selective loading
+    // Step 1: Load basic property data with only active rent (most critical data)
     const property = await this.propertyRepository
       .createQueryBuilder('property')
-      .leftJoin('property.rents', 'rent', 'rent.rent_status = :activeStatus', {
-        activeStatus: 'active',
-      })
-      .addSelect([
-        'rent.id',
-        'rent.tenant_id',
-        'rent.property_id',
-        'rent.amount_paid',
-        'rent.expiry_date',
-        'rent.rent_start_date',
-        'rent.rental_price',
-        'rent.payment_frequency',
-        'rent.payment_status',
-        'rent.rent_status',
-        'rent.created_at',
-      ])
-      .leftJoin('rent.tenant', 'rentTenant')
-      .addSelect(['rentTenant.id', 'rentTenant.userId'])
-      .leftJoin('rentTenant.user', 'rentTenantUser')
-      .addSelect([
-        'rentTenantUser.id',
-        'rentTenantUser.first_name',
-        'rentTenantUser.last_name',
-        'rentTenantUser.email',
-        'rentTenantUser.phone_number',
-      ])
-      .leftJoin(
-        'property.property_tenants',
-        'propertyTenant',
-        'propertyTenant.status = :tenantStatus',
-        { tenantStatus: 'active' },
+      .leftJoinAndSelect(
+        'property.rents',
+        'rent',
+        'rent.rent_status = :activeStatus AND rent.deleted_at IS NULL',
+        { activeStatus: 'active' },
       )
-      .addSelect([
-        'propertyTenant.id',
-        'propertyTenant.tenant_id',
-        'propertyTenant.property_id',
-        'propertyTenant.status',
-      ])
-      .leftJoin('propertyTenant.tenant', 'tenant')
-      .addSelect(['tenant.id', 'tenant.userId'])
-      .leftJoin('tenant.user', 'tenantUser')
-      .addSelect([
-        'tenantUser.id',
-        'tenantUser.first_name',
-        'tenantUser.last_name',
-        'tenantUser.email',
-        'tenantUser.phone_number',
-      ])
-      .leftJoin(
-        'tenantUser.tenant_kycs',
-        'tenantKyc',
-        'tenantKyc.admin_id = property.owner_id',
-      )
-      .addSelect([
-        'tenantKyc.id',
-        'tenantKyc.first_name',
-        'tenantKyc.last_name',
-        'tenantKyc.email',
-        'tenantKyc.phone_number',
-      ])
-      .leftJoin('property.property_histories', 'history')
-      .addSelect([
-        'history.id',
-        'history.event_type',
-        'history.event_description',
-        'history.move_in_date',
-        'history.move_out_date',
-        'history.move_out_reason',
-        'history.monthly_rent',
-        'history.created_at',
-      ])
-      .leftJoin('history.tenant', 'historyTenant')
-      .addSelect(['historyTenant.id', 'historyTenant.userId'])
-      .leftJoin('historyTenant.user', 'historyTenantUser')
-      .addSelect([
-        'historyTenantUser.id',
-        'historyTenantUser.first_name',
-        'historyTenantUser.last_name',
-      ])
-      .leftJoin(
-        'historyTenantUser.tenant_kycs',
-        'historyTenantKyc',
-        'historyTenantKyc.admin_id = property.owner_id',
-      )
-      .addSelect([
-        'historyTenantKyc.id',
-        'historyTenantKyc.first_name',
-        'historyTenantKyc.last_name',
-      ])
-      .leftJoin('property.kyc_applications', 'kycApplication')
-      .addSelect([
-        'kycApplication.id',
-        'kycApplication.status',
-        'kycApplication.first_name',
-        'kycApplication.last_name',
-        'kycApplication.email',
-        'kycApplication.phone_number',
-        'kycApplication.employment_status',
-        'kycApplication.monthly_net_income',
-        'kycApplication.tenant_id',
-        'kycApplication.passport_photo_url',
-        'kycApplication.created_at',
-      ])
+      .leftJoinAndSelect('rent.tenant', 'rentTenant')
+      .leftJoinAndSelect('rentTenant.user', 'rentTenantUser')
       .where('property.id = :id', { id })
       .getOne();
 
@@ -1258,27 +1162,82 @@ export class PropertiesService {
       );
     }
 
-    const activeTenantRelation = property.property_tenants.find(
-      (pt) => pt.status === 'active',
-    );
+    // Step 2: Load active property tenant separately (only if needed)
+    let activeTenantRelation: PropertyTenant | null = null;
     const activeRent = property.rents.find((r) => r.rent_status === 'active');
+
+    if (activeRent) {
+      activeTenantRelation = await this.dataSource
+        .getRepository(PropertyTenant)
+        .createQueryBuilder('pt')
+        .leftJoinAndSelect('pt.tenant', 'tenant')
+        .leftJoinAndSelect('tenant.user', 'user')
+        .leftJoinAndSelect(
+          'user.tenant_kycs',
+          'tenantKyc',
+          'tenantKyc.admin_id = :ownerId AND tenantKyc.deleted_at IS NULL',
+          { ownerId: property.owner_id },
+        )
+        .where('pt.property_id = :propertyId', { propertyId: id })
+        .andWhere('pt.status = :status', { status: 'active' })
+        .andWhere('pt.deleted_at IS NULL')
+        .getOne();
+    }
+
+    // Step 3: Load property history (separate query, sorted in DB)
+    const propertyHistories = await this.dataSource
+      .getRepository(PropertyHistory)
+      .createQueryBuilder('history')
+      .leftJoinAndSelect('history.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'user')
+      .leftJoinAndSelect(
+        'user.tenant_kycs',
+        'tenantKyc',
+        'tenantKyc.admin_id = :ownerId AND tenantKyc.deleted_at IS NULL',
+        { ownerId: property.owner_id },
+      )
+      .where('history.property_id = :propertyId', { propertyId: id })
+      .orderBy('history.created_at', 'DESC')
+      .limit(50) // Limit history to last 50 events
+      .getMany();
+
+    // Step 4: Load KYC applications (separate query, only recent ones)
+    const kycApplications = await this.dataSource
+      .getRepository(KYCApplication)
+      .createQueryBuilder('kyc')
+      .select([
+        'kyc.id',
+        'kyc.status',
+        'kyc.first_name',
+        'kyc.last_name',
+        'kyc.email',
+        'kyc.phone_number',
+        'kyc.employment_status',
+        'kyc.monthly_net_income',
+        'kyc.tenant_id',
+        'kyc.passport_photo_url',
+        'kyc.created_at',
+      ])
+      .where('kyc.property_id = :propertyId', { propertyId: id })
+      .andWhere('kyc.deleted_at IS NULL')
+      .orderBy('kyc.created_at', 'DESC')
+      .limit(20) // Limit to 20 most recent applications
+      .getMany();
 
     // Current tenant information
     let currentTenant: any | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
-      const tenantKyc = tenantUser.tenant_kycs?.[0]; // Get TenantKyc data if available (filtered by admin_id)
+      const tenantKyc = tenantUser.tenant_kycs?.[0];
 
-      // Prioritize TenantKyc data over User data for consistency
       const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
       const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
       const email = tenantKyc?.email ?? tenantUser.email;
       const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
 
-      // Get the most recent KYC application for this tenant to get passport photo
-      const tenantKycApplication = property.kyc_applications
-        ?.filter((app) => app.tenant_id === activeTenantRelation.tenant.id)
-        ?.sort((a, b) => {
+      const tenantKycApplication = kycApplications
+        .filter((app) => app.tenant_id === activeTenantRelation.tenant.id)
+        .sort((a, b) => {
           const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
           const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
           return dateB - dateA;
@@ -1286,7 +1245,7 @@ export class PropertiesService {
 
       currentTenant = {
         id: activeTenantRelation.tenant.id,
-        tenancyId: activeTenantRelation.id, // PropertyTenant entity ID for tenancy operations
+        tenancyId: activeTenantRelation.id,
         name: `${firstName} ${lastName}`,
         email: email,
         phone: phone,
@@ -1298,22 +1257,8 @@ export class PropertiesService {
       };
     }
 
-    // Property history from property_histories table
-    console.log(
-      `🔍 Property ${id} has ${property.property_histories.length} history entries:`,
-    );
-    property.property_histories.forEach((hist, index) => {
-      console.log(
-        `  ${index + 1}. ${hist.event_type} - ${hist.created_at} - ${hist.event_description}`,
-      );
-    });
-
-    const history = property.property_histories
-      .sort((a, b) => {
-        const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-        const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-        return dateB - dateA;
-      })
+    // Property history formatting (reuse existing logic)
+    const history = propertyHistories
       .map((hist) => {
         const tenantUser = hist.tenant?.user;
         const tenantKyc = tenantUser?.tenant_kycs?.[0];
@@ -1324,18 +1269,16 @@ export class PropertiesService {
             tenantKyc?.last_name ?? tenantUser.last_name
           }`;
         } else {
-          // Try to extract tenant name from event_description (e.g. "Invoice generated for John Doe — ₦500,000")
           const descMatch = hist.event_description?.match(
             /(?:for|to|by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/,
           );
           if (descMatch) {
             tenantName = descMatch[1];
           } else {
-            // Try to find the KYC application linked to this event
             const linkedKycApp =
               hist.related_entity_type === 'kyc_application' &&
               hist.related_entity_id
-                ? property.kyc_applications?.find(
+                ? kycApplications.find(
                     (app) => app.id === hist.related_entity_id,
                   )
                 : null;
@@ -1343,12 +1286,7 @@ export class PropertiesService {
             if (linkedKycApp) {
               tenantName = `${linkedKycApp.first_name} ${linkedKycApp.last_name}`;
             } else {
-              // Fall back to the most recent KYC application for this property
-              const kycApp = property.kyc_applications?.sort(
-                (a, b) =>
-                  new Date(b.created_at || 0).getTime() -
-                  new Date(a.created_at || 0).getTime(),
-              )?.[0];
+              const kycApp = kycApplications[0];
               tenantName = kycApp
                 ? `${kycApp.first_name} ${kycApp.last_name}`
                 : currentTenant?.name || 'Unknown';
@@ -1719,13 +1657,67 @@ export class PropertiesService {
               details: tenantName,
               amount: null,
             };
+          case 'rent_reminder_sent':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'rent_reminder_sent',
+              title: 'Rent reminder sent',
+              description:
+                hist.event_description || `Rent reminder sent to ${tenantName}`,
+              details: tenantName,
+            };
+          case 'renewal_link_sent':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'renewal_link_sent',
+              title: 'Renewal Link Sent',
+              description:
+                hist.event_description ||
+                `Tenancy renewal link sent for property.`,
+              details: tenantName,
+            };
+          case 'renewal_payment_received':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'renewal_payment_received',
+              title: 'Renewal Payment Received',
+              description:
+                hist.event_description ||
+                `Renewal payment received for property.`,
+              details: tenantName,
+            };
+          case 'renewal_payment_initiated':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'renewal_payment_initiated',
+              title: 'Renewal Payment Initiated',
+              description:
+                hist.event_description ||
+                `Renewal payment initiated for property.`,
+              details: tenantName,
+            };
+          case 'renewal_payment_cancelled':
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'renewal_payment_cancelled',
+              title: 'Renewal Payment Cancelled',
+              description:
+                hist.event_description ||
+                `Renewal payment cancelled for property.`,
+              details: tenantName,
+            };
           default:
             return null;
         }
       })
       .filter(Boolean);
 
-    // Manually add the property creation event if it doesn't exist from the history
+    // Add property creation event if missing
     const hasCreationEvent = history.some(
       (e) => e && e.eventType === 'property_created',
     );
@@ -1740,16 +1732,14 @@ export class PropertiesService {
       });
     }
 
-    // Computed description
     const computedDescription = `${property.name} is a ${
       property.no_of_bedrooms === -1
         ? 'studio'
         : `${property.no_of_bedrooms}-bedroom`
     } ${property.property_type?.toLowerCase()} located at ${property.location}.`;
 
-    // KYC Applications data
-    const kycApplications =
-      property.kyc_applications?.map((app) => ({
+    const kycApplicationsFormatted =
+      kycApplications.map((app) => ({
         id: app.id,
         status: app.status,
         applicantName: `${app.first_name} ${app.last_name}`,
@@ -1762,14 +1752,12 @@ export class PropertiesService {
         monthlyIncome: app.monthly_net_income,
       })) || [];
 
-    // KYC Link Status - Now general per landlord, not property-specific
-    const hasActiveKYCLink = false; // Always false since links are now general
-    const kycApplicationCount = kycApplications.length;
-    const pendingApplicationsCount = kycApplications.filter(
+    const hasActiveKYCLink = false;
+    const kycApplicationCount = kycApplicationsFormatted.length;
+    const pendingApplicationsCount = kycApplicationsFormatted.filter(
       (app) => app.status === 'pending',
     ).length;
 
-    // Build the comprehensive response
     return {
       id: property.id,
       name: property.name,
@@ -1786,12 +1774,12 @@ export class PropertiesService {
       rent: activeRent?.rental_price || null,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
-      rentalPrice: property.rental_price || null, // Marketing price for vacant properties
+      rentalPrice: property.rental_price || null,
       isMarketingReady: property.is_marketing_ready || false,
       description: property.description || computedDescription,
       currentTenant,
       history,
-      kycApplications,
+      kycApplications: kycApplicationsFormatted,
       kycApplicationCount,
       pendingApplicationsCount,
       hasActiveKYCLink,

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, In, Raw } from 'typeorm';
+import { Repository, LessThan, In, Raw, IsNull } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron } from '@nestjs/schedule';
 import {
@@ -95,10 +95,16 @@ export class WhatsAppNotificationLogService {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
     const pending = await this.logRepository.find({
-      where: {
-        status: WhatsAppNotificationStatus.PENDING,
-        last_attempted_at: LessThan(fiveMinutesAgo),
-      },
+      where: [
+        {
+          status: WhatsAppNotificationStatus.PENDING,
+          last_attempted_at: LessThan(fiveMinutesAgo),
+        },
+        {
+          status: WhatsAppNotificationStatus.PENDING,
+          last_attempted_at: IsNull(),
+        },
+      ],
       order: { created_at: 'ASC' },
       take: 50,
     });
@@ -146,7 +152,10 @@ export class WhatsAppNotificationLogService {
           WhatsAppNotificationStatus.PENDING,
           WhatsAppNotificationStatus.SENT,
         ]),
-        payload: Raw((alias) => `${alias}->>'days_before_expiry' = '${daysBeforeExpiry}'`),
+        payload: Raw(
+          (alias) => `${alias}->>'days_before_expiry' = :daysBeforeExpiry`,
+          { daysBeforeExpiry: String(daysBeforeExpiry) },
+        ),
       },
     });
     return count > 0;
@@ -157,10 +166,10 @@ export class WhatsAppNotificationLogService {
    */
   async existsToday(referenceId: string, type: string): Promise<boolean> {
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    today.setUTCHours(0, 0, 0, 0);
 
     const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
 
     const count = await this.logRepository
       .createQueryBuilder('log')

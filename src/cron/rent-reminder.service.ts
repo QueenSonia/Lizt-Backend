@@ -38,7 +38,7 @@ export class RentReminderService {
     private async processUpcomingReminders() {
         this.logger.log('Processing upcoming rent reminders...');
         const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        today.setUTCHours(0, 0, 0, 0);
 
         // Collect all valid reminder days across all frequencies
         const allReminderDays = new Set<number>();
@@ -49,7 +49,7 @@ export class RentReminderService {
         // Determine target dates corresponding to those exact gaps
         const targetDates = Array.from(allReminderDays).map((d) => {
             const date = new Date(today);
-            date.setDate(today.getDate() + d);
+            date.setUTCDate(today.getUTCDate() + d);
             return date.toISOString().split('T')[0]; // YYYY-MM-DD format
         });
 
@@ -71,7 +71,7 @@ export class RentReminderService {
             if (!rent.expiry_date) continue;
 
             const expiryDate = new Date(rent.expiry_date);
-            expiryDate.setHours(0, 0, 0, 0);
+            expiryDate.setUTCHours(0, 0, 0, 0);
 
             const daysUntilExpiry = Math.floor(
                 (expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
@@ -111,7 +111,10 @@ export class RentReminderService {
     }
 
     private async sendReminderIfNotSent(rent: Rent, daysUntilExpiry: number) {
-        if (!rent.tenant?.user?.phone_number || !rent.property?.name) return;
+        if (!rent.tenant?.user?.phone_number || !rent.property?.name) {
+            this.logger.warn(`Skipping rent reminder for rent ${rent.id}: missing tenant phone number or property name`);
+            return;
+        }
 
         const alreadySent = await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
             rent.id,
@@ -127,7 +130,7 @@ export class RentReminderService {
         const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString('en-GB'); // dd/mm/yyyy
 
         // Use rental_price if defined, fallback to amount_paid
-        const amountToPay = rent.rental_price || rent.amount_paid;
+        const amountToPay = rent.rental_price ?? rent.amount_paid ?? 0;
         const formattedAmount = amountToPay.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
 
         await this.whatsAppNotificationLogService.queue('sendRentReminderTemplate', {
@@ -143,7 +146,10 @@ export class RentReminderService {
     }
 
     private async sendOverdueReminderIfNotSent(rent: Rent) {
-        if (!rent.tenant?.user?.phone_number || !rent.property?.name) return;
+        if (!rent.tenant?.user?.phone_number || !rent.property?.name) {
+            this.logger.warn(`Skipping overdue reminder for rent ${rent.id}: missing tenant phone number or property name`);
+            return;
+        }
 
         // Only send one overdue reminder per day
         const alreadySentToday = await this.whatsAppNotificationLogService.existsToday(
@@ -158,7 +164,7 @@ export class RentReminderService {
 
         const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString('en-GB');
 
-        const amountToPay = rent.rental_price || rent.amount_paid;
+        const amountToPay = rent.rental_price ?? rent.amount_paid ?? 0;
         const formattedAmount = amountToPay.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
 
         await this.whatsAppNotificationLogService.queue('sendRentOverdueTemplate', {

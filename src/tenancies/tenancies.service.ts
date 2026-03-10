@@ -501,6 +501,7 @@ export class TenanciesService {
       propertyName: invoice.property.name,
       propertyAddress: invoice.property.location,
       tenantName: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
+      tenantEmail: invoice.tenant.user.email,
       tenantPhone: invoice.tenant.user.phone_number,
       renewalPeriod: {
         startDate: formatDate(invoice.start_date),

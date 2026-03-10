@@ -403,13 +403,22 @@ export class TenanciesController {
       verifyPaymentDto.reference,
     );
 
-    // If payment is successful, process it
+    // If payment is successful, process it (catch conflict if already processed)
     if (result.status === 'success') {
-      await this.renewalPaymentService.processSuccessfulPayment(
-        token,
-        result.reference,
-        result.amount,
-      );
+      try {
+        await this.renewalPaymentService.processSuccessfulPayment(
+          token,
+          result.reference,
+          result.amount,
+        );
+      } catch (error) {
+        // If already paid (409 Conflict), that's fine — idempotent
+        if (error?.status === 409 || error?.getStatus?.() === 409) {
+          // Payment already processed, continue normally
+        } else {
+          throw error;
+        }
+      }
     }
 
     return {

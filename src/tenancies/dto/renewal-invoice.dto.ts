@@ -72,6 +72,12 @@ export class RenewalInvoiceDto {
   tenantName: string;
 
   @ApiProperty({
+    description: 'Tenant email address',
+    example: 'tenant@example.com',
+  })
+  tenantEmail: string;
+
+  @ApiProperty({
     description: 'Tenant phone number',
     example: '+2348012345678',
   })

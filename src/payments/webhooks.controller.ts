@@ -11,6 +11,7 @@ import {
 import * as crypto from 'crypto';
 import { Public } from '../auth/public.decorator';
 import { PaymentService } from './payment.service';
+import { RenewalPaymentService } from '../tenancies/renewal-payment.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { ConfigService } from '@nestjs/config';
 
@@ -29,6 +30,7 @@ const PAYSTACK_IPS = ['52.31.139.75', '52.49.173.169', '52.214.14.220'];
 export class WebhooksController {
   constructor(
     private readonly paymentService: PaymentService,
+    private readonly renewalPaymentService: RenewalPaymentService,
     private readonly paystackLogger: PaystackLogger,
     private readonly configService: ConfigService,
   ) {}
@@ -77,8 +79,7 @@ export class WebhooksController {
           : '';
 
       const secretKey =
-        this.configService.get<string>('PAYSTACK_SECRET_KEY') ||
-        this.configService.get<string>('PAYSTACK_WEBHOOK_SECRET');
+        this.configService.get<string>('PAYSTACK_SECRET_KEY');
 
       if (!secretKey) {
         this.paystackLogger.error(
@@ -109,21 +110,31 @@ export class WebhooksController {
 
       // 3. Process webhook synchronously
       if (body.event === 'charge.success') {
+        const reference = body.data.reference;
+        const isRenewalPayment =
+          reference?.startsWith('RENEWAL_') ||
+          body.data.metadata?.renewal_invoice_id;
+
         this.paystackLogger.info('Processing charge.success webhook', {
-          reference: body.data.reference,
+          reference,
           amount: body.data.amount,
+          type: isRenewalPayment ? 'renewal' : 'offer_letter',
         });
 
         try {
-          await this.paymentService.processSuccessfulPayment(body.data);
+          if (isRenewalPayment) {
+            await this.renewalPaymentService.processWebhookPayment(body.data);
+          } else {
+            await this.paymentService.processSuccessfulPayment(body.data);
+          }
           this.paystackLogger.info('Webhook processed successfully', {
-            reference: body.data.reference,
+            reference,
           });
         } catch (error) {
           // Log but don't fail the webhook response
           // Paystack will retry if we return non-200
           this.paystackLogger.error('Error processing webhook', {
-            reference: body.data.reference,
+            reference,
             error: error.message,
           });
         }

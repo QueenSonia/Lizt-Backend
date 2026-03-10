@@ -218,4 +218,54 @@ export class RenewalPaymentService {
       `Successfully processed payment for renewal invoice: ${token}`,
     );
   }
+
+  /**
+   * Process a successful renewal payment from Paystack webhook
+   * Looks up the renewal invoice from webhook metadata and processes payment
+   */
+  async processWebhookPayment(data: {
+    reference: string;
+    amount: number;
+    metadata?: { renewal_invoice_id?: string };
+  }): Promise<void> {
+    const { reference, amount, metadata } = data;
+    const renewalInvoiceId = metadata?.renewal_invoice_id;
+
+    if (!renewalInvoiceId) {
+      this.logger.error(
+        'Webhook missing renewal_invoice_id in metadata',
+        { reference },
+      );
+      throw new Error('Missing renewal_invoice_id in webhook metadata');
+    }
+
+    this.logger.log(
+      `Processing webhook for renewal invoice: ${renewalInvoiceId}, reference: ${reference}`,
+    );
+
+    // Find invoice by ID to get the token
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { id: renewalInvoiceId },
+    });
+
+    if (!invoice) {
+      this.logger.error('Renewal invoice not found for webhook', {
+        renewalInvoiceId,
+        reference,
+      });
+      throw new Error(`Renewal invoice not found: ${renewalInvoiceId}`);
+    }
+
+    // Already paid — idempotent, just return
+    if (invoice.payment_status === RenewalPaymentStatus.PAID) {
+      this.logger.log(
+        'Renewal invoice already paid (webhook idempotency), skipping',
+        { renewalInvoiceId, reference },
+      );
+      return;
+    }
+
+    const amountInNaira = amount / 100; // Convert from kobo
+    await this.processSuccessfulPayment(invoice.token, reference, amountInNaira);
+  }
 }

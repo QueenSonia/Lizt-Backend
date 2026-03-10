@@ -55,6 +55,7 @@ import { DatabaseErrorHandlerService } from 'src/database/database-error-handler
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
+import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 
 @Injectable()
 export class PropertiesService {
@@ -81,6 +82,8 @@ export class PropertiesService {
     private readonly kycApplicationRepository: Repository<KYCApplication>,
     @InjectRepository(KYCLink)
     private readonly kycLinkRepository: Repository<KYCLink>,
+    @InjectRepository(RenewalInvoice)
+    private readonly renewalInvoiceRepository: Repository<RenewalInvoice>,
     private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
@@ -1243,6 +1246,21 @@ export class PropertiesService {
           return dateB - dateA;
         })[0];
 
+      // Check for latest renewal invoice for this property+tenant
+      const latestRenewalInvoice = await this.renewalInvoiceRepository.findOne({
+        where: {
+          property_id: property.id,
+          tenant_id: activeTenantRelation.tenant.id,
+        },
+        order: { created_at: 'DESC' },
+        select: ['id', 'payment_status'],
+      });
+
+      let renewalStatus: 'pending' | 'paid' | null = null;
+      if (latestRenewalInvoice) {
+        renewalStatus = latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
+      }
+
       currentTenant = {
         id: activeTenantRelation.tenant.id,
         tenancyId: activeTenantRelation.id,
@@ -1254,6 +1272,7 @@ export class PropertiesService {
           .split('T')[0],
         paymentCycle: activeRent.payment_frequency || 'Monthly',
         passportPhoto: tenantKycApplication?.passport_photo_url || null,
+        renewalStatus,
       };
     }
 

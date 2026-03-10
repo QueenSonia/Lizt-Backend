@@ -27,6 +27,7 @@ import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
 import { NotificationModule } from 'src/notifications/notification.module';
+import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { NotificationModule } from 'src/notifications/notification.module';
       Rent,
       KYCApplication,
       KYCLink,
+      RenewalInvoice,
     ]),
     RentsModule,
     UsersModule,

@@ -35,6 +35,7 @@ import { Roles } from 'src/auth/role.decorator';
 import { Public } from 'src/auth/public.decorator';
 import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 import { RenewTenancyDto } from './dto/renew-tenancy.dto';
+import { InitiateRenewalDto } from './dto/initiate-renewal.dto';
 import { TenancyVerifyOTPDto } from './dto/verify-otp.dto';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
@@ -110,14 +111,17 @@ export class TenanciesController {
   })
   @ApiSecurity('access_token')
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @ApiBody({ type: InitiateRenewalDto })
   @Post(':propertyTenantId/initiate-renewal')
   async initiateRenewal(
     @Param('propertyTenantId', new ParseUUIDPipe()) propertyTenantId: string,
+    @Body() body: InitiateRenewalDto,
     @Req() req: any,
   ) {
     const { token, link } = await this.tenanciesService.initiateRenewal(
       propertyTenantId,
       req.user.id,
+      body,
     );
 
     return {

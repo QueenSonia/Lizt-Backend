@@ -2474,7 +2474,7 @@ export class TemplateSenderService {
     renewal_receipt:
       'Hi {{1}}, your payment of {{2}} for {{3}} has been received successfully.\n\nYour receipt is ready: {{4}}\n\nThank you for your payment!',
     rent_reminders:
-      'Hi {{1}},\n\nThis is a friendly reminder that your rent for {{2}} is due on {{3}}.\n\nAmount due: {{4}}\n\nPlease ensure payment is made on time to avoid any late fees.\n\nThank you!',
+      'Hi {{1}},\n\nThis is a friendly reminder that your rent for {{2}} is due on {{3}}.\n\nAmount due: {{4}}\n\nPlease ensure payment is made on time.',
     rent_overdue:
       'Hi {{1}},\n\nYour rent for {{2}} was due on {{3}} and is now overdue.\n\nAmount due: {{4}}\n\nPlease make payment as soon as possible to avoid additional charges.\n\nThank you for your prompt attention to this matter.',
   };

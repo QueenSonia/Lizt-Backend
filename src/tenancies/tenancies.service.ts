@@ -282,6 +282,7 @@ export class TenanciesService {
   async initiateRenewal(
     propertyTenantId: string,
     userId: string,
+    body?: { rentAmount: number; paymentFrequency: string; serviceCharge?: number },
   ): Promise<{ token: string; link: string }> {
     // 1. Find the PropertyTenant relationship with all necessary relations
     const propertyTenant = await this.propertyTenantRepository.findOne({
@@ -324,18 +325,35 @@ export class TenanciesService {
       );
     }
 
-    // 4. Calculate renewal period (start date = day after expiry, end date = 1 year later)
+    // 4. Calculate renewal period (start date = day after expiry, end date based on frequency)
     const startDate = new Date(activeRent.expiry_date);
     startDate.setDate(startDate.getDate() + 1);
 
+    // Use frontend-provided values, falling back to active rent values
+    const paymentFrequency = body?.paymentFrequency || activeRent.payment_frequency || 'Annually';
+
     const endDate = new Date(startDate);
-    endDate.setFullYear(endDate.getFullYear() + 1);
+    switch (paymentFrequency.toLowerCase()) {
+      case 'monthly':
+        endDate.setMonth(endDate.getMonth() + 1);
+        break;
+      case 'quarterly':
+        endDate.setMonth(endDate.getMonth() + 3);
+        break;
+      case 'bi-annually':
+        endDate.setMonth(endDate.getMonth() + 6);
+        break;
+      case 'annually':
+      default:
+        endDate.setFullYear(endDate.getFullYear() + 1);
+        break;
+    }
     endDate.setDate(endDate.getDate() - 1); // End date is inclusive
 
-    // 5. Calculate total amount (rent + service charge + legal fee)
-    const rentAmount = activeRent.rental_price;
-    const serviceCharge = activeRent.service_charge || 0;
-    const legalFee = rentAmount * 0.05; // 5% legal fee
+    // 5. Calculate total amount (rent + service charge only; no auto-calculated legal fee)
+    const rentAmount = body?.rentAmount || activeRent.rental_price;
+    const serviceCharge = body?.serviceCharge ?? (activeRent.service_charge || 0);
+    const legalFee = 0;
     const otherCharges = 0;
     const totalAmount = rentAmount + serviceCharge + legalFee + otherCharges;
 
@@ -360,6 +378,7 @@ export class TenanciesService {
       other_charges: otherCharges,
       total_amount: totalAmount,
       payment_status: RenewalPaymentStatus.UNPAID,
+      payment_frequency: paymentFrequency,
       expires_at: expiresAt,
     });
 
@@ -752,7 +771,7 @@ export class TenanciesService {
         service_charge:
           parseFloat(invoice.service_charge.toString()) ||
           activeRent.service_charge,
-        payment_frequency: activeRent.payment_frequency,
+        payment_frequency: invoice.payment_frequency || activeRent.payment_frequency,
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
       });

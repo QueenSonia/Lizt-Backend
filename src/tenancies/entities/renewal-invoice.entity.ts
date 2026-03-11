@@ -87,4 +87,7 @@ export class RenewalInvoice extends BaseEntity {
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   receipt_number: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  payment_frequency: string | null;
 }

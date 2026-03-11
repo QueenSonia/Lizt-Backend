@@ -1383,6 +1383,7 @@ export class TenantManagementService {
       .addSelect([
         'rents.id',
         'rents.rental_price',
+        'rents.service_charge',
         'rents.expiry_date',
         'rents.rent_start_date',
         'rents.payment_frequency',
@@ -1525,6 +1526,7 @@ export class TenantManagementService {
         'rents.expiry_date',
         'rents.rent_start_date',
         'rents.rental_price',
+        'rents.service_charge',
         'rents.payment_frequency',
         'rents.payment_status',
         'rents.rent_status',
@@ -1629,9 +1631,57 @@ export class TenantManagementService {
     // Query offer letters for this tenant (via KYC applications)
     const kycApplications = await this.kycApplicationRepository.find({
       where: { tenant_id: tenantId },
-      select: ['id'],
+      select: ['id', 'property_id'],
     });
     const kycApplicationIds = kycApplications.map((k) => k.id);
+
+    // Fetch applicant-phase property history records for the KYC application's property.
+    // These events (kyc_form_viewed, kyc_application_submitted, offer_letter_sent, etc.)
+    // may not have tenant_id set if the backfill was incomplete, so we query by property_id
+    // and merge them into the tenant's property_histories to ensure the full applicant
+    // journey always appears at the start of the tenant detail timeline.
+    const kycPropertyIds = [
+      ...new Set(
+        kycApplications
+          .map((k) => k.property_id)
+          .filter((pid): pid is string => !!pid),
+      ),
+    ];
+
+    if (kycPropertyIds.length > 0) {
+      const propertyHistoryRepo =
+        this.dataSource.getRepository(PropertyHistory);
+      // Fetch events for the property where tenant_id is NULL (not yet backfilled)
+      // or already belongs to this tenant. This avoids pulling in events from
+      // other tenants on the same property.
+      const applicantPhaseHistories = await propertyHistoryRepo
+        .createQueryBuilder('ph')
+        .leftJoinAndSelect('ph.property', 'property')
+        .where('ph.property_id IN (:...propertyIds)', {
+          propertyIds: kycPropertyIds,
+        })
+        .andWhere('(ph.tenant_id IS NULL OR ph.tenant_id = :tenantId)', {
+          tenantId,
+        })
+        .orderBy('ph.created_at', 'ASC')
+        .getMany();
+
+      // Merge applicant-phase histories into the tenant account's property_histories,
+      // deduplicating by id so events that were already backfilled don't appear twice.
+      const existingIds = new Set(
+        (tenantAccount.property_histories || []).map((ph) => ph.id),
+      );
+      const newHistories = applicantPhaseHistories.filter(
+        (ph) => !existingIds.has(ph.id),
+      );
+
+      if (newHistories.length > 0) {
+        tenantAccount.property_histories = [
+          ...newHistories,
+          ...(tenantAccount.property_histories || []),
+        ];
+      }
+    }
 
     let offerLetters: OfferLetter[] = [];
     if (kycApplicationIds.length > 0) {
@@ -2055,6 +2105,7 @@ export class TenantManagementService {
 
         if (
           ph.event_type === 'payment_initiated' ||
+          ph.event_type === 'payment_cancelled' ||
           ph.event_type === 'payment_completed_full' ||
           ph.event_type === 'payment_completed_partial'
         ) {
@@ -2062,12 +2113,15 @@ export class TenantManagementService {
           const eventDate = new Date(ph.created_at || new Date());
           const titleMap: Record<string, string> = {
             payment_initiated: 'Payment Initiated',
+            payment_cancelled: 'Payment Cancelled',
             payment_completed_full: 'Full Payment Received',
             payment_completed_partial: 'Partial Payment Received',
           };
 
-          // payment_initiated should open the invoice modal; payment_completed should open receipt
-          const isPaymentInitiated = ph.event_type === 'payment_initiated';
+          // payment_initiated/cancelled should open the invoice modal; payment_completed should open receipt
+          const isPaymentInitiated =
+            ph.event_type === 'payment_initiated' ||
+            ph.event_type === 'payment_cancelled';
           tenancyEvents.push({
             id: `${ph.event_type}-${ph.id}`,
             type: isPaymentInitiated

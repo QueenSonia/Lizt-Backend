@@ -189,9 +189,14 @@ export class RentsService {
       );
     }
 
+    // Calculate total amount including service charge
+    const totalAmount =
+      (rent?.rental_price ?? rent?.amount_paid ?? 0) +
+      (rent?.service_charge ?? 0);
+
     const emailContent = rentReminderEmailTemplate(
       `${rent?.tenant?.user?.first_name} ${rent?.tenant?.user?.last_name}`,
-      rent?.rental_price ?? rent?.amount_paid ?? 0,
+      totalAmount,
       DateService.getDateNormalFormat(rent?.expiry_date),
     );
 

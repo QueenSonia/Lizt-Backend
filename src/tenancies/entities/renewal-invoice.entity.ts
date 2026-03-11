@@ -81,4 +81,10 @@ export class RenewalInvoice extends BaseEntity {
 
   @Column({ type: 'timestamp', nullable: true })
   expires_at: Date | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  receipt_token: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  receipt_number: string | null;
 }

@@ -349,4 +349,34 @@ export class KYCApplicationController {
       message: 'KYC completion link sent successfully',
     };
   }
+
+  /**
+   * Get history events for a KYC application
+   * GET /api/kyc-applications/:applicationId/history
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('kyc-applications/:applicationId/history')
+  async getApplicationHistory(
+    @Param('applicationId', ParseUUIDPipe) applicationId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    history: Array<{
+      id: string;
+      eventType: string;
+      eventDescription: string;
+      createdAt: string;
+    }>;
+  }> {
+    const history = await this.kycApplicationService.getApplicationHistory(
+      applicationId,
+      user.id,
+    );
+
+    return {
+      success: true,
+      history,
+    };
+  }
 }

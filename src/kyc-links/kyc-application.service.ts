@@ -1637,4 +1637,59 @@ export class KYCApplicationService {
 
     return property;
   }
+
+  /**
+   * Get history events for a KYC application by querying property_histories
+   * for the application's property_id
+   */
+  async getApplicationHistory(
+    applicationId: string,
+    landlordId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      eventType: string;
+      eventDescription: string;
+      createdAt: string;
+    }>
+  > {
+    // Find the application and verify ownership
+    const application = await this.kycApplicationRepository.findOne({
+      where: { id: applicationId },
+      relations: ['property'],
+    });
+
+    if (!application) {
+      throw new NotFoundException('Application not found');
+    }
+
+    if (application.property?.owner_id !== landlordId) {
+      throw new ForbiddenException(
+        'Not authorized to view this application history',
+      );
+    }
+
+    // Query property_histories for events related to this property
+    const { PropertyHistory } = await import(
+      '../property-history/entities/property-history.entity'
+    );
+    const propertyHistoryRepo =
+      this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+    const historyEvents = await propertyHistoryRepo.find({
+      where: {
+        property_id: application.property_id,
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    return historyEvents.map((event) => ({
+      id: event.id,
+      eventType: event.event_type,
+      eventDescription: event.event_description || '',
+      createdAt: event.created_at
+        ? new Date(event.created_at).toISOString()
+        : new Date().toISOString(),
+    }));
+  }
 }

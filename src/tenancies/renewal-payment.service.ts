@@ -13,6 +13,7 @@ import {
 } from './entities/renewal-invoice.entity';
 import { PaystackService } from '../payments/paystack.service';
 import { TenanciesService } from './tenancies.service';
+import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface PaymentInitializationResult {
@@ -27,6 +28,12 @@ export interface PaymentVerificationResult {
   amount: number;
   paidAt?: string;
   channel?: string;
+  receiptToken?: string;
+  whatsappDelivery?: {
+    sent: boolean;
+    messageId?: string;
+    error?: string;
+  };
 }
 
 @Injectable()
@@ -38,6 +45,7 @@ export class RenewalPaymentService {
     private readonly renewalInvoiceRepository: Repository<RenewalInvoice>,
     private readonly paystackService: PaystackService,
     private readonly tenanciesService: TenanciesService,
+    private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
   ) {}
 
   /**
@@ -172,12 +180,16 @@ export class RenewalPaymentService {
       );
 
       if (verification.data.status === 'success') {
+        // Generate receipt token for successful payments
+        const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
+
         return {
           status: 'success',
           reference: verification.data.reference,
           amount: verification.data.amount / 100, // Convert from kobo
           paidAt: verification.data.paid_at,
           channel: verification.data.channel,
+          receiptToken,
         };
       }
 
@@ -198,25 +210,50 @@ export class RenewalPaymentService {
   }
 
   /**
-   * Process successful payment
-   * Requirements: 5.3, 6.1-6.5, 7.1-7.4, 8.1-8.5
+   * Process successful payment and send WhatsApp receipt
+   * Requirements: 5.3, 3.1-3.6, 6.1-6.5, 7.1-7.4, 8.1-8.5
    */
   async processSuccessfulPayment(
     token: string,
     reference: string,
     amount: number,
+    receiptToken?: string,
   ): Promise<void> {
     this.logger.log(
       `Processing successful payment for renewal invoice: ${token}, reference: ${reference}`,
     );
 
+    // If receipt token is provided, store it in the invoice
+    if (receiptToken) {
+      const invoice = await this.renewalInvoiceRepository.findOne({
+        where: { token },
+      });
+
+      if (invoice) {
+        invoice.receipt_token = receiptToken;
+        invoice.receipt_number = `RR-${Date.now()}`;
+        await this.renewalInvoiceRepository.save(invoice);
+      }
+    }
+
     // Delegate to TenanciesService to handle invoice update, notifications, and history updates
-    // This follows the separation of concerns pattern and avoids duplication
     await this.tenanciesService.markInvoiceAsPaid(token, reference, amount);
 
     this.logger.log(
       `Successfully processed payment for renewal invoice: ${token}`,
     );
+
+    // Send WhatsApp receipt AFTER invoice is fully updated and receipt token is persisted
+    if (receiptToken) {
+      const invoice = await this.renewalInvoiceRepository.findOne({
+        where: { token },
+        relations: ['property', 'tenant', 'tenant.user'],
+      });
+
+      if (invoice) {
+        await this.sendWhatsAppReceipt(invoice, receiptToken, amount);
+      }
+    }
   }
 
   /**
@@ -232,10 +269,9 @@ export class RenewalPaymentService {
     const renewalInvoiceId = metadata?.renewal_invoice_id;
 
     if (!renewalInvoiceId) {
-      this.logger.error(
-        'Webhook missing renewal_invoice_id in metadata',
-        { reference },
-      );
+      this.logger.error('Webhook missing renewal_invoice_id in metadata', {
+        reference,
+      });
       throw new Error('Missing renewal_invoice_id in webhook metadata');
     }
 
@@ -266,6 +302,86 @@ export class RenewalPaymentService {
     }
 
     const amountInNaira = amount / 100; // Convert from kobo
-    await this.processSuccessfulPayment(invoice.token, reference, amountInNaira);
+    await this.processSuccessfulPayment(
+      invoice.token,
+      reference,
+      amountInNaira,
+    );
+  }
+
+  /**
+   * Find renewal invoice by payment reference
+   * Helper method for WhatsApp receipt delivery
+   */
+  private async findInvoiceByReference(
+    reference: string,
+  ): Promise<RenewalInvoice | null> {
+    try {
+      // First, try to find by payment_reference (if already processed)
+      let invoice = await this.renewalInvoiceRepository.findOne({
+        where: { payment_reference: reference },
+        relations: ['property', 'tenant', 'tenant.user'],
+      });
+
+      if (invoice) {
+        return invoice;
+      }
+
+      // If not found, get the transaction details from Paystack to find the invoice ID
+      const verification =
+        await this.paystackService.verifyTransaction(reference);
+      const renewalInvoiceId = verification.data.metadata?.renewal_invoice_id;
+
+      if (renewalInvoiceId) {
+        invoice = await this.renewalInvoiceRepository.findOne({
+          where: { id: renewalInvoiceId },
+          relations: ['property', 'tenant', 'tenant.user'],
+        });
+      }
+
+      return invoice;
+    } catch (error) {
+      this.logger.error('Error finding invoice by reference:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Send WhatsApp receipt notification to tenant
+   * Requirements: 3.1-3.6
+   */
+  private async sendWhatsAppReceipt(
+    invoice: RenewalInvoice,
+    receiptToken: string,
+    amount: number,
+  ): Promise<{ sent: boolean; messageId?: string; error?: string }> {
+    try {
+      const tenantPhone = invoice.tenant.user.phone_number;
+      const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+      const propertyName = invoice.property.name;
+
+      // Generate receipt URL
+      const frontendUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
+      const receiptUrl = `${frontendUrl}/renewal-receipt/${receiptToken}`;
+
+      // Queue WhatsApp receipt delivery
+      await this.whatsappNotificationLog.queue('sendRenewalReceipt', {
+        phone_number: tenantPhone,
+        tenant_name: tenantName,
+        property_name: propertyName,
+        receipt_url: receiptUrl,
+        payment_amount: amount,
+      });
+
+      this.logger.log(`WhatsApp receipt queued for tenant ${tenantPhone}`);
+
+      return { sent: true };
+    } catch (error) {
+      this.logger.error('Error sending WhatsApp receipt:', error);
+      return {
+        sent: false,
+        error: error.message || 'Failed to send WhatsApp receipt',
+      };
+    }
   }
 }

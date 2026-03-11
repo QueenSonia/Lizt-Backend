@@ -1009,6 +1009,9 @@ export class TenantAttachmentService {
       referral_agent_full_name: application.referral_agent_full_name || '',
       referral_agent_phone_number:
         application.referral_agent_phone_number || '',
+
+      // Contact address (required column)
+      contact_address: application.contact_address || '',
     };
 
     if (existingTenantKyc) {

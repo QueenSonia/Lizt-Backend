@@ -339,6 +339,17 @@ export interface RenewalPaymentLandlordParams {
 }
 
 /**
+ * Parameters for renewal receipt delivery to tenant
+ */
+export interface RenewalReceiptParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  receipt_url: string;
+  payment_amount: number;
+}
+
+/**
  * Parameters for rent reminder to tenant
  */
 export interface RentReminderParams {
@@ -1823,6 +1834,54 @@ export class TemplateSenderService {
   }
 
   /**
+   * Template: renewal_receipt
+   */
+  async sendRenewalReceipt({
+    phone_number,
+    tenant_name,
+    property_name,
+    receipt_url,
+    payment_amount,
+  }: RenewalReceiptParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_receipt',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${payment_amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: receipt_url,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send plain text message
    */
   async sendText(to: string, text: string): Promise<void> {
@@ -2412,6 +2471,8 @@ export class TemplateSenderService {
       'Congratulations {{1}}! Your renewal payment of {{2}} for {{3}} has been confirmed.\n\nYou can download your receipt from the renewal page.',
     renewal_payment_landlord:
       'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThe tenancy has been successfully renewed!',
+    renewal_receipt:
+      'Hi {{1}}, your payment of {{2}} for {{3}} has been received successfully.\n\nYour receipt is ready: {{4}}\n\nThank you for your payment!',
   };
 
   /**

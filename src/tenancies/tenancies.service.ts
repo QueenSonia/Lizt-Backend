@@ -491,9 +491,7 @@ export class TenanciesService {
     const landlordUser = invoice.property.owner?.user;
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
-      landlordUser?.logo_urls?.[0] ||
-      landlordBranding?.letterhead ||
-      null;
+      landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
 
     return {
       id: invoice.id,
@@ -545,6 +543,138 @@ export class TenanciesService {
     }
 
     return true;
+  }
+
+  /**
+   * Get payment success page data
+   * Requirements: 1.1-1.7
+   */
+  async getPaymentSuccessData(token: string): Promise<any> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    // Check if invoice is paid
+    if (invoice.payment_status !== RenewalPaymentStatus.PAID) {
+      throw new HttpException(
+        'Invoice not paid - success data not available',
+        HttpStatus.GONE,
+      );
+    }
+
+    return {
+      invoiceToken: invoice.token,
+      receiptToken: invoice.receipt_token,
+      invoice: this.formatRenewalInvoiceResponse(invoice),
+      paymentReference: invoice.payment_reference,
+      paidAt: invoice.paid_at
+        ? typeof invoice.paid_at === 'string'
+          ? invoice.paid_at
+          : invoice.paid_at.toISOString()
+        : null,
+    };
+  }
+
+  /**
+   * Get renewal receipt data by receipt token
+   * Requirements: 4.1-4.8, 8.1-8.3
+   */
+  async getRenewalReceiptByToken(receiptToken: string): Promise<any> {
+    // Find invoice by receipt token
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { receipt_token: receiptToken },
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Receipt not found');
+    }
+
+    // Check if invoice is paid (access control requirement 8.3)
+    if (invoice.payment_status !== RenewalPaymentStatus.PAID) {
+      throw new HttpException(
+        'Receipt not available - payment required',
+        HttpStatus.GONE,
+      );
+    }
+
+    // Format receipt data
+    return this.formatRenewalReceiptResponse(invoice);
+  }
+
+  /**
+   * Format renewal invoice entity into receipt response
+   * Requirements: 4.1-4.8, 5.1-5.6
+   */
+  private formatRenewalReceiptResponse(invoice: RenewalInvoice): any {
+    const formatDate = (date: any): string => {
+      if (typeof date === 'string') {
+        return date.split('T')[0];
+      }
+      return date.toISOString().split('T')[0];
+    };
+
+    const formatDateTime = (date: any): string => {
+      if (typeof date === 'string') {
+        return date;
+      }
+      return date.toISOString();
+    };
+
+    const landlordUser = invoice.property.owner?.user;
+    const landlordBranding = landlordUser?.branding || null;
+    const landlordLogoUrl =
+      landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
+
+    return {
+      receiptNumber: invoice.receipt_number,
+      receiptDate: formatDateTime(invoice.paid_at || new Date()),
+      transactionReference: invoice.payment_reference,
+
+      // Tenant Information
+      tenantName: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
+      tenantEmail: invoice.tenant.user.email,
+      tenantPhone: invoice.tenant.user.phone_number,
+
+      // Property Information
+      propertyName: invoice.property.name,
+      propertyAddress: invoice.property.location,
+
+      // Payment Breakdown
+      charges: {
+        rentAmount: parseFloat(invoice.rent_amount.toString()),
+        serviceCharge:
+          parseFloat(invoice.service_charge.toString()) || undefined,
+        legalFee: parseFloat(invoice.legal_fee.toString()) || undefined,
+        otherCharges: parseFloat(invoice.other_charges.toString()) || undefined,
+      },
+      totalAmount: parseFloat(invoice.total_amount.toString()),
+
+      // Payment Details
+      paymentDate: formatDateTime(invoice.paid_at || new Date()),
+      paymentMethod: 'card', // Default for now, could be enhanced later
+
+      // Branding
+      landlordBranding: landlordBranding,
+      landlordLogoUrl: landlordLogoUrl,
+    };
   }
 
   /**
@@ -619,7 +749,9 @@ export class TenanciesService {
         rental_price: parseFloat(invoice.rent_amount.toString()),
         amount_paid: parseFloat(invoice.rent_amount.toString()),
         security_deposit: activeRent.security_deposit,
-        service_charge: parseFloat(invoice.service_charge.toString()) || activeRent.service_charge,
+        service_charge:
+          parseFloat(invoice.service_charge.toString()) ||
+          activeRent.service_charge,
         payment_frequency: activeRent.payment_frequency,
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,

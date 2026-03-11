@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, In, Raw, IsNull } from 'typeorm';
+import { Repository, LessThan, IsNull } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron } from '@nestjs/schedule';
 import {
@@ -144,20 +144,20 @@ export class WhatsAppNotificationLogService {
     type: string,
     daysBeforeExpiry: number,
   ): Promise<boolean> {
-    const count = await this.logRepository.count({
-      where: {
-        reference_id: referenceId,
-        type,
-        status: In([
+    const count = await this.logRepository
+      .createQueryBuilder('log')
+      .where('log.reference_id = :referenceId', { referenceId })
+      .andWhere('log.type = :type', { type })
+      .andWhere('log.status IN (:...statuses)', {
+        statuses: [
           WhatsAppNotificationStatus.PENDING,
           WhatsAppNotificationStatus.SENT,
-        ]),
-        payload: Raw(
-          (alias) => `${alias}->>'days_before_expiry' = :daysBeforeExpiry`,
-          { daysBeforeExpiry: String(daysBeforeExpiry) },
-        ),
-      },
-    });
+        ],
+      })
+      .andWhere("log.payload->>'days_before_expiry' = :daysBeforeExpiry", {
+        daysBeforeExpiry: String(daysBeforeExpiry),
+      })
+      .getCount();
     return count > 0;
   }
 

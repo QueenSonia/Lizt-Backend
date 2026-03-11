@@ -410,6 +410,7 @@ export class TenanciesController {
           token,
           result.reference,
           result.amount,
+          result.receiptToken, // Pass the receipt token
         );
       } catch (error) {
         // If already paid (409 Conflict), that's fine — idempotent
@@ -511,5 +512,162 @@ export class TenanciesController {
         error.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
+  }
+
+  /**
+   * GET /api/tenancies/renewal-receipt/:token
+   * Get renewal receipt data by token
+   * Requirements: 4.1-4.8, 8.1-8.3
+   * Note: This endpoint does NOT require authentication (public access via token)
+   */
+  @Public()
+  @ApiOperation({
+    summary: 'Get Renewal Receipt',
+    description: 'Retrieve renewal receipt details by receipt token',
+  })
+  @ApiParam({
+    name: 'token',
+    description: 'Receipt token',
+    type: 'string',
+  })
+  @ApiOkResponse({
+    description: 'Receipt retrieved successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          receiptNumber: 'RR-1705312200000',
+          receiptDate: '2025-01-15T10:30:00Z',
+          transactionReference: 'RENEWAL_1705312200000_abcd1234',
+          tenantName: 'John Doe',
+          tenantEmail: 'john.doe@example.com',
+          tenantPhone: '+2348012345678',
+          propertyName: 'Sunset Apartments Unit 3B',
+          propertyAddress: '123 Main Street, Victoria Island, Lagos',
+          charges: {
+            rentAmount: 500000,
+            serviceCharge: 50000,
+            legalFee: 25000,
+            otherCharges: 0,
+          },
+          totalAmount: 575000,
+          paymentDate: '2025-01-15T10:30:00Z',
+          paymentMethod: 'card',
+          landlordBranding: {
+            businessName: 'ABC Properties Ltd',
+            businessAddress: '456 Business District, Lagos',
+            contactPhone: '+2348087654321',
+            contactEmail: 'info@abcproperties.com',
+          },
+          landlordLogoUrl: 'https://example.com/logo.png',
+        },
+      },
+    },
+  })
+  @ApiBadRequestResponse({ description: 'Invalid receipt token' })
+  @ApiNotFoundResponse({ description: 'Receipt not found' })
+  @ApiGoneResponse({ description: 'Receipt not available - payment required' })
+  @Get('renewal-receipt/:token')
+  async getRenewalReceipt(@Param('token') token: string) {
+    const receiptData =
+      await this.tenanciesService.getRenewalReceiptByToken(token);
+
+    return {
+      success: true,
+      data: receiptData,
+    };
+  }
+  /**
+   * Download renewal receipt as PDF
+   * Requirements: 6.1, 6.2, 6.3, 6.4
+   * Note: This endpoint does NOT require authentication (public access via token)
+   */
+  @Public()
+  @Get('renewal-receipt/:token/download')
+  async downloadRenewalReceipt(
+    @Param('token') token: string,
+    @Res() res: Response,
+  ) {
+    try {
+      // Get receipt data to retrieve property name for filename
+      const receiptData =
+        await this.tenanciesService.getRenewalReceiptByToken(token);
+
+      // Generate PDF
+      const pdfBuffer =
+        await this.renewalPDFService.generateRenewalReceiptPDF(token);
+
+      // Generate filename in format "payment-receipt-{propertyName}-{date}.pdf"
+      const filename = this.renewalPDFService.generateReceiptFilename(
+        receiptData.propertyName,
+        new Date(receiptData.paymentDate),
+      );
+
+      // Set response headers
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${filename}"`,
+      );
+      res.setHeader('Content-Length', pdfBuffer.length);
+
+      // Send PDF buffer
+      res.send(pdfBuffer);
+    } catch (error) {
+      throw new HttpException(
+        error.message || 'Failed to generate receipt PDF',
+        error.status || HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * GET /api/tenancies/renewal-invoice/:token/success-data
+   * Get payment success page data
+   * Requirements: 1.1-1.7
+   * Note: This endpoint does NOT require authentication (public access via token)
+   */
+  @Public()
+  @ApiOperation({
+    summary: 'Get Payment Success Data',
+    description: 'Retrieve payment success page data by invoice token',
+  })
+  @ApiParam({
+    name: 'token',
+    description: 'Invoice token',
+    type: 'string',
+  })
+  @ApiOkResponse({
+    description: 'Success data retrieved successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          invoiceToken: '123e4567-e89b-12d3-a456-426614174000',
+          receiptToken: 'receipt_1705312200000_abcd1234',
+          invoice: {
+            id: '123e4567-e89b-12d3-a456-426614174000',
+            propertyName: 'Sunset Apartments Unit 3B',
+            tenantName: 'John Doe',
+            totalAmount: 575000,
+            paymentStatus: 'paid',
+          },
+          paymentReference: 'RENEWAL_1705312200000_abcd1234',
+          paidAt: '2025-01-15T10:30:00Z',
+        },
+      },
+    },
+  })
+  @ApiBadRequestResponse({ description: 'Invalid invoice token' })
+  @ApiNotFoundResponse({ description: 'Invoice not found or not paid' })
+  @Get('renewal-invoice/:token/success-data')
+  async getPaymentSuccessData(@Param('token') token: string) {
+    const successData =
+      await this.tenanciesService.getPaymentSuccessData(token);
+
+    return {
+      success: true,
+      data: successData,
+    };
   }
 }

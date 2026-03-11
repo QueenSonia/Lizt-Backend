@@ -626,6 +626,7 @@ export class OfferLettersService {
     }
 
     // Update status to accepted and save acceptance details with tracking
+    // Clear cached PDF so the next download regenerates with the digital signature stamp
     await this.offerLetterRepository.update(offerLetter.id, {
       status: OfferLetterStatus.ACCEPTED,
       accepted_at: new Date(),
@@ -634,6 +635,13 @@ export class OfferLettersService {
       decision_made_at: new Date(),
       decision_made_ip: ipAddress,
     });
+    // Invalidate cached PDF so next download includes the digital signature stamp
+    await this.offerLetterRepository
+      .createQueryBuilder()
+      .update()
+      .set({ pdf_url: () => 'NULL', pdf_generated_at: () => 'NULL' })
+      .where('id = :id', { id: offerLetter.id })
+      .execute();
 
     // Update property status to offer_accepted
     // Marketing readiness is independent — don't touch is_marketing_ready
@@ -888,6 +896,13 @@ export class OfferLettersService {
       decision_made_at: new Date(),
       decision_made_ip: ipAddress,
     });
+    // Invalidate cached PDF so next download includes the digital signature stamp
+    await this.offerLetterRepository
+      .createQueryBuilder()
+      .update()
+      .set({ pdf_url: () => 'NULL', pdf_generated_at: () => 'NULL' })
+      .where('id = :id', { id: offerLetter.id })
+      .execute();
 
     // Revert property status to vacant
     await this.propertyRepository.update(offerLetter.property_id, {

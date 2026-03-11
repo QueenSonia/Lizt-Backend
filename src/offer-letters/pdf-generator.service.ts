@@ -151,15 +151,39 @@ export class PDFGeneratorService {
   }
 
   /**
-   * Format date to readable string (e.g., "January 15, 2025")
+   * Format date to readable string with ordinal suffix (e.g., " January 15th, 2025")
+   * Matches the frontend OfferLetterDocument formatDate function
    */
   private formatDate(dateString: string): string {
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
+    const day = date.getDate();
+    const month = date.toLocaleString('en-US', { month: 'long' });
+    const year = date.getFullYear();
+
+    const suffix =
+      day === 1 || day === 21 || day === 31
+        ? 'st'
+        : day === 2 || day === 22
+          ? 'nd'
+          : day === 3 || day === 23
+            ? 'rd'
+            : 'th';
+
+    return ` ${month} ${day}${suffix}, ${year}`;
+  }
+
+  /**
+   * Format date/time for signature display (e.g., "15-01-2025 14:30:00")
+   */
+  private formatSignedDateTime(date: Date): string {
+    const d = new Date(date);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
   }
 
   /**
@@ -184,18 +208,28 @@ export class PDFGeneratorService {
   }
 
   /**
-   * Format currency with Naira symbol
+   * Format currency with Naira symbol (no decimals, matches frontend)
    */
   private formatCurrency(amount: number | undefined | null): string {
     if (amount === undefined || amount === null || isNaN(amount)) return '₦0';
-    // Use regex for formatting to avoid locale issues in Node environments
-    const parts = amount.toFixed(2).split('.');
-    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    return `₦${parts.join('.')}`;
+    // Match frontend: Number().toLocaleString() - no decimals
+    const formatted = Math.round(Number(amount))
+      .toString()
+      .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return `₦${formatted}`;
+  }
+
+  /**
+   * Get gender-based salutation (matches frontend logic)
+   */
+  private getSalutation(gender?: string): string {
+    if (gender?.toLowerCase() === 'female') return 'Ms';
+    return 'Mr';
   }
 
   /**
    * Generate HTML content for offer letter
+   * Matches the frontend OfferLetterDocument component layout exactly
    * Requirements: 4.3, 4.4
    */
   private generateOfferLetterHTML(
@@ -207,8 +241,13 @@ export class PDFGeneratorService {
     const nameParts = applicantName.split(' ');
     const lastName = nameParts[nameParts.length - 1];
 
-    const today = this.formatDate(new Date().toISOString());
     const snapshot = offerLetter.content_snapshot;
+    const createdAt = offerLetter.created_at;
+    const issuedDate = this.formatDate(
+      createdAt instanceof Date
+        ? createdAt.toISOString()
+        : (createdAt?.toString() || new Date().toISOString()),
+    );
 
     // Use snapshot if available, otherwise format manually
     const tenancyStartDateFormatted =
@@ -227,22 +266,24 @@ export class PDFGeneratorService {
       snapshot?.tenancy_period ||
       `${tenancyStartDateFormatted} to ${tenancyEndDateFormatted}`;
 
-    const propertyName = property.name || 'Property';
     const propertyAddress = snapshot?.tenant_address || 'Lagos, Nigeria';
 
     // Get landlord branding data from branding field
     const branding = offerLetter.branding || ({} as any);
-    const businessName = branding.businessName || 'Business Name';
-    const businessAddress =
-      branding.businessAddress ||
-      '17 Ayinde Akinmade Street, Lekki Phase 1, Lagos State';
-    const contactInfo =
-      branding.contactInfo || 'contact@propertykraft.com | +234 901 234 5678';
+    const businessName = branding.businessName || '';
+    const businessAddress = branding.businessAddress || '';
+    const contactEmail = branding.contactEmail || '';
+    const websiteLink = branding.websiteLink || '';
     const footerColor = branding.footerColor || '#6B6B6B';
     const letterhead = branding.letterhead || '';
     const signature = branding.signature || '';
     const headingFont = branding.headingFont || 'Inter';
     const bodyFont = branding.bodyFont || 'Inter';
+
+    // Salutation based on gender (matches frontend)
+    const salutation = this.getSalutation(
+      (kycApplication as any).gender || undefined,
+    );
 
     // Use terms from database, or fall back to standard terms if none exist
     const terms =
@@ -250,17 +291,17 @@ export class PDFGeneratorService {
         ? offerLetter.terms_of_tenancy
         : [];
 
-    // Generate terms HTML
+    // Generate terms HTML (matches frontend layout)
     const termsHtml =
       terms.length > 0
         ? terms
             .map(
               (term, index) => `
       <div style="margin-bottom: 24px;">
-        <h3 style="font-weight: 700; font-size: 14px; margin-bottom: 12px; font-family: ${headingFont}, sans-serif;">
+        <h3 style="font-weight: 700; font-size: 11px; line-height: 15px; color: #1a1b23; margin-bottom: 12px;">
           ${index + 1}. ${this.escapeHtml(term.title)}
         </h3>
-        <div style="font-size: 14px; line-height: 1.6; text-align: justify;">
+        <div style="font-size: 11px; line-height: 15px; color: #1a1b23; text-align: justify;">
           ${this.formatTermContent(term.content)}
         </div>
       </div>
@@ -271,10 +312,10 @@ export class PDFGeneratorService {
 
     const offerTitle =
       snapshot?.offer_title ||
-      `OFFER FOR RENT OF ${propertyName.toUpperCase()}`;
+      `OFFER FOR RENT OF ${(property.name || 'Property').toUpperCase()}`;
     const introText =
       snapshot?.intro_text ||
-      `Following your visit and review of the property "${propertyName}" (hereafter the "Property"), we hereby make you an offer to rent the Property upon the following terms:`;
+      `Following your visit and review of the property "${property.name || 'Property'}" (hereafter the "Property"), we hereby make you an offer to rent the Property upon the following terms:`;
     const agreementText =
       snapshot?.agreement_text ||
       'This Offer and the attached Terms of Tenancy (together the "Agreement") is non-binding until you have accepted this offer, made payment of all sums due into the company\'s designated bank account, and have been granted possession of the Property by the Landlord or the Landlord\'s authorized representative.';
@@ -293,6 +334,43 @@ export class PDFGeneratorService {
       snapshot?.permitted_use || 'Residential',
     );
 
+    // Status-related data for digital signature section
+    const isAccepted =
+      offerLetter.status === 'accepted' || offerLetter.status === 'selected';
+    const isRejected = offerLetter.status === 'rejected';
+    const showDigitalSignature = isAccepted || isRejected;
+
+    // Build commercial terms rows (flex columns with underlined labels, matching frontend)
+    const commercialTermsHtml = this.buildCommercialTermsHtml(
+      offerLetter,
+      snapshot,
+      cleanPermittedUse,
+      tenancyTerm,
+      tenancyPeriod,
+    );
+
+    // Build digital signature section HTML
+    const digitalSignatureHtml = showDigitalSignature
+      ? this.buildDigitalSignatureHtml(
+          offerLetter,
+          applicantName,
+          isAccepted,
+        )
+      : '';
+
+    // Build footnotes HTML (matches frontend)
+    const footnotesHtml = `
+    <div style="font-size: 9px; line-height: 13px; color: #1a1b23; margin-bottom: 32px;">
+      <p style="font-style: italic; margin: 0;"><sup>1</sup> Caution/Security Deposit: Refundable deposit held as security against damages or unpaid rent. Returned at end of tenancy subject to property condition and rent payment status.</p>
+    </div>`;
+
+    const fontFamilyBody =
+      bodyFont === 'Inter' ? "'Inter', sans-serif" : `${bodyFont}, sans-serif`;
+    const fontFamilyHeading =
+      headingFont === 'Inter'
+        ? "'Inter', sans-serif"
+        : `${headingFont}, sans-serif`;
+
     return `
 <!DOCTYPE html>
 <html lang="en">
@@ -302,324 +380,237 @@ export class PDFGeneratorService {
   <title>Offer Letter - ${applicantName}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: ${bodyFont === 'Inter' ? "'Inter', sans-serif" : bodyFont}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 14px;
-      line-height: 1.428;
+      font-family: ${fontFamilyBody}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: #000;
       background: #fff;
     }
     .container {
-      max-width: 800px;
+      max-width: 850px;
       margin: 0 auto;
-      padding: 64px 80px;
-    }
-    
-    .header {
-      display: flex;
-      justify-content: flex-end;
-      align-items: flex-start;
-      margin-bottom: 48px;
-    }
-    .header img {
-      height: 64px;
-      max-width: 200px;
-      object-fit: contain;
-    }
-    
-    .date-section {
-      margin-bottom: 32px;
-      font-size: 14px;
-    }
-    
-    .recipient-section {
-      margin-bottom: 32px;
-    }
-    .recipient-section p {
-      margin-bottom: 4px;
-    }
-    .recipient-section .name {
-      font-weight: 700;
-    }
-    
-    .salutation {
-      margin-bottom: 24px;
-    }
-    
-    .main-heading {
-      margin-bottom: 24px;
-    }
-    .main-heading h1 {
-      font-family: ${headingFont === 'Inter' ? "'Inter', sans-serif" : headingFont}, sans-serif;
-      font-weight: 700;
-      font-size: 14px;
-      text-transform: uppercase;
-      text-decoration: underline;
-    }
-    
-    .intro-text {
-      margin-bottom: 32px;
-      font-size: 14px;
-      text-align: justify;
-    }
-    .intro-text p {
-      margin-bottom: 0;
-    }
-    
-    .terms-bullets {
-      margin-bottom: 32px;
-      font-size: 14px;
-    }
-    .terms-bullets .term-item {
-      display: flex;
-      margin-bottom: 8px;
-    }
-    .terms-bullets .bullet {
-      margin-right: 8px;
-      flex-shrink: 0;
-    }
-    .terms-bullets .term-content {
-      flex: 1;
-    }
-    .terms-bullets strong {
-      font-weight: 700;
-    }
-    
-    .agreement-text {
-      margin-bottom: 32px;
-      font-size: 14px;
-      text-align: justify;
-    }
-    .agreement-text p {
-      margin-bottom: 0;
-    }
-    
-    .closing-section {
-      margin-bottom: 8px;
-      font-size: 14px;
-    }
-    
-    .signature-space {
-      height: 64px;
-      display: flex;
-      align-items: center;
-      margin-bottom: 8px;
-    }
-    .signature-space img {
-      height: 48px;
-      max-width: 200px;
-      object-fit: contain;
-    }
-    
-    .for-landlord {
-      margin-bottom: 48px;
-      font-size: 14px;
-    }
-    .for-landlord em {
-      font-style: italic;
-    }
-    
-    .page-divider {
-      margin: 48px 0;
-      border-top: 2px solid #d1d5db;
-      page-break-after: always;
-    }
-    
-    .terms-section {
-      margin-bottom: 48px;
-    }
-    .terms-section h2 {
-      font-family: ${headingFont === 'Inter' ? "'Inter', sans-serif" : headingFont}, sans-serif;
-      font-weight: 700;
-      font-size: 16px;
-      text-transform: uppercase;
-      margin-bottom: 24px;
-      text-decoration: underline;
-    }
-    .terms-section h3 {
-      font-weight: 700;
-      font-size: 14px;
-      margin-bottom: 12px;
-      line-height: 1.4;
-    }
-    .terms-section p {
-      margin: 0;
-      line-height: 1.6;
-    }
-    .terms-section ul {
-      margin: 0;
-      padding-left: 24px;
-      list-style-type: disc;
-    }
-    .terms-section li {
-      margin-bottom: 8px;
-      line-height: 1.6;
-    }
-    
-    .footer-section {
-      margin-top: 64px;
-      padding-top: 32px;
-      border-top: 1px solid #e5e7eb;
-      text-align: right;
-      color: ${footerColor};
-    }
-    .footer-section p {
-      margin-bottom: 4px;
-    }
-    .footer-section .business-name,
-    .footer-section .business-address {
-      font-weight: 700;
-      font-size: 14px;
-    }
-    .footer-section .contact-info {
-      font-size: 14px;
+      padding: 48px 64px;
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      ${letterhead ? `<img src="${letterhead}" alt="Logo" />` : ''}
+    <!-- Logo - Top Right -->
+    <div style="display: flex; justify-content: flex-end; margin-bottom: 32px;">
+      ${letterhead ? `<img src="${letterhead}" alt="Logo" style="height: 50px; max-width: 300px; object-fit: contain;" />` : ''}
     </div>
 
-    <div class="date-section">
-      <p>${today}</p>
+    <!-- Date -->
+    <p style="font-size: 12.25px; line-height: 17.5px; margin-bottom: 24px;">${issuedDate}</p>
+
+    <!-- Recipient -->
+    <div style="margin-bottom: 24px;">
+      <p style="font-weight: 700; font-size: 11px; line-height: 15px; color: #1a1b23;">${this.escapeHtml(applicantName)}</p>
+      <p style="font-weight: 700; font-size: 11px; line-height: 15px; color: #1a1b23; white-space: pre-line;">${this.escapeHtml(propertyAddress)}</p>
     </div>
 
-    <div class="recipient-section">
-      <p class="name">${applicantName}</p>
-      <p>${this.escapeHtml(propertyAddress)}</p>
-    </div>
+    <!-- Salutation -->
+    <p style="font-size: 14px; line-height: 21px; margin-bottom: 24px;">Dear ${salutation} ${this.escapeHtml(lastName)},</p>
 
-    <div class="salutation">
-      <p>Dear Mr/Ms ${lastName},</p>
-    </div>
+    <!-- Main Heading -->
+    <p style="font-weight: 700; text-transform: uppercase; text-decoration: underline; font-size: 12.25px; line-height: 17.5px; margin-bottom: 24px; font-family: ${fontFamilyHeading};">${this.escapeHtml(cleanOfferTitle)}</p>
 
-    <div class="main-heading">
-      <h1>${this.escapeHtml(cleanOfferTitle)}</h1>
-    </div>
-
-    <div class="intro-text">
+    <!-- Introduction -->
+    <div style="text-align: justify; font-size: 12.25px; line-height: 17.5px; margin-bottom: 24px;">
       <p>${this.escapeHtml(cleanIntroText)}</p>
     </div>
 
-    <div class="terms-bullets">
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Permitted Use:</strong> ${this.escapeHtml(cleanPermittedUse)}
-        </div>
-      </div>
+    <!-- Commercial Terms (flex columns with underlined labels) -->
+    ${commercialTermsHtml}
 
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Rent:</strong> ${snapshot?.rent_amount_formatted || this.formatCurrency(offerLetter.rent_amount)}
-        </div>
-      </div>
-
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Service Charge:</strong> ${snapshot?.service_charge_formatted || (offerLetter.service_charge ? this.formatCurrency(offerLetter.service_charge) : '₦0')}
-        </div>
-      </div>
-
-      ${
-        (snapshot?.caution_deposit_formatted &&
-          snapshot.caution_deposit_formatted !== '₦0' &&
-          snapshot.caution_deposit_formatted !== '') ||
-        (offerLetter.caution_deposit && offerLetter.caution_deposit > 0)
-          ? `
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Caution (Refundable):</strong> ${snapshot?.caution_deposit_formatted || this.formatCurrency(offerLetter.caution_deposit)}
-        </div>
-      </div>
-      `
-          : ''
-      }
-
-      ${
-        (snapshot?.legal_fee_formatted &&
-          snapshot.legal_fee_formatted !== '₦0' &&
-          snapshot.legal_fee_formatted !== '') ||
-        (offerLetter.legal_fee && offerLetter.legal_fee > 0)
-          ? `
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Legal Fee:</strong> ${snapshot?.legal_fee_formatted || this.formatCurrency(offerLetter.legal_fee)}
-        </div>
-      </div>
-      `
-          : ''
-      }
-
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Agency Fee:</strong> ${snapshot?.agency_fee_formatted || this.escapeHtml(offerLetter.agency_fee?.toString() || 'N/A')}
-        </div>
-      </div>
-
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Tenancy Term:</strong> ${tenancyTerm}
-        </div>
-      </div>
-
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Tenancy Period:</strong> ${tenancyPeriod}
-        </div>
-      </div>
-    </div>
-
-    <div class="agreement-text">
+    <!-- Non-binding Agreement Text -->
+    <div style="text-align: justify; font-size: 11px; line-height: 15px; color: #1a1b23; margin-bottom: 24px;">
       <p>${this.escapeHtml(cleanAgreementText)}</p>
     </div>
 
-    <div class="closing-section">
-      <p>${this.escapeHtml(cleanClosingText)}</p>
+    <!-- Closing -->
+    <p style="font-size: 12.25px; line-height: 17.5px; margin-bottom: 16px;">${this.escapeHtml(cleanClosingText)}</p>
+
+    <!-- Signature -->
+    <div style="height: 38px; margin-bottom: 8px;">
+      ${signature ? `<img src="${signature}" alt="Signature" style="height: 38px; max-width: 300px; object-fit: contain;" />` : ''}
     </div>
 
-    <div class="signature-space">
-      ${signature ? `<img src="${signature}" alt="Signature" />` : ''}
+    <!-- For Landlord -->
+    <p style="font-style: italic; font-size: 12.25px; line-height: 17.5px; margin-bottom: 32px;">${this.escapeHtml(cleanForLandlordText)}</p>
+
+    <!-- Footnotes -->
+    ${footnotesHtml}
+
+    <!-- Page Divider -->
+    <div style="margin: 32px 0 48px 0; border-top: 2px solid #9ca3af; page-break-after: always;"></div>
+
+    <!-- Terms of Tenancy Section -->
+    <div style="margin-bottom: 48px;">
+      <h2 style="font-weight: 700; text-transform: uppercase; font-size: 12px; line-height: 16px; color: #1a1b23; margin-bottom: 24px; text-align: center; font-family: ${fontFamilyHeading};">TERMS OF TENANCY</h2>
+
+      <!-- Intro paragraph (matches frontend) -->
+      <p style="font-size: 11px; line-height: 15px; color: #1a1b23; margin-bottom: 24px;">
+        The following terms shall govern the tenancy relationship between
+        <span style="text-decoration: underline;">${this.escapeHtml(businessName || '[Landlord Name]')}</span>
+        (&quot;the Landlord&quot;) and you,
+        <span style="text-decoration: underline;">${this.escapeHtml(applicantName)}</span>
+        <span style="font-weight: 700;">&quot;the Tenant&quot;</span>.
+      </p>
+
+      ${termsHtml}
     </div>
 
-    <div class="for-landlord">
-      <p><em>${this.escapeHtml(cleanForLandlordText)}</em></p>
-    </div>
+    <!-- Gradient separator -->
+    <div style="height: 1px; background: linear-gradient(to right, transparent, #d1d5db, transparent); margin: 32px 0;"></div>
 
-    <div class="page-divider"></div>
+    ${digitalSignatureHtml}
 
-    <div class="terms-section">
-      <h2>Terms of Tenancy</h2>
-      <div>
-        ${termsHtml}
-      </div>
-    </div>
-
-    <div class="footer-section">
-      <p class="business-name">${this.escapeHtml(businessName)}</p>
-      <p class="business-address">${this.escapeHtml(businessAddress)}</p>
-      <p class="contact-info">${this.escapeHtml(contactInfo)}</p>
+    <!-- Footer (centered, matches frontend) -->
+    <div style="text-align: center; font-size: 14px; padding-top: 16px; margin-top: 48px; color: ${footerColor};">
+      ${businessAddress ? `<p style="font-weight: 700; margin-bottom: 4px;">${this.escapeHtml(businessAddress)}</p>` : ''}
+      ${contactEmail ? `<p style="font-weight: 700; margin-bottom: 4px;">${this.escapeHtml(contactEmail)}</p>` : ''}
+      ${websiteLink ? `<p style="color: #2563eb; text-decoration: underline; margin-bottom: 4px;">${this.escapeHtml(websiteLink)}</p>` : ''}
     </div>
   </div>
 </body>
 </html>
     `;
+  }
+
+  /**
+   * Build commercial terms HTML with flex column layout (matching frontend)
+   */
+  private buildCommercialTermsHtml(
+    offerLetter: OfferLetter,
+    snapshot: OfferLetter['content_snapshot'],
+    cleanPermittedUse: string,
+    tenancyTerm: string,
+    tenancyPeriod: string,
+  ): string {
+    const labelStyle =
+      'font-size: 11px; line-height: 15px; color: #1a1b23; font-weight: 700; text-decoration: underline; width: 140px; flex-shrink: 0;';
+    const valueStyle =
+      'font-size: 11px; line-height: 15px; color: #1a1b23;';
+    const rowStyle = 'display: flex; margin-bottom: 6px;';
+
+    let html = `<div style="margin-bottom: 24px;">`;
+
+    // Permitted Use
+    html += `<div style="${rowStyle}"><span style="${labelStyle}">Permitted Use:</span><span style="${valueStyle}">${this.escapeHtml(cleanPermittedUse)}</span></div>`;
+
+    // Rent
+    html += `<div style="${rowStyle}"><span style="${labelStyle}">Rent:</span><span style="${valueStyle}">${snapshot?.rent_amount_formatted || this.formatCurrency(offerLetter.rent_amount)}</span></div>`;
+
+    // Service Charge (conditional)
+    if (offerLetter.service_charge) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Service Charge:</span><span style="${valueStyle}">${snapshot?.service_charge_formatted || this.formatCurrency(offerLetter.service_charge)}</span></div>`;
+    }
+
+    // Caution Deposit (conditional)
+    if (
+      (snapshot?.caution_deposit_formatted &&
+        snapshot.caution_deposit_formatted !== '₦0' &&
+        snapshot.caution_deposit_formatted !== '') ||
+      (offerLetter.caution_deposit && offerLetter.caution_deposit > 0)
+    ) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Caution<sup>1</sup>:</span><span style="${valueStyle}">${snapshot?.caution_deposit_formatted || this.formatCurrency(offerLetter.caution_deposit)}</span></div>`;
+    }
+
+    // Legal Fee (conditional)
+    if (
+      (snapshot?.legal_fee_formatted &&
+        snapshot.legal_fee_formatted !== '₦0' &&
+        snapshot.legal_fee_formatted !== '') ||
+      (offerLetter.legal_fee && offerLetter.legal_fee > 0)
+    ) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Legal Fee:</span><span style="${valueStyle}">${snapshot?.legal_fee_formatted || this.formatCurrency(offerLetter.legal_fee)}</span></div>`;
+    }
+
+    // Agency Fee (conditional)
+    if (offerLetter.agency_fee) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Agency Fee:</span><span style="${valueStyle}">${snapshot?.agency_fee_formatted || this.escapeHtml(offerLetter.agency_fee?.toString() || 'N/A')}</span></div>`;
+    }
+
+    // Tenancy Term
+    html += `<div style="${rowStyle}"><span style="${labelStyle}">Tenancy Term:</span><span style="${valueStyle}">${this.escapeHtml(tenancyTerm)}</span></div>`;
+
+    // Tenancy Period
+    html += `<div style="${rowStyle}"><span style="${labelStyle}">Tenancy Period:</span><span style="${valueStyle}">${this.escapeHtml(tenancyPeriod)}</span></div>`;
+
+    html += `</div>`;
+    return html;
+  }
+
+  /**
+   * Build digital signature section HTML for accepted/rejected offers
+   * Matches the frontend OfferLetterDocument stamp rendering
+   */
+  private buildDigitalSignatureHtml(
+    offerLetter: OfferLetter,
+    applicantName: string,
+    isAccepted: boolean,
+  ): string {
+    const stampText = isAccepted ? 'ACCEPTED' : 'REJECTED';
+    const borderColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.4)'
+      : 'rgba(211, 47, 47, 0.4)';
+    const innerBorderColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.3)'
+      : 'rgba(211, 47, 47, 0.3)';
+    const textColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.45)'
+      : 'rgba(211, 47, 47, 0.45)';
+    const strokeColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.25)'
+      : 'rgba(211, 47, 47, 0.25)';
+
+    const signedAt = offerLetter.accepted_at
+      ? this.formatSignedDateTime(offerLetter.accepted_at)
+      : 'Recorded';
+    const signedByPhone = offerLetter.accepted_by_phone || 'Recorded';
+    const otp = offerLetter.acceptance_otp || 'Recorded';
+
+    return `
+    <div style="margin-top: 48px; margin-bottom: 48px; position: relative;">
+      <h2 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">Digital Signature :</h2>
+
+      <!-- Stamp -->
+      <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: flex-start; pointer-events: none; z-index: 10;">
+        <div style="transform: rotate(-22deg) translateY(-40px); padding-left: 32px;">
+          <div style="position: relative; padding: 10px 20px; border: 6px solid ${borderColor}; background-color: transparent;">
+            <!-- Inner border -->
+            <div style="position: absolute; top: 3px; left: 3px; right: 3px; bottom: 3px; border: 1.5px solid ${innerBorderColor}; pointer-events: none;"></div>
+            <!-- Stamp text -->
+            <div style="font-size: 36px; font-weight: 900; letter-spacing: 0.25em; color: ${textColor}; font-family: Impact, 'Arial Black', 'Franklin Gothic Bold', sans-serif; -webkit-text-stroke: 0.8px ${strokeColor};">
+              ${stampText}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Signature details -->
+      <div style="position: relative; z-index: 0;">
+        <div style="display: flex; font-size: 14px; margin-bottom: 8px;">
+          <span style="width: 192px; flex-shrink: 0;">Sign Name</span>
+          <span>${this.escapeHtml(applicantName)}</span>
+        </div>
+        <div style="display: flex; font-size: 14px; margin-bottom: 8px;">
+          <span style="width: 192px; flex-shrink: 0;">OTP</span>
+          <span>${this.escapeHtml(otp)}</span>
+        </div>
+        <div style="display: flex; font-size: 14px; margin-bottom: 8px;">
+          <span style="width: 192px; flex-shrink: 0;">Date and Time Signed</span>
+          <span>${signedAt}</span>
+        </div>
+        <div style="display: flex; font-size: 14px; margin-bottom: 8px;">
+          <span style="width: 192px; flex-shrink: 0;">Phone</span>
+          <span>${this.escapeHtml(signedByPhone)}</span>
+        </div>
+      </div>
+    </div>`;
   }
 
   /**

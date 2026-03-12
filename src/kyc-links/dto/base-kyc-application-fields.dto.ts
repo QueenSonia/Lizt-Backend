@@ -199,6 +199,23 @@ export class BaseKYCApplicationFieldsDto {
   @IsString()
   additional_notes?: string;
 
+  // Tracking fields (captured client-side, sent with submission)
+  @IsOptional()
+  @IsString()
+  form_opened_at?: string;
+
+  @IsOptional()
+  @IsString()
+  form_opened_ip?: string;
+
+  @IsOptional()
+  @IsString()
+  decision_made_ip?: string;
+
+  @IsOptional()
+  @IsString()
+  user_agent?: string;
+
   // Document URLs (from Cloudinary - always https://)
   @IsUrl(
     { require_protocol: true },

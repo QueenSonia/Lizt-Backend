@@ -357,30 +357,53 @@ export class TenanciesService {
     const otherCharges = 0;
     const totalAmount = rentAmount + serviceCharge + legalFee + otherCharges;
 
-    // 6. Generate unique token
-    const token = uuidv4();
-
-    // 7. Set expiration date (30 days from now)
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
-
-    // 8. Create renewal invoice record
-    const renewalInvoice = this.renewalInvoiceRepository.create({
-      token,
-      property_tenant_id: propertyTenantId,
-      property_id: propertyTenant.property_id,
-      tenant_id: propertyTenant.tenant_id,
-      start_date: startDate,
-      end_date: endDate,
-      rent_amount: rentAmount,
-      service_charge: serviceCharge,
-      legal_fee: legalFee,
-      other_charges: otherCharges,
-      total_amount: totalAmount,
-      payment_status: RenewalPaymentStatus.UNPAID,
-      payment_frequency: paymentFrequency,
-      expires_at: expiresAt,
+    // 6. Check for existing unpaid renewal invoice (may have been auto-created by rent reminder)
+    const existingInvoice = await this.renewalInvoiceRepository.findOne({
+      where: {
+        property_tenant_id: propertyTenantId,
+        payment_status: RenewalPaymentStatus.UNPAID,
+      },
+      order: { created_at: 'DESC' },
     });
+
+    let renewalInvoice: RenewalInvoice;
+
+    if (existingInvoice) {
+      // Update existing invoice with landlord's chosen terms
+      existingInvoice.start_date = startDate;
+      existingInvoice.end_date = endDate;
+      existingInvoice.rent_amount = rentAmount;
+      existingInvoice.service_charge = serviceCharge;
+      existingInvoice.legal_fee = legalFee;
+      existingInvoice.other_charges = otherCharges;
+      existingInvoice.total_amount = totalAmount;
+      existingInvoice.payment_frequency = paymentFrequency;
+      renewalInvoice = existingInvoice;
+    } else {
+      // Generate new token and create fresh invoice
+      const token = uuidv4();
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      renewalInvoice = this.renewalInvoiceRepository.create({
+        token,
+        property_tenant_id: propertyTenantId,
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        start_date: startDate,
+        end_date: endDate,
+        rent_amount: rentAmount,
+        service_charge: serviceCharge,
+        legal_fee: legalFee,
+        other_charges: otherCharges,
+        total_amount: totalAmount,
+        payment_status: RenewalPaymentStatus.UNPAID,
+        payment_frequency: paymentFrequency,
+        expires_at: expiresAt,
+      });
+    }
+
+    const token = renewalInvoice.token;
 
     // 9. Create property history entry for renewal link sent
     const tenantName = `${propertyTenant.tenant.user.first_name} ${propertyTenant.tenant.user.last_name}`;
@@ -786,12 +809,19 @@ export class TenanciesService {
       const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
       const propertyName = invoice.property.name;
 
-      // Queue tenant payment confirmation
+      // Build receipt URL from the invoice's receipt_token
+      const frontendUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
+      const receiptUrl = invoice.receipt_token
+        ? `${frontendUrl}/renewal-receipt/${invoice.receipt_token}`
+        : `${frontendUrl}/renewal-invoice/verify/${invoice.token}`;
+
+      // Queue tenant payment confirmation with receipt link
       await this.whatsappNotificationLog.queue('sendRenewalPaymentTenant', {
         phone_number: tenantPhone,
         tenant_name: tenantName,
         amount,
         property_name: propertyName,
+        receipt_url: receiptUrl,
       });
 
       console.log(`Payment confirmation queued for tenant ${tenantPhone}`);

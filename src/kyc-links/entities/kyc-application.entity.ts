@@ -193,6 +193,9 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   decision_made_ip?: string;
 
+  @Column({ type: 'varchar', length: 512, nullable: true })
+  user_agent?: string;
+
   @ManyToOne(() => KYCLink, (kycLink) => kycLink.applications)
   @JoinColumn({ name: 'kyc_link_id' })
   kyc_link: KYCLink;

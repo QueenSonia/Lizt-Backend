@@ -325,6 +325,7 @@ export interface RenewalPaymentTenantParams {
   tenant_name: string;
   amount: number;
   property_name: string;
+  receipt_url: string;
 }
 
 /**
@@ -358,6 +359,19 @@ export interface RentReminderParams {
   property_name: string;
   rent_amount: string;
   expiry_date: string;
+}
+
+/**
+ * Parameters for rent reminder with renewal link to tenant
+ */
+export interface RentReminderWithRenewalParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  rent_amount: string;
+  expiry_date: string;
+  renewal_token: string;
+  frontend_url: string;
 }
 
 /**
@@ -699,12 +713,10 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'text',
-                parameter_name: 'tenant_name',
                 text: tenant_name,
               },
               {
                 type: 'text',
-                parameter_name: 'request_description',
                 text: request_description,
               },
             ],
@@ -1748,6 +1760,7 @@ export class TemplateSenderService {
     tenant_name,
     amount,
     property_name,
+    receipt_url,
   }: RenewalPaymentTenantParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -1773,6 +1786,17 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: property_name,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: receipt_url,
               },
             ],
           },
@@ -2346,6 +2370,71 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send rent reminder with renewal link template to tenant via WhatsApp.
+   * Used for the last 3 days before rent expiry.
+   * Template: rent_reminder_with_renewal
+   */
+  async sendRentReminderWithRenewalTemplate({
+    phone_number,
+    tenant_name,
+    property_name,
+    rent_amount,
+    expiry_date,
+    renewal_token,
+    frontend_url,
+  }: RentReminderWithRenewalParams): Promise<void> {
+    const renewalUrl = `${frontend_url}/renewal-invoice/verify/${renewal_token}`;
+
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'rent_reminder_with_renewal',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: expiry_date,
+              },
+              {
+                type: 'text',
+                text: rent_amount,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: renewalUrl,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send rent overdue reminder template to tenant via WhatsApp
    * Requirements: 1.2
    */
@@ -2468,13 +2557,15 @@ export class TemplateSenderService {
     renewal_link:
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
     renewal_payment_tenant:
-      'Congratulations {{1}}! Your renewal payment of {{2}} for {{3}} has been confirmed.\n\nYou can download your receipt from the renewal page.',
+      'Congratulations {{1}}! Your renewal payment of {{2}} for {{3}} has been confirmed.\n\nClick the button below to view your receipt.',
     renewal_payment_landlord:
       'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThe tenancy has been successfully renewed!',
     renewal_receipt:
       'Hi {{1}}, your payment of {{2}} for {{3}} has been received successfully.\n\nYour receipt is ready: {{4}}\n\nThank you for your payment!',
     rent_reminders:
       'Hi {{1}},\n\nThis is a friendly reminder that your rent for {{2}} is due on {{3}}.\n\nAmount due: {{4}}\n\nPlease ensure payment is made on time.',
+    rent_reminder_with_renewal:
+      'Hi {{1}},\n\nThis is a friendly reminder that your rent for {{2}} is due on {{3}}.\n\nAmount due: {{4}}\n\nPlease use the link below to view and complete your renewal.',
     rent_overdue:
       'Hi {{1}},\n\nYour rent for {{2}} was due on {{3}} and is now overdue.\n\nAmount due: {{4}}\n\nPlease make payment as soon as possible to avoid additional charges.\n\nThank you for your prompt attention to this matter.',
   };

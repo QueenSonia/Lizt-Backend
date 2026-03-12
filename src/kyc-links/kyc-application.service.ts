@@ -193,7 +193,19 @@ export class KYCApplicationService {
       status: ApplicationStatus.PENDING,
       first_name: kycData.first_name,
       last_name: kycData.last_name,
+      // Tracking fields: form_opened_at captured client-side, decision timestamps set at submission
+      decision_made_at: new Date(),
+      decision_made_ip: kycData.decision_made_ip,
+      user_agent: kycData.user_agent,
     };
+
+    // Set form_opened_at from client-side capture (stored in sessionStorage)
+    if (kycData.form_opened_at) {
+      applicationData.form_opened_at = new Date(kycData.form_opened_at);
+    }
+    if (kycData.form_opened_ip) {
+      applicationData.form_opened_ip = kycData.form_opened_ip;
+    }
 
     const kycApplication =
       this.kycApplicationRepository.create(applicationData);
@@ -233,6 +245,53 @@ export class KYCApplicationService {
 
     if (!applicationWithRelations) {
       throw new Error('Failed to retrieve saved KYC application');
+    }
+
+    // Create property history events for tracking timeline
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+      const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
+
+      // If form_opened_at was captured, create a "form viewed" event
+      if (applicationWithRelations.form_opened_at) {
+        const openedDate = new Date(applicationWithRelations.form_opened_at);
+        const ipInfo = applicationWithRelations.form_opened_ip
+          ? ` from IP ${applicationWithRelations.form_opened_ip}`
+          : '';
+        const deviceInfo = applicationWithRelations.user_agent
+          ? ` — ${applicationWithRelations.user_agent}`
+          : '';
+        historyEvents.push(
+          propertyHistoryRepo.create({
+            property_id: kycData.property_id,
+            event_type: 'kyc_form_viewed',
+            event_description: `KYC form opened by ${kycData.first_name} ${kycData.last_name} on ${openedDate.toLocaleDateString('en-GB')} at ${openedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}${ipInfo}${deviceInfo}`,
+            related_entity_id: savedApplication.id,
+            related_entity_type: 'kyc_application',
+            created_at: openedDate,
+          }),
+        );
+      }
+
+      // Create "application submitted" event
+      historyEvents.push(
+        propertyHistoryRepo.create({
+          property_id: kycData.property_id,
+          event_type: 'kyc_application_submitted',
+          event_description: `${kycData.first_name} ${kycData.last_name} submitted a KYC application for ${applicationWithRelations.property?.name || 'property'}`,
+          related_entity_id: savedApplication.id,
+          related_entity_type: 'kyc_application',
+        }),
+      );
+
+      await propertyHistoryRepo.save(historyEvents);
+    } catch (error) {
+      console.error('Failed to create property history events:', error);
     }
 
     // Create notification for KYC submission
@@ -1232,7 +1291,22 @@ export class KYCApplicationService {
       const updateData: Partial<KYCApplication> = {
         ...this.mapCommonFieldsToEntity(completionData),
         updated_at: new Date(),
+        decision_made_at: new Date(),
       };
+
+      // Tracking fields from client-side capture
+      if (completionData.decision_made_ip) {
+        updateData.decision_made_ip = completionData.decision_made_ip;
+      }
+      if (completionData.user_agent) {
+        updateData.user_agent = completionData.user_agent;
+      }
+      if (completionData.form_opened_at) {
+        updateData.form_opened_at = new Date(completionData.form_opened_at);
+      }
+      if (completionData.form_opened_ip) {
+        updateData.form_opened_ip = completionData.form_opened_ip;
+      }
 
       // Service-level validation: verify all required fields are present before approving
       const requiredFields = [
@@ -1284,6 +1358,53 @@ export class KYCApplicationService {
         throw new NotFoundException(
           'Failed to retrieve updated KYC application',
         );
+      }
+
+      // Create property history events for tracking timeline
+      try {
+        const { PropertyHistory } = await import(
+          '../property-history/entities/property-history.entity'
+        );
+        const propertyHistoryRepo =
+          this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+        const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
+
+        // If form_opened_at was captured, create a "form viewed" event
+        if (updatedKyc.form_opened_at) {
+          const openedDate = new Date(updatedKyc.form_opened_at);
+          const ipInfo = updatedKyc.form_opened_ip
+            ? ` from IP ${updatedKyc.form_opened_ip}`
+            : '';
+          const deviceInfo = updatedKyc.user_agent
+            ? ` — ${updatedKyc.user_agent}`
+            : '';
+          historyEvents.push(
+            propertyHistoryRepo.create({
+              property_id: updatedKyc.property_id,
+              event_type: 'kyc_form_viewed',
+              event_description: `KYC form opened by ${updatedKyc.first_name} ${updatedKyc.last_name} on ${openedDate.toLocaleDateString('en-GB')} at ${openedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}${ipInfo}${deviceInfo}`,
+              related_entity_id: updatedKyc.id,
+              related_entity_type: 'kyc_application',
+              created_at: openedDate,
+            }),
+          );
+        }
+
+        // Create "application submitted" event for completion
+        historyEvents.push(
+          propertyHistoryRepo.create({
+            property_id: updatedKyc.property_id,
+            event_type: 'kyc_application_submitted',
+            event_description: `${updatedKyc.first_name} ${updatedKyc.last_name} completed their KYC application for ${updatedKyc.property?.name || 'property'}`,
+            related_entity_id: updatedKyc.id,
+            related_entity_type: 'kyc_application',
+          }),
+        );
+
+        await propertyHistoryRepo.save(historyEvents);
+      } catch (error) {
+        console.error('Failed to create property history events:', error);
       }
 
       // Send notification to landlord

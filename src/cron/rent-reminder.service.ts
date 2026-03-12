@@ -2,12 +2,19 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { v4 as uuidv4 } from 'uuid';
 import { Rent } from '../rents/entities/rent.entity';
 import { RentStatusEnum } from '../rents/dto/create-rent.dto';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import {
+  RenewalInvoice,
+  RenewalPaymentStatus,
+} from '../tenancies/entities/renewal-invoice.entity';
+import { PropertyTenant } from '../properties/entities/property-tenants.entity';
+import { TenantStatusEnum } from '../properties/dto/create-property.dto';
 
 const RENT_REMINDER_SCHEDULE = {
   monthly: [14, 7, 3],
@@ -26,6 +33,10 @@ export class RentReminderService {
     private readonly rentRepository: Repository<Rent>,
     @InjectRepository(PropertyHistory)
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
+    @InjectRepository(RenewalInvoice)
+    private readonly renewalInvoiceRepository: Repository<RenewalInvoice>,
+    @InjectRepository(PropertyTenant)
+    private readonly propertyTenantRepository: Repository<PropertyTenant>,
     private readonly whatsAppNotificationLogService: WhatsAppNotificationLogService,
     private readonly notificationService: NotificationService,
   ) {}
@@ -115,10 +126,15 @@ export class RentReminderService {
       return;
     }
 
+    const useRenewalTemplate = daysUntilExpiry <= 3;
+    const templateName = useRenewalTemplate
+      ? 'sendRentReminderWithRenewalTemplate'
+      : 'sendRentReminderTemplate';
+
     const alreadySent =
       await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
         rent.id,
-        'sendRentReminderTemplate',
+        templateName,
         daysUntilExpiry,
       );
 
@@ -133,13 +149,65 @@ export class RentReminderService {
       'en-GB',
     ); // dd/mm/yyyy
 
-    // Use rental_price if defined, fallback to amount_paid
-    const amountToPay = rent.rental_price ?? rent.amount_paid ?? 0;
+    // Use rental_price if defined, fallback to amount_paid, plus service charge
+    const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
+    const amountToPay = baseAmount + (rent.service_charge || 0);
     const formattedAmount = amountToPay.toLocaleString('en-NG', {
       style: 'currency',
       currency: 'NGN',
     });
 
+    if (useRenewalTemplate) {
+      // Find or create a renewal invoice for the last 3 days
+      const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
+      if (!renewalInvoice) {
+        this.logger.warn(
+          `Could not find or create renewal invoice for rent ${rent.id}, falling back to standard reminder.`,
+        );
+        // Fall back to standard reminder
+        await this.queueStandardReminder(rent, formattedAmount, expiryDateStr, daysUntilExpiry);
+        return;
+      }
+
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+      await this.whatsAppNotificationLogService.queue(
+        'sendRentReminderWithRenewalTemplate',
+        {
+          phone_number: rent.tenant.user.phone_number,
+          tenant_name: rent.tenant.user.first_name,
+          property_name: rent.property.name,
+          rent_amount: formattedAmount,
+          expiry_date: expiryDateStr,
+          renewal_token: renewalInvoice.token,
+          frontend_url: frontendUrl,
+          days_before_expiry: daysUntilExpiry,
+        },
+        rent.id,
+      );
+
+      this.logger.log(
+        `Queued rent reminder WITH renewal link for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
+      );
+    } else {
+      await this.queueStandardReminder(rent, formattedAmount, expiryDateStr, daysUntilExpiry);
+    }
+
+    // Log to live feed and property/tenant history
+    await this.logReminderSent(
+      rent,
+      formattedAmount,
+      expiryDateStr,
+      daysUntilExpiry,
+    );
+  }
+
+  private async queueStandardReminder(
+    rent: Rent,
+    formattedAmount: string,
+    expiryDateStr: string,
+    daysUntilExpiry: number,
+  ) {
     await this.whatsAppNotificationLogService.queue(
       'sendRentReminderTemplate',
       {
@@ -156,14 +224,110 @@ export class RentReminderService {
     this.logger.log(
       `Queued rent reminder for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
     );
+  }
 
-    // Log to live feed and property/tenant history
-    await this.logReminderSent(
-      rent,
-      formattedAmount,
-      expiryDateStr,
-      daysUntilExpiry,
-    );
+  /**
+   * Find an existing unpaid renewal invoice for this rent, or auto-create one
+   * using the current rent terms.
+   */
+  private async findOrCreateRenewalInvoice(
+    rent: Rent,
+  ): Promise<RenewalInvoice | null> {
+    try {
+      // Find the PropertyTenant record
+      const propertyTenant = await this.propertyTenantRepository.findOne({
+        where: {
+          property_id: rent.property_id,
+          tenant_id: rent.tenant_id,
+          status: TenantStatusEnum.ACTIVE,
+        },
+      });
+
+      if (!propertyTenant) {
+        this.logger.warn(
+          `No active PropertyTenant found for rent ${rent.id}`,
+        );
+        return null;
+      }
+
+      // Check for existing unpaid renewal invoice
+      const existing = await this.renewalInvoiceRepository.findOne({
+        where: {
+          property_tenant_id: propertyTenant.id,
+          payment_status: RenewalPaymentStatus.UNPAID,
+        },
+        order: { created_at: 'DESC' },
+      });
+
+      if (existing) {
+        this.logger.log(
+          `Reusing existing renewal invoice ${existing.id} for rent ${rent.id}`,
+        );
+        return existing;
+      }
+
+      // Auto-create a renewal invoice using current rent terms
+      const startDate = new Date(rent.expiry_date);
+      startDate.setDate(startDate.getDate() + 1);
+
+      const paymentFrequency = rent.payment_frequency || 'Annually';
+      const endDate = new Date(startDate);
+      switch (paymentFrequency.toLowerCase()) {
+        case 'monthly':
+          endDate.setMonth(endDate.getMonth() + 1);
+          break;
+        case 'quarterly':
+          endDate.setMonth(endDate.getMonth() + 3);
+          break;
+        case 'bi-annually':
+          endDate.setMonth(endDate.getMonth() + 6);
+          break;
+        case 'annually':
+        default:
+          endDate.setFullYear(endDate.getFullYear() + 1);
+          break;
+      }
+      endDate.setDate(endDate.getDate() - 1);
+
+      const rentAmount = rent.rental_price ?? rent.amount_paid ?? 0;
+      const serviceCharge = rent.service_charge || 0;
+      const totalAmount = rentAmount + serviceCharge;
+
+      const token = uuidv4();
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      const renewalInvoice = this.renewalInvoiceRepository.create({
+        token,
+        property_tenant_id: propertyTenant.id,
+        property_id: rent.property_id,
+        tenant_id: rent.tenant_id,
+        start_date: startDate,
+        end_date: endDate,
+        rent_amount: rentAmount,
+        service_charge: serviceCharge,
+        legal_fee: 0,
+        other_charges: 0,
+        total_amount: totalAmount,
+        payment_status: RenewalPaymentStatus.UNPAID,
+        payment_frequency: paymentFrequency,
+        expires_at: expiresAt,
+      });
+
+      await this.renewalInvoiceRepository.save(renewalInvoice);
+
+      this.logger.log(
+        `Auto-created renewal invoice ${renewalInvoice.id} for rent ${rent.id}`,
+      );
+
+      return renewalInvoice;
+    } catch (error) {
+      this.logger.error(
+        `Failed to find/create renewal invoice for rent ${rent.id}`,
+        error,
+      );
+      return null;
+    }
   }
 
   private async logReminderSent(

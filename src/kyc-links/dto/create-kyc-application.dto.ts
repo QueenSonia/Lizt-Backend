@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty } from 'class-validator';
 import { BaseKYCApplicationFieldsDto } from './base-kyc-application-fields.dto';
 
 /**
@@ -21,9 +21,4 @@ export class CreateKYCApplicationDto extends BaseKYCApplicationFieldsDto {
   @IsString()
   @IsNotEmpty()
   last_name: string;
-
-  // Tracking Information (optional - captured from request)
-  @IsOptional()
-  @IsString()
-  decision_made_ip?: string;
 }

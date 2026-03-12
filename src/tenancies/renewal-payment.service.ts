@@ -242,18 +242,6 @@ export class RenewalPaymentService {
     this.logger.log(
       `Successfully processed payment for renewal invoice: ${token}`,
     );
-
-    // Send WhatsApp receipt AFTER invoice is fully updated and receipt token is persisted
-    if (receiptToken) {
-      const invoice = await this.renewalInvoiceRepository.findOne({
-        where: { token },
-        relations: ['property', 'tenant', 'tenant.user'],
-      });
-
-      if (invoice) {
-        await this.sendWhatsAppReceipt(invoice, receiptToken, amount);
-      }
-    }
   }
 
   /**

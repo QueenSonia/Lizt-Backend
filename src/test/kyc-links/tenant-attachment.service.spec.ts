@@ -947,7 +947,6 @@ describe('TenantAttachmentService', () => {
         Rent,
         expect.objectContaining({
           rent_start_date: new Date('2026-02-01'),
-          lease_agreement_end_date: new Date('2027-01-31'),
         }),
       );
     });

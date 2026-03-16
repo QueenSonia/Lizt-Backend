@@ -31,13 +31,13 @@ export class KYCApplicationController {
 
   /**
    * Submit KYC application (public endpoint - no authentication required)
-   * POST /api/kyc/:token/submit
+   * POST /api/kyc/submit
    * Requirements: 3.1, 3.2, 3.4
+   * SECURITY: Token in request body to prevent exposure in logs
    */
   @SkipAuth()
-  @Post('kyc/:token/submit')
+  @Post('kyc/submit')
   async submitKYCApplication(
-    @Param('token') token: string,
     @Body(ValidationPipe) createKYCApplicationDto: CreateKYCApplicationDto,
   ): Promise<{
     success: boolean;
@@ -46,7 +46,7 @@ export class KYCApplicationController {
     status: ApplicationStatus;
   }> {
     const application = await this.kycApplicationService.submitKYCApplication(
-      token,
+      createKYCApplicationDto.kyc_token,
       createKYCApplicationDto,
     );
 
@@ -56,23 +56,6 @@ export class KYCApplicationController {
       applicationId: application.id,
       status: application.status,
     };
-  }
-
-  /**
-   * Track when a user opens the KYC form
-   * POST /api/kyc/:token/track-open
-   * Public endpoint - records timestamp and IP address
-   */
-  @SkipAuth()
-  @Post('kyc/:token/track-open')
-  async trackFormOpen(
-    @Param('token') token: string,
-    @Body('ipAddress') ipAddress?: string,
-  ): Promise<{
-    success: boolean;
-    message: string;
-  }> {
-    return await this.kycApplicationService.trackFormOpen(token, ipAddress);
   }
 
   /**
@@ -290,13 +273,13 @@ export class KYCApplicationController {
 
   /**
    * Complete a pending KYC application
-   * PUT /api/kyc/complete-pending/:kycId
+   * PUT /api/kyc/complete-pending
    * Requirements: 5.1
+   * SECURITY: Requires valid KYC token (in body) and OTP verification
    */
   @Public()
-  @Put('kyc/complete-pending/:kycId')
+  @Put('kyc/complete-pending')
   async completePendingKYC(
-    @Param('kycId', ParseUUIDPipe) kycId: string,
     @Body(ValidationPipe) completionData: CompleteKYCDto,
   ): Promise<{
     success: boolean;
@@ -304,7 +287,7 @@ export class KYCApplicationController {
     application: KYCApplication;
   }> {
     const application = await this.kycApplicationService.completePendingKYC(
-      kycId,
+      completionData.kyc_token,
       completionData,
     );
 
@@ -368,9 +351,8 @@ export class KYCApplicationController {
   }
 
   /**
-   * Get property history events for a KYC application (landlord only)
+   * Get history events for a KYC application
    * GET /api/kyc-applications/:applicationId/history
-   * Returns tracking events like form views and submissions
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
   @Roles('landlord')
@@ -380,7 +362,12 @@ export class KYCApplicationController {
     @CurrentUser() user: Account,
   ): Promise<{
     success: boolean;
-    history: any[];
+    history: Array<{
+      id: string;
+      eventType: string;
+      eventDescription: string;
+      createdAt: string;
+    }>;
   }> {
     const history = await this.kycApplicationService.getApplicationHistory(
       applicationId,

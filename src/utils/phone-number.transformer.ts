@@ -1,5 +1,4 @@
 import { Transform } from 'class-transformer';
-import { UtilService } from './utility-service';
 
 /**
  * Decorator to automatically normalize phone numbers in DTOs
@@ -12,9 +11,7 @@ import { UtilService } from './utility-service';
 export function NormalizePhoneNumber() {
   return Transform(({ value }) => {
     if (!value) return value;
-
-    const utilService = new UtilService();
-    return utilService.normalizePhoneNumber(value);
+    return normalizePhoneNumber(value);
   });
 }
 

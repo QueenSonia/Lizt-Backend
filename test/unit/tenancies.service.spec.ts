@@ -7,8 +7,11 @@ import { Rent } from '../../src/rents/entities/rent.entity';
 import { Property } from '../../src/properties/entities/property.entity';
 import { PropertyHistory } from '../../src/property-history/entities/property-history.entity';
 import { Users } from '../../src/users/entities/user.entity';
+import { RentIncrease } from '../../src/rents/entities/rent-increase.entity';
+import { RenewalInvoice } from '../../src/tenancies/entities/renewal-invoice.entity';
 import { WhatsappBotService } from '../../src/whatsapp-bot/whatsapp-bot.service';
 import { UtilService } from '../../src/utils/utility-service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, Repository } from 'typeorm';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { RentStatusEnum } from '../../src/rents/dto/create-rent.dto';
@@ -40,8 +43,11 @@ describe('TenanciesService', () => {
   let propertyRepository: MockRepository;
   let propertyHistoryRepository: MockRepository;
   let usersRepository: MockRepository;
+  let rentIncreaseRepository: MockRepository;
+  let renewalInvoiceRepository: MockRepository;
   let whatsappBotService: Partial<WhatsappBotService>;
   let utilService: Partial<UtilService>;
+  let eventEmitter: Partial<EventEmitter2>;
   let dataSource: Partial<DataSource>;
 
   /**
@@ -70,10 +76,17 @@ describe('TenanciesService', () => {
     propertyRepository = createMockRepository();
     propertyHistoryRepository = createMockRepository();
     usersRepository = createMockRepository();
+    rentIncreaseRepository = createMockRepository();
+    renewalInvoiceRepository = createMockRepository();
 
     // Mock WhatsApp service (we don't want to send real messages in tests!)
     whatsappBotService = {
       sendTenantAttachmentNotification: jest.fn().mockResolvedValue(undefined),
+    };
+
+    // Mock EventEmitter2
+    eventEmitter = {
+      emit: jest.fn(),
     };
 
     // Mock utility service
@@ -126,12 +139,24 @@ describe('TenanciesService', () => {
           useValue: usersRepository,
         },
         {
+          provide: getRepositoryToken(RentIncrease),
+          useValue: rentIncreaseRepository,
+        },
+        {
+          provide: getRepositoryToken(RenewalInvoice),
+          useValue: renewalInvoiceRepository,
+        },
+        {
           provide: WhatsappBotService,
           useValue: whatsappBotService,
         },
         {
           provide: UtilService,
           useValue: utilService,
+        },
+        {
+          provide: EventEmitter2,
+          useValue: eventEmitter,
         },
         {
           provide: DataSource,
@@ -348,6 +373,10 @@ describe('TenanciesService', () => {
         id: 'pt-001',
         property_id: 'property-456',
         tenant_id: 'tenant-789',
+        property: {
+          id: 'property-456',
+          owner_id: 'owner-123',
+        },
       } as PropertyTenant;
 
       const mockRent = {
@@ -355,6 +384,7 @@ describe('TenanciesService', () => {
         property_id: 'property-456',
         tenant_id: 'tenant-789',
         rent_status: RentStatusEnum.ACTIVE,
+        expiry_date: new Date('2024-06-30'),
       } as Rent;
 
       propertyTenantRepository.findOne.mockResolvedValue(mockPropertyTenant);
@@ -370,11 +400,11 @@ describe('TenanciesService', () => {
       // ===== ACT & ASSERT =====
       // Use rejects.toThrow to test async errors
       await expect(
-        service.renewTenancy('pt-001', invalidDto as any),
+        service.renewTenancy('pt-001', invalidDto as any, 'owner-123'),
       ).rejects.toThrow(BadRequestException);
 
       await expect(
-        service.renewTenancy('pt-001', invalidDto as any),
+        service.renewTenancy('pt-001', invalidDto as any, 'owner-123'),
       ).rejects.toThrow('End date must be after start date');
     });
 
@@ -396,7 +426,7 @@ describe('TenanciesService', () => {
 
       // ===== ACT & ASSERT =====
       await expect(
-        service.renewTenancy('non-existent-id', renewDto as any),
+        service.renewTenancy('non-existent-id', renewDto as any, 'owner-123'),
       ).rejects.toThrow(NotFoundException);
     });
 
@@ -406,6 +436,10 @@ describe('TenanciesService', () => {
         id: 'pt-001',
         property_id: 'property-456',
         tenant_id: 'tenant-789',
+        property: {
+          id: 'property-456',
+          owner_id: 'owner-123',
+        },
       } as PropertyTenant;
 
       propertyTenantRepository.findOne.mockResolvedValue(mockPropertyTenant);
@@ -420,11 +454,11 @@ describe('TenanciesService', () => {
 
       // ===== ACT & ASSERT =====
       await expect(
-        service.renewTenancy('pt-001', renewDto as any),
+        service.renewTenancy('pt-001', renewDto as any, 'owner-123'),
       ).rejects.toThrow(NotFoundException);
 
       await expect(
-        service.renewTenancy('pt-001', renewDto as any),
+        service.renewTenancy('pt-001', renewDto as any, 'owner-123'),
       ).rejects.toThrow('No active rent record found for this tenancy');
     });
   });

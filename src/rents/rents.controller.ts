@@ -175,9 +175,6 @@ export class RentsController {
   @Get('reminder/:id')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  @Get('reminder/:id')
-  @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
   sendReminder(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: any) {
     try {
       return this.rentsService.sendRentReminder(id, req?.user?.id);
@@ -194,7 +191,6 @@ export class RentsController {
   @ApiNotFoundResponse({ description: 'Rent not found' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
-  @Get(':id')
   @Get(':id')
   getRentById(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: any) {
     try {
@@ -235,7 +231,6 @@ export class RentsController {
   @ApiOkResponse()
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
-  @Delete(':id')
   @Delete(':id')
   deletePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,

@@ -97,6 +97,31 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  // Fix #6: Emit a distinct event for service request updates (vs. created)
+  emitServiceRequestUpdated(
+    propertyId: string,
+    landlordId: string | undefined,
+    serviceRequestData: any,
+  ) {
+    this.logger.log(
+      `Emitting service request updated for property ${propertyId}`,
+    );
+
+    this.server.to(`property:${propertyId}`).emit('service_request:updated', {
+      propertyId,
+      serviceRequestData,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (landlordId) {
+      this.server.to(`landlord:${landlordId}`).emit('service_request:updated', {
+        propertyId,
+        serviceRequestData,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
   // Allow clients to join property-specific rooms
   async joinPropertyRoom(client: Socket, propertyId: string) {
     await client.join(`property:${propertyId}`);
@@ -186,6 +211,37 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     this.server.to(`landlord:${landlordId}`).emit('payment:received', {
       ...paymentData,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // Emit tenancy renewed event to landlord
+  emitTenancyRenewed(
+    landlordId: string,
+    propertyId: string,
+    tenancyData: {
+      propertyName: string;
+      tenantName: string;
+      rentAmount: number;
+      paymentFrequency: string;
+      startDate: string;
+      endDate: string;
+    },
+  ) {
+    this.logger.log(
+      `Emitting tenancy renewed for property ${tenancyData.propertyName} to landlord ${landlordId}`,
+    );
+
+    this.server.to(`landlord:${landlordId}`).emit('tenancy:renewed', {
+      propertyId,
+      ...tenancyData,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Also emit to property-specific room
+    this.server.to(`property:${propertyId}`).emit('tenancy:renewed', {
+      propertyId,
+      ...tenancyData,
       timestamp: new Date().toISOString(),
     });
   }

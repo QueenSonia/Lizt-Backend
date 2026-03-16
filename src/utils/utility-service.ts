@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
 import sgMail from '@sendgrid/mail';
 import { randomBytes, randomInt } from 'crypto';
+import { normalizePhoneNumber } from './phone-number.transformer';
 
 dotenv.config();
 
@@ -30,31 +31,10 @@ export class UtilService {
 
   /**
    * Normalize phone number to consistent format: 234XXXXXXXXXX (no + prefix)
-   * This matches the format stored in the database via the entity transformer.
+   * Delegates to the canonical implementation in phone-number.transformer.ts
    */
   normalizePhoneNumber = (phone_number: string): string => {
-    if (!phone_number) return '';
-
-    // Remove all non-digit characters (including +)
-    const cleaned = phone_number.replace(/\D/g, '');
-
-    // Already in correct format: 234XXXXXXXXXX
-    if (cleaned.startsWith('234')) {
-      return cleaned;
-    }
-
-    // Nigerian local format: 0XXXXXXXXXX -> 234XXXXXXXXXX
-    if (cleaned.startsWith('0')) {
-      return '234' + cleaned.substring(1);
-    }
-
-    // 10 digits without country code (e.g., 8031234567)
-    if (/^[7-9]\d{9}$/.test(cleaned)) {
-      return '234' + cleaned;
-    }
-
-    // Default: prepend 234
-    return '234' + cleaned;
+    return normalizePhoneNumber(phone_number);
   };
 
   sendEmail = async (email: string, subject: string, htmlContent: string) => {

@@ -1,3 +1,6 @@
+// IMPORTANT: instrument must be imported before everything else for Sentry to work
+import './instrument';
+
 import { HttpAdapterHost, NestFactory, Reflector } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
@@ -8,7 +11,6 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 import { AppModule } from './app.module';
 import { AppExceptionsFilter } from './filters/app-exceptions-filter';
-import { HttpExceptionFilter } from './filters/exception-filter';
 import express from 'express';
 import { corsOptions } from './utils/options.cors';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';

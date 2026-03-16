@@ -2,6 +2,8 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -10,12 +12,25 @@ import { Rent } from 'src/rents/entities/rent.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { RenewTenancyDto } from './dto/renew-tenancy.dto';
-import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import {
+  RentStatusEnum,
+  RentPaymentStatusEnum,
+} from 'src/rents/dto/create-rent.dto';
+import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
+import { WhatsAppNotificationLogService } from 'src/whatsapp-bot/whatsapp-notification-log.service';
 import { Users } from 'src/users/entities/user.entity';
 import { UtilService } from 'src/utils/utility-service';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import {
+  RenewalInvoice,
+  RenewalPaymentStatus,
+} from './entities/renewal-invoice.entity';
+import { v4 as uuidv4 } from 'uuid';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { NotificationService } from 'src/notifications/notification.service';
+import { NotificationType } from 'src/notifications/enums/notification-type';
 
 @Injectable()
 export class TenanciesService {
@@ -30,8 +45,15 @@ export class TenanciesService {
     private propertyHistoryRepository: Repository<PropertyHistory>,
     @InjectRepository(Users)
     private usersRepository: Repository<Users>,
+    @InjectRepository(RentIncrease)
+    private rentIncreaseRepository: Repository<RentIncrease>,
+    @InjectRepository(RenewalInvoice)
+    private renewalInvoiceRepository: Repository<RenewalInvoice>,
     private readonly whatsappBotService: WhatsappBotService,
+    private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
+    private readonly eventEmitter: EventEmitter2,
+    private readonly notificationService: NotificationService,
     private dataSource: DataSource,
   ) {}
 
@@ -89,8 +111,8 @@ export class TenanciesService {
   async renewTenancy(
     propertyTenantId: string,
     renewTenancyDto: RenewTenancyDto,
+    userId: string,
   ) {
-    // Use transaction to ensure all updates succeed or fail together
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -108,7 +130,15 @@ export class TenanciesService {
         );
       }
 
-      // 2. Find the active rent record for this property and tenant
+      // 2. Verify ownership
+      if (propertyTenant.property.owner_id !== userId) {
+        throw new HttpException(
+          'You do not have permission to renew this tenancy',
+          HttpStatus.FORBIDDEN,
+        );
+      }
+
+      // 3. Find the active rent record for this property and tenant
       const activeRent = await this.rentRepository.findOne({
         where: {
           property_id: propertyTenant.property_id,
@@ -123,27 +153,21 @@ export class TenanciesService {
         );
       }
 
-      // 3. Validate and parse dates
-      const startDate = new Date(renewTenancyDto.startDate);
-      const endDate = new Date(renewTenancyDto.endDate);
-
-      if (endDate <= startDate) {
-        throw new BadRequestException('End date must be after start date');
+      if (!activeRent.expiry_date) {
+        throw new BadRequestException(
+          'Active rent has no expiry date set. Cannot calculate renewal start date.',
+        );
       }
 
-      // 4. Update the rent record with new tenancy details
-      // Note: In the new rent-based system, renewal updates rent terms
-      // The lease_agreement_end_date is optional and for reference only
-      activeRent.rent_start_date = startDate;
-      activeRent.lease_agreement_end_date = endDate; // Optional reference
-      activeRent.rental_price = renewTenancyDto.rentAmount;
-      activeRent.payment_frequency = renewTenancyDto.paymentFrequency;
-      activeRent.updated_at = new Date();
+      // 4. Capture previous rent for history and rent increase tracking
+      const previousRentalPrice = activeRent.rental_price;
 
-      // Calculate next rent due date based on new terms
-      // Logic: Start Date + Frequency - 1 Day
-      const nextRentDate = new Date(startDate);
-      const dueDay = startDate.getDate();
+      // 5. Calculate new start date (day after current rent expires)
+      const newStartDate = new Date(activeRent.expiry_date);
+      newStartDate.setDate(newStartDate.getDate() + 1);
+
+      // 6. Calculate new expiry date: start + frequency - 1 day
+      const newExpiryDate = new Date(newStartDate);
       let monthsToAdd = 0;
 
       switch (renewTenancyDto.paymentFrequency.toLowerCase()) {
@@ -160,54 +184,762 @@ export class TenanciesService {
           monthsToAdd = 12;
           break;
         default:
-          monthsToAdd = 1; // Default to monthly
+          monthsToAdd = 1;
       }
 
-      nextRentDate.setMonth(nextRentDate.getMonth() + monthsToAdd);
+      newExpiryDate.setMonth(newExpiryDate.getMonth() + monthsToAdd);
 
       // Handle month overflow (e.g. Jan 31 + 1 month -> Feb 28/29)
-      const targetMonth = (startDate.getMonth() + monthsToAdd) % 12;
-      if (nextRentDate.getMonth() !== targetMonth) {
-        nextRentDate.setDate(0); // Set to last day of previous month
+      const targetMonth = (newStartDate.getMonth() + monthsToAdd) % 12;
+      if (newExpiryDate.getMonth() !== targetMonth) {
+        newExpiryDate.setDate(0);
       }
 
-      // Subtract 1 day to get the due date (day before next cycle starts)
-      nextRentDate.setDate(nextRentDate.getDate() - 1);
+      // Subtract 1 day (day before next cycle starts)
+      newExpiryDate.setDate(newExpiryDate.getDate() - 1);
 
-      activeRent.expiry_date = nextRentDate;
-
+      // 7. Mark old rent as INACTIVE
+      activeRent.rent_status = RentStatusEnum.INACTIVE;
+      activeRent.updated_at = new Date();
       await queryRunner.manager.save(Rent, activeRent);
 
-      // 5. Create property history entry for the renewal
+      // 8. Create new rent record
+      const newRent = await queryRunner.manager.save(Rent, {
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        rent_start_date: newStartDate,
+        expiry_date: newExpiryDate,
+        rental_price: renewTenancyDto.rentAmount,
+        amount_paid: renewTenancyDto.rentAmount,
+        security_deposit: activeRent.security_deposit,
+        service_charge: activeRent.service_charge,
+        payment_frequency: renewTenancyDto.paymentFrequency,
+        payment_status: RentPaymentStatusEnum.PENDING,
+        rent_status: RentStatusEnum.ACTIVE,
+      });
+
+      // 9. Create RentIncrease record if amount changed
+      if (renewTenancyDto.rentAmount !== previousRentalPrice) {
+        await queryRunner.manager.save(RentIncrease, {
+          property_id: propertyTenant.property_id,
+          initial_rent: previousRentalPrice,
+          current_rent: renewTenancyDto.rentAmount,
+          rent_increase_date: newStartDate,
+          reason: 'Tenancy renewal',
+        });
+      }
+
+      // 10. Create property history entry
+      const startDateStr = newStartDate.toISOString().split('T')[0];
+      const endDateStr = newExpiryDate.toISOString().split('T')[0];
+
       const historyEntry = this.propertyHistoryRepository.create({
         property_id: propertyTenant.property_id,
         tenant_id: propertyTenant.tenant_id,
-        move_in_date: startDate,
+        move_in_date: newStartDate,
         monthly_rent: renewTenancyDto.rentAmount,
-        owner_comment: `Tenancy renewed. New rent: ₦${renewTenancyDto.rentAmount.toLocaleString()}, Period: ${renewTenancyDto.startDate} to ${renewTenancyDto.endDate}, Payment: ${renewTenancyDto.paymentFrequency}. Previous rent: ₦${activeRent.rental_price?.toLocaleString() || 'N/A'}`,
+        owner_comment: `Tenancy renewed. New rent: ₦${renewTenancyDto.rentAmount.toLocaleString()}, Period: ${startDateStr} to ${endDateStr}, Payment: ${renewTenancyDto.paymentFrequency}. Previous rent: ₦${previousRentalPrice?.toLocaleString() || 'N/A'}`,
       });
 
       await queryRunner.manager.save(PropertyHistory, historyEntry);
 
-      // 6. Commit the transaction
       await queryRunner.commitTransaction();
 
-      // 7. Return the updated data
+      // Emit tenancy renewed event for live feed
+      this.eventEmitter.emit('tenancy.renewed', {
+        property_id: propertyTenant.property_id,
+        property_name: propertyTenant.property.name,
+        tenant_id: propertyTenant.tenant_id,
+        tenant_name: `${propertyTenant.tenant.user.first_name} ${propertyTenant.tenant.user.last_name}`,
+        user_id: propertyTenant.property.owner_id,
+        rent_amount: renewTenancyDto.rentAmount,
+        payment_frequency: renewTenancyDto.paymentFrequency,
+        start_date: startDateStr,
+        end_date: endDateStr,
+      });
+
       return {
         success: true,
         message: 'Tenancy renewed successfully',
         data: {
           propertyTenant,
-          rent: activeRent,
+          rent: newRent,
         },
       };
     } catch (error) {
-      // Rollback transaction on error
       await queryRunner.rollbackTransaction();
       throw error;
     } finally {
-      // Release the query runner
       await queryRunner.release();
     }
+  }
+
+  /**
+   * Generate renewal invoice link and send via WhatsApp
+   * Requirements: 1.1, 1.2, 1.3
+   */
+  async initiateRenewal(
+    propertyTenantId: string,
+    userId: string,
+    body?: { rentAmount: number; paymentFrequency: string; serviceCharge?: number },
+  ): Promise<{ token: string; link: string }> {
+    // 1. Find the PropertyTenant relationship with all necessary relations
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: { id: propertyTenantId },
+      relations: ['property', 'property.owner', 'tenant', 'tenant.user'],
+    });
+
+    if (!propertyTenant) {
+      throw new NotFoundException(
+        `Property tenant relationship with ID ${propertyTenantId} not found`,
+      );
+    }
+
+    // 2. Verify ownership
+    if (propertyTenant.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to initiate renewal for this tenancy',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    // 3. Find the active rent record to get renewal details
+    const activeRent = await this.rentRepository.findOne({
+      where: {
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!activeRent) {
+      throw new NotFoundException(
+        'No active rent record found for this tenancy',
+      );
+    }
+
+    if (!activeRent.expiry_date) {
+      throw new BadRequestException(
+        'Active rent has no expiry date set. Cannot calculate renewal period.',
+      );
+    }
+
+    // 4. Calculate renewal period (start date = day after expiry, end date based on frequency)
+    const startDate = new Date(activeRent.expiry_date);
+    startDate.setDate(startDate.getDate() + 1);
+
+    // Use frontend-provided values, falling back to active rent values
+    const paymentFrequency = body?.paymentFrequency || activeRent.payment_frequency || 'Annually';
+
+    const endDate = new Date(startDate);
+    switch (paymentFrequency.toLowerCase()) {
+      case 'monthly':
+        endDate.setMonth(endDate.getMonth() + 1);
+        break;
+      case 'quarterly':
+        endDate.setMonth(endDate.getMonth() + 3);
+        break;
+      case 'bi-annually':
+        endDate.setMonth(endDate.getMonth() + 6);
+        break;
+      case 'annually':
+      default:
+        endDate.setFullYear(endDate.getFullYear() + 1);
+        break;
+    }
+    endDate.setDate(endDate.getDate() - 1); // End date is inclusive
+
+    // 5. Calculate total amount (rent + service charge only; no auto-calculated legal fee)
+    const rentAmount = body?.rentAmount || activeRent.rental_price;
+    const serviceCharge = body?.serviceCharge ?? (activeRent.service_charge || 0);
+    const legalFee = 0;
+    const otherCharges = 0;
+    const totalAmount = rentAmount + serviceCharge + legalFee + otherCharges;
+
+    // 6. Check for existing unpaid renewal invoice (may have been auto-created by rent reminder)
+    const existingInvoice = await this.renewalInvoiceRepository.findOne({
+      where: {
+        property_tenant_id: propertyTenantId,
+        payment_status: RenewalPaymentStatus.UNPAID,
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    let renewalInvoice: RenewalInvoice;
+
+    if (existingInvoice) {
+      // Update existing invoice with landlord's chosen terms
+      existingInvoice.start_date = startDate;
+      existingInvoice.end_date = endDate;
+      existingInvoice.rent_amount = rentAmount;
+      existingInvoice.service_charge = serviceCharge;
+      existingInvoice.legal_fee = legalFee;
+      existingInvoice.other_charges = otherCharges;
+      existingInvoice.total_amount = totalAmount;
+      existingInvoice.payment_frequency = paymentFrequency;
+      renewalInvoice = existingInvoice;
+    } else {
+      // Generate new token and create fresh invoice
+      const token = uuidv4();
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      renewalInvoice = this.renewalInvoiceRepository.create({
+        token,
+        property_tenant_id: propertyTenantId,
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        start_date: startDate,
+        end_date: endDate,
+        rent_amount: rentAmount,
+        service_charge: serviceCharge,
+        legal_fee: legalFee,
+        other_charges: otherCharges,
+        total_amount: totalAmount,
+        payment_status: RenewalPaymentStatus.UNPAID,
+        payment_frequency: paymentFrequency,
+        expires_at: expiresAt,
+      });
+    }
+
+    const token = renewalInvoice.token;
+
+    // 9. Create property history entry for renewal link sent
+    const tenantName = `${propertyTenant.tenant.user.first_name} ${propertyTenant.tenant.user.last_name}`;
+    const historyEntry = this.propertyHistoryRepository.create({
+      property_id: propertyTenant.property_id,
+      tenant_id: propertyTenant.tenant_id,
+      event_type: 'renewal_link_sent',
+      event_description: `Tenancy renewal link sent to ${tenantName}`,
+      owner_comment: `Tenancy renewal link sent to ${tenantName}`,
+      related_entity_id: renewalInvoice.id,
+      related_entity_type: 'renewal_invoice',
+    });
+
+    // 10. Save both records in parallel
+    await Promise.all([
+      this.renewalInvoiceRepository.save(renewalInvoice),
+      this.propertyHistoryRepository.save(historyEntry),
+    ]);
+
+    // Emit event for livefeed (listener will create the detailed notification)
+    this.eventEmitter.emit('renewal.link.sent', {
+      property_id: propertyTenant.property_id,
+      property_name: propertyTenant.property.name,
+      tenant_id: propertyTenant.tenant_id,
+      tenant_name: tenantName,
+      user_id: userId,
+      amount: totalAmount,
+      timestamp: new Date().toISOString(),
+    });
+
+    // 11. Generate renewal link
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const baseUrl = `${frontendUrl}/renewal-invoice`;
+    const link = `${baseUrl}/${token}`;
+
+    // 12. Queue WhatsApp notification asynchronously (fire and forget)
+    setImmediate(async () => {
+      try {
+        const tenantPhone = this.utilService.normalizePhoneNumber(
+          propertyTenant.tenant.user.phone_number,
+        );
+
+        await this.whatsappNotificationLog.queue('sendRenewalLink', {
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          renewal_token: token,
+          frontend_url: frontendUrl,
+        });
+
+        console.log(`Renewal link queued for ${tenantPhone}: ${link}`);
+      } catch (error) {
+        console.error(
+          'Error queueing renewal link WhatsApp notification:',
+          error,
+        );
+      }
+    });
+
+    return { token, link };
+  }
+
+  /**
+   * Get renewal invoice data by token
+   * Requirements: 4.1-4.7
+   */
+  async getRenewalInvoice(token: string): Promise<any> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    // Check if token is expired
+    if (invoice.expires_at && new Date() > invoice.expires_at) {
+      throw new HttpException(
+        'This renewal link has expired. Please contact your landlord for a new link.',
+        HttpStatus.GONE,
+      );
+    }
+
+    return this.formatRenewalInvoiceResponse(invoice);
+  }
+
+  /**
+   * Get renewal invoice by its database ID (for landlord dashboard)
+   */
+  async getRenewalInvoiceById(id: string): Promise<any> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { id },
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    // Reuse the same formatting as getRenewalInvoice
+    return this.formatRenewalInvoiceResponse(invoice);
+  }
+
+  /**
+   * Format renewal invoice entity into API response
+   */
+  private formatRenewalInvoiceResponse(invoice: RenewalInvoice): any {
+    const formatDate = (date: any): string => {
+      if (typeof date === 'string') {
+        return date.split('T')[0];
+      }
+      return date.toISOString().split('T')[0];
+    };
+
+    const landlordUser = invoice.property.owner?.user;
+    const landlordBranding = landlordUser?.branding || null;
+    const landlordLogoUrl =
+      landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
+
+    return {
+      id: invoice.id,
+      token: invoice.token,
+      propertyName: invoice.property.name,
+      propertyAddress: invoice.property.location,
+      tenantName: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
+      tenantEmail: invoice.tenant.user.email,
+      tenantPhone: invoice.tenant.user.phone_number,
+      renewalPeriod: {
+        startDate: formatDate(invoice.start_date),
+        endDate: formatDate(invoice.end_date),
+      },
+      charges: {
+        rentAmount: parseFloat(invoice.rent_amount.toString()),
+        serviceCharge: parseFloat(invoice.service_charge.toString()),
+        legalFee: parseFloat(invoice.legal_fee.toString()),
+        otherCharges: parseFloat(invoice.other_charges.toString()),
+      },
+      totalAmount: parseFloat(invoice.total_amount.toString()),
+      paymentStatus: invoice.payment_status,
+      paidAt: invoice.paid_at
+        ? typeof invoice.paid_at === 'string'
+          ? invoice.paid_at
+          : invoice.paid_at.toISOString()
+        : null,
+      paymentReference: invoice.payment_reference,
+      landlordBranding: landlordBranding,
+      landlordLogoUrl: landlordLogoUrl,
+    };
+  }
+
+  /**
+   * Verify renewal token validity
+   * Requirements: 12.1
+   */
+  async verifyRenewalToken(token: string): Promise<boolean> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+    });
+
+    if (!invoice) {
+      return false;
+    }
+
+    // Check if token is expired
+    if (invoice.expires_at && new Date() > invoice.expires_at) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Get payment success page data
+   * Requirements: 1.1-1.7
+   */
+  async getPaymentSuccessData(token: string): Promise<any> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    // Check if invoice is paid
+    if (invoice.payment_status !== RenewalPaymentStatus.PAID) {
+      throw new HttpException(
+        'Invoice not paid - success data not available',
+        HttpStatus.GONE,
+      );
+    }
+
+    return {
+      invoiceToken: invoice.token,
+      receiptToken: invoice.receipt_token,
+      invoice: this.formatRenewalInvoiceResponse(invoice),
+      paymentReference: invoice.payment_reference,
+      paidAt: invoice.paid_at
+        ? typeof invoice.paid_at === 'string'
+          ? invoice.paid_at
+          : invoice.paid_at.toISOString()
+        : null,
+    };
+  }
+
+  /**
+   * Get renewal receipt data by receipt token
+   * Requirements: 4.1-4.8, 8.1-8.3
+   */
+  async getRenewalReceiptByToken(receiptToken: string): Promise<any> {
+    // Find invoice by receipt token
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { receipt_token: receiptToken },
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Receipt not found');
+    }
+
+    // Check if invoice is paid (access control requirement 8.3)
+    if (invoice.payment_status !== RenewalPaymentStatus.PAID) {
+      throw new HttpException(
+        'Receipt not available - payment required',
+        HttpStatus.GONE,
+      );
+    }
+
+    // Format receipt data
+    return this.formatRenewalReceiptResponse(invoice);
+  }
+
+  /**
+   * Format renewal invoice entity into receipt response
+   * Requirements: 4.1-4.8, 5.1-5.6
+   */
+  private formatRenewalReceiptResponse(invoice: RenewalInvoice): any {
+    const formatDate = (date: any): string => {
+      if (typeof date === 'string') {
+        return date.split('T')[0];
+      }
+      return date.toISOString().split('T')[0];
+    };
+
+    const formatDateTime = (date: any): string => {
+      if (typeof date === 'string') {
+        return date;
+      }
+      return date.toISOString();
+    };
+
+    const landlordUser = invoice.property.owner?.user;
+    const landlordBranding = landlordUser?.branding || null;
+    const landlordLogoUrl =
+      landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
+
+    return {
+      receiptNumber: invoice.receipt_number,
+      receiptDate: formatDateTime(invoice.paid_at || new Date()),
+      transactionReference: invoice.payment_reference,
+
+      // Tenant Information
+      tenantName: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
+      tenantEmail: invoice.tenant.user.email,
+      tenantPhone: invoice.tenant.user.phone_number,
+
+      // Property Information
+      propertyName: invoice.property.name,
+      propertyAddress: invoice.property.location,
+
+      // Payment Breakdown
+      charges: {
+        rentAmount: parseFloat(invoice.rent_amount.toString()),
+        serviceCharge:
+          parseFloat(invoice.service_charge.toString()) || undefined,
+        legalFee: parseFloat(invoice.legal_fee.toString()) || undefined,
+        otherCharges: parseFloat(invoice.other_charges.toString()) || undefined,
+      },
+      totalAmount: parseFloat(invoice.total_amount.toString()),
+
+      // Payment Details
+      paymentDate: formatDateTime(invoice.paid_at || new Date()),
+      paymentMethod: 'card', // Default for now, could be enhanced later
+
+      // Branding
+      landlordBranding: landlordBranding,
+      landlordLogoUrl: landlordLogoUrl,
+    };
+  }
+
+  /**
+   * Mark invoice as paid and update records
+   * Requirements: 5.3, 8.1-8.5
+   */
+  async markInvoiceAsPaid(
+    token: string,
+    paymentReference: string,
+    amount: number,
+  ): Promise<void> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    // Check if already paid
+    if (invoice.payment_status === RenewalPaymentStatus.PAID) {
+      throw new HttpException(
+        'This invoice has already been paid',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    // Validate amount matches invoice total
+    const invoiceTotal = parseFloat(invoice.total_amount.toString());
+    if (Math.abs(amount - invoiceTotal) > 0.01) {
+      throw new BadRequestException(
+        'Payment amount does not match invoice total',
+      );
+    }
+
+    // Update invoice payment status
+    invoice.payment_status = RenewalPaymentStatus.PAID;
+    invoice.payment_reference = paymentReference;
+    invoice.paid_at = new Date();
+
+    await this.renewalInvoiceRepository.save(invoice);
+
+    // Update the active rent record with the new rental period
+    const activeRent = await this.rentRepository.findOne({
+      where: {
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+
+    if (activeRent) {
+      // Mark old rent as inactive
+      activeRent.rent_status = RentStatusEnum.INACTIVE;
+      activeRent.updated_at = new Date();
+      await this.rentRepository.save(activeRent);
+
+      // Create new rent record with the renewal period dates
+      const newRent = this.rentRepository.create({
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        rent_start_date: invoice.start_date,
+        expiry_date: invoice.end_date,
+        rental_price: parseFloat(invoice.rent_amount.toString()),
+        amount_paid: parseFloat(invoice.rent_amount.toString()),
+        security_deposit: activeRent.security_deposit,
+        service_charge:
+          parseFloat(invoice.service_charge.toString()) ||
+          activeRent.service_charge,
+        payment_frequency: invoice.payment_frequency || activeRent.payment_frequency,
+        payment_status: RentPaymentStatusEnum.PAID,
+        rent_status: RentStatusEnum.ACTIVE,
+      });
+      await this.rentRepository.save(newRent);
+    }
+
+    // Send WhatsApp notifications (non-blocking)
+    try {
+      const tenantPhone = this.utilService.normalizePhoneNumber(
+        invoice.tenant.user.phone_number,
+      );
+      const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+      const propertyName = invoice.property.name;
+
+      // Build receipt URL from the invoice's receipt_token
+      const frontendUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
+      const receiptUrl = invoice.receipt_token
+        ? `${frontendUrl}/renewal-receipt/${invoice.receipt_token}`
+        : `${frontendUrl}/renewal-invoice/verify/${invoice.token}`;
+
+      // Queue tenant payment confirmation with receipt link
+      await this.whatsappNotificationLog.queue('sendRenewalPaymentTenant', {
+        phone_number: tenantPhone,
+        tenant_name: tenantName,
+        amount,
+        property_name: propertyName,
+        receipt_url: receiptUrl,
+      });
+
+      console.log(`Payment confirmation queued for tenant ${tenantPhone}`);
+
+      // Send notification to landlord
+      if (invoice.property.owner?.user?.phone_number) {
+        const landlordPhone = this.utilService.normalizePhoneNumber(
+          invoice.property.owner.user.phone_number,
+        );
+        const landlordName = invoice.property.owner.user.first_name;
+
+        // Queue landlord payment notification
+        await this.whatsappNotificationLog.queue('sendRenewalPaymentLandlord', {
+          phone_number: landlordPhone,
+          landlord_name: landlordName,
+          tenant_name: tenantName,
+          amount,
+          property_name: propertyName,
+        });
+
+        console.log(
+          `Payment notification queued for landlord ${landlordPhone}`,
+        );
+      }
+    } catch (error) {
+      console.error('Error queueing payment notifications:', error);
+      // Non-blocking - continue even if queueing fails
+    }
+
+    // Update property history for renewal payment received
+    const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+    const propertyName = invoice.property.name;
+    const propertyHistoryEntry = this.propertyHistoryRepository.create({
+      property_id: invoice.property_id,
+      tenant_id: invoice.tenant_id,
+      event_type: 'renewal_payment_received',
+      event_description: `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`,
+      owner_comment: `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`,
+      related_entity_id: invoice.id,
+      related_entity_type: 'renewal_invoice',
+    });
+
+    await this.propertyHistoryRepository.save(propertyHistoryEntry);
+
+    // Create tenant history entry for renewal payment
+    const tenantHistoryEntry = this.propertyHistoryRepository.create({
+      property_id: invoice.property_id,
+      tenant_id: invoice.tenant_id,
+      event_type: 'renewal_payment_made',
+      event_description: `Payment made for tenancy renewal for property ${propertyName}. Amount: ₦${amount.toLocaleString()}`,
+      tenant_comment: `Payment made for tenancy renewal for property ${propertyName}`,
+      related_entity_id: invoice.id,
+      related_entity_type: 'renewal_invoice',
+    });
+
+    await this.propertyHistoryRepository.save(tenantHistoryEntry);
+
+    // Create notification for livefeed
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.RENEWAL_PAYMENT_RECEIVED,
+        description: `Renewal payment received from ${tenantName} — ₦${amount.toLocaleString()}`,
+        status: 'Completed',
+        property_id: invoice.property_id,
+        user_id: invoice.property.owner_id,
+      });
+    } catch (error) {
+      console.error(
+        'Failed to create renewal_payment_received notification:',
+        error,
+      );
+    }
+  }
+
+  /**
+   * Log renewal payment initiated event to property history
+   */
+  async logRenewalPaymentInitiated(
+    invoiceId: string,
+    propertyId: string,
+    tenantId: string,
+    tenantName: string,
+    propertyName: string,
+  ): Promise<void> {
+    const entry = this.propertyHistoryRepository.create({
+      property_id: propertyId,
+      tenant_id: tenantId,
+      event_type: 'renewal_payment_initiated',
+      event_description: `Renewal payment initiated by ${tenantName} for property ${propertyName}.`,
+      related_entity_id: invoiceId,
+      related_entity_type: 'renewal_invoice',
+    });
+    await this.propertyHistoryRepository.save(entry);
+  }
+
+  /**
+   * Log renewal payment cancelled event to property history
+   */
+  async logRenewalPaymentCancelled(token: string): Promise<void> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+      relations: ['property', 'tenant', 'tenant.user'],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+    const propertyName = invoice.property.name;
+
+    const entry = this.propertyHistoryRepository.create({
+      property_id: invoice.property_id,
+      tenant_id: invoice.tenant_id,
+      event_type: 'renewal_payment_cancelled',
+      event_description: `Renewal payment cancelled by ${tenantName} for property ${propertyName}.`,
+      related_entity_id: invoice.id,
+      related_entity_type: 'renewal_invoice',
+    });
+    await this.propertyHistoryRepository.save(entry);
   }
 }

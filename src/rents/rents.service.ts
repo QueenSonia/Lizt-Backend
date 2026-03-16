@@ -37,11 +37,8 @@ export class RentsService {
   ) {}
 
   async payRent(data: any): Promise<Rent> {
-    const { rent_start_date, lease_agreement_end_date } = data;
+    const { rent_start_date } = data;
     data.rent_start_date = DateService.getStartOfTheDay(rent_start_date);
-    data.lease_agreement_end_date = DateService.getEndOfTheDay(
-      lease_agreement_end_date,
-    );
     return this.rentRepository.save(data);
   }
 
@@ -114,6 +111,7 @@ export class RentsService {
       where: {
         ...query,
         expiry_date: Between(startDate, endDate),
+        rent_status: RentStatusEnum.ACTIVE,
       },
       relations: ['tenant', 'property'],
       skip,
@@ -149,7 +147,8 @@ export class RentsService {
     const [rents, count] = await this.rentRepository.findAndCount({
       where: {
         ...query,
-        // expiry_date: LessThanOrEqual(currentDate),
+        expiry_date: LessThanOrEqual(currentDate),
+        rent_status: RentStatusEnum.ACTIVE,
       },
       relations: ['tenant', 'property'],
       skip,
@@ -173,7 +172,7 @@ export class RentsService {
   async sendRentReminder(id: string, userId: string) {
     const rent = await this.rentRepository.findOne({
       where: { id },
-      relations: ['tenant', 'property'],
+      relations: ['tenant', 'tenant.user', 'property'],
     });
 
     if (!rent?.id) {
@@ -187,9 +186,14 @@ export class RentsService {
       );
     }
 
+    // Calculate total amount including service charge
+    const totalAmount =
+      (rent?.rental_price ?? rent?.amount_paid ?? 0) +
+      (rent?.service_charge ?? 0);
+
     const emailContent = rentReminderEmailTemplate(
-      `${rent?.tenant?.user.first_name} ${rent?.tenant?.user.last_name}`,
-      rent?.property?.rental_price,
+      `${rent?.tenant?.user?.first_name} ${rent?.tenant?.user?.last_name}`,
+      totalAmount,
       DateService.getDateNormalFormat(rent?.expiry_date),
     );
 

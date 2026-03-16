@@ -33,8 +33,7 @@ describe('RentsService', () => {
     property_id: 'property-123',
     rental_price: 50000,
     amount_paid: 50000,
-    lease_start_date: new Date('2024-01-01'),
-    lease_end_date: new Date('2024-12-31'),
+    rent_start_date: new Date('2024-01-01'),
     expiry_date: new Date('2024-12-31'),
     rent_status: RentStatusEnum.ACTIVE,
     payment_status: RentPaymentStatusEnum.PAID,
@@ -99,8 +98,7 @@ describe('RentsService', () => {
         property_id: 'property-123',
         rental_price: 50000,
         amount_paid: 50000,
-        lease_start_date: '2024-01-01',
-        lease_end_date: '2024-12-31',
+        rent_start_date: '2024-01-01',
       };
 
       (rentRepository.save as jest.Mock).mockResolvedValue(mockRent);

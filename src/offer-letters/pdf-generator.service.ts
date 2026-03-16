@@ -2,12 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as puppeteer from 'puppeteer';
-import {
-  OfferLetter,
-  TermsOfTenancy,
-  OfferLetterStatus,
-} from './entities/offer-letter.entity';
-
+import { OfferLetter, TermsOfTenancy } from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { FileUploadService } from '../utils/cloudinary';
@@ -29,95 +24,39 @@ export class PDFGeneratorService {
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
     private readonly fileUploadService: FileUploadService,
-  ) { }
+  ) {}
 
   /**
    * Generate PDF for an offer letter by token
    * Requirements: 4.1, 4.3, 4.4
    */
   async generateOfferLetterPDF(token: string): Promise<Buffer> {
-    console.log('=== PDF GENERATOR SERVICE: generateOfferLetterPDF ===');
-    console.log('Token:', token);
+    const offerLetter = await this.offerLetterRepository.findOne({
+      where: { token },
+    });
 
-    try {
-      console.log('Fetching offer letter from database...');
-      const offerLetter = await this.offerLetterRepository.findOne({
-        where: { token },
-      });
-
-      if (!offerLetter) {
-        console.error('Offer letter not found for token:', token);
-        throw new NotFoundException('Offer letter not found');
-      }
-
-      console.log('Offer letter found:', {
-        id: offerLetter.id,
-        kyc_application_id: offerLetter.kyc_application_id,
-        property_id: offerLetter.property_id,
-        status: offerLetter.status,
-      });
-
-      console.log('Fetching KYC application...');
-      const kycApplication = await this.kycApplicationRepository.findOne({
-        where: { id: offerLetter.kyc_application_id },
-      });
-
-      console.log(
-        'KYC application found:',
-        kycApplication
-          ? {
-            id: kycApplication.id,
-            name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-            email: kycApplication.email,
-          }
-          : 'null (not found)',
-      );
-
-      console.log('Fetching property...');
-      const property = await this.propertyRepository.findOne({
-        where: { id: offerLetter.property_id },
-      });
-
-      console.log(
-        'Property found:',
-        property
-          ? {
-            id: property.id,
-            name: property.name,
-            address: property.location,
-          }
-          : 'null (not found)',
-      );
-
-      if (!kycApplication || !property) {
-        console.error('Offer letter data incomplete:', {
-          hasKycApplication: !!kycApplication,
-          hasProperty: !!property,
-        });
-        throw new NotFoundException('Offer letter data incomplete');
-      }
-
-      console.log('Generating HTML for PDF...');
-      const html = this.generateOfferLetterHTML(
-        offerLetter,
-        kycApplication,
-        property,
-      );
-
-      console.log('HTML generated, length:', html.length);
-      console.log('Converting HTML to PDF...');
-
-      const pdfBuffer = await this.htmlToPDF(html);
-
-      console.log('PDF generated successfully, buffer size:', pdfBuffer.length);
-      return pdfBuffer;
-    } catch (error) {
-      console.error('=== ERROR IN PDF GENERATION ===');
-      console.error('Error details:', error);
-      console.error('Error message:', error.message);
-      console.error('Error stack:', error.stack);
-      throw error;
+    if (!offerLetter) {
+      throw new NotFoundException('Offer letter not found');
     }
+
+    const kycApplication = await this.kycApplicationRepository.findOne({
+      where: { id: offerLetter.kyc_application_id },
+    });
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: offerLetter.property_id },
+    });
+
+    if (!kycApplication || !property) {
+      throw new NotFoundException('Offer letter data incomplete');
+    }
+
+    const html = this.generateOfferLetterHTML(
+      offerLetter,
+      kycApplication,
+      property,
+    );
+    return this.htmlToPDF(html);
   }
 
   /**
@@ -134,17 +73,6 @@ export class PDFGeneratorService {
           `Cannot generate PDF: Offer letter with token ${token} not found`,
         );
         return;
-      }
-
-      // Delete old PDF from Cloudinary if it exists
-      if (offerLetter.pdf_url) {
-        const publicId = this.fileUploadService.extractPublicId(
-          offerLetter.pdf_url,
-        );
-        if (publicId) {
-          this.logger.log(`Deleting old PDF from Cloudinary: ${publicId}`);
-          await this.fileUploadService.deleteFile(publicId, 'raw');
-        }
       }
 
       // Generate the PDF
@@ -181,7 +109,6 @@ export class PDFGeneratorService {
     let browser: puppeteer.Browser | null = null;
 
     try {
-      console.log('Launching Puppeteer browser...');
       browser = await puppeteer.launch({
         headless: true,
         args: [
@@ -191,16 +118,12 @@ export class PDFGeneratorService {
           '--disable-gpu',
         ],
       });
-      console.log('Browser launched successfully');
 
       const page = await browser.newPage();
-      console.log('New page created, setting content...');
-
       await page.setContent(html, {
         waitUntil: 'domcontentloaded',
         timeout: 10000,
       });
-      console.log('Content set, generating PDF...');
 
       const pdfBuffer = await page.pdf({
         format: 'A4',
@@ -212,15 +135,9 @@ export class PDFGeneratorService {
           left: '15mm',
         },
       });
-      console.log('PDF generated, buffer size:', pdfBuffer.length);
 
       return Buffer.from(pdfBuffer);
     } catch (error) {
-      console.error('=== PUPPETEER ERROR ===');
-      console.error('Error type:', error.constructor.name);
-      console.error('Error message:', error.message);
-      console.error('Error stack:', error.stack);
-
       this.logger.error(
         `Failed to generate PDF: ${error.message}`,
         error.stack,
@@ -228,22 +145,45 @@ export class PDFGeneratorService {
       throw error;
     } finally {
       if (browser) {
-        console.log('Closing browser...');
         await browser.close();
       }
     }
   }
 
   /**
-   * Format date to readable string (e.g., "January 15, 2025")
+   * Format date to readable string with ordinal suffix (e.g., " January 15th, 2025")
+   * Matches the frontend OfferLetterDocument formatDate function
    */
   private formatDate(dateString: string): string {
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
+    const day = date.getDate();
+    const month = date.toLocaleString('en-US', { month: 'long' });
+    const year = date.getFullYear();
+
+    const suffix =
+      day === 1 || day === 21 || day === 31
+        ? 'st'
+        : day === 2 || day === 22
+          ? 'nd'
+          : day === 3 || day === 23
+            ? 'rd'
+            : 'th';
+
+    return ` ${month} ${day}${suffix}, ${year}`;
+  }
+
+  /**
+   * Format date/time for signature display (e.g., "15-01-2025 14:30:00")
+   */
+  private formatSignedDateTime(date: Date): string {
+    const d = new Date(date);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
   }
 
   /**
@@ -268,18 +208,28 @@ export class PDFGeneratorService {
   }
 
   /**
-   * Format currency with Naira symbol
+   * Format currency with Naira symbol (no decimals, matches frontend)
    */
   private formatCurrency(amount: number | undefined | null): string {
     if (amount === undefined || amount === null || isNaN(amount)) return '₦0';
-    // Use regex for formatting to avoid locale issues in Node environments
-    const parts = amount.toFixed(2).split('.');
-    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    return `₦${parts.join('.')}`;
+    // Match frontend: Number().toLocaleString() - no decimals
+    const formatted = Math.round(Number(amount))
+      .toString()
+      .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return `₦${formatted}`;
+  }
+
+  /**
+   * Get gender-based salutation (matches frontend logic)
+   */
+  private getSalutation(gender?: string): string {
+    if (gender?.toLowerCase() === 'female') return 'Ms';
+    return 'Mr';
   }
 
   /**
    * Generate HTML content for offer letter
+   * Matches the frontend OfferLetterDocument component layout exactly
    * Requirements: 4.3, 4.4
    */
   private generateOfferLetterHTML(
@@ -291,8 +241,13 @@ export class PDFGeneratorService {
     const nameParts = applicantName.split(' ');
     const lastName = nameParts[nameParts.length - 1];
 
-    const today = this.formatDate(new Date().toISOString());
     const snapshot = offerLetter.content_snapshot;
+    const createdAt = offerLetter.created_at;
+    const issuedDate = this.formatDate(
+      createdAt instanceof Date
+        ? createdAt.toISOString()
+        : (createdAt?.toString() || new Date().toISOString()),
+    );
 
     // Use snapshot if available, otherwise format manually
     const tenancyStartDateFormatted =
@@ -311,22 +266,24 @@ export class PDFGeneratorService {
       snapshot?.tenancy_period ||
       `${tenancyStartDateFormatted} to ${tenancyEndDateFormatted}`;
 
-    const propertyName = property.name || 'Property';
     const propertyAddress = snapshot?.tenant_address || 'Lagos, Nigeria';
 
     // Get landlord branding data from branding field
     const branding = offerLetter.branding || ({} as any);
-    const businessName = branding.businessName || 'Business Name';
-    const businessAddress =
-      branding.businessAddress ||
-      '17 Ayinde Akinmade Street, Lekki Phase 1, Lagos State';
-    const contactInfo =
-      branding.contactInfo || 'contact@propertykraft.com | +234 901 234 5678';
+    const businessName = branding.businessName || '';
+    const businessAddress = branding.businessAddress || '';
+    const contactEmail = branding.contactEmail || '';
+    const websiteLink = branding.websiteLink || '';
     const footerColor = branding.footerColor || '#6B6B6B';
     const letterhead = branding.letterhead || '';
     const signature = branding.signature || '';
     const headingFont = branding.headingFont || 'Inter';
     const bodyFont = branding.bodyFont || 'Inter';
+
+    // Salutation based on gender (matches frontend)
+    const salutation = this.getSalutation(
+      (kycApplication as any).gender || undefined,
+    );
 
     // Use terms from database, or fall back to standard terms if none exist
     const terms =
@@ -334,31 +291,31 @@ export class PDFGeneratorService {
         ? offerLetter.terms_of_tenancy
         : [];
 
-    // Generate terms HTML
+    // Generate terms HTML (matches frontend layout)
     const termsHtml =
       terms.length > 0
         ? terms
-          .map(
-            (term, index) => `
+            .map(
+              (term, index) => `
       <div style="margin-bottom: 24px;">
-        <h3 style="font-weight: 700; font-size: 14px; margin-bottom: 12px; font-family: ${headingFont}, sans-serif;">
+        <h3 style="font-weight: 700; font-size: 11px; line-height: 15px; color: #1a1b23; margin-bottom: 12px;">
           ${index + 1}. ${this.escapeHtml(term.title)}
         </h3>
-        <div style="font-size: 14px; line-height: 1.6; text-align: justify;">
+        <div style="font-size: 11px; line-height: 15px; color: #1a1b23; text-align: justify;">
           ${this.formatTermContent(term.content)}
         </div>
       </div>
     `,
-          )
-          .join('')
+            )
+            .join('')
         : '<p>Standard terms of tenancy apply.</p>';
 
     const offerTitle =
       snapshot?.offer_title ||
-      `OFFER FOR RENT OF ${propertyName.toUpperCase()}`;
+      `OFFER FOR RENT OF ${(property.name || 'Property').toUpperCase()}`;
     const introText =
       snapshot?.intro_text ||
-      `Following your visit and review of the property "${propertyName}" (hereafter the "Property"), we hereby make you an offer to rent the Property upon the following terms:`;
+      `Following your visit and review of the property "${property.name || 'Property'}" (hereafter the "Property"), we hereby make you an offer to rent the Property upon the following terms:`;
     const agreementText =
       snapshot?.agreement_text ||
       'This Offer and the attached Terms of Tenancy (together the "Agreement") is non-binding until you have accepted this offer, made payment of all sums due into the company\'s designated bank account, and have been granted possession of the Property by the Landlord or the Landlord\'s authorized representative.';
@@ -377,6 +334,43 @@ export class PDFGeneratorService {
       snapshot?.permitted_use || 'Residential',
     );
 
+    // Status-related data for digital signature section
+    const isAccepted =
+      offerLetter.status === 'accepted' || offerLetter.status === 'selected';
+    const isRejected = offerLetter.status === 'rejected';
+    const showDigitalSignature = isAccepted || isRejected;
+
+    // Build commercial terms rows (flex columns with underlined labels, matching frontend)
+    const commercialTermsHtml = this.buildCommercialTermsHtml(
+      offerLetter,
+      snapshot,
+      cleanPermittedUse,
+      tenancyTerm,
+      tenancyPeriod,
+    );
+
+    // Build digital signature section HTML
+    const digitalSignatureHtml = showDigitalSignature
+      ? this.buildDigitalSignatureHtml(
+          offerLetter,
+          applicantName,
+          isAccepted,
+        )
+      : '';
+
+    // Build footnotes HTML (matches frontend)
+    const footnotesHtml = `
+    <div style="font-size: 9px; line-height: 13px; color: #1a1b23; margin-bottom: 32px;">
+      <p style="font-style: italic; margin: 0;"><sup>1</sup> Caution/Security Deposit: Refundable deposit held as security against damages or unpaid rent. Returned at end of tenancy subject to property condition and rent payment status.</p>
+    </div>`;
+
+    const fontFamilyBody =
+      bodyFont === 'Inter' ? "'Inter', sans-serif" : `${bodyFont}, sans-serif`;
+    const fontFamilyHeading =
+      headingFont === 'Inter'
+        ? "'Inter', sans-serif"
+        : `${headingFont}, sans-serif`;
+
     return `
 <!DOCTYPE html>
 <html lang="en">
@@ -386,341 +380,237 @@ export class PDFGeneratorService {
   <title>Offer Letter - ${applicantName}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: ${bodyFont === 'Inter' ? "'Inter', sans-serif" : bodyFont}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 14.6px;
-      line-height: 1.5;
-      color: #1a1b23;
+      font-family: ${fontFamilyBody}, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #000;
       background: #fff;
     }
     .container {
-      max-width: 800px;
+      max-width: 850px;
       margin: 0 auto;
-      padding: 64px 80px;
-    }
-    
-    .header {
-      display: flex;
-      justify-content: flex-end;
-      align-items: flex-start;
-      margin-bottom: 48px;
-    }
-    .header img {
-      height: 64px;
-      max-width: 200px;
-      object-fit: contain;
-    }
-    
-    .date-section {
-      margin-bottom: 32px;
-      font-size: 14.6px;
-    }
-    
-    .recipient-section {
-      margin-bottom: 32px;
-    }
-    .recipient-section p {
-      margin-bottom: 4px;
-    }
-    .recipient-section .name {
-      font-weight: 700;
-    }
-    
-    .salutation {
-      margin-bottom: 24px;
-    }
-    
-    .main-heading {
-      margin-bottom: 24px;
-    }
-    .main-heading h1 {
-      font-family: ${headingFont === 'Inter' ? "'Inter', sans-serif" : headingFont}, sans-serif;
-      font-weight: 700;
-      font-size: 14.6px;
-      text-transform: uppercase;
-      text-decoration: underline;
-    }
-    
-    .intro-text {
-      margin-bottom: 32px;
-      font-size: 14.6px;
-      text-align: justify;
-    }
-    .intro-text p {
-      margin-bottom: 0;
-    }
-    
-    .terms-bullets {
-      margin-bottom: 32px;
-      font-size: 14.6px;
-      text-align: justify;
-    }
-    .terms-bullets .term-item {
-      display: flex;
-      margin-bottom: 8px;
-    }
-    .terms-bullets .bullet {
-      margin-right: 8px;
-      flex-shrink: 0;
-    }
-    .terms-bullets .term-content {
-      flex: 1;
-    }
-    .terms-bullets strong {
-      font-weight: 700;
-    }
-    
-    .agreement-text {
-      margin-bottom: 32px;
-      font-size: 14.6px;
-      text-align: justify;
-    }
-    .agreement-text p {
-      margin-bottom: 0;
-    }
-    
-    .closing-section {
-      margin-bottom: 8px;
-      font-size: 14.6px;
-    }
-    
-    .signature-space {
-      height: 64px;
-      display: flex;
-      align-items: center;
-      margin-bottom: 8px;
-    }
-    .signature-space img {
-      height: 48px;
-      max-width: 200px;
-      object-fit: contain;
-    }
-    
-    .for-landlord {
-      margin-bottom: 48px;
-      font-size: 14.6px;
-    }
-    .for-landlord em {
-      font-style: italic;
-    }
-    
-    .page-divider {
-      margin: 48px 0;
-      border-top: 2px solid #d1d5db;
-      page-break-after: always;
-    }
-    
-    .terms-section {
-      margin-bottom: 48px;
-    }
-    .terms-section h2 {
-      font-family: ${headingFont === 'Inter' ? "'Inter', sans-serif" : headingFont}, sans-serif;
-      font-weight: 700;
-      font-size: 16px;
-      text-transform: uppercase;
-      margin-bottom: 24px;
-      text-decoration: underline;
-    }
-    .terms-section h3 {
-      font-weight: 700;
-      font-size: 14px;
-      margin-bottom: 12px;
-      line-height: 1.4;
-    }
-    .terms-section p {
-      margin: 0;
-      line-height: 1.6;
-    }
-    .terms-section ul {
-      margin: 0;
-      padding-left: 24px;
-      list-style-type: disc;
-    }
-    .terms-section li {
-      margin-bottom: 8px;
-      line-height: 1.6;
-    }
-    
-    .footer-section {
-      margin-top: 48px;
-      padding-top: 16px;
-      text-align: center;
-      color: ${footerColor};
-    }
-    .footer-section p {
-      margin-bottom: 4px;
-    }
-    .footer-section .business-name,
-    .footer-section .business-address {
-      font-weight: 700;
-      font-size: 14px;
-    }
-    .footer-section .contact-info {
-      font-size: 14px;
+      padding: 48px 64px;
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      ${letterhead ? `<img src="${letterhead}" alt="Logo" />` : ''}
+    <!-- Logo - Top Right -->
+    <div style="display: flex; justify-content: flex-end; margin-bottom: 32px;">
+      ${letterhead ? `<img src="${letterhead}" alt="Logo" style="height: 50px; max-width: 300px; object-fit: contain;" />` : ''}
     </div>
 
-    <div class="date-section">
-      <p>${today}</p>
+    <!-- Date -->
+    <p style="font-size: 12.25px; line-height: 17.5px; margin-bottom: 24px;">${issuedDate}</p>
+
+    <!-- Recipient -->
+    <div style="margin-bottom: 24px;">
+      <p style="font-weight: 700; font-size: 11px; line-height: 15px; color: #1a1b23;">${this.escapeHtml(applicantName)}</p>
+      <p style="font-weight: 700; font-size: 11px; line-height: 15px; color: #1a1b23; white-space: pre-line;">${this.escapeHtml(propertyAddress)}</p>
     </div>
 
-    <div class="recipient-section">
-      <p class="name">${applicantName}</p>
-      <p>${this.escapeHtml(propertyAddress)}</p>
-    </div>
+    <!-- Salutation -->
+    <p style="font-size: 14px; line-height: 21px; margin-bottom: 24px;">Dear ${salutation} ${this.escapeHtml(lastName)},</p>
 
-    <div class="salutation">
-      <p>Dear Mr/Ms ${lastName},</p>
-    </div>
+    <!-- Main Heading -->
+    <p style="font-weight: 700; text-transform: uppercase; text-decoration: underline; font-size: 12.25px; line-height: 17.5px; margin-bottom: 24px; font-family: ${fontFamilyHeading};">${this.escapeHtml(cleanOfferTitle)}</p>
 
-    <div class="main-heading">
-      <h1>${this.escapeHtml(cleanOfferTitle)}</h1>
-    </div>
-
-    <div class="intro-text">
+    <!-- Introduction -->
+    <div style="text-align: justify; font-size: 12.25px; line-height: 17.5px; margin-bottom: 24px;">
       <p>${this.escapeHtml(cleanIntroText)}</p>
     </div>
 
-    <div class="terms-bullets">
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Permitted Use:</strong> ${this.escapeHtml(cleanPermittedUse)}
-        </div>
-      </div>
+    <!-- Commercial Terms (flex columns with underlined labels) -->
+    ${commercialTermsHtml}
 
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Rent:</strong> ${snapshot?.rent_amount_formatted || this.formatCurrency(offerLetter.rent_amount)}
-        </div>
-      </div>
-
-      ${(snapshot?.service_charge_formatted &&
-        snapshot.service_charge_formatted !== '₦0' &&
-        snapshot.service_charge_formatted !== '') ||
-        (offerLetter.service_charge && offerLetter.service_charge > 0)
-        ? `
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Service Charge:</strong> ${snapshot?.service_charge_formatted || this.formatCurrency(offerLetter.service_charge)}
-        </div>
-      </div>
-      `
-        : ''
-      }
-
-      ${(snapshot?.caution_deposit_formatted &&
-        snapshot.caution_deposit_formatted !== '₦0' &&
-        snapshot.caution_deposit_formatted !== '') ||
-        (offerLetter.caution_deposit && offerLetter.caution_deposit > 0)
-        ? `
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Caution (Refundable):</strong> ${snapshot?.caution_deposit_formatted || this.formatCurrency(offerLetter.caution_deposit)}
-        </div>
-      </div>
-      `
-        : ''
-      }
-
-      ${(snapshot?.legal_fee_formatted &&
-        snapshot.legal_fee_formatted !== '₦0' &&
-        snapshot.legal_fee_formatted !== '') ||
-        (offerLetter.legal_fee && offerLetter.legal_fee > 0)
-        ? `
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Legal Fee:</strong> ${snapshot?.legal_fee_formatted || this.formatCurrency(offerLetter.legal_fee)}
-        </div>
-      </div>
-      `
-        : ''
-      }
-
-      ${(snapshot?.agency_fee_formatted &&
-        snapshot.agency_fee_formatted !== '' &&
-        snapshot.agency_fee_formatted !==
-        'As agreed between tenant and agent (paid directly to agent)') ||
-        (offerLetter.agency_fee && offerLetter.agency_fee.toString() !== '')
-        ? `
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Agency Fee:</strong> ${snapshot?.agency_fee_formatted || this.escapeHtml(offerLetter.agency_fee?.toString() || 'N/A')}
-        </div>
-      </div>
-      `
-        : ''
-      }
-
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Tenancy Term:</strong> ${tenancyTerm}
-        </div>
-      </div>
-
-      <div class="term-item">
-        <span class="bullet">•</span>
-        <div class="term-content">
-          <strong>Tenancy Period:</strong> ${tenancyPeriod}
-        </div>
-      </div>
-    </div>
-
-    <div class="agreement-text">
+    <!-- Non-binding Agreement Text -->
+    <div style="text-align: justify; font-size: 11px; line-height: 15px; color: #1a1b23; margin-bottom: 24px;">
       <p>${this.escapeHtml(cleanAgreementText)}</p>
     </div>
 
-    <div class="closing-section">
-      <p>${this.escapeHtml(cleanClosingText)}</p>
+    <!-- Closing -->
+    <p style="font-size: 12.25px; line-height: 17.5px; margin-bottom: 16px;">${this.escapeHtml(cleanClosingText)}</p>
+
+    <!-- Signature -->
+    <div style="height: 38px; margin-bottom: 8px;">
+      ${signature ? `<img src="${signature}" alt="Signature" style="height: 38px; max-width: 300px; object-fit: contain;" />` : ''}
     </div>
 
-    <div class="signature-space">
-      ${signature ? `<img src="${signature}" alt="Signature" />` : ''}
+    <!-- For Landlord -->
+    <p style="font-style: italic; font-size: 12.25px; line-height: 17.5px; margin-bottom: 32px;">${this.escapeHtml(cleanForLandlordText)}</p>
+
+    <!-- Footnotes -->
+    ${footnotesHtml}
+
+    <!-- Page Divider -->
+    <div style="margin: 32px 0 48px 0; border-top: 2px solid #9ca3af; page-break-after: always;"></div>
+
+    <!-- Terms of Tenancy Section -->
+    <div style="margin-bottom: 48px;">
+      <h2 style="font-weight: 700; text-transform: uppercase; font-size: 12px; line-height: 16px; color: #1a1b23; margin-bottom: 24px; text-align: center; font-family: ${fontFamilyHeading};">TERMS OF TENANCY</h2>
+
+      <!-- Intro paragraph (matches frontend) -->
+      <p style="font-size: 11px; line-height: 15px; color: #1a1b23; margin-bottom: 24px;">
+        The following terms shall govern the tenancy relationship between
+        <span style="text-decoration: underline;">${this.escapeHtml(businessName || '[Landlord Name]')}</span>
+        (&quot;the Landlord&quot;) and you,
+        <span style="text-decoration: underline;">${this.escapeHtml(applicantName)}</span>
+        <span style="font-weight: 700;">&quot;the Tenant&quot;</span>.
+      </p>
+
+      ${termsHtml}
     </div>
 
-    <div class="for-landlord">
-      <p><em>${this.escapeHtml(cleanForLandlordText)}</em></p>
-    </div>
+    <!-- Gradient separator -->
+    <div style="height: 1px; background: linear-gradient(to right, transparent, #d1d5db, transparent); margin: 32px 0;"></div>
 
-    ${this.generateDigitalSignatureHtml(offerLetter, applicantName)}
+    ${digitalSignatureHtml}
 
-    <div class="page-divider"></div>
-
-    <div class="terms-section">
-      <h2>Terms of Tenancy</h2>
-      <div>
-        ${termsHtml}
-      </div>
-    </div>
-
-    <div class="footer-section">
-      <p class="business-name">${this.escapeHtml(businessName)}</p>
-      <p class="business-address">${this.escapeHtml(businessAddress)}</p>
-      <p class="contact-info">${this.escapeHtml(contactInfo)}</p>
+    <!-- Footer (centered, matches frontend) -->
+    <div style="text-align: center; font-size: 14px; padding-top: 16px; margin-top: 48px; color: ${footerColor};">
+      ${businessAddress ? `<p style="font-weight: 700; margin-bottom: 4px;">${this.escapeHtml(businessAddress)}</p>` : ''}
+      ${contactEmail ? `<p style="font-weight: 700; margin-bottom: 4px;">${this.escapeHtml(contactEmail)}</p>` : ''}
+      ${websiteLink ? `<p style="color: #2563eb; text-decoration: underline; margin-bottom: 4px;">${this.escapeHtml(websiteLink)}</p>` : ''}
     </div>
   </div>
 </body>
 </html>
     `;
+  }
+
+  /**
+   * Build commercial terms HTML with flex column layout (matching frontend)
+   */
+  private buildCommercialTermsHtml(
+    offerLetter: OfferLetter,
+    snapshot: OfferLetter['content_snapshot'],
+    cleanPermittedUse: string,
+    tenancyTerm: string,
+    tenancyPeriod: string,
+  ): string {
+    const labelStyle =
+      'font-size: 11px; line-height: 15px; color: #1a1b23; font-weight: 700; text-decoration: underline; width: 140px; flex-shrink: 0;';
+    const valueStyle =
+      'font-size: 11px; line-height: 15px; color: #1a1b23;';
+    const rowStyle = 'display: flex; margin-bottom: 6px;';
+
+    let html = `<div style="margin-bottom: 24px;">`;
+
+    // Permitted Use
+    html += `<div style="${rowStyle}"><span style="${labelStyle}">Permitted Use:</span><span style="${valueStyle}">${this.escapeHtml(cleanPermittedUse)}</span></div>`;
+
+    // Rent
+    html += `<div style="${rowStyle}"><span style="${labelStyle}">Rent:</span><span style="${valueStyle}">${snapshot?.rent_amount_formatted || this.formatCurrency(offerLetter.rent_amount)}</span></div>`;
+
+    // Service Charge (conditional)
+    if (offerLetter.service_charge) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Service Charge:</span><span style="${valueStyle}">${snapshot?.service_charge_formatted || this.formatCurrency(offerLetter.service_charge)}</span></div>`;
+    }
+
+    // Caution Deposit (conditional)
+    if (
+      (snapshot?.caution_deposit_formatted &&
+        snapshot.caution_deposit_formatted !== '₦0' &&
+        snapshot.caution_deposit_formatted !== '') ||
+      (offerLetter.caution_deposit && offerLetter.caution_deposit > 0)
+    ) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Caution<sup>1</sup>:</span><span style="${valueStyle}">${snapshot?.caution_deposit_formatted || this.formatCurrency(offerLetter.caution_deposit)}</span></div>`;
+    }
+
+    // Legal Fee (conditional)
+    if (
+      (snapshot?.legal_fee_formatted &&
+        snapshot.legal_fee_formatted !== '₦0' &&
+        snapshot.legal_fee_formatted !== '') ||
+      (offerLetter.legal_fee && offerLetter.legal_fee > 0)
+    ) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Legal Fee:</span><span style="${valueStyle}">${snapshot?.legal_fee_formatted || this.formatCurrency(offerLetter.legal_fee)}</span></div>`;
+    }
+
+    // Agency Fee (conditional)
+    if (offerLetter.agency_fee) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Agency Fee:</span><span style="${valueStyle}">${snapshot?.agency_fee_formatted || this.escapeHtml(offerLetter.agency_fee?.toString() || 'N/A')}</span></div>`;
+    }
+
+    // Tenancy Term
+    html += `<div style="${rowStyle}"><span style="${labelStyle}">Tenancy Term:</span><span style="${valueStyle}">${this.escapeHtml(tenancyTerm)}</span></div>`;
+
+    // Tenancy Period
+    html += `<div style="${rowStyle}"><span style="${labelStyle}">Tenancy Period:</span><span style="${valueStyle}">${this.escapeHtml(tenancyPeriod)}</span></div>`;
+
+    html += `</div>`;
+    return html;
+  }
+
+  /**
+   * Build digital signature section HTML for accepted/rejected offers
+   * Matches the frontend OfferLetterDocument stamp rendering
+   */
+  private buildDigitalSignatureHtml(
+    offerLetter: OfferLetter,
+    applicantName: string,
+    isAccepted: boolean,
+  ): string {
+    const stampText = isAccepted ? 'ACCEPTED' : 'REJECTED';
+    const borderColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.4)'
+      : 'rgba(211, 47, 47, 0.4)';
+    const innerBorderColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.3)'
+      : 'rgba(211, 47, 47, 0.3)';
+    const textColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.45)'
+      : 'rgba(211, 47, 47, 0.45)';
+    const strokeColor = isAccepted
+      ? 'rgba(30, 30, 30, 0.25)'
+      : 'rgba(211, 47, 47, 0.25)';
+
+    const signedAt = offerLetter.accepted_at
+      ? this.formatSignedDateTime(offerLetter.accepted_at)
+      : 'Recorded';
+    const signedByPhone = offerLetter.accepted_by_phone || 'Recorded';
+    const otp = offerLetter.acceptance_otp || 'Recorded';
+
+    return `
+    <div style="margin-top: 48px; margin-bottom: 48px; position: relative;">
+      <h2 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">Digital Signature :</h2>
+
+      <!-- Stamp -->
+      <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: flex-start; pointer-events: none; z-index: 10;">
+        <div style="transform: rotate(-22deg) translateY(-40px); padding-left: 32px;">
+          <div style="position: relative; padding: 10px 20px; border: 6px solid ${borderColor}; background-color: transparent;">
+            <!-- Inner border -->
+            <div style="position: absolute; top: 3px; left: 3px; right: 3px; bottom: 3px; border: 1.5px solid ${innerBorderColor}; pointer-events: none;"></div>
+            <!-- Stamp text -->
+            <div style="font-size: 36px; font-weight: 900; letter-spacing: 0.25em; color: ${textColor}; font-family: Impact, 'Arial Black', 'Franklin Gothic Bold', sans-serif; -webkit-text-stroke: 0.8px ${strokeColor};">
+              ${stampText}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Signature details -->
+      <div style="position: relative; z-index: 0;">
+        <div style="display: flex; font-size: 14px; margin-bottom: 8px;">
+          <span style="width: 192px; flex-shrink: 0;">Sign Name</span>
+          <span>${this.escapeHtml(applicantName)}</span>
+        </div>
+        <div style="display: flex; font-size: 14px; margin-bottom: 8px;">
+          <span style="width: 192px; flex-shrink: 0;">OTP</span>
+          <span>${this.escapeHtml(otp)}</span>
+        </div>
+        <div style="display: flex; font-size: 14px; margin-bottom: 8px;">
+          <span style="width: 192px; flex-shrink: 0;">Date and Time Signed</span>
+          <span>${signedAt}</span>
+        </div>
+        <div style="display: flex; font-size: 14px; margin-bottom: 8px;">
+          <span style="width: 192px; flex-shrink: 0;">Phone</span>
+          <span>${this.escapeHtml(signedByPhone)}</span>
+        </div>
+      </div>
+    </div>`;
   }
 
   /**
@@ -833,166 +723,14 @@ export class PDFGeneratorService {
   /**
    * Escape HTML special characters
    */
-  private escapeHtml(unsafe: string): string {
-    if (!unsafe) return '';
-    return unsafe
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
-  /**
-   * Generate HTML for digital signature section
-   */
-  private generateDigitalSignatureHtml(
-    offerLetter: OfferLetter,
-    applicantName: string,
-  ): string {
-    const status = offerLetter.status;
-    const isAccepted =
-      status === OfferLetterStatus.ACCEPTED ||
-      status === OfferLetterStatus.SELECTED;
-    const isRejected = status === OfferLetterStatus.REJECTED;
-
-    if (!isAccepted && !isRejected) {
-      return '';
-    }
-
-    const color = isAccepted
-      ? 'rgba(30, 30, 30, 0.45)'
-      : 'rgba(211, 47, 47, 0.45)';
-    const borderColor = isAccepted
-      ? 'rgba(30, 30, 30, 0.4)'
-      : 'rgba(211, 47, 47, 0.4)';
-    const text = isAccepted ? 'ACCEPTED' : 'REJECTED';
-
-    // Format date
-    let signedDateStr = 'Recorded';
-    if (offerLetter.accepted_at) {
-      const date = new Date(offerLetter.accepted_at);
-      const day = String(date.getDate()).padStart(2, '0');
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const year = date.getFullYear();
-      const hours = String(date.getHours()).padStart(2, '0');
-      const minutes = String(date.getMinutes()).padStart(2, '0');
-      const seconds = String(date.getSeconds()).padStart(2, '0');
-      signedDateStr = `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
-    }
-
-    return `
-    <svg width="0" height="0" style="position: absolute;">
-      <defs>
-        <filter id="distressed-stamp-\${status}">
-          <feTurbulence
-            type="fractalNoise"
-            baseFrequency="0.8"
-            numOctaves="4"
-            result="noise"
-          />
-          <feDisplacementMap
-            in="SourceGraphic"
-            in2="noise"
-            scale="3"
-            xChannelSelector="R"
-            yChannelSelector="G"
-          />
-          <feGaussianBlur stdDeviation="0.3" />
-        </filter>
-      </defs>
-    </svg>
-    <div style="margin-top: 48px; margin-bottom: 48px; position: relative; page-break-inside: avoid;">
-      <h2 style="font-size: 14px; font-weight: 700; margin-bottom: 16px;">Digital Signature :</h2>
-
-      <!-- Distressed Rubber Stamp Container -->
-      <div style="position: absolute; left: 0; top: 0; bottom: 0; display: flex; align-items: center; justify-content: flex-start; pointer-events: none; z-index: 10; transform: rotate(-22deg) translateY(-40px); padding-left: 2rem;">
-        <div style="
-          border: 6px solid ${borderColor};
-          background-color: transparent;
-          filter: url(#distressed-stamp-\${status});
-          position: relative;
-          padding: 10px 20px;
-        ">
-          <!-- Inner border for depth -->
-          <div style="
-            position: absolute;
-            top: 3px; right: 3px; bottom: 3px; left: 3px;
-            border: 1.5px solid ${isAccepted ? 'rgba(30, 30, 30, 0.3)' : 'rgba(211, 47, 47, 0.3)'};
-            pointer-events: none;
-          "></div>
-
-          <!-- Stamp text -->
-          <div style="
-            font-family: Impact, 'Arial Black', 'Franklin Gothic Bold', sans-serif;
-            font-size: 36px;
-            font-weight: 900;
-            letter-spacing: 0.25em;
-            color: ${color};
-            text-shadow: ${isAccepted
-        ? '2px 2px 0px rgba(30, 30, 30, 0.2), -1px -1px 0px rgba(30, 30, 30, 0.15), 1px 0px 2px rgba(30, 30, 30, 0.1)'
-        : '2px 2px 0px rgba(211, 47, 47, 0.2), -1px -1px 0px rgba(211, 47, 47, 0.15), 1px 0px 2px rgba(211, 47, 47, 0.1)'};
-            -webkit-text-stroke: ${isAccepted ? '0.8px rgba(30, 30, 30, 0.25)' : '0.8px rgba(211, 47, 47, 0.25)'};
-            position: relative;
-          ">
-            ${text}
-          </div>
-
-          <!-- Grunge overlay spots -->
-          <div style="
-            position: absolute;
-            top: 0; right: 0; bottom: 0; left: 0;
-            background: ${isAccepted
-        ? 'radial-gradient(circle at 20% 30%, transparent 0%, transparent 40%, rgba(30, 30, 30, 0.06) 50%, transparent 60%), radial-gradient(circle at 80% 70%, transparent 0%, transparent 35%, rgba(30, 30, 30, 0.07) 45%, transparent 55%), radial-gradient(circle at 50% 90%, transparent 0%, transparent 30%, rgba(30, 30, 30, 0.05) 40%, transparent 50%), radial-gradient(circle at 10% 80%, transparent 0%, transparent 25%, rgba(30, 30, 30, 0.06) 35%, transparent 45%)'
-        : 'radial-gradient(circle at 20% 30%, transparent 0%, transparent 40%, rgba(211, 47, 47, 0.06) 50%, transparent 60%), radial-gradient(circle at 80% 70%, transparent 0%, transparent 35%, rgba(211, 47, 47, 0.07) 45%, transparent 55%), radial-gradient(circle at 50% 90%, transparent 0%, transparent 30%, rgba(211, 47, 47, 0.05) 40%, transparent 50%), radial-gradient(circle at 10% 80%, transparent 0%, transparent 25%, rgba(211, 47, 47, 0.06) 35%, transparent 45%)'};
-            pointer-events: none;
-            mix-blend-mode: multiply;
-          "></div>
-
-          <!-- Edge wear effect top -->
-          <div style="
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 2px;
-            background: ${isAccepted
-        ? 'linear-gradient(90deg, transparent 0%, rgba(30, 30, 30, 0.15) 10%, transparent 25%, rgba(30, 30, 30, 0.1) 40%, transparent 60%, rgba(30, 30, 30, 0.12) 80%, transparent 100%)'
-        : 'linear-gradient(90deg, transparent 0%, rgba(211, 47, 47, 0.15) 10%, transparent 25%, rgba(211, 47, 47, 0.1) 40%, transparent 60%, rgba(211, 47, 47, 0.12) 80%, transparent 100%)'};
-            pointer-events: none;
-          "></div>
-          
-          <!-- Edge wear effect bottom -->
-          <div style="
-            position: absolute;
-            bottom: 0; left: 0; right: 0;
-            height: 2px;
-            background: ${isAccepted
-        ? 'linear-gradient(90deg, transparent 0%, rgba(30, 30, 30, 0.1) 15%, transparent 35%, rgba(30, 30, 30, 0.15) 55%, transparent 70%, rgba(30, 30, 30, 0.12) 90%, transparent 100%)'
-        : 'linear-gradient(90deg, transparent 0%, rgba(211, 47, 47, 0.1) 15%, transparent 35%, rgba(211, 47, 47, 0.15) 55%, transparent 70%, rgba(211, 47, 47, 0.12) 90%, transparent 100%)'};
-            pointer-events: none;
-          "></div>
-        </div>
-      </div>
-
-      <!-- Signature Details Table -->
-      <table style="width: 100%; border-collapse: collapse; font-size: 14px; position: relative; z-index: 1;">
-        <tr>
-          <td style="width: 200px; padding: 4px 0;">Sign Name</td>
-          <td style="padding: 4px 0;">${this.escapeHtml(applicantName)}</td>
-        </tr>
-        <tr>
-          <td style="width: 200px; padding: 4px 0;">OTP</td>
-          <td style="padding: 4px 0;">${this.escapeHtml(offerLetter.acceptance_otp || 'Recorded')}</td>
-        </tr>
-        <tr>
-          <td style="width: 200px; padding: 4px 0;">Date and Time Signed</td>
-          <td style="padding: 4px 0;">${this.escapeHtml(signedDateStr)}</td>
-        </tr>
-        <tr>
-          <td style="width: 200px; padding: 4px 0;">Phone</td>
-          <td style="padding: 4px 0;">${this.escapeHtml(offerLetter.accepted_by_phone || 'Recorded')}</td>
-        </tr>
-      </table>
-    </div>
-    `;
+  private escapeHtml(text: string): string {
+    const htmlEntities: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    };
+    return text.replace(/[&<>"']/g, (char) => htmlEntities[char]);
   }
 }

@@ -6,6 +6,7 @@ import { ServiceRequest } from 'src/service-requests/entities/service-request.en
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
 import { ConfigService } from '@nestjs/config';
+import { ChatLogService } from 'src/whatsapp-bot/chat-log.service';
 
 export class LandlordInteractive {
   private whatsappUtil: WhatsappUtils;
@@ -18,9 +19,10 @@ export class LandlordInteractive {
     private serviceRequestRepo: Repository<ServiceRequest>,
     private propertyTenantRepo: Repository<PropertyTenant>,
     private cache: CacheService,
+    private chatLogService?: ChatLogService,
   ) {
     const config = new ConfigService();
-    this.whatsappUtil = new WhatsappUtils(config);
+    this.whatsappUtil = new WhatsappUtils(config, chatLogService);
   }
 
   // async handle(message: any, from: string) {

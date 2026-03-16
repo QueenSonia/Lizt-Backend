@@ -16,6 +16,18 @@ export interface ServiceCreatedEvent {
   created_at?: Date; // Timestamp
 }
 
+export interface TenancyRenewedEvent {
+  property_id: string;
+  property_name: string;
+  tenant_id: string;
+  tenant_name: string;
+  user_id: string; // landlord/owner id
+  rent_amount: number;
+  payment_frequency: string;
+  start_date: string;
+  end_date: string;
+}
+
 @Injectable()
 export class HistoryEventListener {
   private readonly logger = new Logger(HistoryEventListener.name);
@@ -47,13 +59,16 @@ export class HistoryEventListener {
     );
 
     try {
-      // Create history entry
-      // Store status and description separately using a delimiter
+      // Fix #19: Store status and description as JSON instead of fragile delimiter
       const historyEntry = this.propertyHistoryRepository.create({
         property_id: payload.property_id,
         tenant_id: payload.tenant_id,
         event_type: 'service_request_updated',
-        event_description: `${payload.status}|||${payload.description}`, // Use delimiter to separate status and description
+        event_description: JSON.stringify({
+          status: payload.status,
+          description: payload.description,
+          previous_status: payload.previous_status,
+        }),
         related_entity_id: payload.request_id,
         related_entity_type: 'service_request',
         created_at: payload.updated_at || new Date(),
@@ -61,9 +76,9 @@ export class HistoryEventListener {
 
       await this.propertyHistoryRepository.save(historyEntry);
 
-      // Emit WebSocket event to notify property viewers and landlord
+      // Fix #6: Emit the correct WebSocket event for updates
       if (this.eventsGateway) {
-        this.eventsGateway.emitServiceRequestCreated(
+        this.eventsGateway.emitServiceRequestUpdated(
           payload.property_id,
           payload.landlord_id,
           {
@@ -71,13 +86,48 @@ export class HistoryEventListener {
             description: payload.description,
             tenantName: payload.tenant_name,
             propertyName: payload.property_name,
-            // status: payload.status, // Ideally update gateway to accept status
+            status: payload.status,
+            previousStatus: payload.previous_status,
           },
         );
       }
     } catch (error) {
       this.logger.error(
         `Failed to create history entry for update: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  @OnEvent('tenancy.renewed')
+  async handleTenancyRenewed(payload: TenancyRenewedEvent): Promise<void> {
+    this.logger.log(
+      `Received tenancy.renewed event for property ${payload.property_id}`,
+    );
+
+    try {
+      // Emit WebSocket event to notify landlord and property viewers
+      if (this.eventsGateway) {
+        this.eventsGateway.emitTenancyRenewed(
+          payload.user_id,
+          payload.property_id,
+          {
+            propertyName: payload.property_name,
+            tenantName: payload.tenant_name,
+            rentAmount: payload.rent_amount,
+            paymentFrequency: payload.payment_frequency,
+            startDate: payload.start_date,
+            endDate: payload.end_date,
+          },
+        );
+      }
+
+      this.logger.log(
+        `Successfully emitted tenancy renewed WebSocket event for property ${payload.property_id}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to emit tenancy renewed event: ${error.message}`,
         error.stack,
       );
     }

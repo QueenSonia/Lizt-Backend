@@ -5,6 +5,7 @@ import { ChatLog } from './entities/chat-log.entity';
 import { MessageDirection } from './entities/message-direction.enum';
 import { MessageStatus } from './entities/message-status.enum';
 import { Users } from '../users/entities/user.entity';
+import { normalizePhoneNumber } from '../utils/phone-number.transformer';
 
 export interface ChatHistoryOptions {
   limit?: number;
@@ -51,35 +52,6 @@ export class ChatLogService {
   ) { }
 
   /**
-   * Normalize phone number to consistent format: 234XXXXXXXXXX (no + prefix)
-   * This ensures all phone numbers are stored consistently in the database
-   */
-  private normalizePhoneNumber(phoneNumber: string): string {
-    if (!phoneNumber) return '';
-
-    // Remove all non-digit characters (including +)
-    const cleaned = phoneNumber.replace(/\D/g, '');
-
-    // Already in correct format: 234XXXXXXXXXX
-    if (cleaned.startsWith('234')) {
-      return cleaned;
-    }
-
-    // Nigerian local format: 0XXXXXXXXXX -> 234XXXXXXXXXX
-    if (cleaned.startsWith('0')) {
-      return '234' + cleaned.substring(1);
-    }
-
-    // 10 digits without country code (e.g., 8031234567)
-    if (/^[7-9]\d{9}$/.test(cleaned)) {
-      return '234' + cleaned;
-    }
-
-    // Default: prepend 234
-    return '234' + cleaned;
-  }
-
-  /**
    * Log an inbound message (Tenant -> Bot)
    * Validates: Requirements 1.1
    */
@@ -91,7 +63,7 @@ export class ChatLogService {
   ): Promise<ChatLog> {
     try {
       // Normalize phone number to ensure consistent format in database
-      const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+      const normalizedPhone = normalizePhoneNumber(phoneNumber);
 
       // Extract whatsapp_message_id from metadata to prevent duplicates
       const whatsappMessageId = metadata?.whatsapp_message_id;
@@ -151,7 +123,7 @@ export class ChatLogService {
   ): Promise<ChatLog> {
     try {
       // Normalize phone number to ensure consistent format in database
-      const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+      const normalizedPhone = normalizePhoneNumber(phoneNumber);
 
       // Check if message already exists to prevent duplicates
       if (whatsappMessageId) {
@@ -267,9 +239,10 @@ export class ChatLogService {
    */
   async markInboundMessagesAsRead(phoneNumber: string): Promise<void> {
     try {
+      const normalizedPhone = normalizePhoneNumber(phoneNumber);
       const result = await this.chatLogRepository.update(
         {
-          phone_number: phoneNumber,
+          phone_number: normalizedPhone,
           direction: MessageDirection.INBOUND,
           status: MessageStatus.DELIVERED,
         },
@@ -322,10 +295,11 @@ export class ChatLogService {
     options: ChatHistoryOptions = {},
   ): Promise<ChatLog[]> {
     try {
+      const normalizedPhone = normalizePhoneNumber(phoneNumber);
       const queryBuilder = this.chatLogRepository
         .createQueryBuilder('chat_log')
         .leftJoinAndSelect('chat_log.user', 'user')
-        .where('chat_log.phone_number = :phoneNumber', { phoneNumber });
+        .where('chat_log.phone_number = :phoneNumber', { phoneNumber: normalizedPhone });
 
       // Apply filters
       if (options.startDate) {
@@ -395,8 +369,9 @@ export class ChatLogService {
         });
 
       if (phoneNumber) {
+        const normalizedPhone = normalizePhoneNumber(phoneNumber);
         queryBuilder.andWhere('chat_log.phone_number = :phoneNumber', {
-          phoneNumber,
+          phoneNumber: normalizedPhone,
         });
       }
 

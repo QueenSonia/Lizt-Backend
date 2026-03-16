@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Receipt } from './entities/receipt.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
+import { Property } from '../properties/entities/property.entity';
 import { ReceiptGeneratorService } from './receipt-generator.service';
 import { PropertyHistoryService } from '../property-history/property-history.service';
 import { NotificationService } from '../notifications/notification.service';
@@ -17,6 +18,8 @@ export class ReceiptsService {
     private readonly receiptRepository: Repository<Receipt>,
     @InjectRepository(OfferLetter)
     private readonly offerLetterRepository: Repository<OfferLetter>,
+    @InjectRepository(Property)
+    private readonly propertyRepository: Repository<Property>,
     private readonly receiptGeneratorService: ReceiptGeneratorService,
     private readonly propertyHistoryService: PropertyHistoryService,
     private readonly notificationService: NotificationService,
@@ -44,11 +47,11 @@ export class ReceiptsService {
     propertyId: string,
     landlordId: string,
   ): Promise<Receipt[]> {
-    // Verify landlord ownership via offer letter linked to this property
-    const offerLetter = await this.offerLetterRepository.findOne({
-      where: { property_id: propertyId, landlord_id: landlordId },
+    // Verify landlord ownership directly via property entity
+    const property = await this.propertyRepository.findOne({
+      where: { id: propertyId, owner_id: landlordId },
     });
-    if (!offerLetter) {
+    if (!property) {
       throw new NotFoundException(
         'Property not found or not owned by landlord',
       );

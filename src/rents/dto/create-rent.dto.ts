@@ -76,15 +76,6 @@ export class CreateRentDto {
   @IsDateString()
   rent_start_date: Date;
 
-  @ApiProperty({
-    example: '2025-01-01',
-    description:
-      'Optional lease agreement end date (for reference only, not enforced)',
-    required: false,
-  })
-  @IsOptional()
-  @IsDateString()
-  lease_agreement_end_date: Date;
 }
 
 export class RentFilter {

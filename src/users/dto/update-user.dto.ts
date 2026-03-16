@@ -331,13 +331,6 @@ export class UpdateUserResponseDto {
   rent_start_date: Date;
 
   @ApiProperty({
-    example: '2024-10-01',
-    required: false,
-    description: 'lease agreement end date',
-  })
-  lease_agreement_end_date: Date;
-
-  @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',
     description: 'UUID of the property',
     required: false,

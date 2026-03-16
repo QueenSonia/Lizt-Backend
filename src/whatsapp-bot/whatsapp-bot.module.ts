@@ -29,6 +29,9 @@ import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 import { TemplateSenderService } from './template-sender';
 import { TenantFlowService } from './tenant-flow';
 import { LandlordFlowService } from './landlord-flow';
+import { WhatsAppNotificationLog } from './entities/whatsapp-notification-log.entity';
+import { WhatsAppNotificationLogService } from './whatsapp-notification-log.service';
+import { WhatsAppNotificationListener } from './whatsapp-notification.listener';
 
 @Module({
   imports: [
@@ -44,6 +47,7 @@ import { LandlordFlowService } from './landlord-flow';
       Rent,
       ChatLog,
       KYCApplication,
+      WhatsAppNotificationLog,
     ]),
     ServiceRequestsModule,
     forwardRef(() => UsersModule),
@@ -62,6 +66,8 @@ import { LandlordFlowService } from './landlord-flow';
     MessageStatusTracker,
     WebhookHandler,
     SimulatorGateway,
+    WhatsAppNotificationLogService,
+    WhatsAppNotificationListener,
   ],
   exports: [
     TemplateSenderService,
@@ -72,6 +78,7 @@ import { LandlordFlowService } from './landlord-flow';
     MessageStatusTracker,
     WebhookHandler,
     SimulatorGateway,
+    WhatsAppNotificationLogService,
   ],
 })
 export class WhatsappBotModule {}

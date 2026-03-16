@@ -176,8 +176,7 @@ describe('PropertiesService', () => {
     const propertyId = 'test-property-id';
     const assignTenantDto = {
       tenant_id: 'test-tenant-id',
-      lease_start_date: '2024-01-01',
-      lease_end_date: '2024-12-31',
+      rent_start_date: '2024-01-01',
       rental_price: 100000,
       security_deposit: 50000,
       service_charge: 10000,

@@ -41,7 +41,7 @@ export class RentReminderService {
     private readonly notificationService: NotificationService,
   ) {}
 
-  @Cron('* * * * *') // TODO: revert to CronExpression.EVERY_DAY_AT_8AM after testing
+  @Cron(CronExpression.EVERY_DAY_AT_8AM)
   async runDailyReminderCheck() {
     this.logger.log('Starting daily rent reminder check...');
     try {

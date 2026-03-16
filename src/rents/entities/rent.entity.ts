@@ -21,9 +21,6 @@ export class Rent extends BaseEntity {
   @Column({ nullable: false, type: 'timestamp' })
   rent_start_date: Date;
 
-  @Column({ nullable: true, type: 'timestamp' })
-  lease_agreement_end_date: Date;
-
   @Column({ nullable: true, type: 'varchar', array: true })
   rent_receipts?: string[] | null;
 

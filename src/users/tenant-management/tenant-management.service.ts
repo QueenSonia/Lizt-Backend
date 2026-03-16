@@ -187,7 +187,6 @@ export class TenantManagementService {
       full_name,
       rental_price,
       rent_start_date,
-      lease_agreement_end_date,
       email,
       property_id,
       security_deposit,
@@ -284,7 +283,6 @@ export class TenantManagementService {
           amount_paid: rental_price,
           rental_price: rental_price,
           rent_start_date: rent_start_date,
-          lease_agreement_end_date: lease_agreement_end_date,
           security_deposit: security_deposit || 0,
           service_charge: service_charge || 0,
           payment_frequency: payment_frequency || 'Monthly',
@@ -780,7 +778,6 @@ export class TenantManagementService {
           amount_paid: rent_amount,
           rental_price: rent_amount,
           rent_start_date: tenancy_start_date,
-          lease_agreement_end_date: tenancy_end_date,
           rent_status: RentStatusEnum.ACTIVE,
         });
 
@@ -2593,7 +2590,7 @@ export class TenantManagementService {
       propertyAddress: property?.location || '——',
       propertyStatus: property?.property_status || 'Vacant',
       leaseStartDate: this.formatDateField(activeRent?.rent_start_date),
-      leaseEndDate: this.formatDateField(activeRent?.lease_agreement_end_date),
+      leaseEndDate: this.formatDateField(activeRent?.expiry_date),
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
       serviceCharge: activeRent?.service_charge || 0,

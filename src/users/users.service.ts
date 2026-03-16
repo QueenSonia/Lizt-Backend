@@ -207,7 +207,6 @@ export class UsersService {
           lga: data.lga,
           nationality: data.nationality,
           rent_start_date: data.rent_start_date,
-          lease_agreement_end_date: data.lease_agreement_end_date,
           property_id: data.property_id,
           rental_price: data.rental_price,
           security_deposit: data.security_deposit,
@@ -288,7 +287,6 @@ export class UsersService {
       await queryRunner.manager.save(Rent, {
         tenant_id: tenantAccount.id,
         rent_start_date: data.rent_start_date,
-        lease_agreement_end_date: data.lease_agreement_end_date,
         property_id: property.id,
         amount_paid: data.rental_price,
         rental_price: data.rental_price,
@@ -449,7 +447,6 @@ export class UsersService {
       const rent = {
         tenant_id: createdUser.id,
         rent_start_date: data?.rent_start_date,
-        lease_agreement_end_date: data?.lease_agreement_end_date,
         property_id: property?.id,
         amount_paid: data?.rental_price,
         rental_price: data?.rental_price,

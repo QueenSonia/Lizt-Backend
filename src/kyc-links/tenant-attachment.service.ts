@@ -163,7 +163,6 @@ export class TenantAttachmentService {
         tenant_id: tenantAccount.id,
         property_id: application.property_id,
         rent_start_date: rentStartDate,
-        lease_agreement_end_date: undefined,
         rental_price: tenancyDetails.rentAmount,
         security_deposit: tenancyDetails.securityDeposit || 0,
         service_charge: tenancyDetails.serviceCharge || 0,
@@ -448,7 +447,6 @@ export class TenantAttachmentService {
 
     // Parse dates from offer letter
     const rentStartDate = new Date(offerLetter.tenancy_start_date);
-    const leaseEndDate = new Date(offerLetter.tenancy_end_date);
 
     // Map rent frequency from offer letter format to RentFrequency enum
     const rentFrequency = this.mapOfferLetterFrequencyToRentFrequency(
@@ -463,7 +461,6 @@ export class TenantAttachmentService {
 
     console.log('Rent schedule calculated:', {
       startDate: rentStartDate.toISOString(),
-      endDate: leaseEndDate.toISOString(),
       frequency: rentFrequency,
       nextDueDate: nextRentDueDate.toISOString(),
     });
@@ -473,7 +470,6 @@ export class TenantAttachmentService {
       tenant_id: tenantAccount.id,
       property_id: offerLetter.property_id,
       rent_start_date: rentStartDate,
-      lease_agreement_end_date: leaseEndDate,
       rental_price: Number(offerLetter.rent_amount),
       security_deposit: Number(offerLetter.caution_deposit || 0),
       service_charge: Number(offerLetter.service_charge || 0),
@@ -513,7 +509,7 @@ export class TenantAttachmentService {
       event_type: 'tenancy_started',
       move_in_date: DateService.getStartOfTheDay(rentStartDate),
       monthly_rent: Number(offerLetter.rent_amount),
-      owner_comment: `Tenant attached via offer letter payment. Rent: ₦${Number(offerLetter.rent_amount).toLocaleString()}, Frequency: ${offerLetter.rent_frequency}, Lease ends: ${leaseEndDate.toLocaleDateString()}`,
+      owner_comment: `Tenant attached via offer letter payment. Rent: ₦${Number(offerLetter.rent_amount).toLocaleString()}, Frequency: ${offerLetter.rent_frequency}, Next due: ${nextRentDueDate.toLocaleDateString()}`,
       tenant_comment: null,
       move_out_date: null,
       move_out_reason: null,

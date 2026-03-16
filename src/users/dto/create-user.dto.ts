@@ -44,10 +44,6 @@ export class CreateTenantDto {
   @IsDateString()
   rent_start_date: Date;
 
-  @IsOptional()
-  @IsDateString()
-  lease_agreement_end_date?: Date;
-
   @IsNotEmpty()
   @IsNumber()
   @Type(() => Number)
@@ -256,14 +252,6 @@ export class CreateUserDto {
   @IsNotEmpty()
   @IsDateString()
   rent_start_date: Date;
-
-  @ApiProperty({
-    example: '',
-    description: 'lease agreement end date',
-  })
-  @IsOptional()
-  @IsDateString()
-  lease_agreement_end_date?: Date;
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',

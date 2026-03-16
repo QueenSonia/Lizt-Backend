@@ -3043,7 +3043,6 @@ export class PropertiesService {
       await queryRunner.manager.save(Rent, {
         tenant_id: data.tenant_id,
         rent_start_date: data.rent_start_date,
-        lease_agreement_end_date: data.lease_agreement_end_date,
         property_id: property.id,
         amount_paid: data.rental_price,
         rental_price: data.rental_price,

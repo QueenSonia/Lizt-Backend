@@ -27,9 +27,6 @@ export class AssignTenantDto {
   @IsString()
   rent_start_date: string;
 
-  @IsString()
-  lease_agreement_end_date: string;
-
   @IsEnum(RentFrequency)
   @IsOptional()
   payment_frequency?: RentFrequency;

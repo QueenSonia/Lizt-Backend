@@ -535,12 +535,20 @@ export class TenantFlowService {
     // Handle button IDs with payloads (e.g., "confirm_resolution_yes:request_id")
     let cleanButtonId = buttonId;
     if (buttonId?.includes(':')) {
-      const [action] = buttonId.split(':');
+      const [action, payload] = buttonId.split(':');
       if (
         action === 'confirm_resolution_yes' ||
         action === 'confirm_resolution_no'
       ) {
         cleanButtonId = action;
+      }
+      if (action === 'confirm_pay_ob') {
+        await this.handleConfirmPayOB(from, payload);
+        return;
+      }
+      if (action === 'confirm_pay_rent') {
+        await this.handleConfirmPayRent(from, payload);
+        return;
       }
     }
 
@@ -599,10 +607,17 @@ export class TenantFlowService {
         await this.handleConfirmResolutionNo(from);
         break;
 
+      case 'cancel_payment':
+        await this.templateSenderService.sendText(
+          from,
+          'Payment cancelled.',
+        );
+        break;
+
       default:
         await this.templateSenderService.sendText(
           from,
-          '❓ Unknown option selected.',
+          'Unknown option selected.',
         );
     }
   }
@@ -1171,7 +1186,7 @@ export class TenantFlowService {
         this.SESSION_TIMEOUT_MS,
       );
     } else {
-      await this.createOBInvoiceAndSendLink(from, filtered[0]);
+      await this.sendOBConfirmation(from, filtered[0]);
     }
   }
 
@@ -1206,6 +1221,53 @@ export class TenantFlowService {
     const rent = await this.rentRepo.findOne({
       where: {
         property_id: propertyIds[selectedIndex],
+        tenant_id: user.accounts[0].id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    if (!rent || (rent.outstanding_balance || 0) <= 0) {
+      await this.templateSenderService.sendText(
+        from,
+        'No outstanding balance found for that property.',
+      );
+      return;
+    }
+
+    await this.sendOBConfirmation(from, rent);
+  }
+
+  /**
+   * Send OB payment confirmation message with details before generating the link.
+   */
+  private async sendOBConfirmation(from: string, rent: Rent): Promise<void> {
+    const formatNGN = (amt: number) =>
+      amt.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
+    const ob = rent.outstanding_balance || 0;
+
+    let message = `Do you want to pay the outstanding balance for *${rent.property.name}*?\n`;
+    message += `\n*Outstanding Balance:* ${formatNGN(ob)}`;
+
+    await this.templateSenderService.sendButtons(from, message, [
+      { id: `confirm_pay_ob:${rent.property_id}`, title: 'Yes, pay now' },
+      { id: 'cancel_payment', title: 'Cancel' },
+    ]);
+  }
+
+  /**
+   * Handle confirmed OB payment button click.
+   */
+  private async handleConfirmPayOB(
+    from: string,
+    propertyId: string,
+  ): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return;
+
+    const rent = await this.rentRepo.findOne({
+      where: {
+        property_id: propertyId,
         tenant_id: user.accounts[0].id,
         rent_status: RentStatusEnum.ACTIVE,
       },
@@ -1333,7 +1395,7 @@ export class TenantFlowService {
         this.SESSION_TIMEOUT_MS,
       );
     } else {
-      await this.createRentInvoiceAndRequestApproval(from, activeRents[0]);
+      await this.sendRentConfirmation(from, activeRents[0]);
     }
   }
 
@@ -1368,6 +1430,88 @@ export class TenantFlowService {
     const rent = await this.rentRepo.findOne({
       where: {
         property_id: propertyIds[selectedIndex],
+        tenant_id: user.accounts[0].id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    if (!rent) {
+      await this.templateSenderService.sendText(
+        from,
+        'No active rent found for that property.',
+      );
+      return;
+    }
+
+    await this.sendRentConfirmation(from, rent);
+  }
+
+  /**
+   * Send rent payment confirmation message with details before requesting landlord approval.
+   */
+  private async sendRentConfirmation(from: string, rent: Rent): Promise<void> {
+    const formatNGN = (amt: number) =>
+      amt.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
+
+    const rentAmount = rent.rental_price || 0;
+    const serviceCharge = rent.service_charge || 0;
+    const outstandingBalance = rent.outstanding_balance || 0;
+    const totalAmount = rentAmount + serviceCharge + outstandingBalance;
+
+    const paymentFrequency = rent.payment_frequency || 'Annually';
+
+    // Calculate renewal dates
+    const startDate = new Date(rent.expiry_date || new Date());
+    startDate.setDate(startDate.getDate() + 1);
+    const endDate = new Date(startDate);
+    switch (paymentFrequency.toLowerCase()) {
+      case 'monthly':
+        endDate.setMonth(endDate.getMonth() + 1);
+        break;
+      case 'quarterly':
+        endDate.setMonth(endDate.getMonth() + 3);
+        break;
+      case 'bi-annually':
+        endDate.setMonth(endDate.getMonth() + 6);
+        break;
+      case 'annually':
+      default:
+        endDate.setFullYear(endDate.getFullYear() + 1);
+        break;
+    }
+    endDate.setDate(endDate.getDate() - 1);
+
+    const startFormatted = startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const endFormatted = endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    let message = `Do you want to send a rent renewal request to your landlord for *${rent.property.name}*?\n`;
+    message += `\n*Frequency:* ${paymentFrequency}`;
+    message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
+    message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
+    if (serviceCharge > 0) message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
+    if (outstandingBalance > 0) message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+    message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
+
+    await this.templateSenderService.sendButtons(from, message, [
+      { id: `confirm_pay_rent:${rent.property_id}`, title: 'Yes, send request' },
+      { id: 'cancel_payment', title: 'Cancel' },
+    ]);
+  }
+
+  /**
+   * Handle confirmed rent payment button click.
+   */
+  private async handleConfirmPayRent(
+    from: string,
+    propertyId: string,
+  ): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return;
+
+    const rent = await this.rentRepo.findOne({
+      where: {
+        property_id: propertyId,
         tenant_id: user.accounts[0].id,
         rent_status: RentStatusEnum.ACTIVE,
       },
@@ -1492,11 +1636,11 @@ export class TenantFlowService {
     const endFormatted = endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
     let message = `${tenantName} is requesting to pay rent for *${rent.property.name}*.\n`;
-    message += `\n📅 *Frequency:* ${paymentFrequency}`;
-    message += `\n📆 *Tenancy Period:* ${startFormatted} – ${endFormatted}`;
-    message += `\n\n💰 *Rent:* ${formatNGN(rentAmount)}`;
-    if (serviceCharge > 0) message += `\n💰 *Service Charge:* ${formatNGN(serviceCharge)}`;
-    if (outstandingBalance > 0) message += `\n💰 *Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+    message += `\n*Frequency:* ${paymentFrequency}`;
+    message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
+    message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
+    if (serviceCharge > 0) message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
+    if (outstandingBalance > 0) message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
     message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
     message += `\n\nDo you approve this payment?`;
 

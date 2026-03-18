@@ -41,7 +41,7 @@ export class RentReminderService {
     private readonly notificationService: NotificationService,
   ) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_8AM)
+  @Cron(CronExpression.EVERY_DAY_AT_8AM, { timeZone: 'Africa/Lagos' })
   async runDailyReminderCheck() {
     this.logger.log('Starting daily rent reminder check...');
     try {

@@ -32,6 +32,7 @@ import { LandlordFlowService } from './landlord-flow';
 import { WhatsAppNotificationLog } from './entities/whatsapp-notification-log.entity';
 import { WhatsAppNotificationLogService } from './whatsapp-notification-log.service';
 import { WhatsAppNotificationListener } from './whatsapp-notification.listener';
+import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { WhatsAppNotificationListener } from './whatsapp-notification.listener';
       ChatLog,
       KYCApplication,
       WhatsAppNotificationLog,
+      RenewalInvoice,
     ]),
     ServiceRequestsModule,
     forwardRef(() => UsersModule),

@@ -106,6 +106,7 @@ interface TimelineEvent {
     paidAt?: string;
     isPartPayment: boolean;
   };
+  amount?: string | null;
   relatedEntityId?: string;
   relatedEntityType?: string;
 }
@@ -851,6 +852,8 @@ export class TenantManagementService {
       tenancyStartDate: string;
       rentDueDate: string;
       serviceCharge?: number;
+      outstandingBalance?: number;
+      outstandingBalanceReason?: string;
     },
   ): Promise<{
     tenantUser: Users;
@@ -909,6 +912,8 @@ export class TenantManagementService {
       spouse_occupation: undefined,
       spouse_employer: undefined,
       service_charge: dto.serviceCharge,
+      outstanding_balance: dto.outstandingBalance,
+      outstanding_balance_reason: dto.outstandingBalanceReason,
     };
 
     // 3. Handle existing user or create new tenant
@@ -988,6 +993,8 @@ export class TenantManagementService {
         nature_of_business,
         business_address,
         service_charge,
+        outstanding_balance,
+        outstanding_balance_reason,
       } = dto;
 
       // 1. Check if user already exists
@@ -1197,11 +1204,16 @@ export class TenantManagementService {
         rental_price: rent_amount,
         security_deposit: 0,
         service_charge: service_charge || 0,
+        outstanding_balance: outstanding_balance || 0,
+        outstanding_balance_reason: outstanding_balance_reason || null,
         payment_frequency: this.mapRentFrequencyToPaymentFrequency(
           rent_frequency as RentFrequency,
         ),
         rent_status: RentStatusEnum.ACTIVE,
-        payment_status: RentPaymentStatusEnum.PENDING,
+        payment_status:
+          outstanding_balance && outstanding_balance > 0
+            ? RentPaymentStatusEnum.OWING
+            : RentPaymentStatusEnum.PENDING,
         amount_paid: 0,
         expiry_date: rent_due_date,
       });
@@ -1237,6 +1249,26 @@ export class TenantManagementService {
       });
 
       await manager.getRepository(PropertyHistory).save(propertyHistory);
+
+      // 9b. Create property history record for outstanding balance (if any)
+      if (outstanding_balance && outstanding_balance > 0) {
+        const outstandingBalanceHistory = manager
+          .getRepository(PropertyHistory)
+          .create({
+            property_id: property_id,
+            tenant_id: tenantAccount.id,
+            event_type: 'outstanding_balance_recorded',
+            event_description: JSON.stringify({
+              amount: outstanding_balance,
+              reason: outstanding_balance_reason || null,
+            }),
+            related_entity_id: rent.id,
+            related_entity_type: 'rent',
+          });
+        await manager
+          .getRepository(PropertyHistory)
+          .save(outstandingBalanceHistory);
+      }
 
       // 10. Send WhatsApp notification to tenant and emit live feed event
       try {
@@ -1281,6 +1313,19 @@ export class TenantManagementService {
           tenant_id: tenantAccount.id,
           tenant_name: fallbackTenantName,
           user_id: property.owner_id,
+        });
+      }
+
+      // 11. Emit outstanding balance recorded event for live feed (if any)
+      if (outstanding_balance && outstanding_balance > 0) {
+        const obTenantName = `${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}`;
+        this.eventEmitter.emit('outstanding.balance.recorded', {
+          property_id: property_id,
+          property_name: property.name,
+          tenant_id: tenantAccount.id,
+          tenant_name: obTenantName,
+          user_id: property.owner_id,
+          amount: outstanding_balance,
         });
       }
 
@@ -1840,6 +1885,32 @@ export class TenantManagementService {
           });
         }
 
+        if (ph.event_type === 'outstanding_balance_recorded') {
+          const prop = ph.property;
+          let amount = 0;
+          let reason: string | null = null;
+          try {
+            const parsed = JSON.parse(ph.event_description || '{}');
+            amount = parsed.amount || 0;
+            reason = parsed.reason || null;
+          } catch {}
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `outstanding-balance-${ph.id}`,
+            type: 'general' as const,
+            title: 'Outstanding balance recorded',
+            description: `Outstanding balance recorded — ${prop?.name || 'property'} — ₦${amount.toLocaleString()}`,
+            details: reason || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'outstanding_balance',
+          });
+        }
+
         if (ph.event_type === 'tenancy_ended') {
           const prop = ph.property;
           const moveOutDate = ph.move_out_date
@@ -2244,6 +2315,30 @@ export class TenantManagementService {
             relatedEntityType: 'renewal_invoice',
           });
         }
+
+        if (ph.event_type === 'user_added_history') {
+          const prop = ph.property;
+          let parsedData: any = {};
+          try {
+            parsedData = JSON.parse(ph.event_description || '{}');
+          } catch {
+            parsedData = { displayType: 'Custom Event', description: ph.event_description || '' };
+          }
+          const eventDate = new Date(ph.move_in_date || ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `user-added-${ph.id}`,
+            type: 'general' as const,
+            title: `${parsedData.displayType || 'Custom Event'} — ${prop?.name || 'property'} — ${parsedData.description || ''}`,
+            description: parsedData.description || '',
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            amount: parsedData.amount || null,
+          });
+        }
       });
     }
 
@@ -2597,7 +2692,7 @@ export class TenantManagementService {
       rentFrequency: activeRent?.payment_frequency || 'Annually',
       rentStatus: activeRent?.payment_status || '——',
       nextRentDue: this.formatDateField(activeRent?.expiry_date),
-      outstandingBalance: 0,
+      outstandingBalance: activeRent?.outstanding_balance || 0,
       paymentFrequency: activeRent?.payment_frequency || null,
       paymentHistory: (account.rents || [])
         .map((rent) => ({
@@ -2782,4 +2877,6 @@ interface TenantKycFromApplicationDto {
   spouse_occupation?: string;
   spouse_employer?: string;
   service_charge?: number;
+  outstanding_balance?: number;
+  outstanding_balance_reason?: string;
 }

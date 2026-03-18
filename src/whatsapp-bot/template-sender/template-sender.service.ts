@@ -340,6 +340,51 @@ export interface RenewalPaymentLandlordParams {
 }
 
 /**
+ * Parameters for outstanding balance payment notification to tenant
+ */
+export interface OutstandingBalancePaidTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  amount: number;
+  property_name: string;
+  remaining_balance: number;
+}
+
+/**
+ * Parameters for outstanding balance payment notification to landlord
+ */
+export interface OutstandingBalancePaidLandlordParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  amount: number;
+  property_name: string;
+  remaining_balance: number;
+}
+
+/**
+ * Parameters for full renewal payment (OB cleared + renewed) to tenant
+ */
+export interface FullRenewalPaymentTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  amount: number;
+  property_name: string;
+  receipt_url: string;
+}
+
+/**
+ * Parameters for full renewal payment (OB cleared + renewed) to landlord
+ */
+export interface FullRenewalPaymentLandlordParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  amount: number;
+  property_name: string;
+}
+
+/**
  * Parameters for renewal receipt delivery to tenant
  */
 export interface RenewalReceiptParams {
@@ -1895,6 +1940,214 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: receipt_url,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send outstanding balance payment notification to tenant
+   * Template: outstanding_balance_paid_tenant
+   */
+  async sendOutstandingBalancePaidTenant({
+    phone_number,
+    tenant_name,
+    amount,
+    property_name,
+    remaining_balance,
+  }: OutstandingBalancePaidTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'outstanding_balance_paid_tenant',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: `₦${remaining_balance.toLocaleString()}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send outstanding balance payment notification to landlord
+   * Template: outstanding_balance_paid_landlord
+   */
+  async sendOutstandingBalancePaidLandlord({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    amount,
+    property_name,
+    remaining_balance,
+  }: OutstandingBalancePaidLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'outstanding_balance_paid_landlord',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlord_name,
+              },
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+              {
+                type: 'text',
+                text: `₦${remaining_balance.toLocaleString()}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send full renewal payment notification to tenant (OB cleared + tenancy renewed)
+   * Template: full_renewal_payment_tenant
+   */
+  async sendFullRenewalPaymentTenant({
+    phone_number,
+    tenant_name,
+    amount,
+    property_name,
+    receipt_url,
+  }: FullRenewalPaymentTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'full_renewal_payment_tenant',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: receipt_url,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send full renewal payment notification to landlord (OB cleared + tenancy renewed)
+   * Template: full_renewal_payment_landlord
+   */
+  async sendFullRenewalPaymentLandlord({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    amount,
+    property_name,
+  }: FullRenewalPaymentLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'full_renewal_payment_landlord',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: landlord_name,
+              },
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: `₦${amount.toLocaleString()}`,
+              },
+              {
+                type: 'text',
+                text: property_name,
               },
             ],
           },

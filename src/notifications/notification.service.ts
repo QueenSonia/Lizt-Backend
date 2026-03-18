@@ -75,6 +75,10 @@ export class NotificationService {
         return 'Renewal Link Sent';
       case NotificationType.RENEWAL_PAYMENT_RECEIVED:
         return 'Renewal Payment Received';
+      case NotificationType.OUTSTANDING_BALANCE_RECORDED:
+        return 'Outstanding Balance Recorded';
+      case NotificationType.USER_ADDED_HISTORY:
+        return 'History Entry Added';
       default:
         return 'Panda Homes';
     }

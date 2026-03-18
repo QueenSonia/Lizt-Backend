@@ -215,6 +215,33 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
+  // Emit user-added history event to landlord
+  emitHistoryAdded(
+    landlordId: string,
+    historyData: {
+      propertyId: string;
+      propertyName: string;
+      tenantName: string;
+      displayType: string;
+      description: string;
+    },
+  ) {
+    this.logger.log(
+      `Emitting history added for property ${historyData.propertyName} to landlord ${landlordId}`,
+    );
+
+    this.server.to(`landlord:${landlordId}`).emit('history:added', {
+      ...historyData,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Also emit to property-specific room
+    this.server.to(`property:${historyData.propertyId}`).emit('history:added', {
+      ...historyData,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   // Emit tenancy renewed event to landlord
   emitTenancyRenewed(
     landlordId: string,

@@ -1008,7 +1008,7 @@ export class KYCApplicationService {
 
           if (
             recentRecord &&
-            new Date(recentRecord.created_at) > thirtySecondsAgo
+            recentRecord.created_at && new Date(recentRecord.created_at) > thirtySecondsAgo
           ) {
             return {
               success: true,

@@ -53,6 +53,17 @@ export class InvoicesController {
   }
 
   /**
+   * Get invoice by offer letter ID
+   */
+  @Get('by-offer/:offerLetterId')
+  @Roles('landlord', 'admin')
+  async findByOfferLetterId(
+    @Param('offerLetterId') offerLetterId: string,
+  ) {
+    return this.invoicesService.findByOfferLetterId(offerLetterId);
+  }
+
+  /**
    * Get single invoice by ID
    */
   @Get(':id')

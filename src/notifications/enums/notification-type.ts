@@ -24,4 +24,6 @@ export enum NotificationType {
   RECEIPT_SENT = 'Receipt Sent',
   RECEIPT_VIEWED = 'Receipt Viewed',
   RENT_REMINDER = 'Rent reminder',
+  OUTSTANDING_BALANCE_RECORDED = 'Outstanding Balance Recorded',
+  USER_ADDED_HISTORY = 'User Added History',
 }

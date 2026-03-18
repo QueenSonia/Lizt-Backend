@@ -6,6 +6,7 @@ import {
   IsNumber,
   IsEnum,
   IsOptional,
+  IsUUID,
 } from 'class-validator';
 import { MoveOutReasonEnum } from '../entities/property-history.entity';
 
@@ -15,7 +16,7 @@ export class CreatePropertyHistoryDto {
     description: 'UUID of the property',
   })
   @IsNotEmpty()
-  @IsString()
+  @IsUUID()
   property_id: string;
 
   @ApiProperty({
@@ -24,7 +25,7 @@ export class CreatePropertyHistoryDto {
     required: false,
   })
   @IsOptional()
-  @IsString()
+  @IsUUID()
   tenant_id?: string | null;
 
   @ApiProperty({

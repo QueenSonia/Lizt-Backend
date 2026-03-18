@@ -83,6 +83,7 @@ interface TimeLineEvent {
     paidAt?: string;
     isPartPayment: boolean;
   };
+  amount?: string | null;
   relatedEntityId?: string;
   relatedEntityType?: string;
 }

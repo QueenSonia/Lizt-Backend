@@ -1,4 +1,4 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Inject, forwardRef, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RolesEnum } from 'src/base.entity';
@@ -21,11 +21,17 @@ import {
   RentStatusEnum,
 } from 'src/rents/dto/create-rent.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
+import {
+  RenewalInvoice,
+  RenewalPaymentStatus,
+} from 'src/tenancies/entities/renewal-invoice.entity';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
 import { ChatLogService } from 'src/whatsapp-bot/chat-log.service';
+import { TemplateSenderService } from 'src/whatsapp-bot/template-sender';
 
 @Injectable()
 export class LandlordFlow {
+  private readonly logger = new Logger(LandlordFlow.name);
   private whatsappUtil: WhatsappUtils;
   private lookup: LandlordLookup;
   constructor(
@@ -47,11 +53,15 @@ export class LandlordFlow {
     @InjectRepository(Rent)
     private readonly rentRepo: Repository<Rent>,
 
+    @InjectRepository(RenewalInvoice)
+    private readonly renewalInvoiceRepo: Repository<RenewalInvoice>,
+
     private readonly cache: CacheService,
     private readonly utilService: UtilService,
     @Inject(forwardRef(() => KYCLinksService))
     private readonly kycLinksService: KYCLinksService,
     private readonly chatLogService: ChatLogService,
+    private readonly templateSenderService: TemplateSenderService,
   ) {
     const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config, chatLogService);
@@ -127,6 +137,16 @@ export class LandlordFlow {
       return;
     }
 
+    // Handle dynamic approval/decline buttons (id contains invoice UUID)
+    if (buttonId.startsWith('approve_rent_request:')) {
+      await this.handleApproveRentRequest(from, buttonId);
+      return;
+    }
+    if (buttonId.startsWith('decline_rent_request:')) {
+      await this.handleDeclineRentRequest(from, buttonId);
+      return;
+    }
+
     const handlers: Record<string, () => Promise<void>> = {
       // URL buttons (view_properties, view_maintenance) redirect automatically
       // Only handle the quick reply button
@@ -151,6 +171,116 @@ export class LandlordFlow {
   }
 
   // ------------------------
-  // TEXT flow pieces
+  // RENT REQUEST APPROVAL FLOW
   // ------------------------
+
+  /**
+   * Handle landlord approving a tenant's rent payment request.
+   * Changes invoice from PENDING_APPROVAL to UNPAID and sends link to tenant.
+   */
+  private async handleApproveRentRequest(
+    from: string,
+    buttonId: string,
+  ): Promise<void> {
+    const invoiceId = buttonId.split('approve_rent_request:')[1];
+
+    const invoice = await this.renewalInvoiceRepo.findOne({
+      where: { id: invoiceId },
+      relations: ['tenant', 'tenant.user', 'property'],
+    });
+
+    if (!invoice) {
+      await this.whatsappUtil.sendText(from, 'This request was not found.');
+      return;
+    }
+
+    if (invoice.payment_status !== RenewalPaymentStatus.PENDING_APPROVAL) {
+      await this.whatsappUtil.sendText(
+        from,
+        'This request is no longer pending approval.',
+      );
+      return;
+    }
+
+    // Approve: change status to UNPAID so tenant can pay, and mark as landlord-generated
+    invoice.payment_status = RenewalPaymentStatus.UNPAID;
+    invoice.approval_status = 'approved';
+    invoice.token_type = 'landlord';
+    await this.renewalInvoiceRepo.save(invoice);
+
+    // Notify landlord
+    await this.whatsappUtil.sendText(
+      from,
+      `You've approved the rent payment request for ${invoice.property.name}. The payment link has been sent to the tenant.`,
+    );
+
+    // Send payment link to tenant using template with clickable button
+    const tenantPhone = this.utilService.normalizePhoneNumber(
+      invoice.tenant.user.phone_number,
+    );
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const tenantName = `${this.utilService.toSentenceCase(invoice.tenant.user.first_name)}`;
+
+    await this.templateSenderService.sendRenewalLink({
+      phone_number: tenantPhone,
+      tenant_name: tenantName,
+      renewal_token: invoice.token,
+      frontend_url: frontendUrl,
+    });
+
+    this.logger.log(
+      `Rent request approved for invoice ${invoiceId}, link sent to ${tenantPhone}`,
+    );
+  }
+
+  /**
+   * Handle landlord declining a tenant's rent payment request.
+   */
+  private async handleDeclineRentRequest(
+    from: string,
+    buttonId: string,
+  ): Promise<void> {
+    const invoiceId = buttonId.split('decline_rent_request:')[1];
+
+    const invoice = await this.renewalInvoiceRepo.findOne({
+      where: { id: invoiceId },
+      relations: ['tenant', 'tenant.user', 'property'],
+    });
+
+    if (!invoice) {
+      await this.whatsappUtil.sendText(from, 'This request was not found.');
+      return;
+    }
+
+    if (invoice.payment_status !== RenewalPaymentStatus.PENDING_APPROVAL) {
+      await this.whatsappUtil.sendText(
+        from,
+        'This request is no longer pending approval.',
+      );
+      return;
+    }
+
+    // Decline
+    invoice.approval_status = 'declined';
+    await this.renewalInvoiceRepo.save(invoice);
+
+    // Notify landlord
+    await this.whatsappUtil.sendText(
+      from,
+      `You've declined the rent payment request for ${invoice.property.name}.`,
+    );
+
+    // Notify tenant
+    const tenantPhone = this.utilService.normalizePhoneNumber(
+      invoice.tenant.user.phone_number,
+    );
+    const tenantName = `${this.utilService.toSentenceCase(invoice.tenant.user.first_name)}`;
+
+    await this.whatsappUtil.sendText(
+      tenantPhone,
+      `Hi ${tenantName}, your rent payment request for ${invoice.property.name} was declined by your landlord. Please contact them for more details.`,
+    );
+
+    this.logger.log(`Rent request declined for invoice ${invoiceId}`);
+  }
 }

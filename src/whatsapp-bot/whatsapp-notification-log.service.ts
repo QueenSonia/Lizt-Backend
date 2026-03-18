@@ -20,7 +20,7 @@ export class WhatsAppNotificationLogService {
     private readonly logRepository: Repository<WhatsAppNotificationLog>,
     private readonly templateSenderService: TemplateSenderService,
     private readonly eventEmitter: EventEmitter2,
-  ) { }
+  ) {}
 
   /**
    * Queue a WhatsApp notification: save to DB, then emit event for immediate send.
@@ -113,7 +113,9 @@ export class WhatsAppNotificationLogService {
       return;
     }
 
-    this.logger.log(`Retrying ${pending.length} pending WhatsApp notifications`);
+    this.logger.log(
+      `Retrying ${pending.length} pending WhatsApp notifications`,
+    );
 
     for (const log of pending) {
       await this.processNotification(log.id);

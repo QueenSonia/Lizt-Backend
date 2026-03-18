@@ -33,6 +33,12 @@ export class Rent extends BaseEntity {
   @Column({ type: 'int', nullable: true })
   service_charge: number;
 
+  @Column({ type: 'int', nullable: true, default: 0 })
+  outstanding_balance: number;
+
+  @Column({ nullable: true, type: 'text' })
+  outstanding_balance_reason?: string | null;
+
   @Column({ nullable: true, type: 'varchar' })
   payment_frequency: string;
 

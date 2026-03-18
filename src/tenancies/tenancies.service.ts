@@ -281,7 +281,11 @@ export class TenanciesService {
   async initiateRenewal(
     propertyTenantId: string,
     userId: string,
-    body?: { rentAmount: number; paymentFrequency: string; serviceCharge?: number },
+    body?: {
+      rentAmount: number;
+      paymentFrequency: string;
+      serviceCharge?: number;
+    },
   ): Promise<{ token: string; link: string }> {
     // 1. Find the PropertyTenant relationship with all necessary relations
     const propertyTenant = await this.propertyTenantRepository.findOne({
@@ -329,7 +333,8 @@ export class TenanciesService {
     startDate.setDate(startDate.getDate() + 1);
 
     // Use frontend-provided values, falling back to active rent values
-    const paymentFrequency = body?.paymentFrequency || activeRent.payment_frequency || 'Annually';
+    const paymentFrequency =
+      body?.paymentFrequency || activeRent.payment_frequency || 'Annually';
 
     const endDate = new Date(startDate);
     switch (paymentFrequency.toLowerCase()) {
@@ -349,12 +354,15 @@ export class TenanciesService {
     }
     endDate.setDate(endDate.getDate() - 1); // End date is inclusive
 
-    // 5. Calculate total amount (rent + service charge only; no auto-calculated legal fee)
+    // 5. Calculate total amount (rent + service charge + outstanding balance)
     const rentAmount = body?.rentAmount || activeRent.rental_price;
-    const serviceCharge = body?.serviceCharge ?? (activeRent.service_charge || 0);
+    const serviceCharge =
+      body?.serviceCharge ?? (activeRent.service_charge || 0);
     const legalFee = 0;
     const otherCharges = 0;
-    const totalAmount = rentAmount + serviceCharge + legalFee + otherCharges;
+    const outstandingBalance = activeRent.outstanding_balance || 0;
+    const totalAmount =
+      rentAmount + serviceCharge + legalFee + otherCharges + outstandingBalance;
 
     // 6. Check for existing unpaid renewal invoice (may have been auto-created by rent reminder)
     const existingInvoice = await this.renewalInvoiceRepository.findOne({
@@ -376,13 +384,12 @@ export class TenanciesService {
       existingInvoice.legal_fee = legalFee;
       existingInvoice.other_charges = otherCharges;
       existingInvoice.total_amount = totalAmount;
+      existingInvoice.outstanding_balance = outstandingBalance;
       existingInvoice.payment_frequency = paymentFrequency;
       renewalInvoice = existingInvoice;
     } else {
       // Generate new token and create fresh invoice
       const token = uuidv4();
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30);
 
       renewalInvoice = this.renewalInvoiceRepository.create({
         token,
@@ -396,9 +403,9 @@ export class TenanciesService {
         legal_fee: legalFee,
         other_charges: otherCharges,
         total_amount: totalAmount,
+        outstanding_balance: outstandingBalance,
         payment_status: RenewalPaymentStatus.UNPAID,
         payment_frequency: paymentFrequency,
-        expires_at: expiresAt,
       });
     }
 
@@ -484,14 +491,6 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    // Check if token is expired
-    if (invoice.expires_at && new Date() > invoice.expires_at) {
-      throw new HttpException(
-        'This renewal link has expired. Please contact your landlord for a new link.',
-        HttpStatus.GONE,
-      );
-    }
-
     return this.formatRenewalInvoiceResponse(invoice);
   }
 
@@ -553,7 +552,14 @@ export class TenanciesService {
         otherCharges: parseFloat(invoice.other_charges.toString()),
       },
       totalAmount: parseFloat(invoice.total_amount.toString()),
+      outstandingBalance: parseFloat(
+        (invoice.outstanding_balance || 0).toString(),
+      ),
+      tokenType: invoice.token_type || 'landlord',
       paymentStatus: invoice.payment_status,
+      pendingApproval:
+        invoice.payment_status === RenewalPaymentStatus.PENDING_APPROVAL,
+      approvalStatus: invoice.approval_status || null,
       paidAt: invoice.paid_at
         ? typeof invoice.paid_at === 'string'
           ? invoice.paid_at
@@ -575,11 +581,6 @@ export class TenanciesService {
     });
 
     if (!invoice) {
-      return false;
-    }
-
-    // Check if token is expired
-    if (invoice.expires_at && new Date() > invoice.expires_at) {
       return false;
     }
 
@@ -719,13 +720,19 @@ export class TenanciesService {
   }
 
   /**
-   * Mark invoice as paid and update records
-   * Requirements: 5.3, 8.1-8.5
+   * Mark invoice as paid and update records.
+   * Supports flexible payment options when outstanding balance exists:
+   * - 'current-charges': renew tenancy, OB carries forward
+   * - 'outstanding': pay OB only, no renewal
+   * - 'full': renew tenancy + clear OB
+   * - 'custom': depends on amount vs current charges
+   * - undefined: backwards-compatible full renewal (no OB on invoice)
    */
   async markInvoiceAsPaid(
     token: string,
     paymentReference: string,
     amount: number,
+    paymentOption?: string,
   ): Promise<void> {
     const invoice = await this.renewalInvoiceRepository.findOne({
       where: { token },
@@ -742,7 +749,7 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    // Check if already paid
+    // Check if already fully paid
     if (invoice.payment_status === RenewalPaymentStatus.PAID) {
       throw new HttpException(
         'This invoice has already been paid',
@@ -750,22 +757,49 @@ export class TenanciesService {
       );
     }
 
-    // Validate amount matches invoice total
-    const invoiceTotal = parseFloat(invoice.total_amount.toString());
-    if (Math.abs(amount - invoiceTotal) > 0.01) {
-      throw new BadRequestException(
-        'Payment amount does not match invoice total',
-      );
+    // Determine renewal vs OB-only payment
+    const outstandingBalance = parseFloat(
+      (invoice.outstanding_balance || 0).toString(),
+    );
+    const currentCharges =
+      parseFloat(invoice.total_amount.toString()) - outstandingBalance;
+
+    // Tenant-generated invoices never trigger renewal — only landlords control tenancy renewal
+    const shouldRenew =
+      invoice.token_type !== 'tenant' &&
+      (paymentOption === 'current-charges' ||
+        paymentOption === 'full' ||
+        (paymentOption === 'custom' && amount >= currentCharges) ||
+        !paymentOption); // backwards compat: no option = old flow = always renew
+
+    // Calculate new outstanding balance
+    let newOutstandingBalance = outstandingBalance;
+    if (paymentOption === 'outstanding') {
+      newOutstandingBalance = 0;
+    } else if (paymentOption === 'full') {
+      newOutstandingBalance = 0;
+    } else if (paymentOption === 'custom') {
+      if (amount >= currentCharges) {
+        const excess = amount - currentCharges;
+        newOutstandingBalance = Math.max(0, outstandingBalance - excess);
+      } else {
+        newOutstandingBalance = Math.max(0, outstandingBalance - amount);
+      }
+    } else if (paymentOption === 'current-charges') {
+      newOutstandingBalance = outstandingBalance; // carries forward
     }
 
     // Update invoice payment status
-    invoice.payment_status = RenewalPaymentStatus.PAID;
+    invoice.payment_status = shouldRenew
+      ? RenewalPaymentStatus.PAID
+      : RenewalPaymentStatus.PARTIAL;
     invoice.payment_reference = paymentReference;
     invoice.paid_at = new Date();
+    invoice.amount_paid = amount;
 
     await this.renewalInvoiceRepository.save(invoice);
 
-    // Update the active rent record with the new rental period
+    // Get the active rent record
     const activeRent = await this.rentRepository.findOne({
       where: {
         property_id: invoice.property_id,
@@ -774,7 +808,8 @@ export class TenanciesService {
       },
     });
 
-    if (activeRent) {
+    if (shouldRenew && activeRent) {
+      // --- RENEWAL PATH ---
       // Mark old rent as inactive
       activeRent.rent_status = RentStatusEnum.INACTIVE;
       activeRent.updated_at = new Date();
@@ -792,97 +827,153 @@ export class TenanciesService {
         service_charge:
           parseFloat(invoice.service_charge.toString()) ||
           activeRent.service_charge,
-        payment_frequency: invoice.payment_frequency || activeRent.payment_frequency,
+        outstanding_balance: newOutstandingBalance,
+        payment_frequency:
+          invoice.payment_frequency || activeRent.payment_frequency,
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
       });
       await this.rentRepository.save(newRent);
+    } else if (!shouldRenew && activeRent) {
+      // --- OB-ONLY / PARTIAL PAYMENT PATH ---
+      // Update outstanding balance on current active rent (no renewal)
+      activeRent.outstanding_balance = newOutstandingBalance;
+      activeRent.updated_at = new Date();
+      await this.rentRepository.save(activeRent);
     }
+
+    // Common data for notifications
+    const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+    const propertyName = invoice.property.name;
 
     // Send WhatsApp notifications (non-blocking)
     try {
       const tenantPhone = this.utilService.normalizePhoneNumber(
         invoice.tenant.user.phone_number,
       );
-      const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
-      const propertyName = invoice.property.name;
-
-      // Build receipt URL from the invoice's receipt_token
       const frontendUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
       const receiptUrl = invoice.receipt_token
         ? `${frontendUrl}/renewal-receipt/${invoice.receipt_token}`
         : `${frontendUrl}/renewal-invoice/verify/${invoice.token}`;
 
-      // Queue tenant payment confirmation with receipt link
-      await this.whatsappNotificationLog.queue('sendRenewalPaymentTenant', {
-        phone_number: tenantPhone,
-        tenant_name: tenantName,
-        amount,
-        property_name: propertyName,
-        receipt_url: receiptUrl,
-      });
+      if (shouldRenew) {
+        // Determine if this was a full payment that cleared OB
+        const clearedOB = outstandingBalance > 0 && newOutstandingBalance === 0;
+        const templateName =
+          clearedOB && paymentOption
+            ? 'sendFullRenewalPaymentTenant'
+            : 'sendRenewalPaymentTenant';
 
-      console.log(`Payment confirmation queued for tenant ${tenantPhone}`);
-
-      // Send notification to landlord
-      if (invoice.property.owner?.user?.phone_number) {
-        const landlordPhone = this.utilService.normalizePhoneNumber(
-          invoice.property.owner.user.phone_number,
-        );
-        const landlordName = invoice.property.owner.user.first_name;
-
-        // Queue landlord payment notification
-        await this.whatsappNotificationLog.queue('sendRenewalPaymentLandlord', {
-          phone_number: landlordPhone,
-          landlord_name: landlordName,
+        await this.whatsappNotificationLog.queue(templateName, {
+          phone_number: tenantPhone,
           tenant_name: tenantName,
           amount,
           property_name: propertyName,
+          receipt_url: receiptUrl,
         });
 
-        console.log(
-          `Payment notification queued for landlord ${landlordPhone}`,
+        // Send notification to landlord
+        if (invoice.property.owner?.user?.phone_number) {
+          const landlordPhone = this.utilService.normalizePhoneNumber(
+            invoice.property.owner.user.phone_number,
+          );
+          const landlordName = invoice.property.owner.user.first_name;
+          const landlordTemplate =
+            clearedOB && paymentOption
+              ? 'sendFullRenewalPaymentLandlord'
+              : 'sendRenewalPaymentLandlord';
+
+          await this.whatsappNotificationLog.queue(landlordTemplate, {
+            phone_number: landlordPhone,
+            landlord_name: landlordName,
+            tenant_name: tenantName,
+            amount,
+            property_name: propertyName,
+          });
+        }
+      } else {
+        // OB-only or partial custom payment — no renewal
+        await this.whatsappNotificationLog.queue(
+          'sendOutstandingBalancePaidTenant',
+          {
+            phone_number: tenantPhone,
+            tenant_name: tenantName,
+            amount,
+            property_name: propertyName,
+            remaining_balance: newOutstandingBalance,
+          },
         );
+
+        if (invoice.property.owner?.user?.phone_number) {
+          const landlordPhone = this.utilService.normalizePhoneNumber(
+            invoice.property.owner.user.phone_number,
+          );
+          const landlordName = invoice.property.owner.user.first_name;
+
+          await this.whatsappNotificationLog.queue(
+            'sendOutstandingBalancePaidLandlord',
+            {
+              phone_number: landlordPhone,
+              landlord_name: landlordName,
+              tenant_name: tenantName,
+              amount,
+              property_name: propertyName,
+              remaining_balance: newOutstandingBalance,
+            },
+          );
+        }
       }
     } catch (error) {
       console.error('Error queueing payment notifications:', error);
       // Non-blocking - continue even if queueing fails
     }
 
-    // Update property history for renewal payment received
-    const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
-    const propertyName = invoice.property.name;
-    const propertyHistoryEntry = this.propertyHistoryRepository.create({
-      property_id: invoice.property_id,
-      tenant_id: invoice.tenant_id,
-      event_type: 'renewal_payment_received',
-      event_description: `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`,
-      owner_comment: `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`,
-      related_entity_id: invoice.id,
-      related_entity_type: 'renewal_invoice',
-    });
+    // Property history entries
+    if (shouldRenew) {
+      const propertyHistoryEntry = this.propertyHistoryRepository.create({
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        event_type: 'renewal_payment_received',
+        event_description: `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`,
+        owner_comment: `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`,
+        related_entity_id: invoice.id,
+        related_entity_type: 'renewal_invoice',
+      });
+      await this.propertyHistoryRepository.save(propertyHistoryEntry);
 
-    await this.propertyHistoryRepository.save(propertyHistoryEntry);
-
-    // Create tenant history entry for renewal payment
-    const tenantHistoryEntry = this.propertyHistoryRepository.create({
-      property_id: invoice.property_id,
-      tenant_id: invoice.tenant_id,
-      event_type: 'renewal_payment_made',
-      event_description: `Payment made for tenancy renewal for property ${propertyName}. Amount: ₦${amount.toLocaleString()}`,
-      tenant_comment: `Payment made for tenancy renewal for property ${propertyName}`,
-      related_entity_id: invoice.id,
-      related_entity_type: 'renewal_invoice',
-    });
-
-    await this.propertyHistoryRepository.save(tenantHistoryEntry);
+      const tenantHistoryEntry = this.propertyHistoryRepository.create({
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        event_type: 'renewal_payment_made',
+        event_description: `Payment made for tenancy renewal for property ${propertyName}. Amount: ₦${amount.toLocaleString()}`,
+        tenant_comment: `Payment made for tenancy renewal for property ${propertyName}`,
+        related_entity_id: invoice.id,
+        related_entity_type: 'renewal_invoice',
+      });
+      await this.propertyHistoryRepository.save(tenantHistoryEntry);
+    } else {
+      const obHistoryEntry = this.propertyHistoryRepository.create({
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        event_type: 'outstanding_balance_payment',
+        event_description: `Outstanding balance payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Remaining: ₦${newOutstandingBalance.toLocaleString()}`,
+        owner_comment: `Outstanding balance payment of ₦${amount.toLocaleString()} received from ${tenantName}`,
+        related_entity_id: invoice.id,
+        related_entity_type: 'renewal_invoice',
+      });
+      await this.propertyHistoryRepository.save(obHistoryEntry);
+    }
 
     // Create notification for livefeed
     try {
+      const description = shouldRenew
+        ? `Renewal payment received from ${tenantName} — ₦${amount.toLocaleString()}`
+        : `Outstanding balance payment of ₦${amount.toLocaleString()} received from ${tenantName}`;
+
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.RENEWAL_PAYMENT_RECEIVED,
-        description: `Renewal payment received from ${tenantName} — ₦${amount.toLocaleString()}`,
+        description,
         status: 'Completed',
         property_id: invoice.property_id,
         user_id: invoice.property.owner_id,

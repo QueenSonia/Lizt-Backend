@@ -1258,7 +1258,8 @@ export class PropertiesService {
 
       let renewalStatus: 'pending' | 'paid' | null = null;
       if (latestRenewalInvoice) {
-        renewalStatus = latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
+        renewalStatus =
+          latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
       }
 
       currentTenant = {
@@ -1270,9 +1271,13 @@ export class PropertiesService {
         tenancyStartDate: activeRent.rent_start_date
           .toISOString()
           .split('T')[0],
-        paymentCycle: activeRent.payment_frequency || 'Monthly',
+        paymentCycle: activeRent.payment_frequency
+          ? activeRent.payment_frequency.charAt(0).toUpperCase() +
+            activeRent.payment_frequency.slice(1)
+          : 'Monthly',
         passportPhoto: tenantKycApplication?.passport_photo_url || null,
         renewalStatus,
+        outstandingBalance: activeRent?.outstanding_balance || 0,
       };
     }
 
@@ -1341,6 +1346,24 @@ export class PropertiesService {
               details: hist.monthly_rent
                 ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
                 : null,
+            };
+          }
+          case 'outstanding_balance_recorded': {
+            let obAmount = 0;
+            let obReason: string | null = null;
+            try {
+              const parsed = JSON.parse(hist.event_description || '{}');
+              obAmount = parsed.amount || 0;
+              obReason = parsed.reason || null;
+            } catch {}
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'outstanding_balance_recorded',
+              title: 'Outstanding balance recorded',
+              description: `Outstanding balance recorded — ${tenantName} — ₦${obAmount.toLocaleString()}`,
+              details: obReason,
+              amount: obAmount,
             };
           }
           case 'tenancy_ended':
@@ -1730,6 +1753,25 @@ export class PropertiesService {
                 `Renewal payment cancelled for property.`,
               details: tenantName,
             };
+          case 'user_added_history': {
+            let parsedData: any = {};
+            try {
+              parsedData = JSON.parse(hist.event_description || '{}');
+            } catch {
+              parsedData = { displayType: 'Custom Event', description: hist.event_description || '' };
+            }
+            const userAddedAmount = parsedData.amount || null;
+            return {
+              id: hist.id,
+              date: hist.move_in_date || hist.created_at,
+              eventType: 'user_added_history',
+              title: `${parsedData.displayType || 'Custom Event'} — ${tenantName} — ${parsedData.description || ''}`,
+              description: parsedData.description || '',
+              details: null,
+              amount: userAddedAmount,
+              isUserAdded: true,
+            };
+          }
           default:
             return null;
         }
@@ -1791,6 +1833,7 @@ export class PropertiesService {
             ? 'Inactive'
             : 'Vacant',
       rent: activeRent?.rental_price || null,
+      serviceCharge: activeRent?.service_charge || 0,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
       rentalPrice: property.rental_price || null,

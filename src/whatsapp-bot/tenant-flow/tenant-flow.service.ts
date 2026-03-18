@@ -1,11 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, Not } from 'typeorm';
+import { v4 as uuidv4 } from 'uuid';
 
 import { Users } from 'src/users/entities/user.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { Property } from 'src/properties/entities/property.entity';
+import { Rent } from 'src/rents/entities/rent.entity';
+import { RentStatusEnum } from 'src/rents/dto/create-rent.dto';
+import {
+  RenewalInvoice,
+  RenewalPaymentStatus,
+} from 'src/tenancies/entities/renewal-invoice.entity';
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
@@ -37,7 +44,7 @@ export class TenantFlowService {
   private readonly MAIN_MENU_BUTTONS: ButtonDefinition[] = [
     { id: 'service_request', title: 'Service request' },
     { id: 'view_tenancy', title: 'View tenancy details' },
-    { id: 'visit_site', title: 'Visit our website' },
+    { id: 'payment', title: 'Payment' },
   ];
 
   constructor(
@@ -52,6 +59,12 @@ export class TenantFlowService {
 
     @InjectRepository(Property)
     private readonly propertyRepo: Repository<Property>,
+
+    @InjectRepository(Rent)
+    private readonly rentRepo: Repository<Rent>,
+
+    @InjectRepository(RenewalInvoice)
+    private readonly renewalInvoiceRepo: Repository<RenewalInvoice>,
 
     private readonly cache: CacheService,
     private readonly utilService: UtilService,
@@ -116,6 +129,18 @@ export class TenantFlowService {
     // Handle property selection for multi-property tenants
     if (userState && userState.startsWith('select_property:')) {
       await this.handlePropertySelection(from, text, userState);
+      return;
+    }
+
+    // Handle property selection for OB payment
+    if (userState && userState.startsWith('select_property_ob:')) {
+      await this.handlePropertySelectionForOB(from, text, userState);
+      return;
+    }
+
+    // Handle property selection for rent payment
+    if (userState && userState.startsWith('select_property_rent:')) {
+      await this.handlePropertySelectionForRent(from, text, userState);
       return;
     }
 
@@ -525,6 +550,18 @@ export class TenantFlowService {
           from,
           'Visit our website: https://propertykraft.africa',
         );
+        break;
+
+      case 'payment':
+        await this.handlePaymentMenu(from);
+        break;
+
+      case 'pay_outstanding_balance':
+        await this.handlePayOutstandingBalance(from);
+        break;
+
+      case 'pay_rent':
+        await this.handlePayRent(from);
         break;
 
       case 'view_tenancy':
@@ -1025,6 +1062,459 @@ export class TenantFlowService {
     } catch (error) {
       this.logger.error('Failed to notify property stakeholders:', error);
     }
+  }
+
+  // ========================
+  // PAYMENT FLOW METHODS
+  // ========================
+
+  /**
+   * Show payment sub-menu to tenant.
+   * If tenant has outstanding balance, only show "Pay Outstanding Balance" to prioritize clearing it.
+   * Otherwise show only "Pay Rent".
+   */
+  private async handlePaymentMenu(from: string): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+
+    if (!user?.accounts?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No tenancy info available.',
+      );
+      return;
+    }
+
+    const accountId = user.accounts[0].id;
+
+    // Check if tenant has any active rent with outstanding balance
+    const activeRents = await this.rentRepo.find({
+      where: {
+        tenant_id: accountId,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    if (!activeRents.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No active tenancy found.',
+      );
+      return;
+    }
+
+    const hasOutstandingBalance = activeRents.some(
+      (r) => (r.outstanding_balance || 0) > 0,
+    );
+
+    if (hasOutstandingBalance) {
+      await this.handlePayOutstandingBalance(from);
+    } else {
+      await this.handlePayRent(from);
+    }
+  }
+
+  /**
+   * Handle "Pay Outstanding Balance" — creates a tenant-generated OB-only invoice.
+   * No landlord approval needed.
+   */
+  private async handlePayOutstandingBalance(from: string): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+
+    if (!user?.accounts?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No tenancy info available.',
+      );
+      return;
+    }
+
+    const accountId = user.accounts[0].id;
+
+    // Find active rents with outstanding balance
+    const rentsWithOB = await this.rentRepo.find({
+      where: {
+        tenant_id: accountId,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    const filtered = rentsWithOB.filter(
+      (r) => (r.outstanding_balance || 0) > 0,
+    );
+
+    if (!filtered.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'You have no outstanding balance.',
+      );
+      return;
+    }
+
+    if (filtered.length > 1) {
+      // Multi-property: ask tenant to select
+      let propertyList = 'Which property is this payment for?\n\n';
+      filtered.forEach((rent, index) => {
+        const ob = (rent.outstanding_balance || 0).toLocaleString('en-NG', {
+          style: 'currency',
+          currency: 'NGN',
+        });
+        propertyList += `${index + 1}. ${rent.property.name} — ${ob}\n`;
+      });
+      propertyList += '\nReply with the number of the property.';
+
+      await this.templateSenderService.sendText(from, propertyList);
+      await this.cache.set(
+        `service_request_state_${from}`,
+        `select_property_ob:${JSON.stringify(filtered.map((r) => r.property_id))}`,
+        this.SESSION_TIMEOUT_MS,
+      );
+    } else {
+      await this.createOBInvoiceAndSendLink(from, filtered[0]);
+    }
+  }
+
+  /**
+   * Handle property selection for OB payment (multi-property tenant)
+   */
+  private async handlePropertySelectionForOB(
+    from: string,
+    text: string,
+    userState: string,
+  ): Promise<void> {
+    const propertyIds = JSON.parse(userState.split('select_property_ob:')[1]);
+    const selectedIndex = parseInt(text.trim()) - 1;
+
+    if (
+      isNaN(selectedIndex) ||
+      selectedIndex < 0 ||
+      selectedIndex >= propertyIds.length
+    ) {
+      await this.templateSenderService.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number.',
+      );
+      return;
+    }
+
+    await this.cache.delete(`service_request_state_${from}`);
+
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return;
+
+    const rent = await this.rentRepo.findOne({
+      where: {
+        property_id: propertyIds[selectedIndex],
+        tenant_id: user.accounts[0].id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    if (!rent || (rent.outstanding_balance || 0) <= 0) {
+      await this.templateSenderService.sendText(
+        from,
+        'No outstanding balance found for that property.',
+      );
+      return;
+    }
+
+    await this.createOBInvoiceAndSendLink(from, rent);
+  }
+
+  /**
+   * Create an OB-only invoice and send the payment link to the tenant.
+   */
+  private async createOBInvoiceAndSendLink(
+    from: string,
+    rent: Rent,
+  ): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return;
+
+    const accountId = user.accounts[0].id;
+    const outstandingBalance = rent.outstanding_balance || 0;
+
+    // Find propertyTenant record
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: {
+        property_id: rent.property_id,
+        tenant_id: accountId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!propertyTenant) {
+      await this.templateSenderService.sendText(
+        from,
+        'Could not find your tenancy record. Please contact your landlord.',
+      );
+      return;
+    }
+
+    // Create OB-only invoice
+    const token = uuidv4();
+
+    const invoice = this.renewalInvoiceRepo.create({
+      token,
+      property_tenant_id: propertyTenant.id,
+      property_id: rent.property_id,
+      tenant_id: accountId,
+      start_date: rent.expiry_date || new Date(),
+      end_date: rent.expiry_date || new Date(),
+      rent_amount: 0,
+      service_charge: 0,
+      legal_fee: 0,
+      other_charges: 0,
+      total_amount: outstandingBalance,
+      outstanding_balance: outstandingBalance,
+      token_type: 'tenant',
+      payment_status: RenewalPaymentStatus.UNPAID,
+      payment_frequency: rent.payment_frequency,
+    });
+
+    await this.renewalInvoiceRepo.save(invoice);
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const tenantName = `${this.utilService.toSentenceCase(user.first_name)}`;
+
+    await this.templateSenderService.sendRenewalLink({
+      phone_number: from,
+      tenant_name: tenantName,
+      renewal_token: token,
+      frontend_url: frontendUrl,
+    });
+  }
+
+  /**
+   * Handle "Pay Rent" — creates a tenant-generated rent invoice that needs landlord approval.
+   */
+  private async handlePayRent(from: string): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+
+    if (!user?.accounts?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No tenancy info available.',
+      );
+      return;
+    }
+
+    const accountId = user.accounts[0].id;
+
+    const activeRents = await this.rentRepo.find({
+      where: {
+        tenant_id: accountId,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    if (!activeRents.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No active tenancy found.',
+      );
+      return;
+    }
+
+    if (activeRents.length > 1) {
+      let propertyList = 'Which property is this payment for?\n\n';
+      activeRents.forEach((rent, index) => {
+        propertyList += `${index + 1}. ${rent.property.name}\n`;
+      });
+      propertyList += '\nReply with the number of the property.';
+
+      await this.templateSenderService.sendText(from, propertyList);
+      await this.cache.set(
+        `service_request_state_${from}`,
+        `select_property_rent:${JSON.stringify(activeRents.map((r) => r.property_id))}`,
+        this.SESSION_TIMEOUT_MS,
+      );
+    } else {
+      await this.createRentInvoiceAndRequestApproval(from, activeRents[0]);
+    }
+  }
+
+  /**
+   * Handle property selection for rent payment (multi-property tenant)
+   */
+  private async handlePropertySelectionForRent(
+    from: string,
+    text: string,
+    userState: string,
+  ): Promise<void> {
+    const propertyIds = JSON.parse(userState.split('select_property_rent:')[1]);
+    const selectedIndex = parseInt(text.trim()) - 1;
+
+    if (
+      isNaN(selectedIndex) ||
+      selectedIndex < 0 ||
+      selectedIndex >= propertyIds.length
+    ) {
+      await this.templateSenderService.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number.',
+      );
+      return;
+    }
+
+    await this.cache.delete(`service_request_state_${from}`);
+
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return;
+
+    const rent = await this.rentRepo.findOne({
+      where: {
+        property_id: propertyIds[selectedIndex],
+        tenant_id: user.accounts[0].id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    if (!rent) {
+      await this.templateSenderService.sendText(
+        from,
+        'No active rent found for that property.',
+      );
+      return;
+    }
+
+    await this.createRentInvoiceAndRequestApproval(from, rent);
+  }
+
+  /**
+   * Create a rent invoice (with OB if any) and send approval request to landlord.
+   */
+  private async createRentInvoiceAndRequestApproval(
+    from: string,
+    rent: Rent,
+  ): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return;
+
+    const accountId = user.accounts[0].id;
+    const rentAmount = rent.rental_price || 0;
+    const serviceCharge = rent.service_charge || 0;
+    const outstandingBalance = rent.outstanding_balance || 0;
+    const totalAmount = rentAmount + serviceCharge + outstandingBalance;
+
+    // Find propertyTenant record
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: {
+        property_id: rent.property_id,
+        tenant_id: accountId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!propertyTenant) {
+      await this.templateSenderService.sendText(
+        from,
+        'Could not find your tenancy record. Please contact your landlord.',
+      );
+      return;
+    }
+
+    // Calculate renewal dates (same logic as initiateRenewal)
+    const startDate = new Date(rent.expiry_date || new Date());
+    startDate.setDate(startDate.getDate() + 1);
+
+    const paymentFrequency = rent.payment_frequency || 'Annually';
+    const endDate = new Date(startDate);
+    switch (paymentFrequency.toLowerCase()) {
+      case 'monthly':
+        endDate.setMonth(endDate.getMonth() + 1);
+        break;
+      case 'quarterly':
+        endDate.setMonth(endDate.getMonth() + 3);
+        break;
+      case 'bi-annually':
+        endDate.setMonth(endDate.getMonth() + 6);
+        break;
+      case 'annually':
+      default:
+        endDate.setFullYear(endDate.getFullYear() + 1);
+        break;
+    }
+    endDate.setDate(endDate.getDate() - 1);
+
+    // Create invoice with PENDING_APPROVAL status
+    const token = uuidv4();
+
+    const invoice = this.renewalInvoiceRepo.create({
+      token,
+      property_tenant_id: propertyTenant.id,
+      property_id: rent.property_id,
+      tenant_id: accountId,
+      start_date: startDate,
+      end_date: endDate,
+      rent_amount: rentAmount,
+      service_charge: serviceCharge,
+      legal_fee: 0,
+      other_charges: 0,
+      total_amount: totalAmount,
+      outstanding_balance: outstandingBalance,
+      token_type: 'tenant',
+      payment_status: RenewalPaymentStatus.PENDING_APPROVAL,
+      payment_frequency: paymentFrequency,
+    });
+
+    await this.renewalInvoiceRepo.save(invoice);
+
+    // Look up landlord to send approval request
+    const property = await this.propertyRepo.findOne({
+      where: { id: rent.property_id },
+      relations: ['owner', 'owner.user'],
+    });
+
+    if (!property?.owner?.user?.phone_number) {
+      this.logger.warn(
+        `Cannot send approval request: owner data missing for property ${rent.property_id}`,
+      );
+      await this.templateSenderService.sendText(
+        from,
+        'We could not reach your landlord. Please contact them directly.',
+      );
+      return;
+    }
+
+    const landlordPhone = this.utilService.normalizePhoneNumber(
+      property.owner.user.phone_number,
+    );
+    const tenantName = `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`;
+    const formatNGN = (amt: number) =>
+      amt.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
+
+    const startFormatted = startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const endFormatted = endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    let message = `${tenantName} is requesting to pay rent for *${rent.property.name}*.\n`;
+    message += `\n📅 *Frequency:* ${paymentFrequency}`;
+    message += `\n📆 *Tenancy Period:* ${startFormatted} – ${endFormatted}`;
+    message += `\n\n💰 *Rent:* ${formatNGN(rentAmount)}`;
+    if (serviceCharge > 0) message += `\n💰 *Service Charge:* ${formatNGN(serviceCharge)}`;
+    if (outstandingBalance > 0) message += `\n💰 *Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+    message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
+    message += `\n\nDo you approve this payment?`;
+
+    // Send approval request to landlord with buttons
+    await this.templateSenderService.sendButtons(
+      landlordPhone,
+      message,
+      [
+        { id: `approve_rent_request:${invoice.id}`, title: 'Approve' },
+        { id: `decline_rent_request:${invoice.id}`, title: 'Decline' },
+      ],
+    );
+
+    // Notify tenant
+    await this.templateSenderService.sendText(
+      from,
+      `Your rent payment request for ${rent.property.name} has been sent to your landlord for approval. You'll be notified once they respond.`,
+    );
   }
 
   /**

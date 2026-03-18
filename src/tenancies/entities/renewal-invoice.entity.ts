@@ -7,6 +7,8 @@ import { Account } from '../../users/entities/account.entity';
 export enum RenewalPaymentStatus {
   UNPAID = 'unpaid',
   PAID = 'paid',
+  PARTIAL = 'partial',
+  PENDING_APPROVAL = 'pending_approval',
 }
 
 @Entity('renewal_invoices')
@@ -59,6 +61,21 @@ export class RenewalInvoice extends BaseEntity {
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   total_amount: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  outstanding_balance: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  amount_paid: number | null;
+
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  payment_option: string | null;
+
+  @Column({ type: 'varchar', length: 20, default: 'landlord' })
+  token_type: string;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  approval_status: string | null;
 
   @Column({
     type: 'varchar',

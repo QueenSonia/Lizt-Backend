@@ -56,6 +56,7 @@ export class RenewalPaymentService {
     token: string,
     email: string,
     amount: number,
+    paymentOption?: string,
   ): Promise<PaymentInitializationResult> {
     this.logger.log(`Initializing payment for renewal invoice: ${token}`);
 
@@ -74,12 +75,21 @@ export class RenewalPaymentService {
       throw new ConflictException('This invoice has already been paid');
     }
 
-    // Validate amount matches invoice total (Requirement 5.5)
+    // Validate amount is positive and does not exceed invoice total
     const invoiceTotal = Number(invoice.total_amount);
-    if (Math.abs(amount - invoiceTotal) > 0.01) {
+    if (amount <= 0) {
+      throw new BadRequestException('Payment amount must be greater than 0');
+    }
+    if (amount - invoiceTotal > 0.01) {
       throw new BadRequestException(
-        `Payment amount (₦${amount}) does not match invoice total (₦${invoiceTotal})`,
+        `Payment amount (₦${amount}) exceeds invoice total (₦${invoiceTotal})`,
       );
+    }
+
+    // Store payment option on the invoice for post-payment processing
+    if (paymentOption) {
+      invoice.payment_option = paymentOption;
+      await this.renewalInvoiceRepository.save(invoice);
     }
 
     // Generate unique reference with retry logic for collision handling
@@ -103,6 +113,7 @@ export class RenewalPaymentService {
             tenant_id: invoice.tenant_id,
             tenant_name: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
             property_name: invoice.property.name,
+            payment_option: paymentOption || null,
           },
           channels: ['card', 'bank_transfer'],
         });
@@ -223,21 +234,30 @@ export class RenewalPaymentService {
       `Processing successful payment for renewal invoice: ${token}, reference: ${reference}`,
     );
 
-    // If receipt token is provided, store it in the invoice
-    if (receiptToken) {
-      const invoice = await this.renewalInvoiceRepository.findOne({
-        where: { token },
-      });
+    // Store receipt token and read payment_option from invoice
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+    });
 
-      if (invoice) {
+    let paymentOption: string | null = null;
+
+    if (invoice) {
+      if (receiptToken) {
         invoice.receipt_token = receiptToken;
         invoice.receipt_number = `RR-${Date.now()}`;
-        await this.renewalInvoiceRepository.save(invoice);
       }
+      invoice.amount_paid = amount;
+      paymentOption = invoice.payment_option;
+      await this.renewalInvoiceRepository.save(invoice);
     }
 
     // Delegate to TenanciesService to handle invoice update, notifications, and history updates
-    await this.tenanciesService.markInvoiceAsPaid(token, reference, amount);
+    await this.tenanciesService.markInvoiceAsPaid(
+      token,
+      reference,
+      amount,
+      paymentOption || undefined,
+    );
 
     this.logger.log(
       `Successfully processed payment for renewal invoice: ${token}`,

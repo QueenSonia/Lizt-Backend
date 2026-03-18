@@ -165,7 +165,12 @@ export class RentReminderService {
           `Could not find or create renewal invoice for rent ${rent.id}, falling back to standard reminder.`,
         );
         // Fall back to standard reminder
-        await this.queueStandardReminder(rent, formattedAmount, expiryDateStr, daysUntilExpiry);
+        await this.queueStandardReminder(
+          rent,
+          formattedAmount,
+          expiryDateStr,
+          daysUntilExpiry,
+        );
         return;
       }
 
@@ -190,7 +195,12 @@ export class RentReminderService {
         `Queued rent reminder WITH renewal link for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
       );
     } else {
-      await this.queueStandardReminder(rent, formattedAmount, expiryDateStr, daysUntilExpiry);
+      await this.queueStandardReminder(
+        rent,
+        formattedAmount,
+        expiryDateStr,
+        daysUntilExpiry,
+      );
     }
 
     // Log to live feed and property/tenant history
@@ -244,9 +254,7 @@ export class RentReminderService {
       });
 
       if (!propertyTenant) {
-        this.logger.warn(
-          `No active PropertyTenant found for rent ${rent.id}`,
-        );
+        this.logger.warn(`No active PropertyTenant found for rent ${rent.id}`);
         return null;
       }
 
@@ -294,8 +302,6 @@ export class RentReminderService {
       const totalAmount = rentAmount + serviceCharge;
 
       const token = uuidv4();
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30);
 
       const renewalInvoice = this.renewalInvoiceRepository.create({
         token,
@@ -311,7 +317,6 @@ export class RentReminderService {
         total_amount: totalAmount,
         payment_status: RenewalPaymentStatus.UNPAID,
         payment_frequency: paymentFrequency,
-        expires_at: expiresAt,
       });
 
       await this.renewalInvoiceRepository.save(renewalInvoice);

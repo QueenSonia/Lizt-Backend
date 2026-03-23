@@ -90,4 +90,25 @@ export class ExistingTenantDto {
   @Min(0)
   @Type(() => Number)
   serviceChargeAmount?: number;
+
+  @ApiProperty({
+    example: 150000,
+    description: 'Outstanding balance the tenant owes before onboarding',
+    type: 'number',
+    required: false,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  outstandingBalance?: number;
+
+  @ApiProperty({
+    example: 'Backlog rent for January–February',
+    description: 'Reason for the outstanding balance',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  outstandingBalanceReason?: string;
 }

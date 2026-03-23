@@ -1572,6 +1572,7 @@ export class TenantManagementService {
         'rents.payment_frequency',
         'rents.payment_status',
         'rents.rent_status',
+        'rents.outstanding_balance',
         'rents.created_at',
       ])
       .leftJoin('rents.property', 'property')
@@ -2730,6 +2731,7 @@ export class TenantManagementService {
           rentFrequency: rent.payment_frequency || 'Annually',
           rentDueDate: this.formatDateField(rent.expiry_date),
           tenancyStartDate: this.formatDateField(rent.rent_start_date),
+          outstandingBalance: rent.outstanding_balance || 0,
           status: 'Active' as const,
         })),
       tenancyHistory: (propertyHistories || [])

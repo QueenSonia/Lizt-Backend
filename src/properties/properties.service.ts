@@ -41,7 +41,12 @@ import { WhatsAppNotificationLogService } from 'src/whatsapp-bot/whatsapp-notifi
 import { PerformanceMonitor } from 'src/utils/performance-monitor';
 import { KYCApplicationService } from 'src/kyc-links/kyc-application.service';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
-import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
+import {
+  TenantKyc,
+  Gender,
+  MaritalStatus,
+  EmploymentStatus,
+} from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { Account } from 'src/users/entities/account.entity';
 import {
   KYCApplication,
@@ -331,9 +336,26 @@ export class PropertiesService {
               });
             }
 
+            // If phone lookup failed and duplicate was on email, try finding by email
+            if (!tenantUser && tenantData.email) {
+              tenantUser = await this.usersRepository.findOne({
+                where: { email: tenantData.email },
+              });
+
+              // Update the existing user's phone to match what the landlord entered
+              if (tenantUser && tenantUser.phone_number !== normalizedPhone) {
+                console.log('📞 Updating existing user phone number:', {
+                  oldPhone: tenantUser.phone_number,
+                  newPhone: normalizedPhone,
+                });
+                tenantUser.phone_number = normalizedPhone;
+                tenantUser = await this.usersRepository.save(tenantUser);
+              }
+            }
+
             if (!tenantUser) {
               throw new HttpException(
-                'Unable to find the existing user with this phone number. Please try again.',
+                'Unable to find the existing user with this phone number or email. Please try again.',
                 HttpStatus.INTERNAL_SERVER_ERROR,
               );
             }
@@ -469,14 +491,33 @@ export class PropertiesService {
         kycApplication = queryRunner.manager.create(KYCApplication, {
           kyc_link_id: kycLink.id,
           property_id: savedProperty.id,
+          initial_property_id: savedProperty.id,
           tenant_id: tenantAccount.id,
           status: ApplicationStatus.PENDING_COMPLETION,
           first_name: firstName,
           last_name: lastName,
           phone_number: normalizedPhone,
-          email: tenantData.email || undefined,
-          // Pre-fill with landlord-provided data (stored in KYC application for reference)
-          // Note: Rent details are stored in the Rent entity, not KYC
+          email: tenantData.email || '-',
+          // Placeholder defaults for required fields — tenant will complete these via KYC form
+          contact_address: '-',
+          date_of_birth: new Date('1900-01-01'),
+          gender: Gender.MALE,
+          nationality: '-',
+          state_of_origin: '-',
+          marital_status: MaritalStatus.SINGLE,
+          employment_status: EmploymentStatus.EMPLOYED,
+          religion: '-',
+          next_of_kin_full_name: '-',
+          next_of_kin_address: '-',
+          next_of_kin_relationship: '-',
+          next_of_kin_phone_number: '-',
+          next_of_kin_email: '-',
+          intended_use_of_property: '-',
+          number_of_occupants: '-',
+          proposed_rent_amount: '-',
+          rent_payment_frequency: '-',
+          passport_photo_url: '-',
+          id_document_url: '-',
         });
         await queryRunner.manager.save(KYCApplication, kycApplication);
       }
@@ -530,6 +571,9 @@ export class PropertiesService {
         expiryDate.setMonth(expiryDate.getMonth() + 1);
       }
 
+      const hasOutstandingBalance =
+        tenantData.outstandingBalance && tenantData.outstandingBalance > 0;
+
       const rent = queryRunner.manager.create(Rent, {
         property_id: savedProperty.id,
         tenant_id: tenantAccount.id,
@@ -539,8 +583,16 @@ export class PropertiesService {
         amount_paid: tenantData.rentAmount,
         service_charge: tenantData.serviceChargeAmount || 0,
         payment_frequency: tenantData.rentFrequency,
-        payment_status: RentPaymentStatusEnum.PAID,
+        payment_status: hasOutstandingBalance
+          ? RentPaymentStatusEnum.OWING
+          : RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
+        outstanding_balance: hasOutstandingBalance
+          ? tenantData.outstandingBalance
+          : 0,
+        outstanding_balance_reason: hasOutstandingBalance
+          ? tenantData.outstandingBalanceReason || null
+          : null,
       });
       await queryRunner.manager.save(Rent, rent);
 
@@ -559,6 +611,24 @@ export class PropertiesService {
         move_out_reason: null,
       });
       await queryRunner.manager.save(PropertyHistory, propertyHistory);
+
+      // 12b. If tenant has outstanding balance, create a history event for it
+      if (hasOutstandingBalance) {
+        const balanceHistory = queryRunner.manager.create(PropertyHistory, {
+          property_id: savedProperty.id,
+          tenant_id: tenantAccount.id,
+          event_type: 'outstanding_balance_recorded',
+          move_in_date: rentStartDate,
+          monthly_rent: tenantData.outstandingBalance,
+          owner_comment: tenantData.outstandingBalanceReason
+            ? `Outstanding balance recorded: ₦${tenantData.outstandingBalance!.toLocaleString()} - ${tenantData.outstandingBalanceReason}`
+            : `Outstanding balance recorded: ₦${tenantData.outstandingBalance!.toLocaleString()}`,
+          tenant_comment: null,
+          move_out_date: null,
+          move_out_reason: null,
+        });
+        await queryRunner.manager.save(PropertyHistory, balanceHistory);
+      }
 
       // Commit transaction before sending WhatsApp (non-critical operation)
       await queryRunner.commitTransaction();

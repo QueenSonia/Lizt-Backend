@@ -274,6 +274,7 @@ export class PDFGeneratorService {
     const businessAddress = branding.businessAddress || '';
     const contactEmail = branding.contactEmail || '';
     const websiteLink = branding.websiteLink || '';
+    const contactPhone = branding.contactPhone || '';
     const footerColor = branding.footerColor || '#6B6B6B';
     const letterhead = branding.letterhead || '';
     const signature = branding.signature || '';
@@ -472,7 +473,7 @@ export class PDFGeneratorService {
     <div style="text-align: center; font-size: 14px; padding-top: 16px; margin-top: 48px; color: ${footerColor};">
       ${businessAddress ? `<p style="font-weight: 700; margin-bottom: 4px;">${this.escapeHtml(businessAddress)}</p>` : ''}
       ${contactEmail ? `<p style="font-weight: 700; margin-bottom: 4px;">${this.escapeHtml(contactEmail)}</p>` : ''}
-      ${websiteLink ? `<p style="color: #2563eb; text-decoration: underline; margin-bottom: 4px;">${this.escapeHtml(websiteLink)}</p>` : ''}
+      ${websiteLink || contactPhone ? `<p style="margin-bottom: 4px;">${websiteLink ? `<span style="color: #2563eb; text-decoration: underline;">${this.escapeHtml(websiteLink)}</span>` : ''}${websiteLink && contactPhone ? ' || ' : ''}${contactPhone ? `<span>${this.escapeHtml(contactPhone)}</span>` : ''}</p>` : ''}
     </div>
   </div>
 </body>

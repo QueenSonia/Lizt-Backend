@@ -107,6 +107,8 @@ interface OutstandingBalanceBreakdown {
   propertyName: string;
   propertyId: string;
   outstandingAmount: number;
+  tenancyStartDate: Date | null;
+  tenancyEndDate: Date | null;
   transactions: OutstandingBalanceTransaction[];
 }
 

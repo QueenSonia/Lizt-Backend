@@ -1840,6 +1840,11 @@ export class TenantManagementService {
         }
       });
 
+    // Collect all individual user_added_payment history entries for this tenant
+    const paymentHistories = (account.property_histories || []).filter(
+      (h) => h.event_type === 'user_added_payment',
+    );
+
     const outstandingBalanceBreakdown = Array.from(
       rentsByProperty.values(),
     ).map((rent) => {
@@ -1851,9 +1856,6 @@ export class TenantManagementService {
       }> = [];
 
       const outstandingBalance = rent.outstanding_balance || 0;
-      const amountPaid = rent.amount_paid || 0;
-      const totalCharges =
-        (rent.rental_price || 0) + (rent.service_charge || 0);
 
       // If there's an outstanding balance reason, show it as a single line item
       if (rent.outstanding_balance_reason) {
@@ -1864,8 +1866,6 @@ export class TenantManagementService {
           date: new Date(rent.rent_start_date || rent.created_at!),
         });
       } else {
-        // Otherwise, show the breakdown of charges and payments
-
         // Add rent charge
         if (rent.rental_price) {
           transactions.push({
@@ -1886,26 +1886,6 @@ export class TenantManagementService {
           });
         }
 
-        // Add payment received (if any)
-        if (amountPaid > 0) {
-          transactions.push({
-            id: `payment-${rent.id}`,
-            type: 'Payment Received',
-            amount: -amountPaid,
-            date: new Date(rent.updated_at || rent.created_at!),
-          });
-        }
-      }
-
-      // Log warning if calculated doesn't match stored
-      const calculatedOutstanding = totalCharges - amountPaid;
-      if (
-        !rent.outstanding_balance_reason &&
-        Math.abs(calculatedOutstanding - outstandingBalance) > 1
-      ) {
-        this.logger.warn(
-          `Outstanding balance mismatch for rent ${rent.id}: stored=${outstandingBalance}, calculated=${calculatedOutstanding}`,
-        );
       }
 
       return {
@@ -2944,6 +2924,23 @@ export class TenantManagementService {
       totalOutstandingBalance,
       totalCreditBalance,
       outstandingBalanceBreakdown,
+      paymentTransactions: paymentHistories
+        .map((ph) => {
+          try {
+            const data = JSON.parse(ph.event_description || '{}');
+            const amount = data.paymentAmount || 0;
+            if (amount <= 0) return null;
+            return {
+              id: `payment-history-${ph.id}`,
+              type: 'Payment Received',
+              amount: -amount,
+              date: ph.move_in_date ? new Date(ph.move_in_date) : new Date(ph.created_at!),
+            };
+          } catch {
+            return null;
+          }
+        })
+        .filter((t): t is NonNullable<typeof t> => t !== null),
 
       history: history,
       kycInfo: {

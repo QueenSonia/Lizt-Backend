@@ -189,6 +189,7 @@ export class TenantDetailDto {
   totalOutstandingBalance: number;
   totalCreditBalance: number;
   outstandingBalanceBreakdown: OutstandingBalanceBreakdown[];
+  paymentTransactions: OutstandingBalanceTransaction[];
 
   // Tenancy Details
   leaseStartDate: string | null;

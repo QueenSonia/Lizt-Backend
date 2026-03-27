@@ -1893,6 +1893,8 @@ export class TenantManagementService {
         propertyName: rent.property?.name || 'Unknown Property',
         propertyId: rent.property_id,
         outstandingAmount: outstandingBalance,
+        tenancyStartDate: rent.rent_start_date ? new Date(rent.rent_start_date) : null,
+        tenancyEndDate: rent.expiry_date ? new Date(rent.expiry_date) : null,
         transactions: transactions.sort(
           (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
         ),

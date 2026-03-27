@@ -56,7 +56,7 @@ import { LandlordFlowService } from './landlord-flow';
 const MAIN_MENU_BUTTONS = [
   { id: 'service_request', title: 'Service request' },
   { id: 'view_tenancy', title: 'View tenancy details' },
-  { id: 'visit_site', title: 'Visit our website' },
+  { id: 'payment', title: 'Payment' },
 ];
 
 @Injectable()
@@ -426,7 +426,7 @@ export class WhatsappBotService implements OnModuleInit {
             [
               { id: 'service_request', title: 'Service request' },
               { id: 'view_tenancy', title: 'View tenancy details' },
-              { id: 'visit_site', title: 'Visit our website' },
+              { id: 'payment', title: 'Payment' },
             ],
             'Tap on any option to continue.',
           );

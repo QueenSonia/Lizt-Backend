@@ -609,8 +609,19 @@ export class InvoicesService {
       await manager.save(InvoicePayment, invoicePayment);
 
       const newAmountPaid = Number(invoice.amount_paid) + amount;
-      const newOutstandingBalance =
-        Number(invoice.total_amount) - newAmountPaid;
+      const rawOutstandingBalance = Number(invoice.total_amount) - newAmountPaid;
+
+      // Calculate credit balance if overpayment occurred
+      let newCreditBalance = Number(invoice.credit_balance || 0);
+      let newOutstandingBalance = 0;
+
+      if (rawOutstandingBalance < 0) {
+        // Overpayment: add excess to credit balance
+        newCreditBalance += Math.abs(rawOutstandingBalance);
+        newOutstandingBalance = 0;
+      } else {
+        newOutstandingBalance = rawOutstandingBalance;
+      }
 
       let newStatus = invoice.status;
       if (newOutstandingBalance <= 0) {
@@ -621,7 +632,8 @@ export class InvoicesService {
 
       await manager.update(Invoice, invoiceId, {
         amount_paid: newAmountPaid,
-        outstanding_balance: Math.max(0, newOutstandingBalance),
+        outstanding_balance: newOutstandingBalance,
+        credit_balance: newCreditBalance,
         status: newStatus,
       });
     });

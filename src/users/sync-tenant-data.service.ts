@@ -82,10 +82,6 @@ export class SyncTenantDataService {
                 account.creator_id ||
                 account.user.creator_id ||
                 account.user.id,
-              identity_hash:
-                `${account.user.first_name}_${account.user.last_name}_${account.user.date_of_birth}_${account.email}_${account.user.phone_number}`
-                  .toLowerCase()
-                  .replace(/\s+/g, '_'),
             });
 
             await queryRunner.manager.save(tenantKyc);

@@ -172,6 +172,8 @@ export class UsersService {
       tenancyStartDate: string;
       rentDueDate: string;
       serviceCharge?: number;
+      outstandingBalance?: number;
+      outstandingBalanceReason?: string;
     },
   ) {
     return this.tenantManagementService.attachTenantFromKyc(landlordId, dto);

@@ -352,10 +352,14 @@ export class TenanciesController {
     // Get invoice to retrieve amount
     const invoice = await this.tenanciesService.getRenewalInvoice(token);
 
+    // Use DTO amount if provided (flexible payment), otherwise use full invoice total
+    const paymentAmount = initializePaymentDto.amount || invoice.totalAmount;
+
     const result = await this.renewalPaymentService.initializePayment(
       token,
       initializePaymentDto.email,
-      invoice.totalAmount,
+      paymentAmount,
+      initializePaymentDto.paymentOption,
     );
 
     return {

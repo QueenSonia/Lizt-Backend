@@ -118,6 +118,9 @@ export class OfferLetter extends BaseEntity {
   @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
   outstanding_balance?: number;
 
+  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true, default: 0 })
+  credit_balance?: number;
+
   @Column({
     type: 'enum',
     enum: PaymentStatus,

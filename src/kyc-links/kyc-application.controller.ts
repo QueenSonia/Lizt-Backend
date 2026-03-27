@@ -6,16 +6,19 @@ import {
   Body,
   Param,
   Query,
+  Req,
   UseGuards,
   ValidationPipe,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SkipAuth } from '../auth/auth.decorator';
 import { Public } from '../auth/public.decorator';
+import { KycVerifiedGuard } from './guards/kyc-verified.guard';
 import { KYCApplicationService } from './kyc-application.service';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import {
@@ -131,6 +134,37 @@ export class KYCApplicationController {
   }
 
   /**
+   * Get property history events for a KYC application (landlord only)
+   * GET /api/kyc-applications/:applicationId/history
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('kyc-applications/:applicationId/history')
+  async getKYCApplicationHistory(
+    @Param('applicationId', ParseUUIDPipe) applicationId: string,
+    @CurrentUser() user: Account,
+  ): Promise<{
+    success: boolean;
+    history: Array<{
+      id: string;
+      eventType: string;
+      eventDescription: string;
+      createdAt: string;
+    }>;
+  }> {
+    const history =
+      await this.kycApplicationService.getKYCApplicationHistory(
+        applicationId,
+        user.id,
+      );
+
+    return {
+      success: true,
+      history,
+    };
+  }
+
+  /**
    * Get application statistics for a property (landlord only)
    * GET /api/properties/:propertyId/kyc-applications/statistics
    * Requirements: 4.1, 4.2
@@ -213,11 +247,13 @@ export class KYCApplicationController {
   /**
    * Check for any existing KYC record system-wide by phone number
    * GET /api/kyc/check-existing
+   * SECURITY: Requires KYC verification JWT (issued after OTP verification)
    */
   @SkipAuth()
+  @UseGuards(KycVerifiedGuard)
   @Get('kyc/check-existing')
   async checkExistingKYC(
-    @Query('phone') phone: string,
+    @Req() req: Request,
     @Query('email') email?: string,
   ): Promise<{
     success: boolean;
@@ -225,11 +261,10 @@ export class KYCApplicationController {
     kycData?: any;
     source?: string | null;
   }> {
-    // Decode URL-encoded phone number
-    const decodedPhone = decodeURIComponent(phone);
+    const { phone } = (req as any).kycClaims;
 
     const result = await this.kycApplicationService.checkExistingKYC(
-      decodedPhone,
+      phone,
       email,
     );
 
@@ -243,12 +278,14 @@ export class KYCApplicationController {
    * Check for pending completion KYC by phone number
    * GET /api/kyc/check-pending
    * Requirements: 4.4
+   * SECURITY: Requires KYC verification JWT (issued after OTP verification)
    */
   @SkipAuth()
+  @UseGuards(KycVerifiedGuard)
   @Get('kyc/check-pending')
   async checkPendingCompletion(
+    @Req() req: Request,
     @Query('landlordId', ParseUUIDPipe) landlordId: string,
-    @Query('phone') phone: string,
     @Query('email') email?: string,
   ): Promise<{
     success: boolean;
@@ -256,12 +293,11 @@ export class KYCApplicationController {
     kycData?: any;
     propertyIds?: string[];
   }> {
-    // Decode URL-encoded phone number
-    const decodedPhone = decodeURIComponent(phone);
+    const { phone } = (req as any).kycClaims;
 
     const result = await this.kycApplicationService.checkPendingCompletion(
       landlordId,
-      decodedPhone,
+      phone,
       email,
     );
 

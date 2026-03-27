@@ -72,6 +72,7 @@ interface TimeLineEvent {
     paymentStatus: string;
     amountPaid: number;
     outstandingBalance: number;
+    creditBalance: number;
   };
   receiptData?: {
     id: string;
@@ -83,6 +84,7 @@ interface TimeLineEvent {
     paidAt?: string;
     isPartPayment: boolean;
   };
+  amount?: string | null;
   relatedEntityId?: string;
   relatedEntityType?: string;
 }
@@ -91,6 +93,21 @@ interface KycInfo {
   kycStatus: 'Verified' | 'Pending' | 'Rejected' | 'Not Submitted';
   kycSubmittedDate: string | null;
   kycDocuments?: DocumentItem[];
+}
+
+interface OutstandingBalanceTransaction {
+  id: string;
+  type: string;
+  amount: number;
+  date: Date;
+}
+
+interface OutstandingBalanceBreakdown {
+  rentId: string;
+  propertyName: string;
+  propertyId: string;
+  outstandingAmount: number;
+  transactions: OutstandingBalanceTransaction[];
 }
 
 // main DTO interface
@@ -168,6 +185,12 @@ export class TenantDetailDto {
   // System Info
   whatsAppConnected: boolean; // Placeholder logic
 
+  // Outstanding Balance Info
+  totalOutstandingBalance: number;
+  totalCreditBalance: number;
+  outstandingBalanceBreakdown: OutstandingBalanceBreakdown[];
+  paymentTransactions: OutstandingBalanceTransaction[];
+
   // Tenancy Details
   leaseStartDate: string | null;
   leaseEndDate: string | null;
@@ -180,6 +203,7 @@ export class TenantDetailDto {
   rentStatus: string;
   nextRentDue: string | null;
   outstandingBalance: number;
+  creditBalance: number;
   paymentFrequency: string | null; // Actual agreed payment frequency from Rent record
 
   // Aggregated Data

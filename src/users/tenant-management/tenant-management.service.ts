@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -92,6 +93,7 @@ interface TimelineEvent {
     paymentStatus: string;
     amountPaid: number;
     outstandingBalance: number;
+    creditBalance: number;
     acceptedAt?: Date;
     acceptanceOtp?: string;
     acceptedByPhone?: string;
@@ -106,6 +108,7 @@ interface TimelineEvent {
     paidAt?: string;
     isPartPayment: boolean;
   };
+  amount?: string | null;
   relatedEntityId?: string;
   relatedEntityType?: string;
 }
@@ -156,6 +159,8 @@ interface TenantKycRecord {
  */
 @Injectable()
 export class TenantManagementService {
+  private readonly logger = new Logger(TenantManagementService.name);
+
   constructor(
     @InjectRepository(Users)
     private readonly usersRepository: Repository<Users>,
@@ -851,6 +856,8 @@ export class TenantManagementService {
       tenancyStartDate: string;
       rentDueDate: string;
       serviceCharge?: number;
+      outstandingBalance?: number;
+      outstandingBalanceReason?: string;
     },
   ): Promise<{
     tenantUser: Users;
@@ -909,6 +916,8 @@ export class TenantManagementService {
       spouse_occupation: undefined,
       spouse_employer: undefined,
       service_charge: dto.serviceCharge,
+      outstanding_balance: dto.outstandingBalance,
+      outstanding_balance_reason: dto.outstandingBalanceReason,
     };
 
     // 3. Handle existing user or create new tenant
@@ -988,6 +997,8 @@ export class TenantManagementService {
         nature_of_business,
         business_address,
         service_charge,
+        outstanding_balance,
+        outstanding_balance_reason,
       } = dto;
 
       // 1. Check if user already exists
@@ -1197,11 +1208,16 @@ export class TenantManagementService {
         rental_price: rent_amount,
         security_deposit: 0,
         service_charge: service_charge || 0,
+        outstanding_balance: outstanding_balance || 0,
+        outstanding_balance_reason: outstanding_balance_reason || null,
         payment_frequency: this.mapRentFrequencyToPaymentFrequency(
           rent_frequency as RentFrequency,
         ),
         rent_status: RentStatusEnum.ACTIVE,
-        payment_status: RentPaymentStatusEnum.PENDING,
+        payment_status:
+          outstanding_balance && outstanding_balance > 0
+            ? RentPaymentStatusEnum.OWING
+            : RentPaymentStatusEnum.PENDING,
         amount_paid: 0,
         expiry_date: rent_due_date,
       });
@@ -1237,6 +1253,26 @@ export class TenantManagementService {
       });
 
       await manager.getRepository(PropertyHistory).save(propertyHistory);
+
+      // 9b. Create property history record for outstanding balance (if any)
+      if (outstanding_balance && outstanding_balance > 0) {
+        const outstandingBalanceHistory = manager
+          .getRepository(PropertyHistory)
+          .create({
+            property_id: property_id,
+            tenant_id: tenantAccount.id,
+            event_type: 'outstanding_balance_recorded',
+            event_description: JSON.stringify({
+              amount: outstanding_balance,
+              reason: outstanding_balance_reason || null,
+            }),
+            related_entity_id: rent.id,
+            related_entity_type: 'rent',
+          });
+        await manager
+          .getRepository(PropertyHistory)
+          .save(outstandingBalanceHistory);
+      }
 
       // 10. Send WhatsApp notification to tenant and emit live feed event
       try {
@@ -1281,6 +1317,19 @@ export class TenantManagementService {
           tenant_id: tenantAccount.id,
           tenant_name: fallbackTenantName,
           user_id: property.owner_id,
+        });
+      }
+
+      // 11. Emit outstanding balance recorded event for live feed (if any)
+      if (outstanding_balance && outstanding_balance > 0) {
+        const obTenantName = `${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}`;
+        this.eventEmitter.emit('outstanding.balance.recorded', {
+          property_id: property_id,
+          property_name: property.name,
+          tenant_id: tenantAccount.id,
+          tenant_name: obTenantName,
+          user_id: property.owner_id,
+          amount: outstanding_balance,
         });
       }
 
@@ -1527,6 +1576,7 @@ export class TenantManagementService {
         'rents.payment_frequency',
         'rents.payment_status',
         'rents.rent_status',
+        'rents.outstanding_balance',
         'rents.created_at',
       ])
       .leftJoin('rents.property', 'property')
@@ -1766,6 +1816,89 @@ export class TenantManagementService {
       ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
       : account.rents || [];
 
+    // Calculate total outstanding balance and credit balance across all rents
+    const totalOutstandingBalance = rents.reduce((total, rent) => {
+      return total + (rent.outstanding_balance || 0);
+    }, 0);
+
+    const totalCreditBalance = rents.reduce((total, rent) => {
+      return total + (rent.credit_balance || 0);
+    }, 0);
+
+    // Create outstanding balance breakdown
+    // Group by property to avoid duplicates, taking the most recent rent record per property
+    const rentsByProperty = new Map<string, (typeof rents)[0]>();
+    rents
+      .filter((rent) => (rent.outstanding_balance || 0) > 0)
+      .forEach((rent) => {
+        const existing = rentsByProperty.get(rent.property_id);
+        if (
+          !existing ||
+          new Date(rent.created_at!) > new Date(existing.created_at!)
+        ) {
+          rentsByProperty.set(rent.property_id, rent);
+        }
+      });
+
+    // Collect all individual user_added_payment history entries for this tenant
+    const paymentHistories = (account.property_histories || []).filter(
+      (h) => h.event_type === 'user_added_payment',
+    );
+
+    const outstandingBalanceBreakdown = Array.from(
+      rentsByProperty.values(),
+    ).map((rent) => {
+      const transactions: Array<{
+        id: string;
+        type: string;
+        amount: number;
+        date: Date;
+      }> = [];
+
+      const outstandingBalance = rent.outstanding_balance || 0;
+
+      // If there's an outstanding balance reason, show it as a single line item
+      if (rent.outstanding_balance_reason) {
+        transactions.push({
+          id: `outstanding-${rent.id}`,
+          type: rent.outstanding_balance_reason,
+          amount: outstandingBalance,
+          date: new Date(rent.rent_start_date || rent.created_at!),
+        });
+      } else {
+        // Add rent charge
+        if (rent.rental_price) {
+          transactions.push({
+            id: `rent-${rent.id}`,
+            type: 'Rent Due',
+            amount: rent.rental_price,
+            date: new Date(rent.rent_start_date || rent.created_at!),
+          });
+        }
+
+        // Add service charge if exists
+        if (rent.service_charge) {
+          transactions.push({
+            id: `service-${rent.id}`,
+            type: 'Service Charge Due',
+            amount: rent.service_charge,
+            date: new Date(rent.rent_start_date || rent.created_at!),
+          });
+        }
+
+      }
+
+      return {
+        rentId: rent.id,
+        propertyName: rent.property?.name || 'Unknown Property',
+        propertyId: rent.property_id,
+        outstandingAmount: outstandingBalance,
+        transactions: transactions.sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+        ),
+      };
+    });
+
     const serviceRequests = adminId
       ? account.service_requests?.filter(
           (sr) => sr.property?.owner_id === adminId,
@@ -1837,6 +1970,34 @@ export class TenantManagementService {
               hour: '2-digit',
               minute: '2-digit',
             }),
+          });
+        }
+
+        if (ph.event_type === 'outstanding_balance_recorded') {
+          const prop = ph.property;
+          let amount = 0;
+          let reason: string | null = null;
+          try {
+            const parsed = JSON.parse(ph.event_description || '{}');
+            amount = parsed.amount || 0;
+            reason = parsed.reason || null;
+          } catch (error) {
+            // Failed to parse JSON, use defaults
+          }
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `outstanding-balance-${ph.id}`,
+            type: 'general' as const,
+            title: 'Outstanding balance recorded',
+            description: `Outstanding balance recorded — ${prop?.name || 'property'} — ₦${amount.toLocaleString()}`,
+            details: reason || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            relatedEntityId: ph.related_entity_id || undefined,
+            relatedEntityType: 'outstanding_balance',
           });
         }
 
@@ -2244,6 +2405,112 @@ export class TenantManagementService {
             relatedEntityType: 'renewal_invoice',
           });
         }
+
+        if (ph.event_type === 'user_added_history') {
+          const prop = ph.property;
+          let parsedData: any = {};
+          try {
+            parsedData = JSON.parse(ph.event_description || '{}');
+          } catch {
+            parsedData = {
+              displayType: 'Custom Event',
+              description: ph.event_description || '',
+            };
+          }
+          const eventDate = new Date(
+            ph.move_in_date || ph.created_at || new Date(),
+          );
+          tenancyEvents.push({
+            id: `user-added-${ph.id}`,
+            type: 'general' as const,
+            title: `${parsedData.displayType || 'Custom Event'} — ${prop?.name || 'property'} — ${parsedData.description || ''}`,
+            description: parsedData.description || '',
+            details: prop?.name || undefined,
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            amount: parsedData.amount || null,
+          });
+        }
+
+        if (ph.event_type === 'user_added_tenancy') {
+          const prop = ph.property;
+          let parsedData: any = {};
+          try {
+            parsedData = JSON.parse(ph.event_description || '{}');
+          } catch {
+            parsedData = {};
+          }
+          const startDate = ph.move_in_date
+            ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
+            : '';
+          const endDate = ph.move_out_date
+            ? new Date(ph.move_out_date).toLocaleDateString('en-GB')
+            : '';
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `user-added-tenancy-${ph.id}`,
+            type: 'general' as const,
+            title: `Historical Tenancy Recorded — ${prop?.name || 'property'}`,
+            description: `Tenancy period: ${startDate} – ${endDate}`,
+            details: JSON.stringify({
+              rentAmount: parsedData.rentAmount || 0,
+              serviceCharge: parsedData.serviceChargeAmount || 0,
+              otherFees: parsedData.otherFees || [],
+              totalAmount: parsedData.totalAmount || 0,
+              startDate,
+              endDate,
+              propertyName: prop?.name || '',
+              tenantName: parsedData.tenantName || '',
+            }),
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            amount: parsedData.totalAmount
+              ? String(parsedData.totalAmount)
+              : null,
+          });
+        }
+
+        if (ph.event_type === 'user_added_payment') {
+          const prop = ph.property;
+          let parsedData: any = {};
+          try {
+            parsedData = JSON.parse(ph.event_description || '{}');
+          } catch {
+            parsedData = {};
+          }
+          const paymentDate = parsedData.paymentDate
+            ? new Date(parsedData.paymentDate).toLocaleDateString('en-GB')
+            : ph.move_in_date
+              ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
+              : '';
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `user-added-payment-${ph.id}`,
+            type: 'general' as const,
+            title: `Historical Payment Recorded — ${prop?.name || 'property'}`,
+            description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()} on ${paymentDate}`,
+            details: JSON.stringify({
+              paymentAmount: parsedData.paymentAmount || 0,
+              paymentDate,
+              propertyName: prop?.name || '',
+              tenantName: parsedData.tenantName || '',
+            }),
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            amount: parsedData.paymentAmount
+              ? String(parsedData.paymentAmount)
+              : null,
+          });
+        }
       });
     }
 
@@ -2339,6 +2606,7 @@ export class TenantManagementService {
             paymentStatus: offer.payment_status,
             amountPaid: Number(offer.amount_paid || 0),
             outstandingBalance: Number(offer.outstanding_balance || 0),
+            creditBalance: Number(offer.credit_balance || 0),
             acceptedAt: offer.accepted_at,
             acceptanceOtp: offer.acceptance_otp,
             acceptedByPhone: offer.accepted_by_phone,
@@ -2597,7 +2865,8 @@ export class TenantManagementService {
       rentFrequency: activeRent?.payment_frequency || 'Annually',
       rentStatus: activeRent?.payment_status || '——',
       nextRentDue: this.formatDateField(activeRent?.expiry_date),
-      outstandingBalance: 0,
+      outstandingBalance: activeRent?.outstanding_balance || 0,
+      creditBalance: activeRent?.credit_balance || 0,
       paymentFrequency: activeRent?.payment_frequency || null,
       paymentHistory: (account.rents || [])
         .map((rent) => ({
@@ -2635,6 +2904,7 @@ export class TenantManagementService {
           rentFrequency: rent.payment_frequency || 'Annually',
           rentDueDate: this.formatDateField(rent.expiry_date),
           tenancyStartDate: this.formatDateField(rent.rent_start_date),
+          outstandingBalance: rent.outstanding_balance || 0,
           status: 'Active' as const,
         })),
       tenancyHistory: (propertyHistories || [])
@@ -2649,6 +2919,28 @@ export class TenantManagementService {
 
       // System Info
       whatsAppConnected: false,
+
+      // Outstanding Balance Info
+      totalOutstandingBalance,
+      totalCreditBalance,
+      outstandingBalanceBreakdown,
+      paymentTransactions: paymentHistories
+        .map((ph) => {
+          try {
+            const data = JSON.parse(ph.event_description || '{}');
+            const amount = data.paymentAmount || 0;
+            if (amount <= 0) return null;
+            return {
+              id: `payment-history-${ph.id}`,
+              type: 'Payment Received',
+              amount: -amount,
+              date: ph.move_in_date ? new Date(ph.move_in_date) : new Date(ph.created_at!),
+            };
+          } catch {
+            return null;
+          }
+        })
+        .filter((t): t is NonNullable<typeof t> => t !== null),
 
       history: history,
       kycInfo: {
@@ -2782,4 +3074,6 @@ interface TenantKycFromApplicationDto {
   spouse_occupation?: string;
   spouse_employer?: string;
   service_charge?: number;
+  outstanding_balance?: number;
+  outstanding_balance_reason?: string;
 }

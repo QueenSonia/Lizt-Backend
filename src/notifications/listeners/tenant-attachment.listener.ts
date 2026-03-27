@@ -51,6 +51,15 @@ export interface RenewalPaymentReceivedEvent {
   payment_reference: string;
 }
 
+export interface OutstandingBalanceRecordedEvent {
+  property_id: string;
+  property_name: string;
+  tenant_id: string;
+  tenant_name: string;
+  user_id: string;
+  amount: number;
+}
+
 @Injectable()
 export class TenantAttachmentListener {
   constructor(private readonly notificationService: NotificationService) {}
@@ -109,6 +118,20 @@ export class TenantAttachmentListener {
       date: new Date().toISOString(),
       type: NotificationType.RENEWAL_PAYMENT_RECEIVED,
       description: `Renewal payment received from ${event.tenant_name} for property ${event.property_name}. Amount: ₦${event.amount.toLocaleString()}, Reference: ${event.payment_reference}.`,
+      status: 'Completed',
+      property_id: event.property_id,
+      user_id: event.user_id,
+    });
+  }
+
+  @OnEvent('outstanding.balance.recorded')
+  async handleOutstandingBalanceRecorded(
+    event: OutstandingBalanceRecordedEvent,
+  ) {
+    await this.notificationService.create({
+      date: new Date().toISOString(),
+      type: NotificationType.OUTSTANDING_BALANCE_RECORDED,
+      description: `Outstanding balance of ₦${event.amount.toLocaleString()} recorded for ${event.tenant_name} at ${event.property_name}.`,
       status: 'Completed',
       property_id: event.property_id,
       user_id: event.user_id,

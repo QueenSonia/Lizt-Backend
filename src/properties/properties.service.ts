@@ -41,7 +41,12 @@ import { WhatsAppNotificationLogService } from 'src/whatsapp-bot/whatsapp-notifi
 import { PerformanceMonitor } from 'src/utils/performance-monitor';
 import { KYCApplicationService } from 'src/kyc-links/kyc-application.service';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
-import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
+import {
+  TenantKyc,
+  Gender,
+  MaritalStatus,
+  EmploymentStatus,
+} from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { Account } from 'src/users/entities/account.entity';
 import {
   KYCApplication,
@@ -331,9 +336,26 @@ export class PropertiesService {
               });
             }
 
+            // If phone lookup failed and duplicate was on email, try finding by email
+            if (!tenantUser && tenantData.email) {
+              tenantUser = await this.usersRepository.findOne({
+                where: { email: tenantData.email },
+              });
+
+              // Update the existing user's phone to match what the landlord entered
+              if (tenantUser && tenantUser.phone_number !== normalizedPhone) {
+                console.log('📞 Updating existing user phone number:', {
+                  oldPhone: tenantUser.phone_number,
+                  newPhone: normalizedPhone,
+                });
+                tenantUser.phone_number = normalizedPhone;
+                tenantUser = await this.usersRepository.save(tenantUser);
+              }
+            }
+
             if (!tenantUser) {
               throw new HttpException(
-                'Unable to find the existing user with this phone number. Please try again.',
+                'Unable to find the existing user with this phone number or email. Please try again.',
                 HttpStatus.INTERNAL_SERVER_ERROR,
               );
             }
@@ -469,14 +491,33 @@ export class PropertiesService {
         kycApplication = queryRunner.manager.create(KYCApplication, {
           kyc_link_id: kycLink.id,
           property_id: savedProperty.id,
+          initial_property_id: savedProperty.id,
           tenant_id: tenantAccount.id,
           status: ApplicationStatus.PENDING_COMPLETION,
           first_name: firstName,
           last_name: lastName,
           phone_number: normalizedPhone,
-          email: tenantData.email || undefined,
-          // Pre-fill with landlord-provided data (stored in KYC application for reference)
-          // Note: Rent details are stored in the Rent entity, not KYC
+          email: tenantData.email || '-',
+          // Placeholder defaults for required fields — tenant will complete these via KYC form
+          contact_address: '-',
+          date_of_birth: new Date('1900-01-01'),
+          gender: Gender.MALE,
+          nationality: '-',
+          state_of_origin: '-',
+          marital_status: MaritalStatus.SINGLE,
+          employment_status: EmploymentStatus.EMPLOYED,
+          religion: '-',
+          next_of_kin_full_name: '-',
+          next_of_kin_address: '-',
+          next_of_kin_relationship: '-',
+          next_of_kin_phone_number: '-',
+          next_of_kin_email: '-',
+          intended_use_of_property: '-',
+          number_of_occupants: '-',
+          proposed_rent_amount: '-',
+          rent_payment_frequency: '-',
+          passport_photo_url: '-',
+          id_document_url: '-',
         });
         await queryRunner.manager.save(KYCApplication, kycApplication);
       }
@@ -541,6 +582,8 @@ export class PropertiesService {
         payment_frequency: tenantData.rentFrequency,
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
+        outstanding_balance: 0,
+        outstanding_balance_reason: null,
       });
       await queryRunner.manager.save(Rent, rent);
 
@@ -1258,7 +1301,8 @@ export class PropertiesService {
 
       let renewalStatus: 'pending' | 'paid' | null = null;
       if (latestRenewalInvoice) {
-        renewalStatus = latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
+        renewalStatus =
+          latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
       }
 
       currentTenant = {
@@ -1270,9 +1314,13 @@ export class PropertiesService {
         tenancyStartDate: activeRent.rent_start_date
           .toISOString()
           .split('T')[0],
-        paymentCycle: activeRent.payment_frequency || 'Monthly',
+        paymentCycle: activeRent.payment_frequency
+          ? activeRent.payment_frequency.charAt(0).toUpperCase() +
+            activeRent.payment_frequency.slice(1)
+          : 'Monthly',
         passportPhoto: tenantKycApplication?.passport_photo_url || null,
         renewalStatus,
+        outstandingBalance: activeRent?.outstanding_balance || 0,
       };
     }
 
@@ -1341,6 +1389,24 @@ export class PropertiesService {
               details: hist.monthly_rent
                 ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
                 : null,
+            };
+          }
+          case 'outstanding_balance_recorded': {
+            let obAmount = 0;
+            let obReason: string | null = null;
+            try {
+              const parsed = JSON.parse(hist.event_description || '{}');
+              obAmount = parsed.amount || 0;
+              obReason = parsed.reason || null;
+            } catch {}
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'outstanding_balance_recorded',
+              title: 'Outstanding balance recorded',
+              description: `Outstanding balance recorded — ${tenantName} — ₦${obAmount.toLocaleString()}`,
+              details: obReason,
+              amount: obAmount,
             };
           }
           case 'tenancy_ended':
@@ -1730,6 +1796,91 @@ export class PropertiesService {
                 `Renewal payment cancelled for property.`,
               details: tenantName,
             };
+          case 'user_added_history': {
+            let parsedData: any = {};
+            try {
+              parsedData = JSON.parse(hist.event_description || '{}');
+            } catch {
+              parsedData = { displayType: 'Custom Event', description: hist.event_description || '' };
+            }
+            const userAddedAmount = parsedData.amount || null;
+            return {
+              id: hist.id,
+              date: hist.move_in_date || hist.created_at,
+              eventType: 'user_added_history',
+              title: `${parsedData.displayType || 'Custom Event'} — ${tenantName} — ${parsedData.description || ''}`,
+              description: parsedData.description || '',
+              details: null,
+              amount: userAddedAmount,
+              isUserAdded: true,
+            };
+          }
+          case 'user_added_tenancy': {
+            let parsedTenancy: any = {};
+            try {
+              parsedTenancy = JSON.parse(hist.event_description || '{}');
+            } catch {
+              parsedTenancy = {};
+            }
+            const totalAmount = parsedTenancy.totalAmount || 0;
+            const rentAmount = parsedTenancy.rentAmount || 0;
+            const serviceCharge = parsedTenancy.serviceChargeAmount || 0;
+            const otherFees = parsedTenancy.otherFees || [];
+            const startDate = hist.move_in_date
+              ? new Date(hist.move_in_date).toLocaleDateString('en-GB')
+              : '';
+            const endDate = hist.move_out_date
+              ? new Date(hist.move_out_date).toLocaleDateString('en-GB')
+              : '';
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'user_added_tenancy',
+              title: `Historical Tenancy Recorded — ${tenantName}`,
+              description: `Tenancy period: ${startDate} – ${endDate}`,
+              details: JSON.stringify({
+                rentAmount,
+                serviceCharge,
+                otherFees,
+                totalAmount,
+                startDate,
+                endDate,
+                propertyName: parsedTenancy.propertyName || '',
+                tenantName,
+              }),
+              amount: totalAmount,
+              isUserAdded: true,
+            };
+          }
+          case 'user_added_payment': {
+            let parsedPayment: any = {};
+            try {
+              parsedPayment = JSON.parse(hist.event_description || '{}');
+            } catch {
+              parsedPayment = {};
+            }
+            const paymentAmount = parsedPayment.paymentAmount || 0;
+            const paymentDate = parsedPayment.paymentDate
+              ? new Date(parsedPayment.paymentDate).toLocaleDateString('en-GB')
+              : hist.move_in_date
+                ? new Date(hist.move_in_date).toLocaleDateString('en-GB')
+                : '';
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'user_added_payment',
+              title: `Historical Payment Recorded — ${tenantName}`,
+              description: `Payment of ₦${Number(paymentAmount).toLocaleString()} on ${paymentDate}`,
+              details: JSON.stringify({
+                paymentAmount,
+                paymentDate,
+                propertyName: parsedPayment.propertyName || '',
+                tenantName,
+              }),
+              amount: paymentAmount,
+              isUserAdded: true,
+            };
+          }
           default:
             return null;
         }
@@ -1791,6 +1942,7 @@ export class PropertiesService {
             ? 'Inactive'
             : 'Vacant',
       rent: activeRent?.rental_price || null,
+      serviceCharge: activeRent?.service_charge || 0,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
       rentalPrice: property.rental_price || null,

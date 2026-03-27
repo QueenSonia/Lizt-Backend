@@ -39,6 +39,9 @@ export class Rent extends BaseEntity {
   @Column({ nullable: true, type: 'text' })
   outstanding_balance_reason?: string | null;
 
+  @Column({ type: 'int', nullable: true, default: 0 })
+  credit_balance: number;
+
   @Column({ nullable: true, type: 'varchar' })
   payment_frequency: string;
 

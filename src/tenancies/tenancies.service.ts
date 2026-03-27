@@ -354,15 +354,21 @@ export class TenanciesService {
     }
     endDate.setDate(endDate.getDate() - 1); // End date is inclusive
 
-    // 5. Calculate total amount (rent + service charge + outstanding balance)
+    // 5. Calculate total amount (rent + service charge + outstanding balance - credit balance)
     const rentAmount = body?.rentAmount || activeRent.rental_price;
     const serviceCharge =
       body?.serviceCharge ?? (activeRent.service_charge || 0);
     const legalFee = 0;
     const otherCharges = 0;
     const outstandingBalance = activeRent.outstanding_balance || 0;
-    const totalAmount =
-      rentAmount + serviceCharge + legalFee + otherCharges + outstandingBalance;
+    const creditBalance = activeRent.credit_balance || 0;
+
+    // Apply credit balance to reduce total amount
+    const subtotal = rentAmount + serviceCharge + legalFee + otherCharges + outstandingBalance;
+    const totalAmount = Math.max(0, subtotal - creditBalance);
+
+    // Track remaining credit if credit exceeds charges
+    const remainingCredit = Math.max(0, creditBalance - subtotal);
 
     // 6. Check for existing unpaid renewal invoice (may have been auto-created by rent reminder)
     const existingInvoice = await this.renewalInvoiceRepository.findOne({
@@ -808,6 +814,14 @@ export class TenanciesService {
       },
     });
 
+    // Calculate remaining credit balance if credits were used during invoice creation
+    const originalCreditBalance = activeRent?.credit_balance || 0;
+    const subtotalBeforeCredit = parseFloat(invoice.rent_amount.toString()) +
+      parseFloat((invoice.service_charge || 0).toString()) +
+      outstandingBalance;
+    const creditUsed = Math.min(originalCreditBalance, subtotalBeforeCredit);
+    const remainingCredit = originalCreditBalance - creditUsed;
+
     if (shouldRenew && activeRent) {
       // --- RENEWAL PATH ---
       // Mark old rent as inactive
@@ -828,6 +842,7 @@ export class TenanciesService {
           parseFloat(invoice.service_charge.toString()) ||
           activeRent.service_charge,
         outstanding_balance: newOutstandingBalance,
+        credit_balance: remainingCredit, // Carry forward remaining credit
         payment_frequency:
           invoice.payment_frequency || activeRent.payment_frequency,
         payment_status: RentPaymentStatusEnum.PAID,

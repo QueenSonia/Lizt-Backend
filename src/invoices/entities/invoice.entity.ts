@@ -86,6 +86,9 @@ export class Invoice {
   @Column({ type: 'decimal', precision: 15, scale: 2, default: 0 })
   outstanding_balance: number;
 
+  @Column({ type: 'decimal', precision: 15, scale: 2, nullable: true, default: 0 })
+  credit_balance: number;
+
   @Column({ type: 'text', nullable: true })
   notes: string;
 

@@ -571,9 +571,6 @@ export class PropertiesService {
         expiryDate.setMonth(expiryDate.getMonth() + 1);
       }
 
-      const hasOutstandingBalance =
-        tenantData.outstandingBalance && tenantData.outstandingBalance > 0;
-
       const rent = queryRunner.manager.create(Rent, {
         property_id: savedProperty.id,
         tenant_id: tenantAccount.id,
@@ -583,16 +580,10 @@ export class PropertiesService {
         amount_paid: tenantData.rentAmount,
         service_charge: tenantData.serviceChargeAmount || 0,
         payment_frequency: tenantData.rentFrequency,
-        payment_status: hasOutstandingBalance
-          ? RentPaymentStatusEnum.OWING
-          : RentPaymentStatusEnum.PAID,
+        payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
-        outstanding_balance: hasOutstandingBalance
-          ? tenantData.outstandingBalance
-          : 0,
-        outstanding_balance_reason: hasOutstandingBalance
-          ? tenantData.outstandingBalanceReason || null
-          : null,
+        outstanding_balance: 0,
+        outstanding_balance_reason: null,
       });
       await queryRunner.manager.save(Rent, rent);
 
@@ -611,24 +602,6 @@ export class PropertiesService {
         move_out_reason: null,
       });
       await queryRunner.manager.save(PropertyHistory, propertyHistory);
-
-      // 12b. If tenant has outstanding balance, create a history event for it
-      if (hasOutstandingBalance) {
-        const balanceHistory = queryRunner.manager.create(PropertyHistory, {
-          property_id: savedProperty.id,
-          tenant_id: tenantAccount.id,
-          event_type: 'outstanding_balance_recorded',
-          move_in_date: rentStartDate,
-          monthly_rent: tenantData.outstandingBalance,
-          owner_comment: tenantData.outstandingBalanceReason
-            ? `Outstanding balance recorded: ₦${tenantData.outstandingBalance!.toLocaleString()} - ${tenantData.outstandingBalanceReason}`
-            : `Outstanding balance recorded: ₦${tenantData.outstandingBalance!.toLocaleString()}`,
-          tenant_comment: null,
-          move_out_date: null,
-          move_out_reason: null,
-        });
-        await queryRunner.manager.save(PropertyHistory, balanceHistory);
-      }
 
       // Commit transaction before sending WhatsApp (non-critical operation)
       await queryRunner.commitTransaction();
@@ -1839,6 +1812,72 @@ export class PropertiesService {
               description: parsedData.description || '',
               details: null,
               amount: userAddedAmount,
+              isUserAdded: true,
+            };
+          }
+          case 'user_added_tenancy': {
+            let parsedTenancy: any = {};
+            try {
+              parsedTenancy = JSON.parse(hist.event_description || '{}');
+            } catch {
+              parsedTenancy = {};
+            }
+            const totalAmount = parsedTenancy.totalAmount || 0;
+            const rentAmount = parsedTenancy.rentAmount || 0;
+            const serviceCharge = parsedTenancy.serviceChargeAmount || 0;
+            const otherFees = parsedTenancy.otherFees || [];
+            const startDate = hist.move_in_date
+              ? new Date(hist.move_in_date).toLocaleDateString('en-GB')
+              : '';
+            const endDate = hist.move_out_date
+              ? new Date(hist.move_out_date).toLocaleDateString('en-GB')
+              : '';
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'user_added_tenancy',
+              title: `Historical Tenancy Recorded — ${tenantName}`,
+              description: `Tenancy period: ${startDate} – ${endDate}`,
+              details: JSON.stringify({
+                rentAmount,
+                serviceCharge,
+                otherFees,
+                totalAmount,
+                startDate,
+                endDate,
+                propertyName: parsedTenancy.propertyName || '',
+                tenantName,
+              }),
+              amount: totalAmount,
+              isUserAdded: true,
+            };
+          }
+          case 'user_added_payment': {
+            let parsedPayment: any = {};
+            try {
+              parsedPayment = JSON.parse(hist.event_description || '{}');
+            } catch {
+              parsedPayment = {};
+            }
+            const paymentAmount = parsedPayment.paymentAmount || 0;
+            const paymentDate = parsedPayment.paymentDate
+              ? new Date(parsedPayment.paymentDate).toLocaleDateString('en-GB')
+              : hist.move_in_date
+                ? new Date(hist.move_in_date).toLocaleDateString('en-GB')
+                : '';
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'user_added_payment',
+              title: `Historical Payment Recorded — ${tenantName}`,
+              description: `Payment of ₦${Number(paymentAmount).toLocaleString()} on ${paymentDate}`,
+              details: JSON.stringify({
+                paymentAmount,
+                paymentDate,
+                propertyName: parsedPayment.propertyName || '',
+                tenantName,
+              }),
+              amount: paymentAmount,
               isUserAdded: true,
             };
           }

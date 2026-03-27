@@ -6,10 +6,11 @@ import { PropertyHistory } from './entities/property-history.entity';
 import { NotificationModule } from '../notifications/notification.module';
 import { EventsModule } from '../events/events.module';
 import { Property } from '../properties/entities/property.entity';
+import { Rent } from '../rents/entities/rent.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([PropertyHistory, Property]),
+    TypeOrmModule.forFeature([PropertyHistory, Property, Rent]),
     NotificationModule,
     EventsModule,
   ],

@@ -344,7 +344,19 @@ export class PaymentService {
         const totalAmount = Number(offerLetter.total_amount);
 
         const newAmountPaid = currentAmountPaid + amountToAdd;
-        const newOutstandingBalance = Math.max(0, totalAmount - newAmountPaid);
+        const rawOutstandingBalance = totalAmount - newAmountPaid;
+
+        // Calculate credit balance if overpayment occurred
+        let newCreditBalance = Number(offerLetter.credit_balance || 0);
+        let newOutstandingBalance = 0;
+
+        if (rawOutstandingBalance < 0) {
+          // Overpayment: add excess to credit balance
+          newCreditBalance += Math.abs(rawOutstandingBalance);
+          newOutstandingBalance = 0;
+        } else {
+          newOutstandingBalance = rawOutstandingBalance;
+        }
 
         // Use a small epsilon for zero-check to handle floating point
         const isFullyPaid = newOutstandingBalance < 0.01;
@@ -352,6 +364,7 @@ export class PaymentService {
         await manager.update(OfferLetter, offerLetter.id, {
           amount_paid: newAmountPaid,
           outstanding_balance: isFullyPaid ? 0 : newOutstandingBalance,
+          credit_balance: newCreditBalance,
           payment_status: isFullyPaid
             ? OfferPaymentStatus.FULLY_PAID
             : OfferPaymentStatus.PARTIAL,

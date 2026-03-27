@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -92,6 +93,7 @@ interface TimelineEvent {
     paymentStatus: string;
     amountPaid: number;
     outstandingBalance: number;
+    creditBalance: number;
     acceptedAt?: Date;
     acceptanceOtp?: string;
     acceptedByPhone?: string;
@@ -157,6 +159,8 @@ interface TenantKycRecord {
  */
 @Injectable()
 export class TenantManagementService {
+  private readonly logger = new Logger(TenantManagementService.name);
+
   constructor(
     @InjectRepository(Users)
     private readonly usersRepository: Repository<Users>,
@@ -1812,6 +1816,109 @@ export class TenantManagementService {
       ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
       : account.rents || [];
 
+    // Calculate total outstanding balance and credit balance across all rents
+    const totalOutstandingBalance = rents.reduce((total, rent) => {
+      return total + (rent.outstanding_balance || 0);
+    }, 0);
+
+    const totalCreditBalance = rents.reduce((total, rent) => {
+      return total + (rent.credit_balance || 0);
+    }, 0);
+
+    // Create outstanding balance breakdown
+    // Group by property to avoid duplicates, taking the most recent rent record per property
+    const rentsByProperty = new Map<string, (typeof rents)[0]>();
+    rents
+      .filter((rent) => (rent.outstanding_balance || 0) > 0)
+      .forEach((rent) => {
+        const existing = rentsByProperty.get(rent.property_id);
+        if (
+          !existing ||
+          new Date(rent.created_at!) > new Date(existing.created_at!)
+        ) {
+          rentsByProperty.set(rent.property_id, rent);
+        }
+      });
+
+    const outstandingBalanceBreakdown = Array.from(
+      rentsByProperty.values(),
+    ).map((rent) => {
+      const transactions: Array<{
+        id: string;
+        type: string;
+        amount: number;
+        date: Date;
+      }> = [];
+
+      const outstandingBalance = rent.outstanding_balance || 0;
+      const amountPaid = rent.amount_paid || 0;
+      const totalCharges =
+        (rent.rental_price || 0) + (rent.service_charge || 0);
+
+      // If there's an outstanding balance reason, show it as a single line item
+      if (rent.outstanding_balance_reason) {
+        transactions.push({
+          id: `outstanding-${rent.id}`,
+          type: rent.outstanding_balance_reason,
+          amount: outstandingBalance,
+          date: new Date(rent.rent_start_date || rent.created_at!),
+        });
+      } else {
+        // Otherwise, show the breakdown of charges and payments
+
+        // Add rent charge
+        if (rent.rental_price) {
+          transactions.push({
+            id: `rent-${rent.id}`,
+            type: 'Rent Due',
+            amount: rent.rental_price,
+            date: new Date(rent.rent_start_date || rent.created_at!),
+          });
+        }
+
+        // Add service charge if exists
+        if (rent.service_charge) {
+          transactions.push({
+            id: `service-${rent.id}`,
+            type: 'Service Charge Due',
+            amount: rent.service_charge,
+            date: new Date(rent.rent_start_date || rent.created_at!),
+          });
+        }
+
+        // Add payment received (if any)
+        if (amountPaid > 0) {
+          transactions.push({
+            id: `payment-${rent.id}`,
+            type: 'Payment Received',
+            amount: -amountPaid,
+            date: new Date(rent.updated_at || rent.created_at!),
+          });
+        }
+      }
+
+      // Log warning if calculated doesn't match stored
+      const calculatedOutstanding = totalCharges - amountPaid;
+      if (
+        !rent.outstanding_balance_reason &&
+        Math.abs(calculatedOutstanding - outstandingBalance) > 1
+      ) {
+        this.logger.warn(
+          `Outstanding balance mismatch for rent ${rent.id}: stored=${outstandingBalance}, calculated=${calculatedOutstanding}`,
+        );
+      }
+
+      return {
+        rentId: rent.id,
+        propertyName: rent.property?.name || 'Unknown Property',
+        propertyId: rent.property_id,
+        outstandingAmount: outstandingBalance,
+        transactions: transactions.sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+        ),
+      };
+    });
+
     const serviceRequests = adminId
       ? account.service_requests?.filter(
           (sr) => sr.property?.owner_id === adminId,
@@ -1894,7 +2001,9 @@ export class TenantManagementService {
             const parsed = JSON.parse(ph.event_description || '{}');
             amount = parsed.amount || 0;
             reason = parsed.reason || null;
-          } catch {}
+          } catch (error) {
+            // Failed to parse JSON, use defaults
+          }
           const eventDate = new Date(ph.created_at || new Date());
           tenancyEvents.push({
             id: `outstanding-balance-${ph.id}`,
@@ -2323,9 +2432,14 @@ export class TenantManagementService {
           try {
             parsedData = JSON.parse(ph.event_description || '{}');
           } catch {
-            parsedData = { displayType: 'Custom Event', description: ph.event_description || '' };
+            parsedData = {
+              displayType: 'Custom Event',
+              description: ph.event_description || '',
+            };
           }
-          const eventDate = new Date(ph.move_in_date || ph.created_at || new Date());
+          const eventDate = new Date(
+            ph.move_in_date || ph.created_at || new Date(),
+          );
           tenancyEvents.push({
             id: `user-added-${ph.id}`,
             type: 'general' as const,
@@ -2338,6 +2452,83 @@ export class TenantManagementService {
               minute: '2-digit',
             }),
             amount: parsedData.amount || null,
+          });
+        }
+
+        if (ph.event_type === 'user_added_tenancy') {
+          const prop = ph.property;
+          let parsedData: any = {};
+          try {
+            parsedData = JSON.parse(ph.event_description || '{}');
+          } catch {
+            parsedData = {};
+          }
+          const startDate = ph.move_in_date
+            ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
+            : '';
+          const endDate = ph.move_out_date
+            ? new Date(ph.move_out_date).toLocaleDateString('en-GB')
+            : '';
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `user-added-tenancy-${ph.id}`,
+            type: 'general' as const,
+            title: `Historical Tenancy Recorded — ${prop?.name || 'property'}`,
+            description: `Tenancy period: ${startDate} – ${endDate}`,
+            details: JSON.stringify({
+              rentAmount: parsedData.rentAmount || 0,
+              serviceCharge: parsedData.serviceChargeAmount || 0,
+              otherFees: parsedData.otherFees || [],
+              totalAmount: parsedData.totalAmount || 0,
+              startDate,
+              endDate,
+              propertyName: prop?.name || '',
+              tenantName: parsedData.tenantName || '',
+            }),
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            amount: parsedData.totalAmount
+              ? String(parsedData.totalAmount)
+              : null,
+          });
+        }
+
+        if (ph.event_type === 'user_added_payment') {
+          const prop = ph.property;
+          let parsedData: any = {};
+          try {
+            parsedData = JSON.parse(ph.event_description || '{}');
+          } catch {
+            parsedData = {};
+          }
+          const paymentDate = parsedData.paymentDate
+            ? new Date(parsedData.paymentDate).toLocaleDateString('en-GB')
+            : ph.move_in_date
+              ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
+              : '';
+          const eventDate = new Date(ph.created_at || new Date());
+          tenancyEvents.push({
+            id: `user-added-payment-${ph.id}`,
+            type: 'general' as const,
+            title: `Historical Payment Recorded — ${prop?.name || 'property'}`,
+            description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()} on ${paymentDate}`,
+            details: JSON.stringify({
+              paymentAmount: parsedData.paymentAmount || 0,
+              paymentDate,
+              propertyName: prop?.name || '',
+              tenantName: parsedData.tenantName || '',
+            }),
+            date: eventDate.toISOString(),
+            time: eventDate.toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            amount: parsedData.paymentAmount
+              ? String(parsedData.paymentAmount)
+              : null,
           });
         }
       });
@@ -2435,6 +2626,7 @@ export class TenantManagementService {
             paymentStatus: offer.payment_status,
             amountPaid: Number(offer.amount_paid || 0),
             outstandingBalance: Number(offer.outstanding_balance || 0),
+            creditBalance: Number(offer.credit_balance || 0),
             acceptedAt: offer.accepted_at,
             acceptanceOtp: offer.acceptance_otp,
             acceptedByPhone: offer.accepted_by_phone,
@@ -2694,6 +2886,7 @@ export class TenantManagementService {
       rentStatus: activeRent?.payment_status || '——',
       nextRentDue: this.formatDateField(activeRent?.expiry_date),
       outstandingBalance: activeRent?.outstanding_balance || 0,
+      creditBalance: activeRent?.credit_balance || 0,
       paymentFrequency: activeRent?.payment_frequency || null,
       paymentHistory: (account.rents || [])
         .map((rent) => ({
@@ -2746,6 +2939,11 @@ export class TenantManagementService {
 
       // System Info
       whatsAppConnected: false,
+
+      // Outstanding Balance Info
+      totalOutstandingBalance,
+      totalCreditBalance,
+      outstandingBalanceBreakdown,
 
       history: history,
       kycInfo: {

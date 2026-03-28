@@ -20,6 +20,7 @@ import {
 } from '../offer-letters/entities/offer-letter.entity';
 import { Property } from '../properties/entities/property.entity';
 import { Users } from '../users/entities/user.entity';
+import { Account } from '../users/entities/account.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { PaystackService } from './paystack.service';
 import { PaystackLogger } from './paystack-logger.service';
@@ -52,6 +53,8 @@ export class PaymentService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(Users)
     private readonly usersRepository: Repository<Users>,
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
     @InjectRepository(KYCApplication)
     private readonly kycApplicationRepository: Repository<KYCApplication>,
     private readonly paystackService: PaystackService,
@@ -735,9 +738,11 @@ export class PaymentService {
 
     // Queue race condition notifications (logged to DB, sent async with retries)
     try {
-      const landlord = await this.usersRepository.findOne({
+      const landlordAccount = await this.accountRepository.findOne({
         where: { id: offerLetter.property.owner_id },
+        relations: ['user'],
       });
+      const landlord = landlordAccount?.user;
       const kycApplication = await this.kycApplicationRepository.findOne({
         where: { id: offerLetter.kyc_application_id },
       });
@@ -1296,9 +1301,11 @@ export class PaymentService {
         return;
       }
 
-      const landlord = await this.usersRepository.findOne({
+      const landlordAccount = await this.accountRepository.findOne({
         where: { id: offerLetter.property.owner_id },
+        relations: ['user'],
       });
+      const landlord = landlordAccount?.user;
 
       const kycApplication = await this.kycApplicationRepository.findOne({
         where: { id: offerLetter.kyc_application_id },
@@ -1424,23 +1431,18 @@ export class PaymentService {
         .orderBy('receipt.created_at', 'DESC')
         .getOne();
 
-      const frontendUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
-      const receiptLink = receipt
-        ? `${frontendUrl}/receipt/${receipt.token}`
-        : undefined;
-
       await this.templateSenderService.sendTenantPaymentSuccess({
         phone_number: kycApplication.phone_number,
         tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
         property_name: property.name,
         total_amount: Number(offerLetter.total_amount),
-        receipt_link: receiptLink,
+        receipt_token: receipt?.token,
       });
 
       this.paystackLogger.info('Winning tenant notification sent', {
         offer_id: offerLetter.id,
         kyc_application_id: kycApplication.id,
-        receipt_link: receiptLink,
+        receipt_token: receipt?.token,
       });
     } catch (error) {
       this.paystackLogger.error('Failed to send winning tenant notification', {

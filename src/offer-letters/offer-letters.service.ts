@@ -726,15 +726,11 @@ export class OfferLettersService {
 
     // Send invoice link to tenant via WhatsApp
     try {
-      const frontendUrl =
-        this.configService.get<string>('FRONTEND_URL') || 'https://lizt.co';
-      const invoiceUrl = `${frontendUrl}/offer-letters/invoice/${offerLetter.token}`;
-
       await this.templateSenderService.sendPaymentInvoiceLink({
         phone_number: kycApplication.phone_number,
         tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
         property_name: property.name,
-        invoice_url: invoiceUrl,
+        invoice_url: offerLetter.token,
       });
       this.logger.log(
         `Invoice link sent to tenant for offer letter ${offerLetter.id}`,

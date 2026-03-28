@@ -273,7 +273,7 @@ export interface TenantPaymentSuccessParams {
   tenant_name: string;
   property_name: string;
   total_amount: number;
-  receipt_link?: string;
+  receipt_token?: string;
 }
 
 /**
@@ -1503,7 +1503,7 @@ export class TemplateSenderService {
     tenant_name,
     property_name,
     total_amount,
-    receipt_link,
+    receipt_token,
   }: TenantPaymentSuccessParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -1530,16 +1530,23 @@ export class TemplateSenderService {
                 type: 'text',
                 text: property_name,
               },
-              ...(receipt_link
-                ? [
-                    {
-                      type: 'text' as const,
-                      text: receipt_link,
-                    },
-                  ]
-                : []),
             ],
           },
+          ...(receipt_token
+            ? [
+                {
+                  type: 'button' as const,
+                  sub_type: 'url' as const,
+                  index: '0',
+                  parameters: [
+                    {
+                      type: 'text' as const,
+                      text: receipt_token,
+                    },
+                  ],
+                },
+              ]
+            : []),
         ],
       },
     };

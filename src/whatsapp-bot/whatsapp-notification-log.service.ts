@@ -77,6 +77,7 @@ export class WhatsAppNotificationLogService {
           success: true,
           attempts,
           isRetry: log.attempts > 0,
+          propertyId: log.payload.property_id,
         });
       }
     } catch (error) {
@@ -100,6 +101,7 @@ export class WhatsAppNotificationLogService {
           error: error.message?.substring(0, 200) ?? 'Unknown error',
           attempts,
           isRetry: log.attempts > 0,
+          propertyId: log.payload.property_id,
         });
       }
 

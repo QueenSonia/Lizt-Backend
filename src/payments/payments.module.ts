@@ -12,6 +12,7 @@ import { PaymentLog } from './entities/payment-log.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { Property } from '../properties/entities/property.entity';
 import { Users } from '../users/entities/user.entity';
+import { Account } from '../users/entities/account.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { KYCLinksModule } from '../kyc-links/kyc-links.module';
 import { PropertyHistoryModule } from '../property-history/property-history.module';
@@ -36,6 +37,7 @@ import { TenanciesModule } from '../tenancies/tenancies.module';
       OfferLetter,
       Property,
       Users,
+      Account,
       KYCApplication,
     ]),
     ConfigModule,

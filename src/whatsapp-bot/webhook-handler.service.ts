@@ -276,9 +276,9 @@ export class WebhookHandler {
       return false;
     }
 
-    // WhatsApp Message IDs are typically alphanumeric strings
-    // They can contain letters, numbers, dots, and underscores
-    const wamidPattern = /^[a-zA-Z0-9._-]+$/;
+    // WAMIDs from Meta are base64-encoded and follow the pattern:
+    // "wamid." followed by base64 characters (including +, /, = padding)
+    const wamidPattern = /^[a-zA-Z0-9._\-+=\/]+$/;
     return wamidPattern.test(wamid) && wamid.length > 0;
   }
 

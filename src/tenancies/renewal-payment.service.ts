@@ -353,43 +353,4 @@ export class RenewalPaymentService {
       return null;
     }
   }
-
-  /**
-   * Send WhatsApp receipt notification to tenant
-   * Requirements: 3.1-3.6
-   */
-  private async sendWhatsAppReceipt(
-    invoice: RenewalInvoice,
-    receiptToken: string,
-    amount: number,
-  ): Promise<{ sent: boolean; messageId?: string; error?: string }> {
-    try {
-      const tenantPhone = invoice.tenant.user.phone_number;
-      const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
-      const propertyName = invoice.property.name;
-
-      // Generate receipt URL
-      const frontendUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
-      const receiptUrl = `${frontendUrl}/renewal-receipt/${receiptToken}`;
-
-      // Queue WhatsApp receipt delivery
-      await this.whatsappNotificationLog.queue('sendRenewalReceipt', {
-        phone_number: tenantPhone,
-        tenant_name: tenantName,
-        property_name: propertyName,
-        receipt_url: receiptUrl,
-        payment_amount: amount,
-      });
-
-      this.logger.log(`WhatsApp receipt queued for tenant ${tenantPhone}`);
-
-      return { sent: true };
-    } catch (error) {
-      this.logger.error('Error sending WhatsApp receipt:', error);
-      return {
-        sent: false,
-        error: error.message || 'Failed to send WhatsApp receipt',
-      };
-    }
-  }
 }

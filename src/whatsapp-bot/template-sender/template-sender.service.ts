@@ -273,7 +273,7 @@ export interface TenantPaymentSuccessParams {
   tenant_name: string;
   property_name: string;
   total_amount: number;
-  receipt_link?: string;
+  receipt_token?: string;
 }
 
 /**
@@ -325,7 +325,7 @@ export interface RenewalPaymentTenantParams {
   tenant_name: string;
   amount: number;
   property_name: string;
-  receipt_url: string;
+  receipt_token?: string;
 }
 
 /**
@@ -362,16 +362,6 @@ export interface OutstandingBalancePaidLandlordParams {
   remaining_balance: number;
 }
 
-/**
- * Parameters for full renewal payment (OB cleared + renewed) to tenant
- */
-export interface FullRenewalPaymentTenantParams {
-  phone_number: string;
-  tenant_name: string;
-  amount: number;
-  property_name: string;
-  receipt_url: string;
-}
 
 /**
  * Parameters for full renewal payment (OB cleared + renewed) to landlord
@@ -384,16 +374,6 @@ export interface FullRenewalPaymentLandlordParams {
   property_name: string;
 }
 
-/**
- * Parameters for renewal receipt delivery to tenant
- */
-export interface RenewalReceiptParams {
-  phone_number: string;
-  tenant_name: string;
-  property_name: string;
-  receipt_url: string;
-  payment_amount: number;
-}
 
 /**
  * Parameters for rent reminder to tenant
@@ -1503,7 +1483,7 @@ export class TemplateSenderService {
     tenant_name,
     property_name,
     total_amount,
-    receipt_link,
+    receipt_token,
   }: TenantPaymentSuccessParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -1530,16 +1510,23 @@ export class TemplateSenderService {
                 type: 'text',
                 text: property_name,
               },
-              ...(receipt_link
-                ? [
-                    {
-                      type: 'text' as const,
-                      text: receipt_link,
-                    },
-                  ]
-                : []),
             ],
           },
+          ...(receipt_token
+            ? [
+                {
+                  type: 'button' as const,
+                  sub_type: 'url' as const,
+                  index: '0',
+                  parameters: [
+                    {
+                      type: 'text' as const,
+                      text: receipt_token,
+                    },
+                  ],
+                },
+              ]
+            : []),
         ],
       },
     };
@@ -1803,7 +1790,7 @@ export class TemplateSenderService {
     tenant_name,
     amount,
     property_name,
-    receipt_url,
+    receipt_token,
   }: RenewalPaymentTenantParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -1832,17 +1819,21 @@ export class TemplateSenderService {
               },
             ],
           },
-          {
-            type: 'button',
-            sub_type: 'url',
-            index: '0',
-            parameters: [
-              {
-                type: 'text',
-                text: receipt_url,
-              },
-            ],
-          },
+          ...(receipt_token
+            ? [
+                {
+                  type: 'button' as const,
+                  sub_type: 'url' as const,
+                  index: '0',
+                  parameters: [
+                    {
+                      type: 'text' as const,
+                      text: receipt_token,
+                    },
+                  ],
+                },
+              ]
+            : []),
         ],
       },
     };
@@ -1890,54 +1881,6 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: property_name,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  /**
-   * Template: renewal_receipt
-   */
-  async sendRenewalReceipt({
-    phone_number,
-    tenant_name,
-    property_name,
-    receipt_url,
-    payment_amount,
-  }: RenewalReceiptParams): Promise<void> {
-    const payload: WhatsAppPayload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'renewal_receipt',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: tenant_name,
-              },
-              {
-                type: 'text',
-                text: `₦${payment_amount.toLocaleString()}`,
-              },
-              {
-                type: 'text',
-                text: property_name,
-              },
-              {
-                type: 'text',
-                text: receipt_url,
               },
             ],
           },
@@ -2041,62 +1984,6 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: `₦${remaining_balance.toLocaleString()}`,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  /**
-   * Send full renewal payment notification to tenant (OB cleared + tenancy renewed)
-   * Template: full_renewal_payment_tenant
-   */
-  async sendFullRenewalPaymentTenant({
-    phone_number,
-    tenant_name,
-    amount,
-    property_name,
-    receipt_url,
-  }: FullRenewalPaymentTenantParams): Promise<void> {
-    const payload: WhatsAppPayload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'full_renewal_payment_tenant',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: tenant_name,
-              },
-              {
-                type: 'text',
-                text: `₦${amount.toLocaleString()}`,
-              },
-              {
-                type: 'text',
-                text: property_name,
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'url',
-            index: '0',
-            parameters: [
-              {
-                type: 'text',
-                text: receipt_url,
               },
             ],
           },

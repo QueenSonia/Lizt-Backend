@@ -108,7 +108,8 @@ export class WebhooksController {
         return { status: 'error', message: 'Invalid signature' };
       }
 
-      // 3. Process webhook synchronously
+      // 3. Process webhook asynchronously — respond 200 immediately so Paystack
+      //    doesn't retry, then do the heavy DB/notification work in the background.
       if (body.event === 'charge.success') {
         const reference = body.data.reference;
         const isRenewalPayment =
@@ -121,23 +122,24 @@ export class WebhooksController {
           type: isRenewalPayment ? 'renewal' : 'offer_letter',
         });
 
-        try {
-          if (isRenewalPayment) {
-            await this.renewalPaymentService.processWebhookPayment(body.data);
-          } else {
-            await this.paymentService.processSuccessfulPayment(body.data);
-          }
-          this.paystackLogger.info('Webhook processed successfully', {
-            reference,
-          });
-        } catch (error) {
-          // Log but don't fail the webhook response
-          // Paystack will retry if we return non-200
-          this.paystackLogger.error('Error processing webhook', {
-            reference,
-            error: error.message,
-          });
-        }
+        setImmediate(() => {
+          const processor = isRenewalPayment
+            ? this.renewalPaymentService.processWebhookPayment(body.data)
+            : this.paymentService.processSuccessfulPayment(body.data);
+
+          processor
+            .then(() => {
+              this.paystackLogger.info('Webhook processed successfully', {
+                reference,
+              });
+            })
+            .catch((error) => {
+              this.paystackLogger.error('Error processing webhook', {
+                reference,
+                error: error.message,
+              });
+            });
+        });
       } else {
         this.paystackLogger.info('Webhook event received', {
           event: body.event,

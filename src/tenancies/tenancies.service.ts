@@ -866,25 +866,13 @@ export class TenanciesService {
       const tenantPhone = this.utilService.normalizePhoneNumber(
         invoice.tenant.user.phone_number,
       );
-      const frontendUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
-      const receiptUrl = invoice.receipt_token
-        ? `${frontendUrl}/renewal-receipt/${invoice.receipt_token}`
-        : `${frontendUrl}/renewal-invoice/verify/${invoice.token}`;
-
       if (shouldRenew) {
-        // Determine if this was a full payment that cleared OB
-        const clearedOB = outstandingBalance > 0 && newOutstandingBalance === 0;
-        const templateName =
-          clearedOB && paymentOption
-            ? 'sendFullRenewalPaymentTenant'
-            : 'sendRenewalPaymentTenant';
-
-        await this.whatsappNotificationLog.queue(templateName, {
+        await this.whatsappNotificationLog.queue('sendRenewalPaymentTenant', {
           phone_number: tenantPhone,
           tenant_name: tenantName,
           amount,
           property_name: propertyName,
-          receipt_url: receiptUrl,
+          receipt_token: invoice.receipt_token,
         });
 
         // Send notification to landlord
@@ -893,12 +881,8 @@ export class TenanciesService {
             invoice.property.owner.user.phone_number,
           );
           const landlordName = invoice.property.owner.user.first_name;
-          const landlordTemplate =
-            clearedOB && paymentOption
-              ? 'sendFullRenewalPaymentLandlord'
-              : 'sendRenewalPaymentLandlord';
 
-          await this.whatsappNotificationLog.queue(landlordTemplate, {
+          await this.whatsappNotificationLog.queue('sendRenewalPaymentLandlord', {
             phone_number: landlordPhone,
             landlord_name: landlordName,
             tenant_name: tenantName,

@@ -92,7 +92,7 @@ export class WhatsAppNotificationLogService {
         last_error: error.message?.substring(0, 500) ?? 'Unknown error',
       });
 
-      if (isFinal && log.payload.landlord_id && log.payload.recipient_name) {
+      if (log.payload.landlord_id && log.payload.recipient_name) {
         this.eventsGateway.emitWhatsAppNotification(log.payload.landlord_id, {
           type: log.type,
           recipientName: log.payload.recipient_name,

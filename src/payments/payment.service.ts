@@ -703,6 +703,8 @@ export class PaymentService {
               tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
               property_name: property.name,
               amount_paid: Number(losingOffer.amount_paid),
+              landlord_id: property.owner_id,
+              recipient_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
             },
             losingOffer.id,
           );
@@ -756,6 +758,8 @@ export class PaymentService {
             tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
             property_name: offerLetter.property.name,
             amount: Number(offerLetter.amount_paid),
+            landlord_id: offerLetter.property.owner_id,
+            recipient_name: `${landlord.first_name} ${landlord.last_name}`,
           },
           offerLetter.id,
         );
@@ -769,6 +773,8 @@ export class PaymentService {
             tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
             property_name: offerLetter.property.name,
             amount: Number(offerLetter.amount_paid),
+            landlord_id: offerLetter.property.owner_id,
+            recipient_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
           },
           offerLetter.id,
         );

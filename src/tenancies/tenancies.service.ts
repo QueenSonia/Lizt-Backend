@@ -463,6 +463,8 @@ export class TenanciesService {
           tenant_name: tenantName,
           renewal_token: token,
           frontend_url: frontendUrl,
+          landlord_id: userId,
+          recipient_name: tenantName,
         });
 
         console.log(`Renewal link queued for ${tenantPhone}: ${link}`);
@@ -873,6 +875,8 @@ export class TenanciesService {
           amount,
           property_name: propertyName,
           receipt_token: invoice.receipt_token,
+          landlord_id: invoice.property.owner_id,
+          recipient_name: tenantName,
         });
 
         // Send notification to landlord
@@ -888,6 +892,8 @@ export class TenanciesService {
             tenant_name: tenantName,
             amount,
             property_name: propertyName,
+            landlord_id: invoice.property.owner_id,
+            recipient_name: landlordName,
           });
         }
       } else {
@@ -900,6 +906,8 @@ export class TenanciesService {
             amount,
             property_name: propertyName,
             remaining_balance: newOutstandingBalance,
+            landlord_id: invoice.property.owner_id,
+            recipient_name: tenantName,
           },
         );
 
@@ -918,6 +926,8 @@ export class TenanciesService {
               amount,
               property_name: propertyName,
               remaining_balance: newOutstandingBalance,
+              landlord_id: invoice.property.owner_id,
+              recipient_name: landlordName,
             },
           );
         }

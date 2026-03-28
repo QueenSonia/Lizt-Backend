@@ -8,6 +8,7 @@ import {
   WhatsAppNotificationStatus,
 } from './entities/whatsapp-notification-log.entity';
 import { TemplateSenderService } from './template-sender/template-sender.service';
+import { EventsGateway } from 'src/events/events.gateway';
 
 const MAX_ATTEMPTS = 3;
 
@@ -20,6 +21,7 @@ export class WhatsAppNotificationLogService {
     private readonly logRepository: Repository<WhatsAppNotificationLog>,
     private readonly templateSenderService: TemplateSenderService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly eventsGateway: EventsGateway,
   ) {}
 
   /**
@@ -60,24 +62,46 @@ export class WhatsAppNotificationLogService {
     try {
       await this.dispatch(log.type, log.payload);
 
+      const attempts = log.attempts + 1;
       await this.logRepository.update(logId, {
         status: WhatsAppNotificationStatus.SENT,
-        attempts: log.attempts + 1,
+        attempts,
         last_attempted_at: new Date(),
         last_error: null,
       });
+
+      if (log.payload.landlord_id && log.payload.recipient_name) {
+        this.eventsGateway.emitWhatsAppNotification(log.payload.landlord_id, {
+          type: log.type,
+          recipientName: log.payload.recipient_name,
+          success: true,
+          attempts,
+          isRetry: log.attempts > 0,
+        });
+      }
     } catch (error) {
       const attempts = log.attempts + 1;
+      const isFinal = attempts >= MAX_ATTEMPTS;
 
       await this.logRepository.update(logId, {
-        status:
-          attempts >= MAX_ATTEMPTS
-            ? WhatsAppNotificationStatus.FAILED
-            : WhatsAppNotificationStatus.PENDING,
+        status: isFinal
+          ? WhatsAppNotificationStatus.FAILED
+          : WhatsAppNotificationStatus.PENDING,
         attempts,
         last_attempted_at: new Date(),
         last_error: error.message?.substring(0, 500) ?? 'Unknown error',
       });
+
+      if (isFinal && log.payload.landlord_id && log.payload.recipient_name) {
+        this.eventsGateway.emitWhatsAppNotification(log.payload.landlord_id, {
+          type: log.type,
+          recipientName: log.payload.recipient_name,
+          success: false,
+          error: error.message?.substring(0, 200) ?? 'Unknown error',
+          attempts,
+          isRetry: log.attempts > 0,
+        });
+      }
 
       this.logger.error(
         `WhatsApp notification failed (attempt ${attempts}/${MAX_ATTEMPTS}): ${log.type}`,

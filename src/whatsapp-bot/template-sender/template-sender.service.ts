@@ -1754,10 +1754,8 @@ export class TemplateSenderService {
     phone_number,
     tenant_name,
     renewal_token,
-    frontend_url,
+    frontend_url: _frontend_url,
   }: RenewalLinkParams): Promise<void> {
-    const renewalUrl = `${frontend_url}/renewal-invoice/verify/${renewal_token}`;
-
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -1784,7 +1782,7 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'text',
-                text: renewalUrl,
+                text: renewal_token,
               },
             ],
           },
@@ -2634,10 +2632,8 @@ export class TemplateSenderService {
     rent_amount,
     expiry_date,
     renewal_token,
-    frontend_url,
+    frontend_url: _frontend_url,
   }: RentReminderWithRenewalParams): Promise<void> {
-    const renewalUrl = `${frontend_url}/renewal-invoice/verify/${renewal_token}`;
-
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -2676,7 +2672,7 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'text',
-                text: renewalUrl,
+                text: renewal_token,
               },
             ],
           },

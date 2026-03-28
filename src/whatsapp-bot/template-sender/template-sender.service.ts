@@ -1206,7 +1206,7 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'text',
-                text: offerLetterUrl,
+                text: offer_letter_token,
               },
             ],
           },

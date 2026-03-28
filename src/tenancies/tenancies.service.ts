@@ -465,6 +465,7 @@ export class TenanciesService {
           frontend_url: frontendUrl,
           landlord_id: userId,
           recipient_name: tenantName,
+          property_id: propertyTenant.property_id,
         });
 
         console.log(`Renewal link queued for ${tenantPhone}: ${link}`);
@@ -877,6 +878,7 @@ export class TenanciesService {
           receipt_token: invoice.receipt_token,
           landlord_id: invoice.property.owner_id,
           recipient_name: tenantName,
+          property_id: invoice.property_id,
         });
 
         // Send notification to landlord
@@ -894,6 +896,7 @@ export class TenanciesService {
             property_name: propertyName,
             landlord_id: invoice.property.owner_id,
             recipient_name: landlordName,
+            property_id: invoice.property_id,
           });
         }
       } else {

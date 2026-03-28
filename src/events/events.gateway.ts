@@ -242,7 +242,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
-  // Emit WhatsApp notification result to landlord
+  // Emit WhatsApp notification result to landlord and/or property room
   emitWhatsAppNotification(
     landlordId: string,
     data: {
@@ -252,11 +252,14 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       error?: string;
       attempts: number;
       isRetry: boolean;
+      propertyId?: string;
     },
   ) {
-    this.server
-      .to(`landlord:${landlordId}`)
-      .emit('whatsapp:notification', { ...data, timestamp: new Date().toISOString() });
+    const payload = { ...data, timestamp: new Date().toISOString() };
+    this.server.to(`landlord:${landlordId}`).emit('whatsapp:notification', payload);
+    if (data.propertyId) {
+      this.server.to(`property:${data.propertyId}`).emit('whatsapp:notification', payload);
+    }
   }
 
   // Emit tenancy renewed event to landlord

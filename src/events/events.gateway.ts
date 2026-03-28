@@ -242,6 +242,23 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
+  // Emit WhatsApp notification result to landlord
+  emitWhatsAppNotification(
+    landlordId: string,
+    data: {
+      type: string;
+      recipientName: string;
+      success: boolean;
+      error?: string;
+      attempts: number;
+      isRetry: boolean;
+    },
+  ) {
+    this.server
+      .to(`landlord:${landlordId}`)
+      .emit('whatsapp:notification', { ...data, timestamp: new Date().toISOString() });
+  }
+
   // Emit tenancy renewed event to landlord
   emitTenancyRenewed(
     landlordId: string,

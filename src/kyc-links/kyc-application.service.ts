@@ -363,6 +363,8 @@ export class KYCApplicationService {
               property_name: property.name,
               application_id: savedApplication.id,
               frontend_url: frontendUrl,
+              landlord_id: landlord.owner.user.id,
+              recipient_name: landlordName,
             },
             savedApplication.id,
           );
@@ -380,6 +382,8 @@ export class KYCApplicationService {
               kycData.phone_number,
             ),
             tenant_name: `${kycData.first_name} ${kycData.last_name}`,
+            landlord_id: property.owner_id,
+            recipient_name: `${kycData.first_name} ${kycData.last_name}`,
           },
           savedApplication.id,
         );
@@ -399,6 +403,8 @@ export class KYCApplicationService {
             agent_name: kycData.referral_agent_full_name,
             tenant_name: `${kycData.first_name} ${kycData.last_name}`,
             property_name: property.name,
+            landlord_id: property.owner_id,
+            recipient_name: kycData.referral_agent_full_name,
           },
           savedApplication.id,
         );

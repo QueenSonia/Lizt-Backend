@@ -1,4 +1,5 @@
 import { forwardRef, Module } from '@nestjs/common';
+import { EventsModule } from 'src/events/events.module';
 
 import { WhatsappBotService } from './whatsapp-bot.service';
 import { WhatsappBotController } from './whatsapp-bot.controller';
@@ -56,6 +57,7 @@ import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
     UtilsModule,
     forwardRef(() => KYCLinksModule),
     ChatHistoryModule,
+    EventsModule,
   ],
   controllers: [WhatsappBotController],
   providers: [

@@ -631,6 +631,8 @@ export class PropertiesService {
               landlord_name: landlordName,
               property_name: savedProperty.name,
               kyc_link_id: kycLink.token,
+              landlord_id: ownerId,
+              recipient_name: tenantName,
             },
             savedProperty.id,
           );
@@ -647,6 +649,8 @@ export class PropertiesService {
               tenant_name: tenantName,
               landlord_name: landlordName,
               apartment_name: savedProperty.name,
+              landlord_id: ownerId,
+              recipient_name: tenantName,
             },
             savedProperty.id,
           );

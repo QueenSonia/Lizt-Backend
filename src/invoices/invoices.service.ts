@@ -485,7 +485,7 @@ export class InvoicesService {
         description: `Invoice of ₦${totalAmount.toLocaleString()} generated for ${tenantName} — ${propertyName}`,
         status: 'Completed',
         property_id: offerLetter.property_id,
-        user_id: landlordUserId,
+        user_id: offerLetter.landlord_id,
       });
     } catch (error) {
       this.logger.error(

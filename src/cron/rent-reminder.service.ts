@@ -93,6 +93,16 @@ export class RentReminderService {
       try {
         if (!rent.expiry_date) continue;
 
+        // Skip rents that are already past their original expiry — those are
+        // handled exclusively by processOverdueReminders. This prevents a
+        // roll-forward rent (whose expiry_date was advanced) from accidentally
+        // re-triggering upcoming-expiry reminders.
+        const originalExpiry = new Date(
+          rent.original_expiry_date || rent.expiry_date,
+        );
+        originalExpiry.setUTCHours(0, 0, 0, 0);
+        if (originalExpiry < today) continue;
+
         const expiryDate = new Date(rent.expiry_date);
         expiryDate.setUTCHours(0, 0, 0, 0);
 
@@ -134,14 +144,22 @@ export class RentReminderService {
     ninetyDaysAgo.setUTCDate(ninetyDaysAgo.getUTCDate() - 90);
     const ninetyDaysAgoStr = ninetyDaysAgo.toISOString().split('T')[0];
 
+    // Use original_expiry_date so that rents whose expiry_date has already
+    // been advanced by the roll-forward are still detected as overdue.
     const overdueRents = await this.rentRepository
       .createQueryBuilder('rent')
       .leftJoinAndSelect('rent.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
       .leftJoinAndSelect('rent.property', 'property')
       .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
-      .andWhere('DATE(rent.expiry_date) < :today', { today: todayStr })
-      .andWhere('DATE(rent.expiry_date) >= :cutoff', { cutoff: ninetyDaysAgoStr })
+      .andWhere(
+        'DATE(COALESCE(rent.original_expiry_date, rent.expiry_date)) < :today',
+        { today: todayStr },
+      )
+      .andWhere(
+        'DATE(COALESCE(rent.original_expiry_date, rent.expiry_date)) >= :cutoff',
+        { cutoff: ninetyDaysAgoStr },
+      )
       .getMany();
 
     this.logger.log(
@@ -169,31 +187,37 @@ export class RentReminderService {
           continue;
         }
 
-        // Check if renewal invoice is still unpaid
-        const unpaidInvoice = await this.renewalInvoiceRepository.findOne({
-          where: {
-            property_tenant_id: activeTenant.id,
-            payment_status: RenewalPaymentStatus.UNPAID,
-          },
-        });
+        // Roll forward: stamp any newly elapsed periods as outstanding debt
+        // and advance expiry_date so initiateRenewal calculates the correct
+        // next-period start date. This mutates rent in-place and saves it.
+        await this.rollForwardIfNeeded(rent, today);
 
-        if (!unpaidInvoice) {
+        // Find or create the renewal invoice, refreshing its amounts and
+        // period dates to match the current rolled state of the rent.
+        const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
+
+        if (!renewalInvoice) {
           this.logger.debug(
-            `Skipping overdue reminder for rent ${rent.id}: renewal invoice already paid or not found.`,
+            `Skipping overdue reminder for rent ${rent.id}: could not find or create renewal invoice.`,
           );
           continue;
         }
 
-        const expiryDate = new Date(rent.expiry_date);
-        expiryDate.setUTCHours(0, 0, 0, 0);
+        // Use original_expiry_date (or expiry_date as fallback) to calculate
+        // how many days overdue the tenant is — this stays anchored to the
+        // original agreed end date, not the rolled expiry.
+        const baseExpiryDate = new Date(
+          rent.original_expiry_date || rent.expiry_date,
+        );
+        baseExpiryDate.setUTCHours(0, 0, 0, 0);
         const daysUntilExpiry = Math.floor(
-          (expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+          (baseExpiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
         );
 
         await this.sendOverdueRenewalReminder(
           rent,
           daysUntilExpiry,
-          unpaidInvoice,
+          renewalInvoice,
         );
       } catch (error) {
         this.logger.error(
@@ -390,6 +414,81 @@ export class RentReminderService {
   }
 
   /**
+   * For a rent whose expiry_date is in the past, stamp each elapsed period
+   * as outstanding debt and advance expiry_date forward until it is no longer
+   * in the past.  Mutates and saves the rent record in-place.
+   *
+   * Example (monthly, ₦100k rent + ₦10k service charge):
+   *   today = Aug 5,  expiry = May 30  →  OB += 110k×3,  expiry = Aug 30
+   *
+   * original_expiry_date is preserved and never touched here.
+   */
+  private async rollForwardIfNeeded(rent: Rent, today: Date): Promise<void> {
+    const frequency = (rent.payment_frequency || 'monthly').toLowerCase();
+    let rolled = false;
+
+    const currentExpiry = new Date(rent.expiry_date);
+    currentExpiry.setUTCHours(0, 0, 0, 0);
+
+    while (currentExpiry < today) {
+      rent.outstanding_balance =
+        (rent.outstanding_balance || 0) +
+        (rent.rental_price || 0) +
+        (rent.service_charge || 0);
+
+      const nextExpiry = this.advanceExpiryByOnePeriod(currentExpiry, frequency);
+      currentExpiry.setTime(nextExpiry.getTime());
+      rolled = true;
+    }
+
+    if (rolled) {
+      rent.expiry_date = new Date(currentExpiry);
+      await this.rentRepository.save(rent);
+      this.logger.log(
+        `Rolled forward rent ${rent.id}: expiry now ${rent.expiry_date.toISOString().split('T')[0]}, OB now ${rent.outstanding_balance}`,
+      );
+    }
+  }
+
+  /**
+   * Advance an expiry date by exactly one payment period, using the same
+   * semantics as the renewal invoice calculation:
+   *   new_expiry = old_expiry + N months
+   * (the period end is old_expiry + N months, month-overflow safe)
+   */
+  private advanceExpiryByOnePeriod(expiryDate: Date, frequency: string): Date {
+    const newExpiry = new Date(expiryDate);
+    let monthsToAdd: number;
+
+    switch (frequency) {
+      case 'monthly':
+        monthsToAdd = 1;
+        break;
+      case 'quarterly':
+        monthsToAdd = 3;
+        break;
+      case 'bi-annually':
+      case 'biannually':
+        monthsToAdd = 6;
+        break;
+      case 'annually':
+      default:
+        monthsToAdd = 12;
+        break;
+    }
+
+    const expectedMonth = (newExpiry.getMonth() + monthsToAdd) % 12;
+    newExpiry.setMonth(newExpiry.getMonth() + monthsToAdd);
+
+    // Handle month-end overflow (e.g. Jan 31 + 1 month → Feb 28/29, not Mar 2/3)
+    if (newExpiry.getMonth() !== expectedMonth) {
+      newExpiry.setDate(0); // last day of the previous (correct) month
+    }
+
+    return newExpiry;
+  }
+
+  /**
    * Find an existing unpaid renewal invoice for this rent, or auto-create one
    * using the current rent terms.
    */
@@ -411,27 +510,27 @@ export class RentReminderService {
         return null;
       }
 
-      // Check for existing unpaid renewal invoice
-      const existing = await this.renewalInvoiceRepository.findOne({
-        where: {
-          property_tenant_id: propertyTenant.id,
-          payment_status: RenewalPaymentStatus.UNPAID,
-        },
-        order: { created_at: 'DESC' },
+      const rentAmount = rent.rental_price ?? rent.amount_paid ?? 0;
+      const serviceCharge = rent.service_charge || 0;
+
+      // Aggregate outstanding balance across all rents for this property+tenant,
+      // mirroring what initiateRenewal does so the invoice always reflects current debt.
+      const allRents = await this.rentRepository.find({
+        where: { property_id: rent.property_id, tenant_id: rent.tenant_id },
       });
+      const outstandingBalance = allRents.reduce(
+        (sum, r) => sum + (r.outstanding_balance || 0),
+        0,
+      );
 
-      if (existing) {
-        this.logger.log(
-          `Reusing existing renewal invoice ${existing.id} for rent ${rent.id}`,
-        );
-        return existing;
-      }
+      const totalAmount = rentAmount + serviceCharge + outstandingBalance;
 
-      // Auto-create a renewal invoice using current rent terms
+      // Calculate next-period dates from the (possibly rolled) expiry_date.
+      // These are computed once and shared by both the update and create paths.
+      const paymentFrequency = rent.payment_frequency || 'monthly';
       const startDate = new Date(rent.expiry_date);
       startDate.setDate(startDate.getDate() + 1);
 
-      const paymentFrequency = rent.payment_frequency || 'monthly';
       const endDate = new Date(startDate);
       switch (paymentFrequency.toLowerCase()) {
         case 'monthly':
@@ -451,9 +550,35 @@ export class RentReminderService {
       }
       endDate.setDate(endDate.getDate() - 1);
 
-      const rentAmount = rent.rental_price ?? rent.amount_paid ?? 0;
-      const serviceCharge = rent.service_charge || 0;
-      const totalAmount = rentAmount + serviceCharge;
+      // Check for existing unpaid landlord renewal invoice and refresh its OB in case it changed.
+      // Exclude tenant-generated OB-only invoices (token_type = 'tenant') — same guard as initiateRenewal.
+      const existing = await this.renewalInvoiceRepository.findOne({
+        where: {
+          property_tenant_id: propertyTenant.id,
+          payment_status: RenewalPaymentStatus.UNPAID,
+          token_type: 'landlord',
+        },
+        order: { created_at: 'DESC' },
+      });
+
+      if (existing) {
+        existing.outstanding_balance = outstandingBalance;
+        existing.total_amount =
+          parseFloat(existing.rent_amount.toString()) +
+          parseFloat(existing.service_charge.toString()) +
+          outstandingBalance;
+        // Keep the period dates in sync with the rolled expiry_date so the
+        // invoice always shows the correct next-period start/end dates.
+        existing.start_date = startDate;
+        existing.end_date = endDate;
+        await this.renewalInvoiceRepository.save(existing);
+        this.logger.log(
+          `Updated OB and period dates on existing renewal invoice ${existing.id} for rent ${rent.id}`,
+        );
+        return existing;
+      }
+
+      // Auto-create a renewal invoice using current rent terms
 
       const token = uuidv4();
 
@@ -468,6 +593,7 @@ export class RentReminderService {
         service_charge: serviceCharge,
         legal_fee: 0,
         other_charges: 0,
+        outstanding_balance: outstandingBalance,
         total_amount: totalAmount,
         payment_status: RenewalPaymentStatus.UNPAID,
         payment_frequency: paymentFrequency,

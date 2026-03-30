@@ -60,7 +60,7 @@ import { DatabaseErrorHandlerService } from 'src/database/database-error-handler
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
-import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
+import { RenewalInvoice, RenewalPaymentStatus } from 'src/tenancies/entities/renewal-invoice.entity';
 
 @Injectable()
 export class PropertiesService {
@@ -1300,13 +1300,37 @@ export class PropertiesService {
           tenant_id: activeTenantRelation.tenant.id,
         },
         order: { created_at: 'DESC' },
-        select: ['id', 'payment_status'],
+        select: ['id', 'payment_status', 'total_amount', 'amount_paid'],
       });
 
       let renewalStatus: 'pending' | 'paid' | null = null;
       if (latestRenewalInvoice) {
         renewalStatus =
           latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
+      }
+
+      // Outstanding balance: if there is an unpaid/partial renewal invoice, the amount still
+      // owed on it IS the outstanding balance (it already subsumes any carried-forward debt
+      // from previous rent records). Only fall back to summing rent records when no such
+      // invoice exists, covering the case where a manual outstanding_balance was set without
+      // a corresponding renewal invoice.
+      let totalOutstandingBalance: number;
+      if (
+        latestRenewalInvoice &&
+        latestRenewalInvoice.payment_status !== RenewalPaymentStatus.PAID
+      ) {
+        const invoiceTotal = parseFloat(latestRenewalInvoice.total_amount?.toString() || '0');
+        const invoicePaid = parseFloat(latestRenewalInvoice.amount_paid?.toString() || '0');
+        totalOutstandingBalance = Math.max(0, invoiceTotal - invoicePaid);
+      } else {
+        const allRentsResult = await this.rentRepository
+          .createQueryBuilder('rent')
+          .select('SUM(rent.outstanding_balance)', 'total')
+          .where('rent.property_id = :propertyId', { propertyId: property.id })
+          .andWhere('rent.tenant_id = :tenantId', { tenantId: activeTenantRelation.tenant.id })
+          .andWhere('rent.deleted_at IS NULL')
+          .getRawOne();
+        totalOutstandingBalance = parseFloat(allRentsResult?.total || '0');
       }
 
       currentTenant = {
@@ -1324,7 +1348,7 @@ export class PropertiesService {
           : 'Monthly',
         passportPhoto: tenantKycApplication?.passport_photo_url || null,
         renewalStatus,
-        outstandingBalance: activeRent?.outstanding_balance || 0,
+        outstandingBalance: totalOutstandingBalance,
       };
     }
 

@@ -6,7 +6,7 @@ export class AddPaymentFrequencyToRenewalInvoices1773700000000
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
       ALTER TABLE "renewal_invoices"
-      ADD COLUMN "payment_frequency" VARCHAR(50) NULL
+      ADD COLUMN IF NOT EXISTS "payment_frequency" VARCHAR(50) NULL
     `);
   }
 

@@ -2897,18 +2897,23 @@ export class TenantManagementService {
       })),
       activeTenancies: rents
         .filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
-        .map((rent) => ({
-          id: rent.id,
-          property: rent.property?.name ?? 'Unknown Property',
-          propertyId: rent.property_id,
-          rentAmount: rent.rental_price || 0,
-          serviceCharge: rent.service_charge || 0,
-          rentFrequency: rent.payment_frequency || 'Annually',
-          rentDueDate: this.formatDateField(rent.expiry_date),
-          tenancyStartDate: this.formatDateField(rent.rent_start_date),
-          outstandingBalance: rent.outstanding_balance || 0,
-          status: 'Active' as const,
-        })),
+        .map((rent) => {
+          const totalOutstandingBalance = rents
+            .filter((r) => r.property_id === rent.property_id)
+            .reduce((sum, r) => sum + (r.outstanding_balance || 0), 0);
+          return {
+            id: rent.id,
+            property: rent.property?.name ?? 'Unknown Property',
+            propertyId: rent.property_id,
+            rentAmount: rent.rental_price || 0,
+            serviceCharge: rent.service_charge || 0,
+            rentFrequency: rent.payment_frequency || 'Annually',
+            rentDueDate: this.formatDateField(rent.expiry_date),
+            tenancyStartDate: this.formatDateField(rent.rent_start_date),
+            outstandingBalance: totalOutstandingBalance,
+            status: 'Active' as const,
+          };
+        }),
       tenancyHistory: (propertyHistories || [])
         .filter((ph) => ph.move_out_date)
         .map((ph) => ({

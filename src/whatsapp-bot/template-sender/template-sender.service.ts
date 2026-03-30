@@ -1781,6 +1781,53 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send outstanding balance invoice link to tenant
+   * Template: outstanding_balance_link
+   */
+  async sendOutstandingBalanceLink({
+    phone_number,
+    tenant_name,
+    renewal_token,
+    frontend_url: _frontend_url,
+  }: RenewalLinkParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'outstanding_balance_link',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: renewal_token,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send renewal payment confirmation to tenant
    * Requirements: 7.1, 7.3
    * Template: renewal_payment_tenant

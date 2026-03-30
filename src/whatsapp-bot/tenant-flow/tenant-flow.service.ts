@@ -1101,7 +1101,7 @@ export class TenantFlowService {
 
     const accountId = user.accounts[0].id;
 
-    // Check if tenant has any active rent with outstanding balance
+    // Check if tenant has any active rent
     const activeRents = await this.rentRepo.find({
       where: {
         tenant_id: accountId,
@@ -1118,7 +1118,12 @@ export class TenantFlowService {
       return;
     }
 
-    const hasOutstandingBalance = activeRents.some(
+    // Check outstanding balance across ALL rents (active + inactive)
+    const allRents = await this.rentRepo.find({
+      where: { tenant_id: accountId },
+    });
+
+    const hasOutstandingBalance = allRents.some(
       (r) => (r.outstanding_balance || 0) > 0,
     );
 
@@ -1146,18 +1151,29 @@ export class TenantFlowService {
 
     const accountId = user.accounts[0].id;
 
-    // Find active rents with outstanding balance
+    // Find all rents (active + inactive) with outstanding balance
     const rentsWithOB = await this.rentRepo.find({
-      where: {
-        tenant_id: accountId,
-        rent_status: RentStatusEnum.ACTIVE,
-      },
+      where: { tenant_id: accountId },
       relations: ['property'],
     });
 
-    const filtered = rentsWithOB.filter(
-      (r) => (r.outstanding_balance || 0) > 0,
-    );
+    // Group by property_id and sum outstanding balances
+    const obByProperty = new Map<string, { rent: Rent; totalOB: number }>();
+    for (const r of rentsWithOB) {
+      if ((r.outstanding_balance || 0) <= 0) continue;
+      const existing = obByProperty.get(r.property_id);
+      if (existing) {
+        existing.totalOB += r.outstanding_balance || 0;
+      } else {
+        obByProperty.set(r.property_id, { rent: r, totalOB: r.outstanding_balance || 0 });
+      }
+    }
+
+    // Build filtered list with summed OB per property
+    const filtered = Array.from(obByProperty.values()).map(({ rent, totalOB }) => ({
+      ...rent,
+      outstanding_balance: totalOB,
+    }));
 
     if (!filtered.length) {
       await this.templateSenderService.sendText(
@@ -1186,7 +1202,7 @@ export class TenantFlowService {
         this.SESSION_TIMEOUT_MS,
       );
     } else {
-      await this.sendOBConfirmation(from, filtered[0]);
+      await this.sendOBConfirmation(from, filtered[0] as Rent);
     }
   }
 
@@ -1218,16 +1234,21 @@ export class TenantFlowService {
     const user = await this.findTenantByPhone(from);
     if (!user?.accounts?.length) return;
 
-    const rent = await this.rentRepo.findOne({
+    const allRentsForProperty = await this.rentRepo.find({
       where: {
         property_id: propertyIds[selectedIndex],
         tenant_id: user.accounts[0].id,
-        rent_status: RentStatusEnum.ACTIVE,
       },
       relations: ['property'],
     });
 
-    if (!rent || (rent.outstanding_balance || 0) <= 0) {
+    const totalOB = allRentsForProperty.reduce(
+      (sum, r) => sum + (r.outstanding_balance || 0),
+      0,
+    );
+    const rent = allRentsForProperty.find((r) => r.property?.id);
+
+    if (!rent || totalOB <= 0) {
       await this.templateSenderService.sendText(
         from,
         'No outstanding balance found for that property.',
@@ -1235,7 +1256,7 @@ export class TenantFlowService {
       return;
     }
 
-    await this.sendOBConfirmation(from, rent);
+    await this.sendOBConfirmation(from, { ...rent, outstanding_balance: totalOB } as Rent);
   }
 
   /**
@@ -1265,16 +1286,21 @@ export class TenantFlowService {
     const user = await this.findTenantByPhone(from);
     if (!user?.accounts?.length) return;
 
-    const rent = await this.rentRepo.findOne({
+    const allRentsForProperty = await this.rentRepo.find({
       where: {
         property_id: propertyId,
         tenant_id: user.accounts[0].id,
-        rent_status: RentStatusEnum.ACTIVE,
       },
       relations: ['property'],
     });
 
-    if (!rent || (rent.outstanding_balance || 0) <= 0) {
+    const totalOB = allRentsForProperty.reduce(
+      (sum, r) => sum + (r.outstanding_balance || 0),
+      0,
+    );
+    const rent = allRentsForProperty.find((r) => r.property?.id);
+
+    if (!rent || totalOB <= 0) {
       await this.templateSenderService.sendText(
         from,
         'No outstanding balance found for that property.',
@@ -1282,7 +1308,7 @@ export class TenantFlowService {
       return;
     }
 
-    await this.createOBInvoiceAndSendLink(from, rent);
+    await this.createOBInvoiceAndSendLink(from, { ...rent, outstanding_balance: totalOB } as Rent);
   }
 
   /**
@@ -1341,7 +1367,7 @@ export class TenantFlowService {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const tenantName = `${this.utilService.toSentenceCase(user.first_name)}`;
 
-    await this.templateSenderService.sendRenewalLink({
+    await this.templateSenderService.sendOutstandingBalanceLink({
       phone_number: from,
       tenant_name: tenantName,
       renewal_token: token,

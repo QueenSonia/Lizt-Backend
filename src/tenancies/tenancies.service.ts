@@ -360,8 +360,19 @@ export class TenanciesService {
       body?.serviceCharge ?? (activeRent.service_charge || 0);
     const legalFee = 0;
     const otherCharges = 0;
-    const outstandingBalance = activeRent.outstanding_balance || 0;
     const creditBalance = activeRent.credit_balance || 0;
+
+    // Sum outstanding balance across all rents (active + inactive) for this property+tenant
+    const allRentsForProperty = await this.rentRepository.find({
+      where: {
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+      },
+    });
+    const outstandingBalance = allRentsForProperty.reduce(
+      (sum, r) => sum + (r.outstanding_balance || 0),
+      0,
+    );
 
     // Apply credit balance to reduce total amount
     const subtotal =
@@ -372,10 +383,12 @@ export class TenanciesService {
     const remainingCredit = Math.max(0, creditBalance - subtotal);
 
     // 6. Check for existing unpaid renewal invoice (may have been auto-created by rent reminder)
+    // Exclude tenant-generated OB-only invoices — those should not be reused as renewal invoices
     const existingInvoice = await this.renewalInvoiceRepository.findOne({
       where: {
         property_tenant_id: propertyTenantId,
         payment_status: RenewalPaymentStatus.UNPAID,
+        token_type: 'landlord',
       },
       order: { created_at: 'DESC' },
     });
@@ -393,6 +406,7 @@ export class TenanciesService {
       existingInvoice.total_amount = totalAmount;
       existingInvoice.outstanding_balance = outstandingBalance;
       existingInvoice.payment_frequency = paymentFrequency;
+      existingInvoice.token_type = 'landlord';
       renewalInvoice = existingInvoice;
     } else {
       // Generate new token and create fresh invoice
@@ -450,7 +464,7 @@ export class TenanciesService {
     // 11. Generate renewal link
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const baseUrl = `${frontendUrl}/renewal-invoice`;
-    const link = `${baseUrl}/verify/${token}`;
+    const link = `${baseUrl}/${token}`;
 
     // 12. Queue WhatsApp notification asynchronously (fire and forget)
     setImmediate(async () => {

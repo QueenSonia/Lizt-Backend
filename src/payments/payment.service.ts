@@ -1182,6 +1182,113 @@ export class PaymentService {
   }
 
   /**
+   * Process a bank.transfer.rejected webhook event for offer letter payments.
+   * Marks the payment as failed, writes to property history (livefeed + history tab),
+   * creates a landlord notification, and emits a real-time WebSocket event.
+   */
+  async processBankTransferRejected(data: any): Promise<void> {
+    const reference = data.reference;
+    const amountInNaira = data.amount / 100;
+    const gatewayResponse = data.gateway_response || 'Rejected';
+
+    this.paystackLogger.info('Processing bank.transfer.rejected webhook', {
+      reference,
+      amount: data.amount,
+      gateway_response: gatewayResponse,
+    });
+
+    const payment = await this.paymentRepository.findOne({
+      where: { paystack_reference: reference },
+      relations: [
+        'offerLetter',
+        'offerLetter.property',
+        'offerLetter.kyc_application',
+      ],
+    });
+
+    if (!payment) {
+      this.paystackLogger.error('Payment not found for rejected bank transfer', { reference });
+      return;
+    }
+
+    if (
+      payment.status === PaymentStatus.FAILED ||
+      payment.status === PaymentStatus.COMPLETED
+    ) {
+      this.paystackLogger.info(
+        'Payment already in terminal state, skipping bank transfer rejection',
+        { reference, status: payment.status },
+      );
+      return;
+    }
+
+    await this.paymentRepository.update(payment.id, {
+      status: PaymentStatus.FAILED,
+      metadata: { ...(payment.metadata ?? {}), rejection_data: data },
+    });
+
+    await this.logPaymentEvent(payment.id, PaymentLogEventType.ERROR, {
+      reason: 'Bank transfer rejected by Paystack',
+      gateway_response: gatewayResponse,
+      paystack_data: data,
+    });
+
+    const offerLetter = payment.offerLetter;
+    if (!offerLetter) {
+      this.paystackLogger.error(
+        'Offer letter missing on payment for rejected bank transfer',
+        { reference, payment_id: payment.id },
+      );
+      return;
+    }
+
+    const kycApplication = offerLetter.kyc_application;
+    const tenantName = kycApplication
+      ? `${kycApplication.first_name} ${kycApplication.last_name}`
+      : 'Tenant';
+    const propertyName = offerLetter.property?.name || 'Property';
+    const propertyId = offerLetter.property_id;
+    const landlordId = offerLetter.property?.owner_id;
+
+    // Property history — shows in landlord property details history tab
+    await this.createPaymentHistoryEvent(
+      propertyId,
+      'bank_transfer_rejected',
+      `Bank transfer of ₦${amountInNaira.toLocaleString()} from ${tenantName} for ${propertyName} was rejected`,
+      payment.id,
+      'payment',
+    );
+
+    // Landlord livefeed notification + real-time WebSocket event
+    if (landlordId) {
+      this.notificationService
+        .create({
+          date: new Date().toISOString(),
+          type: NotificationType.PAYMENT_TRANSFER_REJECTED,
+          description: `Bank transfer of ₦${amountInNaira.toLocaleString()} from ${tenantName} for ${propertyName} was rejected`,
+          status: 'Completed',
+          property_id: propertyId,
+          user_id: landlordId,
+        })
+        .then(() => {
+          this.eventsGateway.emitPaymentFailed(landlordId, {
+            propertyId,
+            propertyName,
+            applicantName: tenantName,
+            amount: amountInNaira,
+            reason: gatewayResponse,
+          });
+        })
+        .catch((error) => {
+          this.paystackLogger.error(
+            'Failed to create bank transfer rejection notification',
+            { reference, error: error.message },
+          );
+        });
+    }
+  }
+
+  /**
    * Track when a tenant cancels a payment from the Paystack popup
    */
   async trackPaymentCancelled(

@@ -11,8 +11,13 @@ import {
   RenewalInvoice,
   RenewalPaymentStatus,
 } from './entities/renewal-invoice.entity';
+import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import { Property } from '../properties/entities/property.entity';
 import { PaystackService } from '../payments/paystack.service';
 import { TenanciesService } from './tenancies.service';
+import { NotificationService } from '../notifications/notification.service';
+import { NotificationType } from '../notifications/enums/notification-type';
+import { EventsGateway } from '../events/events.gateway';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -43,8 +48,14 @@ export class RenewalPaymentService {
   constructor(
     @InjectRepository(RenewalInvoice)
     private readonly renewalInvoiceRepository: Repository<RenewalInvoice>,
+    @InjectRepository(PropertyHistory)
+    private readonly propertyHistoryRepository: Repository<PropertyHistory>,
+    @InjectRepository(Property)
+    private readonly propertyRepository: Repository<Property>,
     private readonly paystackService: PaystackService,
     private readonly tenanciesService: TenanciesService,
+    private readonly notificationService: NotificationService,
+    private readonly eventsGateway: EventsGateway,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
   ) {}
 
@@ -319,6 +330,124 @@ export class RenewalPaymentService {
       reference,
       amountInNaira,
     );
+  }
+
+  /**
+   * Process a bank.transfer.rejected webhook event for renewal invoice payments.
+   * Writes to property history, tenant history, landlord livefeed notification,
+   * and emits a real-time WebSocket event. Invoice stays UNPAID (no status change needed).
+   */
+  async processWebhookTransferRejected(data: any): Promise<void> {
+    const reference = data.reference;
+    const amountInNaira = data.amount / 100;
+    const gatewayResponse = data.gateway_response || 'Rejected';
+    const renewalInvoiceId = data.metadata?.renewal_invoice_id;
+
+    this.logger.log(
+      `Processing bank.transfer.rejected for renewal invoice: ${renewalInvoiceId}, reference: ${reference}`,
+    );
+
+    if (!renewalInvoiceId) {
+      this.logger.error(
+        'Missing renewal_invoice_id in bank.transfer.rejected metadata',
+        { reference },
+      );
+      return;
+    }
+
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { id: renewalInvoiceId },
+      relations: ['property', 'tenant', 'tenant.user'],
+    });
+
+    if (!invoice) {
+      this.logger.error('Renewal invoice not found for rejected bank transfer', {
+        renewalInvoiceId,
+        reference,
+      });
+      return;
+    }
+
+    // Already fully paid — nothing to mark failed
+    if (invoice.payment_status === RenewalPaymentStatus.PAID) {
+      this.logger.log(
+        'Renewal invoice already paid, skipping bank transfer rejection',
+        { renewalInvoiceId },
+      );
+      return;
+    }
+
+    const propertyId = invoice.property_id;
+    const propertyName = invoice.property?.name || 'Property';
+    const landlordId = invoice.property?.owner_id;
+    const tenantId = invoice.tenant_id;
+    const tenantName = invoice.tenant?.user
+      ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
+      : 'Tenant';
+    const description = `Bank transfer of ₦${amountInNaira.toLocaleString()} from ${tenantName} for renewal of ${propertyName} was rejected`;
+
+    // Property history — shows in landlord property details history tab
+    try {
+      const propertyEntry = this.propertyHistoryRepository.create({
+        property_id: propertyId,
+        event_type: 'bank_transfer_rejected',
+        event_description: description,
+        related_entity_id: invoice.id,
+        related_entity_type: 'renewal_invoice',
+      });
+      await this.propertyHistoryRepository.save(propertyEntry);
+    } catch (error) {
+      this.logger.error(
+        'Failed to create property history for rejected renewal transfer',
+        { error: error.message },
+      );
+    }
+
+    // Tenant history — shows in landlord tenant details history tab
+    try {
+      const tenantEntry = this.propertyHistoryRepository.create({
+        property_id: propertyId,
+        tenant_id: tenantId,
+        event_type: 'bank_transfer_rejected',
+        event_description: description,
+        related_entity_id: invoice.id,
+        related_entity_type: 'renewal_invoice',
+      });
+      await this.propertyHistoryRepository.save(tenantEntry);
+    } catch (error) {
+      this.logger.error(
+        'Failed to create tenant history for rejected renewal transfer',
+        { error: error.message },
+      );
+    }
+
+    // Landlord livefeed notification + real-time WebSocket event
+    if (landlordId) {
+      this.notificationService
+        .create({
+          date: new Date().toISOString(),
+          type: NotificationType.PAYMENT_TRANSFER_REJECTED,
+          description,
+          status: 'Completed',
+          property_id: propertyId,
+          user_id: landlordId,
+        })
+        .then(() => {
+          this.eventsGateway.emitPaymentFailed(landlordId, {
+            propertyId,
+            propertyName,
+            applicantName: tenantName,
+            amount: amountInNaira,
+            reason: gatewayResponse,
+          });
+        })
+        .catch((error) => {
+          this.logger.error(
+            'Failed to create bank transfer rejection notification for renewal',
+            { reference, error: error.message },
+          );
+        });
+    }
   }
 
   /**

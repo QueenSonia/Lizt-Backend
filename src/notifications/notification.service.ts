@@ -79,6 +79,8 @@ export class NotificationService {
         return 'Outstanding Balance Recorded';
       case NotificationType.USER_ADDED_HISTORY:
         return 'History Entry Added';
+      case NotificationType.PAYMENT_TRANSFER_REJECTED:
+        return 'Payment Transfer Rejected';
       default:
         return 'Panda Homes';
     }

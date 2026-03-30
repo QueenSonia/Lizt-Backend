@@ -418,7 +418,8 @@ export class TenanciesController {
           token,
           result.reference,
           result.amount,
-          result.receiptToken, // Pass the receipt token
+          result.receiptToken,
+          result.channel,
         );
       } catch (error) {
         // If already paid (409 Conflict), that's fine — idempotent

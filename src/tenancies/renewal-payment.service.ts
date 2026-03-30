@@ -229,6 +229,7 @@ export class RenewalPaymentService {
     reference: string,
     amount: number,
     receiptToken?: string,
+    channel?: string,
   ): Promise<void> {
     this.logger.log(
       `Processing successful payment for renewal invoice: ${token}, reference: ${reference}`,
@@ -247,6 +248,9 @@ export class RenewalPaymentService {
         invoice.receipt_number = `RR-${Date.now()}`;
       }
       invoice.amount_paid = amount;
+      if (channel) {
+        invoice.payment_method = channel;
+      }
       paymentOption = invoice.payment_option;
       await this.renewalInvoiceRepository.save(invoice);
     }

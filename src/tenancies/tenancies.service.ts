@@ -364,7 +364,8 @@ export class TenanciesService {
     const creditBalance = activeRent.credit_balance || 0;
 
     // Apply credit balance to reduce total amount
-    const subtotal = rentAmount + serviceCharge + legalFee + otherCharges + outstandingBalance;
+    const subtotal =
+      rentAmount + serviceCharge + legalFee + otherCharges + outstandingBalance;
     const totalAmount = Math.max(0, subtotal - creditBalance);
 
     // Track remaining credit if credit exceeds charges
@@ -720,7 +721,7 @@ export class TenanciesService {
 
       // Payment Details
       paymentDate: formatDateTime(invoice.paid_at || new Date()),
-      paymentMethod: 'card', // Default for now, could be enhanced later
+      paymentMethod: invoice.payment_method || null,
 
       // Branding
       landlordBranding: landlordBranding,
@@ -819,7 +820,8 @@ export class TenanciesService {
 
     // Calculate remaining credit balance if credits were used during invoice creation
     const originalCreditBalance = activeRent?.credit_balance || 0;
-    const subtotalBeforeCredit = parseFloat(invoice.rent_amount.toString()) +
+    const subtotalBeforeCredit =
+      parseFloat(invoice.rent_amount.toString()) +
       parseFloat((invoice.service_charge || 0).toString()) +
       outstandingBalance;
     const creditUsed = Math.min(originalCreditBalance, subtotalBeforeCredit);
@@ -888,16 +890,19 @@ export class TenanciesService {
           );
           const landlordName = invoice.property.owner.user.first_name;
 
-          await this.whatsappNotificationLog.queue('sendRenewalPaymentLandlord', {
-            phone_number: landlordPhone,
-            landlord_name: landlordName,
-            tenant_name: tenantName,
-            amount,
-            property_name: propertyName,
-            landlord_id: invoice.property.owner_id,
-            recipient_name: landlordName,
-            property_id: invoice.property_id,
-          });
+          await this.whatsappNotificationLog.queue(
+            'sendRenewalPaymentLandlord',
+            {
+              phone_number: landlordPhone,
+              landlord_name: landlordName,
+              tenant_name: tenantName,
+              amount,
+              property_name: propertyName,
+              landlord_id: invoice.property.owner_id,
+              recipient_name: landlordName,
+              property_id: invoice.property_id,
+            },
+          );
         }
       } else {
         // OB-only or partial custom payment — no renewal

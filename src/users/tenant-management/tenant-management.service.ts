@@ -1885,7 +1885,6 @@ export class TenantManagementService {
             date: new Date(rent.rent_start_date || rent.created_at!),
           });
         }
-
       }
 
       return {
@@ -1893,7 +1892,9 @@ export class TenantManagementService {
         propertyName: rent.property?.name || 'Unknown Property',
         propertyId: rent.property_id,
         outstandingAmount: outstandingBalance,
-        tenancyStartDate: rent.rent_start_date ? new Date(rent.rent_start_date) : null,
+        tenancyStartDate: rent.rent_start_date
+          ? new Date(rent.rent_start_date)
+          : null,
         tenancyEndDate: rent.expiry_date ? new Date(rent.expiry_date) : null,
         transactions: transactions.sort(
           (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
@@ -2941,7 +2942,9 @@ export class TenantManagementService {
               id: `payment-history-${ph.id}`,
               type: 'Payment Received',
               amount: -amount,
-              date: ph.move_in_date ? new Date(ph.move_in_date) : new Date(ph.created_at!),
+              date: ph.move_in_date
+                ? new Date(ph.move_in_date)
+                : new Date(ph.created_at!),
             };
           } catch {
             return null;
@@ -3023,7 +3026,7 @@ export class TenantManagementService {
   ): string | null {
     if (!date) return null;
     if (typeof date === 'string') return date;
-    if (date instanceof Date) return date.toISOString();
+    if (date instanceof Date) return date.toISOString().split('T')[0];
     return null;
   }
 

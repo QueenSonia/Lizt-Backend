@@ -2709,7 +2709,7 @@ export class TemplateSenderService {
     fm_service_request_notification:
       'A new service request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nPhone: {{5}}\nProperty: {{2}}\nReported: {{4}} on record.',
     kyc_completion_link:
-      'Hello {{1}}, {{2}} has added you as a tenant for {{3}}.\n\nPlease complete your KYC information using the link below.',
+      'Hello {{1}},\n\n{{2}} has added you as a tenant for {{3}} using Lizt by Property Kraft — a tenancy management app designed to make your rental experience simple and stress-free.\n\nWith Lizt, you can receive important updates, track rent, and manage everything about your tenancy in one place.\n\nPlease complete your KYC information using the link below to get started:',
     kyc_completion_notification:
       'Hello {{1}}, {{2}} has completed their KYC information for {{3}}.\n\nYou can now view their full tenant details.',
     offer_letter_notification:

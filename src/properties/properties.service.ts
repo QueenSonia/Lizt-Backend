@@ -237,12 +237,11 @@ export class PropertiesService {
         );
       }
 
-      // 4. Use provided first name and surname
       const firstName = tenantData.firstName;
       const lastName = tenantData.surname;
 
-      // 5. Find or create tenant user (BEFORE transaction to avoid transaction abort issues)
-      console.log('🔍 Step 5: Checking for existing tenant user...', {
+      // 4. Find or create tenant user (BEFORE transaction to avoid transaction abort issues)
+      console.log('🔍 Step 4: Checking for existing tenant user...', {
         normalizedPhone,
         firstName,
         lastName,
@@ -3703,6 +3702,9 @@ export class PropertiesService {
     normalizedPhone: string,
   ): Promise<{ exists: boolean; propertyName?: string }> {
     try {
+      // Normalize the phone number regardless of format sent by caller
+      const phone = this.utilService.normalizePhoneNumber(normalizedPhone);
+
       // Find any active tenant with this phone number for this landlord
       const existingTenant = await this.propertyTenantRepository
         .createQueryBuilder('pt')
@@ -3711,7 +3713,7 @@ export class PropertiesService {
         .leftJoinAndSelect('tenant.user', 'user')
         .where('pt.status = :status', { status: TenantStatusEnum.ACTIVE })
         .andWhere('property.owner_id = :landlordId', { landlordId })
-        .andWhere('user.phone_number = :phone', { phone: normalizedPhone })
+        .andWhere('user.phone_number = :phone', { phone })
         .getOne();
 
       if (existingTenant) {

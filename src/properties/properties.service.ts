@@ -51,6 +51,7 @@ import { Account } from 'src/users/entities/account.entity';
 import {
   KYCApplication,
   ApplicationStatus,
+  ApplicationType,
 } from 'src/kyc-links/entities/kyc-application.entity';
 import { ExistingTenantDto } from './dto/existing-tenant.dto';
 import { CreatePropertyWithTenantDto } from './dto/create-property-with-tenant.dto';
@@ -60,7 +61,11 @@ import { DatabaseErrorHandlerService } from 'src/database/database-error-handler
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
-import { RenewalInvoice, RenewalPaymentStatus } from 'src/tenancies/entities/renewal-invoice.entity';
+import {
+  RenewalInvoice,
+  RenewalPaymentStatus,
+} from 'src/tenancies/entities/renewal-invoice.entity';
+import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 
 @Injectable()
 export class PropertiesService {
@@ -100,6 +105,7 @@ export class PropertiesService {
     private readonly databaseErrorHandler: DatabaseErrorHandlerService,
     private readonly notificationService: NotificationService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
+    private readonly tenantBalancesService: TenantBalancesService,
   ) {}
 
   async createProperty(
@@ -424,8 +430,10 @@ export class PropertiesService {
       }
 
       // 7. Get or create KYC link for landlord
-      const kycLinkResponse =
-        await this.kycLinksService.generateKYCLink(ownerId);
+      const kycLinkResponse = await this.kycLinksService.generateKYCLink(
+        ownerId,
+        'property_addition',
+      );
 
       // Get the actual KYC link entity
       const kycLink = await queryRunner.manager.findOne(KYCLink, {
@@ -493,6 +501,7 @@ export class PropertiesService {
           initial_property_id: savedProperty.id,
           tenant_id: tenantAccount.id,
           status: ApplicationStatus.PENDING_COMPLETION,
+          application_type: ApplicationType.PROPERTY_ADDITION, // Mark as property addition
           first_name: firstName,
           last_name: lastName,
           phone_number: normalizedPhone,
@@ -511,10 +520,7 @@ export class PropertiesService {
           next_of_kin_relationship: '-',
           next_of_kin_phone_number: '-',
           next_of_kin_email: '-',
-          intended_use_of_property: '-',
-          number_of_occupants: '-',
-          proposed_rent_amount: '-',
-          rent_payment_frequency: '-',
+          // Tenancy fields are optional for PROPERTY_ADDITION - will be null in DB
           passport_photo_url: '-',
           id_document_url: '-',
         });
@@ -581,8 +587,6 @@ export class PropertiesService {
         payment_frequency: tenantData.rentFrequency,
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
-        outstanding_balance: 0,
-        outstanding_balance_reason: null,
       });
       await queryRunner.manager.save(Rent, rent);
 
@@ -632,15 +636,31 @@ export class PropertiesService {
               kyc_link_id: kycLink.token,
               landlord_id: ownerId,
               recipient_name: tenantName,
+              action_text: 'complete', // New tenants and rejected tenants need to complete KYC
             },
             savedProperty.id,
           );
         }
 
-        if (
-          status === ApplicationStatus.APPROVED ||
-          status === ApplicationStatus.REJECTED
-        ) {
+        // For existing tenants with approved KYC, send update message
+        if (status === ApplicationStatus.APPROVED) {
+          await this.whatsappNotificationLog.queue(
+            'sendKYCCompletionLink',
+            {
+              phone_number: normalizedPhone,
+              tenant_name: tenantName,
+              landlord_name: landlordName,
+              property_name: savedProperty.name,
+              kyc_link_id: kycLink.token,
+              landlord_id: ownerId,
+              recipient_name: tenantName,
+              action_text: 'update', // Existing tenants update their KYC
+            },
+            savedProperty.id,
+          );
+        }
+
+        if (status === ApplicationStatus.REJECTED) {
           await this.whatsappNotificationLog.queue(
             'sendTenantAttachmentNotification',
             {
@@ -1275,6 +1295,11 @@ export class PropertiesService {
 
     // Current tenant information
     let currentTenant: any | null = null;
+    let pendingRenewalInvoice: {
+      rentAmount: number;
+      serviceCharge: number;
+      totalAmount: number;
+    } | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
       const tenantKyc = tenantUser.tenant_kycs?.[0];
@@ -1299,7 +1324,15 @@ export class PropertiesService {
           tenant_id: activeTenantRelation.tenant.id,
         },
         order: { created_at: 'DESC' },
-        select: ['id', 'payment_status', 'total_amount', 'amount_paid'],
+        select: [
+          'id',
+          'payment_status',
+          'token_type',
+          'total_amount',
+          'amount_paid',
+          'rent_amount',
+          'service_charge',
+        ],
       });
 
       let renewalStatus: 'pending' | 'paid' | null = null;
@@ -1308,29 +1341,30 @@ export class PropertiesService {
           latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
       }
 
-      // Outstanding balance: if there is an unpaid/partial renewal invoice, the amount still
-      // owed on it IS the outstanding balance (it already subsumes any carried-forward debt
-      // from previous rent records). Only fall back to summing rent records when no such
-      // invoice exists, covering the case where a manual outstanding_balance was set without
-      // a corresponding renewal invoice.
-      let totalOutstandingBalance: number;
-      if (
+      // Pending landlord invoice (unpaid) — the amount the tenant is expected to pay
+      pendingRenewalInvoice =
         latestRenewalInvoice &&
-        latestRenewalInvoice.payment_status !== RenewalPaymentStatus.PAID
-      ) {
-        const invoiceTotal = parseFloat(latestRenewalInvoice.total_amount?.toString() || '0');
-        const invoicePaid = parseFloat(latestRenewalInvoice.amount_paid?.toString() || '0');
-        totalOutstandingBalance = Math.max(0, invoiceTotal - invoicePaid);
-      } else {
-        const allRentsResult = await this.rentRepository
-          .createQueryBuilder('rent')
-          .select('SUM(rent.outstanding_balance)', 'total')
-          .where('rent.property_id = :propertyId', { propertyId: property.id })
-          .andWhere('rent.tenant_id = :tenantId', { tenantId: activeTenantRelation.tenant.id })
-          .andWhere('rent.deleted_at IS NULL')
-          .getRawOne();
-        totalOutstandingBalance = parseFloat(allRentsResult?.total || '0');
-      }
+        latestRenewalInvoice.payment_status === RenewalPaymentStatus.UNPAID &&
+        latestRenewalInvoice.token_type === 'landlord'
+          ? {
+              rentAmount: parseFloat(
+                latestRenewalInvoice.rent_amount.toString(),
+              ),
+              serviceCharge: parseFloat(
+                (latestRenewalInvoice.service_charge || 0).toString(),
+              ),
+              totalAmount: parseFloat(
+                latestRenewalInvoice.total_amount.toString(),
+              ),
+            }
+          : null;
+
+      // Outstanding balance: sourced from TenantBalance (tenant-level, per landlord)
+      const { outstanding_balance: totalOutstandingBalance } =
+        await this.tenantBalancesService.getBalances(
+          activeTenantRelation.tenant.id,
+          property.owner_id,
+        );
 
       currentTenant = {
         id: activeTenantRelation.tenant.id,
@@ -1828,7 +1862,10 @@ export class PropertiesService {
             try {
               parsedData = JSON.parse(hist.event_description || '{}');
             } catch {
-              parsedData = { displayType: 'Custom Event', description: hist.event_description || '' };
+              parsedData = {
+                displayType: 'Custom Event',
+                description: hist.event_description || '',
+              };
             }
             const userAddedAmount = parsedData.amount || null;
             return {
@@ -1863,7 +1900,7 @@ export class PropertiesService {
               id: hist.id,
               date: hist.created_at,
               eventType: 'user_added_tenancy',
-              title: `Historical Tenancy Recorded — ${tenantName}`,
+              title: `Tenancy started`,
               description: `Tenancy period: ${startDate} – ${endDate}`,
               details: JSON.stringify({
                 rentAmount,
@@ -1896,7 +1933,7 @@ export class PropertiesService {
               id: hist.id,
               date: hist.created_at,
               eventType: 'user_added_payment',
-              title: `Historical Payment Recorded — ${tenantName}`,
+              title: `Payment received`,
               description: `Payment of ₦${Number(paymentAmount).toLocaleString()} on ${paymentDate}`,
               details: JSON.stringify({
                 paymentAmount,
@@ -1972,6 +2009,7 @@ export class PropertiesService {
       serviceCharge: activeRent?.service_charge || 0,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
+      pendingRenewalInvoice: pendingRenewalInvoice || null,
       rentalPrice: property.rental_price || null,
       isMarketingReady: property.is_marketing_ready || false,
       description: property.description || computedDescription,

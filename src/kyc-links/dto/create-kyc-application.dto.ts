@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumberString } from 'class-validator';
 import { BaseKYCApplicationFieldsDto } from './base-kyc-application-fields.dto';
 
 /**
@@ -21,4 +21,21 @@ export class CreateKYCApplicationDto extends BaseKYCApplicationFieldsDto {
   @IsString()
   @IsNotEmpty()
   last_name: string;
+
+  // Tenancy fields required in full submission flow
+  @IsString()
+  @IsNotEmpty()
+  intended_use_of_property: string;
+
+  @IsNumberString()
+  @IsNotEmpty()
+  number_of_occupants: string;
+
+  @IsNumberString()
+  @IsNotEmpty()
+  proposed_rent_amount: string;
+
+  @IsString()
+  @IsNotEmpty()
+  rent_payment_frequency: string;
 }

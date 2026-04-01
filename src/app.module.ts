@@ -35,6 +35,7 @@ import { InvoicesModule } from './invoices/invoices.module';
 import { ReceiptsModule } from './receipts/receipts.module';
 import { ApiLogModule } from './common/interceptors/api-log.module';
 import { QueryLogModule } from './common/logger/query-log.module';
+import { TenantBalancesModule } from './tenant-balances/tenant-balances.module';
 
 config({ default_node_env: 'production' });
 
@@ -82,6 +83,7 @@ config({ default_node_env: 'production' });
     ReceiptsModule,
     ApiLogModule,
     QueryLogModule,
+    TenantBalancesModule,
   ],
   controllers: [AppController],
   providers: [

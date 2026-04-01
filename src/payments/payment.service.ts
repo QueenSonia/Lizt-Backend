@@ -1544,11 +1544,22 @@ export class PaymentService {
         .orderBy('receipt.created_at', 'DESC')
         .getOne();
 
+      const landlordAccount = await this.accountRepository.findOne({
+        where: { id: property.owner_id },
+        relations: ['user'],
+      });
+      const landlordName = landlordAccount?.profile_name
+        ? landlordAccount.profile_name
+        : landlordAccount?.user
+          ? `${landlordAccount.user.first_name} ${landlordAccount.user.last_name}`
+          : 'Your Landlord';
+
       await this.templateSenderService.sendTenantPaymentSuccess({
         phone_number: kycApplication.phone_number,
         tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
         property_name: property.name,
         total_amount: Number(offerLetter.total_amount),
+        landlord_name: landlordName,
         receipt_token: receipt?.token,
       });
 

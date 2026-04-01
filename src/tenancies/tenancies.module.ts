@@ -19,6 +19,7 @@ import { AppCacheModule } from 'src/lib/cache';
 import { PaymentsModule } from 'src/payments/payments.module';
 import { NotificationModule } from 'src/notifications/notification.module';
 import { EventsModule } from 'src/events/events.module';
+import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { EventsModule } from 'src/events/events.module';
     forwardRef(() => PaymentsModule),
     NotificationModule,
     EventsModule,
+    TenantBalancesModule,
   ],
   controllers: [TenanciesController],
   providers: [

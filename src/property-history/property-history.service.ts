@@ -18,6 +18,11 @@ import { buildPropertyHistoryFilter } from 'src/filters/query-filter';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
+import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import {
+  TenantBalanceLedger,
+  TenantBalanceLedgerType,
+} from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 
 @Injectable()
 export class PropertyHistoryService {
@@ -30,20 +35,43 @@ export class PropertyHistoryService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(Rent)
     private readonly rentRepository: Repository<Rent>,
+    @InjectRepository(TenantBalanceLedger)
+    private readonly ledgerRepository: Repository<TenantBalanceLedger>,
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
+    private readonly tenantBalancesService: TenantBalancesService,
   ) {}
 
   async createPropertyHistory(
     data: CreatePropertyHistoryDto,
   ): Promise<PropertyHistory> {
+    // Validate required fields
+    if (!data.property_id || data.property_id.trim() === '') {
+      throw new HttpException(
+        'Property ID is required',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     // Handle tenancy history entries: clash detection + outstanding balance update
     if (data.event_type === 'user_added_tenancy') {
+      if (!data.tenant_id || data.tenant_id.trim() === '') {
+        throw new HttpException(
+          'Tenant ID is required for tenancy entries',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
       return this.handleTenancyHistoryEntry(data);
     }
 
     // Handle payment history entries: outstanding balance reduction
     if (data.event_type === 'user_added_payment') {
+      if (!data.tenant_id || data.tenant_id.trim() === '') {
+        throw new HttpException(
+          'Tenant ID is required for payment entries',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
       return this.handlePaymentHistoryEntry(data);
     }
 
@@ -103,23 +131,38 @@ export class PropertyHistoryService {
     const serviceChargeAmount = parsedData.serviceChargeAmount || 0;
 
     const rent = this.rentRepository.create({
-      property_id: data.property_id,
+      property_id: data.property_id!,
       tenant_id: data.tenant_id!,
       rent_start_date: startDate,
       expiry_date: endDate,
       rental_price: rentAmount,
       service_charge: serviceChargeAmount,
       amount_paid: 0,
-      outstanding_balance: totalAmount,
-      outstanding_balance_reason:
-        totalAmount > 0 ? 'Historical tenancy recorded' : null,
-      payment_status:
-        totalAmount > 0
-          ? RentPaymentStatusEnum.OWING
-          : RentPaymentStatusEnum.PAID,
+      payment_status: RentPaymentStatusEnum.PAID,
       rent_status: RentStatusEnum.INACTIVE,
     });
     await this.rentRepository.save(rent);
+
+    // Record outstanding balance on TenantBalance if applicable
+    if (totalAmount > 0 && data.tenant_id) {
+      const property = await this.propertyRepository.findOne({
+        where: { id: data.property_id },
+      });
+      if (property?.owner_id) {
+        await this.tenantBalancesService.addOutstandingBalance(
+          data.tenant_id,
+          property.owner_id,
+          totalAmount,
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Historical tenancy recorded',
+            propertyId: data.property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+        );
+      }
+    }
 
     // Create notification for livefeed
     await this.createHistoryNotification(data, saved);
@@ -150,52 +193,52 @@ export class PropertyHistoryService {
     // Save the history entry
     const saved = await this.propertyHistoryRepository.save(data);
 
-    // Find ALL rents for this tenant with outstanding balance, oldest first
-    const rentsWithBalance = await this.rentRepository
-      .createQueryBuilder('rent')
-      .where('rent.tenant_id = :tenantId', { tenantId: data.tenant_id })
-      .andWhere('rent.outstanding_balance > 0')
-      .orderBy('rent.rent_start_date', 'ASC')
-      .getMany();
+    // Look up landlord via property
+    const property = await this.propertyRepository.findOne({
+      where: { id: data.property_id },
+    });
 
-    // Subtract payment across rents, overflowing to the next
-    let remaining = paymentAmount;
-    for (const rent of rentsWithBalance) {
-      if (remaining <= 0) break;
+    if (property?.owner_id) {
+      const landlordId = property.owner_id;
+      const tenantId = data.tenant_id!;
 
-      const owed = rent.outstanding_balance || 0;
-      const deduction = Math.min(owed, remaining);
+      const currentOB = await this.tenantBalancesService.getOutstandingBalance(
+        tenantId,
+        landlordId,
+      );
+      const deduction = Math.min(currentOB, paymentAmount);
+      const remaining = paymentAmount - deduction;
 
-      rent.outstanding_balance = owed - deduction;
-      rent.amount_paid = (rent.amount_paid || 0) + deduction;
-      remaining -= deduction;
-
-      if (rent.outstanding_balance === 0) {
-        rent.payment_status = RentPaymentStatusEnum.PAID;
-        rent.outstanding_balance_reason = null;
+      if (deduction > 0) {
+        await this.tenantBalancesService.subtractOutstandingBalance(
+          tenantId,
+          landlordId,
+          deduction,
+          {
+            type: TenantBalanceLedgerType.OB_PAYMENT,
+            description: `Manual payment of ₦${paymentAmount.toLocaleString()} applied to outstanding balance`,
+            propertyId: data.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: saved.id,
+          },
+        );
       }
 
-      await this.rentRepository.save(rent);
-    }
-
-    // If there's still remaining payment (overpayment), store as credit on the active rent
-    if (remaining > 0) {
-      const activeRent = await this.rentRepository.findOne({
-        where: {
-          tenant_id: data.tenant_id,
-          rent_status: RentStatusEnum.ACTIVE,
-        },
-      });
-
-      if (activeRent) {
-        activeRent.credit_balance = (activeRent.credit_balance || 0) + remaining;
-        await this.rentRepository.save(activeRent);
-        this.logger.log(
-          `Overpayment of ₦${remaining} stored as credit for tenant ${data.tenant_id}`,
+      if (remaining > 0) {
+        await this.tenantBalancesService.addCreditBalance(
+          tenantId,
+          landlordId,
+          remaining,
+          {
+            type: TenantBalanceLedgerType.CREDIT_ADDED,
+            description: `Overpayment of ₦${remaining.toLocaleString()} stored as credit`,
+            propertyId: data.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: saved.id,
+          },
         );
-      } else {
-        this.logger.warn(
-          `Overpayment of ₦${remaining} for tenant ${data.tenant_id} but no active rent found to store credit`,
+        this.logger.log(
+          `Overpayment of ₦${remaining} stored as credit for tenant ${tenantId}`,
         );
       }
     }
@@ -224,9 +267,9 @@ export class PropertyHistoryService {
 
       const displayType =
         data.event_type === 'user_added_tenancy'
-          ? 'Historical Tenancy Recorded'
+          ? 'Tenancy started'
           : data.event_type === 'user_added_payment'
-            ? 'Historical Payment Recorded'
+            ? 'Payment received'
             : parsedData.displayType || 'Custom Event';
       const tenantName = parsedData.tenantName || '';
       const propertyName = property?.name || parsedData.propertyName || '';
@@ -316,13 +359,345 @@ export class PropertyHistoryService {
   }
 
   async updatePropertyHistoryById(id: string, data: UpdatePropertyHistoryDto) {
-    await this.getPropertyHistoryById(id);
+    const existing = await this.getPropertyHistoryById(id);
+
+    if (existing.event_type === 'user_added_tenancy') {
+      return this.handleUpdateTenancyHistoryEntry(id, existing, data);
+    }
+
+    if (existing.event_type === 'user_added_payment') {
+      return this.handleUpdatePaymentHistoryEntry(id, existing, data);
+    }
+
     return this.propertyHistoryRepository.update(id, data);
   }
 
+  private async handleUpdateTenancyHistoryEntry(
+    id: string,
+    existing: PropertyHistory,
+    data: UpdatePropertyHistoryDto,
+  ): Promise<PropertyHistory> {
+    const newStartDate = new Date(data.move_in_date!);
+    const newEndDate = new Date(data.move_out_date!);
+
+    if (isNaN(newStartDate.getTime()) || isNaN(newEndDate.getTime())) {
+      throw new HttpException('Invalid tenancy dates', HttpStatus.BAD_REQUEST);
+    }
+
+    if (newStartDate >= newEndDate) {
+      throw new HttpException(
+        'Tenancy start date must be before end date',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Find the associated rent created with this history entry (match by tenant + old dates)
+    const existingRent =
+      existing.tenant_id && existing.move_in_date
+        ? await this.rentRepository.findOne({
+            where: {
+              tenant_id: existing.tenant_id,
+              rent_start_date: existing.move_in_date,
+              rent_status: RentStatusEnum.INACTIVE,
+            },
+          })
+        : null;
+
+    // Clash check against active rents on this property, excluding the associated rent
+    const clashQuery = this.rentRepository
+      .createQueryBuilder('rent')
+      .where('rent.property_id = :propertyId', {
+        propertyId: existing.property_id,
+      })
+      .andWhere('rent.rent_start_date < :endDate', {
+        endDate: newEndDate.toISOString(),
+      })
+      .andWhere('rent.expiry_date > :startDate', {
+        startDate: newStartDate.toISOString(),
+      });
+
+    if (existingRent) {
+      clashQuery.andWhere('rent.id != :rentId', { rentId: existingRent.id });
+    }
+
+    const clashingRents = await clashQuery.getMany();
+    if (clashingRents.length > 0) {
+      throw new HttpException(
+        'This tenancy period overlaps with an existing tenancy record for this property',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const oldParsedData = JSON.parse(existing.event_description || '{}');
+    const oldTotalAmount: number = oldParsedData.totalAmount || 0;
+    const newParsedData = JSON.parse(data.event_description || '{}');
+    const newTotalAmount: number = newParsedData.totalAmount || 0;
+
+    // Update the history record
+    await this.propertyHistoryRepository.update(id, data);
+
+    // Update the associated rent record dates and amounts
+    if (existingRent) {
+      await this.rentRepository.update(existingRent.id, {
+        rent_start_date: newStartDate,
+        expiry_date: newEndDate,
+        rental_price: newParsedData.rentAmount || 0,
+        service_charge: newParsedData.serviceChargeAmount || 0,
+      });
+    }
+
+    // Adjust outstanding balance if total amount changed
+    if (oldTotalAmount !== newTotalAmount && existing.tenant_id) {
+      const property = await this.propertyRepository.findOne({
+        where: { id: existing.property_id },
+      });
+      if (property?.owner_id) {
+        const delta = newTotalAmount - oldTotalAmount;
+        if (delta > 0) {
+          await this.tenantBalancesService.addOutstandingBalance(
+            existing.tenant_id,
+            property.owner_id,
+            delta,
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: 'Historical tenancy updated (amount increased)',
+              propertyId: existing.property_id,
+              relatedEntityType: 'property_history',
+              relatedEntityId: id,
+            },
+          );
+        } else {
+          await this.tenantBalancesService.subtractOutstandingBalance(
+            existing.tenant_id,
+            property.owner_id,
+            Math.abs(delta),
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: 'Historical tenancy updated (amount decreased)',
+              propertyId: existing.property_id,
+              relatedEntityType: 'property_history',
+              relatedEntityId: id,
+            },
+          );
+        }
+      }
+    }
+
+    return this.getPropertyHistoryById(id);
+  }
+
+  private async handleUpdatePaymentHistoryEntry(
+    id: string,
+    existing: PropertyHistory,
+    data: UpdatePropertyHistoryDto,
+  ): Promise<PropertyHistory> {
+    const newParsedData = JSON.parse(data.event_description || '{}');
+    const newPaymentAmount: number = newParsedData.paymentAmount || 0;
+
+    if (newPaymentAmount <= 0) {
+      throw new HttpException(
+        'Payment amount must be greater than 0',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const oldParsedData = JSON.parse(existing.event_description || '{}');
+    const oldPaymentAmount: number = oldParsedData.paymentAmount || 0;
+
+    // Update the history record first
+    await this.propertyHistoryRepository.update(id, data);
+
+    if (oldPaymentAmount === newPaymentAmount) {
+      return this.getPropertyHistoryById(id);
+    }
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: existing.property_id },
+    });
+
+    if (!property?.owner_id || !existing.tenant_id) {
+      return this.getPropertyHistoryById(id);
+    }
+
+    const tenantId = existing.tenant_id;
+    const landlordId = property.owner_id;
+
+    // Query ledger entries created by the original payment to reverse them precisely
+    const ledgerEntries = await this.ledgerRepository.find({
+      where: {
+        related_entity_id: id,
+        related_entity_type: 'property_history',
+        tenant_id: tenantId,
+      },
+    });
+
+    for (const entry of ledgerEntries) {
+      // Reverse OB reduction (outstanding_balance_change is negative for a subtraction)
+      if (entry.outstanding_balance_change < 0) {
+        const obReduction = Math.abs(entry.outstanding_balance_change);
+        await this.tenantBalancesService.addOutstandingBalance(
+          tenantId,
+          landlordId,
+          obReduction,
+          {
+            type: TenantBalanceLedgerType.OB_PAYMENT,
+            description: 'Historical payment updated (reversal)',
+            propertyId: existing.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: id,
+          },
+        );
+      }
+      // Reverse credit addition
+      if (entry.credit_balance_change > 0) {
+        await this.tenantBalancesService.subtractCreditBalance(
+          tenantId,
+          landlordId,
+          entry.credit_balance_change,
+          {
+            type: TenantBalanceLedgerType.CREDIT_ADDED,
+            description: 'Historical payment updated (credit reversal)',
+            propertyId: existing.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: id,
+          },
+        );
+      }
+    }
+
+    // Apply the new payment amount
+    const currentOB = await this.tenantBalancesService.getOutstandingBalance(
+      tenantId,
+      landlordId,
+    );
+    const deduction = Math.min(currentOB, newPaymentAmount);
+    const remaining = newPaymentAmount - deduction;
+
+    if (deduction > 0) {
+      await this.tenantBalancesService.subtractOutstandingBalance(
+        tenantId,
+        landlordId,
+        deduction,
+        {
+          type: TenantBalanceLedgerType.OB_PAYMENT,
+          description: `Manual payment of ₦${newPaymentAmount.toLocaleString()} applied to outstanding balance`,
+          propertyId: existing.property_id,
+          relatedEntityType: 'property_history',
+          relatedEntityId: id,
+        },
+      );
+    }
+
+    if (remaining > 0) {
+      await this.tenantBalancesService.addCreditBalance(
+        tenantId,
+        landlordId,
+        remaining,
+        {
+          type: TenantBalanceLedgerType.CREDIT_ADDED,
+          description: `Overpayment of ₦${remaining.toLocaleString()} stored as credit`,
+          propertyId: existing.property_id,
+          relatedEntityType: 'property_history',
+          relatedEntityId: id,
+        },
+      );
+    }
+
+    return this.getPropertyHistoryById(id);
+  }
+
   async deletePropertyHistoryById(id: string) {
-    await this.getPropertyHistoryById(id);
+    const existing = await this.getPropertyHistoryById(id);
+
+    if (existing.event_type === 'user_added_tenancy') {
+      await this.reverseBalancesForTenancyEntry(existing);
+    } else if (existing.event_type === 'user_added_payment') {
+      await this.reverseBalancesForPaymentEntry(id, existing);
+    }
+
     return this.propertyHistoryRepository.delete(id);
+  }
+
+  private async reverseBalancesForTenancyEntry(
+    existing: PropertyHistory,
+  ): Promise<void> {
+    if (!existing.tenant_id) return;
+
+    const parsedData = JSON.parse(existing.event_description || '{}');
+    const totalAmount: number = parsedData.totalAmount || 0;
+    if (totalAmount <= 0) return;
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: existing.property_id },
+    });
+    if (!property?.owner_id) return;
+
+    await this.tenantBalancesService.subtractOutstandingBalance(
+      existing.tenant_id,
+      property.owner_id,
+      totalAmount,
+      {
+        type: TenantBalanceLedgerType.INITIAL_BALANCE,
+        description: 'Historical tenancy deleted (balance reversal)',
+        propertyId: existing.property_id,
+        relatedEntityType: 'property_history',
+        relatedEntityId: existing.id,
+      },
+    );
+  }
+
+  private async reverseBalancesForPaymentEntry(
+    id: string,
+    existing: PropertyHistory,
+  ): Promise<void> {
+    if (!existing.tenant_id) return;
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: existing.property_id },
+    });
+    if (!property?.owner_id) return;
+
+    const tenantId = existing.tenant_id;
+    const landlordId = property.owner_id;
+
+    const ledgerEntries = await this.ledgerRepository.find({
+      where: {
+        related_entity_id: id,
+        related_entity_type: 'property_history',
+        tenant_id: tenantId,
+      },
+    });
+
+    for (const entry of ledgerEntries) {
+      if (entry.outstanding_balance_change < 0) {
+        await this.tenantBalancesService.addOutstandingBalance(
+          tenantId,
+          landlordId,
+          Math.abs(entry.outstanding_balance_change),
+          {
+            type: TenantBalanceLedgerType.OB_PAYMENT,
+            description: 'Historical payment deleted (OB reversal)',
+            propertyId: existing.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: id,
+          },
+        );
+      }
+      if (entry.credit_balance_change > 0) {
+        await this.tenantBalancesService.subtractCreditBalance(
+          tenantId,
+          landlordId,
+          entry.credit_balance_change,
+          {
+            type: TenantBalanceLedgerType.CREDIT_ADDED,
+            description: 'Historical payment deleted (credit reversal)',
+            propertyId: existing.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: id,
+          },
+        );
+      }
+    }
   }
 
   async getPropertyHistoryByTenantId(

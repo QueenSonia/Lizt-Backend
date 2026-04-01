@@ -31,6 +31,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
+import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 
 @Injectable()
 export class TenanciesService {
@@ -54,6 +56,7 @@ export class TenanciesService {
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
     private readonly notificationService: NotificationService,
+    private readonly tenantBalancesService: TenantBalancesService,
     private dataSource: DataSource,
   ) {}
 
@@ -328,31 +331,41 @@ export class TenanciesService {
       );
     }
 
-    // 4. Calculate renewal period (start date = day after expiry, end date based on frequency)
-    const startDate = new Date(activeRent.expiry_date);
-    startDate.setDate(startDate.getDate() + 1);
-
-    // Use frontend-provided values, falling back to active rent values
+    // 4. Calculate invoice period.
+    // If the current rent is already OWING (auto-renewed but unpaid), the invoice
+    // covers the current period (tenant pays for what they owe).
+    // Otherwise (PAID/PENDING) the invoice is for the upcoming next period.
     const paymentFrequency =
       body?.paymentFrequency || activeRent.payment_frequency || 'Annually';
 
-    const endDate = new Date(startDate);
-    switch (paymentFrequency.toLowerCase()) {
-      case 'monthly':
-        endDate.setMonth(endDate.getMonth() + 1);
-        break;
-      case 'quarterly':
-        endDate.setMonth(endDate.getMonth() + 3);
-        break;
-      case 'bi-annually':
-        endDate.setMonth(endDate.getMonth() + 6);
-        break;
-      case 'annually':
-      default:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
+    let startDate: Date;
+    let endDate: Date;
+
+    if (activeRent.payment_status === RentPaymentStatusEnum.OWING) {
+      startDate = new Date(activeRent.rent_start_date);
+      endDate = new Date(activeRent.expiry_date);
+    } else {
+      startDate = new Date(activeRent.expiry_date);
+      startDate.setDate(startDate.getDate() + 1);
+
+      endDate = new Date(startDate);
+      switch (paymentFrequency.toLowerCase()) {
+        case 'monthly':
+          endDate.setMonth(endDate.getMonth() + 1);
+          break;
+        case 'quarterly':
+          endDate.setMonth(endDate.getMonth() + 3);
+          break;
+        case 'bi-annually':
+          endDate.setMonth(endDate.getMonth() + 6);
+          break;
+        case 'annually':
+        default:
+          endDate.setFullYear(endDate.getFullYear() + 1);
+          break;
+      }
+      endDate.setDate(endDate.getDate() - 1); // End date is inclusive
     }
-    endDate.setDate(endDate.getDate() - 1); // End date is inclusive
 
     // 5. Calculate total amount (rent + service charge + outstanding balance - credit balance)
     const rentAmount = body?.rentAmount || activeRent.rental_price;
@@ -360,27 +373,20 @@ export class TenanciesService {
       body?.serviceCharge ?? (activeRent.service_charge || 0);
     const legalFee = 0;
     const otherCharges = 0;
-    const creditBalance = activeRent.credit_balance || 0;
 
-    // Sum outstanding balance across all rents (active + inactive) for this property+tenant
-    const allRentsForProperty = await this.rentRepository.find({
-      where: {
-        property_id: propertyTenant.property_id,
-        tenant_id: propertyTenant.tenant_id,
-      },
-    });
-    const outstandingBalance = allRentsForProperty.reduce(
-      (sum, r) => sum + (r.outstanding_balance || 0),
-      0,
+    const landlordId = propertyTenant.property.owner_id;
+    const {
+      outstanding_balance: outstandingBalance,
+      credit_balance: creditBalance,
+    } = await this.tenantBalancesService.getBalances(
+      propertyTenant.tenant_id,
+      landlordId,
     );
 
     // Apply credit balance to reduce total amount
     const subtotal =
       rentAmount + serviceCharge + legalFee + otherCharges + outstandingBalance;
     const totalAmount = Math.max(0, subtotal - creditBalance);
-
-    // Track remaining credit if credit exceeds charges
-    const remainingCredit = Math.max(0, creditBalance - subtotal);
 
     // 6. Check for existing unpaid renewal invoice (may have been auto-created by rent reminder)
     // Exclude tenant-generated OB-only invoices — those should not be reused as renewal invoices
@@ -508,6 +514,8 @@ export class TenanciesService {
         'property.owner.user',
         'tenant',
         'tenant.user',
+        'tenant.user.tenant_kycs',
+        'tenant.user.kyc_applications',
       ],
     });
 
@@ -530,6 +538,8 @@ export class TenanciesService {
         'property.owner.user',
         'tenant',
         'tenant.user',
+        'tenant.user.tenant_kycs',
+        'tenant.user.kyc_applications',
       ],
     });
 
@@ -557,13 +567,20 @@ export class TenanciesService {
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
 
+    const tenantUser = invoice.tenant.user;
+    const tenantKyc = tenantUser.tenant_kycs?.[0];
+    const tenantEmail =
+      tenantKyc?.email ??
+      invoice.tenant.email ??
+      tenantUser.email;
+
     return {
       id: invoice.id,
       token: invoice.token,
       propertyName: invoice.property.name,
       propertyAddress: invoice.property.location,
       tenantName: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
-      tenantEmail: invoice.tenant.user.email,
+      tenantEmail: tenantEmail,
       tenantPhone: invoice.tenant.user.phone_number,
       renewalPeriod: {
         startDate: formatDate(invoice.start_date),
@@ -624,6 +641,8 @@ export class TenanciesService {
         'property.owner.user',
         'tenant',
         'tenant.user',
+        'tenant.user.tenant_kycs',
+        'tenant.user.kyc_applications',
       ],
     });
 
@@ -666,6 +685,8 @@ export class TenanciesService {
         'property.owner.user',
         'tenant',
         'tenant.user',
+        'tenant.user.tenant_kycs',
+        'tenant.user.kyc_applications',
       ],
     });
 
@@ -709,6 +730,13 @@ export class TenanciesService {
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
 
+    const tenantUser = invoice.tenant.user;
+    const tenantKyc = tenantUser.tenant_kycs?.[0];
+    const tenantEmail =
+      tenantKyc?.email ??
+      invoice.tenant.email ??
+      tenantUser.email;
+
     return {
       receiptNumber: invoice.receipt_number,
       receiptDate: formatDateTime(invoice.paid_at || new Date()),
@@ -716,7 +744,7 @@ export class TenanciesService {
 
       // Tenant Information
       tenantName: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
-      tenantEmail: invoice.tenant.user.email,
+      tenantEmail: tenantEmail,
       tenantPhone: invoice.tenant.user.phone_number,
 
       // Property Information
@@ -796,23 +824,6 @@ export class TenanciesService {
         (paymentOption === 'custom' && amount >= currentCharges) ||
         !paymentOption); // backwards compat: no option = old flow = always renew
 
-    // Calculate new outstanding balance
-    let newOutstandingBalance = outstandingBalance;
-    if (paymentOption === 'outstanding') {
-      newOutstandingBalance = 0;
-    } else if (paymentOption === 'full') {
-      newOutstandingBalance = 0;
-    } else if (paymentOption === 'custom') {
-      if (amount >= currentCharges) {
-        const excess = amount - currentCharges;
-        newOutstandingBalance = Math.max(0, outstandingBalance - excess);
-      } else {
-        newOutstandingBalance = Math.max(0, outstandingBalance - amount);
-      }
-    } else if (paymentOption === 'current-charges') {
-      newOutstandingBalance = outstandingBalance; // carries forward
-    }
-
     // Update invoice payment status
     invoice.payment_status = shouldRenew
       ? RenewalPaymentStatus.PAID
@@ -832,49 +843,134 @@ export class TenanciesService {
       },
     });
 
-    // Calculate remaining credit balance if credits were used during invoice creation
-    const originalCreditBalance = activeRent?.credit_balance || 0;
-    const subtotalBeforeCredit =
+    const landlordId = invoice.property.owner_id;
+    const tenantId = invoice.tenant_id;
+
+    // If credit was applied when the invoice was created, consume it now.
+    // credit used = (rent + sc + OB) - total_amount on invoice
+    const invoiceSubtotal =
       parseFloat(invoice.rent_amount.toString()) +
       parseFloat((invoice.service_charge || 0).toString()) +
+      parseFloat((invoice.legal_fee || 0).toString()) +
+      parseFloat((invoice.other_charges || 0).toString()) +
       outstandingBalance;
-    const creditUsed = Math.min(originalCreditBalance, subtotalBeforeCredit);
-    const remainingCredit = originalCreditBalance - creditUsed;
+    const creditUsed = Math.max(
+      0,
+      invoiceSubtotal - parseFloat(invoice.total_amount.toString()),
+    );
 
     if (shouldRenew && activeRent) {
-      // --- RENEWAL PATH ---
-      // Mark old rent as inactive
-      activeRent.rent_status = RentStatusEnum.INACTIVE;
-      activeRent.updated_at = new Date();
-      await this.rentRepository.save(activeRent);
+      const isOwingRent =
+        activeRent.payment_status === RentPaymentStatusEnum.OWING;
 
-      // Create new rent record with the renewal period dates
-      const newRent = this.rentRepository.create({
-        property_id: invoice.property_id,
-        tenant_id: invoice.tenant_id,
-        rent_start_date: invoice.start_date,
-        expiry_date: invoice.end_date,
-        rental_price: parseFloat(invoice.rent_amount.toString()),
-        amount_paid: parseFloat(invoice.rent_amount.toString()),
-        security_deposit: activeRent.security_deposit,
-        service_charge:
-          parseFloat(invoice.service_charge.toString()) ||
-          activeRent.service_charge,
-        outstanding_balance: newOutstandingBalance,
-        credit_balance: remainingCredit, // Carry forward remaining credit
-        payment_frequency:
-          invoice.payment_frequency || activeRent.payment_frequency,
-        payment_status: RentPaymentStatusEnum.PAID,
-        rent_status: RentStatusEnum.ACTIVE,
-      });
-      await this.rentRepository.save(newRent);
-    } else if (!shouldRenew && activeRent) {
-      // --- OB-ONLY / PARTIAL PAYMENT PATH ---
-      // Update outstanding balance on current active rent (no renewal)
-      activeRent.outstanding_balance = newOutstandingBalance;
-      activeRent.updated_at = new Date();
-      await this.rentRepository.save(activeRent);
+      if (isOwingRent) {
+        // --- MARK CURRENT OWING RENT PAID ---
+        // Auto-renewal already created this period; just mark it paid.
+        // Also sync rental_price/service_charge/payment_frequency from the invoice
+        // so that future auto-renewals carry the landlord's chosen amount forward.
+        activeRent.payment_status = RentPaymentStatusEnum.PAID;
+        activeRent.amount_paid = parseFloat(invoice.rent_amount.toString());
+        activeRent.rental_price = parseFloat(invoice.rent_amount.toString());
+        activeRent.service_charge =
+          parseFloat((invoice.service_charge || 0).toString()) ||
+          activeRent.service_charge;
+        activeRent.payment_frequency =
+          invoice.payment_frequency || activeRent.payment_frequency;
+        activeRent.updated_at = new Date();
+        await this.rentRepository.save(activeRent);
+      } else {
+        // --- OLD FLOW: current rent was PAID/PENDING (pre-expiry payment) ---
+        // Mark current period inactive and create new PAID rent for next period.
+        activeRent.rent_status = RentStatusEnum.INACTIVE;
+        activeRent.updated_at = new Date();
+        await this.rentRepository.save(activeRent);
+
+        const newRent = this.rentRepository.create({
+          property_id: invoice.property_id,
+          tenant_id: invoice.tenant_id,
+          rent_start_date: invoice.start_date,
+          expiry_date: invoice.end_date,
+          rental_price: parseFloat(invoice.rent_amount.toString()),
+          amount_paid: parseFloat(invoice.rent_amount.toString()),
+          security_deposit: activeRent.security_deposit,
+          service_charge:
+            parseFloat(invoice.service_charge.toString()) ||
+            activeRent.service_charge,
+          payment_frequency:
+            invoice.payment_frequency || activeRent.payment_frequency,
+          payment_status: RentPaymentStatusEnum.PAID,
+          rent_status: RentStatusEnum.ACTIVE,
+        });
+        await this.rentRepository.save(newRent);
+      }
     }
+
+    // Update TenantBalance based on payment option
+    if (paymentOption === 'outstanding' || paymentOption === 'full') {
+      await this.tenantBalancesService.clearOutstandingBalance(
+        tenantId,
+        landlordId,
+        {
+          type: TenantBalanceLedgerType.OB_PAYMENT,
+          description: `Outstanding balance cleared. Payment: ₦${amount.toLocaleString()}, option: ${paymentOption ?? 'full'}`,
+          propertyId: invoice.property_id,
+          relatedEntityType: 'renewal_invoice',
+          relatedEntityId: invoice.id,
+        },
+      );
+    } else if (paymentOption === 'custom') {
+      if (amount >= currentCharges) {
+        const excess = amount - currentCharges;
+        if (excess > 0) {
+          await this.tenantBalancesService.subtractOutstandingBalance(
+            tenantId,
+            landlordId,
+            excess,
+            {
+              type: TenantBalanceLedgerType.OB_PAYMENT,
+              description: `Custom payment — ₦${excess.toLocaleString()} excess applied to outstanding balance`,
+              propertyId: invoice.property_id,
+              relatedEntityType: 'renewal_invoice',
+              relatedEntityId: invoice.id,
+            },
+          );
+        }
+      } else {
+        await this.tenantBalancesService.subtractOutstandingBalance(
+          tenantId,
+          landlordId,
+          amount,
+          {
+            type: TenantBalanceLedgerType.OB_PAYMENT,
+            description: `Custom partial payment — ₦${amount.toLocaleString()} applied to outstanding balance`,
+            propertyId: invoice.property_id,
+            relatedEntityType: 'renewal_invoice',
+            relatedEntityId: invoice.id,
+          },
+        );
+      }
+    }
+    // 'current-charges' — OB unchanged
+
+    // Consume any credit balance that was used to reduce the invoice amount
+    if (creditUsed > 0) {
+      await this.tenantBalancesService.subtractCreditBalance(
+        tenantId,
+        landlordId,
+        creditUsed,
+        {
+          type: TenantBalanceLedgerType.CREDIT_APPLIED,
+          description: `Credit of ₦${creditUsed.toLocaleString()} applied to renewal invoice`,
+          propertyId: invoice.property_id,
+          relatedEntityType: 'renewal_invoice',
+          relatedEntityId: invoice.id,
+        },
+      );
+    }
+
+    // Recalculate newOutstandingBalance for notifications (sourced from TenantBalance)
+    const { outstanding_balance: newOutstandingBalance } =
+      await this.tenantBalancesService.getBalances(tenantId, landlordId);
 
     // Common data for notifications
     const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;

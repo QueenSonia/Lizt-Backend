@@ -27,6 +27,7 @@ import {
 } from './entities/kyc-application.entity';
 import { Account } from '../users/entities/account.entity';
 import { CompleteKYCDto } from './dto/complete-kyc.dto';
+import { PropertyAdditionKYCDto } from './dto/property-addition-kyc.dto';
 
 @Controller('api')
 export class KYCApplicationController {
@@ -413,6 +414,32 @@ export class KYCApplicationController {
     return {
       success: true,
       history,
+    };
+  }
+
+  /**
+   * Submit KYC for property addition (existing tenant being added to new property)
+   */
+  @SkipAuth()
+  @Post('kyc/submit-property-addition')
+  async submitPropertyAdditionKYC(
+    @Body(new ValidationPipe({ transform: true })) kycData: PropertyAdditionKYCDto,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    application_id: string;
+    status: ApplicationStatus;
+  }> {
+    const application = await this.kycApplicationService.submitPropertyAdditionKYC(
+      kycData.kyc_token,
+      kycData,
+    );
+
+    return {
+      success: true,
+      message: 'Property addition KYC submitted successfully',
+      application_id: application.id,
+      status: application.status,
     };
   }
 }

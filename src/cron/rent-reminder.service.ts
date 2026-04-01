@@ -4,7 +4,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { Rent } from '../rents/entities/rent.entity';
-import { RentStatusEnum } from '../rents/dto/create-rent.dto';
+import {
+  RentPaymentStatusEnum,
+  RentStatusEnum,
+} from '../rents/dto/create-rent.dto';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
@@ -15,6 +18,8 @@ import {
 } from '../tenancies/entities/renewal-invoice.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from '../properties/dto/create-property.dto';
+import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
+import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 
 const RENT_REMINDER_SCHEDULE = {
   monthly: [14],
@@ -39,19 +44,139 @@ export class RentReminderService {
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
     private readonly whatsAppNotificationLogService: WhatsAppNotificationLogService,
     private readonly notificationService: NotificationService,
+    private readonly tenantBalancesService: TenantBalancesService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_8AM, { timeZone: 'Africa/Lagos' })
   async runDailyReminderCheck() {
     this.logger.log('Starting daily rent reminder check...');
     try {
+      await this.processAutoRenewal();
       await this.processUpcomingReminders();
-      await this.processOverdueReminders();
+      await this.processOwingReminders();
       this.logger.log('Completed daily rent reminder check.');
     } catch (error) {
       this.logger.error('Failed to process daily rent reminders', error);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Auto-renewal
+  // ---------------------------------------------------------------------------
+
+  /**
+   * For every active rent whose expiry date has passed, automatically renew
+   * it into the next period (OWING).  If the expired period was unpaid, the
+   * amount is added to the tenant's TenantBalance.
+   *
+   * This replaces the old "roll-forward" approach which mutated expiry_date
+   * in-place and accumulated debt on the rent record.
+   */
+  private async processAutoRenewal() {
+    this.logger.log('Processing auto-renewal for expired rents...');
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().split('T')[0];
+
+    const expiredRents = await this.rentRepository
+      .createQueryBuilder('rent')
+      .leftJoinAndSelect('rent.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'user')
+      .leftJoinAndSelect('rent.property', 'property')
+      .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
+      .andWhere('DATE(rent.expiry_date) < :today', { today: todayStr })
+      .getMany();
+
+    this.logger.log(
+      `Found ${expiredRents.length} expired rents for auto-renewal.`,
+    );
+
+    for (const rent of expiredRents) {
+      try {
+        await this.autoRenewExpiredRent(rent, today);
+      } catch (error) {
+        this.logger.error(`Failed to auto-renew rent ${rent.id}`, error);
+      }
+    }
+  }
+
+  /**
+   * Advance a single rent forward through any elapsed periods, creating one
+   * new ACTIVE/OWING rent record per period.  Marks the old rent INACTIVE.
+   *
+   * If the expired rent was not PAID, the missed period amount is added to
+   * the tenant's TenantBalance for that landlord.
+   */
+  private async autoRenewExpiredRent(rent: Rent, today: Date): Promise<void> {
+    const frequency = (rent.payment_frequency || 'monthly').toLowerCase();
+
+    let currentRent = rent;
+    let currentExpiry = new Date(rent.expiry_date);
+    currentExpiry.setUTCHours(0, 0, 0, 0);
+
+    while (currentExpiry < today) {
+      const nextStart = new Date(currentExpiry);
+      nextStart.setDate(nextStart.getDate() + 1);
+      const nextExpiry = this.advanceDateByOnePeriod(currentExpiry, frequency);
+
+      // Mark the current period inactive
+      currentRent.rent_status = RentStatusEnum.INACTIVE;
+      await this.rentRepository.save(currentRent);
+
+      // If the expiring period was unpaid, record it as outstanding balance
+      const wasUnpaid =
+        currentRent.payment_status !== RentPaymentStatusEnum.PAID;
+
+      if (wasUnpaid) {
+        const unpaidAmount =
+          (currentRent.rental_price || 0) + (currentRent.service_charge || 0);
+        if (unpaidAmount > 0) {
+          await this.tenantBalancesService.addOutstandingBalance(
+            currentRent.tenant_id,
+            currentRent.property.owner_id,
+            unpaidAmount,
+            {
+              type: TenantBalanceLedgerType.AUTO_RENEWAL,
+              description: `Rent auto-renewed: unpaid period ${currentExpiry.toLocaleDateString('en-GB')} – ${currentExpiry.toLocaleDateString('en-GB')} added to outstanding balance`,
+              propertyId: currentRent.property_id,
+              relatedEntityType: 'rent',
+              relatedEntityId: currentRent.id,
+            },
+          );
+        }
+      }
+
+      // Create the new period as ACTIVE/OWING
+      const newRent = this.rentRepository.create({
+        property_id: currentRent.property_id,
+        tenant_id: currentRent.tenant_id,
+        rent_start_date: nextStart,
+        expiry_date: nextExpiry,
+        rental_price: currentRent.rental_price,
+        security_deposit: currentRent.security_deposit,
+        service_charge: currentRent.service_charge,
+        payment_frequency: currentRent.payment_frequency,
+        payment_status: RentPaymentStatusEnum.OWING,
+        rent_status: RentStatusEnum.ACTIVE,
+        amount_paid: 0,
+      });
+      await this.rentRepository.save(newRent);
+
+      this.logger.log(
+        `Auto-renewed rent ${currentRent.id} → new rent ${newRent.id} ` +
+          `(${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]})` +
+          (wasUnpaid ? ', OB updated' : ''),
+      );
+
+      currentRent = newRent;
+      currentExpiry = new Date(nextExpiry);
+      currentExpiry.setUTCHours(0, 0, 0, 0);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Upcoming reminders (before expiry)
+  // ---------------------------------------------------------------------------
 
   private async processUpcomingReminders() {
     this.logger.log('Processing upcoming rent reminders...');
@@ -63,19 +188,17 @@ export class RentReminderService {
     Object.values(RENT_REMINDER_SCHEDULE).forEach((days) => {
       days.forEach((day) => allReminderDays.add(day));
     });
-    // Also include days 0-7 for daily reminders in the last 7 days
+    // Include last 7 days before expiry for daily renewal-link reminders
     for (let d = 0; d <= 7; d++) allReminderDays.add(d);
 
-    // Determine target dates corresponding to those exact gaps
     const targetDates = Array.from(allReminderDays).map((d) => {
       const date = new Date(today);
       date.setUTCDate(today.getUTCDate() + d);
-      return date.toISOString().split('T')[0]; // YYYY-MM-DD format
+      return date.toISOString().split('T')[0];
     });
 
     if (targetDates.length === 0) return;
 
-    // Optimized DB Query: Fetch only rents expiring exactly on one of the target dates
     const rents = await this.rentRepository
       .createQueryBuilder('rent')
       .leftJoinAndSelect('rent.tenant', 'tenant')
@@ -85,37 +208,22 @@ export class RentReminderService {
       .andWhere('DATE(rent.expiry_date) IN (:...dates)', { dates: targetDates })
       .getMany();
 
-    this.logger.log(
-      `Found ${rents.length} potential upcoming rents to remind.`,
-    );
+    this.logger.log(`Found ${rents.length} upcoming rents to remind.`);
 
     for (const rent of rents) {
       try {
         if (!rent.expiry_date) continue;
 
-        // Skip rents that are already past their original expiry — those are
-        // handled exclusively by processOverdueReminders. This prevents a
-        // roll-forward rent (whose expiry_date was advanced) from accidentally
-        // re-triggering upcoming-expiry reminders.
-        const originalExpiry = new Date(
-          rent.original_expiry_date || rent.expiry_date,
-        );
-        originalExpiry.setUTCHours(0, 0, 0, 0);
-        if (originalExpiry < today) continue;
-
         const expiryDate = new Date(rent.expiry_date);
         expiryDate.setUTCHours(0, 0, 0, 0);
-
         const daysUntilExpiry = Math.floor(
           (expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
         );
 
-        // Normalize string (e.g. 'Bi-Annually' -> 'bi-annually')
         const frequency = (rent.payment_frequency || 'monthly').toLowerCase();
         const schedule =
           RENT_REMINDER_SCHEDULE[frequency] || RENT_REMINDER_SCHEDULE.monthly;
 
-        // Send on scheduled days + every day for the last 7 days
         if (!schedule.includes(daysUntilExpiry) && daysUntilExpiry > 7)
           continue;
 
@@ -129,49 +237,37 @@ export class RentReminderService {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Owing reminders (after auto-renewal, tenant has unpaid current period)
+  // ---------------------------------------------------------------------------
+
   /**
-   * Process overdue rents: keep sending daily renewal reminders
-   * until payment is completed or tenant is no longer attached.
+   * For every active OWING rent, send a daily renewal reminder with payment
+   * link until the tenant pays.
    */
-  private async processOverdueReminders() {
-    this.logger.log('Processing overdue rent reminders...');
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const todayStr = today.toISOString().split('T')[0];
+  private async processOwingReminders() {
+    this.logger.log('Processing owing rent reminders...');
 
-    // Fetch active rents whose expiry date has passed (cap at 90 days to avoid unbounded queries)
-    const ninetyDaysAgo = new Date(today);
-    ninetyDaysAgo.setUTCDate(ninetyDaysAgo.getUTCDate() - 90);
-    const ninetyDaysAgoStr = ninetyDaysAgo.toISOString().split('T')[0];
-
-    // Use original_expiry_date so that rents whose expiry_date has already
-    // been advanced by the roll-forward are still detected as overdue.
-    const overdueRents = await this.rentRepository
+    const owingRents = await this.rentRepository
       .createQueryBuilder('rent')
       .leftJoinAndSelect('rent.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
       .leftJoinAndSelect('rent.property', 'property')
       .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
-      .andWhere(
-        'DATE(COALESCE(rent.original_expiry_date, rent.expiry_date)) < :today',
-        { today: todayStr },
-      )
-      .andWhere(
-        'DATE(COALESCE(rent.original_expiry_date, rent.expiry_date)) >= :cutoff',
-        { cutoff: ninetyDaysAgoStr },
-      )
+      .andWhere('rent.payment_status = :paymentStatus', {
+        paymentStatus: RentPaymentStatusEnum.OWING,
+      })
       .getMany();
 
-    this.logger.log(
-      `Found ${overdueRents.length} overdue rents to check.`,
-    );
+    this.logger.log(`Found ${owingRents.length} owing rents to remind.`);
 
-    for (const rent of overdueRents) {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    for (const rent of owingRents) {
       try {
-        if (!rent.expiry_date) continue;
         if (!rent.tenant?.user?.phone_number || !rent.property?.name) continue;
 
-        // Check if tenant is still actively attached
         const activeTenant = await this.propertyTenantRepository.findOne({
           where: {
             property_id: rent.property_id,
@@ -182,55 +278,32 @@ export class RentReminderService {
 
         if (!activeTenant) {
           this.logger.debug(
-            `Skipping overdue reminder for rent ${rent.id}: tenant no longer attached.`,
+            `Skipping owing reminder for rent ${rent.id}: tenant no longer attached.`,
           );
           continue;
         }
 
-        // Roll forward: stamp any newly elapsed periods as outstanding debt
-        // and advance expiry_date so initiateRenewal calculates the correct
-        // next-period start date. This mutates rent in-place and saves it.
-        await this.rollForwardIfNeeded(rent, today);
-
-        // Find or create the renewal invoice, refreshing its amounts and
-        // period dates to match the current rolled state of the rent.
         const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
+        if (!renewalInvoice) continue;
 
-        if (!renewalInvoice) {
-          this.logger.debug(
-            `Skipping overdue reminder for rent ${rent.id}: could not find or create renewal invoice.`,
-          );
-          continue;
-        }
-
-        // Use original_expiry_date (or expiry_date as fallback) to calculate
-        // how many days overdue the tenant is — this stays anchored to the
-        // original agreed end date, not the rolled expiry.
-        const baseExpiryDate = new Date(
-          rent.original_expiry_date || rent.expiry_date,
-        );
-        baseExpiryDate.setUTCHours(0, 0, 0, 0);
-        const daysUntilExpiry = Math.floor(
-          (baseExpiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+        const rentStart = new Date(rent.rent_start_date);
+        const daysOverdue = Math.floor(
+          (today.getTime() - rentStart.getTime()) / (1000 * 60 * 60 * 24),
         );
 
-        await this.sendOverdueRenewalReminder(
-          rent,
-          daysUntilExpiry,
-          renewalInvoice,
-        );
+        await this.sendOwingRenewalReminder(rent, daysOverdue, renewalInvoice);
       } catch (error) {
         this.logger.error(
-          `Failed to process overdue reminder for rent ${rent.id}`,
+          `Failed to process owing reminder for rent ${rent.id}`,
           error,
         );
       }
     }
   }
 
-  private async sendOverdueRenewalReminder(
+  private async sendOwingRenewalReminder(
     rent: Rent,
-    daysUntilExpiry: number,
+    daysOwing: number,
     renewalInvoice: RenewalInvoice,
   ) {
     const templateName = 'sendRentReminderWithRenewalTemplate';
@@ -239,12 +312,12 @@ export class RentReminderService {
       await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
         rent.id,
         templateName,
-        daysUntilExpiry,
+        -daysOwing,
       );
 
     if (alreadySent) {
       this.logger.debug(
-        `Overdue reminder already sent for rent ${rent.id} at ${daysUntilExpiry} days.`,
+        `Owing reminder already sent today for rent ${rent.id}.`,
       );
       return;
     }
@@ -271,27 +344,32 @@ export class RentReminderService {
         expiry_date: expiryDateStr,
         renewal_token: renewalInvoice.token,
         frontend_url: frontendUrl,
-        days_before_expiry: daysUntilExpiry,
+        payment_frequency: rent.payment_frequency || 'Monthly',
+        days_before_expiry: -daysOwing,
       },
       rent.id,
     );
 
     this.logger.log(
-      `Queued overdue renewal reminder for rent ${rent.id} (${Math.abs(daysUntilExpiry)} days overdue).`,
+      `Queued owing renewal reminder for rent ${rent.id} (${daysOwing} days owing).`,
     );
 
     await this.logReminderSent(
       rent,
       formattedAmount,
       expiryDateStr,
-      daysUntilExpiry,
+      -daysOwing,
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // Upcoming reminder helpers (same as before, stripped of original_expiry_date)
+  // ---------------------------------------------------------------------------
 
   private async sendReminderIfNotSent(rent: Rent, daysUntilExpiry: number) {
     if (!rent.tenant?.user?.phone_number || !rent.property?.name) {
       this.logger.warn(
-        `Skipping rent reminder for rent ${rent.id}: missing tenant phone number or property name`,
+        `Skipping rent reminder for rent ${rent.id}: missing tenant phone or property name`,
       );
       return;
     }
@@ -317,9 +395,7 @@ export class RentReminderService {
 
     const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
       'en-GB',
-    ); // dd/mm/yyyy
-
-    // Use rental_price if defined, fallback to amount_paid, plus service charge
+    );
     const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
     const amountToPay = baseAmount + (rent.service_charge || 0);
     const formattedAmount = amountToPay.toLocaleString('en-NG', {
@@ -328,20 +404,14 @@ export class RentReminderService {
     });
 
     if (useRenewalTemplate) {
-      // Find or create a renewal invoice for the last 7 days
       const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
       if (!renewalInvoice) {
-        this.logger.warn(
-          `Could not find or create renewal invoice for rent ${rent.id}, falling back to standard reminder.`,
-        );
-        // Fall back to standard reminder
         await this.queueStandardReminder(
           rent,
           formattedAmount,
           expiryDateStr,
           daysUntilExpiry,
         );
-        // Still log the reminder even on fallback
         await this.logReminderSent(
           rent,
           formattedAmount,
@@ -352,7 +422,6 @@ export class RentReminderService {
       }
 
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-
       await this.whatsAppNotificationLogService.queue(
         'sendRentReminderWithRenewalTemplate',
         {
@@ -363,13 +432,14 @@ export class RentReminderService {
           expiry_date: expiryDateStr,
           renewal_token: renewalInvoice.token,
           frontend_url: frontendUrl,
+          payment_frequency: rent.payment_frequency || 'Monthly',
           days_before_expiry: daysUntilExpiry,
         },
         rent.id,
       );
 
       this.logger.log(
-        `Queued rent reminder WITH renewal link for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
+        `Queued rent reminder with renewal link for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
       );
     } else {
       await this.queueStandardReminder(
@@ -380,7 +450,6 @@ export class RentReminderService {
       );
     }
 
-    // Log to live feed and property/tenant history
     await this.logReminderSent(
       rent,
       formattedAmount,
@@ -407,57 +476,136 @@ export class RentReminderService {
       },
       rent.id,
     );
-
     this.logger.log(
       `Queued rent reminder for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Renewal invoice helper
+  // ---------------------------------------------------------------------------
+
   /**
-   * For a rent whose expiry_date is in the past, stamp each elapsed period
-   * as outstanding debt and advance expiry_date forward until it is no longer
-   * in the past.  Mutates and saves the rent record in-place.
+   * Find or create an unpaid landlord renewal invoice for a rent.
    *
-   * Example (monthly, ₦100k rent + ₦10k service charge):
-   *   today = Aug 5,  expiry = May 30  →  OB += 110k×3,  expiry = Aug 30
-   *
-   * original_expiry_date is preserved and never touched here.
+   * For an OWING rent (already auto-renewed):
+   *   invoice period = rent's own start/expiry dates (the current unpaid period)
+   * For a pre-expiry upcoming reminder:
+   *   invoice period = next period (expiry + 1 day … advance by frequency)
    */
-  private async rollForwardIfNeeded(rent: Rent, today: Date): Promise<void> {
-    const frequency = (rent.payment_frequency || 'monthly').toLowerCase();
-    let rolled = false;
+  private async findOrCreateRenewalInvoice(
+    rent: Rent,
+  ): Promise<RenewalInvoice | null> {
+    try {
+      const propertyTenant = await this.propertyTenantRepository.findOne({
+        where: {
+          property_id: rent.property_id,
+          tenant_id: rent.tenant_id,
+          status: TenantStatusEnum.ACTIVE,
+        },
+      });
 
-    const currentExpiry = new Date(rent.expiry_date);
-    currentExpiry.setUTCHours(0, 0, 0, 0);
+      if (!propertyTenant) {
+        this.logger.warn(`No active PropertyTenant found for rent ${rent.id}`);
+        return null;
+      }
 
-    while (currentExpiry < today) {
-      rent.outstanding_balance =
-        (rent.outstanding_balance || 0) +
-        (rent.rental_price || 0) +
-        (rent.service_charge || 0);
+      const rentAmount = rent.rental_price ?? rent.amount_paid ?? 0;
+      const serviceCharge = rent.service_charge || 0;
+      const landlordId = rent.property.owner_id;
 
-      const nextExpiry = this.advanceExpiryByOnePeriod(currentExpiry, frequency);
-      currentExpiry.setTime(nextExpiry.getTime());
-      rolled = true;
-    }
+      const outstandingBalance =
+        await this.tenantBalancesService.getOutstandingBalance(
+          rent.tenant_id,
+          landlordId,
+        );
 
-    if (rolled) {
-      rent.expiry_date = new Date(currentExpiry);
-      await this.rentRepository.save(rent);
+      const totalAmount = rentAmount + serviceCharge + outstandingBalance;
+      const paymentFrequency = rent.payment_frequency || 'monthly';
+
+      // Determine invoice period dates
+      let startDate: Date;
+      let endDate: Date;
+
+      if (rent.payment_status === RentPaymentStatusEnum.OWING) {
+        // Current period — tenant owes for this period
+        startDate = new Date(rent.rent_start_date);
+        endDate = new Date(rent.expiry_date);
+      } else {
+        // Pre-expiry — invoice is for the upcoming next period
+        startDate = new Date(rent.expiry_date);
+        startDate.setDate(startDate.getDate() + 1);
+        endDate = this.advanceDateByOnePeriod(
+          new Date(rent.expiry_date),
+          paymentFrequency.toLowerCase(),
+        );
+      }
+
+      // Refresh existing unpaid landlord invoice if one exists
+      const existing = await this.renewalInvoiceRepository.findOne({
+        where: {
+          property_tenant_id: propertyTenant.id,
+          payment_status: RenewalPaymentStatus.UNPAID,
+          token_type: 'landlord',
+        },
+        order: { created_at: 'DESC' },
+      });
+
+      if (existing) {
+        existing.outstanding_balance = outstandingBalance;
+        existing.total_amount =
+          parseFloat(existing.rent_amount.toString()) +
+          parseFloat(existing.service_charge.toString()) +
+          outstandingBalance;
+        existing.start_date = startDate;
+        existing.end_date = endDate;
+        await this.renewalInvoiceRepository.save(existing);
+        return existing;
+      }
+
+      // Auto-create
+      const token = uuidv4();
+      const renewalInvoice = this.renewalInvoiceRepository.create({
+        token,
+        property_tenant_id: propertyTenant.id,
+        property_id: rent.property_id,
+        tenant_id: rent.tenant_id,
+        start_date: startDate,
+        end_date: endDate,
+        rent_amount: rentAmount,
+        service_charge: serviceCharge,
+        legal_fee: 0,
+        other_charges: 0,
+        outstanding_balance: outstandingBalance,
+        total_amount: totalAmount,
+        payment_status: RenewalPaymentStatus.UNPAID,
+        payment_frequency: paymentFrequency,
+      });
+
+      await this.renewalInvoiceRepository.save(renewalInvoice);
       this.logger.log(
-        `Rolled forward rent ${rent.id}: expiry now ${rent.expiry_date.toISOString().split('T')[0]}, OB now ${rent.outstanding_balance}`,
+        `Auto-created renewal invoice ${renewalInvoice.id} for rent ${rent.id}`,
       );
+      return renewalInvoice;
+    } catch (error) {
+      this.logger.error(
+        `Failed to find/create renewal invoice for rent ${rent.id}`,
+        error,
+      );
+      return null;
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Date math helper
+  // ---------------------------------------------------------------------------
+
   /**
-   * Advance an expiry date by exactly one payment period, using the same
-   * semantics as the renewal invoice calculation:
-   *   new_expiry = old_expiry + N months
-   * (the period end is old_expiry + N months, month-overflow safe)
+   * Advance a date by exactly one payment period, month-overflow safe.
+   * E.g. Jan 31 + 1 month → Feb 28/29, not Mar 2/3.
    */
-  private advanceExpiryByOnePeriod(expiryDate: Date, frequency: string): Date {
-    const newExpiry = new Date(expiryDate);
+  private advanceDateByOnePeriod(date: Date, frequency: string): Date {
+    const result = new Date(date);
     let monthsToAdd: number;
 
     switch (frequency) {
@@ -477,143 +625,19 @@ export class RentReminderService {
         break;
     }
 
-    const expectedMonth = (newExpiry.getMonth() + monthsToAdd) % 12;
-    newExpiry.setMonth(newExpiry.getMonth() + monthsToAdd);
-
-    // Handle month-end overflow (e.g. Jan 31 + 1 month → Feb 28/29, not Mar 2/3)
-    if (newExpiry.getMonth() !== expectedMonth) {
-      newExpiry.setDate(0); // last day of the previous (correct) month
+    const expectedMonth = (result.getMonth() + monthsToAdd) % 12;
+    result.setMonth(result.getMonth() + monthsToAdd);
+    // Handle month-end overflow
+    if (result.getMonth() !== expectedMonth) {
+      result.setDate(0);
     }
 
-    return newExpiry;
+    return result;
   }
 
-  /**
-   * Find an existing unpaid renewal invoice for this rent, or auto-create one
-   * using the current rent terms.
-   */
-  private async findOrCreateRenewalInvoice(
-    rent: Rent,
-  ): Promise<RenewalInvoice | null> {
-    try {
-      // Find the PropertyTenant record
-      const propertyTenant = await this.propertyTenantRepository.findOne({
-        where: {
-          property_id: rent.property_id,
-          tenant_id: rent.tenant_id,
-          status: TenantStatusEnum.ACTIVE,
-        },
-      });
-
-      if (!propertyTenant) {
-        this.logger.warn(`No active PropertyTenant found for rent ${rent.id}`);
-        return null;
-      }
-
-      const rentAmount = rent.rental_price ?? rent.amount_paid ?? 0;
-      const serviceCharge = rent.service_charge || 0;
-
-      // Aggregate outstanding balance across all rents for this property+tenant,
-      // mirroring what initiateRenewal does so the invoice always reflects current debt.
-      const allRents = await this.rentRepository.find({
-        where: { property_id: rent.property_id, tenant_id: rent.tenant_id },
-      });
-      const outstandingBalance = allRents.reduce(
-        (sum, r) => sum + (r.outstanding_balance || 0),
-        0,
-      );
-
-      const totalAmount = rentAmount + serviceCharge + outstandingBalance;
-
-      // Calculate next-period dates from the (possibly rolled) expiry_date.
-      // These are computed once and shared by both the update and create paths.
-      const paymentFrequency = rent.payment_frequency || 'monthly';
-      const startDate = new Date(rent.expiry_date);
-      startDate.setDate(startDate.getDate() + 1);
-
-      const endDate = new Date(startDate);
-      switch (paymentFrequency.toLowerCase()) {
-        case 'monthly':
-          endDate.setMonth(endDate.getMonth() + 1);
-          break;
-        case 'quarterly':
-          endDate.setMonth(endDate.getMonth() + 3);
-          break;
-        case 'bi-annually':
-        case 'biannually':
-          endDate.setMonth(endDate.getMonth() + 6);
-          break;
-        case 'annually':
-        default:
-          endDate.setFullYear(endDate.getFullYear() + 1);
-          break;
-      }
-      endDate.setDate(endDate.getDate() - 1);
-
-      // Check for existing unpaid landlord renewal invoice and refresh its OB in case it changed.
-      // Exclude tenant-generated OB-only invoices (token_type = 'tenant') — same guard as initiateRenewal.
-      const existing = await this.renewalInvoiceRepository.findOne({
-        where: {
-          property_tenant_id: propertyTenant.id,
-          payment_status: RenewalPaymentStatus.UNPAID,
-          token_type: 'landlord',
-        },
-        order: { created_at: 'DESC' },
-      });
-
-      if (existing) {
-        existing.outstanding_balance = outstandingBalance;
-        existing.total_amount =
-          parseFloat(existing.rent_amount.toString()) +
-          parseFloat(existing.service_charge.toString()) +
-          outstandingBalance;
-        // Keep the period dates in sync with the rolled expiry_date so the
-        // invoice always shows the correct next-period start/end dates.
-        existing.start_date = startDate;
-        existing.end_date = endDate;
-        await this.renewalInvoiceRepository.save(existing);
-        this.logger.log(
-          `Updated OB and period dates on existing renewal invoice ${existing.id} for rent ${rent.id}`,
-        );
-        return existing;
-      }
-
-      // Auto-create a renewal invoice using current rent terms
-
-      const token = uuidv4();
-
-      const renewalInvoice = this.renewalInvoiceRepository.create({
-        token,
-        property_tenant_id: propertyTenant.id,
-        property_id: rent.property_id,
-        tenant_id: rent.tenant_id,
-        start_date: startDate,
-        end_date: endDate,
-        rent_amount: rentAmount,
-        service_charge: serviceCharge,
-        legal_fee: 0,
-        other_charges: 0,
-        outstanding_balance: outstandingBalance,
-        total_amount: totalAmount,
-        payment_status: RenewalPaymentStatus.UNPAID,
-        payment_frequency: paymentFrequency,
-      });
-
-      await this.renewalInvoiceRepository.save(renewalInvoice);
-
-      this.logger.log(
-        `Auto-created renewal invoice ${renewalInvoice.id} for rent ${rent.id}`,
-      );
-
-      return renewalInvoice;
-    } catch (error) {
-      this.logger.error(
-        `Failed to find/create renewal invoice for rent ${rent.id}`,
-        error,
-      );
-      return null;
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Logging
+  // ---------------------------------------------------------------------------
 
   private async logReminderSent(
     rent: Rent,
@@ -625,7 +649,6 @@ export class RentReminderService {
     const propertyName = rent.property.name;
 
     try {
-      // Live feed notification (for landlord)
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.RENT_REMINDER,
@@ -635,21 +658,20 @@ export class RentReminderService {
         user_id: rent.property.owner_id,
       });
 
-      // Property & tenant history entry
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
           property_id: rent.property_id,
           tenant_id: rent.tenant_id,
           event_type: 'rent_reminder_sent',
-          event_description: daysUntilExpiry >= 0
-            ? `Rent reminder sent to ${tenantName}. ${formattedAmount} due in ${daysUntilExpiry} days (${expiryDateStr}).`
-            : `Rent reminder sent to ${tenantName}. ${formattedAmount} overdue by ${Math.abs(daysUntilExpiry)} days (was due ${expiryDateStr}).`,
+          event_description:
+            daysUntilExpiry >= 0
+              ? `Rent reminder sent to ${tenantName}. ${formattedAmount} due in ${daysUntilExpiry} days (${expiryDateStr}).`
+              : `Rent reminder sent to ${tenantName}. ${formattedAmount} overdue by ${Math.abs(daysUntilExpiry)} days (was due ${expiryDateStr}).`,
           related_entity_id: rent.id,
           related_entity_type: 'rent',
         }),
       );
     } catch (error) {
-      // Don't let logging failures break the reminder flow
       this.logger.error(
         `Failed to log rent reminder for rent ${rent.id}`,
         error,

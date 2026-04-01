@@ -1,4 +1,4 @@
-import { BeforeInsert, Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { RentPaymentStatusEnum, RentStatusEnum } from '../dto/create-rent.dto';
@@ -18,23 +18,8 @@ export class Rent extends BaseEntity {
   @Column({ nullable: true, type: 'timestamp' })
   expiry_date: Date;
 
-  /**
-   * The original agreed-upon expiry date, set once at creation and never
-   * touched by the roll-forward cron. Used to detect overdue rents even
-   * after expiry_date has been advanced by the roll-forward logic.
-   */
-  @Column({ nullable: true, type: 'timestamp' })
-  original_expiry_date: Date;
-
   @Column({ nullable: false, type: 'timestamp' })
   rent_start_date: Date;
-
-  @BeforeInsert()
-  setOriginalExpiryDate() {
-    if (!this.original_expiry_date && this.expiry_date) {
-      this.original_expiry_date = this.expiry_date;
-    }
-  }
 
   @Column({ nullable: true, type: 'varchar', array: true })
   rent_receipts?: string[] | null;
@@ -47,15 +32,6 @@ export class Rent extends BaseEntity {
 
   @Column({ type: 'int', nullable: true })
   service_charge: number;
-
-  @Column({ type: 'int', nullable: true, default: 0 })
-  outstanding_balance: number;
-
-  @Column({ nullable: true, type: 'text' })
-  outstanding_balance_reason?: string | null;
-
-  @Column({ type: 'int', nullable: true, default: 0 })
-  credit_balance: number;
 
   @Column({ nullable: true, type: 'varchar' })
   payment_frequency: string;

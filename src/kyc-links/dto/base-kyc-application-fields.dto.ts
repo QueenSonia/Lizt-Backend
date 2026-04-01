@@ -175,25 +175,25 @@ export class BaseKYCApplicationFieldsDto {
   referral_agent_phone_number?: string;
 
   // Tenancy Information
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  intended_use_of_property: string;
+  intended_use_of_property?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsNumberString()
-  number_of_occupants: string;
+  number_of_occupants?: string;
 
   @IsOptional()
   @IsString()
   parking_needs?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsNumberString()
-  proposed_rent_amount: string;
+  proposed_rent_amount?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  rent_payment_frequency: string;
+  rent_payment_frequency?: string;
 
   @IsOptional()
   @IsString()

@@ -204,6 +204,8 @@ export class TenantDetailDto {
   rentFrequency?: string;
   rentStatus: string;
   nextRentDue: string | null;
+  pendingInvoiceRentAmount: number | null;
+  pendingInvoiceTotalAmount: number | null;
   outstandingBalance: number;
   creditBalance: number;
   paymentFrequency: string | null; // Actual agreed payment frequency from Rent record

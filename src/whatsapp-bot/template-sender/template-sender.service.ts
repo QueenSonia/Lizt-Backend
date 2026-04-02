@@ -2765,7 +2765,7 @@ export class TemplateSenderService {
     renewal_payment_tenant:
       'Congratulations {{1}}! Your renewal payment of {{2}} for {{3}} has been confirmed.\n\nClick the button below to view your receipt.',
     renewal_payment_landlord:
-      'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThe tenancy has been successfully renewed!',
+      'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThank you.',
     renewal_receipt:
       'Hi {{1}}, your payment of {{2}} for {{3}} has been received successfully.\n\nYour receipt is ready: {{4}}\n\nThank you for your payment!',
     rent_reminders:

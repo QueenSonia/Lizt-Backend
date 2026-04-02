@@ -578,6 +578,7 @@ export class PaymentService {
                   await this.notifyWinningTenant(
                     offerLetter,
                     offerLetter.property,
+                    savedReceipt.token,
                   );
                 }
               } catch (error) {
@@ -1480,6 +1481,7 @@ export class PaymentService {
   private async notifyWinningTenant(
     offerLetter: OfferLetter,
     property: Property,
+    receiptToken: string,
   ): Promise<void> {
     try {
       const kycApplication = await this.kycApplicationRepository.findOne({
@@ -1492,16 +1494,6 @@ export class PaymentService {
         });
         return;
       }
-
-      // Get the most recent receipt for this offer letter
-      const receipt = await this.dataSource
-        .getRepository('receipts')
-        .createQueryBuilder('receipt')
-        .where('receipt.offer_letter_id = :offerLetterId', {
-          offerLetterId: offerLetter.id,
-        })
-        .orderBy('receipt.created_at', 'DESC')
-        .getOne();
 
       const landlordAccount = await this.accountRepository.findOne({
         where: { id: property.owner_id },
@@ -1519,7 +1511,7 @@ export class PaymentService {
         property_name: property.name,
         total_amount: Number(offerLetter.total_amount),
         landlord_name: landlordName,
-        receipt_token: receipt?.token,
+        receipt_token: receiptToken,
       });
 
       this.paystackLogger.info('Winning tenant notification sent', {

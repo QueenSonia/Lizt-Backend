@@ -1436,14 +1436,25 @@ export class PaymentService {
         return;
       }
 
-      await this.templateSenderService.sendLandlordPaymentReceived({
-        phone_number: landlord.phone_number,
-        landlord_name: `${landlord.first_name} ${landlord.last_name}`,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-        property_name: offerLetter.property.name,
-        amount: Number(payment.amount),
-        outstanding_balance: newOutstandingBalance,
-      });
+      if (newOutstandingBalance === 0) {
+        await this.templateSenderService.sendLandlordPaymentComplete({
+          phone_number: landlord.phone_number,
+          landlord_name: `${landlord.first_name} ${landlord.last_name}`,
+          tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+          property_name: offerLetter.property.name,
+          total_amount: Number(offerLetter.total_amount),
+          property_id: offerLetter.property.id,
+        });
+      } else {
+        await this.templateSenderService.sendLandlordPaymentReceived({
+          phone_number: landlord.phone_number,
+          landlord_name: `${landlord.first_name} ${landlord.last_name}`,
+          tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+          property_name: offerLetter.property.name,
+          amount: Number(payment.amount),
+          outstanding_balance: newOutstandingBalance,
+        });
+      }
 
       this.paystackLogger.info('Landlord payment notification sent', {
         offer_id: offerLetter.id,
@@ -1461,58 +1472,6 @@ export class PaymentService {
       );
     }
   }
-
-  /**
-   * Notify landlord when tenant completes 100% payment and wins property
-   * DEPRECATED: Now using ll_payment_received for all payments (partial and full)
-   * Keeping this method for reference but it's no longer called
-   * Requirements: Phase 5 - Task 19.4
-   */
-  /*
-  private async notifyLandlordPaymentComplete(
-    offerLetter: OfferLetter,
-    property: Property,
-  ): Promise<void> {
-    try {
-      const landlord = await this.usersRepository.findOne({
-        where: { id: property.owner_id },
-      });
-
-      const kycApplication = await this.kycApplicationRepository.findOne({
-        where: { id: offerLetter.kyc_application_id },
-      });
-
-      if (!landlord?.phone_number || !kycApplication) {
-        this.paystackLogger.warn('Cannot send landlord complete notification', {
-          offer_id: offerLetter.id,
-        });
-        return;
-      }
-
-      await this.templateSenderService.sendLandlordPaymentComplete({
-        phone_number: landlord.phone_number,
-        landlord_name: `${landlord.first_name} ${landlord.last_name}`,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-        property_name: property.name,
-        total_amount: Number(offerLetter.total_amount),
-        property_id: property.id,
-      });
-
-      this.paystackLogger.info('Landlord payment complete notification sent', {
-        offer_id: offerLetter.id,
-        landlord_id: landlord.id,
-      });
-    } catch (error) {
-      this.paystackLogger.error(
-        'Failed to send landlord complete notification',
-        {
-          offer_id: offerLetter.id,
-          error: error.message,
-        },
-      );
-    }
-  }
-  */
 
   /**
    * Notify winning tenant

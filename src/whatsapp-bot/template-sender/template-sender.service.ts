@@ -250,12 +250,11 @@ export interface LandlordPaymentReceivedParams {
   tenant_name: string;
   property_name: string;
   amount: number;
-  outstanding_balance: number; // Will be 0 when payment is complete
+  outstanding_balance: number;
 }
 
 /**
  * Parameters for landlord payment complete notification
- * DEPRECATED: No longer used - replaced by LandlordPaymentReceivedParams
  */
 export interface LandlordPaymentCompleteParams {
   phone_number: string;
@@ -2749,7 +2748,7 @@ export class TemplateSenderService {
     ll_payment_received:
       'Hello {{1}}, {{2}} has made a payment of {{3}} for {{4}}.\n\nOutstanding balance: {{5}}. View details in your dashboard.',
     ll_payment_complete:
-      'Hello {{1}}, {{2}} has completed their full payment of {{3}} for {{4}}.\n\nThe property is now secured!',
+      'Hello {{1}}, {{2}} has completed their full payment of {{3}} for {{4}}.\n\nThank you',
     tenant_payment_success:
       'Hi {{1}},\n\nCongratulations! Your payment of {{2}} for {{3}} has been confirmed.\n\nYou can view your receipt below:\n\nYour landlord, {{4}}, uses Lizt by Property Kraft — a simple app designed to make your rental experience smooth and stress-free.\n\nWith Lizt, you can receive important updates, track rent, report issues easily, and stay connected throughout your tenancy — all in one place.\n\nReply Hi to get started.\n\n— The Lizt Team',
     tenant_payment_refund:

@@ -322,9 +322,18 @@ export class RentReminderService {
       return;
     }
 
-    const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
-      'en-GB',
-    );
+    const firstOwingRent = await this.rentRepository.findOne({
+      where: {
+        tenant_id: rent.tenant_id,
+        property_id: rent.property_id,
+        payment_status: RentPaymentStatusEnum.OWING,
+      },
+      order: { rent_start_date: 'ASC' },
+    });
+    const overdueFromDate =
+      firstOwingRent?.rent_start_date ?? rent.rent_start_date;
+    const expiryDateStr = new Date(overdueFromDate).toLocaleDateString('en-GB');
+
     const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
     const amountToPay = baseAmount + (rent.service_charge || 0);
     const formattedAmount = amountToPay.toLocaleString('en-NG', {

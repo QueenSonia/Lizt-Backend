@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ChatLogService } from '../chat-log.service';
@@ -426,8 +426,6 @@ export interface ButtonDefinition {
  */
 @Injectable()
 export class TemplateSenderService {
-  private readonly logger = new Logger(TemplateSenderService.name);
-
   constructor(
     private readonly config: ConfigService,
     private readonly chatLogService: ChatLogService,
@@ -1159,8 +1157,6 @@ export class TemplateSenderService {
     offer_letter_token,
     frontend_url,
   }: OfferLetterNotificationParams): Promise<void> {
-    const offerLetterUrl = `${frontend_url}/offer-letters/${offer_letter_token}`;
-
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -1796,6 +1792,7 @@ export class TemplateSenderService {
    */
   async sendOutstandingBalanceLink({
     phone_number,
+    tenant_name,
     renewal_token,
     frontend_url: _frontend_url,
   }: RenewalLinkParams): Promise<void> {
@@ -1809,6 +1806,15 @@ export class TemplateSenderService {
           code: 'en',
         },
         components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+            ],
+          },
           {
             type: 'button',
             sub_type: 'url',
@@ -2478,7 +2484,7 @@ export class TemplateSenderService {
       'sim_msg_id_' +
       Date.now() +
       '_' +
-      Math.random().toString(36).substr(2, 9);
+      Math.random().toString(36).substring(2, 11);
 
     console.log('🎭 Creating simulated response for:', {
       recipient: recipientPhone,
@@ -2760,6 +2766,8 @@ export class TemplateSenderService {
     invoice_reminder:
       'Hi {{1}}, this is a reminder from {{2}} regarding invoice {{3}}. Outstanding balance: {{4}} for {{5}}.',
     landlord_main_menu: 'Hello {{1}}, What do you want to do today?',
+    outstanding_balance_link:
+      'Hi {{1}},\n\nPlease click the button below to view your invoice and make payment for your outstanding balance.',
     renewal_link:
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
     renewal_payment_tenant:

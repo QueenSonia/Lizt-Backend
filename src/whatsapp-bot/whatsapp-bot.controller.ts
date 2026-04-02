@@ -287,6 +287,24 @@ export class WhatsappBotController {
     );
   }
 
+  @Post('/send-custom-message')
+  async sendCustomMessage(@Req() req: ExpressRequest) {
+    try {
+      const { phone_number, message } = req.body as {
+        phone_number: string;
+        message: string;
+      };
+      if (!phone_number || !message) {
+        throw new BadRequestException('phone_number and message are required');
+      }
+      await this.whatsappBotService.sendText(phone_number, message);
+      return { success: true };
+    } catch (error) {
+      console.error('Error sending custom WhatsApp message:', error);
+      throw error;
+    }
+  }
+
   @Post('/user-message')
   async sendToUserWithTemplate(@Req() req: ExpressRequest) {
     try {

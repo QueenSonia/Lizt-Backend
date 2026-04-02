@@ -1517,7 +1517,7 @@ export class PaymentService {
       this.paystackLogger.info('Winning tenant notification sent', {
         offer_id: offerLetter.id,
         kyc_application_id: kycApplication.id,
-        receipt_token: receipt?.token,
+        receipt_token: receiptToken,
       });
     } catch (error) {
       this.paystackLogger.error('Failed to send winning tenant notification', {
@@ -1547,11 +1547,11 @@ export class PaymentService {
         return;
       }
 
-      await this.templateSenderService.sendTenantPaymentRefund({
+      await this.templateSenderService.sendTenantRaceCondition({
         phone_number: kycApplication.phone_number,
         tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
         property_name: property.name,
-        amount_paid: Number(offerLetter.amount_paid),
+        amount: Number(offerLetter.amount_paid),
       });
 
       this.paystackLogger.info('Losing tenant notification sent', {

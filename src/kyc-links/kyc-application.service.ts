@@ -1749,7 +1749,7 @@ export class KYCApplicationService {
       // Send WhatsApp notification to referral agent (if provided)
       try {
         if (
-          this.whatsappBotService &&
+          this.whatsappNotificationLog &&
           updatedKyc.referral_agent_phone_number &&
           updatedKyc.referral_agent_full_name &&
           updatedKyc.property
@@ -1762,15 +1762,21 @@ export class KYCApplicationService {
           const agentName = updatedKyc.referral_agent_full_name;
           const tenantName = `${updatedKyc.first_name} ${updatedKyc.last_name}`;
 
-          await this.whatsappBotService.sendAgentKYCNotification({
-            phone_number: agentPhone,
-            agent_name: agentName,
-            tenant_name: tenantName,
-            property_name: property.name,
-          });
+          await this.whatsappNotificationLog.queue(
+            'sendAgentKYCNotification',
+            {
+              phone_number: agentPhone,
+              agent_name: agentName,
+              tenant_name: tenantName,
+              property_name: property.name,
+              landlord_id: property.owner_id,
+              recipient_name: agentName,
+            },
+            updatedKyc.id,
+          );
 
           console.log(
-            `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
+            `✅ Agent KYC notification queued for ${agentName} (${agentPhone})`,
           );
         }
       } catch (error) {

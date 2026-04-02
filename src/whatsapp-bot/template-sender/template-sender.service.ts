@@ -280,13 +280,6 @@ export interface TenantPaymentSuccessParams {
 /**
  * Parameters for tenant payment refund notification
  */
-export interface TenantPaymentRefundParams {
-  phone_number: string;
-  tenant_name: string;
-  property_name: string;
-  amount_paid: number;
-}
-
 /**
  * Parameters for landlord race condition notification
  */
@@ -1360,7 +1353,7 @@ export class TemplateSenderService {
   /**
    * Send landlord payment received notification (for ANY payment - partial or full)
    * Requirements: Phase 5 - Task 19.3
-   * Template: ll_payment_received (20 chars)
+   * Template: landlord_partial_payment
    */
   async sendLandlordPaymentReceived({
     phone_number,
@@ -1375,7 +1368,7 @@ export class TemplateSenderService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'll_payment_received',
+        name: 'landlord_partial_payment',
         language: {
           code: 'en',
         },
@@ -1533,51 +1526,6 @@ export class TemplateSenderService {
                 },
               ]
             : []),
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  /**
-   * Send tenant payment refund notification (losing tenant)
-   * Requirements: Phase 5 - Task 19.2
-   * Template: tenant_payment_refund (21 chars)
-   */
-  async sendTenantPaymentRefund({
-    phone_number,
-    tenant_name,
-    property_name,
-    amount_paid,
-  }: TenantPaymentRefundParams): Promise<void> {
-    const payload: WhatsAppPayload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'tenant_payment_refund',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: tenant_name,
-              },
-              {
-                type: 'text',
-                text: property_name,
-              },
-              {
-                type: 'text',
-                text: `₦${amount_paid.toLocaleString()}`,
-              },
-            ],
-          },
         ],
       },
     };
@@ -2751,14 +2699,12 @@ export class TemplateSenderService {
       'Hi {{1}}, {{2}} has {{4}} your offer letter for {{3}}.\n\nLog in to your dashboard to view details and take next steps.',
     payment_invoice_link:
       'Hi {{1}}, your offer for {{2}} has been accepted successfully.\n\nAn invoice has been prepared for you. Please complete your payment to secure the property and proceed with your tenancy.',
-    ll_payment_received:
+    landlord_partial_payment:
       'Hello {{1}}, {{2}} has made a payment of {{3}} for {{4}}.\n\nOutstanding balance: {{5}}. View details in your dashboard.',
     ll_payment_complete:
       'Hello {{1}}, {{2}} has completed their full payment of {{3}} for {{4}}.\n\nThank you',
     tenant_payment_success:
       'Hi {{1}},\n\nCongratulations! Your payment of {{2}} for {{3}} has been confirmed.\n\nYou can view your receipt below:\n\nYour landlord, {{4}}, uses Lizt by Property Kraft — a simple app designed to make your rental experience smooth and stress-free.\n\nWith Lizt, you can receive important updates, track rent, report issues easily, and stay connected throughout your tenancy — all in one place.\n\nReply Hi to get started.\n\n— The Lizt Team',
-    tenant_payment_refund:
-      'Hello {{1}}, unfortunately another applicant has secured {{2}}.\nYour payment of {{3}} is eligible for refund.\n\nPlease contact the landlord to process your refund. We apologize for any inconvenience.',
     ll_payment_race:
       'Hello {{1}}, {{2}} completed payment of {{3}} for {{4}}, but the property was already secured by another tenant.\n\nThe payment is being held. Please process a refund through your dashboard.',
     tenant_payment_race:

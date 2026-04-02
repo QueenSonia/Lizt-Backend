@@ -1118,6 +1118,8 @@ export class KYCApplicationService {
   ): Partial<KYCApplication> {
     const {
       id,
+      property_id,
+      application_type,
       first_name,
       last_name,
       email,
@@ -1157,6 +1159,8 @@ export class KYCApplicationService {
 
     return {
       id,
+      property_id,
+      application_type,
       first_name,
       last_name,
       email,

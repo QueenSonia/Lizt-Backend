@@ -2458,7 +2458,7 @@ export class TenantManagementService {
           const endDate = ph.move_out_date
             ? new Date(ph.move_out_date).toLocaleDateString('en-GB')
             : '';
-          const eventDate = new Date(ph.created_at || new Date());
+          const eventDate = new Date(ph.move_in_date || ph.created_at || new Date());
           tenancyEvents.push({
             id: `user-added-tenancy-${ph.id}`,
             type: 'general' as const,
@@ -2505,7 +2505,7 @@ export class TenantManagementService {
             : ph.move_in_date
               ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
               : '';
-          const eventDate = new Date(ph.created_at || new Date());
+          const eventDate = new Date(parsedData.paymentDate || ph.move_in_date || ph.created_at || new Date());
           tenancyEvents.push({
             id: `user-added-payment-${ph.id}`,
             type: 'general' as const,
@@ -2708,7 +2708,7 @@ export class TenantManagementService {
           where: {
             tenant_id: account.id,
             payment_status: RenewalPaymentStatus.UNPAID,
-            token_type: 'landlord',
+            token_type: In(['landlord', 'draft']),
             property_id: In(activeRentPropertyIds),
           },
           order: { created_at: 'DESC' },

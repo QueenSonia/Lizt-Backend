@@ -2,6 +2,7 @@ import {
   Controller,
   Put,
   Post,
+  Patch,
   Get,
   Body,
   Param,
@@ -32,6 +33,7 @@ import { Public } from 'src/auth/public.decorator';
 import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 import { RenewTenancyDto } from './dto/renew-tenancy.dto';
 import { InitiateRenewalDto } from './dto/initiate-renewal.dto';
+import { UpdateRenewalInvoiceDto } from './dto/update-renewal-invoice.dto';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { RenewalInvoiceDto } from './dto/renewal-invoice.dto';
@@ -151,6 +153,31 @@ export class TenanciesController {
       success: true,
       data: invoice,
     };
+  }
+
+  /**
+   * PATCH /api/tenancies/renewal-invoice/by-id/:id
+   * Update an existing unpaid renewal invoice (landlord edits next-period terms)
+   */
+  @ApiOperation({
+    summary: 'Update Renewal Invoice',
+    description: 'Update rent amount, service charge, and payment frequency on an unpaid renewal invoice',
+  })
+  @ApiParam({ name: 'id', description: 'Renewal invoice UUID', type: 'string' })
+  @ApiOkResponse({ description: 'Invoice updated successfully' })
+  @ApiBadRequestResponse({ description: 'Invoice already paid or invalid data' })
+  @ApiNotFoundResponse({ description: 'Invoice not found' })
+  @ApiSecurity('access_token')
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @ApiBody({ type: UpdateRenewalInvoiceDto })
+  @Patch('renewal-invoice/by-id/:id')
+  async updateRenewalInvoice(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: UpdateRenewalInvoiceDto,
+    @Req() req: any,
+  ) {
+    const result = await this.tenanciesService.updateRenewalInvoice(id, req.user.id, body);
+    return { success: true, data: result };
   }
 
   /**

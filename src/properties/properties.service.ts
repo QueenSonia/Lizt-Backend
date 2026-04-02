@@ -460,37 +460,81 @@ export class PropertiesService {
       });
 
       let isNewKycApplication = false;
+      // Track whether tenant had a prior KYC so we can pick the right WhatsApp message
+      const hadExistingKyc = !!kycApplication;
 
       if (kycApplication) {
         const status = kycApplication.status;
 
-        if (status === ApplicationStatus.APPROVED) {
+        if (
+          status === ApplicationStatus.APPROVED ||
+          status === ApplicationStatus.REJECTED
+        ) {
           console.log(
-            '✅ Tenant already has APPROVED KYC, reusing existing application',
+            `${status === ApplicationStatus.APPROVED ? '✅' : '❌'} Tenant has ${status} KYC — creating PROPERTY_ADDITION placeholder pre-filled with existing data`,
           );
-          // Tenant can be attached to new property without additional KYC
+          // Create a new PENDING_COMPLETION PROPERTY_ADDITION placeholder for this property,
+          // pre-filled with their existing data so the frontend can autofill and detect
+          // the form type via check-pending.
+          const newPlaceholder = queryRunner.manager.create(KYCApplication, {
+            kyc_link_id: kycLink.id,
+            property_id: savedProperty.id,
+            initial_property_id: savedProperty.id,
+            tenant_id: tenantAccount.id,
+            status: ApplicationStatus.PENDING_COMPLETION,
+            application_type: ApplicationType.PROPERTY_ADDITION,
+            // Copy personal/employment/next-of-kin data from existing application
+            first_name: kycApplication.first_name,
+            last_name: kycApplication.last_name,
+            phone_number: kycApplication.phone_number,
+            email: kycApplication.email,
+            contact_address: kycApplication.contact_address,
+            date_of_birth: kycApplication.date_of_birth,
+            gender: kycApplication.gender,
+            nationality: kycApplication.nationality,
+            state_of_origin: kycApplication.state_of_origin,
+            marital_status: kycApplication.marital_status,
+            employment_status: kycApplication.employment_status,
+            religion: kycApplication.religion,
+            occupation: kycApplication.occupation,
+            job_title: kycApplication.job_title,
+            employer_name: kycApplication.employer_name,
+            work_address: kycApplication.work_address,
+            work_phone_number: kycApplication.work_phone_number,
+            monthly_net_income: kycApplication.monthly_net_income,
+            length_of_employment: kycApplication.length_of_employment,
+            nature_of_business: kycApplication.nature_of_business,
+            business_name: kycApplication.business_name,
+            business_address: kycApplication.business_address,
+            business_duration: kycApplication.business_duration,
+            next_of_kin_full_name: kycApplication.next_of_kin_full_name,
+            next_of_kin_address: kycApplication.next_of_kin_address,
+            next_of_kin_relationship: kycApplication.next_of_kin_relationship,
+            next_of_kin_phone_number: kycApplication.next_of_kin_phone_number,
+            next_of_kin_email: kycApplication.next_of_kin_email,
+            passport_photo_url: kycApplication.passport_photo_url || '-',
+            id_document_url: kycApplication.id_document_url || '-',
+            employment_proof_url: kycApplication.employment_proof_url,
+            business_proof_url: kycApplication.business_proof_url,
+            // Tenancy fields intentionally omitted — not part of this form
+          });
+          await queryRunner.manager.save(KYCApplication, newPlaceholder);
+          kycApplication = newPlaceholder;
         } else if (status === ApplicationStatus.PENDING) {
           console.log(
-            '⏳ Tenant has KYC AWAITING APPROVAL, reusing existing application',
+            '⏳ Tenant has KYC AWAITING APPROVAL — no new form needed',
           );
-          // Tenant's KYC is submitted and awaiting landlord approval
-        } else if (status === ApplicationStatus.REJECTED) {
-          console.log(
-            '❌ Tenant has REJECTED KYC, reusing existing application',
-          );
-          // Tenant's previous KYC was rejected, they may need to resubmit
         } else if (status === ApplicationStatus.PENDING_COMPLETION) {
           console.log(
-            '📝 Tenant has PENDING COMPLETION KYC, reusing existing application',
+            '📝 Tenant has PENDING COMPLETION KYC — ensuring PROPERTY_ADDITION type',
           );
-          // Tenant hasn't completed their KYC form yet
-        } else {
-          console.log(
-            `🔍 Tenant has KYC with status: ${status}, reusing existing application`,
-          );
+          // Ensure the placeholder is marked as property addition for this property
+          await queryRunner.manager.update(KYCApplication, kycApplication.id, {
+            application_type: ApplicationType.PROPERTY_ADDITION,
+            property_id: savedProperty.id,
+          });
+          kycApplication.application_type = ApplicationType.PROPERTY_ADDITION;
         }
-
-        // Always reuse existing KYC application regardless of status
       } else {
         // Create new KYC application only if tenant has NO existing KYC for this landlord
         console.log('🆕 Creating new KYC application for new tenant');
@@ -620,12 +664,10 @@ export class PropertiesService {
           : 'Your landlord';
 
         const tenantName = this.utilService.toSentenceCase(firstName);
-        const status = kycApplication.status;
 
-        if (
-          status === ApplicationStatus.PENDING_COMPLETION ||
-          status === ApplicationStatus.REJECTED
-        ) {
+        // Only send link if tenant needs to fill the form (PENDING_COMPLETION)
+        // PENDING means they already submitted — no action needed from them
+        if (kycApplication.status === ApplicationStatus.PENDING_COMPLETION) {
           await this.whatsappNotificationLog.queue(
             'sendKYCCompletionLink',
             {
@@ -636,40 +678,8 @@ export class PropertiesService {
               kyc_link_id: kycLink.token,
               landlord_id: ownerId,
               recipient_name: tenantName,
-              action_text: 'complete', // New tenants and rejected tenants need to complete KYC
-            },
-            savedProperty.id,
-          );
-        }
-
-        // For existing tenants with approved KYC, send update message
-        if (status === ApplicationStatus.APPROVED) {
-          await this.whatsappNotificationLog.queue(
-            'sendKYCCompletionLink',
-            {
-              phone_number: normalizedPhone,
-              tenant_name: tenantName,
-              landlord_name: landlordName,
-              property_name: savedProperty.name,
-              kyc_link_id: kycLink.token,
-              landlord_id: ownerId,
-              recipient_name: tenantName,
-              action_text: 'update', // Existing tenants update their KYC
-            },
-            savedProperty.id,
-          );
-        }
-
-        if (status === ApplicationStatus.REJECTED) {
-          await this.whatsappNotificationLog.queue(
-            'sendTenantAttachmentNotification',
-            {
-              phone_number: normalizedPhone,
-              tenant_name: tenantName,
-              landlord_name: landlordName,
-              apartment_name: savedProperty.name,
-              landlord_id: ownerId,
-              recipient_name: tenantName,
+              // 'update' if they had a prior KYC with this landlord, 'complete' if brand new
+              action_text: hadExistingKyc ? 'update' : 'complete',
             },
             savedProperty.id,
           );
@@ -1296,9 +1306,11 @@ export class PropertiesService {
     // Current tenant information
     let currentTenant: any | null = null;
     let pendingRenewalInvoice: {
+      id: string;
       rentAmount: number;
       serviceCharge: number;
       totalAmount: number;
+      paymentFrequency: string | null;
     } | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
@@ -1332,21 +1344,28 @@ export class PropertiesService {
           'amount_paid',
           'rent_amount',
           'service_charge',
+          'payment_frequency',
         ],
       });
 
       let renewalStatus: 'pending' | 'paid' | null = null;
       if (latestRenewalInvoice) {
-        renewalStatus =
-          latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
+        if (latestRenewalInvoice.payment_status === 'paid') {
+          renewalStatus = 'paid';
+        } else if (latestRenewalInvoice.token_type === 'landlord') {
+          // Only show 'pending' badge when the tenant has actually been notified
+          renewalStatus = 'pending';
+        }
+        // draft invoices (silent saves) do not trigger the badge
       }
 
       // Pending landlord invoice (unpaid) — the amount the tenant is expected to pay
       pendingRenewalInvoice =
         latestRenewalInvoice &&
         latestRenewalInvoice.payment_status === RenewalPaymentStatus.UNPAID &&
-        latestRenewalInvoice.token_type === 'landlord'
+        (latestRenewalInvoice.token_type === 'landlord' || latestRenewalInvoice.token_type === 'draft')
           ? {
+              id: latestRenewalInvoice.id,
               rentAmount: parseFloat(
                 latestRenewalInvoice.rent_amount.toString(),
               ),
@@ -1356,6 +1375,7 @@ export class PropertiesService {
               totalAmount: parseFloat(
                 latestRenewalInvoice.total_amount.toString(),
               ),
+              paymentFrequency: latestRenewalInvoice.payment_frequency ?? null,
             }
           : null;
 
@@ -1898,7 +1918,7 @@ export class PropertiesService {
               : '';
             return {
               id: hist.id,
-              date: hist.created_at,
+              date: hist.move_in_date || hist.created_at,
               eventType: 'user_added_tenancy',
               title: `Tenancy started`,
               description: `Tenancy period: ${startDate} – ${endDate}`,
@@ -1931,7 +1951,7 @@ export class PropertiesService {
                 : '';
             return {
               id: hist.id,
-              date: hist.created_at,
+              date: parsedPayment.paymentDate || hist.move_in_date || hist.created_at,
               eventType: 'user_added_payment',
               title: `Payment received`,
               description: `Payment of ₦${Number(paymentAmount).toLocaleString()} on ${paymentDate}`,

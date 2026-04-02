@@ -68,6 +68,27 @@ export class TenanciesController {
   }
 
   /**
+   * PATCH /api/tenancies/:propertyTenantId/active-rent
+   * Update the active rent record (current tenancy terms)
+   */
+  @ApiOperation({ summary: 'Update Active Tenancy', description: 'Update rent amount, service charge, and payment frequency on the active rent record' })
+  @ApiParam({ name: 'propertyTenantId', description: 'Property tenant relationship ID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Active rent updated successfully' })
+  @ApiNotFoundResponse({ description: 'Tenancy or active rent not found' })
+  @ApiSecurity('access_token')
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @ApiBody({ type: UpdateRenewalInvoiceDto })
+  @Patch(':propertyTenantId/active-rent')
+  async updateActiveTenancy(
+    @Param('propertyTenantId', new ParseUUIDPipe()) propertyTenantId: string,
+    @Body() body: UpdateRenewalInvoiceDto,
+    @Req() req: any,
+  ) {
+    const result = await this.tenanciesService.updateActiveTenancy(propertyTenantId, req.user.id, body);
+    return { success: true, data: result };
+  }
+
+  /**
    * POST /api/tenancies/:propertyTenantId/initiate-renewal
    * Initiate renewal and send link to tenant
    * Requirements: 1.1, 1.2, 1.3

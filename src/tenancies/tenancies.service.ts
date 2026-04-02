@@ -518,6 +518,52 @@ export class TenanciesService {
   }
 
   /**
+   * Update the active rent record (landlord edits current tenancy terms)
+   */
+  async updateActiveTenancy(
+    propertyTenantId: string,
+    userId: string,
+    dto: { rentAmount: number; serviceCharge?: number; paymentFrequency: string },
+  ): Promise<{ success: boolean }> {
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: { id: propertyTenantId },
+      relations: ['property'],
+    });
+
+    if (!propertyTenant) {
+      throw new NotFoundException('Tenancy not found');
+    }
+
+    if (propertyTenant.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to edit this tenancy',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    const activeRent = await this.rentRepository.findOne({
+      where: {
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!activeRent) {
+      throw new NotFoundException('No active rent record found for this tenancy');
+    }
+
+    activeRent.rental_price = dto.rentAmount;
+    activeRent.service_charge = dto.serviceCharge ?? activeRent.service_charge;
+    activeRent.payment_frequency = dto.paymentFrequency;
+    activeRent.updated_at = new Date();
+
+    await this.rentRepository.save(activeRent);
+
+    return { success: true };
+  }
+
+  /**
    * Update an existing unpaid renewal invoice (landlord edits next-period terms)
    */
   async updateRenewalInvoice(

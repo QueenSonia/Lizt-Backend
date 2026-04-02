@@ -325,10 +325,12 @@ export class RenewalPaymentService {
     }
 
     const amountInNaira = amount / 100; // Convert from kobo
+    const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
     await this.processSuccessfulPayment(
       invoice.token,
       reference,
       amountInNaira,
+      receiptToken,
     );
   }
 

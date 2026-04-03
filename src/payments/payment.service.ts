@@ -578,6 +578,7 @@ export class PaymentService {
                   await this.notifyWinningTenant(
                     offerLetter,
                     offerLetter.property,
+                    savedReceipt.token,
                   );
                 }
               } catch (error) {
@@ -1182,6 +1183,113 @@ export class PaymentService {
   }
 
   /**
+   * Process a bank.transfer.rejected webhook event for offer letter payments.
+   * Marks the payment as failed, writes to property history (livefeed + history tab),
+   * creates a landlord notification, and emits a real-time WebSocket event.
+   */
+  async processBankTransferRejected(data: any): Promise<void> {
+    const reference = data.reference;
+    const amountInNaira = data.amount / 100;
+    const gatewayResponse = data.gateway_response || 'Rejected';
+
+    this.paystackLogger.info('Processing bank.transfer.rejected webhook', {
+      reference,
+      amount: data.amount,
+      gateway_response: gatewayResponse,
+    });
+
+    const payment = await this.paymentRepository.findOne({
+      where: { paystack_reference: reference },
+      relations: [
+        'offerLetter',
+        'offerLetter.property',
+        'offerLetter.kyc_application',
+      ],
+    });
+
+    if (!payment) {
+      this.paystackLogger.error('Payment not found for rejected bank transfer', { reference });
+      return;
+    }
+
+    if (
+      payment.status === PaymentStatus.FAILED ||
+      payment.status === PaymentStatus.COMPLETED
+    ) {
+      this.paystackLogger.info(
+        'Payment already in terminal state, skipping bank transfer rejection',
+        { reference, status: payment.status },
+      );
+      return;
+    }
+
+    await this.paymentRepository.update(payment.id, {
+      status: PaymentStatus.FAILED,
+      metadata: { ...(payment.metadata ?? {}), rejection_data: data },
+    });
+
+    await this.logPaymentEvent(payment.id, PaymentLogEventType.ERROR, {
+      reason: 'Bank transfer rejected by Paystack',
+      gateway_response: gatewayResponse,
+      paystack_data: data,
+    });
+
+    const offerLetter = payment.offerLetter;
+    if (!offerLetter) {
+      this.paystackLogger.error(
+        'Offer letter missing on payment for rejected bank transfer',
+        { reference, payment_id: payment.id },
+      );
+      return;
+    }
+
+    const kycApplication = offerLetter.kyc_application;
+    const tenantName = kycApplication
+      ? `${kycApplication.first_name} ${kycApplication.last_name}`
+      : 'Tenant';
+    const propertyName = offerLetter.property?.name || 'Property';
+    const propertyId = offerLetter.property_id;
+    const landlordId = offerLetter.property?.owner_id;
+
+    // Property history — shows in landlord property details history tab
+    await this.createPaymentHistoryEvent(
+      propertyId,
+      'bank_transfer_rejected',
+      `Bank transfer of ₦${amountInNaira.toLocaleString()} from ${tenantName} for ${propertyName} was rejected`,
+      payment.id,
+      'payment',
+    );
+
+    // Landlord livefeed notification + real-time WebSocket event
+    if (landlordId) {
+      this.notificationService
+        .create({
+          date: new Date().toISOString(),
+          type: NotificationType.PAYMENT_TRANSFER_REJECTED,
+          description: `Bank transfer of ₦${amountInNaira.toLocaleString()} from ${tenantName} for ${propertyName} was rejected`,
+          status: 'Completed',
+          property_id: propertyId,
+          user_id: landlordId,
+        })
+        .then(() => {
+          this.eventsGateway.emitPaymentFailed(landlordId, {
+            propertyId,
+            propertyName,
+            applicantName: tenantName,
+            amount: amountInNaira,
+            reason: gatewayResponse,
+          });
+        })
+        .catch((error) => {
+          this.paystackLogger.error(
+            'Failed to create bank transfer rejection notification',
+            { reference, error: error.message },
+          );
+        });
+    }
+  }
+
+  /**
    * Track when a tenant cancels a payment from the Paystack popup
    */
   async trackPaymentCancelled(
@@ -1329,14 +1437,25 @@ export class PaymentService {
         return;
       }
 
-      await this.templateSenderService.sendLandlordPaymentReceived({
-        phone_number: landlord.phone_number,
-        landlord_name: `${landlord.first_name} ${landlord.last_name}`,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-        property_name: offerLetter.property.name,
-        amount: Number(payment.amount),
-        outstanding_balance: newOutstandingBalance,
-      });
+      if (newOutstandingBalance === 0) {
+        await this.templateSenderService.sendLandlordPaymentComplete({
+          phone_number: landlord.phone_number,
+          landlord_name: `${landlord.first_name} ${landlord.last_name}`,
+          tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+          property_name: offerLetter.property.name,
+          total_amount: Number(offerLetter.total_amount),
+          property_id: offerLetter.property.id,
+        });
+      } else {
+        await this.templateSenderService.sendLandlordPaymentReceived({
+          phone_number: landlord.phone_number,
+          landlord_name: `${landlord.first_name} ${landlord.last_name}`,
+          tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+          property_name: offerLetter.property.name,
+          amount: Number(payment.amount),
+          outstanding_balance: newOutstandingBalance,
+        });
+      }
 
       this.paystackLogger.info('Landlord payment notification sent', {
         offer_id: offerLetter.id,
@@ -1356,64 +1475,13 @@ export class PaymentService {
   }
 
   /**
-   * Notify landlord when tenant completes 100% payment and wins property
-   * DEPRECATED: Now using ll_payment_received for all payments (partial and full)
-   * Keeping this method for reference but it's no longer called
-   * Requirements: Phase 5 - Task 19.4
-   */
-  /*
-  private async notifyLandlordPaymentComplete(
-    offerLetter: OfferLetter,
-    property: Property,
-  ): Promise<void> {
-    try {
-      const landlord = await this.usersRepository.findOne({
-        where: { id: property.owner_id },
-      });
-
-      const kycApplication = await this.kycApplicationRepository.findOne({
-        where: { id: offerLetter.kyc_application_id },
-      });
-
-      if (!landlord?.phone_number || !kycApplication) {
-        this.paystackLogger.warn('Cannot send landlord complete notification', {
-          offer_id: offerLetter.id,
-        });
-        return;
-      }
-
-      await this.templateSenderService.sendLandlordPaymentComplete({
-        phone_number: landlord.phone_number,
-        landlord_name: `${landlord.first_name} ${landlord.last_name}`,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-        property_name: property.name,
-        total_amount: Number(offerLetter.total_amount),
-        property_id: property.id,
-      });
-
-      this.paystackLogger.info('Landlord payment complete notification sent', {
-        offer_id: offerLetter.id,
-        landlord_id: landlord.id,
-      });
-    } catch (error) {
-      this.paystackLogger.error(
-        'Failed to send landlord complete notification',
-        {
-          offer_id: offerLetter.id,
-          error: error.message,
-        },
-      );
-    }
-  }
-  */
-
-  /**
    * Notify winning tenant
    * Requirements: Phase 5 - Task 19.1
    */
   private async notifyWinningTenant(
     offerLetter: OfferLetter,
     property: Property,
+    receiptToken: string,
   ): Promise<void> {
     try {
       const kycApplication = await this.kycApplicationRepository.findOne({
@@ -1427,28 +1495,29 @@ export class PaymentService {
         return;
       }
 
-      // Get the most recent receipt for this offer letter
-      const receipt = await this.dataSource
-        .getRepository('receipts')
-        .createQueryBuilder('receipt')
-        .where('receipt.offer_letter_id = :offerLetterId', {
-          offerLetterId: offerLetter.id,
-        })
-        .orderBy('receipt.created_at', 'DESC')
-        .getOne();
+      const landlordAccount = await this.accountRepository.findOne({
+        where: { id: property.owner_id },
+        relations: ['user'],
+      });
+      const landlordName = landlordAccount?.profile_name
+        ? landlordAccount.profile_name
+        : landlordAccount?.user
+          ? `${landlordAccount.user.first_name} ${landlordAccount.user.last_name}`
+          : 'Your Landlord';
 
       await this.templateSenderService.sendTenantPaymentSuccess({
         phone_number: kycApplication.phone_number,
         tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
         property_name: property.name,
         total_amount: Number(offerLetter.total_amount),
-        receipt_token: receipt?.token,
+        landlord_name: landlordName,
+        receipt_token: receiptToken,
       });
 
       this.paystackLogger.info('Winning tenant notification sent', {
         offer_id: offerLetter.id,
         kyc_application_id: kycApplication.id,
-        receipt_token: receipt?.token,
+        receipt_token: receiptToken,
       });
     } catch (error) {
       this.paystackLogger.error('Failed to send winning tenant notification', {
@@ -1478,11 +1547,11 @@ export class PaymentService {
         return;
       }
 
-      await this.templateSenderService.sendTenantPaymentRefund({
+      await this.templateSenderService.sendTenantRaceCondition({
         phone_number: kycApplication.phone_number,
         tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
         property_name: property.name,
-        amount_paid: Number(offerLetter.amount_paid),
+        amount: Number(offerLetter.amount_paid),
       });
 
       this.paystackLogger.info('Losing tenant notification sent', {
@@ -1495,99 +1564,6 @@ export class PaymentService {
         offer_id: offerLetter.id,
         error: error.message,
       });
-    }
-  }
-
-  /**
-   * Notify landlord of race condition
-   * Requirements: Phase 5 - Task 19.5.1
-   */
-  private async notifyLandlordRaceCondition(
-    offerLetter: OfferLetter,
-  ): Promise<void> {
-    try {
-      const landlord = await this.usersRepository.findOne({
-        where: { id: offerLetter.property.owner_id },
-      });
-
-      const kycApplication = await this.kycApplicationRepository.findOne({
-        where: { id: offerLetter.kyc_application_id },
-      });
-
-      if (!landlord?.phone_number || !kycApplication) {
-        this.paystackLogger.warn(
-          'Cannot send landlord race condition notification',
-          {
-            offer_id: offerLetter.id,
-          },
-        );
-        return;
-      }
-
-      await this.templateSenderService.sendLandlordRaceCondition({
-        phone_number: landlord.phone_number,
-        landlord_name: `${landlord.first_name} ${landlord.last_name}`,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-        property_name: offerLetter.property.name,
-        amount: Number(offerLetter.amount_paid),
-      });
-
-      this.paystackLogger.info('Landlord race condition notification sent', {
-        offer_id: offerLetter.id,
-        landlord_id: landlord.id,
-      });
-    } catch (error) {
-      this.paystackLogger.error(
-        'Failed to send landlord race condition notification',
-        {
-          offer_id: offerLetter.id,
-          error: error.message,
-        },
-      );
-    }
-  }
-
-  /**
-   * Notify tenant of race condition
-   * Requirements: Phase 5 - Task 19.5.2
-   */
-  private async notifyTenantRaceCondition(
-    offerLetter: OfferLetter,
-  ): Promise<void> {
-    try {
-      const kycApplication = await this.kycApplicationRepository.findOne({
-        where: { id: offerLetter.kyc_application_id },
-      });
-
-      if (!kycApplication?.phone_number) {
-        this.paystackLogger.warn(
-          'Cannot send tenant race condition notification',
-          {
-            offer_id: offerLetter.id,
-          },
-        );
-        return;
-      }
-
-      await this.templateSenderService.sendTenantRaceCondition({
-        phone_number: kycApplication.phone_number,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-        property_name: offerLetter.property.name,
-        amount: Number(offerLetter.amount_paid),
-      });
-
-      this.paystackLogger.info('Tenant race condition notification sent', {
-        offer_id: offerLetter.id,
-        kyc_application_id: kycApplication.id,
-      });
-    } catch (error) {
-      this.paystackLogger.error(
-        'Failed to send tenant race condition notification',
-        {
-          offer_id: offerLetter.id,
-          error: error.message,
-        },
-      );
     }
   }
 

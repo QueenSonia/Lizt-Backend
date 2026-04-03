@@ -140,6 +140,38 @@ export class WebhooksController {
               });
             });
         });
+      } else if (body.event === 'bank.transfer.rejected') {
+        const reference = body.data.reference;
+        const isRenewalPayment =
+          reference?.startsWith('RENEWAL_') ||
+          body.data.metadata?.renewal_invoice_id;
+
+        this.paystackLogger.info('Processing bank.transfer.rejected webhook', {
+          reference,
+          amount: body.data.amount,
+          gateway_response: body.data.gateway_response,
+          type: isRenewalPayment ? 'renewal' : 'offer_letter',
+        });
+
+        setImmediate(() => {
+          const processor = isRenewalPayment
+            ? this.renewalPaymentService.processWebhookTransferRejected(body.data)
+            : this.paymentService.processBankTransferRejected(body.data);
+
+          processor
+            .then(() => {
+              this.paystackLogger.info(
+                'Bank transfer rejection webhook processed successfully',
+                { reference },
+              );
+            })
+            .catch((error) => {
+              this.paystackLogger.error(
+                'Error processing bank transfer rejection webhook',
+                { reference, error: error.message },
+              );
+            });
+        });
       } else {
         this.paystackLogger.info('Webhook event received', {
           event: body.event,

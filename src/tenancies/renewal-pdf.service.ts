@@ -31,6 +31,8 @@ export class RenewalPDFService {
         'property.owner.user',
         'tenant',
         'tenant.user',
+        'tenant.user.tenant_kycs',
+        'tenant.user.kyc_applications',
         'propertyTenant',
       ],
     });

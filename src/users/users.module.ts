@@ -24,6 +24,7 @@ import { Payment } from 'src/payments/entities/payment.entity';
 import { TenantManagementService } from './tenant-management';
 import { TeamService } from './team';
 import { PasswordService } from './password';
+import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 
 @Global()
 @Module({
@@ -46,6 +47,7 @@ import { PasswordService } from './password';
     AuthModule,
     forwardRef(() => WhatsappBotModule),
     UtilsModule,
+    TenantBalancesModule,
   ],
   controllers: [UsersController],
   providers: [

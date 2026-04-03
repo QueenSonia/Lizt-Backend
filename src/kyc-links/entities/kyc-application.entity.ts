@@ -17,6 +17,11 @@ export enum ApplicationStatus {
   REJECTED = 'rejected',
 }
 
+export enum ApplicationType {
+  NEW_TENANT = 'new_tenant',
+  PROPERTY_ADDITION = 'property_addition',
+}
+
 /**
  * KYC Application Entity
  *
@@ -40,6 +45,13 @@ export class KYCApplication extends BaseEntity {
     default: ApplicationStatus.PENDING,
   })
   status: ApplicationStatus;
+
+  @Column({
+    type: 'enum',
+    enum: ApplicationType,
+    default: ApplicationType.NEW_TENANT,
+  })
+  application_type: ApplicationType;
 
   @Column({ type: 'uuid', nullable: true })
   tenant_id?: string;
@@ -140,21 +152,21 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   business_duration?: string;
 
-  // Tenancy Information
-  @Column({ type: 'varchar' })
-  intended_use_of_property: string;
+  // Tenancy Information (optional for PROPERTY_ADDITION type)
+  @Column({ type: 'varchar', nullable: true })
+  intended_use_of_property?: string;
 
-  @Column({ type: 'varchar' })
-  number_of_occupants: string;
+  @Column({ type: 'varchar', nullable: true })
+  number_of_occupants?: string;
 
   @Column({ type: 'varchar', nullable: true })
   parking_needs?: string;
 
-  @Column({ type: 'varchar' })
-  proposed_rent_amount: string;
+  @Column({ type: 'varchar', nullable: true })
+  proposed_rent_amount?: string;
 
-  @Column({ type: 'varchar' })
-  rent_payment_frequency: string;
+  @Column({ type: 'varchar', nullable: true })
+  rent_payment_frequency?: string;
 
   @Column({ type: 'text', nullable: true })
   additional_notes?: string;

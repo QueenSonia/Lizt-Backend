@@ -11,7 +11,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import {
   KYCApplication,
   ApplicationStatus,
@@ -1118,6 +1118,8 @@ export class KYCApplicationService {
   ): Partial<KYCApplication> {
     const {
       id,
+      property_id,
+      application_type,
       first_name,
       last_name,
       email,
@@ -1157,6 +1159,8 @@ export class KYCApplicationService {
 
     return {
       id,
+      property_id,
+      application_type,
       first_name,
       last_name,
       email,
@@ -1745,7 +1749,7 @@ export class KYCApplicationService {
       // Send WhatsApp notification to referral agent (if provided)
       try {
         if (
-          this.whatsappBotService &&
+          this.whatsappNotificationLog &&
           updatedKyc.referral_agent_phone_number &&
           updatedKyc.referral_agent_full_name &&
           updatedKyc.property
@@ -1758,15 +1762,21 @@ export class KYCApplicationService {
           const agentName = updatedKyc.referral_agent_full_name;
           const tenantName = `${updatedKyc.first_name} ${updatedKyc.last_name}`;
 
-          await this.whatsappBotService.sendAgentKYCNotification({
-            phone_number: agentPhone,
-            agent_name: agentName,
-            tenant_name: tenantName,
-            property_name: property.name,
-          });
+          await this.whatsappNotificationLog.queue(
+            'sendAgentKYCNotification',
+            {
+              phone_number: agentPhone,
+              agent_name: agentName,
+              tenant_name: tenantName,
+              property_name: property.name,
+              landlord_id: property.owner_id,
+              recipient_name: agentName,
+            },
+            updatedKyc.id,
+          );
 
           console.log(
-            `✅ Agent KYC notification sent to ${agentName} (${agentPhone})`,
+            `✅ Agent KYC notification queued for ${agentName} (${agentPhone})`,
           );
         }
       } catch (error) {
@@ -2036,5 +2046,223 @@ export class KYCApplicationService {
         ? new Date(event.created_at).toISOString()
         : new Date().toISOString(),
     }));
+  }
+
+  /**
+   * Submit KYC application for property addition (existing tenant being added to new property)
+   * This is a simplified flow since the tenant already has approved KYC with the landlord
+   */
+  async submitPropertyAdditionKYC(
+    token: string,
+    kycData: BaseKYCApplicationFieldsDto & { property_id: string; first_name: string; last_name: string },
+  ): Promise<KYCApplication> {
+    // Validate the KYC token and get the associated link
+    const kycLink = await this.validateKYCToken(token);
+
+    // SECURITY: Verify OTP before allowing submission
+    const verifiedOtp = await this.kycOtpRepository.findOne({
+      where: {
+        phone_number: kycData.phone_number,
+        kyc_token: token,
+        is_verified: true,
+      },
+      order: {
+        created_at: 'DESC',
+      },
+    });
+
+    if (!verifiedOtp) {
+      throw new BadRequestException(
+        'Phone number must be verified before submitting KYC application. Please request and verify an OTP code.',
+      );
+    }
+
+    // Find the existing KYC application for this tenant and landlord
+    // Handles both: brand new tenants (PENDING_COMPLETION placeholder) and existing tenants (APPROVED)
+    const existingApplication = await this.kycApplicationRepository.findOne({
+      where: {
+        phone_number: kycData.phone_number,
+        kyc_link: { landlord_id: kycLink.landlord_id },
+        status: In([ApplicationStatus.PENDING_COMPLETION, ApplicationStatus.APPROVED]),
+      },
+      relations: ['kyc_link', 'property', 'tenant'],
+      order: {
+        created_at: 'DESC',
+      },
+    });
+
+    if (!existingApplication) {
+      throw new BadRequestException(
+        'No KYC application found for this tenant with this landlord.',
+      );
+    }
+
+    // Map submitted fields onto the existing application (tenancy fields are not in this form)
+    const updateData = this.mapCommonFieldsToEntity(kycData);
+
+    // Tenancy fields are not part of this form — strip them so we don't overwrite
+    // existing values on previously-approved applications
+    delete updateData.intended_use_of_property;
+    delete updateData.number_of_occupants;
+    delete updateData.proposed_rent_amount;
+    delete updateData.rent_payment_frequency;
+
+    Object.assign(existingApplication, updateData, {
+      first_name: kycData.first_name,
+      last_name: kycData.last_name,
+      status: ApplicationStatus.PENDING, // Goes to landlord for review
+      updated_at: new Date(),
+      decision_made_at: new Date(),
+    });
+
+    if (kycData.form_opened_at) {
+      existingApplication.form_opened_at = new Date(kycData.form_opened_at);
+    }
+    if (kycData.form_opened_ip) {
+      existingApplication.form_opened_ip = kycData.form_opened_ip;
+    }
+    if (kycData.decision_made_ip) {
+      existingApplication.decision_made_ip = kycData.decision_made_ip;
+    }
+    if (kycData.user_agent) {
+      existingApplication.user_agent = kycData.user_agent;
+    }
+
+    // Save the updated application
+    await this.kycApplicationRepository.save(existingApplication);
+
+    // Reload with relations for notifications
+    const savedApplication = await this.kycApplicationRepository.findOne({
+      where: { id: existingApplication.id },
+      relations: ['property', 'tenant', 'kyc_link'],
+    });
+
+    if (!savedApplication) {
+      throw new Error('KYC application not found after save');
+    }
+
+    // Property history
+    try {
+      const { PropertyHistory } = await import(
+        '../property-history/entities/property-history.entity'
+      );
+      const propertyHistoryRepo =
+        this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+      const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
+
+      if (savedApplication.form_opened_at) {
+        const openedDate = new Date(savedApplication.form_opened_at);
+        historyEvents.push(
+          propertyHistoryRepo.create({
+            property_id: savedApplication.property_id,
+            event_type: 'kyc_form_viewed',
+            event_description: `KYC form opened by ${savedApplication.first_name} ${savedApplication.last_name} on ${openedDate.toLocaleDateString('en-GB')} at ${openedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`,
+            related_entity_id: savedApplication.id,
+            related_entity_type: 'kyc_application',
+            created_at: openedDate,
+          }),
+        );
+      }
+
+      historyEvents.push(
+        propertyHistoryRepo.create({
+          property_id: savedApplication.property_id,
+          event_type: 'kyc_application_submitted',
+          event_description: `${savedApplication.first_name} ${savedApplication.last_name} submitted their KYC application for ${savedApplication.property?.name || 'property'}`,
+          related_entity_id: savedApplication.id,
+          related_entity_type: 'kyc_application',
+        }),
+      );
+
+      await propertyHistoryRepo.save(historyEvents);
+    } catch (error) {
+      console.error('Failed to create property history events:', error);
+    }
+
+    // Push notification to landlord
+    try {
+      if (this.notificationService && savedApplication.property) {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.KYC_SUBMITTED,
+          description: `${savedApplication.first_name} ${savedApplication.last_name} completed their KYC application for ${savedApplication.property.name}`,
+          status: 'Completed',
+          property_id: savedApplication.property_id,
+          user_id: savedApplication.property.owner_id,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to create KYC submission notification:', error);
+    }
+
+    // WebSocket event to landlord
+    try {
+      if (this.eventsGateway && savedApplication.property) {
+        this.eventsGateway.emitKYCSubmission(
+          savedApplication.property_id,
+          savedApplication.property.owner_id,
+          {
+            id: savedApplication.id,
+            firstName: savedApplication.first_name,
+            lastName: savedApplication.last_name,
+            email: savedApplication.email,
+            phoneNumber: savedApplication.phone_number,
+          },
+        );
+      }
+    } catch (error) {
+      console.error('Failed to emit KYC submission event:', error);
+    }
+
+    // WhatsApp notification to landlord
+    try {
+      if (this.whatsappBotService && savedApplication.property) {
+        const property = savedApplication.property;
+        const landlordWithUser = await this.propertyRepository
+          .createQueryBuilder('property')
+          .leftJoinAndSelect('property.owner', 'owner')
+          .leftJoinAndSelect('owner.user', 'user')
+          .where('property.id = :propertyId', { propertyId: property.id })
+          .getOne();
+
+        if (landlordWithUser?.owner?.user?.phone_number && savedApplication.tenant_id) {
+          const landlordPhone = this.utilService.normalizePhoneNumber(
+            landlordWithUser.owner.user.phone_number,
+          );
+          const landlordName = this.utilService.toSentenceCase(
+            landlordWithUser.owner.user.first_name,
+          );
+          const tenantName = this.utilService.toSentenceCase(savedApplication.first_name);
+
+          await this.whatsappBotService.sendKYCCompletionNotification({
+            phone_number: landlordPhone,
+            landlord_name: landlordName,
+            tenant_name: tenantName,
+            property_name: property.name,
+            tenant_id: savedApplication.tenant_id,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to send WhatsApp KYC completion notification:', error);
+    }
+
+    // WhatsApp confirmation to tenant
+    try {
+      if (this.whatsappBotService && savedApplication.phone_number) {
+        const tenantPhone = this.utilService.normalizePhoneNumber(savedApplication.phone_number);
+        const tenantName = `${savedApplication.first_name} ${savedApplication.last_name}`;
+
+        await this.whatsappBotService.sendKYCSubmissionConfirmation({
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to send tenant KYC submission confirmation:', error);
+    }
+
+    return savedApplication;
   }
 }

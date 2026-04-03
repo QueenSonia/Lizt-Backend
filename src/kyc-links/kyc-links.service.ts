@@ -60,7 +60,10 @@ export class KYCLinksService {
    * Generate a unique KYC link for a landlord (general link for all properties)
    * Links remain active permanently and never expire
    */
-  async generateKYCLink(landlordId: string): Promise<KYCLinkResponse> {
+  async generateKYCLink(
+    landlordId: string,
+    formType?: 'property_addition',
+  ): Promise<KYCLinkResponse> {
     const baseUrl = this.configService.get<string>('FRONTEND_URL');
     if (!baseUrl) {
       throw new HttpException(
@@ -77,27 +80,29 @@ export class KYCLinksService {
       },
     });
 
+    let token: string;
     if (existingLink?.token) {
-      return {
-        token: existingLink.token,
-        link: `${baseUrl}/kyc/${existingLink.token}`,
-      };
+      token = existingLink.token;
+    } else {
+      // Generate new token
+      token = uuidv4();
+
+      const kycLink = this.kycLinkRepository.create({
+        token,
+        landlord_id: landlordId,
+        is_active: true,
+      });
+
+      await this.kycLinkRepository.save(kycLink);
     }
 
-    // Generate new token
-    const token = uuidv4();
-
-    const kycLink = this.kycLinkRepository.create({
-      token,
-      landlord_id: landlordId,
-      is_active: true,
-    });
-
-    await this.kycLinkRepository.save(kycLink);
+    // Add form type as query parameter
+    const queryParam = formType ? `?type=${formType}` : '';
+    const link = `${baseUrl}/kyc/${token}${queryParam}`;
 
     return {
       token,
-      link: `${baseUrl}/kyc/${token}`,
+      link,
     };
   }
 

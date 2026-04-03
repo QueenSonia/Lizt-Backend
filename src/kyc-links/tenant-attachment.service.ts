@@ -587,29 +587,6 @@ export class TenantAttachmentService {
 
     console.log('Other applications rejected');
 
-    // Send WhatsApp notification to tenant
-    try {
-      await this.sendTenantAttachmentWhatsAppNotification(
-        tenantAccount,
-        application,
-        {
-          rentAmount: Number(offerLetter.rent_amount),
-          rentFrequency: rentFrequency,
-          tenancyStartDate: rentStartDate.toISOString(),
-          securityDeposit: Number(offerLetter.caution_deposit || 0),
-          serviceCharge: Number(offerLetter.service_charge || 0),
-        },
-        rentStartDate,
-        offerLetter.id,
-      );
-    } catch (whatsappError) {
-      console.error(
-        'Failed to send WhatsApp notification to tenant:',
-        whatsappError,
-      );
-      // Continue - don't fail the entire operation if WhatsApp fails
-    }
-
     console.log('Tenant attachment from offer letter completed successfully');
   }
 

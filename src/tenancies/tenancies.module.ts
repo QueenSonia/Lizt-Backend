@@ -2,7 +2,6 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TenanciesController } from './tenancies.controller';
 import { TenanciesService } from './tenancies.service';
-import { RenewalOTPService } from './renewal-otp.service';
 import { RenewalPaymentService } from './renewal-payment.service';
 import { RenewalPDFService } from './renewal-pdf.service';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
@@ -19,6 +18,8 @@ import { UtilsModule } from 'src/utils/utils.module';
 import { AppCacheModule } from 'src/lib/cache';
 import { PaymentsModule } from 'src/payments/payments.module';
 import { NotificationModule } from 'src/notifications/notification.module';
+import { EventsModule } from 'src/events/events.module';
+import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 
 @Module({
   imports: [
@@ -38,17 +39,17 @@ import { NotificationModule } from 'src/notifications/notification.module';
     AppCacheModule,
     forwardRef(() => PaymentsModule),
     NotificationModule,
+    EventsModule,
+    TenantBalancesModule,
   ],
   controllers: [TenanciesController],
   providers: [
     TenanciesService,
-    RenewalOTPService,
     RenewalPaymentService,
     RenewalPDFService,
   ],
   exports: [
     TenanciesService,
-    RenewalOTPService,
     RenewalPaymentService,
     RenewalPDFService,
   ],

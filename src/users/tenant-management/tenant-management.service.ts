@@ -10,7 +10,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { Users } from '../entities/user.entity';
@@ -29,6 +29,10 @@ import {
 } from 'src/offer-letters/entities/offer-letter.entity';
 import { Payment, PaymentStatus } from 'src/payments/entities/payment.entity';
 import { TenantDetailDto } from '../dto/tenant-detail.dto';
+import {
+  RenewalInvoice,
+  RenewalPaymentStatus,
+} from 'src/tenancies/entities/renewal-invoice.entity';
 
 import {
   CreateTenantDto,
@@ -55,6 +59,11 @@ import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { config } from 'src/config';
 import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { AttachResult } from 'src/common/interfaces';
+import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import {
+  TenantBalanceLedger,
+  TenantBalanceLedgerType,
+} from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 
 /**
  * Internal interface for timeline events
@@ -181,6 +190,7 @@ export class TenantManagementService {
     private readonly eventEmitter: EventEmitter2,
     @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService: WhatsappBotService,
+    private readonly tenantBalancesService: TenantBalancesService,
   ) {}
 
   /**
@@ -970,7 +980,7 @@ export class TenantManagementService {
     tenantAccount: Account;
     property: Property;
   }> {
-    return await this.dataSource.transaction(async (manager) => {
+    const txResult = await this.dataSource.transaction(async (manager) => {
       const {
         phone_number,
         first_name,
@@ -1208,16 +1218,11 @@ export class TenantManagementService {
         rental_price: rent_amount,
         security_deposit: 0,
         service_charge: service_charge || 0,
-        outstanding_balance: outstanding_balance || 0,
-        outstanding_balance_reason: outstanding_balance_reason || null,
         payment_frequency: this.mapRentFrequencyToPaymentFrequency(
           rent_frequency as RentFrequency,
         ),
         rent_status: RentStatusEnum.ACTIVE,
-        payment_status:
-          outstanding_balance && outstanding_balance > 0
-            ? RentPaymentStatusEnum.OWING
-            : RentPaymentStatusEnum.PENDING,
+        payment_status: RentPaymentStatusEnum.PENDING,
         amount_paid: 0,
         expiry_date: rent_due_date,
       });
@@ -1333,8 +1338,32 @@ export class TenantManagementService {
         });
       }
 
-      return { tenantUser, tenantAccount, property };
+      return { tenantUser, tenantAccount, property, rentId: rent.id };
     });
+
+    // After transaction commits: add initial outstanding balance to TenantBalance
+    if (dto.outstanding_balance && dto.outstanding_balance > 0) {
+      await this.tenantBalancesService.addOutstandingBalance(
+        txResult.tenantAccount.id,
+        landlordId,
+        dto.outstanding_balance,
+        {
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description:
+            dto.outstanding_balance_reason ||
+            'Initial outstanding balance on tenant setup',
+          propertyId: dto.property_id,
+          relatedEntityType: 'rent',
+          relatedEntityId: txResult.rentId,
+        },
+      );
+    }
+
+    return {
+      tenantUser: txResult.tenantUser,
+      tenantAccount: txResult.tenantAccount,
+      property: txResult.property,
+    };
   }
 
   /**
@@ -1576,7 +1605,6 @@ export class TenantManagementService {
         'rents.payment_frequency',
         'rents.payment_status',
         'rents.rent_status',
-        'rents.outstanding_balance',
         'rents.created_at',
       ])
       .leftJoin('rents.property', 'property')
@@ -1761,7 +1789,7 @@ export class TenantManagementService {
         .getMany();
     }
 
-    return this.formatTenantData(
+    return await this.formatTenantData(
       tenantAccount,
       kycApplication,
       adminId,
@@ -1799,13 +1827,13 @@ export class TenantManagementService {
   /**
    * Format tenant data for response
    */
-  private formatTenantData(
+  private async formatTenantData(
     account: Account,
     kycApplication?: KYCApplication | null,
     adminId?: string,
     offerLetters?: OfferLetter[],
     payments?: Payment[],
-  ): TenantDetailDto {
+  ): Promise<TenantDetailDto> {
     const user = account.user;
     const kyc = (user as Users & { kyc?: Record<string, string> }).kyc ?? {};
     const tenantKyc = (user as Users & { tenant_kycs?: TenantKycRecord[] })
@@ -1816,28 +1844,31 @@ export class TenantManagementService {
       ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
       : account.rents || [];
 
-    // Calculate total outstanding balance and credit balance across all rents
-    const totalOutstandingBalance = rents.reduce((total, rent) => {
-      return total + (rent.outstanding_balance || 0);
-    }, 0);
+    // Fetch TenantBalance and ledger from service (requires adminId as landlordId)
+    let totalOutstandingBalance = 0;
+    let totalCreditBalance = 0;
+    let ledgerEntries: TenantBalanceLedger[] = [];
+    if (adminId) {
+      const balances = await this.tenantBalancesService.getBalances(
+        account.id,
+        adminId,
+      );
+      totalOutstandingBalance = balances.outstanding_balance;
+      totalCreditBalance = balances.credit_balance;
+      ledgerEntries = await this.tenantBalancesService.getLedger(
+        account.id,
+        adminId,
+      );
+    }
 
-    const totalCreditBalance = rents.reduce((total, rent) => {
-      return total + (rent.credit_balance || 0);
-    }, 0);
-
-    // Create outstanding balance breakdown
-    // Group by property to avoid duplicates, taking the most recent rent record per property
-    const rentsByProperty = new Map<string, (typeof rents)[0]>();
-    rents
-      .filter((rent) => (rent.outstanding_balance || 0) > 0)
-      .forEach((rent) => {
-        const existing = rentsByProperty.get(rent.property_id);
-        if (
-          !existing ||
-          new Date(rent.created_at!) > new Date(existing.created_at!)
-        ) {
-          rentsByProperty.set(rent.property_id, rent);
-        }
+    // Build outstandingBalanceBreakdown from ledger entries grouped by property
+    const obEntriesByProperty = new Map<string, TenantBalanceLedger[]>();
+    ledgerEntries
+      .filter((e) => Number(e.outstanding_balance_change) > 0)
+      .forEach((e) => {
+        const key = e.property_id || 'global';
+        if (!obEntriesByProperty.has(key)) obEntriesByProperty.set(key, []);
+        obEntriesByProperty.get(key)!.push(e);
       });
 
     // Collect all individual user_added_payment history entries for this tenant
@@ -1846,58 +1877,34 @@ export class TenantManagementService {
     );
 
     const outstandingBalanceBreakdown = Array.from(
-      rentsByProperty.values(),
-    ).map((rent) => {
-      const transactions: Array<{
-        id: string;
-        type: string;
-        amount: number;
-        date: Date;
-      }> = [];
-
-      const outstandingBalance = rent.outstanding_balance || 0;
-
-      // If there's an outstanding balance reason, show it as a single line item
-      if (rent.outstanding_balance_reason) {
-        transactions.push({
-          id: `outstanding-${rent.id}`,
-          type: rent.outstanding_balance_reason,
-          amount: outstandingBalance,
-          date: new Date(rent.rent_start_date || rent.created_at!),
-        });
-      } else {
-        // Add rent charge
-        if (rent.rental_price) {
-          transactions.push({
-            id: `rent-${rent.id}`,
-            type: 'Rent Due',
-            amount: rent.rental_price,
-            date: new Date(rent.rent_start_date || rent.created_at!),
-          });
-        }
-
-        // Add service charge if exists
-        if (rent.service_charge) {
-          transactions.push({
-            id: `service-${rent.id}`,
-            type: 'Service Charge Due',
-            amount: rent.service_charge,
-            date: new Date(rent.rent_start_date || rent.created_at!),
-          });
-        }
-
-      }
-
+      obEntriesByProperty.entries(),
+    ).map(([propId, entries]) => {
+      const propRent = rents.find((r) => r.property_id === propId);
       return {
-        rentId: rent.id,
-        propertyName: rent.property?.name || 'Unknown Property',
-        propertyId: rent.property_id,
-        outstandingAmount: outstandingBalance,
-        tenancyStartDate: rent.rent_start_date ? new Date(rent.rent_start_date) : null,
-        tenancyEndDate: rent.expiry_date ? new Date(rent.expiry_date) : null,
-        transactions: transactions.sort(
-          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+        rentId: propRent?.id || propId,
+        propertyName:
+          propRent?.property?.name ||
+          entries[0]?.property?.name ||
+          'Unknown Property',
+        propertyId: propId === 'global' ? propRent?.property_id || '' : propId,
+        outstandingAmount: entries.reduce(
+          (sum, e) => sum + Number(e.outstanding_balance_change),
+          0,
         ),
+        tenancyStartDate: propRent?.rent_start_date
+          ? new Date(propRent.rent_start_date)
+          : null,
+        tenancyEndDate: propRent?.expiry_date
+          ? new Date(propRent.expiry_date)
+          : null,
+        transactions: entries
+          .map((e) => ({
+            id: e.id,
+            type: e.description || String(e.type),
+            amount: Number(e.outstanding_balance_change),
+            date: new Date(e.created_at!),
+          }))
+          .sort((a, b) => b.date.getTime() - a.date.getTime()),
       };
     });
 
@@ -2451,11 +2458,11 @@ export class TenantManagementService {
           const endDate = ph.move_out_date
             ? new Date(ph.move_out_date).toLocaleDateString('en-GB')
             : '';
-          const eventDate = new Date(ph.created_at || new Date());
+          const eventDate = new Date(ph.move_in_date || ph.created_at || new Date());
           tenancyEvents.push({
             id: `user-added-tenancy-${ph.id}`,
             type: 'general' as const,
-            title: `Historical Tenancy Recorded — ${prop?.name || 'property'}`,
+            title: `Tenancy started`,
             description: `Tenancy period: ${startDate} – ${endDate}`,
             details: JSON.stringify({
               rentAmount: parsedData.rentAmount || 0,
@@ -2464,6 +2471,13 @@ export class TenantManagementService {
               totalAmount: parsedData.totalAmount || 0,
               startDate,
               endDate,
+              rawMoveInDate: ph.move_in_date
+                ? new Date(ph.move_in_date).toISOString()
+                : null,
+              rawMoveOutDate: ph.move_out_date
+                ? new Date(ph.move_out_date).toISOString()
+                : null,
+              propertyId: ph.property_id,
               propertyName: prop?.name || '',
               tenantName: parsedData.tenantName || '',
             }),
@@ -2491,15 +2505,21 @@ export class TenantManagementService {
             : ph.move_in_date
               ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
               : '';
-          const eventDate = new Date(ph.created_at || new Date());
+          const eventDate = new Date(parsedData.paymentDate || ph.move_in_date || ph.created_at || new Date());
           tenancyEvents.push({
             id: `user-added-payment-${ph.id}`,
             type: 'general' as const,
-            title: `Historical Payment Recorded — ${prop?.name || 'property'}`,
+            title: `Payment received`,
             description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()} on ${paymentDate}`,
             details: JSON.stringify({
               paymentAmount: parsedData.paymentAmount || 0,
               paymentDate,
+              rawPaymentDate:
+                parsedData.paymentDate ||
+                (ph.move_in_date
+                  ? new Date(ph.move_in_date).toISOString()
+                  : null),
+              propertyId: ph.property_id,
               propertyName: prop?.name || '',
               tenantName: parsedData.tenantName || '',
             }),
@@ -2670,6 +2690,53 @@ export class TenantManagementService {
         seenIds.add(event.id);
         return true;
       });
+
+    // Fetch all pending landlord renewal invoices for active rents in one query
+    const activeRentPropertyIds = rents
+      .filter((r) => r.rent_status === RentStatusEnum.ACTIVE)
+      .map((r) => r.property_id);
+
+    const pendingInvoiceMap = new Map<
+      string,
+      { rentAmount: number; serviceCharge: number; totalAmount: number }
+    >();
+
+    if (activeRentPropertyIds.length > 0) {
+      const pendingInvoices = await this.dataSource
+        .getRepository(RenewalInvoice)
+        .find({
+          where: {
+            tenant_id: account.id,
+            payment_status: RenewalPaymentStatus.UNPAID,
+            token_type: In(['landlord', 'draft']),
+            property_id: In(activeRentPropertyIds),
+          },
+          order: { created_at: 'DESC' },
+          select: [
+            'id',
+            'property_id',
+            'rent_amount',
+            'service_charge',
+            'total_amount',
+          ],
+        });
+
+      // Keep only the most-recent invoice per property (results already ordered DESC)
+      for (const inv of pendingInvoices) {
+        if (!pendingInvoiceMap.has(inv.property_id)) {
+          pendingInvoiceMap.set(inv.property_id, {
+            rentAmount: parseFloat(inv.rent_amount.toString()),
+            serviceCharge: parseFloat((inv.service_charge || 0).toString()),
+            totalAmount: parseFloat(inv.total_amount.toString()),
+          });
+        }
+      }
+    }
+
+    // Pending invoice for the primary active rent (used by single-tenancy view)
+    const activePendingInvoice = activeRent
+      ? (pendingInvoiceMap.get(activeRent.property_id) ?? null)
+      : null;
 
     return {
       id: account.id,
@@ -2867,8 +2934,10 @@ export class TenantManagementService {
       rentFrequency: activeRent?.payment_frequency || 'Annually',
       rentStatus: activeRent?.payment_status || '——',
       nextRentDue: this.formatDateField(activeRent?.expiry_date),
-      outstandingBalance: activeRent?.outstanding_balance || 0,
-      creditBalance: activeRent?.credit_balance || 0,
+      pendingInvoiceRentAmount: activePendingInvoice?.rentAmount ?? null,
+      pendingInvoiceTotalAmount: activePendingInvoice?.totalAmount ?? null,
+      outstandingBalance: totalOutstandingBalance,
+      creditBalance: totalCreditBalance,
       paymentFrequency: activeRent?.payment_frequency || null,
       paymentHistory: (account.rents || [])
         .map((rent) => ({
@@ -2897,18 +2966,24 @@ export class TenantManagementService {
       })),
       activeTenancies: rents
         .filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
-        .map((rent) => ({
-          id: rent.id,
-          property: rent.property?.name ?? 'Unknown Property',
-          propertyId: rent.property_id,
-          rentAmount: rent.rental_price || 0,
-          serviceCharge: rent.service_charge || 0,
-          rentFrequency: rent.payment_frequency || 'Annually',
-          rentDueDate: this.formatDateField(rent.expiry_date),
-          tenancyStartDate: this.formatDateField(rent.rent_start_date),
-          outstandingBalance: rent.outstanding_balance || 0,
-          status: 'Active' as const,
-        })),
+        .map((rent) => {
+          const pendingInvoice =
+            pendingInvoiceMap.get(rent.property_id) ?? null;
+          return {
+            id: rent.id,
+            property: rent.property?.name ?? 'Unknown Property',
+            propertyId: rent.property_id,
+            rentAmount: rent.rental_price || 0,
+            serviceCharge: rent.service_charge || 0,
+            rentFrequency: rent.payment_frequency || 'Annually',
+            rentDueDate: this.formatDateField(rent.expiry_date),
+            tenancyStartDate: this.formatDateField(rent.rent_start_date),
+            outstandingBalance: totalOutstandingBalance,
+            pendingInvoiceRentAmount: pendingInvoice?.rentAmount ?? null,
+            pendingInvoiceTotalAmount: pendingInvoice?.totalAmount ?? null,
+            status: 'Active' as const,
+          };
+        }),
       tenancyHistory: (propertyHistories || [])
         .filter((ph) => ph.move_out_date)
         .map((ph) => ({
@@ -2936,7 +3011,9 @@ export class TenantManagementService {
               id: `payment-history-${ph.id}`,
               type: 'Payment Received',
               amount: -amount,
-              date: ph.move_in_date ? new Date(ph.move_in_date) : new Date(ph.created_at!),
+              date: ph.move_in_date
+                ? new Date(ph.move_in_date)
+                : new Date(ph.created_at!),
             };
           } catch {
             return null;
@@ -3018,7 +3095,7 @@ export class TenantManagementService {
   ): string | null {
     if (!date) return null;
     if (typeof date === 'string') return date;
-    if (date instanceof Date) return date.toISOString();
+    if (date instanceof Date) return date.toISOString().split('T')[0];
     return null;
   }
 

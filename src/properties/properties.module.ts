@@ -28,6 +28,7 @@ import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
 import { NotificationModule } from 'src/notifications/notification.module';
 import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
+import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
     UtilsModule,
     forwardRef(() => WhatsappBotModule),
     NotificationModule,
+    TenantBalancesModule,
   ],
   controllers: [PropertiesController],
   providers: [

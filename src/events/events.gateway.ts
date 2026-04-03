@@ -262,6 +262,27 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  // Emit payment failed event to landlord (e.g. bank transfer rejected)
+  emitPaymentFailed(
+    landlordId: string,
+    paymentData: {
+      propertyId: string;
+      propertyName: string;
+      applicantName: string;
+      amount: number;
+      reason: string;
+    },
+  ) {
+    this.logger.log(
+      `Emitting payment failed for property ${paymentData.propertyName} to landlord ${landlordId}`,
+    );
+
+    this.server.to(`landlord:${landlordId}`).emit('payment:failed', {
+      ...paymentData,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   // Emit tenancy renewed event to landlord
   emitTenancyRenewed(
     landlordId: string,

@@ -26,4 +26,5 @@ export enum NotificationType {
   RENT_REMINDER = 'Rent reminder',
   OUTSTANDING_BALANCE_RECORDED = 'Outstanding Balance Recorded',
   USER_ADDED_HISTORY = 'User Added History',
+  PAYMENT_TRANSFER_REJECTED = 'Payment Transfer Rejected',
 }

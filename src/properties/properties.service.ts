@@ -51,6 +51,7 @@ import { Account } from 'src/users/entities/account.entity';
 import {
   KYCApplication,
   ApplicationStatus,
+  ApplicationType,
 } from 'src/kyc-links/entities/kyc-application.entity';
 import { ExistingTenantDto } from './dto/existing-tenant.dto';
 import { CreatePropertyWithTenantDto } from './dto/create-property-with-tenant.dto';
@@ -60,7 +61,11 @@ import { DatabaseErrorHandlerService } from 'src/database/database-error-handler
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
-import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
+import {
+  RenewalInvoice,
+  RenewalPaymentStatus,
+} from 'src/tenancies/entities/renewal-invoice.entity';
+import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 
 @Injectable()
 export class PropertiesService {
@@ -100,6 +105,7 @@ export class PropertiesService {
     private readonly databaseErrorHandler: DatabaseErrorHandlerService,
     private readonly notificationService: NotificationService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
+    private readonly tenantBalancesService: TenantBalancesService,
   ) {}
 
   async createProperty(
@@ -237,12 +243,11 @@ export class PropertiesService {
         );
       }
 
-      // 4. Use provided first name and surname
       const firstName = tenantData.firstName;
       const lastName = tenantData.surname;
 
-      // 5. Find or create tenant user (BEFORE transaction to avoid transaction abort issues)
-      console.log('🔍 Step 5: Checking for existing tenant user...', {
+      // 4. Find or create tenant user (BEFORE transaction to avoid transaction abort issues)
+      console.log('🔍 Step 4: Checking for existing tenant user...', {
         normalizedPhone,
         firstName,
         lastName,
@@ -425,8 +430,10 @@ export class PropertiesService {
       }
 
       // 7. Get or create KYC link for landlord
-      const kycLinkResponse =
-        await this.kycLinksService.generateKYCLink(ownerId);
+      const kycLinkResponse = await this.kycLinksService.generateKYCLink(
+        ownerId,
+        'property_addition',
+      );
 
       // Get the actual KYC link entity
       const kycLink = await queryRunner.manager.findOne(KYCLink, {
@@ -453,37 +460,81 @@ export class PropertiesService {
       });
 
       let isNewKycApplication = false;
+      // Track whether tenant had a prior KYC so we can pick the right WhatsApp message
+      const hadExistingKyc = !!kycApplication;
 
       if (kycApplication) {
         const status = kycApplication.status;
 
-        if (status === ApplicationStatus.APPROVED) {
+        if (
+          status === ApplicationStatus.APPROVED ||
+          status === ApplicationStatus.REJECTED
+        ) {
           console.log(
-            '✅ Tenant already has APPROVED KYC, reusing existing application',
+            `${status === ApplicationStatus.APPROVED ? '✅' : '❌'} Tenant has ${status} KYC — creating PROPERTY_ADDITION placeholder pre-filled with existing data`,
           );
-          // Tenant can be attached to new property without additional KYC
+          // Create a new PENDING_COMPLETION PROPERTY_ADDITION placeholder for this property,
+          // pre-filled with their existing data so the frontend can autofill and detect
+          // the form type via check-pending.
+          const newPlaceholder = queryRunner.manager.create(KYCApplication, {
+            kyc_link_id: kycLink.id,
+            property_id: savedProperty.id,
+            initial_property_id: savedProperty.id,
+            tenant_id: tenantAccount.id,
+            status: ApplicationStatus.PENDING_COMPLETION,
+            application_type: ApplicationType.PROPERTY_ADDITION,
+            // Copy personal/employment/next-of-kin data from existing application
+            first_name: kycApplication.first_name,
+            last_name: kycApplication.last_name,
+            phone_number: kycApplication.phone_number,
+            email: kycApplication.email,
+            contact_address: kycApplication.contact_address,
+            date_of_birth: kycApplication.date_of_birth,
+            gender: kycApplication.gender,
+            nationality: kycApplication.nationality,
+            state_of_origin: kycApplication.state_of_origin,
+            marital_status: kycApplication.marital_status,
+            employment_status: kycApplication.employment_status,
+            religion: kycApplication.religion,
+            occupation: kycApplication.occupation,
+            job_title: kycApplication.job_title,
+            employer_name: kycApplication.employer_name,
+            work_address: kycApplication.work_address,
+            work_phone_number: kycApplication.work_phone_number,
+            monthly_net_income: kycApplication.monthly_net_income,
+            length_of_employment: kycApplication.length_of_employment,
+            nature_of_business: kycApplication.nature_of_business,
+            business_name: kycApplication.business_name,
+            business_address: kycApplication.business_address,
+            business_duration: kycApplication.business_duration,
+            next_of_kin_full_name: kycApplication.next_of_kin_full_name,
+            next_of_kin_address: kycApplication.next_of_kin_address,
+            next_of_kin_relationship: kycApplication.next_of_kin_relationship,
+            next_of_kin_phone_number: kycApplication.next_of_kin_phone_number,
+            next_of_kin_email: kycApplication.next_of_kin_email,
+            passport_photo_url: kycApplication.passport_photo_url || '-',
+            id_document_url: kycApplication.id_document_url || '-',
+            employment_proof_url: kycApplication.employment_proof_url,
+            business_proof_url: kycApplication.business_proof_url,
+            // Tenancy fields intentionally omitted — not part of this form
+          });
+          await queryRunner.manager.save(KYCApplication, newPlaceholder);
+          kycApplication = newPlaceholder;
         } else if (status === ApplicationStatus.PENDING) {
           console.log(
-            '⏳ Tenant has KYC AWAITING APPROVAL, reusing existing application',
+            '⏳ Tenant has KYC AWAITING APPROVAL — no new form needed',
           );
-          // Tenant's KYC is submitted and awaiting landlord approval
-        } else if (status === ApplicationStatus.REJECTED) {
-          console.log(
-            '❌ Tenant has REJECTED KYC, reusing existing application',
-          );
-          // Tenant's previous KYC was rejected, they may need to resubmit
         } else if (status === ApplicationStatus.PENDING_COMPLETION) {
           console.log(
-            '📝 Tenant has PENDING COMPLETION KYC, reusing existing application',
+            '📝 Tenant has PENDING COMPLETION KYC — ensuring PROPERTY_ADDITION type',
           );
-          // Tenant hasn't completed their KYC form yet
-        } else {
-          console.log(
-            `🔍 Tenant has KYC with status: ${status}, reusing existing application`,
-          );
+          // Ensure the placeholder is marked as property addition for this property
+          await queryRunner.manager.update(KYCApplication, kycApplication.id, {
+            application_type: ApplicationType.PROPERTY_ADDITION,
+            property_id: savedProperty.id,
+          });
+          kycApplication.application_type = ApplicationType.PROPERTY_ADDITION;
         }
-
-        // Always reuse existing KYC application regardless of status
       } else {
         // Create new KYC application only if tenant has NO existing KYC for this landlord
         console.log('🆕 Creating new KYC application for new tenant');
@@ -494,6 +545,7 @@ export class PropertiesService {
           initial_property_id: savedProperty.id,
           tenant_id: tenantAccount.id,
           status: ApplicationStatus.PENDING_COMPLETION,
+          application_type: ApplicationType.PROPERTY_ADDITION, // Mark as property addition
           first_name: firstName,
           last_name: lastName,
           phone_number: normalizedPhone,
@@ -512,10 +564,7 @@ export class PropertiesService {
           next_of_kin_relationship: '-',
           next_of_kin_phone_number: '-',
           next_of_kin_email: '-',
-          intended_use_of_property: '-',
-          number_of_occupants: '-',
-          proposed_rent_amount: '-',
-          rent_payment_frequency: '-',
+          // Tenancy fields are optional for PROPERTY_ADDITION - will be null in DB
           passport_photo_url: '-',
           id_document_url: '-',
         });
@@ -582,8 +631,6 @@ export class PropertiesService {
         payment_frequency: tenantData.rentFrequency,
         payment_status: RentPaymentStatusEnum.PAID,
         rent_status: RentStatusEnum.ACTIVE,
-        outstanding_balance: 0,
-        outstanding_balance_reason: null,
       });
       await queryRunner.manager.save(Rent, rent);
 
@@ -617,12 +664,10 @@ export class PropertiesService {
           : 'Your landlord';
 
         const tenantName = this.utilService.toSentenceCase(firstName);
-        const status = kycApplication.status;
 
-        if (
-          status === ApplicationStatus.PENDING_COMPLETION ||
-          status === ApplicationStatus.REJECTED
-        ) {
+        // Only send link if tenant needs to fill the form (PENDING_COMPLETION)
+        // PENDING means they already submitted — no action needed from them
+        if (kycApplication.status === ApplicationStatus.PENDING_COMPLETION) {
           await this.whatsappNotificationLog.queue(
             'sendKYCCompletionLink',
             {
@@ -633,24 +678,8 @@ export class PropertiesService {
               kyc_link_id: kycLink.token,
               landlord_id: ownerId,
               recipient_name: tenantName,
-            },
-            savedProperty.id,
-          );
-        }
-
-        if (
-          status === ApplicationStatus.APPROVED ||
-          status === ApplicationStatus.REJECTED
-        ) {
-          await this.whatsappNotificationLog.queue(
-            'sendTenantAttachmentNotification',
-            {
-              phone_number: normalizedPhone,
-              tenant_name: tenantName,
-              landlord_name: landlordName,
-              apartment_name: savedProperty.name,
-              landlord_id: ownerId,
-              recipient_name: tenantName,
+              // 'update' if they had a prior KYC with this landlord, 'complete' if brand new
+              action_text: hadExistingKyc ? 'update' : 'complete',
             },
             savedProperty.id,
           );
@@ -1276,6 +1305,13 @@ export class PropertiesService {
 
     // Current tenant information
     let currentTenant: any | null = null;
+    let pendingRenewalInvoice: {
+      id: string;
+      rentAmount: number;
+      serviceCharge: number;
+      totalAmount: number;
+      paymentFrequency: string | null;
+    } | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
       const tenantKyc = tenantUser.tenant_kycs?.[0];
@@ -1300,14 +1336,55 @@ export class PropertiesService {
           tenant_id: activeTenantRelation.tenant.id,
         },
         order: { created_at: 'DESC' },
-        select: ['id', 'payment_status'],
+        select: [
+          'id',
+          'payment_status',
+          'token_type',
+          'total_amount',
+          'amount_paid',
+          'rent_amount',
+          'service_charge',
+          'payment_frequency',
+        ],
       });
 
       let renewalStatus: 'pending' | 'paid' | null = null;
       if (latestRenewalInvoice) {
-        renewalStatus =
-          latestRenewalInvoice.payment_status === 'paid' ? 'paid' : 'pending';
+        if (latestRenewalInvoice.payment_status === 'paid') {
+          renewalStatus = 'paid';
+        } else if (latestRenewalInvoice.token_type === 'landlord') {
+          // Only show 'pending' badge when the tenant has actually been notified
+          renewalStatus = 'pending';
+        }
+        // draft invoices (silent saves) do not trigger the badge
       }
+
+      // Pending landlord invoice (unpaid) — the amount the tenant is expected to pay
+      pendingRenewalInvoice =
+        latestRenewalInvoice &&
+        latestRenewalInvoice.payment_status === RenewalPaymentStatus.UNPAID &&
+        (latestRenewalInvoice.token_type === 'landlord' || latestRenewalInvoice.token_type === 'draft')
+          ? {
+              id: latestRenewalInvoice.id,
+              rentAmount: parseFloat(
+                latestRenewalInvoice.rent_amount.toString(),
+              ),
+              serviceCharge: parseFloat(
+                (latestRenewalInvoice.service_charge || 0).toString(),
+              ),
+              totalAmount: parseFloat(
+                latestRenewalInvoice.total_amount.toString(),
+              ),
+              paymentFrequency: latestRenewalInvoice.payment_frequency ?? null,
+            }
+          : null;
+
+      // Outstanding balance: sourced from TenantBalance (tenant-level, per landlord)
+      const { outstanding_balance: totalOutstandingBalance } =
+        await this.tenantBalancesService.getBalances(
+          activeTenantRelation.tenant.id,
+          property.owner_id,
+        );
 
       currentTenant = {
         id: activeTenantRelation.tenant.id,
@@ -1324,7 +1401,7 @@ export class PropertiesService {
           : 'Monthly',
         passportPhoto: tenantKycApplication?.passport_photo_url || null,
         renewalStatus,
-        outstandingBalance: activeRent?.outstanding_balance || 0,
+        outstandingBalance: totalOutstandingBalance,
       };
     }
 
@@ -1805,7 +1882,10 @@ export class PropertiesService {
             try {
               parsedData = JSON.parse(hist.event_description || '{}');
             } catch {
-              parsedData = { displayType: 'Custom Event', description: hist.event_description || '' };
+              parsedData = {
+                displayType: 'Custom Event',
+                description: hist.event_description || '',
+              };
             }
             const userAddedAmount = parsedData.amount || null;
             return {
@@ -1838,9 +1918,9 @@ export class PropertiesService {
               : '';
             return {
               id: hist.id,
-              date: hist.created_at,
+              date: hist.move_in_date || hist.created_at,
               eventType: 'user_added_tenancy',
-              title: `Historical Tenancy Recorded — ${tenantName}`,
+              title: `Tenancy started`,
               description: `Tenancy period: ${startDate} – ${endDate}`,
               details: JSON.stringify({
                 rentAmount,
@@ -1871,9 +1951,9 @@ export class PropertiesService {
                 : '';
             return {
               id: hist.id,
-              date: hist.created_at,
+              date: parsedPayment.paymentDate || hist.move_in_date || hist.created_at,
               eventType: 'user_added_payment',
-              title: `Historical Payment Recorded — ${tenantName}`,
+              title: `Payment received`,
               description: `Payment of ₦${Number(paymentAmount).toLocaleString()} on ${paymentDate}`,
               details: JSON.stringify({
                 paymentAmount,
@@ -1949,6 +2029,7 @@ export class PropertiesService {
       serviceCharge: activeRent?.service_charge || 0,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
+      pendingRenewalInvoice: pendingRenewalInvoice || null,
       rentalPrice: property.rental_price || null,
       isMarketingReady: property.is_marketing_ready || false,
       description: property.description || computedDescription,
@@ -3679,6 +3760,9 @@ export class PropertiesService {
     normalizedPhone: string,
   ): Promise<{ exists: boolean; propertyName?: string }> {
     try {
+      // Normalize the phone number regardless of format sent by caller
+      const phone = this.utilService.normalizePhoneNumber(normalizedPhone);
+
       // Find any active tenant with this phone number for this landlord
       const existingTenant = await this.propertyTenantRepository
         .createQueryBuilder('pt')
@@ -3687,7 +3771,7 @@ export class PropertiesService {
         .leftJoinAndSelect('tenant.user', 'user')
         .where('pt.status = :status', { status: TenantStatusEnum.ACTIVE })
         .andWhere('property.owner_id = :landlordId', { landlordId })
-        .andWhere('user.phone_number = :phone', { phone: normalizedPhone })
+        .andWhere('user.phone_number = :phone', { phone })
         .getOne();
 
       if (existingTenant) {

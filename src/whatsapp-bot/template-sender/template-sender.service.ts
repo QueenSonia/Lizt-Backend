@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ChatLogService } from '../chat-log.service';
@@ -185,6 +185,7 @@ export interface KYCCompletionLinkParams {
   landlord_name: string;
   property_name: string;
   kyc_link_id: string;
+  action_text?: string; // "complete" or "update"
 }
 
 /**
@@ -249,12 +250,11 @@ export interface LandlordPaymentReceivedParams {
   tenant_name: string;
   property_name: string;
   amount: number;
-  outstanding_balance: number; // Will be 0 when payment is complete
+  outstanding_balance: number;
 }
 
 /**
  * Parameters for landlord payment complete notification
- * DEPRECATED: No longer used - replaced by LandlordPaymentReceivedParams
  */
 export interface LandlordPaymentCompleteParams {
   phone_number: string;
@@ -273,19 +273,13 @@ export interface TenantPaymentSuccessParams {
   tenant_name: string;
   property_name: string;
   total_amount: number;
+  landlord_name: string;
   receipt_token?: string;
 }
 
 /**
  * Parameters for tenant payment refund notification
  */
-export interface TenantPaymentRefundParams {
-  phone_number: string;
-  tenant_name: string;
-  property_name: string;
-  amount_paid: number;
-}
-
 /**
  * Parameters for landlord race condition notification
  */
@@ -362,7 +356,6 @@ export interface OutstandingBalancePaidLandlordParams {
   remaining_balance: number;
 }
 
-
 /**
  * Parameters for full renewal payment (OB cleared + renewed) to landlord
  */
@@ -373,7 +366,6 @@ export interface FullRenewalPaymentLandlordParams {
   amount: number;
   property_name: string;
 }
-
 
 /**
  * Parameters for rent reminder to tenant
@@ -397,6 +389,7 @@ export interface RentReminderWithRenewalParams {
   expiry_date: string;
   renewal_token: string;
   frontend_url: string;
+  payment_frequency: string;
 }
 
 /**
@@ -426,8 +419,6 @@ export interface ButtonDefinition {
  */
 @Injectable()
 export class TemplateSenderService {
-  private readonly logger = new Logger(TemplateSenderService.name);
-
   constructor(
     private readonly config: ConfigService,
     private readonly chatLogService: ChatLogService,
@@ -1041,6 +1032,7 @@ export class TemplateSenderService {
     landlord_name,
     property_name,
     kyc_link_id,
+    action_text = 'complete', // Default to 'complete'
   }: KYCCompletionLinkParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -1066,6 +1058,10 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: property_name,
+              },
+              {
+                type: 'text',
+                text: action_text, // New parameter for "complete" or "update"
               },
             ],
           },
@@ -1154,8 +1150,6 @@ export class TemplateSenderService {
     offer_letter_token,
     frontend_url,
   }: OfferLetterNotificationParams): Promise<void> {
-    const offerLetterUrl = `${frontend_url}/offer-letters/${offer_letter_token}`;
-
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -1359,7 +1353,7 @@ export class TemplateSenderService {
   /**
    * Send landlord payment received notification (for ANY payment - partial or full)
    * Requirements: Phase 5 - Task 19.3
-   * Template: ll_payment_received (20 chars)
+   * Template: landlord_partial_payment
    */
   async sendLandlordPaymentReceived({
     phone_number,
@@ -1374,7 +1368,7 @@ export class TemplateSenderService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'll_payment_received',
+        name: 'landlord_partial_payment',
         language: {
           code: 'en',
         },
@@ -1483,6 +1477,7 @@ export class TemplateSenderService {
     tenant_name,
     property_name,
     total_amount,
+    landlord_name,
     receipt_token,
   }: TenantPaymentSuccessParams): Promise<void> {
     const payload: WhatsAppPayload = {
@@ -1510,6 +1505,10 @@ export class TemplateSenderService {
                 type: 'text',
                 text: property_name,
               },
+              {
+                type: 'text',
+                text: landlord_name,
+              },
             ],
           },
           ...(receipt_token
@@ -1527,51 +1526,6 @@ export class TemplateSenderService {
                 },
               ]
             : []),
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  /**
-   * Send tenant payment refund notification (losing tenant)
-   * Requirements: Phase 5 - Task 19.2
-   * Template: tenant_payment_refund (21 chars)
-   */
-  async sendTenantPaymentRefund({
-    phone_number,
-    tenant_name,
-    property_name,
-    amount_paid,
-  }: TenantPaymentRefundParams): Promise<void> {
-    const payload: WhatsAppPayload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'tenant_payment_refund',
-        language: {
-          code: 'en',
-        },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                text: tenant_name,
-              },
-              {
-                type: 'text',
-                text: property_name,
-              },
-              {
-                type: 'text',
-                text: `₦${amount_paid.toLocaleString()}`,
-              },
-            ],
-          },
         ],
       },
     };
@@ -1749,6 +1703,53 @@ export class TemplateSenderService {
       type: 'template',
       template: {
         name: 'renewal_link',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: renewal_token,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send outstanding balance invoice link to tenant
+   * Template: outstanding_balance_link
+   */
+  async sendOutstandingBalanceLink({
+    phone_number,
+    tenant_name,
+    renewal_token,
+    frontend_url: _frontend_url,
+  }: RenewalLinkParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'outstanding_balance_link',
         language: {
           code: 'en',
         },
@@ -2431,7 +2432,7 @@ export class TemplateSenderService {
       'sim_msg_id_' +
       Date.now() +
       '_' +
-      Math.random().toString(36).substr(2, 9);
+      Math.random().toString(36).substring(2, 11);
 
     console.log('🎭 Creating simulated response for:', {
       recipient: recipientPhone,
@@ -2520,7 +2521,26 @@ export class TemplateSenderService {
     expiry_date,
     renewal_token,
     frontend_url: _frontend_url,
+    payment_frequency,
   }: RentReminderWithRenewalParams): Promise<void> {
+    // Map payment frequency to period text
+    const getPeriodText = (frequency: string): string => {
+      switch (frequency?.toLowerCase()) {
+        case 'monthly':
+          return "month's";
+        case 'quarterly':
+          return "quarter's";
+        case 'bi-annually':
+          return "half-year's";
+        case 'annually':
+          return "year's";
+        default:
+          return '';
+      }
+    };
+
+    const periodText = getPeriodText(payment_frequency);
+
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -2537,6 +2557,10 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: periodText,
               },
               {
                 type: 'text',
@@ -2662,7 +2686,7 @@ export class TemplateSenderService {
     fm_service_request_notification:
       'A new service request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nPhone: {{5}}\nProperty: {{2}}\nReported: {{4}} on record.',
     kyc_completion_link:
-      'Hello {{1}}, {{2}} has added you as a tenant for {{3}}.\n\nPlease complete your KYC information using the link below.',
+      'Hello {{1}},\n\n{{2}} has added you as a tenant for {{3}} using Lizt by Property Kraft — a tenancy management app designed to make your rental experience simple and stress-free.\n\nWith Lizt, you can receive important updates, track rent, and manage everything about your tenancy in one place.\n\nPlease {{4}} your KYC information using the link below to get started:',
     kyc_completion_notification:
       'Hello {{1}}, {{2}} has completed their KYC information for {{3}}.\n\nYou can now view their full tenant details.',
     offer_letter_notification:
@@ -2675,14 +2699,12 @@ export class TemplateSenderService {
       'Hi {{1}}, {{2}} has {{4}} your offer letter for {{3}}.\n\nLog in to your dashboard to view details and take next steps.',
     payment_invoice_link:
       'Hi {{1}}, your offer for {{2}} has been accepted successfully.\n\nAn invoice has been prepared for you. Please complete your payment to secure the property and proceed with your tenancy.',
-    ll_payment_received:
+    landlord_partial_payment:
       'Hello {{1}}, {{2}} has made a payment of {{3}} for {{4}}.\n\nOutstanding balance: {{5}}. View details in your dashboard.',
     ll_payment_complete:
-      'Hello {{1}}, {{2}} has completed their full payment of {{3}} for {{4}}.\n\nThe property is now secured!',
+      'Hello {{1}}, {{2}} has completed their full payment of {{3}} for {{4}}.\n\nThank you',
     tenant_payment_success:
-      'Congratulations {{1}}! Your payment of {{2}} for {{3}} has been confirmed.\nYou have successfully secured the property.\n\nThe landlord will contact you shortly with next steps.',
-    tenant_payment_refund:
-      'Hello {{1}}, unfortunately another applicant has secured {{2}}.\nYour payment of {{3}} is eligible for refund.\n\nPlease contact the landlord to process your refund. We apologize for any inconvenience.',
+      'Hi {{1}},\n\nCongratulations! Your payment of {{2}} for {{3}} has been confirmed.\n\nYou can view your receipt below:\n\nYour landlord, {{4}}, uses Lizt by Property Kraft — a simple app designed to make your rental experience smooth and stress-free.\n\nWith Lizt, you can receive important updates, track rent, report issues easily, and stay connected throughout your tenancy — all in one place.\n\nReply Hi to get started.\n\n— The Lizt Team',
     ll_payment_race:
       'Hello {{1}}, {{2}} completed payment of {{3}} for {{4}}, but the property was already secured by another tenant.\n\nThe payment is being held. Please process a refund through your dashboard.',
     tenant_payment_race:
@@ -2690,18 +2712,20 @@ export class TemplateSenderService {
     invoice_reminder:
       'Hi {{1}}, this is a reminder from {{2}} regarding invoice {{3}}. Outstanding balance: {{4}} for {{5}}.',
     landlord_main_menu: 'Hello {{1}}, What do you want to do today?',
+    outstanding_balance_link:
+      'Hi {{1}},\n\nPlease click the button below to view your invoice and make payment for your outstanding balance.',
     renewal_link:
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
     renewal_payment_tenant:
       'Congratulations {{1}}! Your renewal payment of {{2}} for {{3}} has been confirmed.\n\nClick the button below to view your receipt.',
     renewal_payment_landlord:
-      'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThe tenancy has been successfully renewed!',
+      'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThank you.',
     renewal_receipt:
       'Hi {{1}}, your payment of {{2}} for {{3}} has been received successfully.\n\nYour receipt is ready: {{4}}\n\nThank you for your payment!',
     rent_reminders:
       'Hi {{1}},\n\nThis is a friendly reminder that your rent for {{2}} is due on {{3}}.\n\nAmount due: {{4}}\n\nThank you.',
     rent_reminder_with_renewal:
-      'Hi {{1}},\n\nThis is a friendly reminder that your rent for {{2}} is due on {{3}}.\n\nAmount due: {{4}}\n\nPlease use the link below to view and complete your renewal.',
+      'Hi {{1}},\n\nThis is a friendly reminder that your next {{2}} rent for {{3}} is due on {{4}}.\n\nAmount due: {{5}}\n\nPlease use the link below to view your invoice and complete your payment.',
     rent_overdue:
       'Hi {{1}},\n\nYour rent for {{2}} was due on {{3}} and is now overdue.\n\nAmount due: {{4}}\n\nPlease make payment as soon as possible to avoid additional charges.\n\nThank you for your prompt attention to this matter.',
   };

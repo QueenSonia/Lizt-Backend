@@ -26,6 +26,7 @@ import {
 } from '../template-sender';
 import { IncomingMessage } from '../utils';
 import { WhatsAppNotificationLogService } from '../whatsapp-notification-log.service';
+import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 
 /**
  * TenantFlowService handles all tenant-specific WhatsApp message interactions.
@@ -71,6 +72,7 @@ export class TenantFlowService {
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly templateSenderService: TemplateSenderService,
     private readonly notificationLogService: WhatsAppNotificationLogService,
+    private readonly tenantBalancesService: TenantBalancesService,
   ) {}
 
   /**
@@ -1101,7 +1103,7 @@ export class TenantFlowService {
 
     const accountId = user.accounts[0].id;
 
-    // Check if tenant has any active rent with outstanding balance
+    // Check if tenant has any active rent
     const activeRents = await this.rentRepo.find({
       where: {
         tenant_id: accountId,
@@ -1118,9 +1120,19 @@ export class TenantFlowService {
       return;
     }
 
-    const hasOutstandingBalance = activeRents.some(
-      (r) => (r.outstanding_balance || 0) > 0,
-    );
+    // Check outstanding balance via TenantBalance for each unique landlord
+    let hasOutstandingBalance = false;
+    for (const r of activeRents) {
+      if (!r.property?.owner_id) continue;
+      const ob = await this.tenantBalancesService.getOutstandingBalance(
+        accountId,
+        r.property.owner_id,
+      );
+      if (ob > 0) {
+        hasOutstandingBalance = true;
+        break;
+      }
+    }
 
     if (hasOutstandingBalance) {
       await this.handlePayOutstandingBalance(from);
@@ -1146,18 +1158,28 @@ export class TenantFlowService {
 
     const accountId = user.accounts[0].id;
 
-    // Find active rents with outstanding balance
-    const rentsWithOB = await this.rentRepo.find({
-      where: {
-        tenant_id: accountId,
-        rent_status: RentStatusEnum.ACTIVE,
-      },
+    // Get active rents to find landlords
+    const activeRents = await this.rentRepo.find({
+      where: { tenant_id: accountId, rent_status: RentStatusEnum.ACTIVE },
       relations: ['property'],
     });
 
-    const filtered = rentsWithOB.filter(
-      (r) => (r.outstanding_balance || 0) > 0,
-    );
+    // Get OB for each unique landlord (use first active rent per landlord as representative)
+    const landlordToRent = new Map<string, Rent>();
+    for (const r of activeRents) {
+      if (r.property?.owner_id && !landlordToRent.has(r.property.owner_id)) {
+        landlordToRent.set(r.property.owner_id, r);
+      }
+    }
+
+    const filtered: Array<{ rent: Rent; ob: number }> = [];
+    for (const [landlordId, rent] of landlordToRent.entries()) {
+      const ob = await this.tenantBalancesService.getOutstandingBalance(
+        accountId,
+        landlordId,
+      );
+      if (ob > 0) filtered.push({ rent, ob });
+    }
 
     if (!filtered.length) {
       await this.templateSenderService.sendText(
@@ -1168,25 +1190,25 @@ export class TenantFlowService {
     }
 
     if (filtered.length > 1) {
-      // Multi-property: ask tenant to select
+      // Multi-landlord: ask tenant to select
       let propertyList = 'Which property is this payment for?\n\n';
-      filtered.forEach((rent, index) => {
-        const ob = (rent.outstanding_balance || 0).toLocaleString('en-NG', {
+      filtered.forEach(({ rent, ob }, index) => {
+        const obFormatted = ob.toLocaleString('en-NG', {
           style: 'currency',
           currency: 'NGN',
         });
-        propertyList += `${index + 1}. ${rent.property.name} — ${ob}\n`;
+        propertyList += `${index + 1}. ${rent.property.name} — ${obFormatted}\n`;
       });
       propertyList += '\nReply with the number of the property.';
 
       await this.templateSenderService.sendText(from, propertyList);
       await this.cache.set(
         `service_request_state_${from}`,
-        `select_property_ob:${JSON.stringify(filtered.map((r) => r.property_id))}`,
+        `select_property_ob:${JSON.stringify(filtered.map(({ rent }) => rent.property_id))}`,
         this.SESSION_TIMEOUT_MS,
       );
     } else {
-      await this.sendOBConfirmation(from, filtered[0]);
+      await this.sendOBConfirmation(from, filtered[0].rent, filtered[0].ob);
     }
   }
 
@@ -1218,16 +1240,18 @@ export class TenantFlowService {
     const user = await this.findTenantByPhone(from);
     if (!user?.accounts?.length) return;
 
+    const accountId = user.accounts[0].id;
+
     const rent = await this.rentRepo.findOne({
       where: {
         property_id: propertyIds[selectedIndex],
-        tenant_id: user.accounts[0].id,
+        tenant_id: accountId,
         rent_status: RentStatusEnum.ACTIVE,
       },
       relations: ['property'],
     });
 
-    if (!rent || (rent.outstanding_balance || 0) <= 0) {
+    if (!rent?.property?.owner_id) {
       await this.templateSenderService.sendText(
         from,
         'No outstanding balance found for that property.',
@@ -1235,16 +1259,32 @@ export class TenantFlowService {
       return;
     }
 
-    await this.sendOBConfirmation(from, rent);
+    const ob = await this.tenantBalancesService.getOutstandingBalance(
+      accountId,
+      rent.property.owner_id,
+    );
+
+    if (ob <= 0) {
+      await this.templateSenderService.sendText(
+        from,
+        'No outstanding balance found for that property.',
+      );
+      return;
+    }
+
+    await this.sendOBConfirmation(from, rent, ob);
   }
 
   /**
    * Send OB payment confirmation message with details before generating the link.
    */
-  private async sendOBConfirmation(from: string, rent: Rent): Promise<void> {
+  private async sendOBConfirmation(
+    from: string,
+    rent: Rent,
+    ob: number,
+  ): Promise<void> {
     const formatNGN = (amt: number) =>
       amt.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
-    const ob = rent.outstanding_balance || 0;
 
     let message = `Do you want to pay the outstanding balance for *${rent.property.name}*?\n`;
     message += `\n*Outstanding Balance:* ${formatNGN(ob)}`;
@@ -1265,16 +1305,18 @@ export class TenantFlowService {
     const user = await this.findTenantByPhone(from);
     if (!user?.accounts?.length) return;
 
+    const accountId = user.accounts[0].id;
+
     const rent = await this.rentRepo.findOne({
       where: {
         property_id: propertyId,
-        tenant_id: user.accounts[0].id,
+        tenant_id: accountId,
         rent_status: RentStatusEnum.ACTIVE,
       },
       relations: ['property'],
     });
 
-    if (!rent || (rent.outstanding_balance || 0) <= 0) {
+    if (!rent?.property?.owner_id) {
       await this.templateSenderService.sendText(
         from,
         'No outstanding balance found for that property.',
@@ -1282,7 +1324,20 @@ export class TenantFlowService {
       return;
     }
 
-    await this.createOBInvoiceAndSendLink(from, rent);
+    const totalOB = await this.tenantBalancesService.getOutstandingBalance(
+      accountId,
+      rent.property.owner_id,
+    );
+
+    if (totalOB <= 0) {
+      await this.templateSenderService.sendText(
+        from,
+        'No outstanding balance found for that property.',
+      );
+      return;
+    }
+
+    await this.createOBInvoiceAndSendLink(from, rent, totalOB);
   }
 
   /**
@@ -1291,12 +1346,12 @@ export class TenantFlowService {
   private async createOBInvoiceAndSendLink(
     from: string,
     rent: Rent,
+    outstandingBalance: number,
   ): Promise<void> {
     const user = await this.findTenantByPhone(from);
     if (!user?.accounts?.length) return;
 
     const accountId = user.accounts[0].id;
-    const outstandingBalance = rent.outstanding_balance || 0;
 
     // Find propertyTenant record
     const propertyTenant = await this.propertyTenantRepo.findOne({
@@ -1341,7 +1396,7 @@ export class TenantFlowService {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const tenantName = `${this.utilService.toSentenceCase(user.first_name)}`;
 
-    await this.templateSenderService.sendRenewalLink({
+    await this.templateSenderService.sendOutstandingBalanceLink({
       phone_number: from,
       tenant_name: tenantName,
       renewal_token: token,
@@ -1456,7 +1511,12 @@ export class TenantFlowService {
 
     const rentAmount = rent.rental_price || 0;
     const serviceCharge = rent.service_charge || 0;
-    const outstandingBalance = rent.outstanding_balance || 0;
+    const outstandingBalance = rent.property?.owner_id
+      ? await this.tenantBalancesService.getOutstandingBalance(
+          rent.tenant_id,
+          rent.property.owner_id,
+        )
+      : 0;
     const totalAmount = rentAmount + serviceCharge + outstandingBalance;
 
     const paymentFrequency = rent.payment_frequency || 'Annually';
@@ -1542,7 +1602,12 @@ export class TenantFlowService {
     const accountId = user.accounts[0].id;
     const rentAmount = rent.rental_price || 0;
     const serviceCharge = rent.service_charge || 0;
-    const outstandingBalance = rent.outstanding_balance || 0;
+    const outstandingBalance = rent.property?.owner_id
+      ? await this.tenantBalancesService.getOutstandingBalance(
+          accountId,
+          rent.property.owner_id,
+        )
+      : 0;
     const totalAmount = rentAmount + serviceCharge + outstandingBalance;
 
     // Find propertyTenant record

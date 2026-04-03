@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsString, IsOptional } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsString, IsOptional, IsBoolean } from 'class-validator';
 
 export class InitiateRenewalDto {
   @ApiProperty({
@@ -26,4 +26,13 @@ export class InitiateRenewalDto {
   @IsOptional()
   @IsNumber()
   serviceCharge?: number;
+
+  @ApiProperty({
+    description: 'If true, creates/updates the invoice without sending a WhatsApp notification to the tenant',
+    example: false,
+    required: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  silent?: boolean;
 }

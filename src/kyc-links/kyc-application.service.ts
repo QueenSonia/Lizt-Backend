@@ -15,6 +15,7 @@ import { Repository, In } from 'typeorm';
 import {
   KYCApplication,
   ApplicationStatus,
+  ApplicationType,
 } from './entities/kyc-application.entity';
 import { KYCLink } from './entities/kyc-link.entity';
 import { KYCOtp } from './entities/kyc-otp.entity';
@@ -1537,6 +1538,12 @@ export class KYCApplicationService {
       }
 
       // Service-level validation: verify all required fields are present before approving
+      const tenancyFields = [
+        'intended_use_of_property',
+        'number_of_occupants',
+        'proposed_rent_amount',
+        'rent_payment_frequency',
+      ];
       const requiredFields = [
         'email',
         'contact_address',
@@ -1552,10 +1559,8 @@ export class KYCApplicationService {
         'next_of_kin_relationship',
         'next_of_kin_address',
         'next_of_kin_email',
-        'intended_use_of_property',
-        'number_of_occupants',
-        'proposed_rent_amount',
-        'rent_payment_frequency',
+        // Tenancy fields are supplied by the landlord for property_addition — not required from tenant
+        ...(kyc.application_type !== ApplicationType.PROPERTY_ADDITION ? tenancyFields : []),
         'passport_photo_url',
         'id_document_url',
       ];

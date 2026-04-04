@@ -3074,45 +3074,50 @@ export class TenantManagementService {
       totalOutstandingBalance,
       totalCreditBalance,
       outstandingBalanceBreakdown,
-      paymentTransactions: ledgerEntries
-        .filter((e) => {
-          // Only include actual payment types, not all negative entries
-          const isNegative = Number(e.outstanding_balance_change) < 0;
-          const isPaymentType = [
-            'rent_payment',
-            'ob_payment',
-          ].includes(e.type);
-          return isNegative && isPaymentType;
-        })
-        .map((e) => {
-          // Implement date resolution for payment entries
-          let paymentDate: Date;
+      paymentTransactions: [
+          // Manual payments — property history is the authority for which payments
+          // currently exist and at what amount. Edited payments update in place so
+          // we never see stale pre-edit amounts. Deleted payments remove the record.
+          ...(account.property_histories || [])
+            .filter((h) => {
+              if (h.event_type !== 'user_added_payment') return false;
+              if (adminId && h.property?.owner_id !== adminId) return false;
+              return true;
+            })
+            .map((ph) => {
+              try {
+                const data = JSON.parse(ph.event_description || '{}');
+                const amount = Number(data.paymentAmount || 0);
+                if (amount <= 0) return null;
+                return {
+                  id: `payment-history-${ph.id}`,
+                  type: data.description || 'Payment received',
+                  amount: -amount,
+                  date: ph.move_in_date
+                    ? new Date(ph.move_in_date)
+                    : new Date(ph.created_at!),
+                };
+              } catch {
+                return null;
+              }
+            })
+            .filter((t): t is NonNullable<typeof t> => t !== null),
 
-          if (
-            e.related_entity_type === 'property_history' &&
-            e.related_entity_id
-          ) {
-            // For property history-related payments, use move_in_date from the specific property history record
-            const relatedPH = propertyHistoryMap.get(e.related_entity_id);
-            if (relatedPH && relatedPH.move_in_date) {
-              paymentDate = new Date(relatedPH.move_in_date);
-            } else {
-              // Fallback to created_at if property history record not found
-              paymentDate = new Date(e.created_at!);
-            }
-          } else {
-            // For other payment types, use created_at
-            paymentDate = new Date(e.created_at!);
-          }
-
-          return {
-            id: e.id,
-            type: e.description || 'Payment Received',
-            amount: Number(e.outstanding_balance_change), // Already negative
-            date: paymentDate,
-          };
-        })
-        .sort((a, b) => b.date.getTime() - a.date.getTime()),
+          // Renewal invoice payments — no property history entry is created for
+          // these, so we read them directly from the ledger.
+          ...ledgerEntries
+            .filter(
+              (e) =>
+                Number(e.outstanding_balance_change) < 0 &&
+                e.related_entity_type === 'renewal_invoice',
+            )
+            .map((e) => ({
+              id: e.id,
+              type: e.description || 'Renewal payment',
+              amount: Number(e.outstanding_balance_change),
+              date: new Date(e.created_at!),
+            })),
+        ].sort((a, b) => b.date.getTime() - a.date.getTime()),
 
       history: history,
       kycInfo: {

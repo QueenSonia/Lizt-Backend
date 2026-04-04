@@ -243,6 +243,9 @@ export class PropertyHistoryService {
       }
     }
 
+    // Sync rent records to reflect the new payment
+    await this.syncRentPaymentStatus(data.tenant_id!, data.property_id);
+
     // Create notification for livefeed
     await this.createHistoryNotification(data, saved);
 
@@ -603,6 +606,9 @@ export class PropertyHistoryService {
       );
     }
 
+    // Sync rent records to reflect the updated payment
+    await this.syncRentPaymentStatus(tenantId, existing.property_id);
+
     return this.getPropertyHistoryById(id);
   }
 
@@ -698,6 +704,66 @@ export class PropertyHistoryService {
         );
       }
     }
+
+    // Sync rent records to reflect the deleted payment
+    await this.syncRentPaymentStatus(tenantId, existing.property_id);
+  }
+
+  /**
+   * Recalculates amount_paid and payment_status on all inactive rent records
+   * for a tenant+property by sequentially allocating payments oldest-first.
+   * Called after any payment add, edit, or delete so rent records stay in sync
+   * with the tenant balance ledger.
+   */
+  private async syncRentPaymentStatus(
+    tenantId: string,
+    propertyId: string,
+  ): Promise<void> {
+    const paymentHistories = await this.propertyHistoryRepository.find({
+      where: {
+        tenant_id: tenantId,
+        property_id: propertyId,
+        event_type: 'user_added_payment',
+      },
+      order: { move_in_date: 'ASC' },
+    });
+
+    let remaining = paymentHistories.reduce((sum, ph) => {
+      try {
+        const parsed = JSON.parse(ph.event_description || '{}');
+        return sum + (Number(parsed.paymentAmount) || 0);
+      } catch {
+        return sum;
+      }
+    }, 0);
+
+    const inactiveRents = await this.rentRepository.find({
+      where: {
+        tenant_id: tenantId,
+        property_id: propertyId,
+        rent_status: RentStatusEnum.INACTIVE,
+      },
+      order: { rent_start_date: 'ASC' },
+    });
+
+    if (inactiveRents.length === 0) return;
+
+    for (const rent of inactiveRents) {
+      const fullAmount =
+        (Number(rent.rental_price) || 0) + (Number(rent.service_charge) || 0);
+
+      if (remaining >= fullAmount) {
+        rent.amount_paid = fullAmount;
+        rent.payment_status = RentPaymentStatusEnum.PAID;
+        remaining -= fullAmount;
+      } else {
+        rent.amount_paid = remaining;
+        rent.payment_status = RentPaymentStatusEnum.OWING;
+        remaining = 0;
+      }
+    }
+
+    await this.rentRepository.save(inactiveRents);
   }
 
   async getPropertyHistoryByTenantId(

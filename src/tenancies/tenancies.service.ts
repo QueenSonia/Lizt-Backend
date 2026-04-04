@@ -646,7 +646,6 @@ export class TenanciesService {
         'tenant',
         'tenant.user',
         'tenant.user.tenant_kycs',
-        'tenant.user.kyc_applications',
       ],
     });
 
@@ -670,7 +669,6 @@ export class TenanciesService {
         'tenant',
         'tenant.user',
         'tenant.user.tenant_kycs',
-        'tenant.user.kyc_applications',
       ],
     });
 
@@ -718,12 +716,12 @@ export class TenanciesService {
         endDate: formatDate(invoice.end_date),
       },
       charges: {
-        rentAmount: parseFloat(invoice.rent_amount.toString()),
-        serviceCharge: parseFloat(invoice.service_charge.toString()),
-        legalFee: parseFloat(invoice.legal_fee.toString()),
-        otherCharges: parseFloat(invoice.other_charges.toString()),
+        rentAmount: parseFloat((invoice.rent_amount ?? 0).toString()),
+        serviceCharge: parseFloat((invoice.service_charge ?? 0).toString()),
+        legalFee: parseFloat((invoice.legal_fee ?? 0).toString()),
+        otherCharges: parseFloat((invoice.other_charges ?? 0).toString()),
       },
-      totalAmount: parseFloat(invoice.total_amount.toString()),
+      totalAmount: parseFloat((invoice.total_amount ?? 0).toString()),
       outstandingBalance: parseFloat(
         (invoice.outstanding_balance || 0).toString(),
       ),
@@ -773,7 +771,6 @@ export class TenanciesService {
         'tenant',
         'tenant.user',
         'tenant.user.tenant_kycs',
-        'tenant.user.kyc_applications',
       ],
     });
 
@@ -817,7 +814,6 @@ export class TenanciesService {
         'tenant',
         'tenant.user',
         'tenant.user.tenant_kycs',
-        'tenant.user.kyc_applications',
       ],
     });
 

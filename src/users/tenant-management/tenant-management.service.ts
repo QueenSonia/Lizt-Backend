@@ -1861,20 +1861,31 @@ export class TenantManagementService {
       );
     }
 
+    // Create maps for efficient lookups of related entities for date resolution
+    const rentMap = new Map<string, any>();
+    const propertyHistoryMap = new Map<string, any>();
+
+    // Populate rent map for date resolution
+    rents.forEach((rent) => {
+      rentMap.set(rent.id, rent);
+    });
+
+    // Populate property history map for payment date resolution
+    (account.property_histories || []).forEach((ph) => {
+      if (ph.id) {
+        propertyHistoryMap.set(ph.id, ph);
+      }
+    });
+
     // Build outstandingBalanceBreakdown from ledger entries grouped by property
     const obEntriesByProperty = new Map<string, TenantBalanceLedger[]>();
     ledgerEntries
-      .filter((e) => Number(e.outstanding_balance_change) > 0)
+      .filter((e) => Number(e.outstanding_balance_change) > 0 && e.type !== 'ob_payment')
       .forEach((e) => {
         const key = e.property_id || 'global';
         if (!obEntriesByProperty.has(key)) obEntriesByProperty.set(key, []);
         obEntriesByProperty.get(key)!.push(e);
       });
-
-    // Collect all individual user_added_payment history entries for this tenant
-    const paymentHistories = (account.property_histories || []).filter(
-      (h) => h.event_type === 'user_added_payment',
-    );
 
     const outstandingBalanceBreakdown = Array.from(
       obEntriesByProperty.entries(),
@@ -1885,6 +1896,10 @@ export class TenantManagementService {
         propertyName:
           propRent?.property?.name ||
           entries[0]?.property?.name ||
+          // For NULL property_id (migration entries), try to resolve from tenant's rent records
+          (propId === 'global' && rents.length > 0
+            ? rents[0].property?.name
+            : null) ||
           'Unknown Property',
         propertyId: propId === 'global' ? propRent?.property_id || '' : propId,
         outstandingAmount: entries.reduce(
@@ -1898,12 +1913,63 @@ export class TenantManagementService {
           ? new Date(propRent.expiry_date)
           : null,
         transactions: entries
-          .map((e) => ({
-            id: e.id,
-            type: e.description || String(e.type),
-            amount: Number(e.outstanding_balance_change),
-            date: new Date(e.created_at!),
-          }))
+          .map((e) => {
+            // Implement date resolution based on related entity type
+            let transactionDate: Date;
+            let periodDescription = e.description || String(e.type);
+
+            if (e.related_entity_type === 'rent' && e.related_entity_id) {
+              // For rent-related entries, use rent_start_date from the specific rent record
+              const relatedRent = rentMap.get(e.related_entity_id);
+              if (relatedRent && relatedRent.rent_start_date) {
+                transactionDate = new Date(relatedRent.rent_start_date);
+
+                // Generate specific period description for this rent
+                const startDate = new Date(relatedRent.rent_start_date);
+                const endDate = relatedRent.expiry_date
+                  ? new Date(relatedRent.expiry_date)
+                  : null;
+                if (endDate) {
+                  const startStr = startDate.toLocaleDateString('en-GB', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  });
+                  const endStr = endDate.toLocaleDateString('en-GB', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  });
+                  periodDescription = `${e.description || String(e.type)} (${startStr} - ${endStr})`;
+                }
+              } else {
+                // Fallback to created_at if rent record not found
+                transactionDate = new Date(e.created_at!);
+              }
+            } else if (
+              e.related_entity_type === 'property_history' &&
+              e.related_entity_id
+            ) {
+              // For property history-related entries, use move_in_date from the specific property history record
+              const relatedPH = propertyHistoryMap.get(e.related_entity_id);
+              if (relatedPH && relatedPH.move_in_date) {
+                transactionDate = new Date(relatedPH.move_in_date);
+              } else {
+                // Fallback to created_at if property history record not found
+                transactionDate = new Date(e.created_at!);
+              }
+            } else {
+              // For other entry types, use created_at
+              transactionDate = new Date(e.created_at!);
+            }
+
+            return {
+              id: e.id,
+              type: periodDescription,
+              amount: Number(e.outstanding_balance_change),
+              date: transactionDate,
+            };
+          })
           .sort((a, b) => b.date.getTime() - a.date.getTime()),
       };
     });
@@ -2458,7 +2524,9 @@ export class TenantManagementService {
           const endDate = ph.move_out_date
             ? new Date(ph.move_out_date).toLocaleDateString('en-GB')
             : '';
-          const eventDate = new Date(ph.move_in_date || ph.created_at || new Date());
+          const eventDate = new Date(
+            ph.move_in_date || ph.created_at || new Date(),
+          );
           tenancyEvents.push({
             id: `user-added-tenancy-${ph.id}`,
             type: 'general' as const,
@@ -2505,7 +2573,12 @@ export class TenantManagementService {
             : ph.move_in_date
               ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
               : '';
-          const eventDate = new Date(parsedData.paymentDate || ph.move_in_date || ph.created_at || new Date());
+          const eventDate = new Date(
+            parsedData.paymentDate ||
+              ph.move_in_date ||
+              ph.created_at ||
+              new Date(),
+          );
           tenancyEvents.push({
             id: `user-added-payment-${ph.id}`,
             type: 'general' as const,
@@ -3001,25 +3074,45 @@ export class TenantManagementService {
       totalOutstandingBalance,
       totalCreditBalance,
       outstandingBalanceBreakdown,
-      paymentTransactions: paymentHistories
-        .map((ph) => {
-          try {
-            const data = JSON.parse(ph.event_description || '{}');
-            const amount = data.paymentAmount || 0;
-            if (amount <= 0) return null;
-            return {
-              id: `payment-history-${ph.id}`,
-              type: 'Payment Received',
-              amount: -amount,
-              date: ph.move_in_date
-                ? new Date(ph.move_in_date)
-                : new Date(ph.created_at!),
-            };
-          } catch {
-            return null;
-          }
+      paymentTransactions: ledgerEntries
+        .filter((e) => {
+          // Only include actual payment types, not all negative entries
+          const isNegative = Number(e.outstanding_balance_change) < 0;
+          const isPaymentType = [
+            'rent_payment',
+            'ob_payment',
+          ].includes(e.type);
+          return isNegative && isPaymentType;
         })
-        .filter((t): t is NonNullable<typeof t> => t !== null),
+        .map((e) => {
+          // Implement date resolution for payment entries
+          let paymentDate: Date;
+
+          if (
+            e.related_entity_type === 'property_history' &&
+            e.related_entity_id
+          ) {
+            // For property history-related payments, use move_in_date from the specific property history record
+            const relatedPH = propertyHistoryMap.get(e.related_entity_id);
+            if (relatedPH && relatedPH.move_in_date) {
+              paymentDate = new Date(relatedPH.move_in_date);
+            } else {
+              // Fallback to created_at if property history record not found
+              paymentDate = new Date(e.created_at!);
+            }
+          } else {
+            // For other payment types, use created_at
+            paymentDate = new Date(e.created_at!);
+          }
+
+          return {
+            id: e.id,
+            type: e.description || 'Payment Received',
+            amount: Number(e.outstanding_balance_change), // Already negative
+            date: paymentDate,
+          };
+        })
+        .sort((a, b) => b.date.getTime() - a.date.getTime()),
 
       history: history,
       kycInfo: {

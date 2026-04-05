@@ -188,8 +188,8 @@ export class RentReminderService {
     Object.values(RENT_REMINDER_SCHEDULE).forEach((days) => {
       days.forEach((day) => allReminderDays.add(day));
     });
-    // Include last 7 days before expiry for daily renewal-link reminders
-    for (let d = 0; d <= 7; d++) allReminderDays.add(d);
+    // Send reminders at exactly 7 days, 1 day before, and on the due date
+    [7, 1, 0].forEach((d) => allReminderDays.add(d));
 
     const targetDates = Array.from(allReminderDays).map((d) => {
       const date = new Date(today);
@@ -224,7 +224,10 @@ export class RentReminderService {
         const schedule =
           RENT_REMINDER_SCHEDULE[frequency] || RENT_REMINDER_SCHEDULE.monthly;
 
-        if (!schedule.includes(daysUntilExpiry) && daysUntilExpiry > 7)
+        if (
+          !schedule.includes(daysUntilExpiry) &&
+          ![7, 1, 0].includes(daysUntilExpiry)
+        )
           continue;
 
         await this.sendReminderIfNotSent(rent, daysUntilExpiry);

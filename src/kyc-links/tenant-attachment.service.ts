@@ -34,6 +34,8 @@ import { RolesEnum } from '../base.entity';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
 import { UtilService } from '../utils/utility-service';
 import { ReceiptsService } from '../receipts/receipts.service';
+import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
+import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 
 @Injectable()
 export class TenantAttachmentService {
@@ -60,6 +62,7 @@ export class TenantAttachmentService {
     private readonly whatsappBotService: WhatsappBotService,
     private readonly utilService: UtilService,
     private readonly receiptsService: ReceiptsService,
+    private readonly tenantBalancesService: TenantBalancesService,
   ) {}
 
   /**
@@ -176,6 +179,20 @@ export class TenantAttachmentService {
       });
 
       await queryRunner.manager.save(rent);
+
+      // Record the first period charge in the tenant balance ledger
+      await this.tenantBalancesService.addOutstandingBalance(
+        tenantAccount.id,
+        landlordId,
+        tenancyDetails.rentAmount + (tenancyDetails.serviceCharge || 0),
+        {
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description: 'Tenancy started',
+          propertyId: application.property_id,
+          relatedEntityType: 'rent',
+          relatedEntityId: rent.id,
+        },
+      );
 
       // Create property-tenant relationship
       const propertyTenant = queryRunner.manager.create(PropertyTenant, {
@@ -488,6 +505,45 @@ export class TenantAttachmentService {
       securityDeposit: rent.security_deposit,
       serviceCharge: rent.service_charge,
     });
+
+    // Record the first period charge in the tenant balance ledger
+    const rentAndServiceCharge =
+      Number(offerLetter.rent_amount) + Number(offerLetter.service_charge || 0);
+
+    await this.tenantBalancesService.addOutstandingBalance(
+      tenantAccount.id,
+      offerLetter.landlord_id,
+      rentAndServiceCharge,
+      {
+        type: TenantBalanceLedgerType.INITIAL_BALANCE,
+        description: 'Tenancy started',
+        propertyId: offerLetter.property_id,
+        relatedEntityType: 'rent',
+        relatedEntityId: rent.id,
+      },
+    );
+
+    // Record the Paystack payment against the charge — this triggers
+    // only after 100% payment so the full rent+service_charge was paid.
+    // Caution deposit, legal fee, agency fee are excluded — they are not
+    // outstanding balance items.
+    await this.tenantBalancesService.subtractOutstandingBalance(
+      tenantAccount.id,
+      offerLetter.landlord_id,
+      rentAndServiceCharge,
+      {
+        type: TenantBalanceLedgerType.OB_PAYMENT,
+        description: `Offer letter payment received`,
+        propertyId: offerLetter.property_id,
+        relatedEntityType: 'rent',
+        relatedEntityId: rent.id,
+      },
+    );
+
+    // Update rent record to reflect payment
+    rent.amount_paid = Number(offerLetter.rent_amount);
+    rent.payment_status = RentPaymentStatusEnum.PAID;
+    await manager.save(rent);
 
     // Create property-tenant relationship
     const propertyTenant = manager.create(PropertyTenant, {

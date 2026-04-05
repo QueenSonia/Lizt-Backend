@@ -295,17 +295,31 @@ export class TenantManagementService {
         const rent = manager.getRepository(Rent).create({
           property_id,
           tenant_id: userAccount.id,
-          amount_paid: rental_price,
+          amount_paid: 0,
           rental_price: rental_price,
           rent_start_date: rent_start_date,
           security_deposit: security_deposit || 0,
           service_charge: service_charge || 0,
           payment_frequency: payment_frequency || 'Monthly',
-          payment_status: RentPaymentStatusEnum.PAID,
+          payment_status: RentPaymentStatusEnum.PENDING,
           rent_status: RentStatusEnum.ACTIVE,
         });
 
         await manager.getRepository(Rent).save(rent);
+
+        // Record the first period charge in the tenant balance ledger
+        await this.tenantBalancesService.addOutstandingBalance(
+          userAccount.id,
+          user_id,
+          rental_price + (service_charge || 0),
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Tenancy started',
+            propertyId: property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+        );
 
         // 5. Assign tenant to property
         const propertyTenant = manager.getRepository(PropertyTenant).create({
@@ -474,6 +488,20 @@ export class TenantManagementService {
         console.log('Created rent record;', rent);
 
         await manager.getRepository(Rent).save(rent);
+
+        // Record the first period charge in the tenant balance ledger
+        await this.tenantBalancesService.addOutstandingBalance(
+          tenantId,
+          landlordId,
+          rentAmount + (serviceCharge || 0),
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Tenancy started',
+            propertyId: propertyId,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+        );
 
         // 8. Create property-tenant relationship
         const propertyTenant = manager.getRepository(PropertyTenant).create({
@@ -787,16 +815,33 @@ export class TenantManagementService {
         await manager.getRepository(Property).save(property);
 
         // 4. create rent record
+        const serviceCharge = dto.service_charge || 0;
         const rent = manager.getRepository(Rent).create({
           property_id,
           tenant_id: userAccount.id,
-          amount_paid: rent_amount,
+          amount_paid: 0,
           rental_price: rent_amount,
           rent_start_date: tenancy_start_date,
+          service_charge: serviceCharge,
+          payment_status: RentPaymentStatusEnum.PENDING,
           rent_status: RentStatusEnum.ACTIVE,
         });
 
         await manager.getRepository(Rent).save(rent);
+
+        // Record the first period charge in the tenant balance ledger
+        await this.tenantBalancesService.addOutstandingBalance(
+          userAccount.id,
+          user_id,
+          rent_amount + serviceCharge,
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Tenancy started',
+            propertyId: property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+        );
 
         // 5. Assign tenant to property
         const propertyTenant = manager.getRepository(PropertyTenant).create({

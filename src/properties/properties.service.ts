@@ -66,6 +66,7 @@ import {
   RenewalPaymentStatus,
 } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 
 @Injectable()
 export class PropertiesService {
@@ -3277,19 +3278,33 @@ export class PropertiesService {
         rentFrequency,
       );
 
-      await queryRunner.manager.save(Rent, {
+      const rent = await queryRunner.manager.save(Rent, {
         tenant_id: data.tenant_id,
         rent_start_date: data.rent_start_date,
         property_id: property.id,
-        amount_paid: data.rental_price,
+        amount_paid: 0,
         rental_price: data.rental_price,
         security_deposit: data.security_deposit,
         service_charge: data.service_charge,
         payment_frequency: rentFrequency,
-        payment_status: RentPaymentStatusEnum.PAID,
+        payment_status: RentPaymentStatusEnum.PENDING,
         rent_status: RentStatusEnum.ACTIVE,
         expiry_date: expiryDate,
       });
+
+      // Record the first period charge in the tenant balance ledger
+      await this.tenantBalancesService.addOutstandingBalance(
+        data.tenant_id,
+        property.owner_id,
+        data.rental_price + (data.service_charge || 0),
+        {
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description: 'Tenancy started',
+          propertyId: property.id,
+          relatedEntityType: 'rent',
+          relatedEntityId: rent.id,
+        },
+      );
 
       await Promise.all([
         queryRunner.manager.save(PropertyTenant, {

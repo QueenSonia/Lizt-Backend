@@ -22,6 +22,7 @@ import { EventsModule } from '../events/events.module';
 import { UtilsModule } from 'src/utils/utils.module';
 import { NotificationModule } from '../notifications/notification.module';
 import { ReceiptsModule } from '../receipts/receipts.module';
+import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { ReceiptsModule } from '../receipts/receipts.module';
     forwardRef(() => NotificationModule),
     UtilsModule,
     forwardRef(() => ReceiptsModule),
+    TenantBalancesModule,
   ],
   controllers: [KYCApplicationController, KYCLinksController],
   providers: [KYCLinksService, KYCApplicationService, TenantAttachmentService],

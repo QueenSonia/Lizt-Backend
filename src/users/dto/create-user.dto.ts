@@ -120,6 +120,11 @@ export class CreateTenantKycDto {
   @Type(() => Number)
   rent_amount: number;
 
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  service_charge?: number;
+
   // -----------------------
   // Employment (if EMPLOYED)
   // -----------------------

@@ -608,6 +608,25 @@ export class WhatsappBotService implements OnModuleInit {
       case RolesEnum.TENANT: {
         console.log('In tenant');
 
+        // Silently ignore tenants with no active property-tenant relationships
+        const tenantAccount = user?.accounts?.find(
+          (acc) => acc.role === RolesEnum.TENANT,
+        );
+        if (tenantAccount) {
+          const activeCount = await this.propertyTenantRepo.count({
+            where: {
+              tenant_id: tenantAccount.id,
+              status: TenantStatusEnum.ACTIVE,
+            },
+          });
+          if (activeCount === 0) {
+            console.log(
+              `🔇 Tenant ${tenantAccount.id} has no active properties — silently ignoring message`,
+            );
+            return;
+          }
+        }
+
         // Convert email to phone number for WhatsApp messaging
         const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
 

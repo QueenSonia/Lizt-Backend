@@ -22,11 +22,11 @@ import { TenantBalancesService } from '../tenant-balances/tenant-balances.servic
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 
 const RENT_REMINDER_SCHEDULE = {
-  monthly: [14],
-  quarterly: [30, 14],
-  'bi-annually': [45, 30, 14],
-  biannually: [45, 30, 14],
-  annually: [60, 30, 14],
+  monthly: [14, 7, 2, 1, 0],
+  quarterly: [30, 14, 7, 2, 1, 0],
+  'bi-annually': [45, 30, 14, 7, 2, 1, 0],
+  biannually: [45, 30, 14, 7, 2, 1, 0],
+  annually: [60, 30, 14, 7, 2, 1, 0],
 };
 
 @Injectable()
@@ -53,7 +53,7 @@ export class RentReminderService {
     try {
       await this.processAutoRenewal();
       await this.processUpcomingReminders();
-      await this.processOwingReminders();
+      await this.processPostExpiryReminders();
       this.logger.log('Completed daily rent reminder check.');
     } catch (error) {
       this.logger.error('Failed to process daily rent reminders', error);
@@ -183,13 +183,11 @@ export class RentReminderService {
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
-    // Collect all valid reminder days across all frequencies
+    // Collect all valid reminder days across all frequencies (builds a set of unique values)
     const allReminderDays = new Set<number>();
     Object.values(RENT_REMINDER_SCHEDULE).forEach((days) => {
       days.forEach((day) => allReminderDays.add(day));
     });
-    // Send reminders at exactly 7 days, 1 day before, and on the due date
-    [7, 1, 0].forEach((d) => allReminderDays.add(d));
 
     const targetDates = Array.from(allReminderDays).map((d) => {
       const date = new Date(today);
@@ -199,6 +197,7 @@ export class RentReminderService {
 
     if (targetDates.length === 0) return;
 
+    // Find all active rents whose expiry_date is in the targetDates list
     const rents = await this.rentRepository
       .createQueryBuilder('rent')
       .leftJoinAndSelect('rent.tenant', 'tenant')
@@ -224,11 +223,7 @@ export class RentReminderService {
         const schedule =
           RENT_REMINDER_SCHEDULE[frequency] || RENT_REMINDER_SCHEDULE.monthly;
 
-        if (
-          !schedule.includes(daysUntilExpiry) &&
-          ![7, 1, 0].includes(daysUntilExpiry)
-        )
-          continue;
+        if (!schedule.includes(daysUntilExpiry)) continue;
 
         await this.sendReminderIfNotSent(rent, daysUntilExpiry);
       } catch (error) {
@@ -241,17 +236,21 @@ export class RentReminderService {
   }
 
   // ---------------------------------------------------------------------------
-  // Owing reminders (after auto-renewal, tenant has unpaid current period)
+  // Post-expiry reminder (1 day after expiry, if still unpaid after auto-renewal)
   // ---------------------------------------------------------------------------
 
   /**
-   * For every active OWING rent, send a daily renewal reminder with payment
-   * link until the tenant pays.
+   * On the day a rent is auto-renewed (rent_start_date = today, payment_status = OWING),
+   * send one final reminder that the previous period went unpaid.
    */
-  private async processOwingReminders() {
-    this.logger.log('Processing owing rent reminders...');
+  private async processPostExpiryReminders() {
+    this.logger.log('Processing post-expiry rent reminders...');
 
-    const owingRents = await this.rentRepository
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().split('T')[0];
+
+    const rents = await this.rentRepository
       .createQueryBuilder('rent')
       .leftJoinAndSelect('rent.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
@@ -260,118 +259,23 @@ export class RentReminderService {
       .andWhere('rent.payment_status = :paymentStatus', {
         paymentStatus: RentPaymentStatusEnum.OWING,
       })
+      .andWhere('DATE(rent.rent_start_date) = :today', { today: todayStr })
       .getMany();
 
-    this.logger.log(`Found ${owingRents.length} owing rents to remind.`);
+    this.logger.log(
+      `Found ${rents.length} newly-renewed owing rents to remind.`,
+    );
 
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-
-    for (const rent of owingRents) {
+    for (const rent of rents) {
       try {
-        if (!rent.tenant?.user?.phone_number || !rent.property?.name) continue;
-
-        const activeTenant = await this.propertyTenantRepository.findOne({
-          where: {
-            property_id: rent.property_id,
-            tenant_id: rent.tenant_id,
-            status: TenantStatusEnum.ACTIVE,
-          },
-        });
-
-        if (!activeTenant) {
-          this.logger.debug(
-            `Skipping owing reminder for rent ${rent.id}: tenant no longer attached.`,
-          );
-          continue;
-        }
-
-        const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
-        if (!renewalInvoice) continue;
-
-        const rentStart = new Date(rent.rent_start_date);
-        const daysOverdue = Math.floor(
-          (today.getTime() - rentStart.getTime()) / (1000 * 60 * 60 * 24),
-        );
-
-        await this.sendOwingRenewalReminder(rent, daysOverdue, renewalInvoice);
+        await this.sendReminderIfNotSent(rent, -1);
       } catch (error) {
         this.logger.error(
-          `Failed to process owing reminder for rent ${rent.id}`,
+          `Failed to process post-expiry reminder for rent ${rent.id}`,
           error,
         );
       }
     }
-  }
-
-  private async sendOwingRenewalReminder(
-    rent: Rent,
-    daysOwing: number,
-    renewalInvoice: RenewalInvoice,
-  ) {
-    const templateName = 'sendRentReminderWithRenewalTemplate';
-
-    const alreadySent =
-      await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
-        rent.id,
-        templateName,
-        -daysOwing,
-      );
-
-    if (alreadySent) {
-      this.logger.debug(
-        `Owing reminder already sent today for rent ${rent.id}.`,
-      );
-      return;
-    }
-
-    const firstOwingRent = await this.rentRepository.findOne({
-      where: {
-        tenant_id: rent.tenant_id,
-        property_id: rent.property_id,
-        payment_status: RentPaymentStatusEnum.OWING,
-      },
-      order: { rent_start_date: 'ASC' },
-    });
-    const overdueFromDate =
-      firstOwingRent?.rent_start_date ?? rent.rent_start_date;
-    const expiryDateStr = new Date(overdueFromDate).toLocaleDateString('en-GB');
-
-    const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
-    const amountToPay = baseAmount + (rent.service_charge || 0);
-    const formattedAmount = amountToPay.toLocaleString('en-NG', {
-      style: 'currency',
-      currency: 'NGN',
-    });
-
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-
-    await this.whatsAppNotificationLogService.queue(
-      templateName,
-      {
-        phone_number: rent.tenant.user.phone_number,
-        tenant_name: rent.tenant.user.first_name,
-        property_name: rent.property.name,
-        rent_amount: formattedAmount,
-        expiry_date: expiryDateStr,
-        renewal_token: renewalInvoice.token,
-        frontend_url: frontendUrl,
-        payment_frequency: rent.payment_frequency || 'Monthly',
-        days_before_expiry: -daysOwing,
-      },
-      rent.id,
-    );
-
-    this.logger.log(
-      `Queued owing renewal reminder for rent ${rent.id} (${daysOwing} days owing).`,
-    );
-
-    await this.logReminderSent(
-      rent,
-      formattedAmount,
-      expiryDateStr,
-      -daysOwing,
-    );
   }
 
   // ---------------------------------------------------------------------------

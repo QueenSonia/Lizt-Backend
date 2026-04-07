@@ -240,15 +240,19 @@ export class RentReminderService {
   // ---------------------------------------------------------------------------
 
   /**
-   * On the day a rent is auto-renewed (rent_start_date = today, payment_status = OWING),
-   * send one final reminder that the previous period went unpaid.
+   * Sends the overdue reminder on day 1 and day 7 after auto-renewal,
+   * if the tenant still hasn't paid (payment_status = OWING).
    */
   private async processPostExpiryReminders() {
     this.logger.log('Processing post-expiry rent reminders...');
 
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
+
     const todayStr = today.toISOString().split('T')[0];
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setUTCDate(today.getUTCDate() - 7);
+    const sevenDaysAgoStr = sevenDaysAgo.toISOString().split('T')[0];
 
     const rents = await this.rentRepository
       .createQueryBuilder('rent')
@@ -259,7 +263,9 @@ export class RentReminderService {
       .andWhere('rent.payment_status = :paymentStatus', {
         paymentStatus: RentPaymentStatusEnum.OWING,
       })
-      .andWhere('DATE(rent.rent_start_date) = :today', { today: todayStr })
+      .andWhere('DATE(rent.rent_start_date) IN (:...startDates)', {
+        startDates: [todayStr, sevenDaysAgoStr],
+      })
       .getMany();
 
     this.logger.log(
@@ -268,7 +274,12 @@ export class RentReminderService {
 
     for (const rent of rents) {
       try {
-        await this.sendReminderIfNotSent(rent, -1);
+        const rentStart = new Date(rent.rent_start_date);
+        rentStart.setUTCHours(0, 0, 0, 0);
+        const daysAfterRenewal = Math.floor(
+          (today.getTime() - rentStart.getTime()) / (1000 * 60 * 60 * 24),
+        );
+        await this.sendReminderIfNotSent(rent, -daysAfterRenewal);
       } catch (error) {
         this.logger.error(
           `Failed to process post-expiry reminder for rent ${rent.id}`,
@@ -287,6 +298,12 @@ export class RentReminderService {
       this.logger.warn(
         `Skipping rent reminder for rent ${rent.id}: missing tenant phone or property name`,
       );
+      return;
+    }
+
+    // Overdue: rent was auto-renewed and previous period is still unpaid
+    if (daysUntilExpiry < 0) {
+      await this.sendOverdueReminder(rent, daysUntilExpiry);
       return;
     }
 
@@ -395,6 +412,66 @@ export class RentReminderService {
     this.logger.log(
       `Queued rent reminder for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
     );
+  }
+
+  private async sendOverdueReminder(rent: Rent, daysBefore: number) {
+    const templateName = 'rent_overdue_with_renewal';
+
+    const alreadySent =
+      await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
+        rent.id,
+        templateName,
+        daysBefore,
+      );
+
+    if (alreadySent) {
+      this.logger.debug(
+        `Overdue reminder already sent for rent ${rent.id} at ${daysBefore} days.`,
+      );
+      return;
+    }
+
+    const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
+    if (!renewalInvoice) {
+      this.logger.warn(
+        `Skipping overdue reminder for rent ${rent.id}: no renewal invoice.`,
+      );
+      return;
+    }
+
+    const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
+    const amountToPay = baseAmount + (rent.service_charge || 0);
+    const formattedAmount = amountToPay.toLocaleString('en-NG', {
+      style: 'currency',
+      currency: 'NGN',
+    });
+
+    const startDateStr = new Date(rent.rent_start_date).toLocaleDateString(
+      'en-GB',
+    );
+    const endDateStr = new Date(rent.expiry_date).toLocaleDateString('en-GB');
+    const period = `${startDateStr} - ${endDateStr}`;
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+    await this.whatsAppNotificationLogService.queue(
+      templateName,
+      {
+        phone_number: rent.tenant.user.phone_number,
+        tenant_name: rent.tenant.user.first_name,
+        rent_amount: formattedAmount,
+        period,
+        property_name: rent.property.name,
+        renewal_token: renewalInvoice.token,
+        frontend_url: frontendUrl,
+        days_before_expiry: daysBefore,
+      },
+      rent.id,
+    );
+
+    this.logger.log(`Queued overdue reminder for rent ${rent.id}.`);
+
+    await this.logReminderSent(rent, formattedAmount, period, daysBefore);
   }
 
   // ---------------------------------------------------------------------------

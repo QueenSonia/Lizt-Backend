@@ -404,6 +404,19 @@ export interface RentOverdueParams {
 }
 
 /**
+ * Parameters for rent overdue reminder with renewal link to tenant
+ */
+export interface RentOverdueWithRenewalParams {
+  phone_number: string;
+  tenant_name: string;
+  rent_amount: string;
+  period: string;
+  property_name: string;
+  renewal_token: string;
+  frontend_url: string;
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -2574,6 +2587,57 @@ export class TemplateSenderService {
                 type: 'text',
                 text: rent_amount,
               },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: renewal_token,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send rent overdue reminder with renewal link to tenant via WhatsApp.
+   * Used the day after a rent auto-renews but the previous period was unpaid.
+   * Template: rent_overdue_with_renewal
+   */
+  async rent_overdue_with_renewal({
+    phone_number,
+    tenant_name,
+    rent_amount,
+    period,
+    property_name,
+    renewal_token,
+    frontend_url: _frontend_url,
+  }: RentOverdueWithRenewalParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'rent_overdue_with_renewal',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: rent_amount },
+              { type: 'text', text: period },
+              { type: 'text', text: property_name },
             ],
           },
           {

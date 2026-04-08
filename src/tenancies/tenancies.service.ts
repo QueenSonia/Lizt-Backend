@@ -376,18 +376,14 @@ export class TenanciesService {
     const otherCharges = 0;
 
     const landlordId = propertyTenant.property.owner_id;
-    const {
-      outstanding_balance: outstandingBalance,
-      credit_balance: creditBalance,
-    } = await this.tenantBalancesService.getBalances(
+    const walletBalance = await this.tenantBalancesService.getBalance(
       propertyTenant.tenant_id,
       landlordId,
     );
 
-    // Apply credit balance to reduce total amount
-    const subtotal =
-      rentAmount + serviceCharge + legalFee + otherCharges + outstandingBalance;
-    const totalAmount = Math.max(0, subtotal - creditBalance);
+    // total = new charges - wallet (credit reduces total; outstanding increases it)
+    const currentCharges = rentAmount + serviceCharge + legalFee + otherCharges;
+    const totalAmount = Math.max(0, currentCharges - walletBalance);
 
     const isSilent = body?.silent === true;
 
@@ -413,7 +409,9 @@ export class TenanciesService {
       existingInvoice.legal_fee = legalFee;
       existingInvoice.other_charges = otherCharges;
       existingInvoice.total_amount = totalAmount;
-      existingInvoice.outstanding_balance = outstandingBalance;
+      existingInvoice.outstanding_balance =
+        walletBalance < 0 ? -walletBalance : 0;
+      existingInvoice.wallet_balance = walletBalance;
       existingInvoice.payment_frequency = paymentFrequency;
       // Upgrade draft → landlord when the landlord is actually sending the notification
       existingInvoice.token_type = isSilent ? 'draft' : 'landlord';
@@ -434,7 +432,8 @@ export class TenanciesService {
         legal_fee: legalFee,
         other_charges: otherCharges,
         total_amount: totalAmount,
-        outstanding_balance: outstandingBalance,
+        outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
+        wallet_balance: walletBalance,
         payment_status: RenewalPaymentStatus.UNPAID,
         payment_frequency: paymentFrequency,
         token_type: isSilent ? 'draft' : 'landlord',
@@ -488,29 +487,31 @@ export class TenanciesService {
     // 12. Queue WhatsApp notification asynchronously (fire and forget)
     // Skip if silent flag is set (landlord is pre-setting terms without notifying tenant yet)
     if (!body?.silent) {
-      setImmediate(async () => {
-        try {
-          const tenantPhone = this.utilService.normalizePhoneNumber(
-            propertyTenant.tenant.user.phone_number,
-          );
+      setImmediate(() => {
+        void (async () => {
+          try {
+            const tenantPhone = this.utilService.normalizePhoneNumber(
+              propertyTenant.tenant.user.phone_number,
+            );
 
-          await this.whatsappNotificationLog.queue('sendRenewalLink', {
-            phone_number: tenantPhone,
-            tenant_name: tenantName,
-            renewal_token: token,
-            frontend_url: frontendUrl,
-            landlord_id: userId,
-            recipient_name: tenantName,
-            property_id: propertyTenant.property_id,
-          });
+            await this.whatsappNotificationLog.queue('sendRenewalLink', {
+              phone_number: tenantPhone,
+              tenant_name: tenantName,
+              renewal_token: token,
+              frontend_url: frontendUrl,
+              landlord_id: userId,
+              recipient_name: tenantName,
+              property_id: propertyTenant.property_id,
+            });
 
-          console.log(`Renewal link queued for ${tenantPhone}: ${link}`);
-        } catch (error) {
-          console.error(
-            'Error queueing renewal link WhatsApp notification:',
-            error,
-          );
-        }
+            console.log(`Renewal link queued for ${tenantPhone}: ${link}`);
+          } catch (error) {
+            console.error(
+              'Error queueing renewal link WhatsApp notification:',
+              error,
+            );
+          }
+        })();
       });
     }
 
@@ -523,7 +524,11 @@ export class TenanciesService {
   async updateActiveTenancy(
     propertyTenantId: string,
     userId: string,
-    dto: { rentAmount: number; serviceCharge?: number; paymentFrequency: string },
+    dto: {
+      rentAmount: number;
+      serviceCharge?: number;
+      paymentFrequency: string;
+    },
   ): Promise<{ success: boolean }> {
     const propertyTenant = await this.propertyTenantRepository.findOne({
       where: { id: propertyTenantId },
@@ -550,7 +555,9 @@ export class TenanciesService {
     });
 
     if (!activeRent) {
-      throw new NotFoundException('No active rent record found for this tenancy');
+      throw new NotFoundException(
+        'No active rent record found for this tenancy',
+      );
     }
 
     activeRent.rental_price = dto.rentAmount;
@@ -569,7 +576,11 @@ export class TenanciesService {
   async updateRenewalInvoice(
     invoiceId: string,
     userId: string,
-    dto: { rentAmount: number; serviceCharge?: number; paymentFrequency: string },
+    dto: {
+      rentAmount: number;
+      serviceCharge?: number;
+      paymentFrequency: string;
+    },
   ): Promise<{ success: boolean; invoiceId: string; totalAmount: number }> {
     const invoice = await this.renewalInvoiceRepository.findOne({
       where: { id: invoiceId },
@@ -588,7 +599,9 @@ export class TenanciesService {
     }
 
     if (invoice.payment_status !== RenewalPaymentStatus.UNPAID) {
-      throw new BadRequestException('Cannot edit an invoice that has already been paid');
+      throw new BadRequestException(
+        'Cannot edit an invoice that has already been paid',
+      );
     }
 
     // Recalculate end_date from invoice start_date + new frequency
@@ -612,18 +625,21 @@ export class TenanciesService {
     endDate.setDate(endDate.getDate() - 1);
 
     const landlordId = invoice.property.owner_id;
-    const { outstanding_balance: outstandingBalance, credit_balance: creditBalance } =
-      await this.tenantBalancesService.getBalances(invoice.tenant_id, landlordId);
+    const walletBalance = await this.tenantBalancesService.getBalance(
+      invoice.tenant_id,
+      landlordId,
+    );
 
     const rentAmount = dto.rentAmount;
     const serviceCharge = dto.serviceCharge ?? 0;
-    const subtotal = rentAmount + serviceCharge + outstandingBalance;
-    const totalAmount = Math.max(0, subtotal - creditBalance);
+    const currentCharges = rentAmount + serviceCharge;
+    const totalAmount = Math.max(0, currentCharges - walletBalance);
 
     invoice.rent_amount = rentAmount;
     invoice.service_charge = serviceCharge;
     invoice.total_amount = totalAmount;
-    invoice.outstanding_balance = outstandingBalance;
+    invoice.outstanding_balance = walletBalance < 0 ? -walletBalance : 0;
+    invoice.wallet_balance = walletBalance;
     invoice.payment_frequency = dto.paymentFrequency;
     invoice.end_date = endDate;
 
@@ -699,9 +715,7 @@ export class TenanciesService {
     const tenantUser = invoice.tenant.user;
     const tenantKyc = tenantUser.tenant_kycs?.[0];
     const tenantEmail =
-      tenantKyc?.email ??
-      invoice.tenant.email ??
-      tenantUser.email;
+      tenantKyc?.email ?? invoice.tenant.email ?? tenantUser.email;
 
     return {
       id: invoice.id,
@@ -725,6 +739,7 @@ export class TenanciesService {
       outstandingBalance: parseFloat(
         (invoice.outstanding_balance || 0).toString(),
       ),
+      walletBalance: parseFloat((invoice.wallet_balance ?? 0).toString()),
       tokenType: invoice.token_type || 'landlord',
       paymentStatus: invoice.payment_status,
       pendingApproval:
@@ -860,9 +875,7 @@ export class TenanciesService {
     const tenantUser = invoice.tenant.user;
     const tenantKyc = tenantUser.tenant_kycs?.[0];
     const tenantEmail =
-      tenantKyc?.email ??
-      invoice.tenant.email ??
-      tenantUser.email;
+      tenantKyc?.email ?? invoice.tenant.email ?? tenantUser.email;
 
     return {
       receiptNumber: invoice.receipt_number,
@@ -887,6 +900,17 @@ export class TenanciesService {
         otherCharges: parseFloat(invoice.other_charges.toString()) || undefined,
       },
       totalAmount: parseFloat(invoice.total_amount.toString()),
+      /**
+       * Signed wallet balance at invoice creation.
+       * positive = credit was applied (reduced the total)
+       * negative = previous outstanding was added (increased the total)
+       */
+      walletBalance: parseFloat((invoice.wallet_balance ?? 0).toString()),
+      /** Actual amount paid by the tenant (may differ from totalAmount for partial payments) */
+      amountPaid:
+        invoice.amount_paid !== null
+          ? parseFloat(invoice.amount_paid.toString())
+          : null,
 
       // Payment Details
       paymentDate: formatDateTime(invoice.paid_at || new Date()),
@@ -936,22 +960,18 @@ export class TenanciesService {
       );
     }
 
-    // Determine renewal vs OB-only payment
-    const outstandingBalance = parseFloat(
-      (invoice.outstanding_balance || 0).toString(),
-    );
-    const currentCharges =
-      parseFloat(invoice.total_amount.toString()) - outstandingBalance;
+    // Calculate total invoice amount for renewal logic
+    const totalInvoiceAmount = parseFloat(invoice.total_amount.toString());
 
     // Tenant-generated invoices never trigger renewal — only landlords control tenancy renewal
+    // For custom payments, always trigger renewal if amount >= total invoice amount
     const shouldRenew =
       invoice.token_type !== 'tenant' &&
-      (paymentOption === 'current-charges' ||
-        paymentOption === 'full' ||
-        (paymentOption === 'custom' && amount >= currentCharges) ||
+      (paymentOption === 'full' ||
+        (paymentOption === 'custom' && amount >= totalInvoiceAmount) ||
         !paymentOption); // backwards compat: no option = old flow = always renew
 
-    // Update invoice payment status
+    // Update invoice payment status - no advance payment logic
     invoice.payment_status = shouldRenew
       ? RenewalPaymentStatus.PAID
       : RenewalPaymentStatus.PARTIAL;
@@ -972,19 +992,6 @@ export class TenanciesService {
 
     const landlordId = invoice.property.owner_id;
     const tenantId = invoice.tenant_id;
-
-    // If credit was applied when the invoice was created, consume it now.
-    // credit used = (rent + sc + OB) - total_amount on invoice
-    const invoiceSubtotal =
-      parseFloat(invoice.rent_amount.toString()) +
-      parseFloat((invoice.service_charge || 0).toString()) +
-      parseFloat((invoice.legal_fee || 0).toString()) +
-      parseFloat((invoice.other_charges || 0).toString()) +
-      outstandingBalance;
-    const creditUsed = Math.max(
-      0,
-      invoiceSubtotal - parseFloat(invoice.total_amount.toString()),
-    );
 
     if (shouldRenew && activeRent) {
       const isOwingRent =
@@ -1032,72 +1039,24 @@ export class TenanciesService {
       }
     }
 
-    // Update TenantBalance based on payment option
-    if (paymentOption === 'outstanding' || paymentOption === 'full') {
-      await this.tenantBalancesService.clearOutstandingBalance(
-        tenantId,
-        landlordId,
-        {
-          type: TenantBalanceLedgerType.OB_PAYMENT,
-          description: `Outstanding balance cleared. Payment: ₦${amount.toLocaleString()}, option: ${paymentOption ?? 'full'}`,
-          propertyId: invoice.property_id,
-          relatedEntityType: 'renewal_invoice',
-          relatedEntityId: invoice.id,
-        },
-      );
-    } else if (paymentOption === 'custom') {
-      if (amount >= currentCharges) {
-        const excess = amount - currentCharges;
-        if (excess > 0) {
-          await this.tenantBalancesService.subtractOutstandingBalance(
-            tenantId,
-            landlordId,
-            excess,
-            {
-              type: TenantBalanceLedgerType.OB_PAYMENT,
-              description: `Custom payment — ₦${excess.toLocaleString()} excess applied to outstanding balance`,
-              propertyId: invoice.property_id,
-              relatedEntityType: 'renewal_invoice',
-              relatedEntityId: invoice.id,
-            },
-          );
-        }
-      } else {
-        await this.tenantBalancesService.subtractOutstandingBalance(
-          tenantId,
-          landlordId,
-          amount,
-          {
-            type: TenantBalanceLedgerType.OB_PAYMENT,
-            description: `Custom partial payment — ₦${amount.toLocaleString()} applied to outstanding balance`,
-            propertyId: invoice.property_id,
-            relatedEntityType: 'renewal_invoice',
-            relatedEntityId: invoice.id,
-          },
-        );
-      }
-    }
-    // 'current-charges' — OB unchanged
+    // Single wallet entry: payment increases balance (positive change).
+    // All payments now go to wallet (no current-charges option)
+    const description = `Renewal payment of ₦${amount.toLocaleString()} received`;
 
-    // Consume any credit balance that was used to reduce the invoice amount
-    if (creditUsed > 0) {
-      await this.tenantBalancesService.subtractCreditBalance(
-        tenantId,
-        landlordId,
-        creditUsed,
-        {
-          type: TenantBalanceLedgerType.CREDIT_APPLIED,
-          description: `Credit of ₦${creditUsed.toLocaleString()} applied to renewal invoice`,
-          propertyId: invoice.property_id,
-          relatedEntityType: 'renewal_invoice',
-          relatedEntityId: invoice.id,
-        },
-      );
-    }
+    await this.tenantBalancesService.applyChange(tenantId, landlordId, amount, {
+      type: TenantBalanceLedgerType.OB_PAYMENT,
+      description,
+      propertyId: invoice.property_id,
+      relatedEntityType: 'renewal_invoice',
+      relatedEntityId: invoice.id,
+    });
 
-    // Recalculate newOutstandingBalance for notifications (sourced from TenantBalance)
-    const { outstanding_balance: newOutstandingBalance } =
-      await this.tenantBalancesService.getBalances(tenantId, landlordId);
+    // Recalculate balance for notifications (negative = still owes)
+    const newWalletBalance = await this.tenantBalancesService.getBalance(
+      tenantId,
+      landlordId,
+    );
+    const newOutstandingBalance = newWalletBalance < 0 ? -newWalletBalance : 0;
 
     // Common data for notifications
     const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
@@ -1182,25 +1141,29 @@ export class TenanciesService {
       // Non-blocking - continue even if queueing fails
     }
 
-    // Property history entries
+    // Property history entries - no advance payment logic
     if (shouldRenew) {
+      const historyDescription = `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`;
+
       const propertyHistoryEntry = this.propertyHistoryRepository.create({
         property_id: invoice.property_id,
         tenant_id: invoice.tenant_id,
         event_type: 'renewal_payment_received',
-        event_description: `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`,
-        owner_comment: `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`,
+        event_description: historyDescription,
+        owner_comment: historyDescription,
         related_entity_id: invoice.id,
         related_entity_type: 'renewal_invoice',
       });
       await this.propertyHistoryRepository.save(propertyHistoryEntry);
 
+      const tenantHistoryDescription = `Payment made for tenancy renewal for property ${propertyName}. Amount: ₦${amount.toLocaleString()}`;
+
       const tenantHistoryEntry = this.propertyHistoryRepository.create({
         property_id: invoice.property_id,
         tenant_id: invoice.tenant_id,
         event_type: 'renewal_payment_made',
-        event_description: `Payment made for tenancy renewal for property ${propertyName}. Amount: ₦${amount.toLocaleString()}`,
-        tenant_comment: `Payment made for tenancy renewal for property ${propertyName}`,
+        event_description: tenantHistoryDescription,
+        tenant_comment: tenantHistoryDescription,
         related_entity_id: invoice.id,
         related_entity_type: 'renewal_invoice',
       });

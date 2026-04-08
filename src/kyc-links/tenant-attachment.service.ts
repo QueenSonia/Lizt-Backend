@@ -181,10 +181,10 @@ export class TenantAttachmentService {
       await queryRunner.manager.save(rent);
 
       // Record the first period charge in the tenant balance ledger
-      await this.tenantBalancesService.addOutstandingBalance(
+      await this.tenantBalancesService.applyChange(
         tenantAccount.id,
         landlordId,
-        tenancyDetails.rentAmount + (tenancyDetails.serviceCharge || 0),
+        -(tenancyDetails.rentAmount + (tenancyDetails.serviceCharge || 0)),
         {
           type: TenantBalanceLedgerType.INITIAL_BALANCE,
           description: 'Tenancy started',
@@ -510,10 +510,10 @@ export class TenantAttachmentService {
     const rentAndServiceCharge =
       Number(offerLetter.rent_amount) + Number(offerLetter.service_charge || 0);
 
-    await this.tenantBalancesService.addOutstandingBalance(
+    await this.tenantBalancesService.applyChange(
       tenantAccount.id,
       offerLetter.landlord_id,
-      rentAndServiceCharge,
+      -rentAndServiceCharge,
       {
         type: TenantBalanceLedgerType.INITIAL_BALANCE,
         description: 'Tenancy started',
@@ -523,11 +523,8 @@ export class TenantAttachmentService {
       },
     );
 
-    // Record the Paystack payment against the charge — this triggers
-    // only after 100% payment so the full rent+service_charge was paid.
-    // Caution deposit, legal fee, agency fee are excluded — they are not
-    // outstanding balance items.
-    await this.tenantBalancesService.subtractOutstandingBalance(
+    // Record the Paystack payment — full rent+service_charge was paid via offer letter.
+    await this.tenantBalancesService.applyChange(
       tenantAccount.id,
       offerLetter.landlord_id,
       rentAndServiceCharge,

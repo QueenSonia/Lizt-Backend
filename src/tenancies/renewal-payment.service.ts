@@ -86,14 +86,16 @@ export class RenewalPaymentService {
       throw new ConflictException('This invoice has already been paid');
     }
 
-    // Validate amount is positive and does not exceed invoice total
+    // Validate amount is positive and for custom payments, must be >= invoice total
     const invoiceTotal = Number(invoice.total_amount);
     if (amount <= 0) {
       throw new BadRequestException('Payment amount must be greater than 0');
     }
-    if (amount - invoiceTotal > 0.01) {
+
+    // For custom payments, amount must be >= total invoice amount
+    if (paymentOption === 'custom' && amount < invoiceTotal) {
       throw new BadRequestException(
-        `Payment amount (₦${amount}) exceeds invoice total (₦${invoiceTotal})`,
+        `Custom payment amount (₦${amount}) must be at least the total invoice amount (₦${invoiceTotal})`,
       );
     }
 
@@ -363,10 +365,13 @@ export class RenewalPaymentService {
     });
 
     if (!invoice) {
-      this.logger.error('Renewal invoice not found for rejected bank transfer', {
-        renewalInvoiceId,
-        reference,
-      });
+      this.logger.error(
+        'Renewal invoice not found for rejected bank transfer',
+        {
+          renewalInvoiceId,
+          reference,
+        },
+      );
       return;
     }
 

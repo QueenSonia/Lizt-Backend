@@ -1380,12 +1380,12 @@ export class PropertiesService {
             }
           : null;
 
-      // Outstanding balance: sourced from TenantBalance (tenant-level, per landlord)
-      const { outstanding_balance: totalOutstandingBalance } =
-        await this.tenantBalancesService.getBalances(
-          activeTenantRelation.tenant.id,
-          property.owner_id,
-        );
+      // Outstanding balance: negative wallet = owes money
+      const walletBal = await this.tenantBalancesService.getBalance(
+        activeTenantRelation.tenant.id,
+        property.owner_id,
+      );
+      const totalOutstandingBalance = walletBal < 0 ? -walletBal : 0;
 
       currentTenant = {
         id: activeTenantRelation.tenant.id,
@@ -3293,10 +3293,10 @@ export class PropertiesService {
       });
 
       // Record the first period charge in the tenant balance ledger
-      await this.tenantBalancesService.addOutstandingBalance(
+      await this.tenantBalancesService.applyChange(
         data.tenant_id,
         property.owner_id,
-        data.rental_price + (data.service_charge || 0),
+        -(data.rental_price + (data.service_charge || 0)),
         {
           type: TenantBalanceLedgerType.INITIAL_BALANCE,
           description: 'Tenancy started',

@@ -65,6 +65,14 @@ export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   outstanding_balance: number;
 
+  /**
+   * Signed wallet balance at the time this invoice was created.
+   * positive = tenant had credit (reduced total)
+   * negative = tenant had outstanding debt (increased total)
+   */
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  wallet_balance: number;
+
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   amount_paid: number | null;
 

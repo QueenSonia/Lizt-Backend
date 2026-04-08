@@ -123,7 +123,7 @@ export class RentReminderService {
       currentRent.rent_status = RentStatusEnum.INACTIVE;
       await this.rentRepository.save(currentRent);
 
-      // If the expiring period was unpaid, record it as outstanding balance
+      // If the expiring period was unpaid, charge it to the wallet now
       const wasUnpaid =
         currentRent.payment_status !== RentPaymentStatusEnum.PAID;
 
@@ -131,13 +131,13 @@ export class RentReminderService {
         const unpaidAmount =
           (currentRent.rental_price || 0) + (currentRent.service_charge || 0);
         if (unpaidAmount > 0) {
-          await this.tenantBalancesService.addOutstandingBalance(
+          await this.tenantBalancesService.applyChange(
             currentRent.tenant_id,
             currentRent.property.owner_id,
-            unpaidAmount,
+            -unpaidAmount,
             {
               type: TenantBalanceLedgerType.AUTO_RENEWAL,
-              description: `Rent auto-renewed: unpaid period ${currentExpiry.toLocaleDateString('en-GB')} – ${currentExpiry.toLocaleDateString('en-GB')} added to outstanding balance`,
+              description: `Unpaid period charged: ${currentExpiry.toLocaleDateString('en-GB')}`,
               propertyId: currentRent.property_id,
               relatedEntityType: 'rent',
               relatedEntityId: currentRent.id,
@@ -146,7 +146,31 @@ export class RentReminderService {
         }
       }
 
-      // Create the new period as ACTIVE/OWING
+      // Apply the new period charge and check if wallet covers it
+      const newPeriodAmount =
+        (currentRent.rental_price || 0) + (currentRent.service_charge || 0);
+
+      await this.tenantBalancesService.applyChange(
+        currentRent.tenant_id,
+        currentRent.property.owner_id,
+        -newPeriodAmount,
+        {
+          type: TenantBalanceLedgerType.AUTO_RENEWAL,
+          description: `New period charged: ${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]}`,
+          propertyId: currentRent.property_id,
+          relatedEntityType: 'rent',
+          // id not yet known; will be set after save
+        },
+      );
+
+      const walletAfterCharge = await this.tenantBalancesService.getBalance(
+        currentRent.tenant_id,
+        currentRent.property.owner_id,
+      );
+
+      // Wallet covers the new period (balance still >= 0) → mark paid silently
+      const coveredByWallet = walletAfterCharge >= 0;
+
       const newRent = this.rentRepository.create({
         property_id: currentRent.property_id,
         tenant_id: currentRent.tenant_id,
@@ -156,16 +180,18 @@ export class RentReminderService {
         security_deposit: currentRent.security_deposit,
         service_charge: currentRent.service_charge,
         payment_frequency: currentRent.payment_frequency,
-        payment_status: RentPaymentStatusEnum.OWING,
+        payment_status: coveredByWallet
+          ? RentPaymentStatusEnum.PAID
+          : RentPaymentStatusEnum.OWING,
         rent_status: RentStatusEnum.ACTIVE,
-        amount_paid: 0,
+        amount_paid: coveredByWallet ? newPeriodAmount : 0,
       });
       await this.rentRepository.save(newRent);
 
       this.logger.log(
         `Auto-renewed rent ${currentRent.id} → new rent ${newRent.id} ` +
-          `(${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]})` +
-          (wasUnpaid ? ', OB updated' : ''),
+          `(${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]}) ` +
+          (coveredByWallet ? 'PAID by wallet' : 'OWING'),
       );
 
       currentRent = newRent;
@@ -507,13 +533,13 @@ export class RentReminderService {
       const serviceCharge = rent.service_charge || 0;
       const landlordId = rent.property.owner_id;
 
-      const outstandingBalance =
-        await this.tenantBalancesService.getOutstandingBalance(
-          rent.tenant_id,
-          landlordId,
-        );
-
-      const totalAmount = rentAmount + serviceCharge + outstandingBalance;
+      const walletBalance = await this.tenantBalancesService.getBalance(
+        rent.tenant_id,
+        landlordId,
+      );
+      // outstanding_balance kept for invoice compat (positive = owed)
+      const outstandingBalance = walletBalance < 0 ? -walletBalance : 0;
+      const totalAmount = Math.max(0, rentAmount + serviceCharge - walletBalance);
       const paymentFrequency = rent.payment_frequency || 'monthly';
 
       // Determine invoice period dates
@@ -546,10 +572,8 @@ export class RentReminderService {
 
       if (existing) {
         existing.outstanding_balance = outstandingBalance;
-        existing.total_amount =
-          parseFloat(existing.rent_amount.toString()) +
-          parseFloat(existing.service_charge.toString()) +
-          outstandingBalance;
+        existing.wallet_balance = walletBalance;
+        existing.total_amount = totalAmount;
         existing.start_date = startDate;
         existing.end_date = endDate;
         await this.renewalInvoiceRepository.save(existing);
@@ -570,6 +594,7 @@ export class RentReminderService {
         legal_fee: 0,
         other_charges: 0,
         outstanding_balance: outstandingBalance,
+        wallet_balance: walletBalance,
         total_amount: totalAmount,
         payment_status: RenewalPaymentStatus.UNPAID,
         payment_frequency: paymentFrequency,

@@ -11,11 +11,10 @@ export class InitializePaymentDto {
   email: string;
 
   @ApiProperty({
-    description:
-      'Payment option selected by tenant (only when outstanding balance exists)',
+    description: 'Payment option selected by tenant',
     example: 'full',
     required: false,
-    enum: ['current-charges', 'outstanding', 'full', 'custom'],
+    enum: ['full', 'custom'],
   })
   @IsOptional()
   @IsString()
@@ -23,7 +22,7 @@ export class InitializePaymentDto {
 
   @ApiProperty({
     description:
-      'The selected payment amount (only when outstanding balance exists)',
+      'The selected payment amount (must be >= total invoice amount for custom payments)',
     example: 550000,
     required: false,
   })

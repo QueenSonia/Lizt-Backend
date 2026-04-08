@@ -6,26 +6,28 @@ import { Account } from 'src/users/entities/account.entity';
 @Unique(['tenant_id', 'landlord_id'])
 export class TenantBalance extends BaseEntity {
   @Column({ nullable: false, type: 'uuid' })
-  tenant_id: string;
+  tenant_id!: string;
 
   @Column({ nullable: false, type: 'uuid' })
-  landlord_id: string;
+  landlord_id!: string;
 
+  /**
+   * Unified signed wallet balance.
+   * positive = tenant has credit (overpaid)
+   * negative = tenant owes (outstanding)
+   */
   @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
-  outstanding_balance: number;
-
-  @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
-  credit_balance: number;
+  balance!: number;
 
   /** Optional reason for an initial balance set at onboarding. */
   @Column({ nullable: true, type: 'text' })
-  notes: string | null;
+  notes!: string | null;
 
   @ManyToOne(() => Account, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Account;
+  tenant!: Account;
 
   @ManyToOne(() => Account, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'landlord_id', referencedColumnName: 'id' })
-  landlord: Account;
+  landlord!: Account;
 }

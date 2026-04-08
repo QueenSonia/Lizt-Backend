@@ -308,10 +308,10 @@ export class TenantManagementService {
         await manager.getRepository(Rent).save(rent);
 
         // Record the first period charge in the tenant balance ledger
-        await this.tenantBalancesService.addOutstandingBalance(
+        await this.tenantBalancesService.applyChange(
           userAccount.id,
           user_id,
-          rental_price + (service_charge || 0),
+          -(rental_price + (service_charge || 0)),
           {
             type: TenantBalanceLedgerType.INITIAL_BALANCE,
             description: 'Tenancy started',
@@ -490,10 +490,10 @@ export class TenantManagementService {
         await manager.getRepository(Rent).save(rent);
 
         // Record the first period charge in the tenant balance ledger
-        await this.tenantBalancesService.addOutstandingBalance(
+        await this.tenantBalancesService.applyChange(
           tenantId,
           landlordId,
-          rentAmount + (serviceCharge || 0),
+          -(rentAmount + (serviceCharge || 0)),
           {
             type: TenantBalanceLedgerType.INITIAL_BALANCE,
             description: 'Tenancy started',
@@ -830,10 +830,10 @@ export class TenantManagementService {
         await manager.getRepository(Rent).save(rent);
 
         // Record the first period charge in the tenant balance ledger
-        await this.tenantBalancesService.addOutstandingBalance(
+        await this.tenantBalancesService.applyChange(
           userAccount.id,
           user_id,
-          rent_amount + serviceCharge,
+          -(rent_amount + serviceCharge),
           {
             type: TenantBalanceLedgerType.INITIAL_BALANCE,
             description: 'Tenancy started',
@@ -1388,10 +1388,10 @@ export class TenantManagementService {
 
     // After transaction commits: add initial outstanding balance to TenantBalance
     if (dto.outstanding_balance && dto.outstanding_balance > 0) {
-      await this.tenantBalancesService.addOutstandingBalance(
+      await this.tenantBalancesService.applyChange(
         txResult.tenantAccount.id,
         landlordId,
-        dto.outstanding_balance,
+        -dto.outstanding_balance,
         {
           type: TenantBalanceLedgerType.INITIAL_BALANCE,
           description:
@@ -1889,22 +1889,22 @@ export class TenantManagementService {
       ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
       : account.rents || [];
 
-    // Fetch TenantBalance and ledger from service (requires adminId as landlordId)
-    let totalOutstandingBalance = 0;
-    let totalCreditBalance = 0;
+    // Fetch wallet balance and ledger (requires adminId as landlordId)
+    let walletBalance = 0;
     let ledgerEntries: TenantBalanceLedger[] = [];
     if (adminId) {
-      const balances = await this.tenantBalancesService.getBalances(
+      walletBalance = await this.tenantBalancesService.getBalance(
         account.id,
         adminId,
       );
-      totalOutstandingBalance = balances.outstanding_balance;
-      totalCreditBalance = balances.credit_balance;
       ledgerEntries = await this.tenantBalancesService.getLedger(
         account.id,
         adminId,
       );
     }
+    // Derive display values from unified balance
+    const totalOutstandingBalance = walletBalance < 0 ? -walletBalance : 0;
+    const totalCreditBalance = walletBalance > 0 ? walletBalance : 0;
 
     // Create maps for efficient lookups of related entities for date resolution
     const rentMap = new Map<string, any>();
@@ -1922,10 +1922,17 @@ export class TenantManagementService {
       }
     });
 
-    // Build outstandingBalanceBreakdown from ledger entries grouped by property
+    // Build outstandingBalanceBreakdown from ledger entries grouped by property.
+    // Charges: balance_change < 0. Exclude legacy credit_applied entries (accounting
+    // artifacts from the old two-step payment flow) and migration entries.
     const obEntriesByProperty = new Map<string, TenantBalanceLedger[]>();
     ledgerEntries
-      .filter((e) => Number(e.outstanding_balance_change) > 0 && e.type !== 'ob_payment')
+      .filter(
+        (e) =>
+          Number(e.balance_change) < 0 &&
+          e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
+          e.type !== TenantBalanceLedgerType.MIGRATION,
+      )
       .forEach((e) => {
         const key = e.property_id || 'global';
         if (!obEntriesByProperty.has(key)) obEntriesByProperty.set(key, []);
@@ -1948,7 +1955,7 @@ export class TenantManagementService {
           'Unknown Property',
         propertyId: propId === 'global' ? propRent?.property_id || '' : propId,
         outstandingAmount: entries.reduce(
-          (sum, e) => sum + Number(e.outstanding_balance_change),
+          (sum, e) => sum + (-Number(e.balance_change)),
           0,
         ),
         tenancyStartDate: propRent?.rent_start_date
@@ -2011,7 +2018,7 @@ export class TenantManagementService {
             return {
               id: e.id,
               type: periodDescription,
-              amount: Number(e.outstanding_balance_change),
+              amount: -Number(e.balance_change), // charges are negative balance_change; expose as positive
               date: transactionDate,
             };
           })
@@ -3153,13 +3160,13 @@ export class TenantManagementService {
           ...ledgerEntries
             .filter(
               (e) =>
-                Number(e.outstanding_balance_change) < 0 &&
+                Number(e.balance_change) > 0 &&
                 e.related_entity_type === 'renewal_invoice',
             )
             .map((e) => ({
               id: e.id,
               type: e.description || 'Renewal payment',
-              amount: Number(e.outstanding_balance_change),
+              amount: -Number(e.balance_change), // payments are positive balance_change; show as negative (money out for tenant)
               date: new Date(e.created_at!),
             })),
         ].sort((a, b) => b.date.getTime() - a.date.getTime()),

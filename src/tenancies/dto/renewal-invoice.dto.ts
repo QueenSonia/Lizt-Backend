@@ -102,6 +102,12 @@ export class RenewalInvoiceDto {
   totalAmount: number;
 
   @ApiProperty({
+    description: 'Signed wallet balance at invoice creation. positive = credit applied (reduced total), negative = outstanding debt added (increased total)',
+    example: -50000,
+  })
+  walletBalance: number;
+
+  @ApiProperty({
     description: 'Payment status',
     example: 'unpaid',
     enum: ['unpaid', 'paid'],

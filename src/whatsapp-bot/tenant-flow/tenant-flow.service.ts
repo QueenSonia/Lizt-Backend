@@ -1124,11 +1124,11 @@ export class TenantFlowService {
     let hasOutstandingBalance = false;
     for (const r of activeRents) {
       if (!r.property?.owner_id) continue;
-      const ob = await this.tenantBalancesService.getOutstandingBalance(
+      const ob = await this.tenantBalancesService.getBalance(
         accountId,
         r.property.owner_id,
       );
-      if (ob > 0) {
+      if (ob < 0) {
         hasOutstandingBalance = true;
         break;
       }
@@ -1174,10 +1174,11 @@ export class TenantFlowService {
 
     const filtered: Array<{ rent: Rent; ob: number }> = [];
     for (const [landlordId, rent] of landlordToRent.entries()) {
-      const ob = await this.tenantBalancesService.getOutstandingBalance(
+      const walletBal = await this.tenantBalancesService.getBalance(
         accountId,
         landlordId,
       );
+      const ob = walletBal < 0 ? -walletBal : 0;
       if (ob > 0) filtered.push({ rent, ob });
     }
 
@@ -1259,12 +1260,12 @@ export class TenantFlowService {
       return;
     }
 
-    const ob = await this.tenantBalancesService.getOutstandingBalance(
+    const ob = await this.tenantBalancesService.getBalance(
       accountId,
       rent.property.owner_id,
     );
 
-    if (ob <= 0) {
+    if (ob >= 0) {
       await this.templateSenderService.sendText(
         from,
         'No outstanding balance found for that property.',
@@ -1272,7 +1273,7 @@ export class TenantFlowService {
       return;
     }
 
-    await this.sendOBConfirmation(from, rent, ob);
+    await this.sendOBConfirmation(from, rent, -ob);
   }
 
   /**
@@ -1324,12 +1325,12 @@ export class TenantFlowService {
       return;
     }
 
-    const totalOB = await this.tenantBalancesService.getOutstandingBalance(
+    const totalOBWallet = await this.tenantBalancesService.getBalance(
       accountId,
       rent.property.owner_id,
     );
 
-    if (totalOB <= 0) {
+    if (totalOBWallet >= 0) {
       await this.templateSenderService.sendText(
         from,
         'No outstanding balance found for that property.',
@@ -1337,7 +1338,7 @@ export class TenantFlowService {
       return;
     }
 
-    await this.createOBInvoiceAndSendLink(from, rent, totalOB);
+    await this.createOBInvoiceAndSendLink(from, rent, -totalOBWallet);
   }
 
   /**
@@ -1511,13 +1512,14 @@ export class TenantFlowService {
 
     const rentAmount = rent.rental_price || 0;
     const serviceCharge = rent.service_charge || 0;
-    const outstandingBalance = rent.property?.owner_id
-      ? await this.tenantBalancesService.getOutstandingBalance(
+    const walletBalance = rent.property?.owner_id
+      ? await this.tenantBalancesService.getBalance(
           rent.tenant_id,
           rent.property.owner_id,
         )
       : 0;
-    const totalAmount = rentAmount + serviceCharge + outstandingBalance;
+    const outstandingBalance = walletBalance < 0 ? -walletBalance : 0;
+    const totalAmount = Math.max(0, rentAmount + serviceCharge - walletBalance);
 
     const paymentFrequency = rent.payment_frequency || 'Annually';
 
@@ -1551,6 +1553,7 @@ export class TenantFlowService {
     message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
     if (serviceCharge > 0) message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
     if (outstandingBalance > 0) message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+    if (walletBalance > 0) message += `\n*Wallet Credit:* -${formatNGN(walletBalance)}`;
     message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
 
     await this.templateSenderService.sendButtons(from, message, [
@@ -1602,13 +1605,14 @@ export class TenantFlowService {
     const accountId = user.accounts[0].id;
     const rentAmount = rent.rental_price || 0;
     const serviceCharge = rent.service_charge || 0;
-    const outstandingBalance = rent.property?.owner_id
-      ? await this.tenantBalancesService.getOutstandingBalance(
+    const walletBal = rent.property?.owner_id
+      ? await this.tenantBalancesService.getBalance(
           accountId,
           rent.property.owner_id,
         )
       : 0;
-    const totalAmount = rentAmount + serviceCharge + outstandingBalance;
+    const outstandingBalance = walletBal < 0 ? -walletBal : 0;
+    const totalAmount = Math.max(0, rentAmount + serviceCharge - walletBal);
 
     // Find propertyTenant record
     const propertyTenant = await this.propertyTenantRepo.findOne({

@@ -149,10 +149,10 @@ export class PropertyHistoryService {
         where: { id: data.property_id },
       });
       if (property?.owner_id) {
-        await this.tenantBalancesService.addOutstandingBalance(
+        await this.tenantBalancesService.applyChange(
           data.tenant_id,
           property.owner_id,
-          totalAmount,
+          -totalAmount,
           {
             type: TenantBalanceLedgerType.INITIAL_BALANCE,
             description: 'Historical tenancy recorded',
@@ -202,45 +202,21 @@ export class PropertyHistoryService {
       const landlordId = property.owner_id;
       const tenantId = data.tenant_id!;
 
-      const currentOB = await this.tenantBalancesService.getOutstandingBalance(
+      // Single entry: payment increases the wallet (positive change).
+      // If wallet was negative (outstanding), it moves toward 0.
+      // If it overshoots 0, the excess becomes credit (wallet goes positive).
+      await this.tenantBalancesService.applyChange(
         tenantId,
         landlordId,
+        paymentAmount,
+        {
+          type: TenantBalanceLedgerType.OB_PAYMENT,
+          description: `Manual payment of ₦${paymentAmount.toLocaleString()} received`,
+          propertyId: data.property_id,
+          relatedEntityType: 'property_history',
+          relatedEntityId: saved.id,
+        },
       );
-      const deduction = Math.min(currentOB, paymentAmount);
-      const remaining = paymentAmount - deduction;
-
-      if (deduction > 0) {
-        await this.tenantBalancesService.subtractOutstandingBalance(
-          tenantId,
-          landlordId,
-          deduction,
-          {
-            type: TenantBalanceLedgerType.OB_PAYMENT,
-            description: `Manual payment of ₦${paymentAmount.toLocaleString()} applied to outstanding balance`,
-            propertyId: data.property_id,
-            relatedEntityType: 'property_history',
-            relatedEntityId: saved.id,
-          },
-        );
-      }
-
-      if (remaining > 0) {
-        await this.tenantBalancesService.addCreditBalance(
-          tenantId,
-          landlordId,
-          remaining,
-          {
-            type: TenantBalanceLedgerType.CREDIT_ADDED,
-            description: `Overpayment of ₦${remaining.toLocaleString()} stored as credit`,
-            propertyId: data.property_id,
-            relatedEntityType: 'property_history',
-            relatedEntityId: saved.id,
-          },
-        );
-        this.logger.log(
-          `Overpayment of ₦${remaining} stored as credit for tenant ${tenantId}`,
-        );
-      }
     }
 
     // Sync rent records to reflect the new payment
@@ -455,34 +431,21 @@ export class PropertyHistoryService {
         where: { id: existing.property_id },
       });
       if (property?.owner_id) {
+        // delta > 0 = more owed (charge, negative wallet change)
+        // delta < 0 = less owed (credit back, positive wallet change)
         const delta = newTotalAmount - oldTotalAmount;
-        if (delta > 0) {
-          await this.tenantBalancesService.addOutstandingBalance(
-            existing.tenant_id,
-            property.owner_id,
-            delta,
-            {
-              type: TenantBalanceLedgerType.INITIAL_BALANCE,
-              description: 'Historical tenancy updated (amount increased)',
-              propertyId: existing.property_id,
-              relatedEntityType: 'property_history',
-              relatedEntityId: id,
-            },
-          );
-        } else {
-          await this.tenantBalancesService.subtractOutstandingBalance(
-            existing.tenant_id,
-            property.owner_id,
-            Math.abs(delta),
-            {
-              type: TenantBalanceLedgerType.INITIAL_BALANCE,
-              description: 'Historical tenancy updated (amount decreased)',
-              propertyId: existing.property_id,
-              relatedEntityType: 'property_history',
-              relatedEntityId: id,
-            },
-          );
-        }
+        await this.tenantBalancesService.applyChange(
+          existing.tenant_id,
+          property.owner_id,
+          -delta,
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: `Historical tenancy updated (amount ${delta > 0 ? 'increased' : 'decreased'})`,
+            propertyId: existing.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: id,
+          },
+        );
       }
     }
 
@@ -535,13 +498,13 @@ export class PropertyHistoryService {
     });
 
     for (const entry of ledgerEntries) {
-      // Reverse OB reduction (outstanding_balance_change is negative for a subtraction)
-      if (entry.outstanding_balance_change < 0) {
-        const obReduction = Math.abs(entry.outstanding_balance_change);
-        await this.tenantBalancesService.addOutstandingBalance(
+      // Reverse each ledger entry by applying the opposite balance change.
+      const reversal = -Number(entry.balance_change);
+      if (reversal !== 0) {
+        await this.tenantBalancesService.applyChange(
           tenantId,
           landlordId,
-          obReduction,
+          reversal,
           {
             type: TenantBalanceLedgerType.OB_PAYMENT,
             description: 'Historical payment updated (reversal)',
@@ -551,60 +514,21 @@ export class PropertyHistoryService {
           },
         );
       }
-      // Reverse credit addition
-      if (entry.credit_balance_change > 0) {
-        await this.tenantBalancesService.subtractCreditBalance(
-          tenantId,
-          landlordId,
-          entry.credit_balance_change,
-          {
-            type: TenantBalanceLedgerType.CREDIT_ADDED,
-            description: 'Historical payment updated (credit reversal)',
-            propertyId: existing.property_id,
-            relatedEntityType: 'property_history',
-            relatedEntityId: id,
-          },
-        );
-      }
     }
 
-    // Apply the new payment amount
-    const currentOB = await this.tenantBalancesService.getOutstandingBalance(
+    // Apply the new payment amount as a single wallet change.
+    await this.tenantBalancesService.applyChange(
       tenantId,
       landlordId,
+      newPaymentAmount,
+      {
+        type: TenantBalanceLedgerType.OB_PAYMENT,
+        description: `Manual payment of ₦${newPaymentAmount.toLocaleString()} received`,
+        propertyId: existing.property_id,
+        relatedEntityType: 'property_history',
+        relatedEntityId: id,
+      },
     );
-    const deduction = Math.min(currentOB, newPaymentAmount);
-    const remaining = newPaymentAmount - deduction;
-
-    if (deduction > 0) {
-      await this.tenantBalancesService.subtractOutstandingBalance(
-        tenantId,
-        landlordId,
-        deduction,
-        {
-          type: TenantBalanceLedgerType.OB_PAYMENT,
-          description: `Manual payment of ₦${newPaymentAmount.toLocaleString()} applied to outstanding balance`,
-          propertyId: existing.property_id,
-          relatedEntityType: 'property_history',
-          relatedEntityId: id,
-        },
-      );
-    }
-
-    if (remaining > 0) {
-      await this.tenantBalancesService.addCreditBalance(
-        tenantId,
-        landlordId,
-        remaining,
-        {
-          type: TenantBalanceLedgerType.CREDIT_ADDED,
-          description: `Overpayment of ₦${remaining.toLocaleString()} stored as credit`,
-          propertyId: existing.property_id,
-          relatedEntityType: 'property_history',
-          relatedEntityId: id,
-        },
-      );
-    }
 
     // Sync rent records to reflect the updated payment
     await this.syncRentPaymentStatus(tenantId, existing.property_id);
@@ -638,7 +562,7 @@ export class PropertyHistoryService {
     });
     if (!property?.owner_id) return;
 
-    await this.tenantBalancesService.subtractOutstandingBalance(
+    await this.tenantBalancesService.applyChange(
       existing.tenant_id,
       property.owner_id,
       totalAmount,
@@ -675,28 +599,15 @@ export class PropertyHistoryService {
     });
 
     for (const entry of ledgerEntries) {
-      if (entry.outstanding_balance_change < 0) {
-        await this.tenantBalancesService.addOutstandingBalance(
+      const reversal = -Number(entry.balance_change);
+      if (reversal !== 0) {
+        await this.tenantBalancesService.applyChange(
           tenantId,
           landlordId,
-          Math.abs(entry.outstanding_balance_change),
+          reversal,
           {
             type: TenantBalanceLedgerType.OB_PAYMENT,
-            description: 'Historical payment deleted (OB reversal)',
-            propertyId: existing.property_id,
-            relatedEntityType: 'property_history',
-            relatedEntityId: id,
-          },
-        );
-      }
-      if (entry.credit_balance_change > 0) {
-        await this.tenantBalancesService.subtractCreditBalance(
-          tenantId,
-          landlordId,
-          entry.credit_balance_change,
-          {
-            type: TenantBalanceLedgerType.CREDIT_ADDED,
-            description: 'Historical payment deleted (credit reversal)',
+            description: 'Historical payment deleted (reversal)',
             propertyId: existing.property_id,
             relatedEntityType: 'property_history',
             relatedEntityId: id,

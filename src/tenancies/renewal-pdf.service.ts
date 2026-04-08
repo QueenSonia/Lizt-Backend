@@ -214,6 +214,7 @@ export class RenewalPDFService {
     const serviceCharge = Number(invoice.service_charge);
     const legalFee = Number(invoice.legal_fee);
     const otherCharges = Number(invoice.other_charges);
+    const walletBalance = Number(invoice.wallet_balance);
     const totalAmount = this.formatCurrency(Number(invoice.total_amount));
 
     const isPaid = invoice.payment_status === 'paid';
@@ -507,6 +508,24 @@ export class RenewalPDFService {
               ? `<div class="charge-row">
             <span class="charge-label">Other Charges</span>
             <span class="charge-amount">${this.formatCurrency(otherCharges)}</span>
+          </div>`
+              : ''
+          }
+
+          ${
+            walletBalance > 0
+              ? `<div class="charge-row">
+            <span class="charge-label" style="color:#059669;">Wallet Credit Applied</span>
+            <span class="charge-amount" style="color:#059669;">-${this.formatCurrency(walletBalance)}</span>
+          </div>`
+              : ''
+          }
+
+          ${
+            walletBalance < 0
+              ? `<div class="charge-row">
+            <span class="charge-label">Previous Outstanding Balance</span>
+            <span class="charge-amount">+${this.formatCurrency(Math.abs(walletBalance))}</span>
           </div>`
               : ''
           }

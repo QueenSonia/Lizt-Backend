@@ -30,7 +30,26 @@ async function bootstrap(): Promise<NestExpressApplication> {
   // =====middlewares start=====
   app.getHttpAdapter().getInstance().set('trust proxy', true);
   app.enableCors(corsOptions);
-  app.use(helmet());
+
+  // Enhanced security headers
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'"],
+          imgSrc: ["'self'", 'data:', 'https:'],
+        },
+      },
+      hsts: {
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true,
+      },
+    }),
+  );
+
   app.use(cookieParser());
 
   app.useGlobalPipes(

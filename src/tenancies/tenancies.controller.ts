@@ -202,6 +202,24 @@ export class TenanciesController {
   }
 
   /**
+   * GET /api/tenancies/renewal-invoice/:token/wallet-history
+   * Get wallet ledger history for a renewal invoice (public, by token)
+   */
+  @Public()
+  @ApiOperation({
+    summary: 'Get Invoice Wallet History',
+    description: 'Retrieve wallet ledger entries for the tenant associated with a renewal invoice',
+  })
+  @ApiParam({ name: 'token', description: 'Renewal invoice token', type: 'string' })
+  @ApiOkResponse({ description: 'Wallet history retrieved successfully' })
+  @ApiNotFoundResponse({ description: 'Renewal invoice not found' })
+  @Get('renewal-invoice/:token/wallet-history')
+  async getInvoiceWalletHistory(@Param('token') token: string) {
+    const entries = await this.tenanciesService.getInvoiceWalletHistory(token);
+    return { success: true, data: entries };
+  }
+
+  /**
    * GET /api/tenancies/renewal-invoice/:token
    * Get renewal invoice data by token
    * Requirements: 4.1-4.7

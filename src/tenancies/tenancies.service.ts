@@ -727,13 +727,28 @@ export class TenanciesService {
     const tenantId = invoice.tenant_id;
     const landlordId = invoice.property.owner_id;
 
-    const [ledgerEntries, manualPaymentHistories] = await Promise.all([
+    const [ledgerEntries, manualPaymentHistories, rentRecords] = await Promise.all([
       this.tenantBalancesService.getLedger(tenantId, landlordId),
       this.propertyHistoryRepository.find({
         where: { tenant_id: tenantId, event_type: 'user_added_payment' },
         relations: ['property'],
       }),
+      this.rentRepository.find({
+        where: { tenant_id: tenantId },
+        relations: ['property'],
+      }),
     ]);
+
+    // Build lookup maps for date resolution (mirrors tenant-management.service.ts logic)
+    const rentMap = new Map<string, Rent>();
+    rentRecords
+      .filter((r) => r.property?.owner_id === landlordId)
+      .forEach((r) => rentMap.set(r.id, r));
+
+    const propertyHistoryMap = new Map<string, PropertyHistory>();
+    manualPaymentHistories.forEach((ph) => {
+      if (ph.id) propertyHistoryMap.set(ph.id, ph);
+    });
 
     // Charges: negative ledger entries, excluding legacy accounting types
     const chargeRows = ledgerEntries
@@ -743,12 +758,38 @@ export class TenanciesService {
           e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
           e.type !== TenantBalanceLedgerType.MIGRATION,
       )
-      .map((e) => ({
-        id: `charge-${e.id}`,
-        date: e.created_at as Date,
-        description: e.description,
-        balanceChange: parseFloat((e.balance_change ?? 0).toString()),
-      }));
+      .map((e) => {
+        // Apply the same date resolution and description enrichment as tenant-management
+        let date: Date;
+        let description = e.description || String(e.type);
+
+        if (e.related_entity_type === 'rent' && e.related_entity_id) {
+          const relatedRent = rentMap.get(e.related_entity_id);
+          if (relatedRent?.rent_start_date) {
+            date = new Date(relatedRent.rent_start_date);
+            const endDate = relatedRent.expiry_date ? new Date(relatedRent.expiry_date) : null;
+            if (endDate) {
+              const startStr = date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+              const endStr = endDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+              description = `${description} (${startStr} - ${endStr})`;
+            }
+          } else {
+            date = new Date(e.created_at!);
+          }
+        } else if (e.related_entity_type === 'property_history' && e.related_entity_id) {
+          const relatedPH = propertyHistoryMap.get(e.related_entity_id);
+          date = relatedPH?.move_in_date ? new Date(relatedPH.move_in_date) : new Date(e.created_at!);
+        } else {
+          date = new Date(e.created_at!);
+        }
+
+        return {
+          id: `charge-${e.id}`,
+          date,
+          description,
+          balanceChange: parseFloat((e.balance_change ?? 0).toString()),
+        };
+      });
 
     // Manual payments from property_history (edits update in-place; deletes remove the row)
     const manualPaymentRows = manualPaymentHistories

@@ -81,6 +81,8 @@ export class NotificationService {
         return 'History Entry Added';
       case NotificationType.PAYMENT_TRANSFER_REJECTED:
         return 'Payment Transfer Rejected';
+      case NotificationType.RENT_REMINDER_FAILED:
+        return 'Rent Reminder Failed';
       default:
         return 'Panda Homes';
     }

@@ -263,7 +263,7 @@ export class RentReminderService {
               date: new Date().toISOString(),
               type: NotificationType.RENT_REMINDER_FAILED,
               description: `Failed to send rent reminder to ${rent.tenant?.user?.first_name ?? 'tenant'} for ${rent.property?.name ?? 'property'}.`,
-              status: 'Failed',
+              status: 'Completed',
               property_id: rent.property_id,
               user_id: rent.property.owner_id,
             })
@@ -334,7 +334,7 @@ export class RentReminderService {
               date: new Date().toISOString(),
               type: NotificationType.RENT_REMINDER_FAILED,
               description: `Failed to send overdue reminder to ${rent.tenant?.user?.first_name ?? 'tenant'} for ${rent.property?.name ?? 'property'}.`,
-              status: 'Failed',
+              status: 'Completed',
               property_id: rent.property_id,
               user_id: rent.property.owner_id,
             })

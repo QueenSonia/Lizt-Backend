@@ -257,6 +257,23 @@ export class RentReminderService {
           `Failed to process reminder for rent ${rent.id}`,
           error,
         );
+        if (rent.property?.owner_id) {
+          this.notificationService
+            .create({
+              date: new Date().toISOString(),
+              type: NotificationType.RENT_REMINDER_FAILED,
+              description: `Failed to send rent reminder to ${rent.tenant?.user?.first_name ?? 'tenant'} for ${rent.property?.name ?? 'property'}.`,
+              status: 'Failed',
+              property_id: rent.property_id,
+              user_id: rent.property.owner_id,
+            })
+            .catch((notifErr) =>
+              this.logger.error(
+                `Failed to create failure notification for rent ${rent.id}`,
+                notifErr,
+              ),
+            );
+        }
       }
     }
   }
@@ -311,6 +328,23 @@ export class RentReminderService {
           `Failed to process post-expiry reminder for rent ${rent.id}`,
           error,
         );
+        if (rent.property?.owner_id) {
+          this.notificationService
+            .create({
+              date: new Date().toISOString(),
+              type: NotificationType.RENT_REMINDER_FAILED,
+              description: `Failed to send overdue reminder to ${rent.tenant?.user?.first_name ?? 'tenant'} for ${rent.property?.name ?? 'property'}.`,
+              status: 'Failed',
+              property_id: rent.property_id,
+              user_id: rent.property.owner_id,
+            })
+            .catch((notifErr) =>
+              this.logger.error(
+                `Failed to create failure notification for rent ${rent.id}`,
+                notifErr,
+              ),
+            );
+        }
       }
     }
   }

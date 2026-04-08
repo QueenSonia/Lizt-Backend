@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsString, IsOptional, Min } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsString, IsOptional, Min, IsDateString } from 'class-validator';
 
 export class UpdateRenewalInvoiceDto {
   @ApiProperty({ description: 'Rent amount for the renewal period', example: 300000 })
@@ -18,4 +18,13 @@ export class UpdateRenewalInvoiceDto {
   @IsNumber()
   @Min(0)
   serviceCharge?: number;
+
+  @ApiProperty({
+    description: 'Custom end date for the renewal period (ISO date string, e.g. 2026-12-31). If omitted, end date is auto-calculated from start date + frequency.',
+    example: '2026-12-31',
+    required: false,
+  })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
 }

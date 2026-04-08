@@ -289,6 +289,7 @@ export class TenanciesService {
       paymentFrequency: string;
       serviceCharge?: number;
       silent?: boolean;
+      endDate?: string;
     },
   ): Promise<{ token: string; link: string }> {
     // 1. Find the PropertyTenant relationship with all necessary relations
@@ -349,23 +350,27 @@ export class TenanciesService {
       startDate = new Date(activeRent.expiry_date);
       startDate.setDate(startDate.getDate() + 1);
 
-      endDate = new Date(startDate);
-      switch (paymentFrequency.toLowerCase()) {
-        case 'monthly':
-          endDate.setMonth(endDate.getMonth() + 1);
-          break;
-        case 'quarterly':
-          endDate.setMonth(endDate.getMonth() + 3);
-          break;
-        case 'bi-annually':
-          endDate.setMonth(endDate.getMonth() + 6);
-          break;
-        case 'annually':
-        default:
-          endDate.setFullYear(endDate.getFullYear() + 1);
-          break;
+      if (body?.endDate) {
+        endDate = new Date(body.endDate);
+      } else {
+        endDate = new Date(startDate);
+        switch (paymentFrequency.toLowerCase()) {
+          case 'monthly':
+            endDate.setMonth(endDate.getMonth() + 1);
+            break;
+          case 'quarterly':
+            endDate.setMonth(endDate.getMonth() + 3);
+            break;
+          case 'bi-annually':
+            endDate.setMonth(endDate.getMonth() + 6);
+            break;
+          case 'annually':
+          default:
+            endDate.setFullYear(endDate.getFullYear() + 1);
+            break;
+        }
+        endDate.setDate(endDate.getDate() - 1); // End date is inclusive
       }
-      endDate.setDate(endDate.getDate() - 1); // End date is inclusive
     }
 
     // 5. Calculate total amount (rent + service charge + outstanding balance - credit balance)
@@ -580,6 +585,7 @@ export class TenanciesService {
       rentAmount: number;
       serviceCharge?: number;
       paymentFrequency: string;
+      endDate?: string;
     },
   ): Promise<{ success: boolean; invoiceId: string; totalAmount: number }> {
     const invoice = await this.renewalInvoiceRepository.findOne({
@@ -604,25 +610,30 @@ export class TenanciesService {
       );
     }
 
-    // Recalculate end_date from invoice start_date + new frequency
+    // Recalculate end_date from invoice start_date + new frequency (or use custom endDate if provided)
     const startDate = new Date(invoice.start_date);
-    const endDate = new Date(startDate);
-    switch (dto.paymentFrequency.toLowerCase()) {
-      case 'monthly':
-        endDate.setMonth(endDate.getMonth() + 1);
-        break;
-      case 'quarterly':
-        endDate.setMonth(endDate.getMonth() + 3);
-        break;
-      case 'bi-annually':
-        endDate.setMonth(endDate.getMonth() + 6);
-        break;
-      case 'annually':
-      default:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
+    let endDate: Date;
+    if (dto.endDate) {
+      endDate = new Date(dto.endDate);
+    } else {
+      endDate = new Date(startDate);
+      switch (dto.paymentFrequency.toLowerCase()) {
+        case 'monthly':
+          endDate.setMonth(endDate.getMonth() + 1);
+          break;
+        case 'quarterly':
+          endDate.setMonth(endDate.getMonth() + 3);
+          break;
+        case 'bi-annually':
+          endDate.setMonth(endDate.getMonth() + 6);
+          break;
+        case 'annually':
+        default:
+          endDate.setFullYear(endDate.getFullYear() + 1);
+          break;
+      }
+      endDate.setDate(endDate.getDate() - 1);
     }
-    endDate.setDate(endDate.getDate() - 1);
 
     const landlordId = invoice.property.owner_id;
     const walletBalance = await this.tenantBalancesService.getBalance(
@@ -694,6 +705,103 @@ export class TenanciesService {
 
     // Reuse the same formatting as getRenewalInvoice
     return this.formatRenewalInvoiceResponse(invoice);
+  }
+
+  /**
+   * Get wallet history for a renewal invoice, using the same dual-source logic
+   * as the landlord breakdown modal:
+   *   - Charges: negative ledger entries (excluding CREDIT_APPLIED / MIGRATION)
+   *   - Manual payments: property_history (authoritative for edits/deletes)
+   *   - Renewal invoice payments: positive ledger entries with related_entity_type = 'renewal_invoice'
+   */
+  async getInvoiceWalletHistory(token: string): Promise<any[]> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { token },
+      relations: ['property'],
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Renewal invoice not found');
+    }
+
+    const tenantId = invoice.tenant_id;
+    const landlordId = invoice.property.owner_id;
+
+    const [ledgerEntries, manualPaymentHistories] = await Promise.all([
+      this.tenantBalancesService.getLedger(tenantId, landlordId),
+      this.propertyHistoryRepository.find({
+        where: { tenant_id: tenantId, event_type: 'user_added_payment' },
+        relations: ['property'],
+      }),
+    ]);
+
+    // Charges: negative ledger entries, excluding legacy accounting types
+    const chargeRows = ledgerEntries
+      .filter(
+        (e) =>
+          Number(e.balance_change) < 0 &&
+          e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
+          e.type !== TenantBalanceLedgerType.MIGRATION,
+      )
+      .map((e) => ({
+        id: `charge-${e.id}`,
+        date: e.created_at as Date,
+        description: e.description,
+        balanceChange: parseFloat((e.balance_change ?? 0).toString()),
+      }));
+
+    // Manual payments from property_history (edits update in-place; deletes remove the row)
+    const manualPaymentRows = manualPaymentHistories
+      .filter((ph) => ph.property?.owner_id === landlordId)
+      .map((ph) => {
+        try {
+          const data = JSON.parse(ph.event_description || '{}');
+          const amount = Number(data.paymentAmount || 0);
+          if (amount <= 0) return null;
+          return {
+            id: `payment-history-${ph.id}`,
+            date: ph.move_in_date
+              ? new Date(ph.move_in_date)
+              : new Date(ph.created_at!),
+            description: data.description || 'Payment received',
+            balanceChange: amount, // positive = balance increased for tenant
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+
+    // Renewal invoice payments from ledger (no property_history row exists for these)
+    const renewalPaymentRows = ledgerEntries
+      .filter(
+        (e) =>
+          Number(e.balance_change) > 0 &&
+          e.related_entity_type === 'renewal_invoice',
+      )
+      .map((e) => ({
+        id: `renewal-${e.id}`,
+        date: e.created_at as Date,
+        description: e.description || 'Renewal payment',
+        balanceChange: parseFloat((e.balance_change ?? 0).toString()),
+      }));
+
+    // Merge, sort chronologically, and compute running balance
+    const allRows = [...chargeRows, ...manualPaymentRows, ...renewalPaymentRows].sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+    );
+
+    let running = 0;
+    return allRows.map((row) => {
+      running += row.balanceChange;
+      return {
+        id: row.id,
+        date: row.date,
+        description: row.description,
+        balanceChange: row.balanceChange,
+        balanceAfter: running,
+      };
+    });
   }
 
   /**

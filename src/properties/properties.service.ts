@@ -1312,6 +1312,7 @@ export class PropertiesService {
       serviceCharge: number;
       totalAmount: number;
       paymentFrequency: string | null;
+      endDate: string | null;
     } | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
@@ -1346,6 +1347,7 @@ export class PropertiesService {
           'rent_amount',
           'service_charge',
           'payment_frequency',
+          'end_date',
         ],
       });
 
@@ -1377,6 +1379,11 @@ export class PropertiesService {
                 latestRenewalInvoice.total_amount.toString(),
               ),
               paymentFrequency: latestRenewalInvoice.payment_frequency ?? null,
+              endDate: latestRenewalInvoice.end_date
+                ? latestRenewalInvoice.end_date instanceof Date
+                  ? latestRenewalInvoice.end_date.toISOString().split('T')[0]
+                  : String(latestRenewalInvoice.end_date)
+                : null,
             }
           : null;
 

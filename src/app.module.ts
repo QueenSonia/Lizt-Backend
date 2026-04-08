@@ -1,10 +1,11 @@
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { config } from 'dotenv-flow';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SentryModule } from '@sentry/nestjs/setup';
+import { APP_GUARD } from '@nestjs/core';
 
 import typeorm from '../ormconfig';
 import { AppController } from './app.controller';
@@ -36,6 +37,9 @@ import { ReceiptsModule } from './receipts/receipts.module';
 import { ApiLogModule } from './common/interceptors/api-log.module';
 import { QueryLogModule } from './common/logger/query-log.module';
 import { TenantBalancesModule } from './tenant-balances/tenant-balances.module';
+import { SecurityMiddleware } from './middleware/security.middleware';
+import { IpRateLimitGuard } from './guards/ip-rate-limit.guard';
+import { AutoBanService } from './services/auto-ban.service';
 
 config({ default_node_env: 'production' });
 
@@ -92,6 +96,15 @@ config({ default_node_env: 'production' });
     DatabaseErrorHandlerService,
     // DatabaseHealthService, // DISABLED to save compute
     UtilService,
+    AutoBanService,
+    {
+      provide: APP_GUARD,
+      useClass: IpRateLimitGuard,
+    },
   ],
 })
-export class AppModule { }
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(SecurityMiddleware).forRoutes('*');
+  }
+}

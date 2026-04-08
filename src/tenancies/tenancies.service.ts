@@ -750,18 +750,27 @@ export class TenanciesService {
       if (ph.id) propertyHistoryMap.set(ph.id, ph);
     });
 
-    // Charges: negative ledger entries, excluding legacy accounting types
+    // Charges: negative ledger entries. Exclude:
+    //   - CREDIT_APPLIED: legacy artifact from old two-step payment flow
+    //   - related_entity_type = 'property_history': reversal entries created when a manual
+    //     payment is edited/deleted — accounting artifacts, not real charges
+    // MIGRATION entries are included — they represent real rent charges at ledger setup.
     const chargeRows = ledgerEntries
       .filter(
         (e) =>
           Number(e.balance_change) < 0 &&
           e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
-          e.type !== TenantBalanceLedgerType.MIGRATION,
+          e.related_entity_type !== 'property_history',
       )
       .map((e) => {
         // Apply the same date resolution and description enrichment as tenant-management
         let date: Date;
-        let description = e.description || String(e.type);
+        // Normalize migration entries to the same label as initial_balance charges
+        const baseDescription =
+          e.type === TenantBalanceLedgerType.MIGRATION
+            ? 'Historical tenancy recorded'
+            : (e.description || String(e.type));
+        let description = baseDescription;
 
         if (e.related_entity_type === 'rent' && e.related_entity_id) {
           const relatedRent = rentMap.get(e.related_entity_id);

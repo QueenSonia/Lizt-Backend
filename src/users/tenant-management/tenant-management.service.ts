@@ -1923,15 +1923,21 @@ export class TenantManagementService {
     });
 
     // Build outstandingBalanceBreakdown from ledger entries grouped by property.
-    // Charges: balance_change < 0. Exclude legacy credit_applied entries (accounting
-    // artifacts from the old two-step payment flow) and migration entries.
+    // Charges: balance_change < 0. Exclude:
+    //   - CREDIT_APPLIED: legacy artifact from old two-step payment flow
+    //   - related_entity_type = 'property_history': these are reversal entries created
+    //     when a manual payment is edited/deleted. They're accounting artifacts and
+    //     should not appear as charges — the property_history record is authoritative
+    //     for the current payment amount.
+    // Note: MIGRATION entries are included — they represent real rent charges carried
+    // forward at ledger setup time.
     const obEntriesByProperty = new Map<string, TenantBalanceLedger[]>();
     ledgerEntries
       .filter(
         (e) =>
           Number(e.balance_change) < 0 &&
           e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
-          e.type !== TenantBalanceLedgerType.MIGRATION,
+          e.related_entity_type !== 'property_history',
       )
       .forEach((e) => {
         const key = e.property_id || 'global';
@@ -1968,7 +1974,12 @@ export class TenantManagementService {
           .map((e) => {
             // Implement date resolution based on related entity type
             let transactionDate: Date;
-            let periodDescription = e.description || String(e.type);
+            // Normalize migration entries to the same label as initial_balance charges
+            const baseDescription =
+              e.type === TenantBalanceLedgerType.MIGRATION
+                ? 'Historical tenancy recorded'
+                : (e.description || String(e.type));
+            let periodDescription = baseDescription;
 
             if (e.related_entity_type === 'rent' && e.related_entity_id) {
               // For rent-related entries, use rent_start_date from the specific rent record
@@ -1992,7 +2003,7 @@ export class TenantManagementService {
                     month: 'short',
                     year: 'numeric',
                   });
-                  periodDescription = `${e.description || String(e.type)} (${startStr} - ${endStr})`;
+                  periodDescription = `${baseDescription} (${startStr} - ${endStr})`;
                 }
               } else {
                 // Fallback to created_at if rent record not found

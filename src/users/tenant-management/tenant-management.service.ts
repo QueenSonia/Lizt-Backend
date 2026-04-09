@@ -1234,7 +1234,7 @@ export class TenantManagementService {
 
       // 5. Create account for tenant if it doesn't exist
       let tenantAccount = await manager.getRepository(Account).findOne({
-        where: { userId: tenantUser.id },
+        where: { userId: tenantUser.id, role: RolesEnum.TENANT },
       });
 
       if (!tenantAccount) {

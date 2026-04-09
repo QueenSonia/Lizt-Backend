@@ -46,7 +46,6 @@ export class TenantFlowService {
     { id: 'service_request', title: 'Service request' },
     { id: 'view_tenancy', title: 'View tenancy details' },
     { id: 'payment', title: 'Payment' },
-    { id: 'switch_role', title: 'Switch Role' },
   ];
 
   constructor(
@@ -715,10 +714,6 @@ export class TenantFlowService {
 
       case 'tenancy_details_incorrect':
         await this.handleTenancyDetailsIncorrect(from);
-        break;
-
-      case 'switch_role':
-        await this.handleSwitchRole(from);
         break;
 
       default:
@@ -2016,18 +2011,6 @@ export class TenantFlowService {
     await this.templateSenderService.sendText(
       from,
       `Thanks for letting us know.\n\nPlease contact your landlord or property manager to update your tenancy details before continuing.`,
-    );
-  }
-
-  /**
-   * Handle role switching for multi-role users
-   */
-  private async handleSwitchRole(from: string): Promise<void> {
-    console.log('🔄 User requested role switch from tenant flow');
-    await this.cache.delete(`selected_role_${from}`);
-    await this.templateSenderService.sendText(
-      from,
-      'Role cleared. Send any message to select a new role.',
     );
   }
 

@@ -373,141 +373,15 @@ export class WhatsappBotService implements OnModuleInit {
       message.interactive?.button_reply || (message as any).button;
     const buttonId = buttonReply?.id || buttonReply?.payload;
 
-    // CRITICAL: Check for tenant-specific actions BEFORE role routing
-    // These actions should always go to tenant flow regardless of user's current role
+    // Check for tenant-specific actions BEFORE role routing.
+    // Route directly to tenant flow — it uses findTenantByPhone internally which
+    // correctly filters by phone + tenant role, handling multi-role users properly.
     if (buttonId && this.isTenantSpecificAction(buttonId)) {
-      console.log(
-        '🏠 Tenant-specific action detected, routing to tenant flow:',
-        buttonId,
-      );
-
-      const user = await this.findUserByPhoneOrEmail(from);
-      console.log('👤 User roles for tenant action:', {
-        userId: user?.id,
-        userName: user ? `${user.first_name} ${user.last_name}` : 'N/A',
-        userTableRole: user?.role,
-        accounts:
-          user?.accounts?.map((acc) => ({ id: acc.id, role: acc.role })) || [],
-        totalAccounts: user?.accounts?.length || 0,
-        hasTenantRole: user?.accounts?.some(
-          (acc) => acc.role === RolesEnum.TENANT,
-        ),
-        hasLandlordRole: user?.accounts?.some(
-          (acc) => acc.role === RolesEnum.LANDLORD,
-        ),
-        hasFMRole: user?.accounts?.some(
-          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
-        ),
-      });
-
-      const hasTenantRole = user?.accounts?.some(
-        (acc) => acc.role === RolesEnum.TENANT,
-      );
-
-      if (!hasTenantRole) {
-        console.log('❌ User does not have tenant role for tenant action');
-        console.log(
-          '🔧 Checking if user should have tenant access for this property...',
-        );
-
-        // Extract property ID from button payload
-        const propertyId = buttonId.includes(':')
-          ? buttonId.split(':')[1]
-          : null;
-
-        if (propertyId) {
-          console.log(
-            '🏠 Checking property tenant relationships for property:',
-            propertyId,
-          );
-
-          // First check: Is user landlord/FM for this property?
-          const isLandlordOrFM = user?.accounts?.some(
-            (acc) =>
-              acc.role === RolesEnum.LANDLORD ||
-              acc.role === RolesEnum.FACILITY_MANAGER,
-          );
-
-          if (isLandlordOrFM) {
-            // Check if they own or manage this property
-            const property = await this.propertyRepo.findOne({
-              where: { id: propertyId },
-            });
-
-            const landlordAccount = user?.accounts?.find(
-              (acc) => acc.role === RolesEnum.LANDLORD,
-            );
-
-            if (
-              property &&
-              landlordAccount &&
-              property.owner_id === landlordAccount.id
-            ) {
-              console.log(
-                '✅ User is landlord of this property, creating tenant account for access',
-              );
-
-              // Create a tenant account for this landlord so they can view tenant details
-              await this.createTenantAccountForExistingUser(user, propertyId);
-
-              // Retry the tenant action now that they have a tenant account
-              console.log(
-                '🔄 Retrying tenant action with new tenant account...',
-              );
-              const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
-              if (message.type === 'interactive' || message.type === 'button') {
-                void this.tenantFlowService.handleInteractive(
-                  message,
-                  tenantPhone,
-                );
-              }
-              return;
-            }
-          }
-
-          // Second check: Should user have tenant access to this property?
-          // This could happen if they were attached as a tenant but the tenant account wasn't created properly
-          const shouldCreateTenantAccount =
-            await this.checkIfUserShouldHaveTenantAccess(user, propertyId);
-
-          if (shouldCreateTenantAccount) {
-            console.log(
-              '✅ User should have tenant access, creating tenant account...',
-            );
-            await this.createTenantAccountForExistingUser(user, propertyId);
-
-            // Retry the tenant action now that they have a tenant account
-            console.log('🔄 Retrying tenant action with new tenant account...');
-            const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
-            if (message.type === 'interactive' || message.type === 'button') {
-              void this.tenantFlowService.handleInteractive(
-                message,
-                tenantPhone,
-              );
-            }
-            return;
-          }
-        }
-
-        console.log(
-          '💡 Suggesting tenant account creation or contact landlord',
-        );
-        await this.sendText(
-          from,
-          'You need a tenant account to view tenancy details. If you are a tenant for this property, please contact your landlord to set up your tenant account properly.',
-        );
-        return;
-      }
-
-      console.log('✅ User has tenant role, routing to tenant flow');
-      // Convert email to phone number for WhatsApp messaging
       const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
-
-      // Route directly to tenant flow
       if (message.type === 'interactive' || message.type === 'button') {
         void this.tenantFlowService.handleInteractive(message, tenantPhone);
       }
-      return; // Don't continue with role detection
+      return;
     }
 
     if (
@@ -632,19 +506,33 @@ export class WhatsappBotService implements OnModuleInit {
         });
         role = selectedRole as RolesEnum;
       } else {
-        // Check if user has multiple roles (FM + Landlord, or any combination)
-        const hasMultipleRoles = user.accounts.length > 1;
         const hasFM = user.accounts.some(
           (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
         );
         const hasLandlord = user.accounts.some(
           (acc) => acc.role === RolesEnum.LANDLORD,
         );
-        const hasTenant = user.accounts.some(
+        let hasTenant = user.accounts.some(
           (acc) => acc.role === RolesEnum.TENANT,
         );
 
-        if (hasMultipleRoles && (hasFM || hasLandlord || hasTenant)) {
+        // The same phone number may map to a separate tenant user record.
+        // Check for it so the Tenant option appears in the role menu.
+        if (!hasTenant && !from.includes('@')) {
+          const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+          const tenantUser = await this.usersRepo.findOne({
+            where: {
+              phone_number: normalizedPhone,
+              accounts: { role: RolesEnum.TENANT },
+            },
+            select: ['id'],
+          });
+          hasTenant = !!tenantUser;
+        }
+
+        const roleCount = [hasFM, hasLandlord, hasTenant].filter(Boolean).length;
+
+        if (roleCount > 1) {
           console.log(
             '👥 User has multiple roles, showing role selection menu',
           );
@@ -1447,104 +1335,4 @@ export class WhatsappBotService implements OnModuleInit {
     return tenantSpecificActions.includes(action);
   }
 
-  /**
-   * Check if a user should have tenant access to a specific property
-   * This handles cases where a user was attached as a tenant but the tenant account wasn't created
-   */
-  private async checkIfUserShouldHaveTenantAccess(
-    user: any,
-    propertyId: string,
-  ): Promise<boolean> {
-    try {
-      // Check if there's a PropertyTenant record that references this user's phone number
-      // but doesn't have a proper tenant account
-
-      // First, check if there are any PropertyTenant records for this property
-      // that might be linked to a tenant user with the same phone number as this user
-      const tenantUsersWithSamePhone = await this.usersRepo.find({
-        where: {
-          phone_number: user.phone_number,
-          role: RolesEnum.TENANT,
-        },
-        relations: ['accounts'],
-      });
-
-      console.log('🔍 Found tenant users with same phone:', {
-        count: tenantUsersWithSamePhone.length,
-        users: tenantUsersWithSamePhone.map((u) => ({
-          id: u.id,
-          name: `${u.first_name} ${u.last_name}`,
-          accounts:
-            u.accounts?.map((acc) => ({ id: acc.id, role: acc.role })) || [],
-        })),
-      });
-
-      // Check if any of these tenant users have active property relationships for this property
-      for (const tenantUser of tenantUsersWithSamePhone) {
-        if (tenantUser.accounts && tenantUser.accounts.length > 0) {
-          const tenantAccount = tenantUser.accounts.find(
-            (acc) => acc.role === RolesEnum.TENANT,
-          );
-          if (tenantAccount) {
-            const propertyTenant = await this.propertyTenantRepo.findOne({
-              where: {
-                property_id: propertyId,
-                tenant_id: tenantAccount.id,
-                status: TenantStatusEnum.ACTIVE,
-              },
-            });
-
-            if (propertyTenant) {
-              console.log(
-                '✅ Found active property tenant relationship for same phone number',
-              );
-              return true;
-            }
-          }
-        }
-      }
-
-      return false;
-    } catch (error) {
-      console.error('Error checking tenant access:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Create a tenant account for an existing user who needs tenant access
-   */
-  private async createTenantAccountForExistingUser(
-    user: any,
-    propertyId: string,
-  ): Promise<void> {
-    try {
-      console.log('🔧 Creating tenant account for existing user:', user.id);
-
-      // Create a tenant account for this user
-      const tenantAccount = this.accountRepo.create({
-        userId: user.id,
-        email: user.email || `${user.phone_number}@tenant.local`,
-        password: await this.utilService.generatePassword(),
-        is_verified: true,
-        profile_name: `${user.first_name} ${user.last_name}`,
-        role: RolesEnum.TENANT,
-        creator_id: user.id, // Self-created
-      });
-
-      await this.accountRepo.save(tenantAccount);
-
-      console.log('✅ Created tenant account:', {
-        accountId: tenantAccount.id,
-        userId: user.id,
-        role: tenantAccount.role,
-      });
-
-      // Note: We don't create PropertyTenant relationship here because that should already exist
-      // from when the user was attached to the property. We're just adding the missing tenant account.
-    } catch (error) {
-      console.error('Error creating tenant account for existing user:', error);
-      throw error;
-    }
-  }
 }

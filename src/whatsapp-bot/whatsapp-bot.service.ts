@@ -1329,6 +1329,7 @@ export class WhatsappBotService implements OnModuleInit {
       'tenancy_details_incorrect',
       'confirm_pay_rent',
       'confirm_pay_ob',
+      'main_menu',
       // Add other tenant-specific actions here as needed
     ];
 

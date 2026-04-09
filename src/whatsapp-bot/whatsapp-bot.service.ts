@@ -373,6 +373,60 @@ export class WhatsappBotService implements OnModuleInit {
       message.interactive?.button_reply || (message as any).button;
     const buttonId = buttonReply?.id || buttonReply?.payload;
 
+    // CRITICAL: Check for tenant-specific actions BEFORE role routing
+    // These actions should always go to tenant flow regardless of user's current role
+    if (buttonId && this.isTenantSpecificAction(buttonId)) {
+      console.log(
+        '🏠 Tenant-specific action detected, routing to tenant flow:',
+        buttonId,
+      );
+
+      const user = await this.findUserByPhoneOrEmail(from);
+      console.log('👤 User roles for tenant action:', {
+        userId: user?.id,
+        userName: user ? `${user.first_name} ${user.last_name}` : 'N/A',
+        userTableRole: user?.role,
+        accounts:
+          user?.accounts?.map((acc) => ({ id: acc.id, role: acc.role })) || [],
+        totalAccounts: user?.accounts?.length || 0,
+        hasTenantRole: user?.accounts?.some(
+          (acc) => acc.role === RolesEnum.TENANT,
+        ),
+        hasLandlordRole: user?.accounts?.some(
+          (acc) => acc.role === RolesEnum.LANDLORD,
+        ),
+        hasFMRole: user?.accounts?.some(
+          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
+        ),
+      });
+
+      const hasTenantRole = user?.accounts?.some(
+        (acc) => acc.role === RolesEnum.TENANT,
+      );
+
+      if (!hasTenantRole) {
+        console.log('❌ User does not have tenant role for tenant action');
+        console.log(
+          '💡 Suggesting tenant account creation or contact landlord',
+        );
+        await this.sendText(
+          from,
+          'You need a tenant account to view tenancy details. If you are a tenant for this property, please contact your landlord to set up your tenant account properly.',
+        );
+        return;
+      }
+
+      console.log('✅ User has tenant role, routing to tenant flow');
+      // Convert email to phone number for WhatsApp messaging
+      const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
+
+      // Route directly to tenant flow
+      if (message.type === 'interactive' || message.type === 'button') {
+        void this.tenantFlowService.handleInteractive(message, tenantPhone);
+      }
+      return; // Don't continue with role detection
+    }
+
     if (
       buttonId === 'select_role_fm' ||
       buttonId === 'select_role_landlord' ||
@@ -1288,5 +1342,25 @@ export class WhatsappBotService implements OnModuleInit {
     this.logger.log(
       `   Access Token: ${accessToken ? '***configured***' : 'missing'}`,
     );
+  }
+
+  /**
+   * Determines if a button action is tenant-specific and should always route to tenant flow
+   * regardless of the user's current role selection
+   */
+  private isTenantSpecificAction(buttonId: string): boolean {
+    // Extract the action part if it contains a payload (e.g., "confirm_tenancy_details:property-id")
+    const action = buttonId.includes(':') ? buttonId.split(':')[0] : buttonId;
+
+    const tenantSpecificActions = [
+      'confirm_tenancy_details',
+      'tenancy_details_correct',
+      'tenancy_details_incorrect',
+      'confirm_pay_rent',
+      'confirm_pay_ob',
+      // Add other tenant-specific actions here as needed
+    ];
+
+    return tenantSpecificActions.includes(action);
   }
 }

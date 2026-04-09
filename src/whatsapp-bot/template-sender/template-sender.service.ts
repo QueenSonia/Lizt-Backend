@@ -106,7 +106,8 @@ export interface TenantWelcomeParams {
   phone_number: string;
   tenant_name: string;
   landlord_name: string;
-  property_name?: string;
+  property_name: string;
+  property_id: string;
 }
 
 /**
@@ -127,6 +128,7 @@ export interface TenantAttachmentParams {
   tenant_name: string;
   landlord_name: string;
   property_name: string;
+  property_id: string;
 }
 
 /**
@@ -658,6 +660,7 @@ export class TemplateSenderService {
     tenant_name,
     landlord_name,
     property_name,
+    property_id,
   }: TenantWelcomeParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -685,7 +688,7 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 parameter_name: 'property_name',
-                text: property_name || 'your property',
+                text: property_name,
               },
             ],
           },
@@ -696,7 +699,7 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'payload',
-                payload: 'confirm_tenancy_details',
+                payload: `confirm_tenancy_details:${property_id}`,
               },
             ],
           },
@@ -777,12 +780,14 @@ export class TemplateSenderService {
     tenant_name,
     landlord_name,
     property_name,
+    property_id,
   }: TenantAttachmentParams): Promise<void> {
     await this.sendTenantWelcomeTemplate({
       phone_number,
       tenant_name,
       landlord_name,
       property_name,
+      property_id,
     });
   }
 

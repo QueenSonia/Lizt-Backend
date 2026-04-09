@@ -609,6 +609,8 @@ export class TenantFlowService {
 
     // Handle button IDs with payloads (e.g., "confirm_resolution_yes:request_id")
     let cleanButtonId = buttonId;
+    let propertyId: string | null = null;
+
     if (buttonId?.includes(':')) {
       const [action, payload] = buttonId.split(':');
       if (
@@ -624,6 +626,10 @@ export class TenantFlowService {
       if (action === 'confirm_pay_rent') {
         await this.handleConfirmPayRent(from, payload);
         return;
+      }
+      if (action === 'confirm_tenancy_details') {
+        cleanButtonId = action;
+        propertyId = payload; // Extract the property ID
       }
     }
 
@@ -687,7 +693,14 @@ export class TenantFlowService {
         break;
 
       case 'confirm_tenancy_details':
-        await this.handleConfirmTenancyDetails(from);
+        if (propertyId) {
+          await this.handleConfirmTenancyDetails(from, propertyId);
+        } else {
+          await this.templateSenderService.sendText(
+            from,
+            'Unable to retrieve property information. Please contact your landlord.',
+          );
+        }
         break;
 
       case 'tenancy_details_correct':
@@ -1849,12 +1862,17 @@ export class TenantFlowService {
 
   /**
    * Handle "Confirm details" quick reply from welcome_tenant template.
-   * Looks up the tenant's active tenancy and sends details with Yes/No buttons.
+   * Shows details for the specific property that was attached.
    */
-  private async handleConfirmTenancyDetails(from: string): Promise<void> {
+  private async handleConfirmTenancyDetails(
+    from: string,
+    propertyId: string,
+  ): Promise<void> {
     console.log(
       '🔍 DEBUG: handleConfirmTenancyDetails called for phone:',
       from,
+      'propertyId:',
+      propertyId,
     );
 
     const user = await this.findTenantByPhone(from);
@@ -1864,12 +1882,15 @@ export class TenantFlowService {
         ? {
             id: user.id,
             phone: user.phone_number,
+            first_name: user.first_name,
+            last_name: user.last_name,
             accounts: user.accounts?.map((a) => ({ id: a.id, role: a.role })),
           }
         : 'null',
     );
 
     if (!user?.accounts?.length) {
+      console.log('🔍 DEBUG: No user or accounts found, sending error message');
       await this.templateSenderService.sendText(
         from,
         'No tenancy info available.',
@@ -1880,6 +1901,24 @@ export class TenantFlowService {
     const accountId = user.accounts[0].id;
     console.log('🔍 DEBUG: Using account ID:', accountId);
 
+    // Let's also check ALL PropertyTenant records for this tenant (regardless of status)
+    const allPropertyTenantsAnyStatus = await this.propertyTenantRepo.find({
+      where: { tenant_id: accountId },
+      relations: ['property'],
+      order: { created_at: 'DESC' },
+    });
+
+    console.log(
+      '🔍 DEBUG: ALL PropertyTenant records (any status):',
+      allPropertyTenantsAnyStatus.map((pt) => ({
+        id: pt.id,
+        property_id: pt.property_id,
+        property_name: pt.property?.name,
+        status: pt.status,
+        created_at: pt.created_at,
+      })),
+    );
+
     // Find ALL active property tenancies for this tenant
     const allPropertyTenants = await this.propertyTenantRepo.find({
       where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
@@ -1888,7 +1927,7 @@ export class TenantFlowService {
     });
 
     console.log(
-      '🔍 DEBUG: Found ALL property tenancies:',
+      '🔍 DEBUG: ACTIVE PropertyTenant records:',
       allPropertyTenants.map((pt) => ({
         id: pt.id,
         property_id: pt.property_id,
@@ -1899,6 +1938,9 @@ export class TenantFlowService {
     );
 
     if (!allPropertyTenants?.length) {
+      console.log(
+        '🔍 DEBUG: No active property tenants found, sending error message',
+      );
       await this.templateSenderService.sendText(
         from,
         'Your tenancy details are not available yet. Please contact your landlord.',
@@ -1934,6 +1976,7 @@ export class TenantFlowService {
     }
 
     // Single tenancy - proceed with showing details
+    console.log('🔍 DEBUG: Single tenancy found, showing details');
     const propertyTenant = allPropertyTenants[0];
     await this.showTenancyDetailsForProperty(from, accountId, propertyTenant);
   }

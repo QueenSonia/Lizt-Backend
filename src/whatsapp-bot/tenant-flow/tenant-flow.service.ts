@@ -616,6 +616,18 @@ export class TenantFlowService {
         );
         break;
 
+      case 'confirm_tenancy_details':
+        await this.handleConfirmTenancyDetails(from);
+        break;
+
+      case 'tenancy_details_correct':
+        await this.handleTenancyDetailsCorrect(from);
+        break;
+
+      case 'tenancy_details_incorrect':
+        await this.handleTenancyDetailsIncorrect(from);
+        break;
+
       default:
         await this.templateSenderService.sendText(
           from,
@@ -719,7 +731,10 @@ export class TenantFlowService {
       return;
     }
 
-    const accountId = user.accounts[0].id;
+    const tenantAccount = user.accounts.find(
+      (a) => a.role === RolesEnum.TENANT,
+    );
+    const accountId = tenantAccount.id;
     this.logger.log('🏠 Looking for properties for account:', accountId);
 
     const properties = await this.propertyTenantRepo.find({
@@ -738,8 +753,14 @@ export class TenantFlowService {
     }
 
     for (const item of properties) {
+      // Filter to this tenant's active rent only
+      const tenantRents = item.property?.rents?.filter(
+        (r) =>
+          r.tenant_id === accountId && r.rent_status === RentStatusEnum.ACTIVE,
+      );
+
       // Check if rent data exists
-      if (!item.property?.rents?.length) {
+      if (!tenantRents?.length) {
         this.logger.log(
           '⚠️ No rent data found for property:',
           item.property?.name,
@@ -751,7 +772,7 @@ export class TenantFlowService {
         continue;
       }
 
-      const rent = item.property.rents[0];
+      const rent = tenantRents[tenantRents.length - 1];
 
       // Validate rent data
       if (!rent.rent_start_date || !rent.expiry_date || !rent.rental_price) {
@@ -1727,6 +1748,92 @@ export class TenantFlowService {
     await this.templateSenderService.sendText(
       from,
       `Your rent payment request for ${rent.property.name} has been sent to your landlord for approval. You'll be notified once they respond.`,
+    );
+  }
+
+  /**
+   * Handle "Confirm details" quick reply from welcome_tenant template.
+   * Looks up the tenant's active tenancy and sends details with Yes/No buttons.
+   */
+  private async handleConfirmTenancyDetails(from: string): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+
+    if (!user?.accounts?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No tenancy info available.',
+      );
+      return;
+    }
+
+    const accountId = user.accounts[0].id;
+
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
+      relations: ['property', 'property.rents'],
+    });
+
+    if (!propertyTenant?.property?.rents?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'Your tenancy details are not available yet. Please contact your landlord.',
+      );
+      return;
+    }
+
+    const property = propertyTenant.property;
+    const rent = property.rents[0];
+
+    const formatNGN = (amount: number) =>
+      amount != null
+        ? amount.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' })
+        : '—';
+
+    const formatDate = (date: Date | string | null) =>
+      date
+        ? new Date(date).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })
+        : '—';
+
+    const serviceCharge = rent.service_charge ?? property.service_charge ?? 0;
+
+    const detailsMessage =
+      `Here are your tenancy details:\n\n` +
+      `• Property: ${property.name}\n` +
+      `• Location: ${property.location}\n` +
+      `• Rent: ${formatNGN(rent.rental_price)}\n` +
+      `• Service charge: ${serviceCharge > 0 ? formatNGN(serviceCharge) : 'None'}\n` +
+      `• Tenancy start date: ${formatDate(rent.rent_start_date)}\n` +
+      `• Tenancy due date: ${formatDate(rent.expiry_date)}\n\n` +
+      `Are these details correct?`;
+
+    await this.templateSenderService.sendButtons(from, detailsMessage, [
+      { id: 'tenancy_details_correct', title: 'Yes, correct' },
+      { id: 'tenancy_details_incorrect', title: 'No, not correct' },
+    ]);
+  }
+
+  /**
+   * Handle "Yes, correct" response — tenant confirmed their tenancy details.
+   */
+  private async handleTenancyDetailsCorrect(from: string): Promise<void> {
+    await this.templateSenderService.sendButtons(
+      from,
+      `Great, you're all set.\n\nYou can now use Lizt to report issues, make payments and stay updated.\n\nSimply tap Hi to get started.`,
+      [{ id: 'main_menu', title: 'Hi' }],
+    );
+  }
+
+  /**
+   * Handle "No, not correct" response — tenant says details are wrong.
+   */
+  private async handleTenancyDetailsIncorrect(from: string): Promise<void> {
+    await this.templateSenderService.sendText(
+      from,
+      `Thanks for letting us know.\n\nPlease contact your landlord or property manager to update your tenancy details before continuing.`,
     );
   }
 

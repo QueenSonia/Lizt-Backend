@@ -689,7 +689,7 @@ export class PropertiesService {
             phone_number: normalizedPhone,
             tenant_name: tenantName,
             landlord_name: landlordName,
-            apartment_name: savedProperty.name,
+            property_name: savedProperty.name,
           });
         }
       } catch (error) {

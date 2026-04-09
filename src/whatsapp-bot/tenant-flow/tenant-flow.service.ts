@@ -2043,14 +2043,25 @@ export class TenantFlowService {
       relations: ['accounts'],
     });
 
+    console.log('🔍 findTenantByPhone:', {
+      normalizedPhone,
+      userFound: !!user,
+      userId: user?.id,
+      accounts: user?.accounts?.map((a) => ({ id: a.id, role: a.role })),
+    });
+
     if (!user?.accounts?.length) return null;
 
-    // Find which of this user's accounts are actually used as tenant_id
-    // in PropertyTenant records (works regardless of account role label).
     const accountIds = user.accounts.map((a) => a.id);
     const tenantRecords = await this.propertyTenantRepo.find({
       where: { tenant_id: In(accountIds) },
       select: ['tenant_id'],
+    });
+
+    console.log('🔍 PropertyTenant lookup:', {
+      accountIds,
+      tenantRecordsFound: tenantRecords.length,
+      tenantIds: tenantRecords.map((r) => r.tenant_id),
     });
 
     const tenantAccountIds = new Set(tenantRecords.map((r) => r.tenant_id));

@@ -6,6 +6,7 @@ import {
   Body,
   Res,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -57,6 +58,13 @@ export class ReceiptsController {
     @CurrentUser() user: Account,
     @Param('offerLetterId') offerLetterId: string,
   ) {
+    // Validate UUID format
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(offerLetterId)) {
+      throw new BadRequestException('Invalid offer letter ID format');
+    }
+
     return this.receiptsService.findByOfferLetterId(offerLetterId, user.id);
   }
 
@@ -72,6 +80,13 @@ export class ReceiptsController {
     @CurrentUser() user: Account,
     @Param('propertyId') propertyId: string,
   ) {
+    // Validate UUID format
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(propertyId)) {
+      throw new BadRequestException('Invalid property ID format');
+    }
+
     return this.receiptsService.findByPropertyId(propertyId, user.id);
   }
 

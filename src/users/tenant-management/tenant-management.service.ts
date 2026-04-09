@@ -343,6 +343,7 @@ export class TenantManagementService {
           phone_number: this.utilService.normalizePhoneNumber(phone_number),
           tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
           landlord_name: admin.profile_name,
+          property_name: property?.name,
         });
 
         // Only send notification to admin if phone number exists
@@ -870,6 +871,7 @@ export class TenantManagementService {
           phone_number: this.utilService.normalizePhoneNumber(phone_number),
           tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
           landlord_name: admin.profile_name,
+          property_name: property?.name,
         });
 
         // Only send notification to admin if phone number exists

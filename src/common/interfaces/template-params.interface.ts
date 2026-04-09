@@ -60,6 +60,7 @@ export interface TenantWelcomeParams {
   phone_number: string;
   tenant_name: string;
   landlord_name: string;
+  property_name?: string;
 }
 
 export interface PropertyTemplateParams {

@@ -1793,10 +1793,10 @@ export class TenantFlowService {
 
     const propertyTenant = await this.propertyTenantRepo.findOne({
       where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
-      relations: ['property', 'property.rents'],
+      relations: ['property'],
     });
 
-    if (!propertyTenant?.property?.rents?.length) {
+    if (!propertyTenant?.property) {
       await this.templateSenderService.sendText(
         from,
         'Your tenancy details are not available yet. Please contact your landlord.',
@@ -1804,8 +1804,24 @@ export class TenantFlowService {
       return;
     }
 
+    // Find the rent record specifically for this tenant
+    const rent = await this.rentRepo.findOne({
+      where: {
+        tenant_id: accountId,
+        property_id: propertyTenant.property.id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!rent) {
+      await this.templateSenderService.sendText(
+        from,
+        'Your rent details are not available yet. Please contact your landlord.',
+      );
+      return;
+    }
+
     const property = propertyTenant.property;
-    const rent = property.rents[0];
 
     const formatNGN = (amount: number) =>
       amount != null

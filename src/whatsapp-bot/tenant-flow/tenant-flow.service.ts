@@ -1878,29 +1878,9 @@ export class TenantFlowService {
     from: string,
     propertyId: string,
   ): Promise<void> {
-    console.log(
-      '🔍 DEBUG: handleConfirmTenancyDetails called for phone:',
-      from,
-      'propertyId:',
-      propertyId,
-    );
-
     const user = await this.findTenantByPhone(from);
-    console.log(
-      '🔍 DEBUG: Found user:',
-      user
-        ? {
-            id: user.id,
-            phone: user.phone_number,
-            first_name: user.first_name,
-            last_name: user.last_name,
-            accounts: user.accounts?.map((a) => ({ id: a.id, role: a.role })),
-          }
-        : 'null',
-    );
 
     if (!user?.accounts?.length) {
-      console.log('🔍 DEBUG: No user or accounts found, sending error message');
       await this.templateSenderService.sendText(
         from,
         'No tenancy info available.',
@@ -1909,57 +1889,8 @@ export class TenantFlowService {
     }
 
     const accountId = user.accounts[0].id;
-    console.log('🔍 DEBUG: Using account ID:', accountId);
 
-    // Let's also check ALL PropertyTenant records for this tenant (regardless of status)
-    const allPropertyTenantsAnyStatus = await this.propertyTenantRepo.find({
-      where: { tenant_id: accountId },
-      relations: ['property'],
-      order: { created_at: 'DESC' },
-    });
-
-    console.log(
-      '🔍 DEBUG: ALL PropertyTenant records (any status):',
-      allPropertyTenantsAnyStatus.map((pt) => ({
-        id: pt.id,
-        property_id: pt.property_id,
-        property_name: pt.property?.name,
-        status: pt.status,
-        created_at: pt.created_at,
-      })),
-    );
-
-    // Find ALL active property tenancies for this tenant
-    const allPropertyTenants = await this.propertyTenantRepo.find({
-      where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
-      relations: ['property'],
-      order: { created_at: 'DESC' },
-    });
-
-    console.log(
-      '🔍 DEBUG: ACTIVE PropertyTenant records:',
-      allPropertyTenants.map((pt) => ({
-        id: pt.id,
-        property_id: pt.property_id,
-        property_name: pt.property?.name,
-        status: pt.status,
-        created_at: pt.created_at,
-      })),
-    );
-
-    if (!allPropertyTenants?.length) {
-      console.log(
-        '🔍 DEBUG: No active property tenants found, sending error message',
-      );
-      await this.templateSenderService.sendText(
-        from,
-        'Your tenancy details are not available yet. Please contact your landlord.',
-      );
-      return;
-    }
-
-    // Find the specific property tenant record for the provided property ID
-    const specificPropertyTenant = await this.propertyTenantRepo.findOne({
+    const propertyTenant = await this.propertyTenantRepo.findOne({
       where: {
         tenant_id: accountId,
         property_id: propertyId,
@@ -1968,26 +1899,7 @@ export class TenantFlowService {
       relations: ['property'],
     });
 
-    console.log(
-      '🔍 DEBUG: Specific PropertyTenant record for property ID',
-      propertyId,
-      ':',
-      specificPropertyTenant
-        ? {
-            id: specificPropertyTenant.id,
-            property_id: specificPropertyTenant.property_id,
-            property_name: specificPropertyTenant.property?.name,
-            status: specificPropertyTenant.status,
-            created_at: specificPropertyTenant.created_at,
-          }
-        : 'null',
-    );
-
-    if (!specificPropertyTenant) {
-      console.log(
-        '🔍 DEBUG: No active tenancy found for property ID:',
-        propertyId,
-      );
+    if (!propertyTenant) {
       await this.templateSenderService.sendText(
         from,
         'No active tenancy found for this property. Please contact your landlord.',
@@ -1995,13 +1907,7 @@ export class TenantFlowService {
       return;
     }
 
-    // Show details for the specific property
-    console.log('🔍 DEBUG: Showing details for specific property:', propertyId);
-    await this.showTenancyDetailsForProperty(
-      from,
-      accountId,
-      specificPropertyTenant,
-    );
+    await this.showTenancyDetailsForProperty(from, accountId, propertyTenant);
   }
 
   /**
@@ -2012,13 +1918,6 @@ export class TenantFlowService {
     accountId: string,
     propertyTenant: any,
   ): Promise<void> {
-    console.log('🔍 DEBUG: Showing details for property tenant:', {
-      id: propertyTenant.id,
-      property_id: propertyTenant.property_id,
-      property_name: propertyTenant.property?.name,
-      status: propertyTenant.status,
-    });
-
     if (!propertyTenant?.property) {
       await this.templateSenderService.sendText(
         from,
@@ -2135,32 +2034,6 @@ export class TenantFlowService {
    */
   private async findTenantByPhone(phoneNumber: string): Promise<Users | null> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
-    console.log(
-      '🔍 DEBUG: findTenantByPhone - Original phone:',
-      phoneNumber,
-      'Normalized:',
-      normalizedPhone,
-    );
-
-    // First, let's see if there are multiple users with this phone number
-    const allUsersWithPhone = await this.usersRepo.find({
-      where: {
-        phone_number: normalizedPhone,
-      },
-      relations: ['accounts'],
-    });
-
-    console.log(
-      '🔍 DEBUG: ALL users with this phone number:',
-      allUsersWithPhone.map((u) => ({
-        id: u.id,
-        phone_number: u.phone_number,
-        first_name: u.first_name,
-        last_name: u.last_name,
-        role: u.role,
-        accounts: u.accounts?.map((a) => ({ id: a.id, role: a.role })),
-      })),
-    );
 
     const user = await this.usersRepo.findOne({
       where: {
@@ -2170,18 +2043,13 @@ export class TenantFlowService {
       relations: ['accounts'],
     });
 
-    console.log(
-      '🔍 DEBUG: findTenantByPhone - Found TENANT user:',
-      user
-        ? {
-            id: user.id,
-            phone_number: user.phone_number,
-            first_name: user.first_name,
-            last_name: user.last_name,
-            accounts: user.accounts?.map((a) => ({ id: a.id, role: a.role })),
-          }
-        : 'null',
-    );
+    // TypeORM loads ALL accounts even when role is used in the WHERE clause.
+    // Filter here so every caller can safely use accounts[0] as the tenant account.
+    if (user) {
+      user.accounts = user.accounts?.filter(
+        (a) => a.role === RolesEnum.TENANT,
+      ) ?? [];
+    }
 
     return user;
   }

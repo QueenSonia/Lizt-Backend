@@ -209,6 +209,14 @@ export class LandlordFlowService {
       return;
     }
 
+    if (!serviceRequest.tenant?.user || !serviceRequest.property) {
+      await this.templateSenderService.sendText(
+        from,
+        'Unable to load full request details. Please contact support.',
+      );
+      return;
+    }
+
     const statusLabel = this.getStatusLabel(serviceRequest.status);
 
     await this.templateSenderService.sendText(
@@ -300,14 +308,16 @@ export class LandlordFlowService {
       `You have acknowledged service request ID: ${text}`,
     );
 
-    await this.templateSenderService.sendText(
-      this.utilService.normalizePhoneNumber(
-        serviceRequest.tenant.user.phone_number,
-      ),
-      `Your service request with ID: ${text} is being processed by ${this.utilService.toSentenceCase(
-        serviceRequest.facilityManager.account.profile_name,
-      )}.`,
-    );
+    if (serviceRequest.tenant?.user?.phone_number) {
+      await this.templateSenderService.sendText(
+        this.utilService.normalizePhoneNumber(
+          serviceRequest.tenant.user.phone_number,
+        ),
+        `Your service request with ID: ${text} is being processed by ${this.utilService.toSentenceCase(
+          serviceRequest.facilityManager?.account?.profile_name || 'your facility manager',
+        )}.`,
+      );
+    }
 
     await this.cache.delete(`service_request_state_facility_${from}`);
   }
@@ -397,12 +407,14 @@ export class LandlordFlowService {
       `You have updated service request ID: ${requestId.trim()}`,
     );
 
-    await this.templateSenderService.sendText(
-      this.utilService.normalizePhoneNumber(
-        serviceRequest.tenant.user.phone_number,
-      ),
-      `Update on your service request with ID: ${requestId.trim()} - ${feedback}`,
-    );
+    if (serviceRequest.tenant?.user?.phone_number) {
+      await this.templateSenderService.sendText(
+        this.utilService.normalizePhoneNumber(
+          serviceRequest.tenant.user.phone_number,
+        ),
+        `Update on your service request with ID: ${requestId.trim()} - ${feedback}`,
+      );
+    }
 
     await this.cache.delete(`service_request_state_facility_${from}`);
   }
@@ -450,17 +462,18 @@ export class LandlordFlowService {
       `You have resolved service request ID: ${requestId}. Waiting for tenant confirmation.`,
     );
 
-    // Trigger Tenant Confirmation
-    await this.templateSenderService.sendTenantConfirmationTemplate({
-      phone_number: this.utilService.normalizePhoneNumber(
-        serviceRequest.tenant.user.phone_number,
-      ),
-      tenant_name: this.utilService.toSentenceCase(
-        serviceRequest.tenant.user.first_name,
-      ),
-      request_description: serviceRequest.description,
-      request_id: serviceRequest.request_id,
-    });
+    if (serviceRequest.tenant?.user?.phone_number) {
+      await this.templateSenderService.sendTenantConfirmationTemplate({
+        phone_number: this.utilService.normalizePhoneNumber(
+          serviceRequest.tenant.user.phone_number,
+        ),
+        tenant_name: this.utilService.toSentenceCase(
+          serviceRequest.tenant.user.first_name,
+        ),
+        request_description: serviceRequest.description,
+        request_id: serviceRequest.request_id,
+      });
+    }
 
     await this.cache.delete(`service_request_state_facility_${from}`);
   }
@@ -723,26 +736,21 @@ export class LandlordFlowService {
       "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
     );
 
-    // Trigger Tenant Confirmation
-    this.logger.log(
-      'Sending tenant confirmation to:',
-      serviceRequest.tenant.user.phone_number,
-    );
-
-    try {
-      await this.templateSenderService.sendTenantConfirmationTemplate({
-        phone_number: this.utilService.normalizePhoneNumber(
-          serviceRequest.tenant.user.phone_number,
-        ),
-        tenant_name: this.utilService.toSentenceCase(
-          serviceRequest.tenant.user.first_name,
-        ),
-        request_description: serviceRequest.description,
-        request_id: serviceRequest.request_id,
-      });
-      this.logger.log('Tenant confirmation sent successfully');
-    } catch (error) {
-      this.logger.error('Failed to send tenant confirmation:', error);
+    if (serviceRequest.tenant?.user?.phone_number) {
+      try {
+        await this.templateSenderService.sendTenantConfirmationTemplate({
+          phone_number: this.utilService.normalizePhoneNumber(
+            serviceRequest.tenant.user.phone_number,
+          ),
+          tenant_name: this.utilService.toSentenceCase(
+            serviceRequest.tenant.user.first_name,
+          ),
+          request_description: serviceRequest.description,
+          request_id: serviceRequest.request_id,
+        });
+      } catch (error) {
+        this.logger.error('Failed to send tenant confirmation:', error);
+      }
     }
 
     await this.cache.delete(`service_request_state_facility_${from}`);

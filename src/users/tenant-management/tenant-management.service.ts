@@ -344,6 +344,7 @@ export class TenantManagementService {
           tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
           landlord_name: admin.profile_name,
           property_name: property?.name,
+          property_id: property_id,
         });
 
         // Only send notification to admin if phone number exists
@@ -571,6 +572,7 @@ export class TenantManagementService {
             tenant_name: tenantName,
             landlord_name: agencyName,
             property_name: property.name,
+            property_id: propertyId,
           });
 
           // Emit tenant attached event for live feed
@@ -872,6 +874,7 @@ export class TenantManagementService {
           tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
           landlord_name: admin.profile_name,
           property_name: property?.name,
+          property_id: property_id,
         });
 
         // Only send notification to admin if phone number exists
@@ -1348,6 +1351,7 @@ export class TenantManagementService {
           tenant_name: tenantName,
           landlord_name: agencyName,
           property_name: property.name,
+          property_id: property_id,
         });
 
         // Emit tenant attached event for live feed

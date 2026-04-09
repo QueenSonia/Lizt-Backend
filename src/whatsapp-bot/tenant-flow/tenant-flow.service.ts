@@ -610,10 +610,7 @@ export class TenantFlowService {
         break;
 
       case 'cancel_payment':
-        await this.templateSenderService.sendText(
-          from,
-          'Payment cancelled.',
-        );
+        await this.templateSenderService.sendText(from, 'Payment cancelled.');
         break;
 
       case 'confirm_tenancy_details':
@@ -734,6 +731,12 @@ export class TenantFlowService {
     const tenantAccount = user.accounts.find(
       (a) => a.role === RolesEnum.TENANT,
     );
+
+    if (!tenantAccount) {
+      this.logger.error('No tenant account found for user');
+      return;
+    }
+
     const accountId = tenantAccount.id;
     this.logger.log('🏠 Looking for properties for account:', accountId);
 
@@ -1565,20 +1568,34 @@ export class TenantFlowService {
     }
     endDate.setDate(endDate.getDate() - 1);
 
-    const startFormatted = startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-    const endFormatted = endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const startFormatted = startDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const endFormatted = endDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
 
     let message = `Do you want to send a rent renewal request to your landlord for *${rent.property.name}*?\n`;
     message += `\n*Frequency:* ${paymentFrequency}`;
     message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
     message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
-    if (serviceCharge > 0) message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
-    if (outstandingBalance > 0) message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
-    if (walletBalance > 0) message += `\n*Wallet Credit:* -${formatNGN(walletBalance)}`;
+    if (serviceCharge > 0)
+      message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
+    if (outstandingBalance > 0)
+      message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+    if (walletBalance > 0)
+      message += `\n*Wallet Credit:* -${formatNGN(walletBalance)}`;
     message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
 
     await this.templateSenderService.sendButtons(from, message, [
-      { id: `confirm_pay_rent:${rent.property_id}`, title: 'Yes, send request' },
+      {
+        id: `confirm_pay_rent:${rent.property_id}`,
+        title: 'Yes, send request',
+      },
       { id: 'cancel_payment', title: 'Cancel' },
     ]);
   }
@@ -1722,27 +1739,33 @@ export class TenantFlowService {
     const formatNGN = (amt: number) =>
       amt.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
 
-    const startFormatted = startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-    const endFormatted = endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const startFormatted = startDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const endFormatted = endDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
 
     let message = `${tenantName} is requesting to pay rent for *${rent.property.name}*.\n`;
     message += `\n*Frequency:* ${paymentFrequency}`;
     message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
     message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
-    if (serviceCharge > 0) message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
-    if (outstandingBalance > 0) message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+    if (serviceCharge > 0)
+      message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
+    if (outstandingBalance > 0)
+      message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
     message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
     message += `\n\nDo you approve this payment?`;
 
     // Send approval request to landlord with buttons
-    await this.templateSenderService.sendButtons(
-      landlordPhone,
-      message,
-      [
-        { id: `approve_rent_request:${invoice.id}`, title: 'Approve' },
-        { id: `decline_rent_request:${invoice.id}`, title: 'Decline' },
-      ],
-    );
+    await this.templateSenderService.sendButtons(landlordPhone, message, [
+      { id: `approve_rent_request:${invoice.id}`, title: 'Approve' },
+      { id: `decline_rent_request:${invoice.id}`, title: 'Decline' },
+    ]);
 
     // Notify tenant
     await this.templateSenderService.sendText(

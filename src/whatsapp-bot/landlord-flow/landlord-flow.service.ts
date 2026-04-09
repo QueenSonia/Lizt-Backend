@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not } from 'typeorm';
 
@@ -13,6 +13,7 @@ import { ServiceRequestsService } from 'src/service-requests/service-requests.se
 import { TemplateSenderService, ButtonDefinition } from '../template-sender';
 import { IncomingMessage } from '../utils';
 import { LandlordFlow } from '../templates/landlord/landlordflow';
+import { TenantFlowService } from '../tenant-flow/tenant-flow.service';
 
 /**
  * LandlordFlowService handles all landlord and facility manager WhatsApp message interactions.
@@ -42,6 +43,9 @@ export class LandlordFlowService {
     private readonly serviceRequestService: ServiceRequestsService,
     private readonly templateSenderService: TemplateSenderService,
     private readonly landlordFlow: LandlordFlow,
+
+    @Inject(forwardRef(() => TenantFlowService))
+    private readonly tenantFlowService: TenantFlowService,
   ) {}
 
   /**
@@ -564,6 +568,16 @@ export class LandlordFlowService {
         break;
 
       default:
+        // Handle tenant-specific actions by routing to tenant flow
+        if (buttonId.startsWith('confirm_tenancy_details:')) {
+          const propertyId = buttonId.split(':')[1];
+          await this.tenantFlowService.handleConfirmTenancyDetails(
+            from,
+            propertyId,
+          );
+          break;
+        }
+
         // Handle dynamic button IDs like "mark_resolved:requestId"
         if (buttonId.startsWith('mark_resolved:')) {
           await this.handleMarkResolved(from, buttonId);

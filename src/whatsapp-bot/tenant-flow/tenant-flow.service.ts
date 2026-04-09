@@ -46,6 +46,7 @@ export class TenantFlowService {
     { id: 'service_request', title: 'Service request' },
     { id: 'view_tenancy', title: 'View tenancy details' },
     { id: 'payment', title: 'Payment' },
+    { id: 'switch_role', title: 'Switch Role' },
   ];
 
   constructor(
@@ -693,9 +694,14 @@ export class TenantFlowService {
         break;
 
       case 'confirm_tenancy_details':
+        console.log(
+          '🏠 Processing confirm_tenancy_details with property ID:',
+          propertyId,
+        );
         if (propertyId) {
           await this.handleConfirmTenancyDetails(from, propertyId);
         } else {
+          console.log('❌ No property ID provided for confirm_tenancy_details');
           await this.templateSenderService.sendText(
             from,
             'Unable to retrieve property information. Please contact your landlord.',
@@ -709,6 +715,10 @@ export class TenantFlowService {
 
       case 'tenancy_details_incorrect':
         await this.handleTenancyDetailsIncorrect(from);
+        break;
+
+      case 'switch_role':
+        await this.handleSwitchRole(from);
         break;
 
       default:
@@ -1864,7 +1874,7 @@ export class TenantFlowService {
    * Handle "Confirm details" quick reply from welcome_tenant template.
    * Shows details for the specific property that was attached.
    */
-  private async handleConfirmTenancyDetails(
+  async handleConfirmTenancyDetails(
     from: string,
     propertyId: string,
   ): Promise<void> {
@@ -1948,37 +1958,50 @@ export class TenantFlowService {
       return;
     }
 
-    // Handle multiple tenancies - ask user to select which property
-    if (allPropertyTenants.length > 1) {
+    // Find the specific property tenant record for the provided property ID
+    const specificPropertyTenant = await this.propertyTenantRepo.findOne({
+      where: {
+        tenant_id: accountId,
+        property_id: propertyId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    console.log(
+      '🔍 DEBUG: Specific PropertyTenant record for property ID',
+      propertyId,
+      ':',
+      specificPropertyTenant
+        ? {
+            id: specificPropertyTenant.id,
+            property_id: specificPropertyTenant.property_id,
+            property_name: specificPropertyTenant.property?.name,
+            status: specificPropertyTenant.status,
+            created_at: specificPropertyTenant.created_at,
+          }
+        : 'null',
+    );
+
+    if (!specificPropertyTenant) {
       console.log(
-        '🔍 DEBUG: Multiple tenancies found, asking user to select property',
+        '🔍 DEBUG: No active tenancy found for property ID:',
+        propertyId,
       );
-
-      const propertyList = allPropertyTenants
-        .map(
-          (pt, index) =>
-            `${index + 1}. ${pt.property?.name || 'Unknown Property'}`,
-        )
-        .join('\n');
-
-      const message = `You have multiple active tenancies. Please select which property you want to view details for:\n\n${propertyList}\n\nReply with the number (e.g., "1" for the first property).`;
-
-      await this.templateSenderService.sendText(from, message);
-
-      // Store the property tenancies in cache for selection
-      await this.cache.set(
-        `tenancy_details_selection_${from}`,
-        JSON.stringify(allPropertyTenants.map((pt) => pt.property_id)),
-        5 * 60 * 1000, // 5 minutes
+      await this.templateSenderService.sendText(
+        from,
+        'No active tenancy found for this property. Please contact your landlord.',
       );
-
       return;
     }
 
-    // Single tenancy - proceed with showing details
-    console.log('🔍 DEBUG: Single tenancy found, showing details');
-    const propertyTenant = allPropertyTenants[0];
-    await this.showTenancyDetailsForProperty(from, accountId, propertyTenant);
+    // Show details for the specific property
+    console.log('🔍 DEBUG: Showing details for specific property:', propertyId);
+    await this.showTenancyDetailsForProperty(
+      from,
+      accountId,
+      specificPropertyTenant,
+    );
   }
 
   /**
@@ -2092,6 +2115,18 @@ export class TenantFlowService {
     await this.templateSenderService.sendText(
       from,
       `Thanks for letting us know.\n\nPlease contact your landlord or property manager to update your tenancy details before continuing.`,
+    );
+  }
+
+  /**
+   * Handle role switching for multi-role users
+   */
+  private async handleSwitchRole(from: string): Promise<void> {
+    console.log('🔄 User requested role switch from tenant flow');
+    await this.cache.delete(`selected_role_${from}`);
+    await this.templateSenderService.sendText(
+      from,
+      'Role cleared. Send any message to select a new role.',
     );
   }
 

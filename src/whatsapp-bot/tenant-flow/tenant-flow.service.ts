@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike, Not } from 'typeorm';
+import { Repository, ILike, Not, In } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import { Users } from 'src/users/entities/user.entity';
@@ -2030,27 +2030,33 @@ export class TenantFlowService {
   }
 
   /**
-   * Find tenant by phone number using normalized format
+   * Find tenant by phone number.
+   * Filters user.accounts to only those that appear as tenant_id in PropertyTenant,
+   * so callers can safely use accounts[0] as the active tenant account regardless
+   * of what role label the account has.
    */
   private async findTenantByPhone(phoneNumber: string): Promise<Users | null> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
 
     const user = await this.usersRepo.findOne({
-      where: {
-        phone_number: normalizedPhone,
-        accounts: { role: RolesEnum.TENANT },
-      },
+      where: { phone_number: normalizedPhone },
       relations: ['accounts'],
     });
 
-    // TypeORM loads ALL accounts even when role is used in the WHERE clause.
-    // Filter here so every caller can safely use accounts[0] as the tenant account.
-    if (user) {
-      user.accounts = user.accounts?.filter(
-        (a) => a.role === RolesEnum.TENANT,
-      ) ?? [];
-    }
+    if (!user?.accounts?.length) return null;
 
+    // Find which of this user's accounts are actually used as tenant_id
+    // in PropertyTenant records (works regardless of account role label).
+    const accountIds = user.accounts.map((a) => a.id);
+    const tenantRecords = await this.propertyTenantRepo.find({
+      where: { tenant_id: In(accountIds) },
+      select: ['tenant_id'],
+    });
+
+    const tenantAccountIds = new Set(tenantRecords.map((r) => r.tenant_id));
+    if (!tenantAccountIds.size) return null;
+
+    user.accounts = user.accounts.filter((a) => tenantAccountIds.has(a.id));
     return user;
   }
 }

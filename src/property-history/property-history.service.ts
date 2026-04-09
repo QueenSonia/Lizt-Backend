@@ -75,6 +75,17 @@ export class PropertyHistoryService {
       return this.handlePaymentHistoryEntry(data);
     }
 
+    // Handle fee history entries: outstanding balance increase
+    if (data.event_type === 'user_added_fee') {
+      if (!data.tenant_id || data.tenant_id.trim() === '') {
+        throw new HttpException(
+          'Tenant ID is required for fee entries',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      return this.handleFeeHistoryEntry(data);
+    }
+
     const saved = await this.propertyHistoryRepository.save(data);
 
     // Create notification + WebSocket event for user-added history entries
@@ -131,7 +142,7 @@ export class PropertyHistoryService {
     const serviceChargeAmount = parsedData.serviceChargeAmount || 0;
 
     const rent = this.rentRepository.create({
-      property_id: data.property_id!,
+      property_id: data.property_id,
       tenant_id: data.tenant_id!,
       rent_start_date: startDate,
       expiry_date: endDate,
@@ -221,6 +232,59 @@ export class PropertyHistoryService {
 
     // Sync rent records to reflect the new payment
     await this.syncRentPaymentStatus(data.tenant_id!, data.property_id);
+
+    // Create notification for livefeed
+    await this.createHistoryNotification(data, saved);
+
+    return saved;
+  }
+
+  private async handleFeeHistoryEntry(
+    data: CreatePropertyHistoryDto,
+  ): Promise<PropertyHistory> {
+    const parsedData = JSON.parse(data.event_description || '{}');
+    const feeAmount = parsedData.feeAmount || 0;
+
+    if (feeAmount <= 0) {
+      throw new HttpException(
+        'Fee amount must be greater than 0',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    if (!data.tenant_id) {
+      throw new HttpException(
+        'Tenant ID is required for fee entries',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Save the history entry
+    const saved = await this.propertyHistoryRepository.save(data);
+
+    // Look up landlord via property
+    const property = await this.propertyRepository.findOne({
+      where: { id: data.property_id },
+    });
+
+    if (property?.owner_id) {
+      const landlordId = property.owner_id;
+      const tenantId = data.tenant_id!;
+
+      // Fee decreases the wallet (negative change) - increases what tenant owes
+      await this.tenantBalancesService.applyChange(
+        tenantId,
+        landlordId,
+        -feeAmount,
+        {
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description: `Fee: ${parsedData.feeDescription} - ₦${feeAmount.toLocaleString()}`,
+          propertyId: data.property_id,
+          relatedEntityType: 'property_history',
+          relatedEntityId: saved.id,
+        },
+      );
+    }
 
     // Create notification for livefeed
     await this.createHistoryNotification(data, saved);
@@ -346,6 +410,10 @@ export class PropertyHistoryService {
 
     if (existing.event_type === 'user_added_payment') {
       return this.handleUpdatePaymentHistoryEntry(id, existing, data);
+    }
+
+    if (existing.event_type === 'user_added_fee') {
+      return this.handleUpdateFeeHistoryEntry(id, existing, data);
     }
 
     return this.propertyHistoryRepository.update(id, data);
@@ -536,6 +604,87 @@ export class PropertyHistoryService {
     return this.getPropertyHistoryById(id);
   }
 
+  private async handleUpdateFeeHistoryEntry(
+    id: string,
+    existing: PropertyHistory,
+    data: UpdatePropertyHistoryDto,
+  ): Promise<PropertyHistory> {
+    const newParsedData = JSON.parse(data.event_description || '{}');
+    const newFeeAmount: number = newParsedData.feeAmount || 0;
+
+    if (newFeeAmount <= 0) {
+      throw new HttpException(
+        'Fee amount must be greater than 0',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const oldParsedData = JSON.parse(existing.event_description || '{}');
+    const oldFeeAmount: number = oldParsedData.feeAmount || 0;
+
+    // Update the history record first
+    await this.propertyHistoryRepository.update(id, data);
+
+    if (oldFeeAmount === newFeeAmount) {
+      return this.getPropertyHistoryById(id);
+    }
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: existing.property_id },
+    });
+
+    if (!property?.owner_id || !existing.tenant_id) {
+      return this.getPropertyHistoryById(id);
+    }
+
+    const tenantId = existing.tenant_id;
+    const landlordId = property.owner_id;
+
+    // Query ledger entries created by the original fee to reverse them precisely
+    const ledgerEntries = await this.ledgerRepository.find({
+      where: {
+        related_entity_id: id,
+        related_entity_type: 'property_history',
+        tenant_id: tenantId,
+      },
+    });
+
+    for (const entry of ledgerEntries) {
+      // Reverse each ledger entry by applying the opposite balance change.
+      const reversal = -Number(entry.balance_change);
+      if (reversal !== 0) {
+        await this.tenantBalancesService.applyChange(
+          tenantId,
+          landlordId,
+          reversal,
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Historical fee updated (reversal)',
+            propertyId: existing.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: id,
+          },
+        );
+      }
+    }
+
+    // Apply the new fee amount as a single wallet change (negative = increases what tenant owes)
+    await this.tenantBalancesService.applyChange(
+      tenantId,
+      landlordId,
+      -newFeeAmount,
+      {
+        type: TenantBalanceLedgerType.INITIAL_BALANCE,
+        description: `Fee: ${newParsedData.feeDescription} - ₦${newFeeAmount.toLocaleString()}`,
+        propertyId: existing.property_id,
+        relatedEntityType: 'property_history',
+        relatedEntityId: id,
+      },
+    );
+
+    return this.getPropertyHistoryById(id);
+  }
+
   async deletePropertyHistoryById(id: string) {
     const existing = await this.getPropertyHistoryById(id);
 
@@ -543,6 +692,8 @@ export class PropertyHistoryService {
       await this.reverseBalancesForTenancyEntry(existing);
     } else if (existing.event_type === 'user_added_payment') {
       await this.reverseBalancesForPaymentEntry(id, existing);
+    } else if (existing.event_type === 'user_added_fee') {
+      await this.reverseBalancesForFeeEntry(id, existing);
     }
 
     return this.propertyHistoryRepository.delete(id);
@@ -618,6 +769,47 @@ export class PropertyHistoryService {
 
     // Sync rent records to reflect the deleted payment
     await this.syncRentPaymentStatus(tenantId, existing.property_id);
+  }
+
+  private async reverseBalancesForFeeEntry(
+    id: string,
+    existing: PropertyHistory,
+  ): Promise<void> {
+    if (!existing.tenant_id) return;
+
+    const property = await this.propertyRepository.findOne({
+      where: { id: existing.property_id },
+    });
+    if (!property?.owner_id) return;
+
+    const tenantId = existing.tenant_id;
+    const landlordId = property.owner_id;
+
+    const ledgerEntries = await this.ledgerRepository.find({
+      where: {
+        related_entity_id: id,
+        related_entity_type: 'property_history',
+        tenant_id: tenantId,
+      },
+    });
+
+    for (const entry of ledgerEntries) {
+      const reversal = -Number(entry.balance_change);
+      if (reversal !== 0) {
+        await this.tenantBalancesService.applyChange(
+          tenantId,
+          landlordId,
+          reversal,
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Historical fee deleted (reversal)',
+            propertyId: existing.property_id,
+            relatedEntityType: 'property_history',
+            relatedEntityId: id,
+          },
+        );
+      }
+    }
   }
 
   /**

@@ -569,7 +569,7 @@ export class TenantManagementService {
             ),
             tenant_name: tenantName,
             landlord_name: agencyName,
-            apartment_name: property.name,
+            property_name: property.name,
           });
 
           // Emit tenant attached event for live feed
@@ -1345,7 +1345,7 @@ export class TenantManagementService {
           ),
           tenant_name: tenantName,
           landlord_name: agencyName,
-          apartment_name: property.name,
+          property_name: property.name,
         });
 
         // Emit tenant attached event for live feed
@@ -1961,7 +1961,7 @@ export class TenantManagementService {
           'Unknown Property',
         propertyId: propId === 'global' ? propRent?.property_id || '' : propId,
         outstandingAmount: entries.reduce(
-          (sum, e) => sum + (-Number(e.balance_change)),
+          (sum, e) => sum + -Number(e.balance_change),
           0,
         ),
         tenancyStartDate: propRent?.rent_start_date
@@ -1978,7 +1978,7 @@ export class TenantManagementService {
             const baseDescription =
               e.type === TenantBalanceLedgerType.MIGRATION
                 ? 'Historical tenancy recorded'
-                : (e.description || String(e.type));
+                : e.description || String(e.type);
             let periodDescription = baseDescription;
 
             if (e.related_entity_type === 'rent' && e.related_entity_id) {
@@ -3138,49 +3138,49 @@ export class TenantManagementService {
       totalCreditBalance,
       outstandingBalanceBreakdown,
       paymentTransactions: [
-          // Manual payments — property history is the authority for which payments
-          // currently exist and at what amount. Edited payments update in place so
-          // we never see stale pre-edit amounts. Deleted payments remove the record.
-          ...(account.property_histories || [])
-            .filter((h) => {
-              if (h.event_type !== 'user_added_payment') return false;
-              if (adminId && h.property?.owner_id !== adminId) return false;
-              return true;
-            })
-            .map((ph) => {
-              try {
-                const data = JSON.parse(ph.event_description || '{}');
-                const amount = Number(data.paymentAmount || 0);
-                if (amount <= 0) return null;
-                return {
-                  id: `payment-history-${ph.id}`,
-                  type: data.description || 'Payment received',
-                  amount: -amount,
-                  date: ph.move_in_date
-                    ? new Date(ph.move_in_date)
-                    : new Date(ph.created_at!),
-                };
-              } catch {
-                return null;
-              }
-            })
-            .filter((t): t is NonNullable<typeof t> => t !== null),
+        // Manual payments — property history is the authority for which payments
+        // currently exist and at what amount. Edited payments update in place so
+        // we never see stale pre-edit amounts. Deleted payments remove the record.
+        ...(account.property_histories || [])
+          .filter((h) => {
+            if (h.event_type !== 'user_added_payment') return false;
+            if (adminId && h.property?.owner_id !== adminId) return false;
+            return true;
+          })
+          .map((ph) => {
+            try {
+              const data = JSON.parse(ph.event_description || '{}');
+              const amount = Number(data.paymentAmount || 0);
+              if (amount <= 0) return null;
+              return {
+                id: `payment-history-${ph.id}`,
+                type: data.description || 'Payment received',
+                amount: -amount,
+                date: ph.move_in_date
+                  ? new Date(ph.move_in_date)
+                  : new Date(ph.created_at!),
+              };
+            } catch {
+              return null;
+            }
+          })
+          .filter((t): t is NonNullable<typeof t> => t !== null),
 
-          // Renewal invoice payments — no property history entry is created for
-          // these, so we read them directly from the ledger.
-          ...ledgerEntries
-            .filter(
-              (e) =>
-                Number(e.balance_change) > 0 &&
-                e.related_entity_type === 'renewal_invoice',
-            )
-            .map((e) => ({
-              id: e.id,
-              type: e.description || 'Renewal payment',
-              amount: -Number(e.balance_change), // payments are positive balance_change; show as negative (money out for tenant)
-              date: new Date(e.created_at!),
-            })),
-        ].sort((a, b) => b.date.getTime() - a.date.getTime()),
+        // Renewal invoice payments — no property history entry is created for
+        // these, so we read them directly from the ledger.
+        ...ledgerEntries
+          .filter(
+            (e) =>
+              Number(e.balance_change) > 0 &&
+              e.related_entity_type === 'renewal_invoice',
+          )
+          .map((e) => ({
+            id: e.id,
+            type: e.description || 'Renewal payment',
+            amount: -Number(e.balance_change), // payments are positive balance_change; show as negative (money out for tenant)
+            date: new Date(e.created_at!),
+          })),
+      ].sort((a, b) => b.date.getTime() - a.date.getTime()),
 
       history: history,
       kycInfo: {

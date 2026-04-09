@@ -1478,13 +1478,12 @@ export class TenantAttachmentService {
         receiptLink: receiptLink || 'none',
       });
 
-      // Send WhatsApp notification using existing tenant_welcome template
+      // Send WhatsApp notification using welcome_tenant template
       await this.whatsappBotService.sendTenantAttachmentNotification({
         phone_number: normalizedPhone,
         tenant_name: tenantName,
         landlord_name: agencyName,
-        apartment_name: propertyName,
-        receipt_link: receiptLink,
+        property_name: propertyName,
       });
 
       console.log(

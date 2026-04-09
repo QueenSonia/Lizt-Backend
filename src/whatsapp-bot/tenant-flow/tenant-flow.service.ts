@@ -610,10 +610,19 @@ export class TenantFlowService {
         break;
 
       case 'cancel_payment':
-        await this.templateSenderService.sendText(
-          from,
-          'Payment cancelled.',
-        );
+        await this.templateSenderService.sendText(from, 'Payment cancelled.');
+        break;
+
+      case 'confirm_tenancy_details':
+        await this.handleConfirmTenancyDetails(from);
+        break;
+
+      case 'tenancy_details_correct':
+        await this.handleTenancyDetailsCorrect(from);
+        break;
+
+      case 'tenancy_details_incorrect':
+        await this.handleTenancyDetailsIncorrect(from);
         break;
 
       default:
@@ -719,7 +728,16 @@ export class TenantFlowService {
       return;
     }
 
-    const accountId = user.accounts[0].id;
+    const tenantAccount = user.accounts.find(
+      (a) => a.role === RolesEnum.TENANT,
+    );
+
+    if (!tenantAccount) {
+      this.logger.error('No tenant account found for user');
+      return;
+    }
+
+    const accountId = tenantAccount.id;
     this.logger.log('🏠 Looking for properties for account:', accountId);
 
     const properties = await this.propertyTenantRepo.find({
@@ -738,8 +756,14 @@ export class TenantFlowService {
     }
 
     for (const item of properties) {
+      // Filter to this tenant's active rent only
+      const tenantRents = item.property?.rents?.filter(
+        (r) =>
+          r.tenant_id === accountId && r.rent_status === RentStatusEnum.ACTIVE,
+      );
+
       // Check if rent data exists
-      if (!item.property?.rents?.length) {
+      if (!tenantRents?.length) {
         this.logger.log(
           '⚠️ No rent data found for property:',
           item.property?.name,
@@ -751,7 +775,7 @@ export class TenantFlowService {
         continue;
       }
 
-      const rent = item.property.rents[0];
+      const rent = tenantRents[tenantRents.length - 1];
 
       // Validate rent data
       if (!rent.rent_start_date || !rent.expiry_date || !rent.rental_price) {
@@ -1544,20 +1568,34 @@ export class TenantFlowService {
     }
     endDate.setDate(endDate.getDate() - 1);
 
-    const startFormatted = startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-    const endFormatted = endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const startFormatted = startDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const endFormatted = endDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
 
     let message = `Do you want to send a rent renewal request to your landlord for *${rent.property.name}*?\n`;
     message += `\n*Frequency:* ${paymentFrequency}`;
     message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
     message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
-    if (serviceCharge > 0) message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
-    if (outstandingBalance > 0) message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
-    if (walletBalance > 0) message += `\n*Wallet Credit:* -${formatNGN(walletBalance)}`;
+    if (serviceCharge > 0)
+      message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
+    if (outstandingBalance > 0)
+      message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+    if (walletBalance > 0)
+      message += `\n*Wallet Credit:* -${formatNGN(walletBalance)}`;
     message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
 
     await this.templateSenderService.sendButtons(from, message, [
-      { id: `confirm_pay_rent:${rent.property_id}`, title: 'Yes, send request' },
+      {
+        id: `confirm_pay_rent:${rent.property_id}`,
+        title: 'Yes, send request',
+      },
       { id: 'cancel_payment', title: 'Cancel' },
     ]);
   }
@@ -1701,32 +1739,124 @@ export class TenantFlowService {
     const formatNGN = (amt: number) =>
       amt.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
 
-    const startFormatted = startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-    const endFormatted = endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const startFormatted = startDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const endFormatted = endDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
 
     let message = `${tenantName} is requesting to pay rent for *${rent.property.name}*.\n`;
     message += `\n*Frequency:* ${paymentFrequency}`;
     message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
     message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
-    if (serviceCharge > 0) message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
-    if (outstandingBalance > 0) message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+    if (serviceCharge > 0)
+      message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
+    if (outstandingBalance > 0)
+      message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
     message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
     message += `\n\nDo you approve this payment?`;
 
     // Send approval request to landlord with buttons
-    await this.templateSenderService.sendButtons(
-      landlordPhone,
-      message,
-      [
-        { id: `approve_rent_request:${invoice.id}`, title: 'Approve' },
-        { id: `decline_rent_request:${invoice.id}`, title: 'Decline' },
-      ],
-    );
+    await this.templateSenderService.sendButtons(landlordPhone, message, [
+      { id: `approve_rent_request:${invoice.id}`, title: 'Approve' },
+      { id: `decline_rent_request:${invoice.id}`, title: 'Decline' },
+    ]);
 
     // Notify tenant
     await this.templateSenderService.sendText(
       from,
       `Your rent payment request for ${rent.property.name} has been sent to your landlord for approval. You'll be notified once they respond.`,
+    );
+  }
+
+  /**
+   * Handle "Confirm details" quick reply from welcome_tenant template.
+   * Looks up the tenant's active tenancy and sends details with Yes/No buttons.
+   */
+  private async handleConfirmTenancyDetails(from: string): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+
+    if (!user?.accounts?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No tenancy info available.',
+      );
+      return;
+    }
+
+    const accountId = user.accounts[0].id;
+
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
+      relations: ['property', 'property.rents'],
+    });
+
+    if (!propertyTenant?.property?.rents?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'Your tenancy details are not available yet. Please contact your landlord.',
+      );
+      return;
+    }
+
+    const property = propertyTenant.property;
+    const rent = property.rents[0];
+
+    const formatNGN = (amount: number) =>
+      amount != null
+        ? amount.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' })
+        : '—';
+
+    const formatDate = (date: Date | string | null) =>
+      date
+        ? new Date(date).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })
+        : '—';
+
+    const serviceCharge = rent.service_charge ?? property.service_charge ?? 0;
+
+    const detailsMessage =
+      `Here are your tenancy details:\n\n` +
+      `• Property: ${property.name}\n` +
+      `• Location: ${property.location}\n` +
+      `• Rent: ${formatNGN(rent.rental_price)}\n` +
+      `• Service charge: ${serviceCharge > 0 ? formatNGN(serviceCharge) : 'None'}\n` +
+      `• Tenancy start date: ${formatDate(rent.rent_start_date)}\n` +
+      `• Tenancy due date: ${formatDate(rent.expiry_date)}\n\n` +
+      `Are these details correct?`;
+
+    await this.templateSenderService.sendButtons(from, detailsMessage, [
+      { id: 'tenancy_details_correct', title: 'Yes, correct' },
+      { id: 'tenancy_details_incorrect', title: 'No, not correct' },
+    ]);
+  }
+
+  /**
+   * Handle "Yes, correct" response — tenant confirmed their tenancy details.
+   */
+  private async handleTenancyDetailsCorrect(from: string): Promise<void> {
+    await this.templateSenderService.sendButtons(
+      from,
+      `Great, you're all set.\n\nYou can now use Lizt to report issues, make payments and stay updated.\n\nSimply tap Hi to get started.`,
+      [{ id: 'main_menu', title: 'Hi' }],
+    );
+  }
+
+  /**
+   * Handle "No, not correct" response — tenant says details are wrong.
+   */
+  private async handleTenancyDetailsIncorrect(from: string): Promise<void> {
+    await this.templateSenderService.sendText(
+      from,
+      `Thanks for letting us know.\n\nPlease contact your landlord or property manager to update your tenancy details before continuing.`,
     );
   }
 

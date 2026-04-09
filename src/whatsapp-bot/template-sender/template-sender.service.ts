@@ -106,8 +106,7 @@ export interface TenantWelcomeParams {
   phone_number: string;
   tenant_name: string;
   landlord_name: string;
-  apartment_name?: string;
-  receipt_link?: string;
+  property_name?: string;
 }
 
 /**
@@ -127,8 +126,7 @@ export interface TenantAttachmentParams {
   phone_number: string;
   tenant_name: string;
   landlord_name: string;
-  apartment_name: string;
-  receipt_link?: string;
+  property_name: string;
 }
 
 /**
@@ -653,21 +651,20 @@ export class TemplateSenderService {
   }
 
   /**
-   * Send tenant welcome template
+   * Send tenant welcome template (welcome_tenant — Utility category)
    */
   async sendTenantWelcomeTemplate({
     phone_number,
     tenant_name,
     landlord_name,
-    apartment_name,
-    receipt_link,
+    property_name,
   }: TenantWelcomeParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
       type: 'template',
       template: {
-        name: 'tenant_welcome',
+        name: 'welcome_tenant',
         language: {
           code: 'en',
         },
@@ -687,8 +684,19 @@ export class TemplateSenderService {
               },
               {
                 type: 'text',
-                parameter_name: 'apartment_name',
-                text: apartment_name || 'your property',
+                parameter_name: 'property_name',
+                text: property_name || 'your property',
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: 'confirm_tenancy_details',
               },
             ],
           },
@@ -697,25 +705,6 @@ export class TemplateSenderService {
     };
 
     await this.sendToWhatsappAPI(payload);
-
-    // Send receipt link as a follow-up message if available
-    if (receipt_link) {
-      const receiptPayload: WhatsAppPayload = {
-        messaging_product: 'whatsapp',
-        to: phone_number,
-        type: 'text',
-        text: {
-          preview_url: true,
-          body: `View your payment receipt: ${receipt_link}`,
-        },
-      };
-      await this.sendToWhatsappAPI(receiptPayload).catch((err) => {
-        console.warn(
-          'Failed to send receipt link follow-up message:',
-          err.message,
-        );
-      });
-    }
   }
 
   /**
@@ -787,15 +776,13 @@ export class TemplateSenderService {
     phone_number,
     tenant_name,
     landlord_name,
-    apartment_name,
-    receipt_link,
+    property_name,
   }: TenantAttachmentParams): Promise<void> {
     await this.sendTenantWelcomeTemplate({
       phone_number,
       tenant_name,
       landlord_name,
-      apartment_name,
-      receipt_link,
+      property_name,
     });
   }
 

@@ -128,6 +128,19 @@ export class TenantFlowService {
   async cachedResponse(from: string, text: string): Promise<void> {
     const userState = await this.cache.get(`service_request_state_${from}`);
 
+    // Handle property selection for tenancy details
+    const tenancyDetailsSelection = await this.cache.get(
+      `tenancy_details_selection_${from}`,
+    );
+    if (tenancyDetailsSelection) {
+      await this.handleTenancyDetailsPropertySelection(
+        from,
+        text,
+        tenancyDetailsSelection,
+      );
+      return;
+    }
+
     // Handle property selection for multi-property tenants
     if (userState && userState.startsWith('select_property:')) {
       await this.handlePropertySelection(from, text, userState);
@@ -166,6 +179,66 @@ export class TenantFlowService {
   /**
    * Handle property selection for multi-property tenants
    */
+  /**
+   * Handle property selection for tenancy details confirmation
+   */
+  private async handleTenancyDetailsPropertySelection(
+    from: string,
+    text: string,
+    cachedPropertyIds: string,
+  ): Promise<void> {
+    const propertyIds = JSON.parse(cachedPropertyIds);
+    const selectedIndex = parseInt(text.trim()) - 1;
+
+    if (
+      isNaN(selectedIndex) ||
+      selectedIndex < 0 ||
+      selectedIndex >= propertyIds.length
+    ) {
+      await this.templateSenderService.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number.',
+      );
+      return;
+    }
+
+    // Clear the cache
+    await this.cache.delete(`tenancy_details_selection_${from}`);
+
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No tenancy info available.',
+      );
+      return;
+    }
+
+    const accountId = user.accounts[0].id;
+    const selectedPropertyId = propertyIds[selectedIndex];
+
+    // Find the specific property tenant record
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: {
+        tenant_id: accountId,
+        property_id: selectedPropertyId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    if (!propertyTenant) {
+      await this.templateSenderService.sendText(
+        from,
+        'Property tenancy not found. Please contact your landlord.',
+      );
+      return;
+    }
+
+    // Show details for the selected property
+    await this.showTenancyDetailsForProperty(from, accountId, propertyTenant);
+  }
+
   private async handlePropertySelection(
     from: string,
     text: string,
@@ -1779,7 +1852,22 @@ export class TenantFlowService {
    * Looks up the tenant's active tenancy and sends details with Yes/No buttons.
    */
   private async handleConfirmTenancyDetails(from: string): Promise<void> {
+    console.log(
+      '🔍 DEBUG: handleConfirmTenancyDetails called for phone:',
+      from,
+    );
+
     const user = await this.findTenantByPhone(from);
+    console.log(
+      '🔍 DEBUG: Found user:',
+      user
+        ? {
+            id: user.id,
+            phone: user.phone_number,
+            accounts: user.accounts?.map((a) => ({ id: a.id, role: a.role })),
+          }
+        : 'null',
+    );
 
     if (!user?.accounts?.length) {
       await this.templateSenderService.sendText(
@@ -1790,13 +1878,27 @@ export class TenantFlowService {
     }
 
     const accountId = user.accounts[0].id;
+    console.log('🔍 DEBUG: Using account ID:', accountId);
 
-    const propertyTenant = await this.propertyTenantRepo.findOne({
+    // Find ALL active property tenancies for this tenant
+    const allPropertyTenants = await this.propertyTenantRepo.find({
       where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
       relations: ['property'],
+      order: { created_at: 'DESC' },
     });
 
-    if (!propertyTenant?.property) {
+    console.log(
+      '🔍 DEBUG: Found ALL property tenancies:',
+      allPropertyTenants.map((pt) => ({
+        id: pt.id,
+        property_id: pt.property_id,
+        property_name: pt.property?.name,
+        status: pt.status,
+        created_at: pt.created_at,
+      })),
+    );
+
+    if (!allPropertyTenants?.length) {
       await this.templateSenderService.sendText(
         from,
         'Your tenancy details are not available yet. Please contact your landlord.',
@@ -1804,7 +1906,62 @@ export class TenantFlowService {
       return;
     }
 
-    // Find the rent record specifically for this tenant
+    // Handle multiple tenancies - ask user to select which property
+    if (allPropertyTenants.length > 1) {
+      console.log(
+        '🔍 DEBUG: Multiple tenancies found, asking user to select property',
+      );
+
+      const propertyList = allPropertyTenants
+        .map(
+          (pt, index) =>
+            `${index + 1}. ${pt.property?.name || 'Unknown Property'}`,
+        )
+        .join('\n');
+
+      const message = `You have multiple active tenancies. Please select which property you want to view details for:\n\n${propertyList}\n\nReply with the number (e.g., "1" for the first property).`;
+
+      await this.templateSenderService.sendText(from, message);
+
+      // Store the property tenancies in cache for selection
+      await this.cache.set(
+        `tenancy_details_selection_${from}`,
+        JSON.stringify(allPropertyTenants.map((pt) => pt.property_id)),
+        5 * 60 * 1000, // 5 minutes
+      );
+
+      return;
+    }
+
+    // Single tenancy - proceed with showing details
+    const propertyTenant = allPropertyTenants[0];
+    await this.showTenancyDetailsForProperty(from, accountId, propertyTenant);
+  }
+
+  /**
+   * Show tenancy details for a specific property
+   */
+  private async showTenancyDetailsForProperty(
+    from: string,
+    accountId: string,
+    propertyTenant: any,
+  ): Promise<void> {
+    console.log('🔍 DEBUG: Showing details for property tenant:', {
+      id: propertyTenant.id,
+      property_id: propertyTenant.property_id,
+      property_name: propertyTenant.property?.name,
+      status: propertyTenant.status,
+    });
+
+    if (!propertyTenant?.property) {
+      await this.templateSenderService.sendText(
+        from,
+        'Property details are not available. Please contact your landlord.',
+      );
+      return;
+    }
+
+    // Find the rent record specifically for this tenant and property
     const rent = await this.rentRepo.findOne({
       where: {
         tenant_id: accountId,
@@ -1813,10 +1970,24 @@ export class TenantFlowService {
       },
     });
 
+    console.log(
+      '🔍 DEBUG: Found rent record:',
+      rent
+        ? {
+            id: rent.id,
+            tenant_id: rent.tenant_id,
+            property_id: rent.property_id,
+            rental_price: rent.rental_price,
+            rent_start_date: rent.rent_start_date,
+            expiry_date: rent.expiry_date,
+          }
+        : 'null',
+    );
+
     if (!rent) {
       await this.templateSenderService.sendText(
         from,
-        'Your rent details are not available yet. Please contact your landlord.',
+        `Rent details for ${propertyTenant.property.name} are not available yet. Please contact your landlord.`,
       );
       return;
     }
@@ -1848,6 +2019,11 @@ export class TenantFlowService {
       `• Tenancy start date: ${formatDate(rent.rent_start_date)}\n` +
       `• Tenancy due date: ${formatDate(rent.expiry_date)}\n\n` +
       `Are these details correct?`;
+
+    console.log(
+      '🔍 DEBUG: Sending details message for property:',
+      property.name,
+    );
 
     await this.templateSenderService.sendButtons(from, detailsMessage, [
       { id: 'tenancy_details_correct', title: 'Yes, correct' },
@@ -1881,6 +2057,32 @@ export class TenantFlowService {
    */
   private async findTenantByPhone(phoneNumber: string): Promise<Users | null> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
+    console.log(
+      '🔍 DEBUG: findTenantByPhone - Original phone:',
+      phoneNumber,
+      'Normalized:',
+      normalizedPhone,
+    );
+
+    // First, let's see if there are multiple users with this phone number
+    const allUsersWithPhone = await this.usersRepo.find({
+      where: {
+        phone_number: normalizedPhone,
+      },
+      relations: ['accounts'],
+    });
+
+    console.log(
+      '🔍 DEBUG: ALL users with this phone number:',
+      allUsersWithPhone.map((u) => ({
+        id: u.id,
+        phone_number: u.phone_number,
+        first_name: u.first_name,
+        last_name: u.last_name,
+        role: u.role,
+        accounts: u.accounts?.map((a) => ({ id: a.id, role: a.role })),
+      })),
+    );
 
     const user = await this.usersRepo.findOne({
       where: {
@@ -1889,6 +2091,19 @@ export class TenantFlowService {
       },
       relations: ['accounts'],
     });
+
+    console.log(
+      '🔍 DEBUG: findTenantByPhone - Found TENANT user:',
+      user
+        ? {
+            id: user.id,
+            phone_number: user.phone_number,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            accounts: user.accounts?.map((a) => ({ id: a.id, role: a.role })),
+          }
+        : 'null',
+    );
 
     return user;
   }

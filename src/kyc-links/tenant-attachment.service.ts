@@ -1484,6 +1484,7 @@ export class TenantAttachmentService {
         tenant_name: tenantName,
         landlord_name: agencyName,
         property_name: propertyName,
+        property_id: application.property_id,
       });
 
       console.log(

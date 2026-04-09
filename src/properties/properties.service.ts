@@ -690,6 +690,7 @@ export class PropertiesService {
             tenant_name: tenantName,
             landlord_name: landlordName,
             property_name: savedProperty.name,
+            property_id: savedProperty.id,
           });
         }
       } catch (error) {
@@ -1373,7 +1374,8 @@ export class PropertiesService {
       pendingRenewalInvoice =
         latestRenewalInvoice &&
         latestRenewalInvoice.payment_status === RenewalPaymentStatus.UNPAID &&
-        (latestRenewalInvoice.token_type === 'landlord' || latestRenewalInvoice.token_type === 'draft')
+        (latestRenewalInvoice.token_type === 'landlord' ||
+          latestRenewalInvoice.token_type === 'draft')
           ? {
               id: latestRenewalInvoice.id,
               rentAmount: parseFloat(
@@ -1966,7 +1968,10 @@ export class PropertiesService {
                 : '';
             return {
               id: hist.id,
-              date: parsedPayment.paymentDate || hist.move_in_date || hist.created_at,
+              date:
+                parsedPayment.paymentDate ||
+                hist.move_in_date ||
+                hist.created_at,
               eventType: 'user_added_payment',
               title: `Payment received`,
               description: `Payment of ₦${Number(paymentAmount).toLocaleString()} on ${paymentDate}`,

@@ -1888,11 +1888,9 @@ export class TenantFlowService {
       return;
     }
 
-    const accountId = user.accounts[0].id;
-
     const propertyTenant = await this.propertyTenantRepo.findOne({
       where: {
-        tenant_id: accountId,
+        tenant_id: In(user.accounts.map((a) => a.id)),
         property_id: propertyId,
         status: TenantStatusEnum.ACTIVE,
       },
@@ -1907,7 +1905,11 @@ export class TenantFlowService {
       return;
     }
 
-    await this.showTenancyDetailsForProperty(from, accountId, propertyTenant);
+    await this.showTenancyDetailsForProperty(
+      from,
+      propertyTenant.tenant_id,
+      propertyTenant,
+    );
   }
 
   /**
@@ -2067,7 +2069,17 @@ export class TenantFlowService {
     const tenantAccountIds = new Set(tenantRecords.map((r) => r.tenant_id));
     if (!tenantAccountIds.size) return null;
 
-    user.accounts = user.accounts.filter((a) => tenantAccountIds.has(a.id));
+    // Keep only accounts that are used as tenant_id in PropertyTenant.
+    // Sort so proper TENANT-role accounts come first — callers using accounts[0]
+    // will get the cleanest account when both old (FM/landlord) and new (tenant)
+    // records exist for the same user.
+    user.accounts = user.accounts
+      .filter((a) => tenantAccountIds.has(a.id))
+      .sort((a, b) => {
+        if (a.role === RolesEnum.TENANT && b.role !== RolesEnum.TENANT) return -1;
+        if (a.role !== RolesEnum.TENANT && b.role === RolesEnum.TENANT) return 1;
+        return 0;
+      });
     return user;
   }
 }

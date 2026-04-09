@@ -94,6 +94,7 @@ export class TenanciesService {
           tenant_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
           landlord_name: property.owner.user.first_name,
           property_name: property.name,
+          property_id: property_id,
         });
         console.log(
           'Successfully sent tenant attachment notification to:',

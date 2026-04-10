@@ -120,6 +120,14 @@ interface TimelineEvent {
   amount?: string | null;
   relatedEntityId?: string;
   relatedEntityType?: string;
+  tenancyData?: {
+    tenantName: string;
+    propertyName: string;
+    rentStartDate: Date;
+    rentAmount: number | null;
+    rentFrequency: string | null;
+    nextDueDate: string | null;
+  };
 }
 
 /**
@@ -1686,6 +1694,7 @@ export class TenantManagementService {
         'property_histories.move_out_date',
         'property_histories.move_out_reason',
         'property_histories.monthly_rent',
+        'property_histories.owner_comment',
         'property_histories.created_at',
         'property_histories.related_entity_id',
         'property_histories.related_entity_type',
@@ -2100,7 +2109,7 @@ export class TenantManagementService {
             ? ` — Rent: ₦${Number(ph.monthly_rent).toLocaleString()}`
             : '';
 
-          const eventDate = new Date(
+          const attachedDate = new Date(
             ph.created_at || ph.move_in_date || new Date(),
           );
           tenancyEvents.push({
@@ -2109,12 +2118,44 @@ export class TenantManagementService {
             title: 'Tenant attached',
             description: `Attached to ${prop?.name || 'property'} on ${moveInDate}${rentAmount}.`,
             details: prop?.name || undefined,
-            date: eventDate.toISOString(),
-            time: eventDate.toLocaleTimeString('en-US', {
+            date: attachedDate.toISOString(),
+            time: attachedDate.toLocaleTimeString('en-US', {
               hour: '2-digit',
               minute: '2-digit',
             }),
           });
+
+          if (ph.move_in_date) {
+            const tenancyStartDate = new Date(ph.move_in_date);
+            const ownerComment = ph.owner_comment || '';
+            const frequencyMatch = ownerComment.match(/Frequency:\s*([^,]+)/);
+            const nextDueMatch = ownerComment.match(/Next due:\s*(.+)$/);
+            const rentFrequency = frequencyMatch
+              ? frequencyMatch[1].trim()
+              : null;
+            const nextDueDate = nextDueMatch ? nextDueMatch[1].trim() : null;
+
+            tenancyEvents.push({
+              id: `tenancy-started-${ph.id}`,
+              type: 'general' as const,
+              title: 'Tenancy started',
+              description: `Tenancy at ${prop?.name || 'property'} began on ${moveInDate}${rentAmount}.`,
+              details: prop?.name || undefined,
+              date: tenancyStartDate.toISOString(),
+              time: tenancyStartDate.toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+              }),
+              tenancyData: {
+                tenantName: `${user?.first_name || ''} ${user?.last_name || ''}`.trim() || 'Tenant',
+                propertyName: prop?.name || '',
+                rentStartDate: ph.move_in_date,
+                rentAmount: ph.monthly_rent ?? null,
+                rentFrequency,
+                nextDueDate,
+              },
+            });
+          }
         }
 
         if (ph.event_type === 'outstanding_balance_recorded') {

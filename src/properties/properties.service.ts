@@ -1404,7 +1404,7 @@ export class PropertiesService {
 
     // Property history formatting (reuse existing logic)
     const history = propertyHistories
-      .map((hist) => {
+      .flatMap((hist) => {
         const tenantUser = hist.tenant?.user;
         const tenantKyc = tenantUser?.tenant_kycs?.[0];
         let tenantName: string;
@@ -1458,16 +1458,49 @@ export class PropertiesService {
                 })
               : 'an unspecified date';
 
-            return {
-              id: hist.id,
-              date: hist.created_at || hist.move_in_date,
-              eventType: 'tenancy_started',
-              title: 'Tenant attached',
-              description: `${tenantName} attached to this property on ${moveInDate}.`,
-              details: hist.monthly_rent
-                ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
-                : null,
-            };
+            const events: any[] = [
+              {
+                id: hist.id,
+                date: hist.created_at || hist.move_in_date,
+                eventType: 'tenancy_started',
+                title: 'Tenant attached',
+                description: `${tenantName} attached to this property on ${moveInDate}.`,
+                details: hist.monthly_rent
+                  ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
+                  : null,
+              },
+            ];
+
+            if (hist.move_in_date) {
+              const ownerComment = hist.owner_comment || '';
+              const frequencyMatch = ownerComment.match(/Frequency:\s*([^,]+)/);
+              const nextDueMatch = ownerComment.match(/Next due:\s*(.+)$/);
+              const rentFrequency = frequencyMatch
+                ? frequencyMatch[1].trim()
+                : null;
+              const nextDueDate = nextDueMatch ? nextDueMatch[1].trim() : null;
+
+              events.push({
+                id: `${hist.id}-tenancy-start`,
+                date: hist.move_in_date,
+                eventType: 'tenancy_started',
+                title: 'Tenancy started',
+                description: `${tenantName}'s tenancy began on ${moveInDate}.`,
+                details: hist.monthly_rent
+                  ? `Rent: ₦${hist.monthly_rent?.toLocaleString()} / year`
+                  : null,
+                tenancyData: {
+                  tenantName,
+                  propertyName: property.name,
+                  rentStartDate: hist.move_in_date,
+                  rentAmount: hist.monthly_rent ?? null,
+                  rentFrequency,
+                  nextDueDate,
+                },
+              });
+            }
+
+            return events;
           }
           case 'outstanding_balance_recorded': {
             let obAmount = 0;

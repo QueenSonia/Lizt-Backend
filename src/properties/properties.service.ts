@@ -666,33 +666,13 @@ export class PropertiesService {
 
         const tenantName = this.utilService.toSentenceCase(firstName);
 
-        // Only send link if tenant needs to fill the form (PENDING_COMPLETION)
-        // PENDING means they already submitted — no form needed, but still notify them
-        if (kycApplication.status === ApplicationStatus.PENDING_COMPLETION) {
-          await this.whatsappNotificationLog.queue(
-            'sendKYCCompletionLink',
-            {
-              phone_number: normalizedPhone,
-              tenant_name: tenantName,
-              landlord_name: landlordName,
-              property_name: savedProperty.name,
-              kyc_link_id: kycLink.token,
-              landlord_id: ownerId,
-              recipient_name: tenantName,
-              // 'update' if they had a prior KYC with this landlord, 'complete' if brand new
-              action_text: hadExistingKyc ? 'update' : 'complete',
-            },
-            savedProperty.id,
-          );
-        } else if (kycApplication.status === ApplicationStatus.PENDING) {
-          await this.whatsappBotService.sendTenantWelcomeTemplate({
-            phone_number: normalizedPhone,
-            tenant_name: tenantName,
-            landlord_name: landlordName,
-            property_name: savedProperty.name,
-            property_id: savedProperty.id,
-          });
-        }
+        await this.whatsappBotService.sendTenantWelcomeTemplate({
+          phone_number: normalizedPhone,
+          tenant_name: tenantName,
+          landlord_name: landlordName,
+          property_name: savedProperty.name,
+          property_id: savedProperty.id,
+        });
       } catch (error) {
         console.error('Failed to queue WhatsApp notification:', error);
       }

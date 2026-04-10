@@ -362,7 +362,12 @@ export class WebhookHandler {
         case 'interactive':
           if (message.interactive?.button_reply) {
             content = message.interactive.button_reply.title;
+          } else if (message.interactive?.list_reply) {
+            content = message.interactive.list_reply.title;
           }
+          break;
+        case 'button':
+          content = message.button?.text || '';
           break;
         default:
           content = `${messageType} message`;

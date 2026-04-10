@@ -120,6 +120,14 @@ interface TimelineEvent {
   amount?: string | null;
   relatedEntityId?: string;
   relatedEntityType?: string;
+  tenancyData?: {
+    tenantName: string;
+    propertyName: string;
+    rentStartDate: Date;
+    rentAmount: number | null;
+    rentFrequency: string | null;
+    nextDueDate: string | null;
+  };
 }
 
 /**

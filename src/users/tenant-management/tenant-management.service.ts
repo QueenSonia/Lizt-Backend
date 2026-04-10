@@ -43,6 +43,7 @@ import {
   AttachTenantToPropertyDto,
   RentFrequency,
 } from '../dto/attach-tenant-to-property.dto';
+import { calculateRentExpiryDate } from 'src/common/utils/rent-date.util';
 
 import { RolesEnum } from 'src/base.entity';
 import {
@@ -471,7 +472,7 @@ export class TenantManagementService {
           : new Date();
 
         // 6. Calculate next rent due date based on frequency
-        const nextRentDueDate = this.calculateNextRentDate(
+        const nextRentDueDate = calculateRentExpiryDate(
           rentStartDate,
           rentFrequency,
         );
@@ -620,42 +621,6 @@ export class TenantManagementService {
         );
       }
     });
-  }
-
-  /**
-   * Calculate next rent due date based on start date and frequency
-   */
-  calculateNextRentDate(startDate: Date, frequency: RentFrequency): Date {
-    const nextDate = new Date(startDate);
-    const dueDay = startDate.getDate();
-
-    switch (frequency) {
-      case RentFrequency.MONTHLY:
-        nextDate.setMonth(nextDate.getMonth() + 1);
-        break;
-      case RentFrequency.QUARTERLY:
-        nextDate.setMonth(nextDate.getMonth() + 3);
-        break;
-      case RentFrequency.BI_ANNUALLY:
-        nextDate.setMonth(nextDate.getMonth() + 6);
-        break;
-      case RentFrequency.ANNUALLY:
-        nextDate.setFullYear(nextDate.getFullYear() + 1);
-        break;
-      default:
-        nextDate.setMonth(nextDate.getMonth() + 1);
-    }
-
-    const targetMonth = nextDate.getMonth();
-    nextDate.setDate(dueDay);
-
-    if (nextDate.getMonth() !== targetMonth) {
-      nextDate.setDate(0);
-    }
-
-    nextDate.setDate(nextDate.getDate() - 1);
-
-    return nextDate;
   }
 
   /**

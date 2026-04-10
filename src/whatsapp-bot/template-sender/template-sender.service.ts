@@ -2729,6 +2729,8 @@ export class TemplateSenderService {
       'Hello {{1}}\n\n{{2}} was added to your {{3}} property.\nThank you.\n- The Lizt Team',
     tenant_welcome:
       'Hi {{1}},\n\nYour landlord, {{2}}, is using Lizt by Property Kraft — a tenancy management app — to manage {{3}} and make your rental experience smooth and stress-free.\n\nWith Lizt, you can handle everything about your home in one place — from getting important updates, tracking rent, reporting issues easily, and staying connected throughout your tenancy.\n\nReply Hi to get started.\n\n— The Lizt Team',
+    welcome_tenant:
+      'Hi {{1}},\n\n{{2}} has added you as a tenant for {{3}} on Lizt.\n\nPlease confirm your tenancy details to continue setup.',
     service_request_confirmation:
       'Hi {{1}} 👋🏽\n\nYour service request about "{{2}}" has been marked as resolved.\n\nCan you confirm if everything is fixed?',
     tenant_application_notification:

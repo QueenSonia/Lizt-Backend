@@ -18,6 +18,7 @@ import { DataSource, In, IsNull, Repository } from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 import { DateService } from 'src/utils/date.helper';
+import { calculateRentExpiryDate } from 'src/common/utils/rent-date.util';
 import { PropertyTenant } from './entities/property-tenants.entity';
 import { config } from 'src/config';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
@@ -601,25 +602,10 @@ export class PropertiesService {
 
       // 10. Create rent records
       const rentStartDate = new Date(tenantData.tenancyStartDate);
-      const rentDueDate = new Date(tenantData.rentDueDate);
-
-      // Calculate expiry date based on rent frequency
-      let expiryDate: Date;
-      const frequency = tenantData.rentFrequency.toLowerCase();
-      if (frequency === 'monthly') {
-        expiryDate = new Date(rentStartDate);
-        expiryDate.setMonth(expiryDate.getMonth() + 1);
-      } else if (frequency === 'quarterly') {
-        expiryDate = new Date(rentStartDate);
-        expiryDate.setMonth(expiryDate.getMonth() + 3);
-      } else if (frequency === 'annually' || frequency === 'yearly') {
-        expiryDate = new Date(rentStartDate);
-        expiryDate.setFullYear(expiryDate.getFullYear() + 1);
-      } else {
-        // Default to monthly
-        expiryDate = new Date(rentStartDate);
-        expiryDate.setMonth(expiryDate.getMonth() + 1);
-      }
+      const expiryDate = calculateRentExpiryDate(
+        rentStartDate,
+        tenantData.rentFrequency,
+      );
 
       const rent = queryRunner.manager.create(Rent, {
         property_id: savedProperty.id,
@@ -3305,10 +3291,7 @@ export class PropertiesService {
       // Calculate next rent due date (expiry_date)
       const rentStartDate = new Date(data.rent_start_date);
       const rentFrequency = data.payment_frequency || 'Monthly';
-      const expiryDate = this.calculateNextRentDate(
-        rentStartDate,
-        rentFrequency,
-      );
+      const expiryDate = calculateRentExpiryDate(rentStartDate, rentFrequency);
 
       const rent = await queryRunner.manager.save(Rent, {
         tenant_id: data.tenant_id,
@@ -3378,48 +3361,6 @@ export class PropertiesService {
     } finally {
       await queryRunner.release();
     }
-  }
-
-  /**
-   * Calculate next rent due date based on start date and frequency
-   * This matches the logic used in tenant-attachment.service.ts
-   */
-  private calculateNextRentDate(startDate: Date, frequency: string): Date {
-    const nextDate = new Date(startDate);
-    const dueDay = startDate.getDate();
-
-    // Add frequency duration to get to the next period
-    switch (frequency) {
-      case 'Monthly':
-        nextDate.setMonth(nextDate.getMonth() + 1);
-        break;
-      case 'Quarterly':
-        nextDate.setMonth(nextDate.getMonth() + 3);
-        break;
-      case 'Bi-Annually':
-        nextDate.setMonth(nextDate.getMonth() + 6);
-        break;
-      case 'Annually':
-        nextDate.setFullYear(nextDate.getFullYear() + 1);
-        break;
-      default:
-        nextDate.setMonth(nextDate.getMonth() + 1);
-    }
-
-    // Set the specific due day
-    // Handle cases where the due day doesn't exist in the target month
-    const targetMonth = nextDate.getMonth();
-    nextDate.setDate(dueDay);
-
-    // If setting the day pushed us to the next month, backtrack to the last day of the previous month
-    if (nextDate.getMonth() !== targetMonth) {
-      nextDate.setDate(0);
-    }
-
-    // Subtract 1 day to get the day BEFORE the next cycle starts
-    nextDate.setDate(nextDate.getDate() - 1);
-
-    return nextDate;
   }
 
   /**

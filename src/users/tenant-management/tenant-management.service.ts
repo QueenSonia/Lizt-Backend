@@ -328,6 +328,8 @@ export class TenantManagementService {
             relatedEntityType: 'rent',
             relatedEntityId: rent.id,
           },
+          undefined,
+          manager,
         );
 
         // 5. Assign tenant to property
@@ -512,6 +514,8 @@ export class TenantManagementService {
             relatedEntityType: 'rent',
             relatedEntityId: rent.id,
           },
+          undefined,
+          manager,
         );
 
         // 8. Create property-tenant relationship
@@ -889,8 +893,9 @@ export class TenantManagementService {
       tenancyStartDate: string;
       rentDueDate: string;
       serviceCharge?: number;
-      outstandingBalance?: number;
-      outstandingBalanceReason?: string;
+      cautionDeposit?: number;
+      legalFee?: number;
+      agencyFee?: number;
     },
   ): Promise<{
     tenantUser: Users;
@@ -949,8 +954,9 @@ export class TenantManagementService {
       spouse_occupation: undefined,
       spouse_employer: undefined,
       service_charge: dto.serviceCharge,
-      outstanding_balance: dto.outstandingBalance,
-      outstanding_balance_reason: dto.outstandingBalanceReason,
+      caution_deposit: dto.cautionDeposit,
+      legal_fee: dto.legalFee,
+      agency_fee: dto.agencyFee,
     };
 
     // 3. Handle existing user or create new tenant
@@ -1030,8 +1036,9 @@ export class TenantManagementService {
         nature_of_business,
         business_address,
         service_charge,
-        outstanding_balance,
-        outstanding_balance_reason,
+        caution_deposit,
+        legal_fee,
+        agency_fee,
       } = dto;
 
       // 1. Check if user already exists
@@ -1252,6 +1259,48 @@ export class TenantManagementService {
 
       await manager.getRepository(Rent).save(rent);
 
+      // Record the first period charge in the tenant balance ledger
+      await this.tenantBalancesService.applyChange(
+        tenantAccount.id,
+        landlordId,
+        -(rent_amount + (service_charge || 0)),
+        {
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description: 'Tenancy started',
+          propertyId: property_id,
+          relatedEntityType: 'rent',
+          relatedEntityId: rent.id,
+        },
+        undefined,
+        manager,
+      );
+
+      // Record one-time attachment fees as separate ledger charges so they
+      // appear as distinct line items on the outstanding balance breakdown.
+      const oneTimeFees: Array<{ amount?: number; description: string }> = [
+        { amount: caution_deposit, description: 'Caution deposit' },
+        { amount: legal_fee, description: 'Legal fee' },
+        { amount: agency_fee, description: 'Agency fee' },
+      ];
+      for (const fee of oneTimeFees) {
+        if (fee.amount && fee.amount > 0) {
+          await this.tenantBalancesService.applyChange(
+            tenantAccount.id,
+            landlordId,
+            -fee.amount,
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: fee.description,
+              propertyId: property_id,
+              relatedEntityType: 'rent',
+              relatedEntityId: rent.id,
+            },
+            undefined,
+            manager,
+          );
+        }
+      }
+
       // 7. Create property-tenant relationship
       const propertyTenant = manager.getRepository(PropertyTenant).create({
         property_id: property_id,
@@ -1281,26 +1330,6 @@ export class TenantManagementService {
       });
 
       await manager.getRepository(PropertyHistory).save(propertyHistory);
-
-      // 9b. Create property history record for outstanding balance (if any)
-      if (outstanding_balance && outstanding_balance > 0) {
-        const outstandingBalanceHistory = manager
-          .getRepository(PropertyHistory)
-          .create({
-            property_id: property_id,
-            tenant_id: tenantAccount.id,
-            event_type: 'outstanding_balance_recorded',
-            event_description: JSON.stringify({
-              amount: outstanding_balance,
-              reason: outstanding_balance_reason || null,
-            }),
-            related_entity_id: rent.id,
-            related_entity_type: 'rent',
-          });
-        await manager
-          .getRepository(PropertyHistory)
-          .save(outstandingBalanceHistory);
-      }
 
       // 10. Send WhatsApp notification to tenant and emit live feed event
       try {
@@ -1349,39 +1378,8 @@ export class TenantManagementService {
         });
       }
 
-      // 11. Emit outstanding balance recorded event for live feed (if any)
-      if (outstanding_balance && outstanding_balance > 0) {
-        const obTenantName = `${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}`;
-        this.eventEmitter.emit('outstanding.balance.recorded', {
-          property_id: property_id,
-          property_name: property.name,
-          tenant_id: tenantAccount.id,
-          tenant_name: obTenantName,
-          user_id: property.owner_id,
-          amount: outstanding_balance,
-        });
-      }
-
-      return { tenantUser, tenantAccount, property, rentId: rent.id };
+      return { tenantUser, tenantAccount, property };
     });
-
-    // After transaction commits: add initial outstanding balance to TenantBalance
-    if (dto.outstanding_balance && dto.outstanding_balance > 0) {
-      await this.tenantBalancesService.applyChange(
-        txResult.tenantAccount.id,
-        landlordId,
-        -dto.outstanding_balance,
-        {
-          type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description:
-            dto.outstanding_balance_reason ||
-            'Initial outstanding balance on tenant setup',
-          propertyId: dto.property_id,
-          relatedEntityType: 'rent',
-          relatedEntityId: txResult.rentId,
-        },
-      );
-    }
 
     return {
       tenantUser: txResult.tenantUser,
@@ -3326,6 +3324,7 @@ interface TenantKycFromApplicationDto {
   spouse_occupation?: string;
   spouse_employer?: string;
   service_charge?: number;
-  outstanding_balance?: number;
-  outstanding_balance_reason?: string;
+  caution_deposit?: number;
+  legal_fee?: number;
+  agency_fee?: number;
 }

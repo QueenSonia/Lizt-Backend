@@ -5,8 +5,6 @@ import {
   IsUUID,
   IsOptional,
   IsEnum,
-  IsString,
-  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -83,23 +81,35 @@ export class AttachTenantFromKycDto {
   serviceCharge?: number;
 
   @ApiProperty({
-    example: 150000,
-    description: 'Outstanding balance the tenant owes before onboarding (optional)',
+    example: 100000,
+    description: 'Caution / security deposit (optional)',
     type: 'integer',
     required: false,
   })
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  @Min(0, { message: 'Outstanding balance must be 0 or greater' })
-  outstandingBalance?: number;
+  cautionDeposit?: number;
 
   @ApiProperty({
-    example: 'Backlog rent for January–February',
-    description: 'Reason for the outstanding balance (optional)',
+    example: 25000,
+    description: 'Legal fee (optional)',
+    type: 'integer',
     required: false,
   })
   @IsOptional()
-  @IsString()
-  outstandingBalanceReason?: string;
+  @IsNumber()
+  @Type(() => Number)
+  legalFee?: number;
+
+  @ApiProperty({
+    example: 50000,
+    description: 'Agency fee (optional)',
+    type: 'integer',
+    required: false,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  agencyFee?: number;
 }

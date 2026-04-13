@@ -3319,6 +3319,8 @@ export class PropertiesService {
           relatedEntityType: 'rent',
           relatedEntityId: rent.id,
         },
+        undefined,
+        queryRunner.manager,
       );
 
       await Promise.all([

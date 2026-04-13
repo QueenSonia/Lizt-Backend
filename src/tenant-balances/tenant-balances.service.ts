@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, EntityManager } from 'typeorm';
 import { TenantBalance } from './entities/tenant-balance.entity';
 import {
   TenantBalanceLedger,
@@ -67,12 +67,13 @@ export class TenantBalancesService {
     amount: number,
     ctx: LedgerContext,
     notes?: string,
+    externalManager?: EntityManager,
   ): Promise<TenantBalance> {
     if (amount === 0) {
       return this.getOrCreate(tenantId, landlordId, notes);
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const run = async (manager: EntityManager): Promise<TenantBalance> => {
       let record = await manager.findOne(TenantBalance, {
         where: { tenant_id: tenantId, landlord_id: landlordId },
         lock: { mode: 'pessimistic_write' },
@@ -106,7 +107,12 @@ export class TenantBalancesService {
       );
 
       return record;
-    });
+    };
+
+    if (externalManager) {
+      return run(externalManager);
+    }
+    return this.dataSource.transaction(run);
   }
 
   // ---------------------------------------------------------------------------

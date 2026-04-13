@@ -193,6 +193,8 @@ export class TenantAttachmentService {
           relatedEntityType: 'rent',
           relatedEntityId: rent.id,
         },
+        undefined,
+        queryRunner.manager,
       );
 
       // Create property-tenant relationship
@@ -522,6 +524,8 @@ export class TenantAttachmentService {
         relatedEntityType: 'rent',
         relatedEntityId: rent.id,
       },
+      undefined,
+      manager,
     );
 
     // Record the Paystack payment — full rent+service_charge was paid via offer letter.
@@ -536,6 +540,8 @@ export class TenantAttachmentService {
         relatedEntityType: 'rent',
         relatedEntityId: rent.id,
       },
+      undefined,
+      manager,
     );
 
     // Update rent record to reflect payment

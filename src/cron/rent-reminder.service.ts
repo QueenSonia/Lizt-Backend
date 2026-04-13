@@ -24,9 +24,9 @@ import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-bala
 const RENT_REMINDER_SCHEDULE = {
   monthly: [14, 7, 2, 1, 0],
   quarterly: [30, 14, 7, 2, 1, 0],
-  'bi-annually': [45, 30, 14, 7, 2, 1, 0],
-  biannually: [45, 30, 14, 7, 2, 1, 0],
-  annually: [60, 30, 14, 7, 2, 1, 0],
+  'bi-annually': [90, 60, 30, 14, 7, 2, 1, 0],
+  biannually: [90, 60, 30, 14, 7, 2, 1, 0],
+  annually: [180, 90, 60, 30, 14, 7, 2, 1, 0],
 };
 
 @Injectable()

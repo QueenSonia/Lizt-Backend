@@ -41,7 +41,6 @@ import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
-import { AssignTenantDto } from './dto/assign-tenant.dto';
 import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { Account } from 'src/users/entities/account.entity';
 import { CurrentUser } from 'src/auth/current-user.decorator';
@@ -613,16 +612,6 @@ export class PropertiesController {
       throw error;
     }
   }
-  @Post('assign-tenant/:id')
-  @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  async assignTenantToProperty(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() data: AssignTenantDto,
-  ) {
-    return this.propertiesService.assignTenant(id, data);
-  }
-
   @ApiOperation({
     summary: 'Sync Property Statuses and Fix Missing History Records',
   })

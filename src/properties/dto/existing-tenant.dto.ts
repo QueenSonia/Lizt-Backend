@@ -90,4 +90,40 @@ export class ExistingTenantDto {
   @Min(0)
   @Type(() => Number)
   serviceChargeAmount?: number;
+
+  @ApiProperty({
+    example: 100000,
+    description: 'Caution / security deposit (optional)',
+    type: 'number',
+    required: false,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  cautionDeposit?: number;
+
+  @ApiProperty({
+    example: 25000,
+    description: 'Legal fee (optional)',
+    type: 'number',
+    required: false,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  legalFee?: number;
+
+  @ApiProperty({
+    example: 50000,
+    description: 'Agency fee (optional)',
+    type: 'number',
+    required: false,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  agencyFee?: number;
 }

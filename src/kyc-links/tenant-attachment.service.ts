@@ -181,19 +181,59 @@ export class TenantAttachmentService {
 
       await queryRunner.manager.save(rent);
 
-      // Record the first period charge in the tenant balance ledger
-      await this.tenantBalancesService.applyChange(
-        tenantAccount.id,
-        landlordId,
-        -(tenancyDetails.rentAmount + (tenancyDetails.serviceCharge || 0)),
-        {
-          type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description: 'Tenancy started',
-          propertyId: application.property_id,
-          relatedEntityType: 'rent',
-          relatedEntityId: rent.id,
-        },
-      );
+      // Record each charge as its own ledger entry so the tenant's
+      // outstanding balance breakdown shows rent, service charge and
+      // security deposit as separate line items.
+      if (tenancyDetails.rentAmount > 0) {
+        await this.tenantBalancesService.applyChange(
+          tenantAccount.id,
+          landlordId,
+          -tenancyDetails.rentAmount,
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Rent',
+            propertyId: application.property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+          undefined,
+          queryRunner.manager,
+        );
+      }
+
+      if ((tenancyDetails.serviceCharge || 0) > 0) {
+        await this.tenantBalancesService.applyChange(
+          tenantAccount.id,
+          landlordId,
+          -(tenancyDetails.serviceCharge || 0),
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Service charge',
+            propertyId: application.property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+          undefined,
+          queryRunner.manager,
+        );
+      }
+
+      if ((tenancyDetails.securityDeposit || 0) > 0) {
+        await this.tenantBalancesService.applyChange(
+          tenantAccount.id,
+          landlordId,
+          -(tenancyDetails.securityDeposit || 0),
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Security deposit',
+            propertyId: application.property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+          undefined,
+          queryRunner.manager,
+        );
+      }
 
       // Create property-tenant relationship
       const propertyTenant = queryRunner.manager.create(PropertyTenant, {
@@ -522,6 +562,8 @@ export class TenantAttachmentService {
         relatedEntityType: 'rent',
         relatedEntityId: rent.id,
       },
+      undefined,
+      manager,
     );
 
     // Record the Paystack payment — full rent+service_charge was paid via offer letter.
@@ -536,6 +578,8 @@ export class TenantAttachmentService {
         relatedEntityType: 'rent',
         relatedEntityId: rent.id,
       },
+      undefined,
+      manager,
     );
 
     // Update rent record to reflect payment

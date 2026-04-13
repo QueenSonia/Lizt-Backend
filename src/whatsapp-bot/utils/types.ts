@@ -13,7 +13,13 @@ export type IncomingMessage = {
 
   interactive?: {
     type: string;
-    button_reply: { id: string; title: string };
+    button_reply?: { id: string; title: string };
+    list_reply?: { id: string; title: string; description?: string };
+  };
+
+  button?: {
+    text: string;
+    payload?: string;
   };
 
   context?: {

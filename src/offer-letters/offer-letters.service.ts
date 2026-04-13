@@ -828,12 +828,17 @@ export class OfferLettersService {
     status: 'accepted' | 'rejected',
   ): Promise<void> {
     try {
-      // Get landlord details
-      const landlord = await this.propertyRepository.manager
+      // Phone number and name live on the Users entity, not Account
+      const landlordAccount = await this.propertyRepository.manager
         .getRepository('Account')
-        .findOne({ where: { id: offerLetter.landlord_id } });
+        .findOne({
+          where: { id: offerLetter.landlord_id },
+          relations: ['user'],
+        });
 
-      if (!landlord || !landlord.phone_number) {
+      const landlordUser = (landlordAccount as { user?: Users })?.user;
+
+      if (!landlordUser || !landlordUser.phone_number) {
         this.logger.warn(
           `Could not notify landlord ${offerLetter.landlord_id} - no phone number`,
         );
@@ -842,11 +847,11 @@ export class OfferLettersService {
 
       const tenantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
       const landlordName =
-        `${landlord.first_name || ''} ${landlord.last_name || ''}`.trim() ||
+        `${landlordUser.first_name || ''} ${landlordUser.last_name || ''}`.trim() ||
         'Landlord';
 
       await this.templateSenderService.sendOfferLetterStatusNotification({
-        phone_number: landlord.phone_number,
+        phone_number: landlordUser.phone_number,
         landlord_name: landlordName,
         tenant_name: tenantName,
         property_name: property.name,

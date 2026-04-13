@@ -3307,21 +3307,32 @@ export class PropertiesService {
         expiry_date: expiryDate,
       });
 
-      // Record the first period charge in the tenant balance ledger
-      await this.tenantBalancesService.applyChange(
-        data.tenant_id,
-        property.owner_id,
-        -(data.rental_price + (data.service_charge || 0)),
-        {
-          type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description: 'Tenancy started',
-          propertyId: property.id,
-          relatedEntityType: 'rent',
-          relatedEntityId: rent.id,
-        },
-        undefined,
-        queryRunner.manager,
-      );
+      // Record each charge as its own ledger entry so the outstanding
+      // balance breakdown shows rent, service charge and security deposit
+      // as separate line items.
+      const initialCharges: Array<{ amount?: number; description: string }> = [
+        { amount: data.rental_price, description: 'Rent' },
+        { amount: data.service_charge, description: 'Service charge' },
+        { amount: data.security_deposit, description: 'Security deposit' },
+      ];
+      for (const charge of initialCharges) {
+        if (charge.amount && charge.amount > 0) {
+          await this.tenantBalancesService.applyChange(
+            data.tenant_id,
+            property.owner_id,
+            -charge.amount,
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: charge.description,
+              propertyId: property.id,
+              relatedEntityType: 'rent',
+              relatedEntityId: rent.id,
+            },
+            undefined,
+            queryRunner.manager,
+          );
+        }
+      }
 
       await Promise.all([
         queryRunner.manager.save(PropertyTenant, {

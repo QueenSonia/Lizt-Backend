@@ -316,21 +316,33 @@ export class TenantManagementService {
 
         await manager.getRepository(Rent).save(rent);
 
-        // Record the first period charge in the tenant balance ledger
-        await this.tenantBalancesService.applyChange(
-          userAccount.id,
-          user_id,
-          -(rental_price + (service_charge || 0)),
-          {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Tenancy started',
-            propertyId: property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-          },
-          undefined,
-          manager,
-        );
+        // Record each charge as its own ledger entry so the outstanding
+        // balance breakdown shows rent, service charge and security deposit
+        // as separate line items.
+        const initialCharges: Array<{ amount?: number; description: string }> =
+          [
+            { amount: rental_price, description: 'Rent' },
+            { amount: service_charge, description: 'Service charge' },
+            { amount: security_deposit, description: 'Security deposit' },
+          ];
+        for (const charge of initialCharges) {
+          if (charge.amount && charge.amount > 0) {
+            await this.tenantBalancesService.applyChange(
+              userAccount.id,
+              user_id,
+              -charge.amount,
+              {
+                type: TenantBalanceLedgerType.INITIAL_BALANCE,
+                description: charge.description,
+                propertyId: property_id,
+                relatedEntityType: 'rent',
+                relatedEntityId: rent.id,
+              },
+              undefined,
+              manager,
+            );
+          }
+        }
 
         // 5. Assign tenant to property
         const propertyTenant = manager.getRepository(PropertyTenant).create({
@@ -502,21 +514,42 @@ export class TenantManagementService {
 
         await manager.getRepository(Rent).save(rent);
 
-        // Record the first period charge in the tenant balance ledger
-        await this.tenantBalancesService.applyChange(
-          tenantId,
-          landlordId,
-          -(rentAmount + (serviceCharge || 0)),
-          {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Tenancy started',
-            propertyId: propertyId,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-          },
-          undefined,
-          manager,
-        );
+        // Record each charge as its own ledger entry so the outstanding
+        // balance breakdown shows rent and service charge as separate
+        // line items.
+        if (rentAmount > 0) {
+          await this.tenantBalancesService.applyChange(
+            tenantId,
+            landlordId,
+            -rentAmount,
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: 'Rent',
+              propertyId: propertyId,
+              relatedEntityType: 'rent',
+              relatedEntityId: rent.id,
+            },
+            undefined,
+            manager,
+          );
+        }
+
+        if ((serviceCharge || 0) > 0) {
+          await this.tenantBalancesService.applyChange(
+            tenantId,
+            landlordId,
+            -(serviceCharge || 0),
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: 'Service charge',
+              propertyId: propertyId,
+              relatedEntityType: 'rent',
+              relatedEntityId: rent.id,
+            },
+            undefined,
+            manager,
+          );
+        }
 
         // 8. Create property-tenant relationship
         const propertyTenant = manager.getRepository(PropertyTenant).create({
@@ -809,19 +842,38 @@ export class TenantManagementService {
 
         await manager.getRepository(Rent).save(rent);
 
-        // Record the first period charge in the tenant balance ledger
-        await this.tenantBalancesService.applyChange(
-          userAccount.id,
-          user_id,
-          -(rent_amount + serviceCharge),
-          {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Tenancy started',
-            propertyId: property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-          },
-        );
+        // Record each charge as its own ledger entry so the outstanding
+        // balance breakdown shows rent and service charge as separate
+        // line items.
+        if (rent_amount > 0) {
+          await this.tenantBalancesService.applyChange(
+            userAccount.id,
+            user_id,
+            -rent_amount,
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: 'Rent',
+              propertyId: property_id,
+              relatedEntityType: 'rent',
+              relatedEntityId: rent.id,
+            },
+          );
+        }
+
+        if (serviceCharge > 0) {
+          await this.tenantBalancesService.applyChange(
+            userAccount.id,
+            user_id,
+            -serviceCharge,
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: 'Service charge',
+              propertyId: property_id,
+              relatedEntityType: 'rent',
+              relatedEntityId: rent.id,
+            },
+          );
+        }
 
         // 5. Assign tenant to property
         const propertyTenant = manager.getRepository(PropertyTenant).create({
@@ -1259,21 +1311,41 @@ export class TenantManagementService {
 
       await manager.getRepository(Rent).save(rent);
 
-      // Record the first period charge in the tenant balance ledger
-      await this.tenantBalancesService.applyChange(
-        tenantAccount.id,
-        landlordId,
-        -(rent_amount + (service_charge || 0)),
-        {
-          type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description: 'Tenancy started',
-          propertyId: property_id,
-          relatedEntityType: 'rent',
-          relatedEntityId: rent.id,
-        },
-        undefined,
-        manager,
-      );
+      // Record rent and service charge as separate ledger entries so the
+      // outstanding balance breakdown shows them as distinct line items.
+      if (rent_amount > 0) {
+        await this.tenantBalancesService.applyChange(
+          tenantAccount.id,
+          landlordId,
+          -rent_amount,
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Rent',
+            propertyId: property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+          undefined,
+          manager,
+        );
+      }
+
+      if ((service_charge || 0) > 0) {
+        await this.tenantBalancesService.applyChange(
+          tenantAccount.id,
+          landlordId,
+          -(service_charge || 0),
+          {
+            type: TenantBalanceLedgerType.INITIAL_BALANCE,
+            description: 'Service charge',
+            propertyId: property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+          undefined,
+          manager,
+        );
+      }
 
       // Record one-time attachment fees as separate ledger charges so they
       // appear as distinct line items on the outstanding balance breakdown.

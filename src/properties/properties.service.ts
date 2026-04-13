@@ -30,7 +30,6 @@ import { RentsService } from 'src/rents/rents.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Users } from 'src/users/entities/user.entity';
 import { UsersService } from 'src/users/users.service';
-import { AssignTenantDto } from './dto/assign-tenant.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 import {
   RentPaymentStatusEnum,
@@ -602,24 +601,65 @@ export class PropertiesService {
 
       // 10. Create rent records
       const rentStartDate = new Date(tenantData.tenancyStartDate);
-      const expiryDate = calculateRentExpiryDate(
-        rentStartDate,
-        tenantData.rentFrequency,
-      );
+      const rentDueDate = tenantData.rentDueDate
+        ? new Date(tenantData.rentDueDate)
+        : calculateRentExpiryDate(rentStartDate, tenantData.rentFrequency);
 
       const rent = queryRunner.manager.create(Rent, {
         property_id: savedProperty.id,
         tenant_id: tenantAccount.id,
         rent_start_date: rentStartDate,
-        expiry_date: expiryDate,
+        expiry_date: rentDueDate,
         rental_price: tenantData.rentAmount,
-        amount_paid: tenantData.rentAmount,
+        amount_paid: 0,
         service_charge: tenantData.serviceChargeAmount || 0,
         payment_frequency: tenantData.rentFrequency,
-        payment_status: RentPaymentStatusEnum.PAID,
+        payment_status: RentPaymentStatusEnum.PENDING,
         rent_status: RentStatusEnum.ACTIVE,
       });
       await queryRunner.manager.save(Rent, rent);
+
+      // Record the first period charge (rent + service charge) in the tenant balance ledger
+      await this.tenantBalancesService.applyChange(
+        tenantAccount.id,
+        ownerId,
+        -(tenantData.rentAmount + (tenantData.serviceChargeAmount || 0)),
+        {
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description: 'Tenancy started',
+          propertyId: savedProperty.id,
+          relatedEntityType: 'rent',
+          relatedEntityId: rent.id,
+        },
+        undefined,
+        queryRunner.manager,
+      );
+
+      // Record one-time attachment fees as separate ledger charges so they
+      // appear as distinct line items on the outstanding balance breakdown.
+      const oneTimeFees: Array<{ amount?: number; description: string }> = [
+        { amount: tenantData.cautionDeposit, description: 'Caution deposit' },
+        { amount: tenantData.legalFee, description: 'Legal fee' },
+        { amount: tenantData.agencyFee, description: 'Agency fee' },
+      ];
+      for (const fee of oneTimeFees) {
+        if (fee.amount && fee.amount > 0) {
+          await this.tenantBalancesService.applyChange(
+            tenantAccount.id,
+            ownerId,
+            -fee.amount,
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: fee.description,
+              propertyId: savedProperty.id,
+              relatedEntityType: 'rent',
+              relatedEntityId: rent.id,
+            },
+            undefined,
+            queryRunner.manager,
+          );
+        }
+      }
 
       // 11. Property status already set to OCCUPIED in step 1
 
@@ -3244,136 +3284,6 @@ export class PropertiesService {
       statusUpdates,
       historyRecordsCreated,
     };
-  }
-
-  async assignTenant(id: string, data: AssignTenantDto) {
-    const queryRunner = this.dataSource.createQueryRunner();
-
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-    try {
-      const property = await queryRunner.manager.findOne(Property, {
-        where: { id },
-      });
-
-      if (!property?.id) {
-        throw new HttpException(
-          `Property with id: ${id} not found`,
-          HttpStatus.NOT_FOUND,
-        );
-      }
-
-      // Only allow tenant assignment to vacant properties
-      if (property.property_status === PropertyStatusEnum.OCCUPIED) {
-        throw new HttpException(
-          'Property is already occupied. Cannot attach another tenant.',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      if (property.property_status === PropertyStatusEnum.INACTIVE) {
-        throw new HttpException(
-          'Cannot assign tenant to inactive property. Please reactivate the property first.',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      if (property.property_status !== PropertyStatusEnum.VACANT) {
-        throw new HttpException(
-          'Can only attach tenant to vacant properties.',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      const tenant = await this.userService.getAccountById(data.tenant_id);
-      if (!tenant) throw new NotFoundException('Tenant not found');
-
-      // Calculate next rent due date (expiry_date)
-      const rentStartDate = new Date(data.rent_start_date);
-      const rentFrequency = data.payment_frequency || 'Monthly';
-      const expiryDate = calculateRentExpiryDate(rentStartDate, rentFrequency);
-
-      const rent = await queryRunner.manager.save(Rent, {
-        tenant_id: data.tenant_id,
-        rent_start_date: data.rent_start_date,
-        property_id: property.id,
-        amount_paid: 0,
-        rental_price: data.rental_price,
-        security_deposit: data.security_deposit,
-        service_charge: data.service_charge,
-        payment_frequency: rentFrequency,
-        payment_status: RentPaymentStatusEnum.PENDING,
-        rent_status: RentStatusEnum.ACTIVE,
-        expiry_date: expiryDate,
-      });
-
-      // Record each charge as its own ledger entry so the outstanding
-      // balance breakdown shows rent, service charge and security deposit
-      // as separate line items.
-      const initialCharges: Array<{ amount?: number; description: string }> = [
-        { amount: data.rental_price, description: 'Rent' },
-        { amount: data.service_charge, description: 'Service charge' },
-        { amount: data.security_deposit, description: 'Security deposit' },
-      ];
-      for (const charge of initialCharges) {
-        if (charge.amount && charge.amount > 0) {
-          await this.tenantBalancesService.applyChange(
-            data.tenant_id,
-            property.owner_id,
-            -charge.amount,
-            {
-              type: TenantBalanceLedgerType.INITIAL_BALANCE,
-              description: charge.description,
-              propertyId: property.id,
-              relatedEntityType: 'rent',
-              relatedEntityId: rent.id,
-            },
-            undefined,
-            queryRunner.manager,
-          );
-        }
-      }
-
-      await Promise.all([
-        queryRunner.manager.save(PropertyTenant, {
-          property_id: property.id,
-          tenant_id: data.tenant_id,
-          status: TenantStatusEnum.ACTIVE,
-        }),
-        queryRunner.manager.update(Property, property.id, {
-          property_status: PropertyStatusEnum.OCCUPIED,
-          is_marketing_ready: false,
-        }),
-        queryRunner.manager.save(PropertyHistory, {
-          property_id: property.id,
-          tenant_id: data.tenant_id,
-          move_in_date: DateService.getStartOfTheDay(new Date()),
-          monthly_rent: data.rental_price,
-          owner_comment: null,
-          tenant_comment: null,
-          move_out_date: null,
-          move_out_reason: null,
-        }),
-        // Note: KYC links are now general per landlord, not property-specific
-        // No need to deactivate KYC links when a single property becomes occupied
-      ]);
-
-      await queryRunner.commitTransaction();
-
-      return {
-        message: 'Tenant Added Successfully',
-      };
-    } catch (error) {
-      await queryRunner.rollbackTransaction();
-      console.error('Transaction rolled back due to:', error);
-      throw new HttpException(
-        error?.message ||
-          'An error occurred while assigning Tenant To property',
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
-    } finally {
-      await queryRunner.release();
-    }
   }
 
   /**

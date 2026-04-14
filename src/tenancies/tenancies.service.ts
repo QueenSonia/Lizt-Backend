@@ -1213,6 +1213,31 @@ export class TenanciesService {
           rent_status: RentStatusEnum.ACTIVE,
         });
         await this.rentRepository.save(newRent);
+
+        // Mirror the charge the auto-renewal cron would have written, so the
+        // ledger/breakdown reflects the new period and the payment below
+        // consumes it instead of becoming phantom credit.
+        const newPeriodAmount =
+          parseFloat(invoice.rent_amount.toString()) +
+          (parseFloat((invoice.service_charge || 0).toString()) || 0);
+        const newPeriodStart = new Date(invoice.start_date)
+          .toISOString()
+          .split('T')[0];
+        const newPeriodEnd = new Date(invoice.end_date)
+          .toISOString()
+          .split('T')[0];
+        await this.tenantBalancesService.applyChange(
+          tenantId,
+          landlordId,
+          -newPeriodAmount,
+          {
+            type: TenantBalanceLedgerType.AUTO_RENEWAL,
+            description: `New period charged: ${newPeriodStart} – ${newPeriodEnd}`,
+            propertyId: invoice.property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: newRent.id,
+          },
+        );
       }
     }
 

@@ -25,7 +25,7 @@ export enum ApplicationType {
 /**
  * KYC Application Entity
  *
- * All user-facing fields are required except referral_agent, additional_notes, and parking_needs.
+ * All user-facing fields are required except additional_notes and parking_needs.
  * Employment-specific fields are nullable (conditionally required based on employment_status).
  */
 @Entity({ name: 'kyc_applications' })

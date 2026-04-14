@@ -33,6 +33,13 @@ import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notific
 import { UtilService } from '../utils/utility-service';
 import { ConfigService } from '@nestjs/config';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
+import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
+import { Payment, PaymentStatus } from '../payments/entities/payment.entity';
+import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import {
+  buildTimelineEvents,
+  TimelineEvent,
+} from '../property-history/property-history-timeline.builder';
 
 @Injectable()
 export class KYCApplicationService {
@@ -49,6 +56,12 @@ export class KYCApplicationService {
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(TenantKyc)
     private readonly tenantKycRepository: Repository<TenantKyc>,
+    @InjectRepository(OfferLetter)
+    private readonly offerLetterRepository: Repository<OfferLetter>,
+    @InjectRepository(Payment)
+    private readonly paymentRepository: Repository<Payment>,
+    @InjectRepository(PropertyHistory)
+    private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     private readonly utilService: UtilService,
     private readonly configService: ConfigService,
     @Optional()
@@ -1999,21 +2012,30 @@ export class KYCApplicationService {
   }
 
   /**
-   * Get history events for a KYC application by querying property_histories
-   * for the application's property_id
+   * Build the unified TimelineEvent[] for a single KYC application, scoped to
+   * the applicant (not the whole property). Uses the shared timeline builder so
+   * the shape matches the tenant-detail endpoint and renders via the same
+   * frontend component, making the applicant→tenant transition continuous.
+   *
+   * Scoping rule (fixes the pre-existing applicant-timeline bug where the old
+   * /history endpoint filtered only by property_id, causing multiple applicants
+   * on the same property to see each other's events):
+   *
+   *   property_id = application.property_id
+   *   AND (
+   *     related_entity_id = application.id
+   *     OR related_entity_id IN offerLetterIds
+   *     OR related_entity_type NOT IN (applicant-scoped types)
+   *   )
+   *
+   * The NOT IN clause lets genuinely property-wide events pass through while
+   * hiding other applicants' kyc_application / offer_letter / invoice / receipt
+   * / payment rows.
    */
-  async getApplicationHistory(
+  async getApplicationTimeline(
     applicationId: string,
     landlordId: string,
-  ): Promise<
-    Array<{
-      id: string;
-      eventType: string;
-      eventDescription: string;
-      createdAt: string;
-    }>
-  > {
-    // Find the application and verify ownership
+  ): Promise<TimelineEvent[]> {
     const application = await this.kycApplicationRepository.findOne({
       where: { id: applicationId },
       relations: ['property'],
@@ -2025,32 +2047,94 @@ export class KYCApplicationService {
 
     if (application.property?.owner_id !== landlordId) {
       throw new ForbiddenException(
-        'Not authorized to view this application history',
+        'Not authorized to view this application timeline',
       );
     }
 
-    // Query property_histories for events related to this property
-    const { PropertyHistory } = await import(
-      '../property-history/entities/property-history.entity'
-    );
-    const propertyHistoryRepo =
-      this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+    const offerLetters = await this.offerLetterRepository
+      .createQueryBuilder('offer')
+      .leftJoinAndSelect('offer.property', 'property')
+      .where('offer.kyc_application_id = :applicationId', { applicationId })
+      .andWhere('offer.landlord_id = :landlordId', { landlordId })
+      .orderBy('offer.created_at', 'DESC')
+      .getMany();
 
-    const historyEvents = await propertyHistoryRepo.find({
-      where: {
-        property_id: application.property_id,
-      },
-      order: { created_at: 'DESC' },
+    const offerLetterIds = offerLetters.map((o) => o.id);
+
+    let payments: Payment[] = [];
+    if (offerLetterIds.length > 0) {
+      payments = await this.paymentRepository
+        .createQueryBuilder('payment')
+        .leftJoinAndSelect('payment.offerLetter', 'offerLetter')
+        .leftJoinAndSelect('offerLetter.property', 'property')
+        .where('payment.offer_letter_id IN (:...offerIds)', {
+          offerIds: offerLetterIds,
+        })
+        .andWhere('payment.status = :status', {
+          status: PaymentStatus.COMPLETED,
+        })
+        .orderBy('payment.paid_at', 'DESC')
+        .getMany();
+    }
+
+    // Applicant-scoped related_entity_types: rows of these types only belong
+    // in this applicant's timeline if they explicitly point at this application
+    // or one of its offer letters. All other types (tenancy_record, rent,
+    // service_request, property_history, renewal_invoice, ...) are treated as
+    // property-wide and pass through.
+    const applicantScopedTypes = [
+      'kyc_application',
+      'offer_letter',
+      'invoice',
+      'receipt',
+      'payment',
+    ];
+
+    const qb = this.propertyHistoryRepository
+      .createQueryBuilder('history')
+      .where('history.property_id = :propertyId', {
+        propertyId: application.property_id,
+      });
+
+    if (offerLetterIds.length > 0) {
+      qb.andWhere(
+        `(
+          history.related_entity_id = :applicationId
+          OR history.related_entity_id IN (:...offerIds)
+          OR history.related_entity_type IS NULL
+          OR history.related_entity_type NOT IN (:...applicantScopedTypes)
+        )`,
+        {
+          applicationId,
+          offerIds: offerLetterIds,
+          applicantScopedTypes,
+        },
+      );
+    } else {
+      qb.andWhere(
+        `(
+          history.related_entity_id = :applicationId
+          OR history.related_entity_type IS NULL
+          OR history.related_entity_type NOT IN (:...applicantScopedTypes)
+        )`,
+        { applicationId, applicantScopedTypes },
+      );
+    }
+
+    qb.orderBy('history.created_at', 'DESC');
+
+    const propertyHistories = await qb.getMany();
+
+    const tenantName =
+      `${application.first_name || ''} ${application.last_name || ''}`.trim() ||
+      'Applicant';
+
+    return buildTimelineEvents({
+      propertyHistories,
+      offerLetters,
+      payments,
+      tenantName,
     });
-
-    return historyEvents.map((event) => ({
-      id: event.id,
-      eventType: event.event_type,
-      eventDescription: event.event_description || '',
-      createdAt: event.created_at
-        ? new Date(event.created_at).toISOString()
-        : new Date().toISOString(),
-    }));
   }
 
   /**

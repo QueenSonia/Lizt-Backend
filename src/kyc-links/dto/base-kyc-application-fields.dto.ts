@@ -164,15 +164,14 @@ export class BaseKYCApplicationFieldsDto {
   @IsEmail()
   next_of_kin_email: string;
 
-  // Referral Agent Information (optional)
-  @IsOptional()
+  // Referral Agent Information (required)
   @IsString()
-  referral_agent_full_name?: string;
+  @IsNotEmpty()
+  referral_agent_full_name: string;
 
-  @IsOptional()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  referral_agent_phone_number?: string;
+  referral_agent_phone_number: string;
 
   // Tenancy Information
   @IsOptional()

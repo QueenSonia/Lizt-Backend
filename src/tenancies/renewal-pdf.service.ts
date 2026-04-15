@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as puppeteer from 'puppeteer';
 import { RenewalInvoice } from './entities/renewal-invoice.entity';
+import { renewalInvoiceToFees, Fee } from '../common/billing/fees';
 
 /**
  * Renewal PDF Service
@@ -210,10 +211,17 @@ export class RenewalPDFService {
     const startDate = this.formatDate(invoice.start_date);
     const endDate = this.formatDate(invoice.end_date);
 
-    const rentAmount = this.formatCurrency(Number(invoice.rent_amount));
-    const serviceCharge = Number(invoice.service_charge);
-    const legalFee = Number(invoice.legal_fee);
-    const otherCharges = Number(invoice.other_charges);
+    // Billing v2 — render the jsonb snapshot verbatim. Falls back to the
+    // legacy scalar columns for invoices created before fee_breakdown existed.
+    const fees: Fee[] = renewalInvoiceToFees(invoice);
+    const feeRowsHtml = fees
+      .map(
+        (f) => `<div class="charge-row">
+            <span class="charge-label">${this.escapeHtml(f.label)}</span>
+            <span class="charge-amount">${this.formatCurrency(f.amount)}</span>
+          </div>`,
+      )
+      .join('');
     const walletBalance = Number(invoice.wallet_balance);
     const totalAmount = this.formatCurrency(Number(invoice.total_amount));
 
@@ -480,37 +488,7 @@ export class RenewalPDFService {
         <div style="margin-bottom: 32px;">
           <h2 class="charges-title">Breakdown of Charges</h2>
 
-          <div class="charge-row">
-            <span class="charge-label">Rent</span>
-            <span class="charge-amount">${rentAmount}</span>
-          </div>
-
-          ${
-            serviceCharge > 0
-              ? `<div class="charge-row">
-            <span class="charge-label">Service Charge</span>
-            <span class="charge-amount">${this.formatCurrency(serviceCharge)}</span>
-          </div>`
-              : ''
-          }
-
-          ${
-            legalFee > 0
-              ? `<div class="charge-row">
-            <span class="charge-label">Legal Fee</span>
-            <span class="charge-amount">${this.formatCurrency(legalFee)}</span>
-          </div>`
-              : ''
-          }
-
-          ${
-            otherCharges > 0
-              ? `<div class="charge-row">
-            <span class="charge-label">Other Charges</span>
-            <span class="charge-amount">${this.formatCurrency(otherCharges)}</span>
-          </div>`
-              : ''
-          }
+          ${feeRowsHtml}
 
           ${
             walletBalance > 0
@@ -562,10 +540,15 @@ export class RenewalPDFService {
     const paymentReference = invoice.payment_reference || 'N/A';
     const receiptNumber = invoice.receipt_number || 'N/A';
 
-    const rentAmount = this.formatCurrency(Number(invoice.rent_amount));
-    const serviceCharge = Number(invoice.service_charge);
-    const legalFee = Number(invoice.legal_fee);
-    const otherCharges = Number(invoice.other_charges);
+    const fees: Fee[] = renewalInvoiceToFees(invoice);
+    const receiptFeeRowsHtml = fees
+      .map(
+        (f) => `<div class="charge-row">
+            <span class="charge-label">${this.escapeHtml(f.label)}</span>
+            <span class="charge-amount">${this.formatCurrency(f.amount)}</span>
+          </div>`,
+      )
+      .join('');
     const totalAmount = this.formatCurrency(Number(invoice.total_amount));
 
     // Get landlord logo URL (document layer - top right)
@@ -777,37 +760,7 @@ export class RenewalPDFService {
         <div class="charges-section">
           <h2 class="charges-title">Payment Breakdown</h2>
 
-          <div class="charge-row">
-            <span class="charge-label">Rent Amount</span>
-            <span class="charge-amount">${rentAmount}</span>
-          </div>
-
-          ${
-            serviceCharge > 0
-              ? `<div class="charge-row">
-            <span class="charge-label">Service Charge</span>
-            <span class="charge-amount">${this.formatCurrency(serviceCharge)}</span>
-          </div>`
-              : ''
-          }
-
-          ${
-            legalFee > 0
-              ? `<div class="charge-row">
-            <span class="charge-label">Legal Fee</span>
-            <span class="charge-amount">${this.formatCurrency(legalFee)}</span>
-          </div>`
-              : ''
-          }
-
-          ${
-            otherCharges > 0
-              ? `<div class="charge-row">
-            <span class="charge-label">Other Charges</span>
-            <span class="charge-amount">${this.formatCurrency(otherCharges)}</span>
-          </div>`
-              : ''
-          }
+          ${receiptFeeRowsHtml}
 
           <!-- Total amount -->
           <div class="total-row">

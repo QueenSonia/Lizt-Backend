@@ -2086,6 +2086,18 @@ export class PropertiesService {
             : 'Vacant',
       rent: activeRent?.rental_price || null,
       serviceCharge: activeRent?.service_charge || 0,
+      // Billing v2 — expose the full fee breakdown so edit/renew modals can
+      // pre-fill with the exact current fee configuration instead of losing
+      // legal/agency/otherFees on every edit.
+      cautionDeposit: activeRent?.security_deposit ?? null,
+      legalFee: activeRent?.legal_fee ?? null,
+      agencyFee: activeRent?.agency_fee ?? null,
+      otherFees: activeRent?.other_fees ?? [],
+      serviceChargeRecurring: activeRent?.service_charge_recurring ?? true,
+      cautionDepositRecurring:
+        activeRent?.security_deposit_recurring ?? false,
+      legalFeeRecurring: activeRent?.legal_fee_recurring ?? false,
+      agencyFeeRecurring: activeRent?.agency_fee_recurring ?? false,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
       pendingRenewalInvoice: pendingRenewalInvoice || null,

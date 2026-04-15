@@ -10,6 +10,7 @@ import {
   ValidateNested,
   Min,
   MaxLength,
+  ArrayMaxSize,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -111,6 +112,31 @@ export class ContentSnapshotDto {
 }
 
 /**
+ * Billing v2 — one entry of the dynamic `otherFees` list.
+ */
+export class OtherFeeDto {
+  @ApiPropertyOptional({ example: 'of_abc123' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  externalId?: string;
+
+  @ApiProperty({ example: 'Diesel' })
+  @IsString()
+  @MaxLength(64)
+  name: string;
+
+  @ApiProperty({ example: 25000 })
+  @IsNumber()
+  @Min(0)
+  amount: number;
+
+  @ApiProperty({ example: false })
+  @IsBoolean()
+  recurring: boolean;
+}
+
+/**
  * Create Offer Letter DTO
  * Used for creating a new offer letter from the landlord dashboard
  * Requirements: 5.2, 10.1
@@ -164,6 +190,35 @@ export class CreateOfferLetterDto {
   @IsNumber()
   @Min(0)
   agencyFee?: number;
+
+  // Billing v2 — per-fee recurring flags.
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  serviceChargeRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  cautionDepositRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  legalFeeRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  agencyFeeRecurring?: boolean;
+
+  @ApiPropertyOptional({ type: () => [OtherFeeDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => OtherFeeDto)
+  otherFees?: OtherFeeDto[];
 
   @ApiProperty({ type: () => [TermsOfTenancyDto] })
   @IsArray()

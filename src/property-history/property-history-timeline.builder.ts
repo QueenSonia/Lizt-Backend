@@ -5,6 +5,7 @@ import {
 } from 'src/offer-letters/entities/offer-letter.entity';
 import { Payment } from 'src/payments/entities/payment.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { offerLetterToFees, sumAll } from 'src/common/billing/fees';
 
 export interface TimelineEvent {
   id: string;
@@ -684,12 +685,9 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
     const eventDate = new Date(
       offer.updated_at || offer.created_at || new Date(),
     );
-    const totalAmount =
-      Number(offer.rent_amount || 0) +
-      Number(offer.service_charge || 0) +
-      Number(offer.caution_deposit || 0) +
-      Number(offer.legal_fee || 0) +
-      Number(offer.agency_fee || 0);
+    // Billing v2: total = rent + service + caution + legal + agency +
+    // every otherFee (recurring or one-time). Matches offer_letters.total_amount.
+    const totalAmount = sumAll(offerLetterToFees(offer));
 
     let statusText = 'sent';
     let titleStatus = 'Sent';

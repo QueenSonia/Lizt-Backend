@@ -25,6 +25,7 @@ import {
   AttachTenantToPropertyDto,
   RentFrequency,
 } from './dto/attach-tenant-to-property.dto';
+import { AttachTenantFromKycDto } from './dto/attach-tenant-from-kyc.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
@@ -164,17 +165,7 @@ export class UsersService {
    */
   async attachTenantFromKyc(
     landlordId: string,
-    dto: {
-      kycApplicationId: string;
-      propertyId: string;
-      rentAmount: number;
-      rentFrequency: string;
-      tenancyStartDate: string;
-      rentDueDate: string;
-      serviceCharge?: number;
-      outstandingBalance?: number;
-      outstandingBalanceReason?: string;
-    },
+    dto: AttachTenantFromKycDto,
   ) {
     return this.tenantManagementService.attachTenantFromKyc(landlordId, dto);
   }

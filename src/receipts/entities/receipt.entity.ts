@@ -69,6 +69,15 @@ export class Receipt extends BaseEntity {
   @Column({ type: 'jsonb', nullable: true })
   branding: Record<string, any> | null;
 
+  // Billing v2 — snapshot of the paid invoice's line items at receipt time.
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  line_items: Array<{
+    label: string;
+    amount: number;
+    feeKind: string | null;
+    isRecurring: boolean;
+  }>;
+
   // Relations
   @ManyToOne(() => Payment, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'payment_id' })

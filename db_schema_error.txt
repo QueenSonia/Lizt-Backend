@@ -1,0 +1,19 @@
+Error: Cannot find module 'src/base.entity'
+Require stack:
+- C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\src\chat\chat-message.entity.ts
+- C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\node_modules\typeorm\util\ImportUtils.js
+- C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\node_modules\typeorm\connection\ConnectionOptionsReader.js
+- C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\node_modules\typeorm\globals.js
+- C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\node_modules\typeorm\index.js
+- C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\src\data-source.ts
+- C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\dump-schema.ts
+    at Function.Module._resolveFilename (node:internal/modules/cjs/loader:1207:15)
+    at Function.Module._resolveFilename.sharedData.moduleResolveFilenameHook.installedValue [as _resolveFilename] (C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\node_modules\@cspotcode\source-map-support\source-map-support.js:811:30)
+    at Function.Module._load (node:internal/modules/cjs/loader:1038:27)
+    at Module.require (node:internal/modules/cjs/loader:1289:19)
+    at require (node:internal/modules/helpers:182:18)
+    at Object.<anonymous> (C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\src\chat\chat-message.entity.ts:1:1)
+    at Module._compile (node:internal/modules/cjs/loader:1521:14)
+    at Module.m._compile (C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\node_modules\ts-node\src\index.ts:1618:23)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1623:10)
+    at Object.require.extensions.<computed> [as .ts] (C:\Users\user\Desktop\Panda\frontend-backend\lizt-backend\node_modules\ts-node\src\index.ts:1621:12)

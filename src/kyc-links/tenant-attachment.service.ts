@@ -37,6 +37,12 @@ import { UtilService } from '../utils/utility-service';
 import { ReceiptsService } from '../receipts/receipts.service';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
+import {
+  offerLetterToFees,
+  sumRecurring,
+  sumOneTime,
+  feeLabelsCsv,
+} from '../common/billing/fees';
 
 @Injectable()
 export class TenantAttachmentService {
@@ -523,14 +529,34 @@ export class TenantAttachmentService {
       nextDueDate: nextRentDueDate.toISOString(),
     });
 
-    // Create rent record
+    // Billing v2: snapshot the full fee breakdown from the offer letter so
+    // every downstream money event (rent row, ledger, renewal) sees the same
+    // per-fee recurring/one-time split the landlord configured at offer time.
+    const fees = offerLetterToFees(offerLetter);
+    const recurringFees = fees.filter((f) => f.recurring);
+    const oneTimeFees = fees.filter((f) => !f.recurring);
+    const recurringPeriodCharge = sumRecurring(fees);
+    const oneTimeCharge = sumOneTime(fees);
+    const totalCollected = recurringPeriodCharge + oneTimeCharge;
+
+    // Create rent record — copy every fee + recurring flag + otherFees so
+    // renewal cron and property-history can reconstruct the fee set later.
     const rent = manager.create(Rent, {
       tenant_id: tenantAccount.id,
       property_id: offerLetter.property_id,
       rent_start_date: rentStartDate,
       rental_price: Number(offerLetter.rent_amount),
       security_deposit: Number(offerLetter.caution_deposit || 0),
+      security_deposit_recurring: !!offerLetter.caution_deposit_recurring,
       service_charge: Number(offerLetter.service_charge || 0),
+      service_charge_recurring: offerLetter.service_charge_recurring !== false,
+      legal_fee:
+        offerLetter.legal_fee != null ? Number(offerLetter.legal_fee) : null,
+      legal_fee_recurring: !!offerLetter.legal_fee_recurring,
+      agency_fee:
+        offerLetter.agency_fee != null ? Number(offerLetter.agency_fee) : null,
+      agency_fee_recurring: !!offerLetter.agency_fee_recurring,
+      other_fees: offerLetter.other_fees ?? [],
       payment_frequency: this.mapRentFrequencyToPaymentFrequency(rentFrequency),
       rent_status: RentStatusEnum.ACTIVE,
       payment_status: RentPaymentStatusEnum.PENDING,
@@ -545,42 +571,78 @@ export class TenantAttachmentService {
       rentalPrice: rent.rental_price,
       securityDeposit: rent.security_deposit,
       serviceCharge: rent.service_charge,
+      recurringPeriodCharge,
+      oneTimeCharge,
     });
 
-    // Record the first period charge in the tenant balance ledger
-    const rentAndServiceCharge =
-      Number(offerLetter.rent_amount) + Number(offerLetter.service_charge || 0);
+    // Record the first period recurring charge in the tenant balance ledger.
+    if (recurringPeriodCharge > 0) {
+      await this.tenantBalancesService.applyChange(
+        tenantAccount.id,
+        offerLetter.landlord_id,
+        -recurringPeriodCharge,
+        {
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description: 'Tenancy started — recurring charges',
+          propertyId: offerLetter.property_id,
+          relatedEntityType: 'rent',
+          relatedEntityId: rent.id,
+          metadata: {
+            batch_id: 'billing-v2',
+            breakdown: recurringFees,
+          },
+        },
+        undefined,
+        manager,
+      );
+    }
 
-    await this.tenantBalancesService.applyChange(
-      tenantAccount.id,
-      offerLetter.landlord_id,
-      -rentAndServiceCharge,
-      {
-        type: TenantBalanceLedgerType.INITIAL_BALANCE,
-        description: 'Tenancy started',
-        propertyId: offerLetter.property_id,
-        relatedEntityType: 'rent',
-        relatedEntityId: rent.id,
-      },
-      undefined,
-      manager,
-    );
+    // Record the one-time move-in fees (caution/legal/agency/one-time otherFees)
+    // — previously these were collected by Paystack but left no audit trail.
+    if (oneTimeCharge > 0) {
+      await this.tenantBalancesService.applyChange(
+        tenantAccount.id,
+        offerLetter.landlord_id,
+        -oneTimeCharge,
+        {
+          type: TenantBalanceLedgerType.ONE_TIME_FEES,
+          description: `Move-in fees — ${feeLabelsCsv(oneTimeFees)}`,
+          propertyId: offerLetter.property_id,
+          relatedEntityType: 'rent',
+          relatedEntityId: rent.id,
+          metadata: {
+            batch_id: 'billing-v2',
+            breakdown: oneTimeFees,
+          },
+        },
+        undefined,
+        manager,
+      );
+    }
 
-    // Record the Paystack payment — full rent+service_charge was paid via offer letter.
-    await this.tenantBalancesService.applyChange(
-      tenantAccount.id,
-      offerLetter.landlord_id,
-      rentAndServiceCharge,
-      {
-        type: TenantBalanceLedgerType.OB_PAYMENT,
-        description: `Offer letter payment received`,
-        propertyId: offerLetter.property_id,
-        relatedEntityType: 'rent',
-        relatedEntityId: rent.id,
-      },
-      undefined,
-      manager,
-    );
+    // Record the Paystack payment — the offer letter was paid in full, so credit
+    // the wallet for everything we just charged. Net effect on wallet balance: 0.
+    if (totalCollected > 0) {
+      await this.tenantBalancesService.applyChange(
+        tenantAccount.id,
+        offerLetter.landlord_id,
+        totalCollected,
+        {
+          type: TenantBalanceLedgerType.OB_PAYMENT,
+          description: 'Offer letter payment received',
+          propertyId: offerLetter.property_id,
+          relatedEntityType: 'rent',
+          relatedEntityId: rent.id,
+          metadata: {
+            batch_id: 'billing-v2',
+            recurring_portion: recurringPeriodCharge,
+            one_time_portion: oneTimeCharge,
+          },
+        },
+        undefined,
+        manager,
+      );
+    }
 
     // Update rent record to reflect payment
     rent.amount_paid = Number(offerLetter.rent_amount);

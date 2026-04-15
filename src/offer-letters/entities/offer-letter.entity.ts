@@ -79,6 +79,27 @@ export class OfferLetter extends BaseEntity {
   @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
   agency_fee?: number;
 
+  // Billing v2 — per-fee recurring flags + dynamic other fees.
+  @Column({ type: 'boolean', default: true })
+  service_charge_recurring: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  caution_deposit_recurring: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  legal_fee_recurring: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  agency_fee_recurring: boolean;
+
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  other_fees: Array<{
+    externalId: string;
+    name: string;
+    amount: number;
+    recurring: boolean;
+  }>;
+
   @Column({
     type: 'enum',
     enum: OfferLetterStatus,

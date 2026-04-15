@@ -8,6 +8,7 @@ import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { Invoice } from '../invoices/entities/invoice.entity';
+import { InvoiceLineItem } from '../invoices/entities/invoice-line-item.entity';
 import { FileUploadService } from '../utils/cloudinary';
 import { PropertyHistoryService } from '../property-history/property-history.service';
 import { NotificationService } from '../notifications/notification.service';
@@ -37,6 +38,8 @@ export class ReceiptGeneratorService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
+    @InjectRepository(InvoiceLineItem)
+    private readonly invoiceLineItemRepository: Repository<InvoiceLineItem>,
     private readonly fileUploadService: FileUploadService,
     private readonly propertyHistoryService: PropertyHistoryService,
     private readonly notificationService: NotificationService,
@@ -81,6 +84,20 @@ export class ReceiptGeneratorService {
       where: { offer_letter_id: offerLetterId },
     });
 
+    // Billing v2 — snapshot the invoice's line items at receipt-issue time
+    // so the receipt PDF remains accurate even if the invoice is later edited.
+    const invoiceLineItems = invoice
+      ? await this.invoiceLineItemRepository.find({
+          where: { invoice_id: invoice.id },
+        })
+      : [];
+    const snapshotLineItems = invoiceLineItems.map((li) => ({
+      label: li.description,
+      amount: Number(li.amount) || 0,
+      feeKind: li.fee_kind ?? null,
+      isRecurring: !!li.is_recurring,
+    }));
+
     // Generate unique identifiers
     const receiptNumber = await this.generateReceiptNumber();
     const token = crypto.randomBytes(32).toString('hex');
@@ -104,6 +121,7 @@ export class ReceiptGeneratorService {
       property_address: property.location || null,
       invoice_number: invoice?.invoice_number || null,
       branding: offerLetter.branding || null,
+      line_items: snapshotLineItems,
     });
 
     const savedReceipt = await this.receiptRepository.save(receipt);
@@ -323,7 +341,8 @@ export class ReceiptGeneratorService {
           <span class="detail-label">Invoice Reference</span>
           <span class="detail-value">${this.escapeHtml(receipt.invoice_number || 'N/A')}</span>
         </div>
-        <div class="detail-row">
+        ${this.renderReceiptLineItems(receipt, formatCurrency)}
+        <div class="detail-row" style="border-top:1px solid #e5e7eb;padding-top:12px;margin-top:8px;">
           <span class="detail-label">Amount Paid</span>
           <span class="detail-value-bold">${formatCurrency(receipt.amount_paid)}</span>
         </div>
@@ -361,6 +380,24 @@ export class ReceiptGeneratorService {
   </div>
 </body>
 </html>`;
+  }
+
+  /**
+   * Render the itemized line-items block on the receipt. Falls back to a
+   * single lump-sum row if the snapshot is empty (pre-billing-v2 receipts).
+   */
+  private renderReceiptLineItems(
+    receipt: Receipt,
+    formatCurrency: (n: number) => string,
+  ): string {
+    const items = receipt.line_items || [];
+    if (items.length === 0) return '';
+    return items
+      .map(
+        (item) =>
+          `<div class="detail-row"><span class="detail-label">${this.escapeHtml(item.label)}${item.isRecurring ? ' <span style="font-size:10px;color:#6b7280;">(recurring)</span>' : ''}</span><span class="detail-value">${formatCurrency(Number(item.amount) || 0)}</span></div>`,
+      )
+      .join('');
   }
 
   private async generateReceiptNumber(): Promise<string> {

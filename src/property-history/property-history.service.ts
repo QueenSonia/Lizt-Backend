@@ -23,6 +23,7 @@ import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import { rentToFees, sumRecurring } from 'src/common/billing/fees';
 
 @Injectable()
 export class PropertyHistoryService {
@@ -852,8 +853,10 @@ export class PropertyHistoryService {
     if (inactiveRents.length === 0) return;
 
     for (const rent of inactiveRents) {
-      const fullAmount =
-        (Number(rent.rental_price) || 0) + (Number(rent.service_charge) || 0);
+      // Billing v2: a period's "full amount" is the sum of every recurring
+      // fee on the rent, not just rent + service. This keeps arrears
+      // allocation consistent with the renewal cron's charge.
+      const fullAmount = sumRecurring(rentToFees(rent));
 
       if (remaining >= fullAmount) {
         rent.amount_paid = fullAmount;

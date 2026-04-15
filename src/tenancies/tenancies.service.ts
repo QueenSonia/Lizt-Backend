@@ -33,6 +33,8 @@ import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import { rentToFees, sumRecurring, Fee } from 'src/common/billing/fees';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class TenanciesService {
@@ -291,6 +293,19 @@ export class TenanciesService {
       serviceCharge?: number;
       silent?: boolean;
       endDate?: string;
+      cautionDeposit?: number;
+      legalFee?: number;
+      agencyFee?: number;
+      serviceChargeRecurring?: boolean;
+      cautionDepositRecurring?: boolean;
+      legalFeeRecurring?: boolean;
+      agencyFeeRecurring?: boolean;
+      otherFees?: Array<{
+        externalId?: string;
+        name: string;
+        amount: number;
+        recurring: boolean;
+      }>;
     },
   ): Promise<{ token: string; link: string }> {
     // 1. Find the PropertyTenant relationship with all necessary relations
@@ -374,12 +389,56 @@ export class TenanciesService {
       }
     }
 
-    // 5. Calculate total amount (rent + service charge + outstanding balance - credit balance)
-    const rentAmount = body?.rentAmount || activeRent.rental_price;
+    // 5. Billing v2 — build the Fee[] for the renewal invoice by merging
+    // per-field overrides from the request body over the active rent's
+    // current values. Every body field is optional; omitted fields fall
+    // back to the rent so "Renew" pre-fills correctly.
+    const rentAmount = body?.rentAmount || activeRent.rental_price || 0;
     const serviceCharge =
       body?.serviceCharge ?? (activeRent.service_charge || 0);
-    const legalFee = 0;
-    const otherCharges = 0;
+    const cautionDeposit =
+      body?.cautionDeposit ?? Number(activeRent.security_deposit || 0);
+    const legalFee =
+      body?.legalFee ?? Number(activeRent.legal_fee || 0);
+    const agencyFee =
+      body?.agencyFee ?? Number(activeRent.agency_fee || 0);
+
+    const serviceChargeRecurring =
+      body?.serviceChargeRecurring ?? activeRent.service_charge_recurring ?? true;
+    const cautionDepositRecurring =
+      body?.cautionDepositRecurring ?? activeRent.security_deposit_recurring ?? false;
+    const legalFeeRecurring =
+      body?.legalFeeRecurring ?? activeRent.legal_fee_recurring ?? false;
+    const agencyFeeRecurring =
+      body?.agencyFeeRecurring ?? activeRent.agency_fee_recurring ?? false;
+
+    const otherFees = (body?.otherFees ?? activeRent.other_fees ?? []).map((f) => ({
+      externalId: f.externalId ?? randomUUID(),
+      name: f.name,
+      amount: f.amount,
+      recurring: f.recurring,
+    }));
+
+    // Build the Fee[] via the shared helper so the same classification
+    // rules apply here as in the rent pipeline.
+    const allFees: Fee[] = rentToFees({
+      rental_price: rentAmount,
+      service_charge: serviceCharge,
+      service_charge_recurring: serviceChargeRecurring,
+      security_deposit: cautionDeposit,
+      security_deposit_recurring: cautionDepositRecurring,
+      legal_fee: legalFee,
+      legal_fee_recurring: legalFeeRecurring,
+      agency_fee: agencyFee,
+      agency_fee_recurring: agencyFeeRecurring,
+      other_fees: otherFees,
+      payment_frequency: paymentFrequency,
+    });
+    // Renewal invoices only bill the recurring portion — one-time move-in
+    // fees were collected at attach time and never re-bill.
+    const recurringFees = allFees.filter((f) => f.recurring);
+    const periodCharge = sumRecurring(allFees);
+    const recurringOtherFees = otherFees.filter((f) => f.recurring);
 
     const landlordId = propertyTenant.property.owner_id;
     const walletBalance = await this.tenantBalancesService.getBalance(
@@ -388,8 +447,10 @@ export class TenanciesService {
     );
 
     // total = new charges - wallet (credit reduces total; outstanding increases it)
-    const currentCharges = rentAmount + serviceCharge + legalFee + otherCharges;
-    const totalAmount = Math.max(0, currentCharges - walletBalance);
+    const totalAmount = Math.max(0, periodCharge - walletBalance);
+    // Legacy scalar columns kept in sync with the helper output so existing
+    // consumers (PDF, history) see the same numbers as fee_breakdown.
+    const otherCharges = 0;
 
     const isSilent = body?.silent === true;
 
@@ -413,7 +474,11 @@ export class TenanciesService {
       existingInvoice.rent_amount = rentAmount;
       existingInvoice.service_charge = serviceCharge;
       existingInvoice.legal_fee = legalFee;
+      existingInvoice.agency_fee = agencyFee;
+      existingInvoice.caution_deposit = cautionDeposit;
       existingInvoice.other_charges = otherCharges;
+      existingInvoice.other_fees = recurringOtherFees;
+      existingInvoice.fee_breakdown = recurringFees;
       existingInvoice.total_amount = totalAmount;
       existingInvoice.outstanding_balance =
         walletBalance < 0 ? -walletBalance : 0;
@@ -436,7 +501,11 @@ export class TenanciesService {
         rent_amount: rentAmount,
         service_charge: serviceCharge,
         legal_fee: legalFee,
+        agency_fee: agencyFee,
+        caution_deposit: cautionDeposit,
         other_charges: otherCharges,
+        other_fees: recurringOtherFees,
+        fee_breakdown: recurringFees,
         total_amount: totalAmount,
         outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
         wallet_balance: walletBalance,

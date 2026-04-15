@@ -20,6 +20,7 @@ import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from '../properties/dto/create-property.dto';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
+import { rentToFees, sumRecurring, Fee } from '../common/billing/fees';
 
 const RENT_REMINDER_SCHEDULE = {
   monthly: [14, 7, 2, 1, 0],
@@ -123,45 +124,59 @@ export class RentReminderService {
       currentRent.rent_status = RentStatusEnum.INACTIVE;
       await this.rentRepository.save(currentRent);
 
+      // Billing v2: the period charge is the sum of every recurring fee
+      // on the rent (rent + service + any legal/agency/otherFees the
+      // landlord flagged `recurring=true`). Non-recurring fees were
+      // collected once at move-in and must not re-bill each renewal.
+      const currentFees = rentToFees(currentRent);
+      const recurringFees = currentFees.filter((f) => f.recurring);
+      const periodCharge = sumRecurring(currentFees);
+
       // If the expiring period was unpaid, charge it to the wallet now
       const wasUnpaid =
         currentRent.payment_status !== RentPaymentStatusEnum.PAID;
 
-      if (wasUnpaid) {
-        const unpaidAmount =
-          (currentRent.rental_price || 0) + (currentRent.service_charge || 0);
-        if (unpaidAmount > 0) {
-          await this.tenantBalancesService.applyChange(
-            currentRent.tenant_id,
-            currentRent.property.owner_id,
-            -unpaidAmount,
-            {
-              type: TenantBalanceLedgerType.AUTO_RENEWAL,
-              description: `Unpaid period charged: ${currentExpiry.toLocaleDateString('en-GB')}`,
-              propertyId: currentRent.property_id,
-              relatedEntityType: 'rent',
-              relatedEntityId: currentRent.id,
+      if (wasUnpaid && periodCharge > 0) {
+        await this.tenantBalancesService.applyChange(
+          currentRent.tenant_id,
+          currentRent.property.owner_id,
+          -periodCharge,
+          {
+            type: TenantBalanceLedgerType.AUTO_RENEWAL,
+            description: `Unpaid period charged: ${currentExpiry.toLocaleDateString('en-GB')}`,
+            propertyId: currentRent.property_id,
+            relatedEntityType: 'rent',
+            relatedEntityId: currentRent.id,
+            metadata: {
+              batch_id: 'billing-v2',
+              breakdown: recurringFees,
+              kind: 'unpaid_period',
             },
-          );
-        }
+          },
+        );
       }
 
       // Apply the new period charge and check if wallet covers it
-      const newPeriodAmount =
-        (currentRent.rental_price || 0) + (currentRent.service_charge || 0);
-
-      await this.tenantBalancesService.applyChange(
-        currentRent.tenant_id,
-        currentRent.property.owner_id,
-        -newPeriodAmount,
-        {
-          type: TenantBalanceLedgerType.AUTO_RENEWAL,
-          description: `New period charged: ${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]}`,
-          propertyId: currentRent.property_id,
-          relatedEntityType: 'rent',
-          // id not yet known; will be set after save
-        },
-      );
+      if (periodCharge > 0) {
+        await this.tenantBalancesService.applyChange(
+          currentRent.tenant_id,
+          currentRent.property.owner_id,
+          -periodCharge,
+          {
+            type: TenantBalanceLedgerType.AUTO_RENEWAL,
+            description: `New period charged: ${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]}`,
+            propertyId: currentRent.property_id,
+            relatedEntityType: 'rent',
+            metadata: {
+              batch_id: 'billing-v2',
+              breakdown: recurringFees,
+              kind: 'new_period',
+              period_start: nextStart.toISOString().split('T')[0],
+              period_end: nextExpiry.toISOString().split('T')[0],
+            },
+          },
+        );
+      }
 
       const walletAfterCharge = await this.tenantBalancesService.getBalance(
         currentRent.tenant_id,
@@ -171,20 +186,31 @@ export class RentReminderService {
       // Wallet covers the new period (balance still >= 0) → mark paid silently
       const coveredByWallet = walletAfterCharge >= 0;
 
+      // Carry recurring fees forward unchanged; non-recurring fees drop out
+      // of the next period (they were move-in one-timers).
+      const carried = this.carryForwardFees(currentRent);
+
       const newRent = this.rentRepository.create({
         property_id: currentRent.property_id,
         tenant_id: currentRent.tenant_id,
         rent_start_date: nextStart,
         expiry_date: nextExpiry,
         rental_price: currentRent.rental_price,
-        security_deposit: currentRent.security_deposit,
-        service_charge: currentRent.service_charge,
+        security_deposit: carried.security_deposit,
+        security_deposit_recurring: carried.security_deposit_recurring,
+        service_charge: carried.service_charge,
+        service_charge_recurring: carried.service_charge_recurring,
+        legal_fee: carried.legal_fee,
+        legal_fee_recurring: carried.legal_fee_recurring,
+        agency_fee: carried.agency_fee,
+        agency_fee_recurring: carried.agency_fee_recurring,
+        other_fees: carried.other_fees,
         payment_frequency: currentRent.payment_frequency,
         payment_status: coveredByWallet
           ? RentPaymentStatusEnum.PAID
           : RentPaymentStatusEnum.OWING,
         rent_status: RentStatusEnum.ACTIVE,
-        amount_paid: coveredByWallet ? newPeriodAmount : 0,
+        amount_paid: coveredByWallet ? periodCharge : 0,
       });
       await this.rentRepository.save(newRent);
 
@@ -563,9 +589,23 @@ export class RentReminderService {
         return null;
       }
 
+      const landlordId = rent.property.owner_id;
+
+      // Billing v2: snapshot the full Fee[] from the rent, then compute the
+      // period charge (rent + every recurring fee) via the shared helper. The
+      // snapshot is persisted on the invoice so the tenant-facing renderer
+      // sees the exact fee set the landlord had configured at bill time.
+      const fees: Fee[] = rentToFees(rent);
+      const recurringFees = fees.filter((f) => f.recurring);
+      const periodCharge = sumRecurring(fees);
       const rentAmount = rent.rental_price ?? rent.amount_paid ?? 0;
       const serviceCharge = rent.service_charge || 0;
-      const landlordId = rent.property.owner_id;
+      const legalFee = Number(rent.legal_fee || 0);
+      const agencyFee = Number(rent.agency_fee || 0);
+      const cautionDeposit = Number(rent.security_deposit || 0);
+      const recurringOtherFees = (rent.other_fees ?? []).filter(
+        (f) => f.recurring,
+      );
 
       const walletBalance = await this.tenantBalancesService.getBalance(
         rent.tenant_id,
@@ -573,7 +613,7 @@ export class RentReminderService {
       );
       // outstanding_balance kept for invoice compat (positive = owed)
       const outstandingBalance = walletBalance < 0 ? -walletBalance : 0;
-      const totalAmount = Math.max(0, rentAmount + serviceCharge - walletBalance);
+      const totalAmount = Math.max(0, periodCharge - walletBalance);
       const paymentFrequency = rent.payment_frequency || 'monthly';
 
       // Determine invoice period dates
@@ -610,11 +650,22 @@ export class RentReminderService {
         existing.total_amount = totalAmount;
         existing.start_date = startDate;
         existing.end_date = endDate;
+        // Refresh the fee snapshot — the underlying rent may have been
+        // edited (new recurring flag, added otherFee) since last run.
+        existing.rent_amount = rentAmount;
+        existing.service_charge = serviceCharge;
+        existing.legal_fee = legalFee;
+        existing.agency_fee = agencyFee;
+        existing.caution_deposit = cautionDeposit;
+        existing.other_fees = recurringOtherFees;
+        existing.fee_breakdown = recurringFees;
         await this.renewalInvoiceRepository.save(existing);
         return existing;
       }
 
-      // Auto-create
+      // Auto-create. fee_breakdown is the authoritative source for the
+      // tenant-facing UI; legacy scalar columns are kept for back-compat
+      // with the existing renewal PDF + API consumers.
       const token = uuidv4();
       const renewalInvoice = this.renewalInvoiceRepository.create({
         token,
@@ -625,8 +676,12 @@ export class RentReminderService {
         end_date: endDate,
         rent_amount: rentAmount,
         service_charge: serviceCharge,
-        legal_fee: 0,
+        legal_fee: legalFee,
+        agency_fee: agencyFee,
+        caution_deposit: cautionDeposit,
         other_charges: 0,
+        other_fees: recurringOtherFees,
+        fee_breakdown: recurringFees,
         outstanding_balance: outstandingBalance,
         wallet_balance: walletBalance,
         total_amount: totalAmount,
@@ -646,6 +701,47 @@ export class RentReminderService {
       );
       return null;
     }
+  }
+
+  /**
+   * Roll a rent's fee set forward into the next period:
+   *   - recurring fees survive unchanged (amount + flag)
+   *   - non-recurring fees (caution/legal/agency/one-time otherFees) zero out
+   *
+   * We can't just spread the old rent because the Rent entity uses flat
+   * columns; the helper produces a typed struct the caller can assign.
+   */
+  private carryForwardFees(rent: Rent): {
+    security_deposit: number;
+    security_deposit_recurring: boolean;
+    service_charge: number;
+    service_charge_recurring: boolean;
+    legal_fee: number | null;
+    legal_fee_recurring: boolean;
+    agency_fee: number | null;
+    agency_fee_recurring: boolean;
+    other_fees: Array<{
+      externalId: string;
+      name: string;
+      amount: number;
+      recurring: boolean;
+    }>;
+  } {
+    return {
+      service_charge: rent.service_charge_recurring
+        ? rent.service_charge || 0
+        : 0,
+      service_charge_recurring: !!rent.service_charge_recurring,
+      security_deposit: rent.security_deposit_recurring
+        ? rent.security_deposit || 0
+        : 0,
+      security_deposit_recurring: !!rent.security_deposit_recurring,
+      legal_fee: rent.legal_fee_recurring ? rent.legal_fee : null,
+      legal_fee_recurring: !!rent.legal_fee_recurring,
+      agency_fee: rent.agency_fee_recurring ? rent.agency_fee : null,
+      agency_fee_recurring: !!rent.agency_fee_recurring,
+      other_fees: (rent.other_fees ?? []).filter((f) => f.recurring),
+    };
   }
 
   // ---------------------------------------------------------------------------

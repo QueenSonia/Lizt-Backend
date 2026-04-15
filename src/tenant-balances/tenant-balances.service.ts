@@ -13,6 +13,13 @@ export interface LedgerContext {
   propertyId?: string;
   relatedEntityType?: string;
   relatedEntityId?: string;
+  /**
+   * Free-form tags persisted to `tenant_balance_ledger.metadata`.
+   * Billing v2 writes set `{ batch_id: 'billing-v2', breakdown?: Fee[] }`
+   * so reversal SQL can target the batch and the breakdown modal can
+   * render per-fee subtotals for bundled charges.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 @Injectable()
@@ -103,6 +110,7 @@ export class TenantBalancesService {
           balance_after: record.balance,
           related_entity_type: ctx.relatedEntityType ?? null,
           related_entity_id: ctx.relatedEntityId ?? null,
+          metadata: ctx.metadata ?? null,
         }),
       );
 

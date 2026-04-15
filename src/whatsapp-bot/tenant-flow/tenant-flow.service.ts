@@ -27,6 +27,7 @@ import {
 import { IncomingMessage } from '../utils';
 import { WhatsAppNotificationLogService } from '../whatsapp-notification-log.service';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import { rentToFees, sumRecurring } from 'src/common/billing/fees';
 
 /**
  * TenantFlowService handles all tenant-specific WhatsApp message interactions.
@@ -1732,8 +1733,18 @@ export class TenantFlowService {
     if (!user?.accounts?.length) return;
 
     const accountId = user.accounts[0].id;
+    // Billing v2: period charge = sum of every recurring fee on the rent
+    // (rent + service + any legal/agency/otherFees the landlord flagged
+    // recurring). One-time move-in fees were collected at attach time.
+    const fees = rentToFees(rent);
+    const recurringFees = fees.filter((f) => f.recurring);
+    const periodCharge = sumRecurring(fees);
     const rentAmount = rent.rental_price || 0;
     const serviceCharge = rent.service_charge || 0;
+    const legalFee = Number(rent.legal_fee || 0);
+    const agencyFee = Number(rent.agency_fee || 0);
+    const cautionDeposit = Number(rent.security_deposit || 0);
+    const recurringOtherFees = (rent.other_fees ?? []).filter((f) => f.recurring);
     const walletBal = rent.property?.owner_id
       ? await this.tenantBalancesService.getBalance(
           accountId,
@@ -1741,7 +1752,7 @@ export class TenantFlowService {
         )
       : 0;
     const outstandingBalance = walletBal < 0 ? -walletBal : 0;
-    const totalAmount = Math.max(0, rentAmount + serviceCharge - walletBal);
+    const totalAmount = Math.max(0, periodCharge - walletBal);
 
     // Find propertyTenant record
     const propertyTenant = await this.propertyTenantRepo.findOne({
@@ -1795,8 +1806,12 @@ export class TenantFlowService {
       end_date: endDate,
       rent_amount: rentAmount,
       service_charge: serviceCharge,
-      legal_fee: 0,
+      legal_fee: legalFee,
+      agency_fee: agencyFee,
+      caution_deposit: cautionDeposit,
       other_charges: 0,
+      other_fees: recurringOtherFees,
+      fee_breakdown: recurringFees,
       total_amount: totalAmount,
       outstanding_balance: outstandingBalance,
       token_type: 'tenant',

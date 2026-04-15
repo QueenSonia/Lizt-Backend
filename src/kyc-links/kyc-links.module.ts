@@ -13,6 +13,8 @@ import { KYCOtp } from './entities/kyc-otp.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
+import { Payment } from '../payments/entities/payment.entity';
 import { Rent } from '../rents/entities/rent.entity';
 import { Account } from '../users/entities/account.entity';
 import { Users } from '../users/entities/user.entity';
@@ -33,6 +35,8 @@ import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module'
       Property,
       PropertyTenant,
       PropertyHistory,
+      OfferLetter,
+      Payment,
       Rent,
       Account,
       Users,

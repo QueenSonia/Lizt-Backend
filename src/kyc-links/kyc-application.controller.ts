@@ -388,32 +388,33 @@ export class KYCApplicationController {
   }
 
   /**
-   * Get history events for a KYC application
-   * GET /api/kyc-applications/:applicationId/history
+   * Get the unified TimelineEvent[] for a KYC application.
+   * GET /api/kyc-applications/:applicationId/timeline
+   *
+   * Returns the same shape as the tenant-detail history field, so the
+   * applicant and tenant views render through one shared frontend component
+   * and the transition between the two is seamlessly continuous.
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
   @Roles('landlord')
-  @Get('kyc-applications/:applicationId/history')
-  async getApplicationHistory(
+  @Get('kyc-applications/:applicationId/timeline')
+  async getApplicationTimeline(
     @Param('applicationId', ParseUUIDPipe) applicationId: string,
     @CurrentUser() user: Account,
   ): Promise<{
     success: boolean;
-    history: Array<{
-      id: string;
-      eventType: string;
-      eventDescription: string;
-      createdAt: string;
-    }>;
+    timeline: Awaited<
+      ReturnType<KYCApplicationService['getApplicationTimeline']>
+    >;
   }> {
-    const history = await this.kycApplicationService.getApplicationHistory(
+    const timeline = await this.kycApplicationService.getApplicationTimeline(
       applicationId,
       user.id,
     );
 
     return {
       success: true,
-      history,
+      timeline,
     };
   }
 

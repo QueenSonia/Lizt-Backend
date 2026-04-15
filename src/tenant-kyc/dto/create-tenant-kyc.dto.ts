@@ -183,13 +183,13 @@ export class CreateTenantKycDto {
   @IsEmail()
   next_of_kin_email: string;
 
-  @IsOptional()
   @IsString()
-  referral_agent_full_name?: string;
+  @IsNotEmpty()
+  referral_agent_full_name: string;
 
-  @IsOptional()
+  @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  referral_agent_phone_number?: string;
+  referral_agent_phone_number: string;
 
   @IsUUID()
   landlord_id: string;

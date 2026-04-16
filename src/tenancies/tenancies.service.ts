@@ -610,6 +610,14 @@ export class TenanciesService {
       rentAmount: number;
       serviceCharge?: number;
       paymentFrequency: string;
+      cautionDeposit?: number;
+      legalFee?: number;
+      agencyFee?: number;
+      serviceChargeRecurring?: boolean;
+      cautionDepositRecurring?: boolean;
+      legalFeeRecurring?: boolean;
+      agencyFeeRecurring?: boolean;
+      otherFees?: { externalId?: string; name: string; amount: number; recurring: boolean }[];
     },
   ): Promise<{ success: boolean }> {
     const propertyTenant = await this.propertyTenantRepository.findOne({
@@ -645,6 +653,21 @@ export class TenanciesService {
     activeRent.rental_price = dto.rentAmount;
     activeRent.service_charge = dto.serviceCharge ?? activeRent.service_charge;
     activeRent.payment_frequency = dto.paymentFrequency;
+    if (dto.cautionDeposit !== undefined) activeRent.security_deposit = dto.cautionDeposit;
+    if (dto.legalFee !== undefined) activeRent.legal_fee = dto.legalFee;
+    if (dto.agencyFee !== undefined) activeRent.agency_fee = dto.agencyFee;
+    if (dto.serviceChargeRecurring !== undefined) activeRent.service_charge_recurring = dto.serviceChargeRecurring;
+    if (dto.cautionDepositRecurring !== undefined) activeRent.security_deposit_recurring = dto.cautionDepositRecurring;
+    if (dto.legalFeeRecurring !== undefined) activeRent.legal_fee_recurring = dto.legalFeeRecurring;
+    if (dto.agencyFeeRecurring !== undefined) activeRent.agency_fee_recurring = dto.agencyFeeRecurring;
+    if (dto.otherFees !== undefined) {
+      activeRent.other_fees = dto.otherFees.map((f) => ({
+        externalId: f.externalId ?? randomUUID(),
+        name: f.name,
+        amount: f.amount,
+        recurring: f.recurring,
+      }));
+    }
     activeRent.updated_at = new Date();
 
     await this.rentRepository.save(activeRent);
@@ -663,6 +686,14 @@ export class TenanciesService {
       serviceCharge?: number;
       paymentFrequency: string;
       endDate?: string;
+      cautionDeposit?: number;
+      legalFee?: number;
+      agencyFee?: number;
+      serviceChargeRecurring?: boolean;
+      cautionDepositRecurring?: boolean;
+      legalFeeRecurring?: boolean;
+      agencyFeeRecurring?: boolean;
+      otherFees?: { externalId?: string; name: string; amount: number; recurring: boolean }[];
     },
   ): Promise<{ success: boolean; invoiceId: string; totalAmount: number }> {
     const invoice = await this.renewalInvoiceRepository.findOne({
@@ -712,19 +743,56 @@ export class TenanciesService {
       endDate.setDate(endDate.getDate() - 1);
     }
 
+    const rentAmount = dto.rentAmount;
+    const serviceCharge = dto.serviceCharge ?? 0;
+    const cautionDeposit = dto.cautionDeposit ?? Number(invoice.caution_deposit || 0);
+    const legalFee = dto.legalFee ?? Number(invoice.legal_fee || 0);
+    const agencyFee = dto.agencyFee ?? Number(invoice.agency_fee || 0);
+
+    const serviceChargeRecurring = dto.serviceChargeRecurring ?? true;
+    const cautionDepositRecurring = dto.cautionDepositRecurring ?? false;
+    const legalFeeRecurring = dto.legalFeeRecurring ?? false;
+    const agencyFeeRecurring = dto.agencyFeeRecurring ?? false;
+
+    const otherFees = (dto.otherFees ?? invoice.other_fees ?? []).map((f) => ({
+      externalId: f.externalId ?? randomUUID(),
+      name: f.name,
+      amount: f.amount,
+      recurring: f.recurring,
+    }));
+
+    const allFees: Fee[] = rentToFees({
+      rental_price: rentAmount,
+      service_charge: serviceCharge,
+      service_charge_recurring: serviceChargeRecurring,
+      security_deposit: cautionDeposit,
+      security_deposit_recurring: cautionDepositRecurring,
+      legal_fee: legalFee,
+      legal_fee_recurring: legalFeeRecurring,
+      agency_fee: agencyFee,
+      agency_fee_recurring: agencyFeeRecurring,
+      other_fees: otherFees,
+      payment_frequency: dto.paymentFrequency,
+    });
+    const recurringFees = allFees.filter((f) => f.recurring);
+    const periodCharge = sumRecurring(allFees);
+    const recurringOtherFees = otherFees.filter((f) => f.recurring);
+
     const landlordId = invoice.property.owner_id;
     const walletBalance = await this.tenantBalancesService.getBalance(
       invoice.tenant_id,
       landlordId,
     );
 
-    const rentAmount = dto.rentAmount;
-    const serviceCharge = dto.serviceCharge ?? 0;
-    const currentCharges = rentAmount + serviceCharge;
-    const totalAmount = Math.max(0, currentCharges - walletBalance);
+    const totalAmount = Math.max(0, periodCharge - walletBalance);
 
     invoice.rent_amount = rentAmount;
     invoice.service_charge = serviceCharge;
+    invoice.legal_fee = legalFee;
+    invoice.agency_fee = agencyFee;
+    invoice.caution_deposit = cautionDeposit;
+    invoice.other_fees = recurringOtherFees;
+    invoice.fee_breakdown = recurringFees;
     invoice.total_amount = totalAmount;
     invoice.outstanding_balance = walletBalance < 0 ? -walletBalance : 0;
     invoice.wallet_balance = walletBalance;

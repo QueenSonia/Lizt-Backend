@@ -120,9 +120,20 @@ export class RentReminderService {
       nextStart.setDate(nextStart.getDate() + 1);
       const nextExpiry = this.advanceDateByOnePeriod(currentExpiry, frequency);
 
-      // Mark the current period inactive
+      // Atomically mark the current period inactive only if still ACTIVE.
+      // If another cron instance already processed this rent, the update
+      // affects 0 rows and we skip — this prevents double-renewal.
+      const updateResult = await this.rentRepository.update(
+        { id: currentRent.id, rent_status: RentStatusEnum.ACTIVE },
+        { rent_status: RentStatusEnum.INACTIVE },
+      );
+      if (updateResult.affected === 0) {
+        this.logger.warn(
+          `Rent ${currentRent.id} already processed by another instance, skipping.`,
+        );
+        return;
+      }
       currentRent.rent_status = RentStatusEnum.INACTIVE;
-      await this.rentRepository.save(currentRent);
 
       // Billing v2: the period charge is the sum of every recurring fee
       // on the rent (rent + service + any legal/agency/otherFees the

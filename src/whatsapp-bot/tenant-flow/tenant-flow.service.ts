@@ -1985,14 +1985,16 @@ export class TenantFlowService {
           })
         : '—';
 
-    const serviceCharge = rent.service_charge ?? property.service_charge ?? 0;
+    const recurringFees = rentToFees(rent).filter((f) => f.recurring);
+    const feeLines = recurringFees
+      .map((f) => `• ${f.label}: ${formatNGN(f.amount)}`)
+      .join('\n');
 
     const detailsMessage =
       `Here are your tenancy details:\n\n` +
       `• Property: ${property.name}\n` +
       `• Location: ${property.location}\n` +
-      `• Rent: ${formatNGN(rent.rental_price)}\n` +
-      `• Service charge: ${serviceCharge > 0 ? formatNGN(serviceCharge) : 'None'}\n` +
+      `${feeLines}\n` +
       `• Tenancy start date: ${formatDate(rent.rent_start_date)}\n` +
       `• Tenancy due date: ${formatDate(rent.expiry_date)}\n\n` +
       `Are these details correct?`;

@@ -2139,6 +2139,62 @@ export class TenantManagementService {
       ? (pendingInvoiceMap.get(activeRent.property_id) ?? null)
       : null;
 
+    // Fetch ALL renewal invoices for this tenant (for Documents tab)
+    const allRenewalInvoices = await this.dataSource
+      .getRepository(RenewalInvoice)
+      .find({
+        where: {
+          tenant_id: account.id,
+          ...(adminId
+            ? {
+                property: { owner_id: adminId },
+              }
+            : {}),
+        },
+        relations: ['property'],
+        order: { created_at: 'DESC' },
+        select: [
+          'id',
+          'token',
+          'receipt_token',
+          'property_id',
+          'rent_amount',
+          'total_amount',
+          'payment_status',
+          'created_at',
+          'paid_at',
+          'start_date',
+          'end_date',
+        ],
+      });
+
+    const renewalInvoiceSummaries = allRenewalInvoices.map((inv) => ({
+      id: inv.id,
+      token: inv.token,
+      receiptToken: inv.receipt_token || null,
+      propertyName: inv.property?.name || 'Property',
+      totalAmount: parseFloat((inv.total_amount ?? 0).toString()),
+      paymentStatus: inv.payment_status,
+      createdAt: inv.created_at
+        ? new Date(inv.created_at).toISOString()
+        : new Date().toISOString(),
+      paidAt: inv.paid_at
+        ? typeof inv.paid_at === 'string'
+          ? inv.paid_at
+          : inv.paid_at.toISOString()
+        : null,
+      startDate: inv.start_date
+        ? typeof inv.start_date === 'string'
+          ? inv.start_date
+          : inv.start_date.toISOString()
+        : null,
+      endDate: inv.end_date
+        ? typeof inv.end_date === 'string'
+          ? inv.end_date
+          : inv.end_date.toISOString()
+        : null,
+    }));
+
     return {
       id: account.id,
 
@@ -2329,6 +2385,19 @@ export class TenantManagementService {
       propertyStatus: property?.property_status || 'Vacant',
       leaseStartDate: this.formatDateField(activeRent?.rent_start_date),
       leaseEndDate: this.formatDateField(activeRent?.expiry_date),
+      firstRentDate: this.formatDateField(
+        rents?.length
+          ? rents.reduce(
+              (earliest, rent) =>
+                !earliest ||
+                (rent.rent_start_date &&
+                  new Date(rent.rent_start_date) < new Date(earliest))
+                  ? rent.rent_start_date
+                  : earliest,
+              null as Date | null,
+            )
+          : null,
+      ),
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
       serviceCharge: activeRent?.service_charge || 0,
@@ -2448,6 +2517,7 @@ export class TenantManagementService {
       ].sort((a, b) => b.date.getTime() - a.date.getTime()),
 
       history: history,
+      renewalInvoices: renewalInvoiceSummaries,
       kycInfo: {
         kycStatus: kycApplication ? 'Verified' : 'Not Submitted',
         kycSubmittedDate: kycApplication?.created_at

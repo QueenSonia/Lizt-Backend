@@ -183,7 +183,7 @@ export function rentToFees(rent: RentLike): Fee[] {
   pushIfPositive(
     fees,
     'caution',
-    'Security Deposit',
+    'Caution Deposit',
     num(rent.security_deposit),
     bool(rent.security_deposit_recurring, false),
   );
@@ -224,10 +224,26 @@ export function renewalInvoiceToFees(inv: RenewalInvoiceLike): Fee[] {
       .map((f) => ({ ...f, amount: num(f.amount) }));
   }
 
+  // Legacy fallback — renewal_invoices created before Billing v2 have no
+  // per-fee recurring flags, so we use defaults. Migration 1775000000008
+  // backfills fee_breakdown from the rent record's actual flags, so this
+  // path should only fire for orphaned invoices with no matching rent.
   const fees: Fee[] = [];
   pushIfPositive(fees, 'rent', 'Rent', num(inv.rent_amount), true);
-  pushIfPositive(fees, 'service', 'Service Charge', num(inv.service_charge), true);
-  pushIfPositive(fees, 'caution', 'Caution Deposit', num(inv.caution_deposit), false);
+  pushIfPositive(
+    fees,
+    'service',
+    'Service Charge',
+    num(inv.service_charge),
+    true,
+  );
+  pushIfPositive(
+    fees,
+    'caution',
+    'Caution Deposit',
+    num(inv.caution_deposit),
+    false,
+  );
   pushIfPositive(fees, 'legal', 'Legal Fee', num(inv.legal_fee), false);
   pushIfPositive(fees, 'agency', 'Agency Fee', num(inv.agency_fee), false);
   // Legacy `other_charges` scalar — render as a single line.

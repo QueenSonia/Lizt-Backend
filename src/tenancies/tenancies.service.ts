@@ -454,92 +454,99 @@ export class TenanciesService {
 
     const isSilent = body?.silent === true;
 
-    // 6. Check for existing unpaid renewal invoice (landlord-initiated or draft)
-    // Exclude tenant-generated OB-only invoices — those should not be reused as renewal invoices
-    const existingInvoice = await this.renewalInvoiceRepository.findOne({
-      where: {
-        property_tenant_id: propertyTenantId,
-        payment_status: RenewalPaymentStatus.UNPAID,
-        token_type: In(['landlord', 'draft']),
-      },
-      order: { created_at: 'DESC' },
-    });
-
-    let renewalInvoice: RenewalInvoice;
-
-    if (existingInvoice) {
-      // Update existing invoice with landlord's chosen terms
-      existingInvoice.start_date = startDate;
-      existingInvoice.end_date = endDate;
-      existingInvoice.rent_amount = rentAmount;
-      existingInvoice.service_charge = serviceCharge;
-      existingInvoice.legal_fee = legalFee;
-      existingInvoice.agency_fee = agencyFee;
-      existingInvoice.caution_deposit = cautionDeposit;
-      existingInvoice.other_charges = otherCharges;
-      existingInvoice.other_fees = recurringOtherFees;
-      existingInvoice.fee_breakdown = recurringFees;
-      existingInvoice.total_amount = totalAmount;
-      existingInvoice.outstanding_balance =
-        walletBalance < 0 ? -walletBalance : 0;
-      existingInvoice.wallet_balance = walletBalance;
-      existingInvoice.payment_frequency = paymentFrequency;
-      // Upgrade draft → landlord when the landlord is actually sending the notification
-      existingInvoice.token_type = isSilent ? 'draft' : 'landlord';
-      renewalInvoice = existingInvoice;
-    } else {
-      // Generate new token and create fresh invoice
-      const token = uuidv4();
-
-      renewalInvoice = this.renewalInvoiceRepository.create({
-        token,
-        property_tenant_id: propertyTenantId,
-        property_id: propertyTenant.property_id,
-        tenant_id: propertyTenant.tenant_id,
-        start_date: startDate,
-        end_date: endDate,
-        rent_amount: rentAmount,
-        service_charge: serviceCharge,
-        legal_fee: legalFee,
-        agency_fee: agencyFee,
-        caution_deposit: cautionDeposit,
-        other_charges: otherCharges,
-        other_fees: recurringOtherFees,
-        fee_breakdown: recurringFees,
-        total_amount: totalAmount,
-        outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
-        wallet_balance: walletBalance,
-        payment_status: RenewalPaymentStatus.UNPAID,
-        payment_frequency: paymentFrequency,
-        token_type: isSilent ? 'draft' : 'landlord',
-      });
-    }
-
-    const token = renewalInvoice.token;
-
     const tenantName = `${propertyTenant.tenant.user.first_name} ${propertyTenant.tenant.user.last_name}`;
 
-    if (isSilent) {
-      // Silent save — just persist the invoice, no history entry, no notification
-      await this.renewalInvoiceRepository.save(renewalInvoice);
-    } else {
-      // 9. Create property history entry for renewal link sent
-      const historyEntry = this.propertyHistoryRepository.create({
-        property_id: propertyTenant.property_id,
-        tenant_id: propertyTenant.tenant_id,
-        event_type: 'renewal_link_sent',
-        event_description: `Tenancy renewal link sent to ${tenantName}`,
-        owner_comment: `Tenancy renewal link sent to ${tenantName}`,
-        related_entity_id: renewalInvoice.id,
-        related_entity_type: 'renewal_invoice',
-      });
+    // 6. Find-or-create the renewal invoice inside a transaction with row
+    // locking so two concurrent calls for the same tenant can't race.
+    const { renewalInvoice, token } = await this.dataSource.transaction(
+      async (manager) => {
+        // Lock any existing unpaid draft/landlord invoice for this tenant to
+        // prevent concurrent updates from overwriting each other.
+        const existingInvoice = await manager
+          .getRepository(RenewalInvoice)
+          .createQueryBuilder('ri')
+          .setLock('pessimistic_write')
+          .where('ri.property_tenant_id = :ptId', {
+            ptId: propertyTenantId,
+          })
+          .andWhere('ri.payment_status = :status', {
+            status: RenewalPaymentStatus.UNPAID,
+          })
+          .andWhere('ri.token_type IN (:...types)', {
+            types: ['landlord', 'draft'],
+          })
+          .andWhere('ri.deleted_at IS NULL')
+          .orderBy('ri.created_at', 'DESC')
+          .getOne();
 
-      // 10. Save both records in parallel
-      await Promise.all([
-        this.renewalInvoiceRepository.save(renewalInvoice),
-        this.propertyHistoryRepository.save(historyEntry),
-      ]);
-    }
+        let invoice: RenewalInvoice;
+
+        if (existingInvoice) {
+          // Update existing invoice with landlord's chosen terms
+          existingInvoice.start_date = startDate;
+          existingInvoice.end_date = endDate;
+          existingInvoice.rent_amount = rentAmount;
+          existingInvoice.service_charge = serviceCharge;
+          existingInvoice.legal_fee = legalFee;
+          existingInvoice.agency_fee = agencyFee;
+          existingInvoice.caution_deposit = cautionDeposit;
+          existingInvoice.other_charges = otherCharges;
+          existingInvoice.other_fees = recurringOtherFees;
+          existingInvoice.fee_breakdown = recurringFees;
+          existingInvoice.total_amount = totalAmount;
+          existingInvoice.outstanding_balance =
+            walletBalance < 0 ? -walletBalance : 0;
+          existingInvoice.wallet_balance = walletBalance;
+          existingInvoice.payment_frequency = paymentFrequency;
+          // Upgrade draft → landlord when the landlord is actually sending the notification
+          existingInvoice.token_type = isSilent ? 'draft' : 'landlord';
+          invoice = existingInvoice;
+        } else {
+          // Generate new token and create fresh invoice
+          invoice = manager.getRepository(RenewalInvoice).create({
+            token: uuidv4(),
+            property_tenant_id: propertyTenantId,
+            property_id: propertyTenant.property_id,
+            tenant_id: propertyTenant.tenant_id,
+            start_date: startDate,
+            end_date: endDate,
+            rent_amount: rentAmount,
+            service_charge: serviceCharge,
+            legal_fee: legalFee,
+            agency_fee: agencyFee,
+            caution_deposit: cautionDeposit,
+            other_charges: otherCharges,
+            other_fees: recurringOtherFees,
+            fee_breakdown: recurringFees,
+            total_amount: totalAmount,
+            outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
+            wallet_balance: walletBalance,
+            payment_status: RenewalPaymentStatus.UNPAID,
+            payment_frequency: paymentFrequency,
+            token_type: isSilent ? 'draft' : 'landlord',
+          });
+        }
+
+        await manager.getRepository(RenewalInvoice).save(invoice);
+
+        if (!isSilent) {
+          const historyEntry = manager
+            .getRepository(PropertyHistory)
+            .create({
+              property_id: propertyTenant.property_id,
+              tenant_id: propertyTenant.tenant_id,
+              event_type: 'renewal_link_sent',
+              event_description: `Tenancy renewal link sent to ${tenantName}`,
+              owner_comment: `Tenancy renewal link sent to ${tenantName}`,
+              related_entity_id: invoice.id,
+              related_entity_type: 'renewal_invoice',
+            });
+          await manager.getRepository(PropertyHistory).save(historyEntry);
+        }
+
+        return { renewalInvoice: invoice, token: invoice.token };
+      },
+    );
 
     if (!isSilent) {
       // Emit event for livefeed (listener will create the detailed notification)
@@ -997,6 +1004,7 @@ export class TenanciesService {
           : invoice.paid_at.toISOString()
         : null,
       paymentReference: invoice.payment_reference,
+      receiptToken: invoice.receipt_token || null,
       landlordBranding: landlordBranding,
       landlordLogoUrl: landlordLogoUrl,
     };

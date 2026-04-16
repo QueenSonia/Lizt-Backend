@@ -32,8 +32,11 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
-import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
-import { rentToFees, sumRecurring, Fee } from 'src/common/billing/fees';
+import {
+  TenantBalanceLedger,
+  TenantBalanceLedgerType,
+} from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import { rentToFees, renewalInvoiceToFees, sumRecurring, Fee } from 'src/common/billing/fees';
 import { randomUUID } from 'crypto';
 
 @Injectable()
@@ -601,7 +604,14 @@ export class TenanciesService {
   }
 
   /**
-   * Update the active rent record (landlord edits current tenancy terms)
+   * Update the active rent record (landlord edits current tenancy terms).
+   *
+   * When fee amounts change, existing charge ledger entries linked to this
+   * rent are reversed and re-created so the outstanding balance breakdown
+   * reflects the corrected charges. Original entries are marked
+   * `metadata.superseded = true` and reversals use
+   * `related_entity_type = 'rent_edit'` — both are excluded from the
+   * breakdown display.
    */
   async updateActiveTenancy(
     propertyTenantId: string,
@@ -650,6 +660,10 @@ export class TenanciesService {
       );
     }
 
+    // Snapshot the old fees before applying edits
+    const oldFees = rentToFees(activeRent);
+
+    // Apply edits to the rent record
     activeRent.rental_price = dto.rentAmount;
     activeRent.service_charge = dto.serviceCharge ?? activeRent.service_charge;
     activeRent.payment_frequency = dto.paymentFrequency;
@@ -670,7 +684,147 @@ export class TenanciesService {
     }
     activeRent.updated_at = new Date();
 
-    await this.rentRepository.save(activeRent);
+    const newFees = rentToFees(activeRent);
+
+    // Check if charge amounts actually changed
+    const oldChargeTotal = oldFees.reduce((s, f) => s + f.amount, 0);
+    const newChargeTotal = newFees.reduce((s, f) => s + f.amount, 0);
+    const chargesChanged = oldChargeTotal !== newChargeTotal ||
+      oldFees.length !== newFees.length ||
+      oldFees.some((of, i) => {
+        const nf = newFees[i];
+        return !nf || of.kind !== nf.kind || of.amount !== nf.amount;
+      });
+
+    if (!chargesChanged) {
+      // Only non-amount fields changed (e.g. payment frequency, recurring flags)
+      await this.rentRepository.save(activeRent);
+      return { success: true };
+    }
+
+    // Charges changed — reverse old ledger entries and create new ones in a transaction
+    const tenantId = propertyTenant.tenant_id;
+    const landlordId = propertyTenant.property.owner_id;
+    const propertyId = propertyTenant.property_id;
+    const rentId = activeRent.id;
+
+    await this.dataSource.transaction(async (manager) => {
+      // Save the updated rent record
+      await manager.save(activeRent);
+
+      // Find existing charge entries linked to this rent.
+      // Exclude already-superseded entries so repeated edits don't double-reverse.
+      const existingCharges = await manager.find(TenantBalanceLedger, {
+        where: {
+          related_entity_id: rentId,
+          related_entity_type: 'rent',
+          tenant_id: tenantId,
+        },
+      });
+
+      // Only reverse active charge entries (balance_change < 0, not already superseded)
+      const chargeEntries = existingCharges.filter(
+        (e) =>
+          Number(e.balance_change) < 0 &&
+          !(e.metadata as any)?.superseded,
+      );
+
+      // If this rent has no ledger entries (pre-ledger tenancy), only save
+      // the rent record — don't fabricate charges that were never billed.
+      if (chargeEntries.length === 0) {
+        return;
+      }
+
+      // Collect the set of fee kinds that were originally charged, so we only
+      // create replacement entries for those kinds (no retroactive new charges).
+      const originalKinds = new Set<string>();
+      for (const entry of chargeEntries) {
+        const kind = (entry.metadata as any)?.fee_kind as string | undefined;
+        if (kind) originalKinds.add(kind);
+      }
+      // If originals have fee_kind metadata, only replace those kinds.
+      // If they don't (pre-Billing v2), replace all — we can't be selective.
+      const hasKindMetadata = originalKinds.size > 0;
+
+      // Build a map from fee_kind → original type so replacements keep the right type.
+      // Fall back to the first entry's type, then INITIAL_BALANCE.
+      const typeByKind = new Map<string, TenantBalanceLedgerType>();
+      let fallbackType = TenantBalanceLedgerType.INITIAL_BALANCE;
+      for (const entry of chargeEntries) {
+        const kind = (entry.metadata as any)?.fee_kind as string | undefined;
+        if (kind) {
+          typeByKind.set(kind, entry.type);
+        }
+        fallbackType = entry.type;
+      }
+
+      // Build a map from fee_kind → original description prefix so replacements
+      // keep the same style (e.g. "New period charged: Oak Apartments — ").
+      const descriptionPrefixByKind = new Map<string, string>();
+      for (const entry of chargeEntries) {
+        const kind = (entry.metadata as any)?.fee_kind as string | undefined;
+        if (kind && entry.description) {
+          // Extract prefix: everything before the last " — <label>" or use as-is
+          const dashIdx = entry.description.lastIndexOf(' \u2014 ');
+          if (dashIdx > 0) {
+            descriptionPrefixByKind.set(kind, entry.description.substring(0, dashIdx + 3));
+          }
+        }
+      }
+
+      // Mark originals as superseded and reverse them
+      for (const entry of chargeEntries) {
+        await manager.update(TenantBalanceLedger, entry.id, {
+          metadata: { ...(entry.metadata ?? {}), superseded: true },
+        });
+
+        const reversalAmount = -Number(entry.balance_change);
+        await this.tenantBalancesService.applyChange(
+          tenantId,
+          landlordId,
+          reversalAmount,
+          {
+            type: entry.type,
+            description: `${entry.description} (reversal)`,
+            propertyId,
+            relatedEntityType: 'rent_edit',
+            relatedEntityId: rentId,
+            metadata: { reversal_of: entry.id },
+          },
+          undefined,
+          manager,
+        );
+      }
+
+      // Create replacement charge entries only for fee kinds that were
+      // originally charged. Skip new fee kinds the landlord added — those
+      // will take effect on the next renewal, not retroactively.
+      const feesToCharge = hasKindMetadata
+        ? newFees.filter((f) => originalKinds.has(f.kind))
+        : newFees;
+
+      for (const fee of feesToCharge) {
+        const entryType = typeByKind.get(fee.kind) ?? fallbackType;
+        const prefix = descriptionPrefixByKind.get(fee.kind);
+        const description = prefix ? `${prefix}${fee.label}` : fee.label;
+
+        await this.tenantBalancesService.applyChange(
+          tenantId,
+          landlordId,
+          -fee.amount,
+          {
+            type: entryType,
+            description,
+            propertyId,
+            relatedEntityType: 'rent',
+            relatedEntityId: rentId,
+            metadata: { fee_kind: fee.kind, edited: true },
+          },
+          undefined,
+          manager,
+        );
+      }
+    });
 
     return { success: true };
   }
@@ -900,13 +1054,17 @@ export class TenanciesService {
     //   - CREDIT_APPLIED: legacy artifact from old two-step payment flow
     //   - related_entity_type = 'property_history': reversal entries created when a manual
     //     payment is edited/deleted — accounting artifacts, not real charges
+    //   - related_entity_type = 'rent_edit': reversal entries from tenancy charge edits
+    //   - metadata.superseded = true: original charges replaced by an edit
     // MIGRATION entries are included — they represent real rent charges at ledger setup.
     const chargeRows = ledgerEntries
       .filter(
         (e) =>
           Number(e.balance_change) < 0 &&
           e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
-          e.related_entity_type !== 'property_history',
+          e.related_entity_type !== 'property_history' &&
+          e.related_entity_type !== 'rent_edit' &&
+          !(e.metadata as any)?.superseded,
       )
       .map((e) => {
         // Apply the same date resolution and description enrichment as tenant-management
@@ -1349,9 +1507,16 @@ export class TenanciesService {
           rental_price: parseFloat(invoice.rent_amount.toString()),
           amount_paid: parseFloat(invoice.rent_amount.toString()),
           security_deposit: activeRent.security_deposit,
+          security_deposit_recurring: activeRent.security_deposit_recurring,
           service_charge:
             parseFloat(invoice.service_charge.toString()) ||
             activeRent.service_charge,
+          service_charge_recurring: activeRent.service_charge_recurring,
+          legal_fee: activeRent.legal_fee,
+          legal_fee_recurring: activeRent.legal_fee_recurring,
+          agency_fee: activeRent.agency_fee,
+          agency_fee_recurring: activeRent.agency_fee_recurring,
+          other_fees: activeRent.other_fees,
           payment_frequency:
             invoice.payment_frequency || activeRent.payment_frequency,
           payment_status: RentPaymentStatusEnum.PAID,
@@ -1362,27 +1527,34 @@ export class TenanciesService {
         // Mirror the charge the auto-renewal cron would have written, so the
         // ledger/breakdown reflects the new period and the payment below
         // consumes it instead of becoming phantom credit.
-        const newPeriodAmount =
-          parseFloat(invoice.rent_amount.toString()) +
-          (parseFloat((invoice.service_charge || 0).toString()) || 0);
+        const invoiceFees = renewalInvoiceToFees(invoice);
+        const recurringFees = invoiceFees.filter((f) => f.recurring);
         const newPeriodStart = new Date(invoice.start_date)
           .toISOString()
           .split('T')[0];
         const newPeriodEnd = new Date(invoice.end_date)
           .toISOString()
           .split('T')[0];
-        await this.tenantBalancesService.applyChange(
-          tenantId,
-          landlordId,
-          -newPeriodAmount,
-          {
-            type: TenantBalanceLedgerType.AUTO_RENEWAL,
-            description: `New period charged: ${newPeriodStart} – ${newPeriodEnd}`,
-            propertyId: invoice.property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: newRent.id,
-          },
-        );
+        for (const fee of recurringFees) {
+          await this.tenantBalancesService.applyChange(
+            tenantId,
+            landlordId,
+            -fee.amount,
+            {
+              type: TenantBalanceLedgerType.AUTO_RENEWAL,
+              description: `New period charged: ${newPeriodStart} – ${newPeriodEnd} — ${fee.label}`,
+              propertyId: invoice.property_id,
+              relatedEntityType: 'rent',
+              relatedEntityId: newRent.id,
+              metadata: {
+                fee_kind: fee.kind,
+                ...(fee.externalId ? { externalId: fee.externalId } : {}),
+                period_start: newPeriodStart,
+                period_end: newPeriodEnd,
+              },
+            },
+          );
+        }
       }
     }
 

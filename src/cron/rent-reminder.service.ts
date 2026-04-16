@@ -147,41 +147,43 @@ export class RentReminderService {
       const wasUnpaid =
         currentRent.payment_status !== RentPaymentStatusEnum.PAID;
 
-      if (wasUnpaid && periodCharge > 0) {
-        await this.tenantBalancesService.applyChange(
-          currentRent.tenant_id,
-          currentRent.property.owner_id,
-          -periodCharge,
-          {
-            type: TenantBalanceLedgerType.AUTO_RENEWAL,
-            description: `Unpaid period charged: ${currentExpiry.toLocaleDateString('en-GB')}`,
-            propertyId: currentRent.property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: currentRent.id,
-            metadata: {
-              batch_id: 'billing-v2',
-              breakdown: recurringFees,
-              kind: 'unpaid_period',
+      if (wasUnpaid) {
+        for (const fee of recurringFees) {
+          await this.tenantBalancesService.applyChange(
+            currentRent.tenant_id,
+            currentRent.property.owner_id,
+            -fee.amount,
+            {
+              type: TenantBalanceLedgerType.AUTO_RENEWAL,
+              description: `Unpaid period charged: ${currentExpiry.toLocaleDateString('en-GB')} — ${fee.label}`,
+              propertyId: currentRent.property_id,
+              relatedEntityType: 'rent',
+              relatedEntityId: currentRent.id,
+              metadata: {
+                kind: 'unpaid_period',
+                fee_kind: fee.kind,
+                ...(fee.externalId ? { externalId: fee.externalId } : {}),
+              },
             },
-          },
-        );
+          );
+        }
       }
 
       // Apply the new period charge and check if wallet covers it
-      if (periodCharge > 0) {
+      for (const fee of recurringFees) {
         await this.tenantBalancesService.applyChange(
           currentRent.tenant_id,
           currentRent.property.owner_id,
-          -periodCharge,
+          -fee.amount,
           {
             type: TenantBalanceLedgerType.AUTO_RENEWAL,
-            description: `New period charged: ${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]}`,
+            description: `New period charged: ${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]} — ${fee.label}`,
             propertyId: currentRent.property_id,
             relatedEntityType: 'rent',
             metadata: {
-              batch_id: 'billing-v2',
-              breakdown: recurringFees,
               kind: 'new_period',
+              fee_kind: fee.kind,
+              ...(fee.externalId ? { externalId: fee.externalId } : {}),
               period_start: nextStart.toISOString().split('T')[0],
               period_end: nextExpiry.toISOString().split('T')[0],
             },

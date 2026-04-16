@@ -41,7 +41,6 @@ import {
   offerLetterToFees,
   sumRecurring,
   sumOneTime,
-  feeLabelsCsv,
 } from '../common/billing/fees';
 
 @Injectable()
@@ -575,21 +574,21 @@ export class TenantAttachmentService {
       oneTimeCharge,
     });
 
-    // Record the first period recurring charge in the tenant balance ledger.
-    if (recurringPeriodCharge > 0) {
+    // Record each fee as a separate ledger entry so charges map 1:1 to fee fields.
+    for (const fee of recurringFees) {
       await this.tenantBalancesService.applyChange(
         tenantAccount.id,
         offerLetter.landlord_id,
-        -recurringPeriodCharge,
+        -fee.amount,
         {
           type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description: 'Tenancy started — recurring charges',
+          description: `Tenancy started — ${fee.label}`,
           propertyId: offerLetter.property_id,
           relatedEntityType: 'rent',
           relatedEntityId: rent.id,
           metadata: {
-            batch_id: 'billing-v2',
-            breakdown: recurringFees,
+            fee_kind: fee.kind,
+            ...(fee.externalId ? { externalId: fee.externalId } : {}),
           },
         },
         undefined,
@@ -599,20 +598,20 @@ export class TenantAttachmentService {
 
     // Record the one-time move-in fees (caution/legal/agency/one-time otherFees)
     // — previously these were collected by Paystack but left no audit trail.
-    if (oneTimeCharge > 0) {
+    for (const fee of oneTimeFees) {
       await this.tenantBalancesService.applyChange(
         tenantAccount.id,
         offerLetter.landlord_id,
-        -oneTimeCharge,
+        -fee.amount,
         {
           type: TenantBalanceLedgerType.ONE_TIME_FEES,
-          description: `Move-in fees — ${feeLabelsCsv(oneTimeFees)}`,
+          description: `Move-in fee — ${fee.label}`,
           propertyId: offerLetter.property_id,
           relatedEntityType: 'rent',
           relatedEntityId: rent.id,
           metadata: {
-            batch_id: 'billing-v2',
-            breakdown: oneTimeFees,
+            fee_kind: fee.kind,
+            ...(fee.externalId ? { externalId: fee.externalId } : {}),
           },
         },
         undefined,

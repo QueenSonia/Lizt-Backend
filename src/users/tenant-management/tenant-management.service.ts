@@ -1902,6 +1902,10 @@ export class TenantManagementService {
     //     when a manual payment is edited/deleted. They're accounting artifacts and
     //     should not appear as charges — the property_history record is authoritative
     //     for the current payment amount.
+    //   - related_entity_type = 'rent_edit': reversal entries created when a landlord
+    //     edits tenancy charges via the edit tenancy modal.
+    //   - metadata.superseded = true: original charge entries that have been replaced
+    //     by an edit — the replacement entries are the authoritative charges.
     // Note: MIGRATION entries are included — they represent real rent charges carried
     // forward at ledger setup time.
     const obEntriesByProperty = new Map<string, TenantBalanceLedger[]>();
@@ -1910,7 +1914,9 @@ export class TenantManagementService {
         (e) =>
           Number(e.balance_change) < 0 &&
           e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
-          e.related_entity_type !== 'property_history',
+          e.related_entity_type !== 'property_history' &&
+          e.related_entity_type !== 'rent_edit' &&
+          !(e.metadata as any)?.superseded,
       )
       .forEach((e) => {
         const key = e.property_id || 'global';

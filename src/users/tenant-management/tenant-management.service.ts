@@ -13,12 +13,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
-import {
-  rentToFees,
-  sumRecurring,
-  sumOneTime,
-  feeLabelsCsv,
-} from 'src/common/billing/fees';
+import { rentToFees } from 'src/common/billing/fees';
 
 import { Users } from '../entities/user.entity';
 import { Account } from '../entities/account.entity';
@@ -1277,50 +1272,24 @@ export class TenantManagementService {
       // Compute fee split off the just-saved Rent row so this function is the
       // single source of truth for the recurring/one-time classification.
       const fees = rentToFees(rent);
-      const recurringFees = fees.filter((f) => f.recurring);
-      const oneTimeFees = fees.filter((f) => !f.recurring);
-      const recurringPeriodCharge = sumRecurring(fees);
-      const oneTimeCharge = sumOneTime(fees);
 
       // Direct-attach has no Paystack leg — the landlord is recording existing
-      // state, not collecting payment. The tenant starts owing exactly the
-      // first period's recurring charges + all one-time move-in fees.
-      if (recurringPeriodCharge > 0) {
+      // state, not collecting payment. Record each charge as its own ledger
+      // entry so the balance breakdown shows itemised line items.
+      for (const fee of fees) {
+        if (fee.amount <= 0) continue;
         await this.tenantBalancesService.applyChange(
           tenantAccount.id,
           landlordId,
-          -recurringPeriodCharge,
+          -fee.amount,
           {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Tenancy started — recurring charges',
+            type: fee.recurring
+              ? TenantBalanceLedgerType.INITIAL_BALANCE
+              : TenantBalanceLedgerType.ONE_TIME_FEES,
+            description: fee.label,
             propertyId: property_id,
             relatedEntityType: 'rent',
             relatedEntityId: rent.id,
-            metadata: {
-              batch_id: 'billing-v2',
-              breakdown: recurringFees,
-            },
-          },
-          undefined,
-          manager,
-        );
-      }
-
-      if (oneTimeCharge > 0) {
-        await this.tenantBalancesService.applyChange(
-          tenantAccount.id,
-          landlordId,
-          -oneTimeCharge,
-          {
-            type: TenantBalanceLedgerType.ONE_TIME_FEES,
-            description: `Move-in fees — ${feeLabelsCsv(oneTimeFees)}`,
-            propertyId: property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-            metadata: {
-              batch_id: 'billing-v2',
-              breakdown: oneTimeFees,
-            },
           },
           undefined,
           manager,

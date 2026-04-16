@@ -69,9 +69,6 @@ import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.servi
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import {
   rentToFees,
-  sumRecurring,
-  sumOneTime,
-  feeLabelsCsv,
   Fee,
 } from 'src/common/billing/fees';
 import { randomUUID } from 'crypto';
@@ -588,49 +585,23 @@ export class PropertiesService {
       });
       await queryRunner.manager.save(Rent, rent);
 
-      // Single source of truth for recurring vs one-time classification.
+      // Record each charge as its own ledger entry so the balance breakdown
+      // shows itemised line items (Rent, Service Charge, Security Deposit, …).
       const fees = rentToFees(rent);
-      const recurringFees = fees.filter((f) => f.recurring);
-      const oneTimeFees = fees.filter((f) => !f.recurring);
-      const recurringPeriodCharge = sumRecurring(fees);
-      const oneTimeCharge = sumOneTime(fees);
-
-      if (recurringPeriodCharge > 0) {
+      for (const fee of fees) {
+        if (fee.amount <= 0) continue;
         await this.tenantBalancesService.applyChange(
           tenantAccount.id,
           ownerId,
-          -recurringPeriodCharge,
+          -fee.amount,
           {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Tenancy started — recurring charges',
+            type: fee.recurring
+              ? TenantBalanceLedgerType.INITIAL_BALANCE
+              : TenantBalanceLedgerType.ONE_TIME_FEES,
+            description: fee.label,
             propertyId: savedProperty.id,
             relatedEntityType: 'rent',
             relatedEntityId: rent.id,
-            metadata: {
-              batch_id: 'billing-v2',
-              breakdown: recurringFees,
-            },
-          },
-          undefined,
-          queryRunner.manager,
-        );
-      }
-
-      if (oneTimeCharge > 0) {
-        await this.tenantBalancesService.applyChange(
-          tenantAccount.id,
-          ownerId,
-          -oneTimeCharge,
-          {
-            type: TenantBalanceLedgerType.ONE_TIME_FEES,
-            description: `Move-in fees — ${feeLabelsCsv(oneTimeFees)}`,
-            propertyId: savedProperty.id,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-            metadata: {
-              batch_id: 'billing-v2',
-              breakdown: oneTimeFees,
-            },
           },
           undefined,
           queryRunner.manager,

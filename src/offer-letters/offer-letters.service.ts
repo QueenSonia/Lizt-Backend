@@ -140,14 +140,25 @@ export class OfferLettersService {
 
     // No existing pending offer found, proceed with creating a new one
 
-    // Calculate total amount from all fees
+    // Calculate total amount from all fees (billing v2 — includes otherFees)
     // Requirements: 1.6
+    const otherFeesNormalized = (dto.otherFees ?? []).map((f) => ({
+      externalId: f.externalId || uuidv4(),
+      name: f.name,
+      amount: Number(f.amount) || 0,
+      recurring: !!f.recurring,
+    }));
+    const otherFeesTotal = otherFeesNormalized.reduce(
+      (acc, f) => acc + (f.amount || 0),
+      0,
+    );
     const totalAmount =
       dto.rentAmount +
       (dto.serviceCharge || 0) +
       (dto.cautionDeposit || 0) +
       (dto.legalFee || 0) +
-      (dto.agencyFee || 0);
+      (dto.agencyFee || 0) +
+      otherFeesTotal;
 
     // Generate unique token using UUID
     // Requirements: 5.3
@@ -190,6 +201,11 @@ export class OfferLettersService {
       caution_deposit: dto.cautionDeposit,
       legal_fee: dto.legalFee,
       agency_fee: dto.agencyFee,
+      service_charge_recurring: dto.serviceChargeRecurring ?? true,
+      caution_deposit_recurring: dto.cautionDepositRecurring ?? false,
+      legal_fee_recurring: dto.legalFeeRecurring ?? false,
+      agency_fee_recurring: dto.agencyFeeRecurring ?? false,
+      other_fees: otherFeesNormalized,
       status: OfferLetterStatus.PENDING,
       token,
       terms_of_tenancy: dto.termsOfTenancy,
@@ -1096,13 +1112,24 @@ export class OfferLettersService {
       );
     }
 
-    // Calculate total amount from all fees
+    // Calculate total amount from all fees (billing v2 — includes otherFees)
+    const otherFeesNormalized = (dto.otherFees ?? []).map((f) => ({
+      externalId: f.externalId || uuidv4(),
+      name: f.name,
+      amount: Number(f.amount) || 0,
+      recurring: !!f.recurring,
+    }));
+    const otherFeesTotal = otherFeesNormalized.reduce(
+      (acc, f) => acc + (f.amount || 0),
+      0,
+    );
     const totalAmount =
       dto.rentAmount +
       (dto.serviceCharge || 0) +
       (dto.cautionDeposit || 0) +
       (dto.legalFee || 0) +
-      (dto.agencyFee || 0);
+      (dto.agencyFee || 0) +
+      otherFeesTotal;
 
     // Calculate outstanding balance (total minus any amount already paid)
     const amountPaid = Number(existingOffer.amount_paid || 0);
@@ -1142,6 +1169,11 @@ export class OfferLettersService {
       caution_deposit: dto.cautionDeposit,
       legal_fee: dto.legalFee,
       agency_fee: dto.agencyFee,
+      service_charge_recurring: dto.serviceChargeRecurring ?? true,
+      caution_deposit_recurring: dto.cautionDepositRecurring ?? false,
+      legal_fee_recurring: dto.legalFeeRecurring ?? false,
+      agency_fee_recurring: dto.agencyFeeRecurring ?? false,
+      other_fees: otherFeesNormalized,
       terms_of_tenancy: dto.termsOfTenancy,
       content_snapshot: dto.contentSnapshot,
       branding: brandingSnapshot,

@@ -109,14 +109,13 @@ export const buildPropertyFilter = async (
 ): Promise<{
   query: FindOptionsWhere<Property>;
   order: Record<string, 'ASC' | 'DESC'>;
+  searchKeyword?: string;
 }> => {
   const query: FindOptionsWhere<Property> = {};
   const order: Record<string, 'ASC' | 'DESC'> = {};
 
   // Filtering
-  if (queryParams?.search) {
-    query['name'] = ILike(`%${queryParams.search}%`);
-  }
+  const searchKeyword = queryParams?.search?.trim() || undefined;
   if (queryParams?.name) query['name'] = ILike(`%${queryParams.name}%`);
   if (queryParams?.owner_id) query['owner_id'] = queryParams.owner_id;
   if (queryParams?.location)
@@ -163,7 +162,7 @@ export const buildPropertyFilter = async (
     }
   }
 
-  return { query, order };
+  return { query, order, searchKeyword };
 };
 
 export const buildRentFilter = async (queryParams: RentFilter) => {

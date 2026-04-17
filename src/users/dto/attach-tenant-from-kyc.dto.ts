@@ -5,10 +5,15 @@ import {
   IsUUID,
   IsOptional,
   IsEnum,
+  IsBoolean,
+  IsArray,
+  ArrayMaxSize,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { OtherFeeDto } from '../../offer-letters/dto/create-offer-letter.dto';
 
 export enum RentFrequency {
   MONTHLY = 'Monthly',
@@ -61,13 +66,23 @@ export class AttachTenantFromKycDto {
   @IsDateString()
   tenancyStartDate: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     example: '2024-01-31',
-    description: 'Rent due date',
+    description:
+      'Rent due date. Optional — if omitted, derived server-side from tenancyEndDate + frequency.',
   })
-  @IsNotEmpty()
+  @IsOptional()
   @IsDateString()
-  rentDueDate: string;
+  rentDueDate?: string;
+
+  @ApiPropertyOptional({
+    example: '2025-01-01',
+    description:
+      'Tenancy end date. Preferred input; rentDueDate is derived from it.',
+  })
+  @IsOptional()
+  @IsDateString()
+  tenancyEndDate?: string;
 
   @ApiProperty({
     example: 50000,
@@ -112,4 +127,33 @@ export class AttachTenantFromKycDto {
   @IsNumber()
   @Type(() => Number)
   agencyFee?: number;
+
+  // Billing v2 — per-fee recurring flags.
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  serviceChargeRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  securityDepositRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  legalFeeRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  agencyFeeRecurring?: boolean;
+
+  @ApiPropertyOptional({ type: () => [OtherFeeDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => OtherFeeDto)
+  otherFees?: OtherFeeDto[];
 }

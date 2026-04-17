@@ -1,6 +1,8 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
+  IsBoolean,
   IsNotEmpty,
   IsString,
   IsNumber,
@@ -8,7 +10,33 @@ import {
   IsOptional,
   IsDateString,
   Min,
+  ValidateNested,
 } from 'class-validator';
+
+export class OtherFeeDto {
+  @ApiProperty({ example: 'Diesel levy', description: 'Name of the fee' })
+  @IsNotEmpty()
+  @IsString()
+  name: string;
+
+  @ApiProperty({ example: 25000, description: 'Amount of the fee' })
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  amount: number;
+
+  @ApiProperty({
+    example: false,
+    description: 'Whether this fee recurs every billing cycle',
+  })
+  @IsBoolean()
+  recurring: boolean;
+
+  @ApiProperty({ required: false, description: 'Optional stable id' })
+  @IsOptional()
+  @IsString()
+  externalId?: string;
+}
 
 export class ExistingTenantDto {
   @ApiProperty({
@@ -91,6 +119,11 @@ export class ExistingTenantDto {
   @Type(() => Number)
   serviceChargeAmount?: number;
 
+  @ApiProperty({ required: false, description: 'Whether service charge recurs' })
+  @IsOptional()
+  @IsBoolean()
+  serviceChargeRecurring?: boolean;
+
   @ApiProperty({
     example: 100000,
     description: 'Caution / security deposit (optional)',
@@ -102,6 +135,11 @@ export class ExistingTenantDto {
   @Min(0)
   @Type(() => Number)
   cautionDeposit?: number;
+
+  @ApiProperty({ required: false, description: 'Whether caution deposit recurs' })
+  @IsOptional()
+  @IsBoolean()
+  cautionDepositRecurring?: boolean;
 
   @ApiProperty({
     example: 25000,
@@ -115,6 +153,11 @@ export class ExistingTenantDto {
   @Type(() => Number)
   legalFee?: number;
 
+  @ApiProperty({ required: false, description: 'Whether legal fee recurs' })
+  @IsOptional()
+  @IsBoolean()
+  legalFeeRecurring?: boolean;
+
   @ApiProperty({
     example: 50000,
     description: 'Agency fee (optional)',
@@ -126,4 +169,20 @@ export class ExistingTenantDto {
   @Min(0)
   @Type(() => Number)
   agencyFee?: number;
+
+  @ApiProperty({ required: false, description: 'Whether agency fee recurs' })
+  @IsOptional()
+  @IsBoolean()
+  agencyFeeRecurring?: boolean;
+
+  @ApiProperty({
+    description: 'Arbitrary one-time fees charged at tenancy start',
+    type: [OtherFeeDto],
+    required: false,
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OtherFeeDto)
+  otherFees?: OtherFeeDto[];
 }

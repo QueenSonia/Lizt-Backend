@@ -67,6 +67,11 @@ import {
 } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import {
+  rentToFees,
+  Fee,
+} from 'src/common/billing/fees';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class PropertiesService {
@@ -130,22 +135,6 @@ export class PropertiesService {
         event_description: 'Property was added to the system.',
       });
 
-      //// Tenant assignment-on-property-creation option removed from frontend form
-      // If tenant_id is provided, create PropertyTenant relationship
-      // if (propertyData.tenant_id) {
-      //   const propertyTenant = this.propertyTenantRepository.create({
-      //     property_id: savedProperty.id,
-      //     tenant_id: propertyData.tenant_id,
-      //     status: TenantStatusEnum.ACTIVE,
-      //   });
-
-      //   await this.propertyTenantRepository.save(propertyTenant);
-
-      //   // Update property status to NOT_VACANT
-      //   savedProperty.property_status = PropertyStatusEnum.OCCUPIED;
-      //   await this.propertyRepository.save(savedProperty);
-      // }
-
       // ✅ Emit event after property is created
       this.eventEmitter.emit('property.created', {
         property_id: savedProperty.id,
@@ -153,29 +142,6 @@ export class PropertiesService {
         user_id: savedProperty.owner_id,
       });
 
-      // Get the full property with relations for notification
-      const property = await this.getPropertyById(savedProperty.id);
-
-      if (!property?.owner?.user?.phone_number) {
-        console.warn(
-          'Property owner or phone number not found for notification',
-        );
-      } else {
-        const admin_phone_number = this.utilService.normalizePhoneNumber(
-          property.owner.user.phone_number,
-        );
-
-        // Fire-and-forget - don't block response for notification
-        this.userService
-          .sendPropertiesNotification({
-            phone_number: admin_phone_number,
-            name: 'Admin',
-            property_name: savedProperty.name,
-          })
-          .catch((error) => {
-            console.error('Failed to send properties notification:', error);
-          });
-      }
       return savedProperty;
     } catch (error) {
       // Log the detailed error and throw a standardized exception
@@ -254,27 +220,9 @@ export class PropertiesService {
         lastName,
       });
 
-      // Try multiple phone number formats to find existing user
       let tenantUser = await this.usersRepository.findOne({
         where: { phone_number: normalizedPhone },
       });
-
-      if (!tenantUser) {
-        // Try with original phone format
-        console.log('🔄 Trying with original phone format:', tenantData.phone);
-        tenantUser = await this.usersRepository.findOne({
-          where: { phone_number: tenantData.phone },
-        });
-      }
-
-      if (!tenantUser) {
-        // Try without the + prefix (database might store without it)
-        const phoneWithoutPlus = normalizedPhone.replace('+', '');
-        console.log('� Tsrying without + prefix:', phoneWithoutPlus);
-        tenantUser = await this.usersRepository.findOne({
-          where: { phone_number: phoneWithoutPlus },
-        });
-      }
 
       console.log('📞 User lookup result:', {
         found: !!tenantUser,
@@ -324,23 +272,9 @@ export class PropertiesService {
               `✅ User already exists, finding existing user for new property...`,
             );
 
-            // Try all phone number formats again
             tenantUser = await this.usersRepository.findOne({
               where: { phone_number: normalizedPhone },
             });
-
-            if (!tenantUser) {
-              tenantUser = await this.usersRepository.findOne({
-                where: { phone_number: tenantData.phone },
-              });
-            }
-
-            if (!tenantUser) {
-              const phoneWithoutPlus = normalizedPhone.replace('+', '');
-              tenantUser = await this.usersRepository.findOne({
-                where: { phone_number: phoneWithoutPlus },
-              });
-            }
 
             // If phone lookup failed and duplicate was on email, try finding by email
             if (!tenantUser && tenantData.email) {
@@ -381,6 +315,22 @@ export class PropertiesService {
           phone: tenantUser.phone_number,
           role: tenantUser.role,
         });
+
+        // Overwrite the existing user's name with what the landlord entered
+        const nameChanged =
+          (firstName && tenantUser.first_name !== firstName) ||
+          (lastName && tenantUser.last_name !== lastName);
+        if (nameChanged) {
+          console.log('✏️ Updating existing user name from landlord input:', {
+            oldFirstName: tenantUser.first_name,
+            oldLastName: tenantUser.last_name,
+            newFirstName: firstName,
+            newLastName: lastName,
+          });
+          if (firstName) tenantUser.first_name = firstName;
+          if (lastName) tenantUser.last_name = lastName;
+          tenantUser = await this.usersRepository.save(tenantUser);
+        }
       }
 
       // 6. Create tenant account
@@ -605,6 +555,9 @@ export class PropertiesService {
         ? new Date(tenantData.rentDueDate)
         : calculateRentExpiryDate(rentStartDate, tenantData.rentFrequency);
 
+      // Billing v2: persist every fee + recurring flag + otherFees on the
+      // Rent row so downstream money events (renewal cron, property history,
+      // offer letter templates) can reconstruct the fee set from a single row.
       const rent = queryRunner.manager.create(Rent, {
         property_id: savedProperty.id,
         tenant_id: tenantAccount.id,
@@ -613,52 +566,46 @@ export class PropertiesService {
         rental_price: tenantData.rentAmount,
         amount_paid: 0,
         service_charge: tenantData.serviceChargeAmount || 0,
+        service_charge_recurring: tenantData.serviceChargeRecurring !== false,
+        security_deposit: tenantData.cautionDeposit ?? 0,
+        security_deposit_recurring: !!tenantData.cautionDepositRecurring,
+        legal_fee: tenantData.legalFee ?? null,
+        legal_fee_recurring: !!tenantData.legalFeeRecurring,
+        agency_fee: tenantData.agencyFee ?? null,
+        agency_fee_recurring: !!tenantData.agencyFeeRecurring,
+        other_fees: (tenantData.otherFees ?? []).map((f) => ({
+          externalId: f.externalId ?? randomUUID(),
+          name: f.name,
+          amount: f.amount,
+          recurring: !!f.recurring,
+        })),
         payment_frequency: tenantData.rentFrequency,
         payment_status: RentPaymentStatusEnum.PENDING,
         rent_status: RentStatusEnum.ACTIVE,
       });
       await queryRunner.manager.save(Rent, rent);
 
-      // Record the first period charge (rent + service charge) in the tenant balance ledger
-      await this.tenantBalancesService.applyChange(
-        tenantAccount.id,
-        ownerId,
-        -(tenantData.rentAmount + (tenantData.serviceChargeAmount || 0)),
-        {
-          type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description: 'Tenancy started',
-          propertyId: savedProperty.id,
-          relatedEntityType: 'rent',
-          relatedEntityId: rent.id,
-        },
-        undefined,
-        queryRunner.manager,
-      );
-
-      // Record one-time attachment fees as separate ledger charges so they
-      // appear as distinct line items on the outstanding balance breakdown.
-      const oneTimeFees: Array<{ amount?: number; description: string }> = [
-        { amount: tenantData.cautionDeposit, description: 'Caution deposit' },
-        { amount: tenantData.legalFee, description: 'Legal fee' },
-        { amount: tenantData.agencyFee, description: 'Agency fee' },
-      ];
-      for (const fee of oneTimeFees) {
-        if (fee.amount && fee.amount > 0) {
-          await this.tenantBalancesService.applyChange(
-            tenantAccount.id,
-            ownerId,
-            -fee.amount,
-            {
-              type: TenantBalanceLedgerType.INITIAL_BALANCE,
-              description: fee.description,
-              propertyId: savedProperty.id,
-              relatedEntityType: 'rent',
-              relatedEntityId: rent.id,
-            },
-            undefined,
-            queryRunner.manager,
-          );
-        }
+      // Record each charge as its own ledger entry so the balance breakdown
+      // shows itemised line items (Rent, Service Charge, Security Deposit, …).
+      const fees = rentToFees(rent);
+      for (const fee of fees) {
+        if (fee.amount <= 0) continue;
+        await this.tenantBalancesService.applyChange(
+          tenantAccount.id,
+          ownerId,
+          -fee.amount,
+          {
+            type: fee.recurring
+              ? TenantBalanceLedgerType.INITIAL_BALANCE
+              : TenantBalanceLedgerType.ONE_TIME_FEES,
+            description: fee.label,
+            propertyId: savedProperty.id,
+            relatedEntityType: 'rent',
+            relatedEntityId: rent.id,
+          },
+          undefined,
+          queryRunner.manager,
+        );
       }
 
       // 11. Property status already set to OCCUPIED in step 1
@@ -682,12 +629,19 @@ export class PropertiesService {
 
       // 13. Queue WhatsApp notification based on KYC status (logged to DB, sent async with retries)
       try {
-        const landlord = await this.usersRepository.findOne({
+        // ownerId references accounts.id (Property.owner is Account), so query accounts
+        // and join the user to fall back on first_name if profile_name is missing.
+        const landlordAccount = await this.accountRepository.findOne({
           where: { id: ownerId },
+          relations: ['user'],
         });
 
-        const landlordName = landlord
-          ? this.utilService.toSentenceCase(landlord.first_name)
+        const rawLandlordName =
+          landlordAccount?.profile_name ||
+          landlordAccount?.user?.first_name ||
+          '';
+        const landlordName = rawLandlordName
+          ? `Your landlord, ${this.utilService.toSentenceCase(rawLandlordName)}`
           : 'Your landlord';
 
         const tenantName = this.utilService.toSentenceCase(firstName);
@@ -847,7 +801,7 @@ export class PropertiesService {
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
-    const { query } = await buildPropertyFilter(queryParams);
+    const { query, searchKeyword } = await buildPropertyFilter(queryParams);
 
     // Optimized query: only select columns actually used by frontend
     const qb = this.propertyRepository
@@ -910,6 +864,13 @@ export class PropertiesService {
         'property.offer_letters',
       )
       .where(query);
+
+    if (searchKeyword) {
+      qb.andWhere(
+        '(property.name ILIKE :kw OR property.location ILIKE :kw)',
+        { kw: `%${searchKeyword}%` },
+      );
+    }
 
     // Apply sorting (rent requires custom logic)
     if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
@@ -1327,6 +1288,7 @@ export class PropertiesService {
       totalAmount: number;
       paymentFrequency: string | null;
       endDate: string | null;
+      feeBreakdown: Fee[];
     } | null = null;
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
@@ -1362,6 +1324,7 @@ export class PropertiesService {
           'service_charge',
           'payment_frequency',
           'end_date',
+          'fee_breakdown',
         ],
       });
 
@@ -1399,6 +1362,7 @@ export class PropertiesService {
                   ? latestRenewalInvoice.end_date.toISOString().split('T')[0]
                   : String(latestRenewalInvoice.end_date)
                 : null,
+              feeBreakdown: latestRenewalInvoice.fee_breakdown ?? [],
             }
           : null;
 
@@ -2086,6 +2050,17 @@ export class PropertiesService {
             : 'Vacant',
       rent: activeRent?.rental_price || null,
       serviceCharge: activeRent?.service_charge || 0,
+      // Billing v2 — expose the full fee breakdown so edit/renew modals can
+      // pre-fill with the exact current fee configuration instead of losing
+      // legal/agency/otherFees on every edit.
+      cautionDeposit: activeRent?.security_deposit ?? null,
+      legalFee: activeRent?.legal_fee ?? null,
+      agencyFee: activeRent?.agency_fee ?? null,
+      otherFees: activeRent?.other_fees ?? [],
+      serviceChargeRecurring: activeRent?.service_charge_recurring ?? true,
+      cautionDepositRecurring: activeRent?.security_deposit_recurring ?? false,
+      legalFeeRecurring: activeRent?.legal_fee_recurring ?? false,
+      agencyFeeRecurring: activeRent?.agency_fee_recurring ?? false,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
       pendingRenewalInvoice: pendingRenewalInvoice || null,

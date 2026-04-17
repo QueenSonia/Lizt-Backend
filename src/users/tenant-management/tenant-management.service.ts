@@ -12,6 +12,8 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { randomUUID } from 'crypto';
+import { rentToFees } from 'src/common/billing/fees';
 
 import { Users } from '../entities/user.entity';
 import { Account } from '../entities/account.entity';
@@ -62,6 +64,7 @@ import { config } from 'src/config';
 import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { AttachResult } from 'src/common/interfaces';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import { AttachTenantFromKycDto } from '../dto/attach-tenant-from-kyc.dto';
 import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
@@ -873,18 +876,7 @@ export class TenantManagementService {
    */
   async attachTenantFromKyc(
     landlordId: string,
-    dto: {
-      kycApplicationId: string;
-      propertyId: string;
-      rentAmount: number;
-      rentFrequency: string;
-      tenancyStartDate: string;
-      rentDueDate: string;
-      serviceCharge?: number;
-      cautionDeposit?: number;
-      legalFee?: number;
-      agencyFee?: number;
-    },
+    dto: AttachTenantFromKycDto,
   ): Promise<{
     tenantUser: Users;
     tenantAccount: Account;
@@ -903,7 +895,17 @@ export class TenantManagementService {
       );
     }
 
-    // 2. Map KYC application data to CreateTenantKycDto
+    // 2. Resolve rent due date. Preferred input is tenancyEndDate (derived
+    // server-side); legacy callers still pass rentDueDate directly.
+    const resolvedRentDueDate = dto.rentDueDate ?? dto.tenancyEndDate;
+    if (!resolvedRentDueDate) {
+      throw new HttpException(
+        'Either rentDueDate or tenancyEndDate must be provided',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // 3. Map KYC application data to CreateTenantKycDto
     const tenantKycDto: TenantKycFromApplicationDto = {
       phone_number: kycApplication.phone_number,
       first_name: kycApplication.first_name,
@@ -922,7 +924,7 @@ export class TenantManagementService {
       rent_amount: dto.rentAmount,
       rent_frequency: dto.rentFrequency,
       tenancy_start_date: new Date(dto.tenancyStartDate),
-      rent_due_date: new Date(dto.rentDueDate),
+      rent_due_date: new Date(resolvedRentDueDate),
       employer_name: kycApplication.employer_name,
       job_title: kycApplication.job_title,
       employer_address: kycApplication.work_address,
@@ -945,6 +947,16 @@ export class TenantManagementService {
       caution_deposit: dto.cautionDeposit,
       legal_fee: dto.legalFee,
       agency_fee: dto.agencyFee,
+      service_charge_recurring: dto.serviceChargeRecurring,
+      security_deposit_recurring: dto.securityDepositRecurring,
+      legal_fee_recurring: dto.legalFeeRecurring,
+      agency_fee_recurring: dto.agencyFeeRecurring,
+      other_fees: dto.otherFees?.map((f) => ({
+        externalId: f.externalId ?? randomUUID(),
+        name: f.name,
+        amount: f.amount,
+        recurring: f.recurring,
+      })),
     };
 
     // 3. Handle existing user or create new tenant
@@ -1027,6 +1039,11 @@ export class TenantManagementService {
         caution_deposit,
         legal_fee,
         agency_fee,
+        service_charge_recurring,
+        security_deposit_recurring,
+        legal_fee_recurring,
+        agency_fee_recurring,
+        other_fees,
       } = dto;
 
       // 1. Check if user already exists
@@ -1224,18 +1241,23 @@ export class TenantManagementService {
           .save(tenantAccount);
       }
 
-      // 6. Create rent record
-      console.log(
-        '💰 Creating rent record with service_charge:',
-        service_charge,
-      );
+      // 6. Create rent record — Billing v2 persists every fee + recurring
+      // flag + otherFees so downstream money events (renewal cron,
+      // property history) can reconstruct the fee set.
       const rent = manager.getRepository(Rent).create({
         tenant_id: tenantAccount.id,
         property_id: property_id,
         rent_start_date: tenancy_start_date,
         rental_price: rent_amount,
-        security_deposit: 0,
+        security_deposit: caution_deposit || 0,
+        security_deposit_recurring: !!security_deposit_recurring,
         service_charge: service_charge || 0,
+        service_charge_recurring: service_charge_recurring !== false,
+        legal_fee: legal_fee != null ? legal_fee : null,
+        legal_fee_recurring: !!legal_fee_recurring,
+        agency_fee: agency_fee != null ? agency_fee : null,
+        agency_fee_recurring: !!agency_fee_recurring,
+        other_fees: other_fees ?? [],
         payment_frequency: this.mapRentFrequencyToPaymentFrequency(
           rent_frequency as RentFrequency,
         ),
@@ -1247,16 +1269,24 @@ export class TenantManagementService {
 
       await manager.getRepository(Rent).save(rent);
 
-      // Record rent and service charge as separate ledger entries so the
-      // outstanding balance breakdown shows them as distinct line items.
-      if (rent_amount > 0) {
+      // Compute fee split off the just-saved Rent row so this function is the
+      // single source of truth for the recurring/one-time classification.
+      const fees = rentToFees(rent);
+
+      // Direct-attach has no Paystack leg — the landlord is recording existing
+      // state, not collecting payment. Record each charge as its own ledger
+      // entry so the balance breakdown shows itemised line items.
+      for (const fee of fees) {
+        if (fee.amount <= 0) continue;
         await this.tenantBalancesService.applyChange(
           tenantAccount.id,
           landlordId,
-          -rent_amount,
+          -fee.amount,
           {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Rent',
+            type: fee.recurring
+              ? TenantBalanceLedgerType.INITIAL_BALANCE
+              : TenantBalanceLedgerType.ONE_TIME_FEES,
+            description: fee.label,
             propertyId: property_id,
             relatedEntityType: 'rent',
             relatedEntityId: rent.id,
@@ -1264,49 +1294,6 @@ export class TenantManagementService {
           undefined,
           manager,
         );
-      }
-
-      if ((service_charge || 0) > 0) {
-        await this.tenantBalancesService.applyChange(
-          tenantAccount.id,
-          landlordId,
-          -(service_charge || 0),
-          {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Service charge',
-            propertyId: property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-          },
-          undefined,
-          manager,
-        );
-      }
-
-      // Record one-time attachment fees as separate ledger charges so they
-      // appear as distinct line items on the outstanding balance breakdown.
-      const oneTimeFees: Array<{ amount?: number; description: string }> = [
-        { amount: caution_deposit, description: 'Caution deposit' },
-        { amount: legal_fee, description: 'Legal fee' },
-        { amount: agency_fee, description: 'Agency fee' },
-      ];
-      for (const fee of oneTimeFees) {
-        if (fee.amount && fee.amount > 0) {
-          await this.tenantBalancesService.applyChange(
-            tenantAccount.id,
-            landlordId,
-            -fee.amount,
-            {
-              type: TenantBalanceLedgerType.INITIAL_BALANCE,
-              description: fee.description,
-              propertyId: property_id,
-              relatedEntityType: 'rent',
-              relatedEntityId: rent.id,
-            },
-            undefined,
-            manager,
-          );
-        }
       }
 
       // 7. Create property-tenant relationship
@@ -1915,6 +1902,10 @@ export class TenantManagementService {
     //     when a manual payment is edited/deleted. They're accounting artifacts and
     //     should not appear as charges — the property_history record is authoritative
     //     for the current payment amount.
+    //   - related_entity_type = 'rent_edit': reversal entries created when a landlord
+    //     edits tenancy charges via the edit tenancy modal.
+    //   - metadata.superseded = true: original charge entries that have been replaced
+    //     by an edit — the replacement entries are the authoritative charges.
     // Note: MIGRATION entries are included — they represent real rent charges carried
     // forward at ledger setup time.
     const obEntriesByProperty = new Map<string, TenantBalanceLedger[]>();
@@ -1923,7 +1914,9 @@ export class TenantManagementService {
         (e) =>
           Number(e.balance_change) < 0 &&
           e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
-          e.related_entity_type !== 'property_history',
+          e.related_entity_type !== 'property_history' &&
+          e.related_entity_type !== 'rent_edit' &&
+          !(e.metadata as any)?.superseded,
       )
       .forEach((e) => {
         const key = e.property_id || 'global';
@@ -2121,6 +2114,62 @@ export class TenantManagementService {
       ? (pendingInvoiceMap.get(activeRent.property_id) ?? null)
       : null;
 
+    // Fetch ALL renewal invoices for this tenant (for Documents tab)
+    const allRenewalInvoices = await this.dataSource
+      .getRepository(RenewalInvoice)
+      .find({
+        where: {
+          tenant_id: account.id,
+          ...(adminId
+            ? {
+                property: { owner_id: adminId },
+              }
+            : {}),
+        },
+        relations: ['property'],
+        order: { created_at: 'DESC' },
+        select: [
+          'id',
+          'token',
+          'receipt_token',
+          'property_id',
+          'rent_amount',
+          'total_amount',
+          'payment_status',
+          'created_at',
+          'paid_at',
+          'start_date',
+          'end_date',
+        ],
+      });
+
+    const renewalInvoiceSummaries = allRenewalInvoices.map((inv) => ({
+      id: inv.id,
+      token: inv.token,
+      receiptToken: inv.receipt_token || null,
+      propertyName: inv.property?.name || 'Property',
+      totalAmount: parseFloat((inv.total_amount ?? 0).toString()),
+      paymentStatus: inv.payment_status,
+      createdAt: inv.created_at
+        ? new Date(inv.created_at).toISOString()
+        : new Date().toISOString(),
+      paidAt: inv.paid_at
+        ? typeof inv.paid_at === 'string'
+          ? inv.paid_at
+          : inv.paid_at.toISOString()
+        : null,
+      startDate: inv.start_date
+        ? typeof inv.start_date === 'string'
+          ? inv.start_date
+          : inv.start_date.toISOString()
+        : null,
+      endDate: inv.end_date
+        ? typeof inv.end_date === 'string'
+          ? inv.end_date
+          : inv.end_date.toISOString()
+        : null,
+    }));
+
     return {
       id: account.id,
 
@@ -2311,6 +2360,19 @@ export class TenantManagementService {
       propertyStatus: property?.property_status || 'Vacant',
       leaseStartDate: this.formatDateField(activeRent?.rent_start_date),
       leaseEndDate: this.formatDateField(activeRent?.expiry_date),
+      firstRentDate: this.formatDateField(
+        rents?.length
+          ? rents.reduce(
+              (earliest, rent) =>
+                !earliest ||
+                (rent.rent_start_date &&
+                  new Date(rent.rent_start_date) < new Date(earliest))
+                  ? rent.rent_start_date
+                  : earliest,
+              null as Date | null,
+            )
+          : null,
+      ),
       tenancyStatus: activeRent?.rent_status ?? 'Inactive',
       rentAmount: activeRent?.rental_price || 0,
       serviceCharge: activeRent?.service_charge || 0,
@@ -2430,6 +2492,7 @@ export class TenantManagementService {
       ].sort((a, b) => b.date.getTime() - a.date.getTime()),
 
       history: history,
+      renewalInvoices: renewalInvoiceSummaries,
       kycInfo: {
         kycStatus: kycApplication ? 'Verified' : 'Not Submitted',
         kycSubmittedDate: kycApplication?.created_at
@@ -2564,4 +2627,15 @@ interface TenantKycFromApplicationDto {
   caution_deposit?: number;
   legal_fee?: number;
   agency_fee?: number;
+  // Billing v2 — per-fee recurring flags + dynamic other fees.
+  service_charge_recurring?: boolean;
+  security_deposit_recurring?: boolean;
+  legal_fee_recurring?: boolean;
+  agency_fee_recurring?: boolean;
+  other_fees?: Array<{
+    externalId: string;
+    name: string;
+    amount: number;
+    recurring: boolean;
+  }>;
 }

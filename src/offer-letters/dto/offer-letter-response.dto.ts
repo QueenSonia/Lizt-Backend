@@ -8,6 +8,7 @@ import { Property } from '../../properties/entities/property.entity';
 import { Users } from '../../users/entities/user.entity';
 import { PropertyStatusEnum } from '../../properties/dto/create-property.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Fee, offerLetterToFees } from '../../common/billing/fees';
 
 /**
  * Branding data for offer letters
@@ -113,6 +114,37 @@ export class OfferLetterResponse {
   @ApiPropertyOptional({ example: 30000 })
   agencyFee?: number;
 
+  // Billing v2 — per-fee recurring flags + dynamic list of other fees.
+  @ApiPropertyOptional({ example: true })
+  serviceChargeRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  cautionDepositRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  legalFeeRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  agencyFeeRecurring?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Landlord-defined additional fees.',
+  })
+  otherFees?: Array<{
+    externalId: string;
+    name: string;
+    amount: number;
+    recurring: boolean;
+  }>;
+
+  /**
+   * Normalized Fee[] derived from the offer letter — preferred source for
+   * tenant-facing UI rendering. Always present; callers should prefer
+   * iterating this over the flat scalar fields.
+   */
+  @ApiPropertyOptional()
+  fees?: Fee[];
+
   @ApiProperty({ enum: OfferLetterStatus, example: OfferLetterStatus.PENDING })
   status: OfferLetterStatus;
 
@@ -207,14 +239,15 @@ export function toOfferLetterResponse(
       }
     : undefined;
 
-  // Calculate total amount if not set (for backward compatibility)
+  // Billing v2 — derive Fee[] once and reuse for total + response payload.
+  const fees = offerLetterToFees(entity);
+  const feeTotal = fees.reduce((acc, f) => acc + Number(f.amount || 0), 0);
+
+  // Prefer the persisted total when present (it's what the tenant paid);
+  // fall back to the computed fee total for backward compatibility.
   const totalAmount = entity.total_amount
     ? Number(entity.total_amount)
-    : Number(entity.rent_amount) +
-      (entity.service_charge ? Number(entity.service_charge) : 0) +
-      (entity.caution_deposit ? Number(entity.caution_deposit) : 0) +
-      (entity.legal_fee ? Number(entity.legal_fee) : 0) +
-      (entity.agency_fee ? Number(entity.agency_fee) : 0);
+    : feeTotal;
 
   // Calculate outstanding balance if not set
   const amountPaid = Number(entity.amount_paid || 0);
@@ -247,6 +280,13 @@ export function toOfferLetterResponse(
       : undefined,
     legalFee: entity.legal_fee ? Number(entity.legal_fee) : undefined,
     agencyFee: entity.agency_fee ? Number(entity.agency_fee) : undefined,
+    // Billing v2 fields.
+    serviceChargeRecurring: entity.service_charge_recurring ?? true,
+    cautionDepositRecurring: entity.caution_deposit_recurring ?? false,
+    legalFeeRecurring: entity.legal_fee_recurring ?? false,
+    agencyFeeRecurring: entity.agency_fee_recurring ?? false,
+    otherFees: entity.other_fees ?? [],
+    fees,
     status: entity.status,
     termsOfTenancy: entity.terms_of_tenancy as TermsOfTenancyResponseDto[],
     createdAt:

@@ -112,6 +112,19 @@ interface OutstandingBalanceBreakdown {
   transactions: OutstandingBalanceTransaction[];
 }
 
+interface RenewalInvoiceSummary {
+  id: string;
+  token: string;
+  receiptToken: string | null;
+  propertyName: string;
+  totalAmount: number;
+  paymentStatus: string;
+  createdAt: string;
+  paidAt: string | null;
+  startDate: string | null;
+  endDate: string | null;
+}
+
 // main DTO interface
 export class TenantDetailDto {
   id: string; // Account ID
@@ -196,6 +209,7 @@ export class TenantDetailDto {
   // Tenancy Details
   leaseStartDate: string | null;
   leaseEndDate: string | null;
+  firstRentDate: string | null;
   tenancyStatus: string;
 
   // Rent Information
@@ -217,5 +231,6 @@ export class TenantDetailDto {
   paymentHistory: PaymentHistoryItem[];
   maintenanceIssues: MaintenanceIssue[];
   history: TimeLineEvent[];
+  renewalInvoices: RenewalInvoiceSummary[];
   kycInfo: KycInfo;
 }

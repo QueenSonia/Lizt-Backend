@@ -6,6 +6,12 @@ import { OfferLetter, TermsOfTenancy } from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { FileUploadService } from '../utils/cloudinary';
+import {
+  offerLetterToFees,
+  sumRecurring,
+  sumAll,
+  Fee,
+} from '../common/billing/fees';
 
 /**
  * PDF Generator Service
@@ -502,37 +508,58 @@ export class PDFGeneratorService {
     // Permitted Use
     html += `<div style="${rowStyle}"><span style="${labelStyle}">Permitted Use:</span><span style="${valueStyle}">${this.escapeHtml(cleanPermittedUse)}</span></div>`;
 
-    // Rent
-    html += `<div style="${rowStyle}"><span style="${labelStyle}">Rent:</span><span style="${valueStyle}">${snapshot?.rent_amount_formatted || this.formatCurrency(offerLetter.rent_amount)}</span></div>`;
-
-    // Service Charge (conditional)
-    if (offerLetter.service_charge) {
-      html += `<div style="${rowStyle}"><span style="${labelStyle}">Service Charge:</span><span style="${valueStyle}">${snapshot?.service_charge_formatted || this.formatCurrency(offerLetter.service_charge)}</span></div>`;
+    // Billing v2 — render all fees from the normalized helper. Preserves
+    // snapshotted currency strings for the fixed kinds so landlord-edited
+    // labels survive.
+    const fees = offerLetterToFees(offerLetter);
+    const snapshotLabelFor = (fee: Fee): string | null => {
+      switch (fee.kind) {
+        case 'rent':
+          return snapshot?.rent_amount_formatted || null;
+        case 'service':
+          return snapshot?.service_charge_formatted || null;
+        case 'caution':
+          return snapshot?.caution_deposit_formatted || null;
+        case 'legal':
+          return snapshot?.legal_fee_formatted || null;
+        case 'agency':
+          return snapshot?.agency_fee_formatted || null;
+        default:
+          return null;
+      }
+    };
+    const renderRow = (fee: Fee): string => {
+      const labelText =
+        fee.kind === 'caution' ? 'Caution<sup>1</sup>' : fee.label;
+      const snap = snapshotLabelFor(fee);
+      const value =
+        snap && snap !== '₦0' && snap !== ''
+          ? snap
+          : this.formatCurrency(fee.amount);
+      return `<div style="${rowStyle}"><span style="${labelStyle}">${labelText}:</span><span style="${valueStyle}">${value}</span></div>`;
+    };
+    for (const fee of fees) {
+      html += renderRow(fee);
     }
 
-    // Caution Deposit (conditional)
-    if (
-      (snapshot?.caution_deposit_formatted &&
-        snapshot.caution_deposit_formatted !== '₦0' &&
-        snapshot.caution_deposit_formatted !== '') ||
-      (offerLetter.caution_deposit && offerLetter.caution_deposit > 0)
-    ) {
-      html += `<div style="${rowStyle}"><span style="${labelStyle}">Caution<sup>1</sup>:</span><span style="${valueStyle}">${snapshot?.caution_deposit_formatted || this.formatCurrency(offerLetter.caution_deposit)}</span></div>`;
+    // Recurring-after-move-in summary (billing v2)
+    const recurringFees = fees.filter((f) => f.recurring && f.kind !== 'rent');
+    if (recurringFees.length > 0) {
+      const recurringTotal = sumRecurring(fees);
+      const freqLabel = this.getRentFrequencyLabel(
+        offerLetter.rent_frequency || '',
+      );
+      html += `<div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #d1d5db;">`;
+      html += `<div style="font-size: 10px; color: #6b7280; font-weight: 700; text-transform: uppercase; margin-bottom: 4px;">Recurring after move-in</div>`;
+      for (const fee of recurringFees) {
+        html += `<div style="${rowStyle}"><span style="${labelStyle}">${fee.label}:</span><span style="${valueStyle}">${this.formatCurrency(fee.amount)}</span></div>`;
+      }
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Recurring total:</span><span style="${valueStyle}"><strong>${this.formatCurrency(recurringTotal)}</strong> ${this.escapeHtml(freqLabel)}</span></div>`;
+      html += `</div>`;
     }
-
-    // Legal Fee (conditional)
-    if (
-      (snapshot?.legal_fee_formatted &&
-        snapshot.legal_fee_formatted !== '₦0' &&
-        snapshot.legal_fee_formatted !== '') ||
-      (offerLetter.legal_fee && offerLetter.legal_fee > 0)
-    ) {
-      html += `<div style="${rowStyle}"><span style="${labelStyle}">Legal Fee:</span><span style="${valueStyle}">${snapshot?.legal_fee_formatted || this.formatCurrency(offerLetter.legal_fee)}</span></div>`;
-    }
-
-    // Agency Fee (conditional)
-    if (offerLetter.agency_fee) {
-      html += `<div style="${rowStyle}"><span style="${labelStyle}">Agency Fee:</span><span style="${valueStyle}">${snapshot?.agency_fee_formatted || this.escapeHtml(offerLetter.agency_fee?.toString() || 'N/A')}</span></div>`;
+    // Total due upfront (new, always shown if there are fees)
+    if (fees.length > 0) {
+      html += `<div style="${rowStyle}"><span style="${labelStyle}">Total due:</span><span style="${valueStyle}"><strong>${this.formatCurrency(sumAll(fees))}</strong></span></div>`;
     }
 
     // Tenancy Term

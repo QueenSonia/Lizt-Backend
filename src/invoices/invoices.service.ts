@@ -19,6 +19,7 @@ import { PropertyHistoryService } from '../property-history/property-history.ser
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { Logger } from '@nestjs/common';
+import { offerLetterToFees, Fee } from '../common/billing/fees';
 
 @Injectable()
 export class InvoicesService {
@@ -385,45 +386,16 @@ export class InvoicesService {
       );
     }
 
-    const lineItems: { description: string; amount: number }[] = [];
-
-    if (offerLetter.rent_amount && Number(offerLetter.rent_amount) > 0) {
-      lineItems.push({
-        description: 'Annual Rent',
-        amount: Number(offerLetter.rent_amount),
-      });
-    }
-
-    if (offerLetter.service_charge && Number(offerLetter.service_charge) > 0) {
-      lineItems.push({
-        description: 'Service Charge',
-        amount: Number(offerLetter.service_charge),
-      });
-    }
-
-    if (offerLetter.legal_fee && Number(offerLetter.legal_fee) > 0) {
-      lineItems.push({
-        description: 'Legal Fee',
-        amount: Number(offerLetter.legal_fee),
-      });
-    }
-
-    if (
-      offerLetter.caution_deposit &&
-      Number(offerLetter.caution_deposit) > 0
-    ) {
-      lineItems.push({
-        description: 'Caution Deposit',
-        amount: Number(offerLetter.caution_deposit),
-      });
-    }
-
-    if (offerLetter.agency_fee && Number(offerLetter.agency_fee) > 0) {
-      lineItems.push({
-        description: 'Agency Fee',
-        amount: Number(offerLetter.agency_fee),
-      });
-    }
+    // Billing v2 — every fee (including otherFees) flows through the helper
+    // so line items are never silently dropped.
+    const fees: Fee[] = offerLetterToFees(offerLetter);
+    const lineItems = fees.map((fee) => ({
+      description: fee.label,
+      amount: fee.amount,
+      fee_kind: fee.kind,
+      is_recurring: fee.recurring,
+      external_id: fee.externalId ?? null,
+    }));
 
     const totalAmount = lineItems.reduce((sum, item) => sum + item.amount, 0);
     const invoiceNumber = await this.generateInvoiceNumber();
@@ -455,6 +427,9 @@ export class InvoicesService {
           invoice_id: savedInvoice.id,
           description: item.description,
           amount: item.amount,
+          fee_kind: item.fee_kind,
+          is_recurring: item.is_recurring,
+          external_id: item.external_id,
         }),
       );
 

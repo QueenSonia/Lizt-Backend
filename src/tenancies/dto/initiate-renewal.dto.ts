@@ -1,5 +1,18 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsString, IsOptional, IsBoolean, IsDateString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsNotEmpty,
+  IsNumber,
+  IsString,
+  IsOptional,
+  IsBoolean,
+  IsDateString,
+  IsArray,
+  ArrayMaxSize,
+  ValidateNested,
+  Min,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { OtherFeeDto } from '../../offer-letters/dto/create-offer-letter.dto';
 
 export class InitiateRenewalDto {
   @ApiProperty({
@@ -44,4 +57,52 @@ export class InitiateRenewalDto {
   @IsOptional()
   @IsDateString()
   endDate?: string;
+
+  // Billing v2 — per-fee overrides. If omitted, defaults come from the
+  // active rent row so "Renew" pre-fills correctly.
+  @ApiPropertyOptional({ example: 100000 })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  cautionDeposit?: number;
+
+  @ApiPropertyOptional({ example: 25000 })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  legalFee?: number;
+
+  @ApiPropertyOptional({ example: 50000 })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  agencyFee?: number;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  serviceChargeRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  cautionDepositRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  legalFeeRecurring?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  agencyFeeRecurring?: boolean;
+
+  @ApiPropertyOptional({ type: () => [OtherFeeDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => OtherFeeDto)
+  otherFees?: OtherFeeDto[];
 }

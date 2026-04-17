@@ -28,6 +28,16 @@ export class InvoiceLineItem {
   @Column({ type: 'decimal', precision: 15, scale: 2 })
   amount: number;
 
+  // Billing v2 — discriminator for fee kind + recurring split.
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  fee_kind: string | null;
+
+  @Column({ type: 'boolean', default: false })
+  is_recurring: boolean;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  external_id: string | null;
+
   @CreateDateColumn()
   created_at: Date;
 }

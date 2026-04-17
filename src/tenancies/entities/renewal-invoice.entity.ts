@@ -3,6 +3,7 @@ import { BaseEntity } from '../../base.entity';
 import { PropertyTenant } from '../../properties/entities/property-tenants.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { Account } from '../../users/entities/account.entity';
+import { Fee } from '../../common/billing/fees';
 
 export enum RenewalPaymentStatus {
   UNPAID = 'unpaid',
@@ -58,6 +59,25 @@ export class RenewalInvoice extends BaseEntity {
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   other_charges: number;
+
+  // Billing v2 — missing fee types, previously hardcoded to 0 at cron time.
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  caution_deposit: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  agency_fee: number;
+
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  other_fees: Array<{
+    externalId: string;
+    name: string;
+    amount: number;
+    recurring: boolean;
+  }>;
+
+  /** Full Fee[] snapshot — see common/billing/fees.ts. */
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  fee_breakdown: Fee[];
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   total_amount: number;

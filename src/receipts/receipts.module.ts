@@ -9,6 +9,7 @@ import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { Invoice } from '../invoices/entities/invoice.entity';
+import { InvoiceLineItem } from '../invoices/entities/invoice-line-item.entity';
 import { FileUploadService } from '../utils/cloudinary';
 import { InvoicesModule } from '../invoices/invoices.module';
 import { AuthModule } from '../auth/auth.module';
@@ -23,6 +24,7 @@ import { NotificationModule } from '../notifications/notification.module';
       KYCApplication,
       Property,
       Invoice,
+      InvoiceLineItem,
     ]),
     ConfigModule,
     forwardRef(() => InvoicesModule),

@@ -698,6 +698,7 @@ export class RentReminderService {
         outstanding_balance: outstandingBalance,
         wallet_balance: walletBalance,
         total_amount: totalAmount,
+        token_type: 'landlord',
         payment_status: RenewalPaymentStatus.UNPAID,
         payment_frequency: paymentFrequency,
       });

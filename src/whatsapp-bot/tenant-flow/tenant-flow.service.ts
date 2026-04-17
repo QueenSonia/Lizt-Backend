@@ -1487,28 +1487,47 @@ export class TenantFlowService {
       return;
     }
 
-    // Create OB-only invoice
-    const token = uuidv4();
-
-    const invoice = this.renewalInvoiceRepo.create({
-      token,
-      property_tenant_id: propertyTenant.id,
-      property_id: rent.property_id,
-      tenant_id: accountId,
-      start_date: rent.expiry_date || new Date(),
-      end_date: rent.expiry_date || new Date(),
-      rent_amount: 0,
-      service_charge: 0,
-      legal_fee: 0,
-      other_charges: 0,
-      total_amount: outstandingBalance,
-      outstanding_balance: outstandingBalance,
-      token_type: 'tenant',
-      payment_status: RenewalPaymentStatus.UNPAID,
-      payment_frequency: rent.payment_frequency,
+    // Reuse an existing live OB invoice for this tenant if one is already
+    // pending. Tapping "pay outstanding balance" in WhatsApp is trivial, and
+    // without this guard each tap creates a parallel ₦X row (seen in prod:
+    // 3× identical rows for the same tenant over two days).
+    const existing = await this.renewalInvoiceRepo.findOne({
+      where: {
+        property_tenant_id: propertyTenant.id,
+        token_type: 'tenant',
+        payment_status: RenewalPaymentStatus.UNPAID,
+        rent_amount: 0,
+      },
+      order: { created_at: 'DESC' },
     });
 
-    await this.renewalInvoiceRepo.save(invoice);
+    let token: string;
+    if (existing) {
+      existing.outstanding_balance = outstandingBalance;
+      existing.total_amount = outstandingBalance;
+      await this.renewalInvoiceRepo.save(existing);
+      token = existing.token;
+    } else {
+      token = uuidv4();
+      const invoice = this.renewalInvoiceRepo.create({
+        token,
+        property_tenant_id: propertyTenant.id,
+        property_id: rent.property_id,
+        tenant_id: accountId,
+        start_date: rent.expiry_date || new Date(),
+        end_date: rent.expiry_date || new Date(),
+        rent_amount: 0,
+        service_charge: 0,
+        legal_fee: 0,
+        other_charges: 0,
+        total_amount: outstandingBalance,
+        outstanding_balance: outstandingBalance,
+        token_type: 'tenant',
+        payment_status: RenewalPaymentStatus.UNPAID,
+        payment_frequency: rent.payment_frequency,
+      });
+      await this.renewalInvoiceRepo.save(invoice);
+    }
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const tenantName = `${this.utilService.toSentenceCase(user.first_name)}`;
@@ -1794,32 +1813,58 @@ export class TenantFlowService {
     }
     endDate.setDate(endDate.getDate() - 1);
 
-    // Create invoice with PENDING_APPROVAL status
-    const token = uuidv4();
-
-    const invoice = this.renewalInvoiceRepo.create({
-      token,
-      property_tenant_id: propertyTenant.id,
-      property_id: rent.property_id,
-      tenant_id: accountId,
-      start_date: startDate,
-      end_date: endDate,
-      rent_amount: rentAmount,
-      service_charge: serviceCharge,
-      legal_fee: legalFee,
-      agency_fee: agencyFee,
-      caution_deposit: cautionDeposit,
-      other_charges: 0,
-      other_fees: recurringOtherFees,
-      fee_breakdown: recurringFees,
-      total_amount: totalAmount,
-      outstanding_balance: outstandingBalance,
-      token_type: 'tenant',
-      payment_status: RenewalPaymentStatus.PENDING_APPROVAL,
-      payment_frequency: paymentFrequency,
+    // If the tenant already has a pending-approval request in flight, reuse
+    // it rather than queueing a second one — otherwise a tenant re-tapping
+    // "pay rent" while waiting on the landlord would spam both the landlord's
+    // WhatsApp and the invoices table.
+    const existing = await this.renewalInvoiceRepo.findOne({
+      where: {
+        property_tenant_id: propertyTenant.id,
+        token_type: 'tenant',
+        payment_status: RenewalPaymentStatus.PENDING_APPROVAL,
+      },
+      order: { created_at: 'DESC' },
     });
 
-    await this.renewalInvoiceRepo.save(invoice);
+    let invoice: RenewalInvoice;
+    if (existing) {
+      existing.start_date = startDate;
+      existing.end_date = endDate;
+      existing.rent_amount = rentAmount;
+      existing.service_charge = serviceCharge;
+      existing.legal_fee = legalFee;
+      existing.agency_fee = agencyFee;
+      existing.caution_deposit = cautionDeposit;
+      existing.other_fees = recurringOtherFees;
+      existing.fee_breakdown = recurringFees;
+      existing.total_amount = totalAmount;
+      existing.outstanding_balance = outstandingBalance;
+      existing.payment_frequency = paymentFrequency;
+      invoice = await this.renewalInvoiceRepo.save(existing);
+    } else {
+      invoice = this.renewalInvoiceRepo.create({
+        token: uuidv4(),
+        property_tenant_id: propertyTenant.id,
+        property_id: rent.property_id,
+        tenant_id: accountId,
+        start_date: startDate,
+        end_date: endDate,
+        rent_amount: rentAmount,
+        service_charge: serviceCharge,
+        legal_fee: legalFee,
+        agency_fee: agencyFee,
+        caution_deposit: cautionDeposit,
+        other_charges: 0,
+        other_fees: recurringOtherFees,
+        fee_breakdown: recurringFees,
+        total_amount: totalAmount,
+        outstanding_balance: outstandingBalance,
+        token_type: 'tenant',
+        payment_status: RenewalPaymentStatus.PENDING_APPROVAL,
+        payment_frequency: paymentFrequency,
+      });
+      await this.renewalInvoiceRepo.save(invoice);
+    }
 
     // Look up landlord to send approval request
     const property = await this.propertyRepo.findOne({
@@ -1876,7 +1921,9 @@ export class TenantFlowService {
     // Notify tenant
     await this.templateSenderService.sendText(
       from,
-      `Your rent payment request for ${rent.property.name} has been sent to your landlord for approval. You'll be notified once they respond.`,
+      existing
+        ? `You already have a rent payment request for ${rent.property.name} that's still being reviewed by your landlord. We've nudged them again — you'll be notified once they respond.`
+        : `Your rent payment request for ${rent.property.name} has been sent to your landlord for approval. You'll be notified once they respond.`,
     );
   }
 

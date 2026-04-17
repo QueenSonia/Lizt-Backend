@@ -2736,7 +2736,7 @@ export class TemplateSenderService {
     tenant_application_notification:
       'A KYC application was submitted by {{2}} for the property {{3}}, assigned to {{1}}.\n\nUse the link below to view the application.',
     kyc_submission_confirmation:
-      "Hello {{1}}, Your KYC form has been submitted. Your landlord is reviewing your details, and we'll keep you updated.",
+      "Hello {{1}}, Your KYC form has been submitted. The landlord is reviewing your details, and we'll keep you updated.",
     agent_kyc_notification:
       'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
     landlord_service_request_notification:

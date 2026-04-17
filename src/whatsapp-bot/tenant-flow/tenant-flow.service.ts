@@ -1996,7 +1996,7 @@ export class TenantFlowService {
       `• Location: ${property.location}\n` +
       `${feeLines}\n` +
       `• Tenancy start date: ${formatDate(rent.rent_start_date)}\n` +
-      `• Tenancy due date: ${formatDate(rent.expiry_date)}\n\n` +
+      `• Tenancy end date: ${formatDate(rent.expiry_date)}\n\n` +
       `Are these details correct?`;
 
     console.log(

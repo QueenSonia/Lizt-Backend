@@ -801,7 +801,7 @@ export class PropertiesService {
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
-    const { query } = await buildPropertyFilter(queryParams);
+    const { query, searchKeyword } = await buildPropertyFilter(queryParams);
 
     // Optimized query: only select columns actually used by frontend
     const qb = this.propertyRepository
@@ -864,6 +864,13 @@ export class PropertiesService {
         'property.offer_letters',
       )
       .where(query);
+
+    if (searchKeyword) {
+      qb.andWhere(
+        '(property.name ILIKE :kw OR property.location ILIKE :kw)',
+        { kw: `%${searchKeyword}%` },
+      );
+    }
 
     // Apply sorting (rent requires custom logic)
     if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {

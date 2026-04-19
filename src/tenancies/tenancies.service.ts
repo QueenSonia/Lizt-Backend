@@ -1416,6 +1416,7 @@ export class TenanciesService {
     paymentReference: string,
     amount: number,
     paymentOption?: string,
+    skipLedger: boolean = false,
   ): Promise<void> {
     const invoice = await this.renewalInvoiceRepository.findOne({
       where: { token },
@@ -1460,6 +1461,16 @@ export class TenanciesService {
     invoice.amount_paid = amount;
 
     await this.renewalInvoiceRepository.save(invoice);
+
+    // Auto-complete any active tenancy-scope payment plans on this invoice
+    // when it's paid in full via a lump-sum (not via the plan ripple-up
+    // itself — skipLedger=true signals the ripple-up case).
+    if (shouldRenew && !skipLedger) {
+      await this.autoCompletePaymentPlansForInvoice(
+        invoice.id,
+        paymentReference,
+      );
+    }
 
     // Get the active rent record
     const activeRent = await this.rentRepository.findOne({
@@ -1562,13 +1573,20 @@ export class TenanciesService {
     // All payments now go to wallet (no current-charges option)
     const description = `Renewal payment of ₦${amount.toLocaleString()} received`;
 
-    await this.tenantBalancesService.applyChange(tenantId, landlordId, amount, {
-      type: TenantBalanceLedgerType.OB_PAYMENT,
-      description,
-      propertyId: invoice.property_id,
-      relatedEntityType: 'renewal_invoice',
-      relatedEntityId: invoice.id,
-    });
+    if (!skipLedger) {
+      await this.tenantBalancesService.applyChange(
+        tenantId,
+        landlordId,
+        amount,
+        {
+          type: TenantBalanceLedgerType.OB_PAYMENT,
+          description,
+          propertyId: invoice.property_id,
+          relatedEntityType: 'renewal_invoice',
+          relatedEntityId: invoice.id,
+        },
+      );
+    }
 
     // Recalculate balance for notifications (negative = still owes)
     const newWalletBalance = await this.tenantBalancesService.getBalance(
@@ -1768,5 +1786,69 @@ export class TenanciesService {
       related_entity_type: 'renewal_invoice',
     });
     await this.propertyHistoryRepository.save(entry);
+  }
+
+  /**
+   * When a renewal invoice is paid in full via lump-sum, any active
+   * tenancy-scope payment plans tied to it are covered by that payment —
+   * flip their pending installments to paid and close the plans so
+   * reminders stop and the plan UI shows the correct state.
+   *
+   * Raw SQL avoids a module-level circular dep with PaymentPlansModule.
+   */
+  private async autoCompletePaymentPlansForInvoice(
+    invoiceId: string,
+    paymentReference: string,
+  ): Promise<void> {
+    try {
+      const plans: { id: string; property_id: string; tenant_id: string }[] =
+        await this.dataSource.query(
+          `SELECT id, property_id, tenant_id FROM payment_plans
+             WHERE renewal_invoice_id = $1
+               AND scope = 'tenancy'
+               AND status = 'active'`,
+          [invoiceId],
+        );
+
+      if (!plans.length) return;
+
+      const now = new Date();
+      const note = `Covered by lump-sum invoice payment (${paymentReference})`;
+
+      for (const plan of plans) {
+        await this.dataSource.query(
+          `UPDATE payment_plan_installments
+             SET status = 'paid',
+                 paid_at = $1,
+                 payment_method = COALESCE(payment_method, 'other'),
+                 manual_payment_note = COALESCE(manual_payment_note, $2),
+                 paystack_reference = COALESCE(paystack_reference, $3)
+             WHERE plan_id = $4 AND status = 'pending'`,
+          [now, note, paymentReference, plan.id],
+        );
+
+        await this.dataSource.query(
+          `UPDATE payment_plans SET status = 'completed', updated_at = $1
+             WHERE id = $2`,
+          [now, plan.id],
+        );
+
+        const histEntry = this.propertyHistoryRepository.create({
+          property_id: plan.property_id,
+          tenant_id: plan.tenant_id,
+          event_type: 'payment_plan_completed',
+          event_description: `Payment plan completed — remaining installments covered by lump-sum invoice payment`,
+          related_entity_id: plan.id,
+          related_entity_type: 'payment_plan',
+        });
+        await this.propertyHistoryRepository.save(histEntry);
+      }
+    } catch (err) {
+      // Non-blocking: a failure here shouldn't fail the renewal payment.
+      console.error(
+        '[autoCompletePaymentPlansForInvoice] failed',
+        (err as Error)?.message,
+      );
+    }
   }
 }

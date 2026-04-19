@@ -29,6 +29,7 @@ import { DatabaseErrorHandlerService } from 'src/database/database-error-handler
 import { NotificationModule } from 'src/notifications/notification.module';
 import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
+import { PaymentPlanInstallment } from 'src/payment-plans/entities/payment-plan-installment.entity';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module
       KYCApplication,
       KYCLink,
       RenewalInvoice,
+      PaymentPlanInstallment,
     ]),
     RentsModule,
     UsersModule,

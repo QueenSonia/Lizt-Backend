@@ -417,6 +417,66 @@ export interface RentOverdueWithRenewalParams {
 }
 
 /**
+ * Parameters for payment plan installment reminder to tenant
+ */
+export interface InstallmentReminderParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  charge_name: string;
+  installment_label: string; // e.g. "2 of 4"
+  amount: string;
+  due_date: string;
+  pay_token: string; // installment id used as URL path
+}
+
+/**
+ * Parameters for installment receipt to tenant (after payment)
+ */
+export interface InstallmentReceiptTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  amount: number;
+  charge_name: string;
+  property_name: string;
+  receipt_token: string;
+}
+
+/**
+ * Parameters for installment paid notification to landlord
+ */
+export interface InstallmentPaidLandlordParams {
+  phone_number: string;
+  tenant_name: string;
+  installment_label: string; // e.g. "2 of 4"
+  charge_name: string;
+  property_name: string;
+  amount: number;
+}
+
+/**
+ * Parameters for payment plan completion to tenant (charge-scope plans only)
+ */
+export interface PaymentPlanCompletedTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  charge_name: string;
+  property_name: string;
+  total_amount: number;
+}
+
+/**
+ * Parameters for payment plan completion to landlord
+ */
+export interface PaymentPlanCompletedLandlordParams {
+  phone_number: string;
+  tenant_name: string;
+  charge_name: string;
+  property_name: string;
+  total_amount: number;
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -2699,6 +2759,207 @@ export class TemplateSenderService {
     await this.sendToWhatsappAPI(payload);
   }
 
+  /**
+   * Send payment plan installment reminder template to tenant via WhatsApp.
+   * Fired 1 day before and on the installment due date.
+   * Template: installment_reminder
+   */
+  async sendInstallmentReminderTemplate({
+    phone_number,
+    tenant_name,
+    property_name,
+    charge_name,
+    installment_label,
+    amount,
+    due_date,
+    pay_token,
+  }: InstallmentReminderParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'installment_reminder',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: installment_label },
+              { type: 'text', text: charge_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: amount },
+              { type: 'text', text: due_date },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: pay_token,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send installment receipt to tenant after a successful payment.
+   * Template: installment_receipt_tenant
+   */
+  async sendInstallmentReceiptTenant({
+    phone_number,
+    tenant_name,
+    amount,
+    charge_name,
+    property_name,
+    receipt_token,
+  }: InstallmentReceiptTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'installment_receipt_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+              { type: 'text', text: charge_name },
+              { type: 'text', text: property_name },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: receipt_token }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify landlord that an installment was paid.
+   * Template: installment_paid_landlord
+   */
+  async sendInstallmentPaidLandlord({
+    phone_number,
+    tenant_name,
+    installment_label,
+    charge_name,
+    property_name,
+    amount,
+  }: InstallmentPaidLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'installment_paid_landlord',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: installment_label },
+              { type: 'text', text: charge_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Congratulate tenant on completing a charge-scope payment plan.
+   * Template: payment_plan_completed_tenant
+   */
+  async sendPaymentPlanCompletedTenant({
+    phone_number,
+    tenant_name,
+    charge_name,
+    property_name,
+    total_amount,
+  }: PaymentPlanCompletedTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_plan_completed_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: charge_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: `₦${total_amount.toLocaleString()}` },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify landlord that a tenant completed their payment plan.
+   * Template: payment_plan_completed_landlord
+   */
+  async sendPaymentPlanCompletedLandlord({
+    phone_number,
+    tenant_name,
+    charge_name,
+    property_name,
+    total_amount,
+  }: PaymentPlanCompletedLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_plan_completed_landlord',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: charge_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: `₦${total_amount.toLocaleString()}` },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   // ----------------------------------------------------------------------
   // Internal API method
   // ----------------------------------------------------------------------
@@ -2786,6 +3047,16 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nThis is a friendly reminder that your next {{2}} rent for {{3}} is due on {{4}}.\n\nAmount due: {{5}}\n\nPlease use the link below to view your invoice and complete your payment.',
     rent_overdue:
       'Hi {{1}},\n\nYour rent for {{2}} was due on {{3}} and is now overdue.\n\nAmount due: {{4}}\n\nPlease make payment as soon as possible to avoid additional charges.\n\nThank you for your prompt attention to this matter.',
+    installment_reminder:
+      'Hi {{1}},\n\nThis is a reminder for installment {{2}} of your {{3}} payment plan at {{4}}.\n\nAmount: {{5}}\nDue date: {{6}}\n\nPlease use the link below to complete your payment.',
+    installment_receipt_tenant:
+      'Hi {{1}}, your installment payment of {{2}} for {{3}} at {{4}} has been received.\n\nClick the button below to view your receipt.',
+    installment_paid_landlord:
+      'Your tenant {{1}} has just paid installment {{2}} for {{3}} at {{4}}.\n\nAmount received: {{5}}.\n\nThe payment has been recorded and the tenant balance has been updated automatically on your dashboard.',
+    payment_plan_completed_tenant:
+      'Congratulations {{1}}! You have completed your {{2}} payment plan at {{3}}.\n\nTotal paid: {{4}}. Thank you.',
+    payment_plan_completed_landlord:
+      'Your tenant {{1}} has just completed their {{2}} payment plan at {{3}}.\n\nTotal received across all installments: {{4}}.\n\nThe plan has been closed automatically and no further reminders will be sent.',
   };
 
   /**

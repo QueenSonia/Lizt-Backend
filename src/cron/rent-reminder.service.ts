@@ -21,6 +21,10 @@ import { TenantStatusEnum } from '../properties/dto/create-property.dto';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 import { rentToFees, sumRecurring, Fee } from '../common/billing/fees';
+import {
+  PaymentPlanInstallment,
+  InstallmentStatus,
+} from '../payment-plans/entities/payment-plan-installment.entity';
 
 const RENT_REMINDER_SCHEDULE = {
   monthly: [14, 7, 2, 1, 0],
@@ -43,6 +47,8 @@ export class RentReminderService {
     private readonly renewalInvoiceRepository: Repository<RenewalInvoice>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
+    @InjectRepository(PaymentPlanInstallment)
+    private readonly installmentRepository: Repository<PaymentPlanInstallment>,
     private readonly whatsAppNotificationLogService: WhatsAppNotificationLogService,
     private readonly notificationService: NotificationService,
     private readonly tenantBalancesService: TenantBalancesService,
@@ -55,10 +61,129 @@ export class RentReminderService {
       await this.processAutoRenewal();
       await this.processUpcomingReminders();
       await this.processPostExpiryReminders();
+      await this.checkInstallmentReminders();
       this.logger.log('Completed daily rent reminder check.');
     } catch (error) {
       this.logger.error('Failed to process daily rent reminders', error);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Payment plan installment reminders
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Sends a WhatsApp installment reminder 1 day before the due date and on the
+   * due date itself. Deduplicated per installment per day via
+   * `last_reminder_sent_on` so the cron can run more than once safely.
+   */
+  async checkInstallmentReminders(): Promise<void> {
+    this.logger.log('Processing payment plan installment reminders...');
+
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setUTCDate(today.getUTCDate() + 1);
+
+    const todayStr = today.toISOString().split('T')[0];
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+    const installments = await this.installmentRepository
+      .createQueryBuilder('inst')
+      .leftJoinAndSelect('inst.plan', 'plan')
+      .leftJoinAndSelect('plan.property', 'property')
+      .leftJoinAndSelect('plan.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'user')
+      .where('inst.status = :status', { status: InstallmentStatus.PENDING })
+      .andWhere('DATE(inst.due_date) IN (:...dates)', {
+        dates: [todayStr, tomorrowStr],
+      })
+      .andWhere(
+        '(inst.last_reminder_sent_on IS NULL OR DATE(inst.last_reminder_sent_on) < :today)',
+        { today: todayStr },
+      )
+      .getMany();
+
+    this.logger.log(
+      `Found ${installments.length} installments needing reminders today.`,
+    );
+
+    for (const installment of installments) {
+      try {
+        await this.sendInstallmentReminder(installment, today);
+      } catch (error) {
+        this.logger.error(
+          `Failed to send installment reminder for installment ${installment.id}`,
+          error,
+        );
+      }
+    }
+  }
+
+  private async sendInstallmentReminder(
+    installment: PaymentPlanInstallment,
+    today: Date,
+  ): Promise<void> {
+    const plan = installment.plan;
+    if (!plan) return;
+
+    const phone = plan.tenant?.user?.phone_number;
+    const tenantName = plan.tenant?.user?.first_name;
+    const propertyName = plan.property?.name;
+
+    if (!phone || !tenantName || !propertyName) {
+      this.logger.warn(
+        `Skipping installment reminder for ${installment.id}: missing tenant phone / name / property name`,
+      );
+      return;
+    }
+
+    const totalInstallments = await this.installmentRepository.count({
+      where: { plan_id: plan.id },
+    });
+    const installmentLabel = `${installment.sequence} of ${totalInstallments}`;
+
+    const amount = Number(installment.amount).toLocaleString('en-NG', {
+      style: 'currency',
+      currency: 'NGN',
+    });
+    const dueDateStr = new Date(installment.due_date).toLocaleDateString(
+      'en-GB',
+    );
+
+    await this.whatsAppNotificationLogService.queue(
+      'sendInstallmentReminderTemplate',
+      {
+        phone_number: phone,
+        tenant_name: tenantName,
+        property_name: propertyName,
+        charge_name: plan.charge_name,
+        installment_label: installmentLabel,
+        amount,
+        due_date: dueDateStr,
+        pay_token: installment.id,
+      },
+      installment.id,
+    );
+
+    await this.installmentRepository.update(installment.id, {
+      last_reminder_sent_on: today,
+    });
+
+    await this.propertyHistoryRepository.save(
+      this.propertyHistoryRepository.create({
+        property_id: plan.property_id,
+        tenant_id: plan.tenant_id,
+        event_type: 'payment_plan_installment_reminder_sent',
+        event_description: `Reminder sent for installment ${installmentLabel} of ${plan.charge_name} — ${amount} due ${dueDateStr}`,
+        related_entity_id: installment.id,
+        related_entity_type: 'payment_plan_installment',
+      }),
+    );
+
+    this.logger.log(
+      `Queued installment reminder for installment ${installment.id} (${installmentLabel}, due ${dueDateStr}).`,
+    );
   }
 
   // ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ import { ReceiptsModule } from './receipts/receipts.module';
 import { ApiLogModule } from './common/interceptors/api-log.module';
 import { QueryLogModule } from './common/logger/query-log.module';
 import { TenantBalancesModule } from './tenant-balances/tenant-balances.module';
+import { PaymentPlansModule } from './payment-plans/payment-plans.module';
 import { SecurityMiddleware } from './middleware/security.middleware';
 import { IpRateLimitGuard } from './guards/ip-rate-limit.guard';
 import { AutoBanService } from './services/auto-ban.service';
@@ -88,6 +89,7 @@ config({ default_node_env: 'production' });
     ApiLogModule,
     QueryLogModule,
     TenantBalancesModule,
+    PaymentPlansModule,
   ],
   controllers: [AppController],
   providers: [

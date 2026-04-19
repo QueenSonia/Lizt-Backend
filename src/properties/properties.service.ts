@@ -1366,12 +1366,13 @@ export class PropertiesService {
             }
           : null;
 
-      // Outstanding balance: negative wallet = owes money
+      // Wallet balance: signed. Negative = tenant owes (outstanding); positive = tenant credit.
       const walletBal = await this.tenantBalancesService.getBalance(
         activeTenantRelation.tenant.id,
         property.owner_id,
       );
       const totalOutstandingBalance = walletBal < 0 ? -walletBal : 0;
+      const totalCreditBalance = walletBal > 0 ? walletBal : 0;
 
       currentTenant = {
         id: activeTenantRelation.tenant.id,
@@ -1389,6 +1390,7 @@ export class PropertiesService {
         passportPhoto: tenantKycApplication?.passport_photo_url || null,
         renewalStatus,
         outstandingBalance: totalOutstandingBalance,
+        creditBalance: totalCreditBalance,
       };
     }
 

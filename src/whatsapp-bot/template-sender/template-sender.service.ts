@@ -477,6 +477,74 @@ export interface PaymentPlanCompletedLandlordParams {
 }
 
 /**
+ * Parameters for ad-hoc invoice pay-link to tenant (sent on invoice creation)
+ */
+export interface AdhocInvoiceLinkTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  fees: string;
+  public_token: string;
+}
+
+/**
+ * Parameters for ad-hoc invoice paid receipt link to tenant
+ */
+export interface AdhocInvoicePaidTenantParams {
+  phone_number: string;
+  amount: number;
+  receipt_token: string;
+}
+
+/**
+ * Parameters for ad-hoc invoice paid notification to landlord
+ */
+export interface AdhocInvoicePaidLandlordParams {
+  phone_number: string;
+  tenant_name: string;
+  amount: number;
+  fees: string;
+}
+
+/**
+ * Parameters for the confirmation a tenant receives after submitting a request
+ */
+export interface PaymentPlanRequestSubmittedTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  total_amount: number;
+  installment_amount: number;
+  preferred_schedule: string;
+  tenant_note: string;
+}
+
+/**
+ * Parameters for the heads-up a landlord receives when a tenant submits a request
+ */
+export interface PaymentPlanRequestLandlordNotifyParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  total_amount: number;
+  installment_amount: number;
+  preferred_schedule: string;
+  tenant_note: string;
+}
+
+/**
+ * Parameters for the approved/declined notification to a tenant
+ */
+export interface PaymentPlanRequestDecisionTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  total_amount: number;
+  installment_amount: number;
+  decline_reason?: string;
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -2960,6 +3028,214 @@ export class TemplateSenderService {
     await this.sendToWhatsappAPI(payload);
   }
 
+  /**
+   * Send ad-hoc invoice pay-link to tenant (on invoice creation).
+   * Template: adhoc_invoice_link_tenant
+   */
+  async sendAdhocInvoiceLinkTenant({
+    phone_number,
+    tenant_name,
+    fees,
+    public_token,
+  }: AdhocInvoiceLinkTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'adhoc_invoice_link_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: fees },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: public_token }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send ad-hoc invoice receipt link to tenant after payment.
+   * Template: adhoc_invoice_paid_tenant
+   */
+  async sendAdhocInvoicePaidTenant({
+    phone_number,
+    amount,
+    receipt_token,
+  }: AdhocInvoicePaidTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'adhoc_invoice_paid_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: receipt_token }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify landlord that an ad-hoc invoice was paid.
+   * Template: adhoc_invoice_paid_landlord
+   */
+  async sendAdhocInvoicePaidLandlord({
+    phone_number,
+    tenant_name,
+    amount,
+    fees,
+  }: AdhocInvoicePaidLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'adhoc_invoice_paid_landlord',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+              { type: 'text', text: fees },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the submission confirmation to the tenant after they POST a request.
+   * Free-form text (we're inside the 24h window — they just navigated here
+   * from the WhatsApp link tap).
+   */
+  async sendPaymentPlanRequestSubmittedTenant({
+    phone_number,
+    tenant_name,
+    property_name,
+    total_amount,
+    installment_amount,
+    preferred_schedule,
+    tenant_note,
+  }: PaymentPlanRequestSubmittedTenantParams): Promise<void> {
+    const lines = [
+      `Hi ${tenant_name}, your payment plan request for ${property_name} has been received.`,
+      '',
+      `Total due: ₦${total_amount.toLocaleString()}`,
+      `Per installment: ₦${installment_amount.toLocaleString()}`,
+      `Preferred schedule: ${preferred_schedule || 'No preference'}`,
+    ];
+    if (tenant_note) lines.push(`Note: ${tenant_note}`);
+    lines.push('', 'Your landlord will review the request and respond on WhatsApp.');
+
+    await this.sendText(phone_number, lines.join('\n'));
+  }
+
+  /**
+   * Notify the landlord that a tenant submitted a payment-plan request.
+   * Template: payment_plan_request_landlord_notify
+   */
+  async sendPaymentPlanRequestLandlordNotify({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    total_amount,
+    installment_amount,
+    preferred_schedule,
+    tenant_note,
+  }: PaymentPlanRequestLandlordNotifyParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_plan_request_landlord_notify',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: `₦${total_amount.toLocaleString()}` },
+              { type: 'text', text: `₦${installment_amount.toLocaleString()}` },
+              { type: 'text', text: preferred_schedule || 'No preference' },
+              { type: 'text', text: tenant_note || 'No note' },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify the tenant that their request was declined.
+   * Template: payment_plan_request_declined
+   */
+  async sendPaymentPlanRequestDeclinedTenant({
+    phone_number,
+    tenant_name,
+    property_name,
+    decline_reason,
+  }: PaymentPlanRequestDecisionTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_plan_request_declined',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: decline_reason || 'No reason provided' },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   // ----------------------------------------------------------------------
   // Internal API method
   // ----------------------------------------------------------------------
@@ -3057,6 +3333,16 @@ export class TemplateSenderService {
       'Congratulations {{1}}! You have completed your {{2}} payment plan at {{3}}.\n\nTotal paid: {{4}}. Thank you.',
     payment_plan_completed_landlord:
       'Your tenant {{1}} has just completed their {{2}} payment plan at {{3}}.\n\nTotal received across all installments: {{4}}.\n\nThe plan has been closed automatically and no further reminders will be sent.',
+    adhoc_invoice_link_tenant:
+      'Hi {{1}},\n\nA new invoice for {{2}} has been issued to you.\n\nClick the button below to view the invoice and complete your payment.',
+    adhoc_invoice_paid_tenant:
+      'Your payment of {{1}} has been received. Thank you.\n\nClick the button to view your receipt.',
+    adhoc_invoice_paid_landlord:
+      'Hi,\n\n{{1}} has made a payment of {{2}} for the invoice of {{3}}.\n\nPlease check your dashboard for the receipt.',
+    payment_plan_request_landlord_notify:
+      'Hi {{1}}, {{2}} has requested a payment plan for {{3}}.\n\nTotal due: {{4}}\nProposed per-installment: {{5}}\nPreferred schedule: {{6}}\nNote: {{7}}\n\nReview and respond from your dashboard.',
+    payment_plan_request_declined:
+      'Hi {{1}}, your payment plan request for {{2}} was declined.\n\nReason: {{3}}\n\nReply "menu" to see other options.',
   };
 
   /**

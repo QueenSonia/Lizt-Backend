@@ -3,8 +3,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { PaymentPlan } from './entities/payment-plan.entity';
 import { PaymentPlanInstallment } from './entities/payment-plan-installment.entity';
+import { PaymentPlanRequest } from './entities/payment-plan-request.entity';
 import { PaymentPlansService } from './payment-plans.service';
 import { PaymentPlansController } from './payment-plans.controller';
+import { PaymentPlanRequestsService } from './payment-plan-requests.service';
+import { PaymentPlanRequestsController } from './payment-plan-requests.controller';
 import { InstallmentPDFService } from './installment-pdf.service';
 
 import { RenewalInvoice } from '../tenancies/entities/renewal-invoice.entity';
@@ -25,6 +28,7 @@ import { UtilService } from '../utils/utility-service';
     TypeOrmModule.forFeature([
       PaymentPlan,
       PaymentPlanInstallment,
+      PaymentPlanRequest,
       RenewalInvoice,
       PropertyTenant,
       Property,
@@ -37,8 +41,17 @@ import { UtilService } from '../utils/utility-service';
     TenantBalancesModule,
     WhatsappBotModule,
   ],
-  controllers: [PaymentPlansController],
-  providers: [PaymentPlansService, InstallmentPDFService, UtilService],
-  exports: [PaymentPlansService, InstallmentPDFService],
+  controllers: [PaymentPlansController, PaymentPlanRequestsController],
+  providers: [
+    PaymentPlansService,
+    PaymentPlanRequestsService,
+    InstallmentPDFService,
+    UtilService,
+  ],
+  exports: [
+    PaymentPlansService,
+    PaymentPlanRequestsService,
+    InstallmentPDFService,
+  ],
 })
 export class PaymentPlansModule {}

@@ -443,6 +443,33 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         });
       }
 
+      if (
+        ph.event_type === 'payment_plan_request_submitted' ||
+        ph.event_type === 'payment_plan_request_approved' ||
+        ph.event_type === 'payment_plan_request_declined'
+      ) {
+        const prop = ph.property;
+        const eventDate = new Date(ph.created_at || new Date());
+        const titleMap: Record<string, string> = {
+          payment_plan_request_submitted: 'Payment Plan Requested',
+          payment_plan_request_approved: 'Payment Plan Request Approved',
+          payment_plan_request_declined: 'Payment Plan Request Declined',
+        };
+        tenancyEvents.push({
+          id: `${ph.event_type}-${ph.id}`,
+          type: 'general',
+          title: titleMap[ph.event_type],
+          description:
+            ph.event_description ||
+            `${titleMap[ph.event_type]} for ${prop?.name || 'property'}.`,
+          details: prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          relatedEntityId: ph.related_entity_id || undefined,
+          relatedEntityType: 'payment_plan_request',
+        });
+      }
+
       if (ph.event_type === 'kyc_form_viewed') {
         const prop = ph.property;
         const eventDate = new Date(ph.created_at || new Date());

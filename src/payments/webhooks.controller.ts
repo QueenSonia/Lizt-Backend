@@ -15,6 +15,7 @@ import { RenewalPaymentService } from '../tenancies/renewal-payment.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { ConfigService } from '@nestjs/config';
 import { PaymentPlansService } from '../payment-plans/payment-plans.service';
+import { AdHocInvoicesService } from '../ad-hoc-invoices/ad-hoc-invoices.service';
 
 // Paystack's official webhook source IP addresses
 const PAYSTACK_IPS = ['52.31.139.75', '52.49.173.169', '52.214.14.220'];
@@ -35,6 +36,7 @@ export class WebhooksController {
     private readonly paystackLogger: PaystackLogger,
     private readonly configService: ConfigService,
     private readonly paymentPlansService: PaymentPlansService,
+    private readonly adHocInvoicesService: AdHocInvoicesService,
   ) {}
 
   /**
@@ -117,16 +119,23 @@ export class WebhooksController {
         const isPaymentPlan =
           reference?.startsWith('PLAN_') ||
           !!body.data.metadata?.payment_plan_installment_id;
+        const isAdHocInvoice =
+          !isPaymentPlan &&
+          (reference?.startsWith('INV_') ||
+            !!body.data.metadata?.ad_hoc_invoice_id);
         const isRenewalPayment =
           !isPaymentPlan &&
+          !isAdHocInvoice &&
           (reference?.startsWith('RENEWAL_') ||
             body.data.metadata?.renewal_invoice_id);
 
         const paymentType = isPaymentPlan
           ? 'payment_plan_installment'
-          : isRenewalPayment
-            ? 'renewal'
-            : 'offer_letter';
+          : isAdHocInvoice
+            ? 'ad_hoc_invoice'
+            : isRenewalPayment
+              ? 'renewal'
+              : 'offer_letter';
 
         this.paystackLogger.info('Processing charge.success webhook', {
           reference,
@@ -141,9 +150,15 @@ export class WebhooksController {
                 amount: body.data.amount,
                 metadata: body.data.metadata,
               })
-            : isRenewalPayment
-              ? this.renewalPaymentService.processWebhookPayment(body.data)
-              : this.paymentService.processSuccessfulPayment(body.data);
+            : isAdHocInvoice
+              ? this.adHocInvoicesService.markInvoicePaidFromWebhook({
+                  reference: body.data.reference,
+                  amount: body.data.amount,
+                  metadata: body.data.metadata,
+                })
+              : isRenewalPayment
+                ? this.renewalPaymentService.processWebhookPayment(body.data)
+                : this.paymentService.processSuccessfulPayment(body.data);
 
           processor
             .then(() => {

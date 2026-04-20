@@ -49,4 +49,13 @@ export class CreatePaymentPlanDto {
   @ValidateNested({ each: true })
   @Type(() => CreateInstallmentDto)
   installments: CreateInstallmentDto[];
+
+  /**
+   * When set, this plan is being created in response to a tenant-submitted
+   * payment plan request. Approval and plan creation happen atomically:
+   * the request is marked `approved` and linked via `created_payment_plan_id`.
+   */
+  @IsOptional()
+  @IsUUID()
+  fromRequestId?: string;
 }

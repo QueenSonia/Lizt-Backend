@@ -40,6 +40,9 @@ import { RenewalInvoiceDto } from './dto/renewal-invoice.dto';
 import { TenanciesService } from 'src/tenancies/tenancies.service';
 import { RenewalPaymentService } from './renewal-payment.service';
 import { RenewalPDFService } from './renewal-pdf.service';
+import { PaymentPlanRequestsService } from '../payment-plans/payment-plan-requests.service';
+import { CreatePaymentPlanRequestDto } from '../payment-plans/dto/create-payment-plan-request.dto';
+import { PaymentPlanRequestSource } from '../payment-plans/entities/payment-plan-request.entity';
 
 @ApiTags('Tenancies')
 @Controller('tenancies')
@@ -49,6 +52,7 @@ export class TenanciesController {
     private readonly tenanciesService: TenanciesService,
     private readonly renewalPaymentService: RenewalPaymentService,
     private readonly renewalPDFService: RenewalPDFService,
+    private readonly paymentPlanRequestsService: PaymentPlanRequestsService,
   ) {}
 
   @ApiOperation({ summary: 'Renew Tenancy' })
@@ -248,6 +252,37 @@ export class TenanciesController {
     return {
       success: true,
       data: invoice,
+    };
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Submit a payment plan request (tenant-facing, token-authed)',
+  })
+  @ApiParam({ name: 'token', description: 'Renewal invoice token' })
+  @ApiBody({ type: CreatePaymentPlanRequestDto })
+  @ApiOkResponse({ description: 'Payment plan request submitted' })
+  @Post('renewal-invoice/:token/payment-plan-request')
+  async submitPaymentPlanRequest(
+    @Param('token') token: string,
+    @Body() dto: CreatePaymentPlanRequestDto,
+  ) {
+    const request =
+      await this.paymentPlanRequestsService.submitFromToken(
+        token,
+        dto,
+        PaymentPlanRequestSource.RENT,
+      );
+    return {
+      success: true,
+      data: {
+        id: request.id,
+        status: request.status,
+        totalAmount: Number(request.total_amount),
+        installmentAmount: Number(request.installment_amount),
+        preferredSchedule: request.preferred_schedule,
+        tenantNote: request.tenant_note,
+      },
     };
   }
 

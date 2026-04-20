@@ -20,6 +20,7 @@ import { PaymentsModule } from 'src/payments/payments.module';
 import { NotificationModule } from 'src/notifications/notification.module';
 import { EventsModule } from 'src/events/events.module';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
+import { PaymentPlansModule } from 'src/payment-plans/payment-plans.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module
     NotificationModule,
     EventsModule,
     TenantBalancesModule,
+    forwardRef(() => PaymentPlansModule),
   ],
   controllers: [TenanciesController],
   providers: [

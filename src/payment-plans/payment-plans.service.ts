@@ -41,6 +41,7 @@ import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-bala
 import { Fee, FeeKind } from '../common/billing/fees';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../utils/utility-service';
+import { PaymentPlanRequestsService } from './payment-plan-requests.service';
 
 export interface PlanPaymentInitializationResult {
   accessCode: string;
@@ -73,6 +74,7 @@ export class PaymentPlansService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
+    private readonly requestsService: PaymentPlanRequestsService,
   ) {}
 
   // ───────────────────────────────────────────────────────────────────────
@@ -247,6 +249,24 @@ export class PaymentPlansService {
       saved,
       NotificationType.PAYMENT_PLAN_CREATED,
     );
+
+    // If this plan came from a tenant-submitted request, atomically flip the
+    // request to `approved` and link it. Done after the plan transaction so
+    // we never leave an `approved` request without a plan; if this fails the
+    // request stays `pending` and the landlord can retry.
+    if (dto.fromRequestId && createdByUserId) {
+      try {
+        await this.requestsService.markApproved(
+          dto.fromRequestId,
+          saved.id,
+          createdByUserId,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Plan ${saved.id} created but failed to mark request ${dto.fromRequestId} approved: ${(err as Error).message}`,
+        );
+      }
+    }
 
     return this.getPlan(saved.id);
   }

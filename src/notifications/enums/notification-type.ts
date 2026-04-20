@@ -32,4 +32,10 @@ export enum NotificationType {
   PAYMENT_PLAN_CANCELLED = 'Payment Plan Cancelled',
   PAYMENT_PLAN_INSTALLMENT_PAID = 'Payment Plan Installment Paid',
   PAYMENT_PLAN_COMPLETED = 'Payment Plan Completed',
+  PAYMENT_PLAN_REQUEST_SUBMITTED = 'Payment Plan Request Submitted',
+  PAYMENT_PLAN_REQUEST_APPROVED = 'Payment Plan Request Approved',
+  PAYMENT_PLAN_REQUEST_DECLINED = 'Payment Plan Request Declined',
+  AD_HOC_INVOICE_CREATED = 'Ad-Hoc Invoice Created',
+  AD_HOC_INVOICE_PAID = 'Ad-Hoc Invoice Paid',
+  AD_HOC_INVOICE_CANCELLED = 'Ad-Hoc Invoice Cancelled',
 }

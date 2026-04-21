@@ -2078,8 +2078,8 @@ export class PropertiesService {
       // pre-fill with the exact current fee configuration instead of losing
       // legal/agency/otherFees on every edit.
       cautionDeposit: activeRent?.security_deposit ?? null,
-      legalFee: activeRent?.legal_fee ?? null,
-      agencyFee: activeRent?.agency_fee ?? null,
+      legalFee: activeRent?.legal_fee != null ? Number(activeRent.legal_fee) : null,
+      agencyFee: activeRent?.agency_fee != null ? Number(activeRent.agency_fee) : null,
       otherFees: activeRent?.other_fees ?? [],
       serviceChargeRecurring: activeRent?.service_charge_recurring ?? true,
       cautionDepositRecurring: activeRent?.security_deposit_recurring ?? false,

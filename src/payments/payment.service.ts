@@ -751,16 +751,20 @@ export class PaymentService {
       });
 
       if (landlord?.phone_number && kycApplication) {
+        const landlordName =
+          landlordAccount?.profile_name ||
+          `${landlord.first_name} ${landlord.last_name}`.trim() ||
+          'Landlord';
         await this.whatsappNotificationLog.queue(
           'sendLandlordRaceCondition',
           {
             phone_number: landlord.phone_number,
-            landlord_name: `${landlord.first_name} ${landlord.last_name}`,
+            landlord_name: landlordName,
             tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
             property_name: offerLetter.property.name,
             amount: Number(offerLetter.amount_paid),
             landlord_id: offerLetter.property.owner_id,
-            recipient_name: `${landlord.first_name} ${landlord.last_name}`,
+            recipient_name: landlordName,
           },
           offerLetter.id,
         );
@@ -1437,10 +1441,15 @@ export class PaymentService {
         return;
       }
 
+      const landlordName =
+        landlordAccount?.profile_name ||
+        `${landlord.first_name} ${landlord.last_name}`.trim() ||
+        'Landlord';
+
       if (newOutstandingBalance === 0) {
         await this.templateSenderService.sendLandlordPaymentComplete({
           phone_number: landlord.phone_number,
-          landlord_name: `${landlord.first_name} ${landlord.last_name}`,
+          landlord_name: landlordName,
           tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
           property_name: offerLetter.property.name,
           total_amount: Number(offerLetter.total_amount),
@@ -1449,7 +1458,7 @@ export class PaymentService {
       } else {
         await this.templateSenderService.sendLandlordPaymentReceived({
           phone_number: landlord.phone_number,
-          landlord_name: `${landlord.first_name} ${landlord.last_name}`,
+          landlord_name: landlordName,
           tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
           property_name: offerLetter.property.name,
           amount: Number(payment.amount),

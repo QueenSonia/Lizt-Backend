@@ -1706,9 +1706,9 @@ export class KYCApplicationService {
             const landlordPhone = this.utilService.normalizePhoneNumber(
               landlord.owner.user.phone_number,
             );
-            const landlordName = this.utilService.toSentenceCase(
-              landlord.owner.user.first_name,
-            );
+            const landlordName =
+              landlord.owner.profile_name ||
+              this.utilService.toSentenceCase(landlord.owner.user.first_name);
             const tenantName = this.utilService.toSentenceCase(
               updatedKyc.first_name,
             );
@@ -1935,11 +1935,13 @@ export class KYCApplicationService {
       const tenantName = this.utilService.toSentenceCase(
         application.first_name,
       );
-      const landlordName = application.property?.owner?.user
-        ? this.utilService.toSentenceCase(
-            application.property.owner.user.first_name,
-          )
-        : 'Your landlord';
+      const landlordName = application.property?.owner?.profile_name
+        ? application.property.owner.profile_name
+        : application.property?.owner?.user
+          ? this.utilService.toSentenceCase(
+              application.property.owner.user.first_name,
+            )
+          : 'Your landlord';
 
       // Send KYC completion link using the same method as initial creation
       if (this.whatsappBotService) {
@@ -2319,9 +2321,11 @@ export class KYCApplicationService {
           const landlordPhone = this.utilService.normalizePhoneNumber(
             landlordWithUser.owner.user.phone_number,
           );
-          const landlordName = this.utilService.toSentenceCase(
-            landlordWithUser.owner.user.first_name,
-          );
+          const landlordName =
+            landlordWithUser.owner.profile_name ||
+            this.utilService.toSentenceCase(
+              landlordWithUser.owner.user.first_name,
+            );
           const tenantName = this.utilService.toSentenceCase(savedApplication.first_name);
 
           await this.whatsappBotService.sendKYCCompletionNotification({

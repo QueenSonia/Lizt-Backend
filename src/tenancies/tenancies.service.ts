@@ -92,12 +92,16 @@ export class TenanciesService {
       });
 
       if (tenantUser && property && property.owner) {
+        const landlordName =
+          property.owner.profile_name ||
+          `${property.owner.user.first_name ?? ''} ${property.owner.user.last_name ?? ''}`.trim() ||
+          'Your Landlord';
         await this.whatsappBotService.sendTenantAttachmentNotification({
           phone_number: this.utilService.normalizePhoneNumber(
             tenantUser.phone_number,
           ),
           tenant_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-          landlord_name: property.owner.user.first_name,
+          landlord_name: landlordName,
           property_name: property.name,
           property_id: property_id,
         });
@@ -1716,7 +1720,9 @@ export class TenanciesService {
           const landlordPhone = this.utilService.normalizePhoneNumber(
             invoice.property.owner.user.phone_number,
           );
-          const landlordName = invoice.property.owner.user.first_name;
+          const landlordName =
+            invoice.property.owner.profile_name ||
+            invoice.property.owner.user.first_name;
 
           await this.whatsappNotificationLog.queue(
             'sendRenewalPaymentLandlord',
@@ -1751,7 +1757,9 @@ export class TenanciesService {
           const landlordPhone = this.utilService.normalizePhoneNumber(
             invoice.property.owner.user.phone_number,
           );
-          const landlordName = invoice.property.owner.user.first_name;
+          const landlordName =
+            invoice.property.owner.profile_name ||
+            invoice.property.owner.user.first_name;
 
           await this.whatsappNotificationLog.queue(
             'sendOutstandingBalancePaidLandlord',

@@ -717,13 +717,15 @@ export class AdHocInvoicesService {
   ): Promise<void> {
     try {
       const property = invoice.property;
-      const landlordUser = property?.owner?.user;
+      const landlordAccount = property?.owner;
+      const landlordUser = landlordAccount?.user;
       const tenantUser = invoice.tenant?.user;
 
       const tenantName =
         `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
         'there';
       const landlordName =
+        landlordAccount?.profile_name ||
         `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`.trim() ||
         'there';
 

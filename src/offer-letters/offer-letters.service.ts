@@ -862,7 +862,9 @@ export class OfferLettersService {
       }
 
       const tenantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+      const landlordAccountForName = landlordAccount as { profile_name?: string };
       const landlordName =
+        landlordAccountForName?.profile_name ||
         `${landlordUser.first_name || ''} ${landlordUser.last_name || ''}`.trim() ||
         'Landlord';
 

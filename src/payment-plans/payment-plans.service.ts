@@ -384,7 +384,14 @@ export class PaymentPlansService {
   async getPlan(id: string): Promise<PaymentPlan> {
     const plan = await this.planRepository.findOne({
       where: { id },
-      relations: ['installments', 'property', 'tenant', 'tenant.user'],
+      relations: [
+        'installments',
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
       order: {
         installments: { sequence: 'ASC' },
       },

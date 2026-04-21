@@ -1005,7 +1005,12 @@ export class TenanciesService {
         ? invoice.fee_breakdown
         : [];
 
-      if (invoice.token_type === 'tenant') {
+      const isOutstandingBalanceInvoice =
+        invoice.token_type === 'tenant' &&
+        Number(invoice.rent_amount || 0) === 0 &&
+        breakdown.some((f) => f.externalId === 'outstanding_balance');
+
+      if (isOutstandingBalanceInvoice) {
         // Tenant-initiated "Pay Outstanding Balance" invoice: total equals
         // the current outstanding portion of the wallet. Keep the single
         // Outstanding Balance fee entry in sync with the wallet. If the
@@ -1025,8 +1030,9 @@ export class TenanciesService {
           invoice.paid_at = new Date();
         }
       } else {
-        // Landlord / draft renewal invoice: total is the full charge set
-        // (every fee in the breakdown, recurring or not) minus current
+        // Landlord / draft renewal invoice, or a tenant-initiated payment
+        // plan request carrying the full fee set. Total is the full charge
+        // set (every fee in the breakdown, recurring or not) minus current
         // wallet. `fee_breakdown` is the authoritative snapshot.
         const periodCharge = sumAll(breakdown);
         invoice.total_amount = Math.max(0, periodCharge - walletBalance);

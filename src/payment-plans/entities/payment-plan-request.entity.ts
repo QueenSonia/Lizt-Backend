@@ -59,8 +59,8 @@ export class PaymentPlanRequest extends BaseEntity {
   @Column({ type: 'jsonb', default: () => "'[]'" })
   fee_breakdown: Fee[];
 
-  @Column({ type: 'decimal', precision: 12, scale: 2 })
-  installment_amount: number;
+  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true })
+  installment_amount: number | null;
 
   @Column({ type: 'text' })
   preferred_schedule: string;

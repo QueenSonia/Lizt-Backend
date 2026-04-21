@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -78,14 +77,6 @@ export class PaymentPlanRequestsService {
     }
 
     const total = Number(invoice.total_amount);
-    if (!(dto.installmentAmount > 0)) {
-      throw new BadRequestException('Installment amount must be greater than zero');
-    }
-    if (dto.installmentAmount > total) {
-      throw new BadRequestException(
-        'Installment amount cannot exceed the total amount due',
-      );
-    }
 
     const breakdown: Fee[] = Array.isArray(invoice.fee_breakdown)
       ? invoice.fee_breakdown
@@ -98,7 +89,7 @@ export class PaymentPlanRequestsService {
       renewal_invoice_id: invoice.id,
       total_amount: total,
       fee_breakdown: breakdown,
-      installment_amount: Number(dto.installmentAmount),
+      installment_amount: null,
       preferred_schedule: dto.preferredSchedule.trim(),
       tenant_note: dto.tenantNote?.trim() || null,
       source,
@@ -232,9 +223,7 @@ export class PaymentPlanRequestsService {
           property_id: request.property_id,
           tenant_id: request.tenant_id,
           event_type: 'payment_plan_request_submitted',
-          event_description: `${tenantName} requested a payment plan — ₦${Number(
-            request.installment_amount,
-          ).toLocaleString()}/installment of ₦${Number(
+          event_description: `${tenantName} requested a payment plan for ₦${Number(
             request.total_amount,
           ).toLocaleString()}`,
           related_entity_id: request.id,
@@ -277,7 +266,6 @@ export class PaymentPlanRequestsService {
             tenant_name: tenantName,
             property_name: propertyName,
             total_amount: Number(request.total_amount),
-            installment_amount: Number(request.installment_amount),
             preferred_schedule: request.preferred_schedule,
             tenant_note: request.tenant_note ?? '',
             landlord_id: property?.owner_id,
@@ -296,7 +284,6 @@ export class PaymentPlanRequestsService {
             tenant_name: tenantName,
             property_name: propertyName,
             total_amount: Number(request.total_amount),
-            installment_amount: Number(request.installment_amount),
             preferred_schedule: request.preferred_schedule,
             tenant_note: request.tenant_note ?? '',
             landlord_id: property?.owner_id,
@@ -391,7 +378,6 @@ export class PaymentPlanRequestsService {
             tenant_name: tenantName,
             property_name: propertyName,
             total_amount: Number(request.total_amount),
-            installment_amount: Number(request.installment_amount),
             decline_reason: request.decline_reason ?? '',
             landlord_id: property?.owner_id,
             property_id: request.property_id,

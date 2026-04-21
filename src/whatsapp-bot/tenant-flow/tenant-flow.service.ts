@@ -2152,12 +2152,11 @@ export class TenantFlowService {
     }
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const tenantName = this.utilService.toSentenceCase(user.first_name);
     const requestUrl = `${frontendUrl}/payment-plan-request/${token}`;
 
     await this.templateSenderService.sendText(
       from,
-      `Hi ${tenantName}, set up a payment plan for ${rent.property.name} below. Tell us how much you can pay per installment and when:\n\n${requestUrl}`,
+      `Your request for a payment plan is subject to landlord approval. Approval is not guaranteed, and you will be notified once your request has been reviewed.\n\n${requestUrl}`,
     );
   }
 

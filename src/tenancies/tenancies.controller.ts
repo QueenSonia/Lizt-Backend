@@ -279,7 +279,6 @@ export class TenanciesController {
         id: request.id,
         status: request.status,
         totalAmount: Number(request.total_amount),
-        installmentAmount: Number(request.installment_amount),
         preferredSchedule: request.preferred_schedule,
         tenantNote: request.tenant_note,
       },

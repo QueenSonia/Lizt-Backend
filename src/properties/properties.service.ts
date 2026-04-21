@@ -65,6 +65,7 @@ import {
   RenewalInvoice,
   RenewalPaymentStatus,
 } from 'src/tenancies/entities/renewal-invoice.entity';
+import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import {
@@ -100,6 +101,10 @@ export class PropertiesService {
     private readonly kycLinkRepository: Repository<KYCLink>,
     @InjectRepository(RenewalInvoice)
     private readonly renewalInvoiceRepository: Repository<RenewalInvoice>,
+    @InjectRepository(OfferLetter)
+    private readonly offerLetterRepository: Repository<OfferLetter>,
+    @InjectRepository(AdHocInvoice)
+    private readonly adHocInvoiceRepository: Repository<AdHocInvoice>,
     private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
@@ -1587,16 +1592,24 @@ export class PropertiesService {
               description: hist.event_description,
               details: null,
             };
-          case 'property_edited':
+          case 'property_edited': {
+            const desc =
+              hist.event_description || 'Property details were updated.';
+            // Title already reads "Property Updated"; strip the redundant
+            // leading "Updated " so the detail renders as e.g.
+            // "Property Updated — name to \"The New Nexus\"".
+            const details = desc.startsWith('Updated ')
+              ? desc.slice('Updated '.length)
+              : desc;
             return {
               id: hist.id,
               date: hist.created_at,
               eventType: 'property_edited',
               title: 'Property Updated',
-              description:
-                hist.event_description || 'Property details were updated.',
-              details: null,
+              description: desc,
+              details,
             };
+          }
           case 'property_marketing_enabled':
             return {
               id: hist.id,
@@ -2037,6 +2050,11 @@ export class PropertiesService {
       (app) => app.status === 'pending',
     ).length;
 
+    const { canDelete } = await this.computeDeletionEligibility(
+      property.id,
+      property.property_status as PropertyStatusEnum,
+    );
+
     return {
       id: property.id,
       name: property.name,
@@ -2050,6 +2068,7 @@ export class PropertiesService {
           : property.property_status === 'inactive'
             ? 'Inactive'
             : 'Vacant',
+      canDelete,
       rent: activeRent?.rental_price || null,
       serviceCharge: activeRent?.service_charge || 0,
       // Billing v2 — expose the full fee breakdown so edit/renew modals can
@@ -2157,6 +2176,18 @@ export class PropertiesService {
       );
     }
 
+    // Snapshot original values so we can report only fields that actually changed
+    const original = {
+      name: property.name,
+      location: property.location,
+      rental_price: property.rental_price,
+      service_charge: property.service_charge,
+      security_deposit: property.security_deposit,
+      no_of_bedrooms: property.no_of_bedrooms,
+      property_type: property.property_type,
+      description: property.description,
+    };
+
     // Merge new data from DTO into existing property entity
     Object.assign(property, updatePropertyDto);
     console.log(property);
@@ -2254,29 +2285,55 @@ export class PropertiesService {
         );
       }
     } else {
-      // Build a description of what specifically changed
+      // Build a description of what specifically changed (only fields whose
+      // value actually differs from the stored value — the frontend often
+      // submits the full property object, so DTO presence alone isn't enough).
       const changes: string[] = [];
-      if (updatePropertyDto.name !== undefined)
+      if (
+        updatePropertyDto.name !== undefined &&
+        updatePropertyDto.name !== original.name
+      )
         changes.push(`name to "${updatePropertyDto.name}"`);
-      if (updatePropertyDto.location !== undefined)
+      if (
+        updatePropertyDto.location !== undefined &&
+        updatePropertyDto.location !== original.location
+      )
         changes.push(`location to "${updatePropertyDto.location}"`);
-      if (updatePropertyDto.rental_price !== undefined)
+      if (
+        updatePropertyDto.rental_price !== undefined &&
+        updatePropertyDto.rental_price !== original.rental_price
+      )
         changes.push(
           `rental price to ₦${updatePropertyDto.rental_price.toLocaleString()}`,
         );
-      if (updatePropertyDto.service_charge !== undefined)
+      if (
+        updatePropertyDto.service_charge !== undefined &&
+        updatePropertyDto.service_charge !== original.service_charge
+      )
         changes.push(
           `service charge to ₦${updatePropertyDto.service_charge.toLocaleString()}`,
         );
-      if (updatePropertyDto.security_deposit !== undefined)
+      if (
+        updatePropertyDto.security_deposit !== undefined &&
+        updatePropertyDto.security_deposit !== original.security_deposit
+      )
         changes.push(
           `security deposit to ₦${updatePropertyDto.security_deposit.toLocaleString()}`,
         );
-      if (updatePropertyDto.no_of_bedrooms !== undefined)
+      if (
+        updatePropertyDto.no_of_bedrooms !== undefined &&
+        updatePropertyDto.no_of_bedrooms !== original.no_of_bedrooms
+      )
         changes.push(`bedrooms to ${updatePropertyDto.no_of_bedrooms}`);
-      if (updatePropertyDto.property_type !== undefined)
+      if (
+        updatePropertyDto.property_type !== undefined &&
+        updatePropertyDto.property_type !== original.property_type
+      )
         changes.push(`property type to "${updatePropertyDto.property_type}"`);
-      if (updatePropertyDto.description !== undefined)
+      if (
+        updatePropertyDto.description !== undefined &&
+        updatePropertyDto.description !== original.description
+      )
         changes.push('description');
 
       const changeDescription =
@@ -2307,6 +2364,35 @@ export class PropertiesService {
     return updatedProperty;
   }
 
+  private async computeDeletionEligibility(
+    propertyId: string,
+    propertyStatus: PropertyStatusEnum,
+  ): Promise<{ canDelete: boolean; blockers: string[] }> {
+    const blockers: string[] = [];
+
+    if (propertyStatus === PropertyStatusEnum.OCCUPIED) {
+      blockers.push('property is currently occupied');
+    }
+
+    // PropertyHistory is intentionally excluded — every property has a
+    // `property_created` row from creation, and other events like edits /
+    // status changes are internal-only and don't leak public links.
+    const [tenantCount, offerLetterCount, renewalInvoiceCount, adHocInvoiceCount] =
+      await Promise.all([
+        this.propertyTenantRepository.count({ where: { property_id: propertyId } }),
+        this.offerLetterRepository.count({ where: { property_id: propertyId } }),
+        this.renewalInvoiceRepository.count({ where: { property_id: propertyId } }),
+        this.adHocInvoiceRepository.count({ where: { property_id: propertyId } }),
+      ]);
+
+    if (tenantCount > 0) blockers.push('past or current tenants');
+    if (offerLetterCount > 0) blockers.push('offer letters');
+    if (renewalInvoiceCount > 0) blockers.push('renewal invoices');
+    if (adHocInvoiceCount > 0) blockers.push('ad-hoc invoices');
+
+    return { canDelete: blockers.length === 0, blockers };
+  }
+
   async deletePropertyById(propertyId: string, ownerId: string): Promise<void> {
     try {
       // Ensure the property exists and belongs to the user making the request
@@ -2320,27 +2406,19 @@ export class PropertiesService {
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
 
-      // Cannot delete occupied properties
-      if (property.property_status === PropertyStatusEnum.OCCUPIED) {
+      const { canDelete, blockers } = await this.computeDeletionEligibility(
+        propertyId,
+        property.property_status as PropertyStatusEnum,
+      );
+
+      if (!canDelete) {
         throw new HttpException(
-          'Cannot delete property that is currently occupied. Please end the tenancy first.',
+          `Cannot delete this property because it has ${blockers.join(', ')}. Deactivate it instead to preserve links already shared with tenants.`,
           HttpStatus.BAD_REQUEST,
         );
       }
 
-      // Cannot delete properties with history records
-      const historyCount = await this.propertyHistoryRepository.count({
-        where: { property_id: propertyId },
-      });
-
-      if (historyCount > 0) {
-        throw new HttpException(
-          'Cannot delete property with existing tenancy history. Properties that have been inhabited cannot be deleted.',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      // Only vacant properties with no history can be deleted
+      // Only pristine vacant properties reach here
       await this.propertyRepository.softDelete(propertyId);
 
       // Create a livefeed notification for the deletion

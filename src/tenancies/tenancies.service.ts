@@ -1213,7 +1213,16 @@ export class TenanciesService {
         serviceCharge: parseFloat((invoice.service_charge ?? 0).toString()),
         legalFee: parseFloat((invoice.legal_fee ?? 0).toString()),
         otherCharges: parseFloat((invoice.other_charges ?? 0).toString()),
+        cautionDeposit: parseFloat((invoice.caution_deposit ?? 0).toString()),
+        agencyFee: parseFloat((invoice.agency_fee ?? 0).toString()),
+        otherFees: (invoice.other_fees ?? []).map((f) => ({
+          externalId: f.externalId,
+          name: f.name,
+          amount: parseFloat((f.amount ?? 0).toString()),
+          recurring: !!f.recurring,
+        })),
       },
+      feeBreakdown: renewalInvoiceToFees(invoice),
       totalAmount: parseFloat((invoice.total_amount ?? 0).toString()),
       outstandingBalance: parseFloat(
         (invoice.outstanding_balance || 0).toString(),

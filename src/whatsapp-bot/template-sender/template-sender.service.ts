@@ -513,7 +513,6 @@ export interface PaymentPlanRequestSubmittedTenantParams {
   tenant_name: string;
   property_name: string;
   total_amount: number;
-  installment_amount: number;
   preferred_schedule: string;
   tenant_note: string;
 }
@@ -527,7 +526,6 @@ export interface PaymentPlanRequestLandlordNotifyParams {
   tenant_name: string;
   property_name: string;
   total_amount: number;
-  installment_amount: number;
   preferred_schedule: string;
   tenant_note: string;
 }
@@ -540,7 +538,6 @@ export interface PaymentPlanRequestDecisionTenantParams {
   tenant_name: string;
   property_name: string;
   total_amount: number;
-  installment_amount: number;
   decline_reason?: string;
 }
 
@@ -3145,7 +3142,6 @@ export class TemplateSenderService {
     tenant_name,
     property_name,
     total_amount,
-    installment_amount,
     preferred_schedule,
     tenant_note,
   }: PaymentPlanRequestSubmittedTenantParams): Promise<void> {
@@ -3153,7 +3149,6 @@ export class TemplateSenderService {
       `Hi ${tenant_name}, your payment plan request for ${property_name} has been received.`,
       '',
       `Total due: ₦${total_amount.toLocaleString()}`,
-      `Per installment: ₦${installment_amount.toLocaleString()}`,
       `Preferred schedule: ${preferred_schedule || 'No preference'}`,
     ];
     if (tenant_note) lines.push(`Note: ${tenant_note}`);
@@ -3172,7 +3167,6 @@ export class TemplateSenderService {
     tenant_name,
     property_name,
     total_amount,
-    installment_amount,
     preferred_schedule,
     tenant_note,
   }: PaymentPlanRequestLandlordNotifyParams): Promise<void> {
@@ -3191,7 +3185,6 @@ export class TemplateSenderService {
               { type: 'text', text: tenant_name },
               { type: 'text', text: property_name },
               { type: 'text', text: `₦${total_amount.toLocaleString()}` },
-              { type: 'text', text: `₦${installment_amount.toLocaleString()}` },
               { type: 'text', text: preferred_schedule || 'No preference' },
               { type: 'text', text: tenant_note || 'No note' },
             ],
@@ -3340,7 +3333,7 @@ export class TemplateSenderService {
     adhoc_invoice_paid_landlord:
       'Hi,\n\n{{1}} has made a payment of {{2}} for the invoice of {{3}}.\n\nPlease check your dashboard for the receipt.',
     payment_plan_request_landlord_notify:
-      'Hi {{1}}, {{2}} has requested a payment plan for {{3}}.\n\nTotal due: {{4}}\nProposed per-installment: {{5}}\nPreferred schedule: {{6}}\nNote: {{7}}\n\nReview and respond from your dashboard.',
+      'Hi {{1}},\n\n{{2}} has requested a payment plan for {{3}}.\n\nTotal due: {{4}}\nPreferred schedule: {{5}}\nNote: {{6}}\n\nReview and respond from your dashboard.',
     payment_plan_request_declined:
       'Hi {{1}}, your payment plan request for {{2}} was declined.\n\nReason: {{3}}\n\nReply "menu" to see other options.',
   };

@@ -14,7 +14,6 @@ import {
   PaymentPlan,
   PaymentPlanScope,
   PaymentPlanStatus,
-  PaymentPlanType,
 } from './entities/payment-plan.entity';
 import {
   InstallmentPaymentMethod,
@@ -285,7 +284,59 @@ export class PaymentPlansService {
       }
     }
 
-    return this.getPlan(saved.id);
+    const fullPlan = await this.getPlan(saved.id);
+    await this.dispatchPlanCreatedNotifications(fullPlan);
+    return fullPlan;
+  }
+
+  private async dispatchPlanCreatedNotifications(
+    plan: PaymentPlan,
+  ): Promise<void> {
+    try {
+      const tenantUser = plan.tenant?.user;
+      const tenantPhone = tenantUser?.phone_number
+        ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
+        : null;
+      if (!tenantPhone) return;
+
+      const property = plan.property;
+      const propertyName = property?.name ?? 'your property';
+      const tenantName =
+        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+        'there';
+
+      const installments = [...(plan.installments ?? [])].sort(
+        (a, b) => a.sequence - b.sequence,
+      );
+      const firstInstallment = installments[0];
+      if (!firstInstallment) return;
+
+      // Tenant-facing label: "Tenancy" reads better than the stored
+      // "Entire Tenancy" sentinel for tenancy-scope plans.
+      const displayChargeName =
+        plan.scope === PaymentPlanScope.TENANCY ? 'Tenancy' : plan.charge_name;
+
+      await this.whatsappNotificationLog.queue(
+        'sendPaymentPlanCreatedTenant',
+        {
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          charge_name: displayChargeName,
+          property_name: propertyName,
+          total_amount: Number(plan.total_amount),
+          installments_summary: String(installments.length),
+          first_installment_id: firstInstallment.id,
+          landlord_id: property?.owner_id,
+          property_id: property?.id,
+          recipient_name: tenantName,
+        },
+        plan.id,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to queue plan-created WhatsApp notification for plan ${plan.id}: ${(err as Error).message}`,
+      );
+    }
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -1116,6 +1167,12 @@ export class PaymentPlansService {
         ? this.utilService.normalizePhoneNumber(landlordUser.phone_number)
         : null;
 
+      // Tenant-facing label: tenancy-scope plans read as "Tenancy", not the
+      // stored "Entire Tenancy" sentinel. Landlord-facing messages below
+      // keep the raw stored value.
+      const tenantDisplayChargeName =
+        plan.scope === PaymentPlanScope.TENANCY ? 'Tenancy' : plan.charge_name;
+
       if (tenantPhone) {
         await this.whatsappNotificationLog.queue(
           'sendInstallmentReceiptTenant',
@@ -1123,7 +1180,7 @@ export class PaymentPlansService {
             phone_number: tenantPhone,
             tenant_name: tenantName,
             amount,
-            charge_name: plan.charge_name,
+            charge_name: tenantDisplayChargeName,
             property_name: propertyName,
             receipt_token: receiptToken,
             landlord_id: property?.owner_id,

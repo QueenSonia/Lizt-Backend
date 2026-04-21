@@ -477,6 +477,21 @@ export interface PaymentPlanCompletedLandlordParams {
 }
 
 /**
+ * Parameters for payment plan creation notice to tenant.
+ * Sent whether the plan was landlord-initiated or created from an approved
+ * tenant request — message is intentionally generic.
+ */
+export interface PaymentPlanCreatedTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  charge_name: string;
+  property_name: string;
+  total_amount: number;
+  installments_summary: string;
+  first_installment_id: string;
+}
+
+/**
  * Parameters for ad-hoc invoice pay-link to tenant (sent on invoice creation)
  */
 export interface AdhocInvoiceLinkTenantParams {
@@ -2956,6 +2971,51 @@ export class TemplateSenderService {
   }
 
   /**
+   * Notify tenant that their payment plan has been created by the landlord.
+   * Same message whether landlord-initiated or from an approved tenant request.
+   * Template: payment_plan_created_tenant
+   */
+  async sendPaymentPlanCreatedTenant({
+    phone_number,
+    tenant_name,
+    charge_name,
+    property_name,
+    total_amount,
+    installments_summary,
+    first_installment_id,
+  }: PaymentPlanCreatedTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_plan_created_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: charge_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: `₦${total_amount.toLocaleString()}` },
+              { type: 'text', text: installments_summary },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: first_installment_id }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Congratulate tenant on completing a charge-scope payment plan.
    * Template: payment_plan_completed_tenant
    */
@@ -3335,6 +3395,8 @@ export class TemplateSenderService {
       'Hi {{1}}, your installment payment of {{2}} for {{3}} at {{4}} has been received.\n\nClick the button below to view your receipt.',
     installment_paid_landlord:
       'Your tenant {{1}} has just paid installment {{2}} for {{3}} at {{4}}.\n\nAmount received: {{5}}.\n\nThe payment has been recorded and the tenant balance has been updated automatically on your dashboard.',
+    payment_plan_created_tenant:
+      'Hi {{1}},\n\nYour payment plan for {{2}} at {{3}} has been created by your landlord.\n\nTotal: {{4}}\nNumber of installments: {{5}}\n\nTap the button below to view your full plan and pay.',
     payment_plan_completed_tenant:
       'Congratulations {{1}}! You have completed your {{2}} payment plan at {{3}}.\n\nTotal paid: {{4}}. Thank you.',
     payment_plan_completed_landlord:
@@ -3348,7 +3410,7 @@ export class TemplateSenderService {
     payment_plan_request_landlord_notify:
       'Hi {{1}},\n\n{{2}} has requested a payment plan for {{3}}.\n\nTotal due: {{4}}\nPreferred schedule: {{5}}\nNote: {{6}}\n\nReview and respond from your dashboard.',
     payment_plan_request_declined:
-      'Hi {{1}}, your payment plan request for {{2}} was declined.\n\nReason: {{3}}\n\nReply "menu" to see other options.',
+      'Hi {{1}}, your payment plan request for {{2}} was declined.\n\nReason: {{3}}.\n\nPlease contact your landlord for more info',
   };
 
   /**

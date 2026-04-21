@@ -186,7 +186,13 @@ export class InstallmentPDFService {
   }
 
   private scopeLabel(scope: string): string {
-    return scope === 'tenancy' ? 'Entire Tenancy' : 'Specific Charge';
+    return scope === 'tenancy' ? 'Tenancy' : 'Specific Charge';
+  }
+
+  private planLabel(plan: { scope: string; charge_name: string }): string {
+    return plan.scope === 'tenancy'
+      ? 'Tenancy'
+      : `${plan.charge_name} — Specific Charge`;
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -348,7 +354,7 @@ export class InstallmentPDFService {
         </div>
         <div class="info-group">
           <p class="info-label">Plan</p>
-          <p class="info-value-bold">${this.escapeHtml(plan.charge_name)} — ${this.scopeLabel(plan.scope)}</p>
+          <p class="info-value-bold">${this.escapeHtml(this.planLabel(plan))}</p>
         </div>
       </div>
 
@@ -515,7 +521,7 @@ export class InstallmentPDFService {
           </div>
           <div class="info-group">
             <p class="info-label">Plan</p>
-            <p class="info-value">${this.escapeHtml(plan.charge_name)} — ${this.scopeLabel(plan.scope)}</p>
+            <p class="info-value">${this.escapeHtml(this.planLabel(plan))}</p>
           </div>
         </div>
       </div>

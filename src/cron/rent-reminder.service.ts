@@ -25,6 +25,7 @@ import {
   PaymentPlanInstallment,
   InstallmentStatus,
 } from '../payment-plans/entities/payment-plan-installment.entity';
+import { PaymentPlanScope } from '../payment-plans/entities/payment-plan.entity';
 
 const RENT_REMINDER_SCHEDULE = {
   monthly: [14, 7, 2, 1, 0],
@@ -151,13 +152,19 @@ export class RentReminderService {
       'en-GB',
     );
 
+    // Tenant-facing label: "Tenancy" reads better than the stored
+    // "Entire Tenancy" sentinel for tenancy-scope plans (matches the
+    // payment_plan_created_tenant send).
+    const displayChargeName =
+      plan.scope === PaymentPlanScope.TENANCY ? 'Tenancy' : plan.charge_name;
+
     await this.whatsAppNotificationLogService.queue(
       'sendInstallmentReminderTemplate',
       {
         phone_number: phone,
         tenant_name: tenantName,
         property_name: propertyName,
-        charge_name: plan.charge_name,
+        charge_name: displayChargeName,
         installment_label: installmentLabel,
         amount,
         due_date: dueDateStr,

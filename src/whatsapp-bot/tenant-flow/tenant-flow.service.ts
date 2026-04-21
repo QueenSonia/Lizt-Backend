@@ -1768,24 +1768,24 @@ export class TenantFlowService {
       day: 'numeric',
     });
 
-    let message = `Do you want to send a rent renewal request to your landlord for *${rent.property.name}*?\n`;
-    message += `\n*Frequency:* ${paymentFrequency}`;
-    message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
+    let message = `Do you want to send a rent renewal request to your landlord for ${rent.property.name}?\n`;
+    message += `\nFrequency: ${paymentFrequency}`;
+    message += `\nTenancy Period: ${startFormatted} – ${endFormatted}`;
 
     if (fees.length > 0) message += `\n`;
     for (const fee of fees) {
-      message += `\n*${fee.label}:* ${formatNGN(fee.amount)}${fee.recurring ? '' : ' _(one-time)_'}`;
+      message += `\n${fee.label}: ${formatNGN(fee.amount)}${fee.recurring ? '' : ' (one-time)'}`;
     }
 
     if (outstandingBalance > 0)
-      message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+      message += `\nOutstanding Balance: ${formatNGN(outstandingBalance)}`;
     if (walletBalance > 0)
-      message += `\n*Wallet Credit:* -${formatNGN(walletBalance)}`;
+      message += `\nWallet Credit: -${formatNGN(walletBalance)}`;
 
-    message += `\n\n*Recurring (per period):* ${formatNGN(recurringTotal)}`;
+    message += `\n\nRecurring (per period): ${formatNGN(recurringTotal)}`;
     if (oneTimeTotal > 0)
-      message += `\n*One-time (this period):* ${formatNGN(oneTimeTotal)}`;
-    message += `\n*Total: ${formatNGN(totalAmount)}*`;
+      message += `\nOne-time (this period): ${formatNGN(oneTimeTotal)}`;
+    message += `\nTotal: ${formatNGN(totalAmount)}`;
 
     await this.templateSenderService.sendButtons(from, message, [
       {

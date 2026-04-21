@@ -42,7 +42,6 @@ import { RenewalPaymentService } from './renewal-payment.service';
 import { RenewalPDFService } from './renewal-pdf.service';
 import { PaymentPlanRequestsService } from '../payment-plans/payment-plan-requests.service';
 import { CreatePaymentPlanRequestDto } from '../payment-plans/dto/create-payment-plan-request.dto';
-import { PaymentPlanRequestSource } from '../payment-plans/entities/payment-plan-request.entity';
 
 @ApiTags('Tenancies')
 @Controller('tenancies')
@@ -268,11 +267,7 @@ export class TenanciesController {
     @Body() dto: CreatePaymentPlanRequestDto,
   ) {
     const request =
-      await this.paymentPlanRequestsService.submitFromToken(
-        token,
-        dto,
-        PaymentPlanRequestSource.RENT,
-      );
+      await this.paymentPlanRequestsService.submitFromToken(token, dto);
     return {
       success: true,
       data: {

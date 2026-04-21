@@ -54,7 +54,6 @@ export class PaymentPlanRequestsService {
   async submitFromToken(
     token: string,
     dto: CreatePaymentPlanRequestDto,
-    source: PaymentPlanRequestSource = PaymentPlanRequestSource.RENT,
   ): Promise<PaymentPlanRequest> {
     const invoice = await this.renewalInvoiceRepository.findOne({
       where: { token },
@@ -81,6 +80,15 @@ export class PaymentPlanRequestsService {
     const breakdown: Fee[] = Array.isArray(invoice.fee_breakdown)
       ? invoice.fee_breakdown
       : [];
+
+    // An OB request comes from a synthetic invoice whose only fee is the
+    // outstanding balance (see tenant-flow handleRequestPaymentPlan, 'ob' branch).
+    const isOutstandingBalanceInvoice =
+      breakdown.length === 1 &&
+      breakdown[0]?.externalId === 'outstanding_balance';
+    const source = isOutstandingBalanceInvoice
+      ? PaymentPlanRequestSource.OB
+      : PaymentPlanRequestSource.RENT;
 
     const request = this.requestRepository.create({
       property_tenant_id: invoice.property_tenant_id,

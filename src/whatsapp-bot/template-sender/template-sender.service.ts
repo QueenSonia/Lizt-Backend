@@ -3181,8 +3181,8 @@ export class TemplateSenderService {
           {
             type: 'body',
             parameters: [
-              { type: 'text', text: landlord_name },
-              { type: 'text', text: tenant_name },
+              { type: 'text', text: this.toDisplayName(landlord_name) },
+              { type: 'text', text: this.toDisplayName(tenant_name) },
               { type: 'text', text: property_name },
               { type: 'text', text: `₦${total_amount.toLocaleString()}` },
               { type: 'text', text: preferred_schedule || 'No preference' },
@@ -3240,6 +3240,19 @@ export class TemplateSenderService {
     if (payload.interactive) return 'interactive';
     if (payload.template) return 'template';
     return 'unknown';
+  }
+
+  // Title-case a DB name for display (e.g. "tunji oginni" -> "Tunji Oginni").
+  // Leaves already-capitalized segments alone so "McDonald" / "O'Brien" survive.
+  private toDisplayName(name: string): string {
+    return (name ?? '')
+      .split(/(\s+)/)
+      .map((seg) =>
+        /^\s+$/.test(seg) || seg === '' || /[A-Z]/.test(seg)
+          ? seg
+          : seg.charAt(0).toUpperCase() + seg.slice(1),
+      )
+      .join('');
   }
 
   /**

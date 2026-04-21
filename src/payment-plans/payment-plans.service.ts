@@ -161,15 +161,27 @@ export class PaymentPlansService {
       const fee = breakdown.find(
         (f) => f.label?.toLowerCase() === dto.chargeName.toLowerCase(),
       );
-      if (!fee) {
+      if (fee) {
+        chargeFeeKind = fee.kind;
+        chargeExternalId = fee.externalId ?? null;
+        chargeAmount = Number(fee.amount);
+        chargeName = fee.label;
+      } else if (
+        dto.chargeName.trim().toLowerCase() === 'outstanding balance' &&
+        Number(invoice.outstanding_balance) > 0
+      ) {
+        // OB on landlord renewal invoices lives in the outstanding_balance
+        // column, not fee_breakdown. Treat it as a synthetic charge so plans
+        // can still split it into installments.
+        chargeFeeKind = 'other';
+        chargeExternalId = 'outstanding_balance';
+        chargeAmount = Number(invoice.outstanding_balance);
+        chargeName = 'Outstanding Balance';
+      } else {
         throw new BadRequestException(
           `Charge "${dto.chargeName}" not found on the current renewal invoice`,
         );
       }
-      chargeFeeKind = fee.kind;
-      chargeExternalId = fee.externalId ?? null;
-      chargeAmount = Number(fee.amount);
-      chargeName = fee.label;
 
       // Validate: installments must sum to the exact charge amount.
       if (Math.abs(totalAmount - chargeAmount) > 1) {
@@ -1284,13 +1296,20 @@ export class PaymentPlansService {
           (externalId ? f.externalId === externalId : f.label === chargeLabel)
         : f.kind === feeKind,
     );
-    if (idx === -1) {
+
+    // Virtual Outstanding Balance lives in the invoice column, not breakdown.
+    const isVirtualOb =
+      feeKind === 'other' && externalId === 'outstanding_balance';
+
+    if (idx === -1 && !isVirtualOb) {
       throw new BadRequestException(
         `Charge "${chargeLabel}" no longer present on the renewal invoice`,
       );
     }
 
-    breakdown.splice(idx, 1);
+    if (idx !== -1) {
+      breakdown.splice(idx, 1);
+    }
 
     // Also keep the legacy other_fees array in sync for kind:'other'.
     let otherFees = Array.isArray(invoice.other_fees)
@@ -1358,13 +1377,20 @@ export class PaymentPlansService {
     const breakdown: Fee[] = Array.isArray(invoice.fee_breakdown)
       ? [...invoice.fee_breakdown]
       : [];
-    breakdown.push({
-      kind: feeKind,
-      label: chargeLabel,
-      amount: chargeAmount,
-      recurring: feeKind === 'rent' || feeKind === 'service',
-      ...(externalId ? { externalId } : {}),
-    });
+
+    // Virtual OB wasn't in breakdown to begin with — restore the column only.
+    const isVirtualOb =
+      feeKind === 'other' && externalId === 'outstanding_balance';
+
+    if (!isVirtualOb) {
+      breakdown.push({
+        kind: feeKind,
+        label: chargeLabel,
+        amount: chargeAmount,
+        recurring: feeKind === 'rent' || feeKind === 'service',
+        ...(externalId ? { externalId } : {}),
+      });
+    }
 
     const updates: Partial<RenewalInvoice> = {
       fee_breakdown: breakdown,
@@ -1389,6 +1415,7 @@ export class PaymentPlansService {
         updates.agency_fee = chargeAmount;
         break;
       case 'other': {
+        if (isVirtualOb) break;
         const otherFees = Array.isArray(invoice.other_fees)
           ? [...invoice.other_fees]
           : [];

@@ -2,7 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { RolesEnum } from 'src/base.entity';
 import { CacheService } from 'src/lib/cache';
 import { Property } from 'src/properties/entities/property.entity';
-import { PropertyStatusEnum } from 'src/properties/dto/create-property.dto';
+import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { Account } from 'src/users/entities/account.entity';
@@ -222,7 +222,10 @@ export class LandlordLookup {
     }
 
     const propertyTenants = await this.propertyTenantRepo.find({
-      where: { property: { owner_id: landlordAccount.id } },
+      where: {
+        property: { owner_id: landlordAccount.id },
+        status: TenantStatusEnum.ACTIVE,
+      },
       relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
     });
 

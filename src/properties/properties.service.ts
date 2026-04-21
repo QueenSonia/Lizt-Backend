@@ -1312,11 +1312,14 @@ export class PropertiesService {
           return dateB - dateA;
         })[0];
 
-      // Check for latest renewal invoice for this property+tenant
+      // Check for latest renewal invoice for this property+tenant.
+      // Scope to landlord/draft invoices — tenant-initiated invoices
+      // (e.g. WhatsApp "Pay OB") must not hide the real renewal from the UI.
       const latestRenewalInvoice = await this.renewalInvoiceRepository.findOne({
         where: {
           property_id: property.id,
           tenant_id: activeTenantRelation.tenant.id,
+          token_type: In(['landlord', 'draft']),
         },
         order: { created_at: 'DESC' },
         select: [

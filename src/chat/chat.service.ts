@@ -9,6 +9,7 @@ import { ServiceRequestsService } from 'src/service-requests/service-requests.se
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
+import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 
 @Injectable()
 export class ChatService {
@@ -29,7 +30,7 @@ export class ChatService {
   ): Promise<ChatMessage> {
     if (sendMessageDto.sender === MessageSender.TENANT) {
       const propertyTenant = await this.propertyTenantRepo.findOne({
-        where: { tenant_id: userId },
+        where: { tenant_id: userId, status: TenantStatusEnum.ACTIVE },
         relations: ['property', 'tenant'],
       });
 

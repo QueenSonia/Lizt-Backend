@@ -4,6 +4,7 @@ import { RolesEnum } from 'src/base.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
 import { ConfigService } from '@nestjs/config';
 import { ChatLogService } from 'src/whatsapp-bot/chat-log.service';
@@ -55,7 +56,10 @@ export class LandlordInteractive {
     }
 
     const propertyTenants = await this.propertyTenantRepo.find({
-      where: { property: { owner_id: ownerUser.accounts[0].id } },
+      where: {
+        property: { owner_id: ownerUser.accounts[0].id },
+        status: TenantStatusEnum.ACTIVE,
+      },
       relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
     });
 

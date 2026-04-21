@@ -20,7 +20,7 @@ import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from '../properties/dto/create-property.dto';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
-import { rentToFees, sumRecurring, Fee } from '../common/billing/fees';
+import { rentToFees, sumRecurring, sumAll, Fee } from '../common/billing/fees';
 import {
   PaymentPlanInstallment,
   InstallmentStatus,
@@ -729,21 +729,19 @@ export class RentReminderService {
 
       const landlordId = rent.property.owner_id;
 
-      // Billing v2: snapshot the full Fee[] from the rent, then compute the
-      // period charge (rent + every recurring fee) via the shared helper. The
-      // snapshot is persisted on the invoice so the tenant-facing renderer
-      // sees the exact fee set the landlord had configured at bill time.
+      // Billing v2: snapshot the full Fee[] from the rent — every fee the
+      // landlord set in Edit Tenancy goes into `fee_breakdown`, recurring or
+      // not. The invoice total is the sum of all of them (minus wallet).
+      // The recurring flag is only consulted by the auto-renewal ledger
+      // charging path (above), not by this invoice snapshot.
       const fees: Fee[] = rentToFees(rent);
-      const recurringFees = fees.filter((f) => f.recurring);
-      const periodCharge = sumRecurring(fees);
+      const periodCharge = sumAll(fees);
       const rentAmount = rent.rental_price ?? rent.amount_paid ?? 0;
       const serviceCharge = rent.service_charge || 0;
       const legalFee = Number(rent.legal_fee || 0);
       const agencyFee = Number(rent.agency_fee || 0);
       const cautionDeposit = Number(rent.security_deposit || 0);
-      const recurringOtherFees = (rent.other_fees ?? []).filter(
-        (f) => f.recurring,
-      );
+      const allOtherFees = rent.other_fees ?? [];
 
       const walletBalance = await this.tenantBalancesService.getBalance(
         rent.tenant_id,
@@ -795,8 +793,8 @@ export class RentReminderService {
         existing.legal_fee = legalFee;
         existing.agency_fee = agencyFee;
         existing.caution_deposit = cautionDeposit;
-        existing.other_fees = recurringOtherFees;
-        existing.fee_breakdown = recurringFees;
+        existing.other_fees = allOtherFees;
+        existing.fee_breakdown = fees;
         await this.renewalInvoiceRepository.save(existing);
         return existing;
       }
@@ -818,8 +816,8 @@ export class RentReminderService {
         agency_fee: agencyFee,
         caution_deposit: cautionDeposit,
         other_charges: 0,
-        other_fees: recurringOtherFees,
-        fee_breakdown: recurringFees,
+        other_fees: allOtherFees,
+        fee_breakdown: fees,
         outstanding_balance: outstandingBalance,
         wallet_balance: walletBalance,
         total_amount: totalAmount,

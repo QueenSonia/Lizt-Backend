@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Repository, DataSource, EntityManager } from 'typeorm';
 import { TenantBalance } from './entities/tenant-balance.entity';
 import {
@@ -30,6 +31,7 @@ export class TenantBalancesService {
     @InjectRepository(TenantBalanceLedger)
     private readonly ledgerRepo: Repository<TenantBalanceLedger>,
     private readonly dataSource: DataSource,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -117,10 +119,18 @@ export class TenantBalancesService {
       return record;
     };
 
-    if (externalManager) {
-      return run(externalManager);
-    }
-    return this.dataSource.transaction(run);
+    const record = externalManager
+      ? await run(externalManager)
+      : await this.dataSource.transaction(run);
+
+    // Notify consumers that cache derived totals (renewal invoices, etc.)
+    // that the wallet changed for this pair.
+    this.eventEmitter.emit('tenant.balance.changed', {
+      tenantId,
+      landlordId,
+    });
+
+    return record;
   }
 
   // ---------------------------------------------------------------------------

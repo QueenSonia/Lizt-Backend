@@ -575,7 +575,10 @@ export class PropertyHistoryService {
           landlordId,
           reversal,
           {
-            type: TenantBalanceLedgerType.OB_PAYMENT,
+            type:
+              reversal > 0
+                ? TenantBalanceLedgerType.OB_PAYMENT
+                : TenantBalanceLedgerType.OB_CHARGE,
             description: 'Historical payment updated (reversal)',
             propertyId: existing.property_id,
             relatedEntityType: 'property_history',
@@ -758,7 +761,10 @@ export class PropertyHistoryService {
           landlordId,
           reversal,
           {
-            type: TenantBalanceLedgerType.OB_PAYMENT,
+            type:
+              reversal > 0
+                ? TenantBalanceLedgerType.OB_PAYMENT
+                : TenantBalanceLedgerType.OB_CHARGE,
             description: 'Historical payment deleted (reversal)',
             propertyId: existing.property_id,
             relatedEntityType: 'property_history',

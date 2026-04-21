@@ -131,6 +131,23 @@ export class PaymentPlansService {
       );
     }
 
+    // Heal any stale `total_amount` / `wallet_balance` against the current
+    // ledger before we validate installments. Invoices snapshot the wallet
+    // at creation; ledger entries written after that snapshot would otherwise
+    // make a correct plan fail the sum check.
+    await this.tenanciesService.refreshInvoiceTotals(
+      invoice.tenant_id,
+      propertyTenant.property.owner_id,
+    );
+    const refreshed = await this.renewalInvoiceRepository.findOne({
+      where: { id: invoice.id },
+    });
+    if (refreshed) {
+      invoice.total_amount = refreshed.total_amount;
+      invoice.wallet_balance = refreshed.wallet_balance;
+      invoice.outstanding_balance = refreshed.outstanding_balance;
+    }
+
     // Resolve the charge kind for charge-scope plans from the invoice's
     // fee_breakdown. For tenancy-scope, there's no single fee to target.
     let chargeFeeKind: FeeKind | null = null;

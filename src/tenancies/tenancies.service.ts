@@ -28,7 +28,7 @@ import {
   RenewalPaymentStatus,
 } from './entities/renewal-invoice.entity';
 import { v4 as uuidv4 } from 'uuid';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
@@ -36,7 +36,7 @@ import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
-import { rentToFees, renewalInvoiceToFees, sumRecurring, Fee } from 'src/common/billing/fees';
+import { rentToFees, renewalInvoiceToFees, sumAll, Fee } from 'src/common/billing/fees';
 import { randomUUID } from 'crypto';
 
 @Injectable()
@@ -437,11 +437,11 @@ export class TenanciesService {
       other_fees: otherFees,
       payment_frequency: paymentFrequency,
     });
-    // Renewal invoices only bill the recurring portion — one-time move-in
-    // fees were collected at attach time and never re-bill.
-    const recurringFees = allFees.filter((f) => f.recurring);
-    const periodCharge = sumRecurring(allFees);
-    const recurringOtherFees = otherFees.filter((f) => f.recurring);
+    // Landlord-driven renewal bills every fee set in the Edit Tenancy modal
+    // (rent + service + caution + legal + agency + otherFees) regardless of
+    // the per-fee recurring flag. The recurring flag governs auto-renewal
+    // (year 2+ cron), not this current-period invoice.
+    const periodCharge = sumAll(allFees);
 
     const landlordId = propertyTenant.property.owner_id;
     const walletBalance = await this.tenantBalancesService.getBalance(
@@ -494,8 +494,8 @@ export class TenanciesService {
           existingInvoice.agency_fee = agencyFee;
           existingInvoice.caution_deposit = cautionDeposit;
           existingInvoice.other_charges = otherCharges;
-          existingInvoice.other_fees = recurringOtherFees;
-          existingInvoice.fee_breakdown = recurringFees;
+          existingInvoice.other_fees = otherFees;
+          existingInvoice.fee_breakdown = allFees;
           existingInvoice.total_amount = totalAmount;
           existingInvoice.outstanding_balance =
             walletBalance < 0 ? -walletBalance : 0;
@@ -519,8 +519,8 @@ export class TenanciesService {
             agency_fee: agencyFee,
             caution_deposit: cautionDeposit,
             other_charges: otherCharges,
-            other_fees: recurringOtherFees,
-            fee_breakdown: recurringFees,
+            other_fees: otherFees,
+            fee_breakdown: allFees,
             total_amount: totalAmount,
             outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
             wallet_balance: walletBalance,
@@ -928,9 +928,7 @@ export class TenanciesService {
       other_fees: otherFees,
       payment_frequency: dto.paymentFrequency,
     });
-    const recurringFees = allFees.filter((f) => f.recurring);
-    const periodCharge = sumRecurring(allFees);
-    const recurringOtherFees = otherFees.filter((f) => f.recurring);
+    const periodCharge = sumAll(allFees);
 
     const landlordId = invoice.property.owner_id;
     const walletBalance = await this.tenantBalancesService.getBalance(
@@ -945,8 +943,8 @@ export class TenanciesService {
     invoice.legal_fee = legalFee;
     invoice.agency_fee = agencyFee;
     invoice.caution_deposit = cautionDeposit;
-    invoice.other_fees = recurringOtherFees;
-    invoice.fee_breakdown = recurringFees;
+    invoice.other_fees = otherFees;
+    invoice.fee_breakdown = allFees;
     invoice.total_amount = totalAmount;
     invoice.outstanding_balance = walletBalance < 0 ? -walletBalance : 0;
     invoice.wallet_balance = walletBalance;
@@ -956,6 +954,88 @@ export class TenanciesService {
     await this.renewalInvoiceRepository.save(invoice);
 
     return { success: true, invoiceId: invoice.id, totalAmount };
+  }
+
+  /**
+   * Recompute `total_amount` / `wallet_balance` / `outstanding_balance` on
+   * every unpaid landlord/draft renewal invoice for a (tenant, landlord)
+   * pair. `fee_breakdown` is the authoritative charges snapshot; only the
+   * wallet-dependent derived fields get refreshed.
+   *
+   * Call this whenever the ledger changes so downstream consumers (payment
+   * plans, PDFs, history) see current numbers without a cron tick.
+   */
+  @OnEvent('tenant.balance.changed', { async: true })
+  async onTenantBalanceChanged(payload: {
+    tenantId: string;
+    landlordId: string;
+  }): Promise<void> {
+    await this.refreshInvoiceTotals(payload.tenantId, payload.landlordId);
+  }
+
+  async refreshInvoiceTotals(
+    tenantId: string,
+    landlordId: string,
+  ): Promise<void> {
+    const invoices = await this.renewalInvoiceRepository
+      .createQueryBuilder('ri')
+      .innerJoin('ri.property', 'p')
+      .where('ri.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.owner_id = :landlordId', { landlordId })
+      .andWhere('ri.payment_status = :status', {
+        status: RenewalPaymentStatus.UNPAID,
+      })
+      .andWhere('ri.token_type IN (:...types)', {
+        types: ['landlord', 'draft', 'tenant'],
+      })
+      .andWhere('ri.deleted_at IS NULL')
+      .getMany();
+
+    if (invoices.length === 0) return;
+
+    const walletBalance = await this.tenantBalancesService.getBalance(
+      tenantId,
+      landlordId,
+    );
+    const outstanding = walletBalance < 0 ? -walletBalance : 0;
+
+    const toSave: RenewalInvoice[] = [];
+    for (const invoice of invoices) {
+      const breakdown: Fee[] = Array.isArray(invoice.fee_breakdown)
+        ? invoice.fee_breakdown
+        : [];
+
+      if (invoice.token_type === 'tenant') {
+        // Tenant-initiated "Pay Outstanding Balance" invoice: total equals
+        // the current outstanding portion of the wallet. Keep the single
+        // Outstanding Balance fee entry in sync with the wallet. If the
+        // outstanding has been cleared elsewhere (e.g. landlord renewal
+        // invoice paid), auto-settle so the link doesn't 0-charge anyone.
+        invoice.total_amount = outstanding;
+        invoice.outstanding_balance = outstanding;
+        invoice.wallet_balance = walletBalance;
+        invoice.fee_breakdown = breakdown.map((f) =>
+          f.externalId === 'outstanding_balance'
+            ? { ...f, amount: outstanding }
+            : f,
+        );
+        if (outstanding === 0) {
+          invoice.payment_status = RenewalPaymentStatus.PAID;
+          invoice.amount_paid = 0;
+          invoice.paid_at = new Date();
+        }
+      } else {
+        // Landlord / draft renewal invoice: total is the full charge set
+        // (every fee in the breakdown, recurring or not) minus current
+        // wallet. `fee_breakdown` is the authoritative snapshot.
+        const periodCharge = sumAll(breakdown);
+        invoice.total_amount = Math.max(0, periodCharge - walletBalance);
+        invoice.wallet_balance = walletBalance;
+        invoice.outstanding_balance = outstanding;
+      }
+      toSave.push(invoice);
+    }
+    await this.renewalInvoiceRepository.save(toSave);
   }
 
   /**

@@ -848,7 +848,7 @@ export class TenantFlowService {
     this.logger.log('🏠 Looking for properties for account:', accountId);
 
     const properties = await this.propertyTenantRepo.find({
-      where: { tenant_id: accountId },
+      where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
       relations: ['property', 'property.rents'],
     });
 

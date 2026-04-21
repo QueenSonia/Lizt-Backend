@@ -137,7 +137,7 @@ export class AdHocInvoicesService {
         property.owner_id,
         -totalAmount,
         {
-          type: TenantBalanceLedgerType.OB_PAYMENT,
+          type: TenantBalanceLedgerType.OB_CHARGE,
           description: `Invoice ${invoiceNumber} — ₦${totalAmount.toLocaleString()}`,
           propertyId: property.id,
           relatedEntityType: 'ad_hoc_invoice',

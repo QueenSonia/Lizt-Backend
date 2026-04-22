@@ -58,6 +58,26 @@ export class InitiateRenewalDto {
   @IsDateString()
   endDate?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Override the renewal start date. If omitted, server uses activeRent.expiry_date + 1 day.',
+    example: '2026-01-01',
+  })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'IDs of impact issues the landlord has already acknowledged. Blockers with IDs not in this list cause the mutation to 409.',
+    type: [String],
+    example: ['sent_public_token:7d4e...'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  acknowledgedIssueIds?: string[];
+
   // Billing v2 — per-fee overrides. If omitted, defaults come from the
   // active rent row so "Renew" pre-fills correctly.
   @ApiPropertyOptional({ example: 100000 })

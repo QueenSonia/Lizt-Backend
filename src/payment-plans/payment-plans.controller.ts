@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -27,6 +28,7 @@ import {
 import { PaymentPlansService } from './payment-plans.service';
 import { InstallmentPDFService } from './installment-pdf.service';
 import { CreatePaymentPlanDto } from './dto/create-payment-plan.dto';
+import { UpdatePaymentPlanDto } from './dto/update-payment-plan.dto';
 import { InitializeInstallmentPaymentDto } from './dto/initialize-installment-payment.dto';
 import { MarkInstallmentPaidDto } from './dto/mark-installment-paid.dto';
 import { VerifyInstallmentPaymentDto } from './dto/verify-installment-payment.dto';
@@ -87,6 +89,23 @@ export class PaymentPlansController {
   ) {
     await this.paymentPlansService.cancelPlan(id, req?.user?.id);
     return { message: 'Payment plan cancelled' };
+  }
+
+  @ApiOperation({
+    summary: 'Update a payment plan — reschedule unpaid installments',
+    description:
+      'Replaces the plan\'s unpaid installments with a new schedule. Paid installments are preserved. Plan total is immutable; new installment sum must equal (total − already paid).',
+  })
+  @ApiBody({ type: UpdatePaymentPlanDto })
+  @ApiOkResponse({ description: 'Payment plan updated' })
+  @ApiSecurity('access_token')
+  @Patch(':id')
+  update(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdatePaymentPlanDto,
+    @Req() req: any,
+  ) {
+    return this.paymentPlansService.updatePlan(id, dto, req?.user?.id);
   }
 
   @ApiOperation({

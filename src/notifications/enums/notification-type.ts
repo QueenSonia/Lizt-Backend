@@ -29,6 +29,7 @@ export enum NotificationType {
   PAYMENT_TRANSFER_REJECTED = 'Payment Transfer Rejected',
   RENT_REMINDER_FAILED = 'Rent Reminder Failed',
   PAYMENT_PLAN_CREATED = 'Payment Plan Created',
+  PAYMENT_PLAN_UPDATED = 'Payment Plan Updated',
   PAYMENT_PLAN_CANCELLED = 'Payment Plan Cancelled',
   PAYMENT_PLAN_INSTALLMENT_PAID = 'Payment Plan Installment Paid',
   PAYMENT_PLAN_COMPLETED = 'Payment Plan Completed',

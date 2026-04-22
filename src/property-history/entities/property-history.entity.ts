@@ -61,6 +61,13 @@ export class PropertyHistory extends BaseEntity {
   @Column({ type: 'int', nullable: true })
   monthly_rent?: number | null;
 
+  // `any` (not `unknown`) to short-circuit TypeORM's recursive deep-partial
+  // expansion. PropertyHistory sits in a Property ↔ PropertyHistory relation
+  // cycle, and `Record<string, unknown>` here blows past TS's instantiation
+  // depth in unrelated `.update()` callers.
+  @Column({ type: 'jsonb', nullable: true })
+  metadata?: Record<string, any> | null;
+
   @ManyToOne(() => Property, (p) => p.property_histories, {
     onDelete: 'CASCADE',
   })

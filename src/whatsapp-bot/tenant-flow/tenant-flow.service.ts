@@ -35,6 +35,7 @@ import {
   sumRecurring,
   sumOneTime,
 } from 'src/common/billing/fees';
+import { nextPeriodEndInclusive } from 'src/common/utils/rent-date.util';
 
 /**
  * TenantFlowService handles all tenant-specific WhatsApp message interactions.
@@ -1702,23 +1703,7 @@ export class TenantFlowService {
     const paymentFrequency = rent.payment_frequency || 'Annually';
     const startDate = new Date(rent.expiry_date || new Date());
     startDate.setDate(startDate.getDate() + 1);
-    const endDate = new Date(startDate);
-    switch (paymentFrequency.toLowerCase()) {
-      case 'monthly':
-        endDate.setMonth(endDate.getMonth() + 1);
-        break;
-      case 'quarterly':
-        endDate.setMonth(endDate.getMonth() + 3);
-        break;
-      case 'bi-annually':
-        endDate.setMonth(endDate.getMonth() + 6);
-        break;
-      case 'annually':
-      default:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-    }
-    endDate.setDate(endDate.getDate() - 1);
+    const endDate = nextPeriodEndInclusive(startDate, rent);
 
     // No landlord pre-set: roll forward only the recurring fees from the
     // current rent. One-time fees (caution, legal, agency, one-time others)
@@ -2145,23 +2130,7 @@ export class TenantFlowService {
       const startDate = new Date(rent.expiry_date || new Date());
       startDate.setDate(startDate.getDate() + 1);
       const paymentFrequency = rent.payment_frequency || 'Annually';
-      const endDate = new Date(startDate);
-      switch (paymentFrequency.toLowerCase()) {
-        case 'monthly':
-          endDate.setMonth(endDate.getMonth() + 1);
-          break;
-        case 'quarterly':
-          endDate.setMonth(endDate.getMonth() + 3);
-          break;
-        case 'bi-annually':
-          endDate.setMonth(endDate.getMonth() + 6);
-          break;
-        case 'annually':
-        default:
-          endDate.setFullYear(endDate.getFullYear() + 1);
-          break;
-      }
-      endDate.setDate(endDate.getDate() - 1);
+      const endDate = nextPeriodEndInclusive(startDate, rent);
 
       // Reuse an UNPAID rent invoice in this period if one already exists from
       // a prior "Payment Plan" tap — keeps tokens stable across re-taps.

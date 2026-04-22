@@ -1202,6 +1202,8 @@ export class TenantAttachmentService {
         return 'Bi-annually';
       case RentFrequency.ANNUALLY:
         return 'Annually';
+      case RentFrequency.CUSTOM:
+        return 'Custom';
       default:
         return 'Monthly';
     }
@@ -1571,6 +1573,8 @@ export class TenantAttachmentService {
         return 'Bi-Annually';
       case RentFrequency.ANNUALLY:
         return 'Annually';
+      case RentFrequency.CUSTOM:
+        return 'Custom';
       default:
         return 'Monthly';
     }

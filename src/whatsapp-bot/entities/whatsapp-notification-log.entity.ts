@@ -5,6 +5,7 @@ export enum WhatsAppNotificationStatus {
   PENDING = 'pending',
   SENT = 'sent',
   FAILED = 'failed',
+  CANCELLED = 'cancelled',
 }
 
 @Entity('whatsapp_notification_log')

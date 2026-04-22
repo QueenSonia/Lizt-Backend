@@ -618,6 +618,8 @@ export class TenantManagementService {
         return 'Bi-annually';
       case RentFrequency.ANNUALLY:
         return 'Annually';
+      case RentFrequency.CUSTOM:
+        return 'Custom';
       default:
         return 'Monthly';
     }

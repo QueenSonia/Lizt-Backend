@@ -21,6 +21,7 @@ import {
   PaymentPlanInstallment,
 } from './entities/payment-plan-installment.entity';
 import { CreatePaymentPlanDto } from './dto/create-payment-plan.dto';
+import { UpdatePaymentPlanDto } from './dto/update-payment-plan.dto';
 import { MarkInstallmentPaidDto } from './dto/mark-installment-paid.dto';
 
 import {
@@ -363,6 +364,9 @@ export class PaymentPlansService {
     const qb = this.planRepository
       .createQueryBuilder('plan')
       .leftJoinAndSelect('plan.installments', 'installments')
+      .where('plan.status != :cancelledStatus', {
+        cancelledStatus: PaymentPlanStatus.CANCELLED,
+      })
       .orderBy('plan.created_at', 'DESC')
       .addOrderBy('installments.sequence', 'ASC');
 
@@ -786,17 +790,21 @@ export class PaymentPlansService {
     if (plan.status !== PaymentPlanStatus.ACTIVE) {
       throw new ConflictException('Plan is not active');
     }
-    const anyPaid = plan.installments.some(
+
+    const paidInstallments = plan.installments.filter(
       (i) => i.status === InstallmentStatus.PAID,
     );
-    if (anyPaid) {
-      throw new ConflictException(
-        'Cannot cancel a plan that already has paid installments',
-      );
-    }
+    const totalPaid = paidInstallments.reduce(
+      (sum, i) => sum + Number(i.amount_paid ?? i.amount),
+      0,
+    );
 
     await this.dataSource.transaction(async (manager) => {
-      // Charge-scope: restore the fee to the parent invoice breakdown.
+      // Charge-scope: restore the full carved-out fee to the parent invoice.
+      // Paid installments already live as credit in the tenant balance ledger,
+      // so restoring only the unpaid portion would double-credit the tenant.
+      // Tenancy-scope: installment payments already decremented the invoice
+      // progressively, so the invoice is correctly stated — leave it alone.
       if (
         plan.scope === PaymentPlanScope.CHARGE &&
         plan.renewal_invoice_id &&
@@ -816,12 +824,139 @@ export class PaymentPlansService {
       });
     });
 
+    // Cancel any still-pending WhatsApp reminders for this plan's
+    // installments so they don't fire after deletion.
+    const installmentIds = plan.installments.map((i) => i.id);
+    await this.whatsappNotificationLog
+      .cancelPendingByReferenceIds(installmentIds)
+      .catch((err) =>
+        this.logger.error(
+          `Failed to cancel pending reminders for plan ${plan.id}`,
+          err,
+        ),
+      );
+
+    const description =
+      paidInstallments.length > 0
+        ? `Payment plan cancelled — ${plan.charge_name}. ${paidInstallments.length} of ${plan.installments.length} installment(s) already paid (₦${totalPaid.toLocaleString()}); reconcile separately.`
+        : `Payment plan cancelled — ${plan.charge_name}`;
+
     await this.logPlanEvent(
       'payment_plan_cancelled',
-      `Payment plan cancelled — ${plan.charge_name}`,
+      description,
       plan,
       NotificationType.PAYMENT_PLAN_CANCELLED,
     );
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Update (reschedule unpaid installments)
+  // ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * Replace a plan's UNPAID installment schedule. Paid installments are
+   * preserved untouched; their sum is subtracted from plan.total_amount to
+   * determine the budget the new unpaid rows must match exactly.
+   *
+   * Why not allow editing total_amount? Charge-scope plans carve their total
+   * out of the parent renewal invoice at creation (`subtractChargeFromInvoice`)
+   * and restore it symmetrically on cancel. Mutating total mid-life would
+   * require the invoice to be re-adjusted in lockstep, which is fragile —
+   * cancel + re-create is the supported path for that case.
+   */
+  async updatePlan(
+    id: string,
+    dto: UpdatePaymentPlanDto,
+    updatedByUserId?: string,
+  ): Promise<PaymentPlan> {
+    const plan = await this.getPlan(id);
+
+    if (plan.status !== PaymentPlanStatus.ACTIVE) {
+      throw new ConflictException('Plan is not active');
+    }
+    if (dto.installments.length < 1) {
+      throw new BadRequestException('Plan must have at least one installment');
+    }
+
+    const paid = plan.installments.filter(
+      (i) => i.status === InstallmentStatus.PAID,
+    );
+    const unpaid = plan.installments.filter(
+      (i) => i.status === InstallmentStatus.PENDING,
+    );
+
+    const paidSum = paid.reduce(
+      (sum, i) => sum + Number(i.amount_paid ?? i.amount),
+      0,
+    );
+    const remainingBudget = Number(plan.total_amount) - paidSum;
+
+    if (remainingBudget <= 0) {
+      throw new ConflictException(
+        'Plan is fully paid; nothing left to reschedule',
+      );
+    }
+
+    const newSum = dto.installments.reduce(
+      (sum, i) => sum + Number(i.amount),
+      0,
+    );
+    if (Math.abs(newSum - remainingBudget) > 1) {
+      throw new BadRequestException(
+        `Installment amounts must sum to ₦${remainingBudget.toLocaleString()} (plan total − already paid)`,
+      );
+    }
+
+    const cancelledReminderIds = unpaid.map((i) => i.id);
+    const maxPaidSequence = paid.reduce(
+      (max, i) => Math.max(max, i.sequence),
+      0,
+    );
+
+    await this.dataSource.transaction(async (manager) => {
+      if (unpaid.length > 0) {
+        await manager.delete(
+          PaymentPlanInstallment,
+          unpaid.map((i) => i.id),
+        );
+      }
+
+      const rows = dto.installments.map((inst, idx) =>
+        manager.create(PaymentPlanInstallment, {
+          plan_id: plan.id,
+          sequence: maxPaidSequence + idx + 1,
+          amount: Number(inst.amount),
+          due_date: new Date(inst.dueDate),
+          status: InstallmentStatus.PENDING,
+        }),
+      );
+      await manager.save(PaymentPlanInstallment, rows);
+
+      if (dto.planType) {
+        await manager.update(PaymentPlan, plan.id, { plan_type: dto.planType });
+      }
+    });
+
+    // Cancel pending reminders queued against the deleted installment ids.
+    await this.whatsappNotificationLog
+      .cancelPendingByReferenceIds(cancelledReminderIds)
+      .catch((err) =>
+        this.logger.error(
+          `Failed to cancel stale reminders for plan ${plan.id}`,
+          err,
+        ),
+      );
+
+    const fresh = await this.getPlan(plan.id);
+
+    await this.logPlanEvent(
+      'payment_plan_updated',
+      `Payment plan updated — ${plan.charge_name}. ${paid.length} paid + ${dto.installments.length} rescheduled installment(s).`,
+      fresh,
+      NotificationType.PAYMENT_PLAN_UPDATED,
+    );
+
+    return fresh;
   }
 
   // ───────────────────────────────────────────────────────────────────────

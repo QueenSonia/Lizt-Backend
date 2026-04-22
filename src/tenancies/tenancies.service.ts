@@ -38,6 +38,18 @@ import {
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { rentToFees, renewalInvoiceToFees, sumAll, Fee } from 'src/common/billing/fees';
+import {
+  calculateRentExpiryDate,
+  normalizeFrequency,
+  effectiveFrequency,
+  nextPeriodEndInclusive,
+  StandardFrequency,
+  RENT_REMINDER_SCHEDULE,
+} from 'src/common/utils/rent-date.util';
+import {
+  RentChangeImpactDto,
+  RentChangeIssueDto,
+} from './dto/rent-change-impact.dto';
 import { randomUUID } from 'crypto';
 
 @Injectable()
@@ -183,36 +195,10 @@ export class TenanciesService {
       newStartDate.setDate(newStartDate.getDate() + 1);
 
       // 6. Calculate new expiry date: start + frequency - 1 day
-      const newExpiryDate = new Date(newStartDate);
-      let monthsToAdd = 0;
-
-      switch (renewTenancyDto.paymentFrequency.toLowerCase()) {
-        case 'monthly':
-          monthsToAdd = 1;
-          break;
-        case 'quarterly':
-          monthsToAdd = 3;
-          break;
-        case 'bi-annually':
-          monthsToAdd = 6;
-          break;
-        case 'annually':
-          monthsToAdd = 12;
-          break;
-        default:
-          monthsToAdd = 1;
-      }
-
-      newExpiryDate.setMonth(newExpiryDate.getMonth() + monthsToAdd);
-
-      // Handle month overflow (e.g. Jan 31 + 1 month -> Feb 28/29)
-      const targetMonth = (newStartDate.getMonth() + monthsToAdd) % 12;
-      if (newExpiryDate.getMonth() !== targetMonth) {
-        newExpiryDate.setDate(0);
-      }
-
-      // Subtract 1 day (day before next cycle starts)
-      newExpiryDate.setDate(newExpiryDate.getDate() - 1);
+      const newExpiryDate = calculateRentExpiryDate(
+        newStartDate,
+        renewTenancyDto.paymentFrequency,
+      );
 
       // 7. Mark old rent as INACTIVE
       activeRent.rent_status = RentStatusEnum.INACTIVE;
@@ -300,6 +286,8 @@ export class TenanciesService {
     body?: {
       rentAmount: number;
       paymentFrequency: string;
+      startDate?: string;
+      acknowledgedIssueIds?: string[];
       serviceCharge?: number;
       silent?: boolean;
       endDate?: string;
@@ -373,31 +361,37 @@ export class TenanciesService {
       startDate = new Date(activeRent.rent_start_date);
       endDate = new Date(activeRent.expiry_date);
     } else {
-      startDate = new Date(activeRent.expiry_date);
-      startDate.setDate(startDate.getDate() + 1);
+      if (body?.startDate) {
+        startDate = new Date(body.startDate);
+      } else {
+        startDate = new Date(activeRent.expiry_date);
+        startDate.setDate(startDate.getDate() + 1);
+      }
 
       if (body?.endDate) {
         endDate = new Date(body.endDate);
+      } else if (normalizeFrequency(paymentFrequency) === 'custom') {
+        // Custom frequency requires an explicit endDate from the caller.
+        throw new BadRequestException(
+          'endDate is required when paymentFrequency is custom.',
+        );
       } else {
-        endDate = new Date(startDate);
-        switch (paymentFrequency.toLowerCase()) {
-          case 'monthly':
-            endDate.setMonth(endDate.getMonth() + 1);
-            break;
-          case 'quarterly':
-            endDate.setMonth(endDate.getMonth() + 3);
-            break;
-          case 'bi-annually':
-            endDate.setMonth(endDate.getMonth() + 6);
-            break;
-          case 'annually':
-          default:
-            endDate.setFullYear(endDate.getFullYear() + 1);
-            break;
-        }
-        endDate.setDate(endDate.getDate() - 1); // End date is inclusive
+        endDate = calculateRentExpiryDate(startDate, paymentFrequency);
       }
     }
+
+    // Run impact preview and enforce blocker acknowledgement.
+    const renewalImpact = await this.buildImpact(
+      activeRent,
+      {
+        rentAmount: body?.rentAmount ?? activeRent.rental_price ?? 0,
+        paymentFrequency,
+        rentStartDate: startDate,
+        expiryDate: endDate,
+      },
+      'renewal',
+    );
+    this.assertBlockersAcknowledged(renewalImpact, body?.acknowledgedIssueIds);
 
     // 5. Billing v2 — build the Fee[] for the renewal invoice by merging
     // per-field overrides from the request body over the active rent's
@@ -627,6 +621,8 @@ export class TenanciesService {
       rentAmount: number;
       serviceCharge?: number;
       paymentFrequency: string;
+      rentStartDate?: string;
+      endDate?: string;
       cautionDeposit?: number;
       legalFee?: number;
       agencyFee?: number;
@@ -635,6 +631,7 @@ export class TenanciesService {
       legalFeeRecurring?: boolean;
       agencyFeeRecurring?: boolean;
       otherFees?: { externalId?: string; name: string; amount: number; recurring: boolean }[];
+      acknowledgedIssueIds?: string[];
     },
   ): Promise<{ success: boolean }> {
     const propertyTenant = await this.propertyTenantRepository.findOne({
@@ -667,6 +664,21 @@ export class TenanciesService {
       );
     }
 
+    // Run the impact preview and refuse unless every blocker was acknowledged.
+    // This is pre-transaction; the caller saw these exact issues when their
+    // preview call ran, so we just validate their response here.
+    const proposed = this.buildProposedFromActiveRentDto(activeRent, dto);
+    const impact = await this.buildImpact(activeRent, proposed, 'active_rent');
+    this.assertBlockersAcknowledged(impact, dto.acknowledgedIssueIds);
+
+    // Snapshot before state for audit (property_histories RENT_PERIOD_AMENDED)
+    const beforeSnapshot = {
+      rent_start_date: activeRent.rent_start_date,
+      expiry_date: activeRent.expiry_date,
+      payment_frequency: activeRent.payment_frequency,
+      rental_price: activeRent.rental_price,
+    };
+
     // Snapshot the old fees before applying edits
     const oldFees = rentToFees(activeRent);
 
@@ -674,6 +686,18 @@ export class TenanciesService {
     activeRent.rental_price = dto.rentAmount;
     activeRent.service_charge = dto.serviceCharge ?? activeRent.service_charge;
     activeRent.payment_frequency = dto.paymentFrequency;
+    if (dto.rentStartDate) activeRent.rent_start_date = new Date(dto.rentStartDate);
+    if (dto.endDate) activeRent.expiry_date = new Date(dto.endDate);
+    else if (
+      dto.rentStartDate &&
+      normalizeFrequency(dto.paymentFrequency) !== 'custom'
+    ) {
+      // Start moved, no explicit end — recompute end from frequency.
+      activeRent.expiry_date = calculateRentExpiryDate(
+        activeRent.rent_start_date,
+        dto.paymentFrequency,
+      );
+    }
     if (dto.cautionDeposit !== undefined) activeRent.security_deposit = dto.cautionDeposit;
     if (dto.legalFee !== undefined) activeRent.legal_fee = dto.legalFee;
     if (dto.agencyFee !== undefined) activeRent.agency_fee = dto.agencyFee;
@@ -703,9 +727,31 @@ export class TenanciesService {
         return !nf || of.kind !== nf.kind || of.amount !== nf.amount;
       });
 
+    const afterSnapshot = {
+      rent_start_date: activeRent.rent_start_date,
+      expiry_date: activeRent.expiry_date,
+      payment_frequency: activeRent.payment_frequency,
+      rental_price: activeRent.rental_price,
+    };
+    const periodOrFrequencyChanged =
+      !datesEqual(beforeSnapshot.rent_start_date, afterSnapshot.rent_start_date) ||
+      !datesEqual(beforeSnapshot.expiry_date, afterSnapshot.expiry_date) ||
+      beforeSnapshot.payment_frequency !== afterSnapshot.payment_frequency;
+
     if (!chargesChanged) {
-      // Only non-amount fields changed (e.g. payment frequency, recurring flags)
+      // Only non-amount fields changed (e.g. payment frequency, recurring flags, dates)
       await this.rentRepository.save(activeRent);
+      if (periodOrFrequencyChanged) {
+        await this.writeRentPeriodAmendedHistory(
+          propertyTenant.property_id,
+          propertyTenant.tenant_id,
+          activeRent.id,
+          beforeSnapshot,
+          afterSnapshot,
+          impact.issues,
+          dto.acknowledgedIssueIds ?? [],
+        );
+      }
       return { success: true };
     }
 
@@ -831,9 +877,66 @@ export class TenanciesService {
           manager,
         );
       }
+
+      if (periodOrFrequencyChanged) {
+        const historyEntry = manager
+          .getRepository(PropertyHistory)
+          .create({
+            property_id: propertyId,
+            tenant_id: tenantId,
+            event_type: 'rent_period_amended',
+            event_description: rentPeriodAmendedDescription(
+              beforeSnapshot,
+              afterSnapshot,
+            ),
+            related_entity_id: rentId,
+            related_entity_type: 'rent',
+            metadata: {
+              before: beforeSnapshot,
+              after: afterSnapshot,
+              acknowledged_issues: (dto.acknowledgedIssueIds ?? []).filter(
+                (id) => impact.issues.some((i) => i.id === id),
+              ),
+            },
+          });
+        await manager.getRepository(PropertyHistory).save(historyEntry);
+      }
     });
 
     return { success: true };
+  }
+
+  /**
+   * Write a `rent_period_amended` property_histories entry when dates or
+   * frequency change outside the existing ledger-rewrite transaction (i.e.
+   * amounts didn't change, so no reconciliation ran). Uses the default repo
+   * since there's no outer transaction to join.
+   */
+  private async writeRentPeriodAmendedHistory(
+    propertyId: string,
+    tenantId: string,
+    rentId: string,
+    before: RentPeriodSnapshot,
+    after: RentPeriodSnapshot,
+    allIssues: RentChangeIssueDto[],
+    acknowledgedIds: string[],
+  ): Promise<void> {
+    const entry = this.propertyHistoryRepository.create({
+      property_id: propertyId,
+      tenant_id: tenantId,
+      event_type: 'rent_period_amended',
+      event_description: rentPeriodAmendedDescription(before, after),
+      related_entity_id: rentId,
+      related_entity_type: 'rent',
+      metadata: {
+        before,
+        after,
+        acknowledged_issues: acknowledgedIds.filter((id) =>
+          allIssues.some((i) => i.id === id),
+        ),
+      },
+    });
+    await this.propertyHistoryRepository.save(entry);
   }
 
   /**
@@ -847,6 +950,7 @@ export class TenanciesService {
       serviceCharge?: number;
       paymentFrequency: string;
       endDate?: string;
+      acknowledgedIssueIds?: string[];
       cautionDeposit?: number;
       legalFee?: number;
       agencyFee?: number;
@@ -884,25 +988,43 @@ export class TenanciesService {
     let endDate: Date;
     if (dto.endDate) {
       endDate = new Date(dto.endDate);
+    } else if (normalizeFrequency(dto.paymentFrequency) === 'custom') {
+      throw new BadRequestException(
+        'endDate is required when paymentFrequency is custom.',
+      );
     } else {
-      endDate = new Date(startDate);
-      switch (dto.paymentFrequency.toLowerCase()) {
-        case 'monthly':
-          endDate.setMonth(endDate.getMonth() + 1);
-          break;
-        case 'quarterly':
-          endDate.setMonth(endDate.getMonth() + 3);
-          break;
-        case 'bi-annually':
-          endDate.setMonth(endDate.getMonth() + 6);
-          break;
-        case 'annually':
-        default:
-          endDate.setFullYear(endDate.getFullYear() + 1);
-          break;
-      }
-      endDate.setDate(endDate.getDate() - 1);
+      endDate = calculateRentExpiryDate(startDate, dto.paymentFrequency);
     }
+
+    // Impact preview + acknowledgement gate. For invoice_edit context most
+    // detectors are silent — the period IS the invoice — but renewal payment
+    // plans and OB shifts can still surface.
+    const activeRentForImpact = await this.rentRepository.findOne({
+      where: {
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+    const invoiceImpact = await this.buildImpact(
+      activeRentForImpact ?? ({
+        id: invoice.id,
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        payment_frequency: invoice.payment_frequency,
+        rent_start_date: invoice.start_date,
+        expiry_date: invoice.end_date,
+      } as unknown as Rent),
+      {
+        rentAmount: dto.rentAmount,
+        paymentFrequency: dto.paymentFrequency,
+        rentStartDate: startDate,
+        expiryDate: endDate,
+      },
+      'invoice_edit',
+      invoice,
+    );
+    this.assertBlockersAcknowledged(invoiceImpact, dto.acknowledgedIssueIds);
 
     const rentAmount = dto.rentAmount;
     const serviceCharge = dto.serviceCharge ?? 0;
@@ -1997,4 +2119,650 @@ export class TenanciesService {
       );
     }
   }
+
+  // =========================================================================
+  // Rent-change impact preview
+  //
+  // Dry-run the proposed date/frequency/amount changes and return a typed
+  // list of downstream issues + the computed new period. Mutation endpoints
+  // re-run this and refuse if a blocker-severity issue has not been
+  // acknowledged by the caller.
+  // =========================================================================
+
+  /**
+   * Throw 409 with the full issue list if any blocker in `impact` is not
+   * present in `acknowledged`. Warnings and info pass through.
+   */
+  private assertBlockersAcknowledged(
+    impact: RentChangeImpactDto,
+    acknowledged: string[] | undefined,
+  ): void {
+    const ack = new Set(acknowledged ?? []);
+    const unacked = impact.issues.filter(
+      (i) => i.severity === 'blocker' && !ack.has(i.id),
+    );
+    if (unacked.length === 0) return;
+    throw new HttpException(
+      {
+        statusCode: HttpStatus.CONFLICT,
+        message:
+          'Unacknowledged blocker issues — pass their ids in acknowledgedIssueIds to proceed',
+        issues: unacked,
+      },
+      HttpStatus.CONFLICT,
+    );
+  }
+
+  /**
+   * PATCH /tenancies/:id/active-rent preview. Runs all applicable detectors
+   * against the ACTIVE rent for the given property-tenant relationship.
+   */
+  async previewActiveRentUpdate(
+    propertyTenantId: string,
+    userId: string,
+    dto: UpdateRenewalInvoiceDtoLike,
+  ): Promise<RentChangeImpactDto> {
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: { id: propertyTenantId },
+      relations: ['property'],
+    });
+    if (!propertyTenant) throw new NotFoundException('Tenancy not found');
+    if (propertyTenant.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to preview this tenancy',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    const activeRent = await this.rentRepository.findOne({
+      where: {
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+    if (!activeRent) {
+      throw new NotFoundException('No active rent record found for this tenancy');
+    }
+
+    const proposed = this.buildProposedFromActiveRentDto(activeRent, dto);
+    return this.buildImpact(activeRent, proposed, 'active_rent');
+  }
+
+  /**
+   * POST /tenancies/:id/initiate-renewal preview. Same detectors, but the
+   * proposed period represents the NEXT period (starting after the current
+   * expiry) rather than an in-flight edit.
+   */
+  async previewRenewal(
+    propertyTenantId: string,
+    userId: string,
+    dto: InitiateRenewalDtoLike,
+  ): Promise<RentChangeImpactDto> {
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: { id: propertyTenantId },
+      relations: ['property'],
+    });
+    if (!propertyTenant) throw new NotFoundException('Tenancy not found');
+    if (propertyTenant.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to preview this renewal',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    const activeRent = await this.rentRepository.findOne({
+      where: {
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+    if (!activeRent) {
+      throw new NotFoundException('No active rent record found for this tenancy');
+    }
+    if (!activeRent.expiry_date) {
+      throw new BadRequestException(
+        'Active rent has no expiry date set. Cannot preview renewal period.',
+      );
+    }
+
+    const proposed = this.buildProposedFromRenewalDto(activeRent, dto);
+    return this.buildImpact(activeRent, proposed, 'renewal');
+  }
+
+  /**
+   * PATCH /tenancies/renewal-invoice/by-id/:invoiceId preview. Uses the
+   * invoice's own start_date as the anchor (unlike the renewal preview
+   * which derives start from the rent's expiry).
+   */
+  async previewRenewalInvoiceUpdate(
+    invoiceId: string,
+    userId: string,
+    dto: UpdateRenewalInvoiceDtoLike,
+  ): Promise<RentChangeImpactDto> {
+    const invoice = await this.renewalInvoiceRepository.findOne({
+      where: { id: invoiceId },
+      relations: ['property'],
+    });
+    if (!invoice) throw new NotFoundException('Renewal invoice not found');
+    if (invoice.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to preview this invoice',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    if (invoice.payment_status !== RenewalPaymentStatus.UNPAID) {
+      throw new BadRequestException(
+        'Cannot preview an edit against a paid invoice',
+      );
+    }
+
+    // Attach-to-rent context — the active rent for the same property-tenant
+    // is what governs reminders / auto-renewal. If the invoice is for a
+    // renewal that hasn't landed yet, that's still the reference.
+    const activeRent = await this.rentRepository.findOne({
+      where: {
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+
+    const proposed = this.buildProposedFromInvoiceDto(invoice, dto);
+    // For invoice edits, detectors run against the invoice itself (it IS the
+    // next period) — pass the invoice as the "rent" context so period-shaped
+    // detectors compare against its current dates.
+    return this.buildImpact(activeRent ?? (invoice as any), proposed, 'invoice_edit', invoice);
+  }
+
+  // --- Proposed-change builders ---------------------------------------------
+
+  private buildProposedFromActiveRentDto(
+    rent: Rent,
+    dto: UpdateRenewalInvoiceDtoLike,
+  ): ProposedRentChange {
+    const frequency = dto.paymentFrequency || rent.payment_frequency || 'Monthly';
+    const rentStartDate = dto.rentStartDate
+      ? new Date(dto.rentStartDate)
+      : new Date(rent.rent_start_date);
+    let expiryDate: Date;
+    if (dto.endDate) {
+      expiryDate = new Date(dto.endDate);
+    } else if (normalizeFrequency(frequency) === 'custom') {
+      // Custom + no endDate = hold existing expiry (landlord is mid-edit).
+      expiryDate = new Date(rent.expiry_date);
+    } else {
+      expiryDate = calculateRentExpiryDate(rentStartDate, frequency);
+    }
+    return {
+      rentAmount: dto.rentAmount,
+      paymentFrequency: frequency,
+      rentStartDate,
+      expiryDate,
+    };
+  }
+
+  private buildProposedFromRenewalDto(
+    rent: Rent,
+    dto: InitiateRenewalDtoLike,
+  ): ProposedRentChange {
+    const frequency = dto.paymentFrequency || rent.payment_frequency || 'Annually';
+    let startDate: Date;
+    if (dto.startDate) {
+      startDate = new Date(dto.startDate);
+    } else {
+      startDate = new Date(rent.expiry_date);
+      startDate.setDate(startDate.getDate() + 1);
+    }
+    let expiryDate: Date;
+    if (dto.endDate) {
+      expiryDate = new Date(dto.endDate);
+    } else if (normalizeFrequency(frequency) === 'custom') {
+      // Holding pattern — caller is mid-edit; show the computed field as equal
+      // to startDate so the UI renders a "pick an end date" state.
+      expiryDate = new Date(startDate);
+    } else {
+      expiryDate = calculateRentExpiryDate(startDate, frequency);
+    }
+    return {
+      rentAmount: dto.rentAmount,
+      paymentFrequency: frequency,
+      rentStartDate: startDate,
+      expiryDate,
+    };
+  }
+
+  private buildProposedFromInvoiceDto(
+    invoice: RenewalInvoice,
+    dto: UpdateRenewalInvoiceDtoLike,
+  ): ProposedRentChange {
+    const frequency = dto.paymentFrequency || invoice.payment_frequency || 'Monthly';
+    // Invoice start_date is fixed (it anchors the tenant-facing token).
+    const rentStartDate = new Date(invoice.start_date);
+    let expiryDate: Date;
+    if (dto.endDate) {
+      expiryDate = new Date(dto.endDate);
+    } else if (normalizeFrequency(frequency) === 'custom') {
+      expiryDate = new Date(invoice.end_date);
+    } else {
+      expiryDate = calculateRentExpiryDate(rentStartDate, frequency);
+    }
+    return {
+      rentAmount: dto.rentAmount,
+      paymentFrequency: frequency,
+      rentStartDate,
+      expiryDate,
+    };
+  }
+
+  // --- Core impact builder --------------------------------------------------
+
+  private async buildImpact(
+    rent: Rent,
+    proposed: ProposedRentChange,
+    context: PreviewContext,
+    invoice?: RenewalInvoice,
+  ): Promise<RentChangeImpactDto> {
+    const issues: RentChangeIssueDto[] = [];
+
+    // Detectors — each returns 0+ issues. Run sequentially; they may query
+    // the DB. Keep detector methods small and single-purpose.
+    issues.push(
+      ...(await this.detectRenewalInvoiceStalePeriod(rent, proposed, context, invoice)),
+    );
+    issues.push(...(await this.detectSentReminderReplay(rent, proposed, context)));
+    issues.push(
+      ...(await this.detectRenewalPaymentPlanDrift(rent, proposed, context)),
+    );
+    issues.push(...(await this.detectOBPaymentPlanShift(rent, proposed, context)));
+    issues.push(...(await this.detectSpecificChargePlan(rent, proposed, context)));
+    issues.push(
+      ...(await this.detectPaymentPlanExtendsBeyondPeriod(rent, proposed, context)),
+    );
+    // detectAdHocInvoiceBalanceShift — info-only, deferred; fee-kind shift
+    // math overlaps with updateActiveTenancy's own reconciliation pass.
+
+    const effFreq: StandardFrequency = effectiveFrequency({
+      payment_frequency: proposed.paymentFrequency,
+      rent_start_date: proposed.rentStartDate,
+      expiry_date: proposed.expiryDate,
+    });
+
+    // For active-rent edits, the "next period" means the next full period
+    // starting the day after the new expiry. For renewal / invoice_edit
+    // contexts, the proposed period *is* the next period.
+    let nextPeriodStart: Date;
+    let nextPeriodEnd: Date;
+    if (context === 'active_rent') {
+      nextPeriodStart = new Date(proposed.expiryDate);
+      nextPeriodStart.setDate(nextPeriodStart.getDate() + 1);
+      nextPeriodEnd = nextPeriodEndInclusive(nextPeriodStart, {
+        payment_frequency: proposed.paymentFrequency,
+        rent_start_date: proposed.rentStartDate,
+        expiry_date: proposed.expiryDate,
+      });
+    } else {
+      nextPeriodStart = proposed.rentStartDate;
+      nextPeriodEnd = proposed.expiryDate;
+    }
+
+    return {
+      issues,
+      computed: {
+        effectiveFrequency: effFreq,
+        nextPeriodStart: toISODate(nextPeriodStart),
+        nextPeriodEnd: toISODate(nextPeriodEnd),
+        newOutstanding: 0, // filled in when detectors run ledger-shift math
+      },
+    };
+  }
+
+  // --- Detectors (plan: 8 total; implementing progressively) ----------------
+
+  /**
+   * Un-paid renewal invoices whose start_date no longer matches the day after
+   * the proposed rent expiry. Severity depends on token_type per D2 policy:
+   *   draft   → silent (updated in place, no issue surfaced)
+   *   landlord/tenant → blocker (link in the wild)
+   */
+  private async detectRenewalInvoiceStalePeriod(
+    rent: Rent,
+    proposed: ProposedRentChange,
+    context: PreviewContext,
+    editingInvoice?: RenewalInvoice,
+  ): Promise<RentChangeIssueDto[]> {
+    // For active-rent edits the "new invoice start" should be expiry + 1.
+    // For renewal-preview / invoice-edit contexts the proposed period IS the
+    // invoice period, so there is no stale-invoice concept to flag here.
+    if (context !== 'active_rent') return [];
+
+    const expectedStart = new Date(proposed.expiryDate);
+    expectedStart.setDate(expectedStart.getDate() + 1);
+
+    const invoices = await this.renewalInvoiceRepository
+      .createQueryBuilder('ri')
+      .where('ri.property_tenant_id IS NOT NULL')
+      .andWhere('ri.property_id = :pid', { pid: rent.property_id })
+      .andWhere('ri.tenant_id = :tid', { tid: rent.tenant_id })
+      .andWhere('ri.payment_status = :status', {
+        status: RenewalPaymentStatus.UNPAID,
+      })
+      .andWhere('ri.deleted_at IS NULL')
+      .getMany();
+
+    const issues: RentChangeIssueDto[] = [];
+    for (const inv of invoices) {
+      if (editingInvoice && inv.id === editingInvoice.id) continue;
+
+      const invStart = new Date(inv.start_date);
+      if (isSameDay(invStart, expectedStart)) continue;
+
+      if (inv.token_type === 'draft') continue; // silent — will be re-aligned at send time
+
+      // token_type 'landlord' or 'tenant': public link in the wild.
+      issues.push({
+        id: `stale_renewal_invoice:${inv.id}`,
+        severity: 'blocker',
+        kind: 'stale_renewal_invoice',
+        description:
+          `A ${inv.token_type === 'tenant' ? 'tenant-facing' : 'landlord-sent'} renewal invoice anchored at ${toISODate(invStart)} ` +
+          `no longer lines up with the proposed period (expected start ${toISODate(expectedStart)}). ` +
+          `Acknowledging records the desync in property history; the invoice row is left alone because its token may already be in the tenant's inbox.`,
+        suggestedFix: {
+          label: 'Acknowledge desync and proceed',
+          action: 'acknowledge_only',
+        },
+      });
+    }
+    return issues;
+  }
+
+  /**
+   * Warn when today's days-until-new-expiry matches a reminder-schedule
+   * offset that has not yet been logged — i.e. the cron would fire a
+   * reminder today as a side-effect of the date change. Not a blocker; the
+   * user just needs to know a tenant message is imminent.
+   */
+  private async detectSentReminderReplay(
+    rent: Rent,
+    proposed: ProposedRentChange,
+    context: PreviewContext,
+  ): Promise<RentChangeIssueDto[]> {
+    if (context !== 'active_rent') return [];
+    if (!rent.id) return [];
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expiry = new Date(proposed.expiryDate);
+    expiry.setHours(0, 0, 0, 0);
+    const daysUntil = Math.floor(
+      (expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+    );
+
+    const freq = effectiveFrequency({
+      payment_frequency: proposed.paymentFrequency,
+      rent_start_date: proposed.rentStartDate,
+      expiry_date: proposed.expiryDate,
+    });
+    const schedule = RENT_REMINDER_SCHEDULE[freq] ?? RENT_REMINDER_SCHEDULE.monthly;
+    if (!schedule.includes(daysUntil)) return [];
+
+    return [
+      {
+        id: `reminder_replay:${rent.id}:${toISODate(today)}:${daysUntil}`,
+        severity: 'warning',
+        kind: 'reminder_replay',
+        description:
+          `Under the new expiry date (${toISODate(expiry)}), the daily reminder cron will evaluate ` +
+          `offset ${daysUntil}d today. If a reminder for this offset has not already been logged in ` +
+          `WhatsApp notifications, one will be sent to the tenant on the next cron tick.`,
+        suggestedFix: {
+          label: 'Acknowledge — I expect the tenant reminder',
+          action: 'acknowledge_only',
+        },
+      },
+    ];
+  }
+
+  /**
+   * Per D2: renewal payment plans (scope=tenancy, tied to a renewal invoice)
+   * are bypassable blockers — their installment due_dates were derived from
+   * the old period. We record the desync in history on acknowledge; the
+   * landlord voids/refunds via the existing payment-plan flow if they want
+   * a clean reset. Reschedule-in-place is out of scope here.
+   */
+  private async detectRenewalPaymentPlanDrift(
+    rent: Rent,
+    proposed: ProposedRentChange,
+    context: PreviewContext,
+  ): Promise<RentChangeIssueDto[]> {
+    if (context === 'invoice_edit') return [];
+
+    const plans: Array<{ id: string; charge_name: string }> =
+      await this.dataSource.query(
+        `SELECT id, charge_name FROM payment_plans
+           WHERE property_id = $1 AND tenant_id = $2
+             AND scope = 'tenancy'
+             AND renewal_invoice_id IS NOT NULL
+             AND status = 'active'`,
+        [rent.property_id, rent.tenant_id],
+      );
+
+    return plans.map((p) => ({
+      id: `renewal_payment_plan_drift:${p.id}`,
+      severity: 'blocker' as const,
+      kind: 'payment_plan_drift' as const,
+      description:
+        `Active renewal payment plan "${p.charge_name}" was built from the previous period. ` +
+        `Installment due dates won't move automatically — acknowledge to record the desync, ` +
+        `then void/refund via the payment-plan flow if you want a clean reset.`,
+      suggestedFix: {
+        label: 'Acknowledge desync',
+        action: 'acknowledge_only' as const,
+      },
+    }));
+  }
+
+  /**
+   * Per D2: outstanding-balance payment plans (charge-scope, carrying the
+   * 'outstanding_balance' externalId) are warnings — OB amounts are
+   * auto-recomputed from the post-reconciliation wallet on commit, so there
+   * is nothing for the user to do beyond acknowledge the shift.
+   */
+  private async detectOBPaymentPlanShift(
+    rent: Rent,
+    proposed: ProposedRentChange,
+    context: PreviewContext,
+  ): Promise<RentChangeIssueDto[]> {
+    if (context === 'invoice_edit') return [];
+
+    const plans: Array<{ id: string; charge_name: string; total_amount: string }> =
+      await this.dataSource.query(
+        `SELECT id, charge_name, total_amount FROM payment_plans
+           WHERE property_id = $1 AND tenant_id = $2
+             AND scope = 'charge'
+             AND charge_fee_kind = 'other'
+             AND charge_external_id = 'outstanding_balance'
+             AND status = 'active'`,
+        [rent.property_id, rent.tenant_id],
+      );
+
+    return plans.map((p) => ({
+      id: `ob_payment_plan_shift:${p.id}`,
+      severity: 'warning' as const,
+      kind: 'payment_plan_drift' as const,
+      description:
+        `Outstanding-balance payment plan "${p.charge_name}" (₦${Number(p.total_amount).toLocaleString('en-NG')}) ` +
+        `will be recomputed against the tenant's post-reconciliation wallet balance. No manual action required.`,
+      suggestedFix: {
+        label: 'Acknowledge — recompute on commit',
+        action: 'acknowledge_only' as const,
+      },
+    }));
+  }
+
+  /**
+   * Per D2: charge-scope plans for specific fees (not OB) are listed for
+   * visibility only — unless the specific charge itself is being moved by
+   * this edit, they're unaffected. No suggested fix, no blocker.
+   */
+  private async detectSpecificChargePlan(
+    rent: Rent,
+    proposed: ProposedRentChange,
+    context: PreviewContext,
+  ): Promise<RentChangeIssueDto[]> {
+    if (context === 'invoice_edit') return [];
+
+    const plans: Array<{ id: string; charge_name: string; charge_fee_kind: string | null }> =
+      await this.dataSource.query(
+        `SELECT id, charge_name, charge_fee_kind FROM payment_plans
+           WHERE property_id = $1 AND tenant_id = $2
+             AND scope = 'charge'
+             AND NOT (charge_fee_kind = 'other' AND charge_external_id = 'outstanding_balance')
+             AND status = 'active'`,
+        [rent.property_id, rent.tenant_id],
+      );
+
+    return plans.map((p) => ({
+      id: `specific_charge_plan:${p.id}`,
+      severity: 'info' as const,
+      kind: 'payment_plan_drift' as const,
+      description:
+        `Payment plan "${p.charge_name}" (${p.charge_fee_kind ?? 'charge'}) is active. ` +
+        `It's unaffected unless you're also editing that specific charge.`,
+      suggestedFix: null,
+    }));
+  }
+
+  /**
+   * Feeds the "Schedule extends past tenancy period" chip — emits an info
+   * issue for every active plan whose latest installment due_date falls
+   * beyond the proposed tenancy expiry. Chip is read-side only until
+   * editable payment plans ship.
+   */
+  private async detectPaymentPlanExtendsBeyondPeriod(
+    rent: Rent,
+    proposed: ProposedRentChange,
+    context: PreviewContext,
+  ): Promise<RentChangeIssueDto[]> {
+    if (context === 'invoice_edit') return [];
+
+    const rows: Array<{ id: string; charge_name: string; max_due: string }> =
+      await this.dataSource.query(
+        `SELECT p.id, p.charge_name, MAX(i.due_date) AS max_due
+           FROM payment_plans p
+           INNER JOIN payment_plan_installments i ON i.plan_id = p.id
+           WHERE p.property_id = $1 AND p.tenant_id = $2
+             AND p.status = 'active'
+           GROUP BY p.id, p.charge_name
+           HAVING MAX(i.due_date) > $3`,
+        [rent.property_id, rent.tenant_id, proposed.expiryDate],
+      );
+
+    return rows.map((r) => ({
+      id: `payment_plan_extends_beyond:${r.id}`,
+      severity: 'info' as const,
+      kind: 'payment_plan_drift' as const,
+      description:
+        `Payment plan "${r.charge_name}" has installments scheduled up to ${toISODate(new Date(r.max_due))}, ` +
+        `beyond the proposed tenancy end ${toISODate(proposed.expiryDate)}. ` +
+        `A "Schedule extends past tenancy period" chip will remain on the plan until it's revised.`,
+      suggestedFix: null,
+    }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Local helpers & types used by the preview path
+// ---------------------------------------------------------------------------
+
+type PreviewContext = 'active_rent' | 'renewal' | 'invoice_edit';
+
+interface ProposedRentChange {
+  rentAmount: number;
+  paymentFrequency: string;
+  rentStartDate: Date;
+  expiryDate: Date;
+}
+
+// Structural types matching the DTO shapes but decoupled so service callers
+// from other places (e.g. the mutation paths re-running preview) don't have
+// to import the Nest DTO class.
+interface UpdateRenewalInvoiceDtoLike {
+  rentAmount: number;
+  paymentFrequency: string;
+  endDate?: string;
+  rentStartDate?: string;
+  acknowledgedIssueIds?: string[];
+}
+
+interface InitiateRenewalDtoLike {
+  rentAmount: number;
+  paymentFrequency: string;
+  startDate?: string;
+  endDate?: string;
+  acknowledgedIssueIds?: string[];
+}
+
+function toISODate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+interface RentPeriodSnapshot {
+  rent_start_date: Date | string | null | undefined;
+  expiry_date: Date | string | null | undefined;
+  payment_frequency: string | null | undefined;
+  rental_price: number | string | null | undefined;
+}
+
+function datesEqual(
+  a: Date | string | null | undefined,
+  b: Date | string | null | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const da = a instanceof Date ? a : new Date(a);
+  const db = b instanceof Date ? b : new Date(b);
+  return da.getTime() === db.getTime();
+}
+
+function rentPeriodAmendedDescription(
+  before: RentPeriodSnapshot,
+  after: RentPeriodSnapshot,
+): string {
+  const parts: string[] = [];
+  if (!datesEqual(before.rent_start_date, after.rent_start_date)) {
+    parts.push(
+      `start ${toDateStrOrDash(before.rent_start_date)} → ${toDateStrOrDash(after.rent_start_date)}`,
+    );
+  }
+  if (!datesEqual(before.expiry_date, after.expiry_date)) {
+    parts.push(
+      `expiry ${toDateStrOrDash(before.expiry_date)} → ${toDateStrOrDash(after.expiry_date)}`,
+    );
+  }
+  if (before.payment_frequency !== after.payment_frequency) {
+    parts.push(
+      `frequency ${before.payment_frequency ?? '—'} → ${after.payment_frequency ?? '—'}`,
+    );
+  }
+  return `Tenancy period amended: ${parts.join('; ') || 'no field changes'}`;
+}
+
+function toDateStrOrDash(d: Date | string | null | undefined): string {
+  if (!d) return '—';
+  const date = d instanceof Date ? d : new Date(d);
+  return toISODate(date);
 }

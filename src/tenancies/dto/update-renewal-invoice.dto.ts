@@ -41,6 +41,26 @@ export class UpdateRenewalInvoiceDto {
   @IsDateString()
   endDate?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Override the tenancy start date (active-rent edit only — ignored for renewal-invoice edits where start_date is fixed to the invoice record). ISO date string.',
+    example: '2026-01-01',
+  })
+  @IsOptional()
+  @IsDateString()
+  rentStartDate?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'IDs of impact issues the landlord has already acknowledged. Blockers with IDs not in this list cause the mutation to 409.',
+    type: [String],
+    example: ['stale_renewal_invoice:7d4e...'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  acknowledgedIssueIds?: string[];
+
   // Billing v2 — per-fee overrides.
   @ApiPropertyOptional({ example: 100000 })
   @IsOptional()

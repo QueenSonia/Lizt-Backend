@@ -22,18 +22,19 @@ import { TenantBalancesService } from '../tenant-balances/tenant-balances.servic
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 import { rentToFees, sumRecurring, sumAll, Fee } from '../common/billing/fees';
 import {
+  advanceRentPeriod,
+  effectiveFrequency,
+  RENT_REMINDER_SCHEDULE,
+} from '../common/utils/rent-date.util';
+import {
   PaymentPlanInstallment,
   InstallmentStatus,
 } from '../payment-plans/entities/payment-plan-installment.entity';
-import { PaymentPlanScope } from '../payment-plans/entities/payment-plan.entity';
+import {
+  PaymentPlanScope,
+  PaymentPlanStatus,
+} from '../payment-plans/entities/payment-plan.entity';
 
-const RENT_REMINDER_SCHEDULE = {
-  monthly: [14, 7, 2, 1, 0],
-  quarterly: [30, 14, 7, 2, 1, 0],
-  'bi-annually': [90, 60, 30, 14, 7, 2, 1, 0],
-  biannually: [90, 60, 30, 14, 7, 2, 1, 0],
-  annually: [180, 90, 60, 30, 14, 7, 2, 1, 0],
-};
 
 @Injectable()
 export class RentReminderService {
@@ -96,6 +97,9 @@ export class RentReminderService {
       .leftJoinAndSelect('plan.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
       .where('inst.status = :status', { status: InstallmentStatus.PENDING })
+      .andWhere('plan.status = :planStatus', {
+        planStatus: PaymentPlanStatus.ACTIVE,
+      })
       .andWhere('DATE(inst.due_date) IN (:...dates)', {
         dates: [todayStr, tomorrowStr],
       })
@@ -241,8 +245,6 @@ export class RentReminderService {
    * the tenant's TenantBalance for that landlord.
    */
   private async autoRenewExpiredRent(rent: Rent, today: Date): Promise<void> {
-    const frequency = (rent.payment_frequency || 'monthly').toLowerCase();
-
     let currentRent = rent;
     let currentExpiry = new Date(rent.expiry_date);
     currentExpiry.setUTCHours(0, 0, 0, 0);
@@ -250,7 +252,7 @@ export class RentReminderService {
     while (currentExpiry < today) {
       const nextStart = new Date(currentExpiry);
       nextStart.setDate(nextStart.getDate() + 1);
-      const nextExpiry = this.advanceDateByOnePeriod(currentExpiry, frequency);
+      const nextExpiry = advanceRentPeriod(currentExpiry, currentRent);
 
       // Atomically mark the current period inactive only if still ACTIVE.
       // If another cron instance already processed this rent, the update
@@ -275,33 +277,42 @@ export class RentReminderService {
       const recurringFees = currentFees.filter((f) => f.recurring);
       const periodCharge = sumRecurring(currentFees);
 
-      // If the expiring period was unpaid, charge it to the wallet now
-      const wasUnpaid =
-        currentRent.payment_status !== RentPaymentStatusEnum.PAID;
+      // The expiring period's charge is already on the wallet — it was
+      // posted either as INITIAL_BALANCE when the first rent was created
+      // (tenant-management) or as new_period when the prior cron tick
+      // created this rent. Re-billing it here would double-charge.
 
-      if (wasUnpaid) {
-        for (const fee of recurringFees) {
-          await this.tenantBalancesService.applyChange(
-            currentRent.tenant_id,
-            currentRent.property.owner_id,
-            -fee.amount,
-            {
-              type: TenantBalanceLedgerType.AUTO_RENEWAL,
-              description: `Unpaid period charged: ${currentExpiry.toLocaleDateString('en-GB')} — ${fee.label}`,
-              propertyId: currentRent.property_id,
-              relatedEntityType: 'rent',
-              relatedEntityId: currentRent.id,
-              metadata: {
-                kind: 'unpaid_period',
-                fee_kind: fee.kind,
-                ...(fee.externalId ? { externalId: fee.externalId } : {}),
-              },
-            },
-          );
-        }
-      }
+      // Carry recurring fees forward unchanged; non-recurring fees drop out
+      // of the next period (they were move-in one-timers).
+      const carried = this.carryForwardFees(currentRent);
 
-      // Apply the new period charge and check if wallet covers it
+      // Create the new rent up-front (tentatively OWING) so the new_period
+      // ledger entries can be tied to newRent.id. That link is what lets
+      // the next cron run skip a double-charge for this same period.
+      const newRent = this.rentRepository.create({
+        property_id: currentRent.property_id,
+        tenant_id: currentRent.tenant_id,
+        rent_start_date: nextStart,
+        expiry_date: nextExpiry,
+        rental_price: currentRent.rental_price,
+        security_deposit: carried.security_deposit,
+        security_deposit_recurring: carried.security_deposit_recurring,
+        service_charge: carried.service_charge,
+        service_charge_recurring: carried.service_charge_recurring,
+        legal_fee: carried.legal_fee,
+        legal_fee_recurring: carried.legal_fee_recurring,
+        agency_fee: carried.agency_fee,
+        agency_fee_recurring: carried.agency_fee_recurring,
+        other_fees: carried.other_fees,
+        payment_frequency: currentRent.payment_frequency,
+        payment_status: RentPaymentStatusEnum.OWING,
+        rent_status: RentStatusEnum.ACTIVE,
+        amount_paid: 0,
+      });
+      await this.rentRepository.save(newRent);
+
+      // Apply the new period charge, tying it to the new rent so a later
+      // renewal of this rent will see it's already been billed.
       for (const fee of recurringFees) {
         await this.tenantBalancesService.applyChange(
           currentRent.tenant_id,
@@ -312,6 +323,7 @@ export class RentReminderService {
             description: `New period charged: ${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]} — ${fee.label}`,
             propertyId: currentRent.property_id,
             relatedEntityType: 'rent',
+            relatedEntityId: newRent.id,
             metadata: {
               kind: 'new_period',
               fee_kind: fee.kind,
@@ -330,34 +342,11 @@ export class RentReminderService {
 
       // Wallet covers the new period (balance still >= 0) → mark paid silently
       const coveredByWallet = walletAfterCharge >= 0;
-
-      // Carry recurring fees forward unchanged; non-recurring fees drop out
-      // of the next period (they were move-in one-timers).
-      const carried = this.carryForwardFees(currentRent);
-
-      const newRent = this.rentRepository.create({
-        property_id: currentRent.property_id,
-        tenant_id: currentRent.tenant_id,
-        rent_start_date: nextStart,
-        expiry_date: nextExpiry,
-        rental_price: currentRent.rental_price,
-        security_deposit: carried.security_deposit,
-        security_deposit_recurring: carried.security_deposit_recurring,
-        service_charge: carried.service_charge,
-        service_charge_recurring: carried.service_charge_recurring,
-        legal_fee: carried.legal_fee,
-        legal_fee_recurring: carried.legal_fee_recurring,
-        agency_fee: carried.agency_fee,
-        agency_fee_recurring: carried.agency_fee_recurring,
-        other_fees: carried.other_fees,
-        payment_frequency: currentRent.payment_frequency,
-        payment_status: coveredByWallet
-          ? RentPaymentStatusEnum.PAID
-          : RentPaymentStatusEnum.OWING,
-        rent_status: RentStatusEnum.ACTIVE,
-        amount_paid: coveredByWallet ? periodCharge : 0,
-      });
-      await this.rentRepository.save(newRent);
+      if (coveredByWallet) {
+        newRent.payment_status = RentPaymentStatusEnum.PAID;
+        newRent.amount_paid = periodCharge;
+        await this.rentRepository.save(newRent);
+      }
 
       this.logger.log(
         `Auto-renewed rent ${currentRent.id} → new rent ${newRent.id} ` +
@@ -416,9 +405,9 @@ export class RentReminderService {
           (expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
         );
 
-        const frequency = (rent.payment_frequency || 'monthly').toLowerCase();
         const schedule =
-          RENT_REMINDER_SCHEDULE[frequency] || RENT_REMINDER_SCHEDULE.monthly;
+          RENT_REMINDER_SCHEDULE[effectiveFrequency(rent)] ||
+          RENT_REMINDER_SCHEDULE.monthly;
 
         if (!schedule.includes(daysUntilExpiry)) continue;
 
@@ -920,10 +909,7 @@ export class RentReminderService {
     }
     const startDate = new Date(rent.expiry_date);
     startDate.setDate(startDate.getDate() + 1);
-    const endDate = this.advanceDateByOnePeriod(
-      new Date(rent.expiry_date),
-      (rent.payment_frequency || 'monthly').toLowerCase(),
-    );
+    const endDate = advanceRentPeriod(new Date(rent.expiry_date), rent);
     return { startDate, endDate };
   }
 
@@ -951,45 +937,6 @@ export class RentReminderService {
       },
     });
     return !!paid;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Date math helper
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Advance a date by exactly one payment period, month-overflow safe.
-   * E.g. Jan 31 + 1 month → Feb 28/29, not Mar 2/3.
-   */
-  private advanceDateByOnePeriod(date: Date, frequency: string): Date {
-    const result = new Date(date);
-    let monthsToAdd: number;
-
-    switch (frequency) {
-      case 'monthly':
-        monthsToAdd = 1;
-        break;
-      case 'quarterly':
-        monthsToAdd = 3;
-        break;
-      case 'bi-annually':
-      case 'biannually':
-        monthsToAdd = 6;
-        break;
-      case 'annually':
-      default:
-        monthsToAdd = 12;
-        break;
-    }
-
-    const expectedMonth = (result.getMonth() + monthsToAdd) % 12;
-    result.setMonth(result.getMonth() + monthsToAdd);
-    // Handle month-end overflow
-    if (result.getMonth() !== expectedMonth) {
-      result.setDate(0);
-    }
-
-    return result;
   }
 
   // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ export enum RentFrequency {
   QUARTERLY = 'quarterly',
   BI_ANNUALLY = 'bi-annually',
   ANNUALLY = 'annually',
+  CUSTOM = 'custom',
 }
 
 export class AttachTenantDto {

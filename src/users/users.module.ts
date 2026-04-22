@@ -21,6 +21,7 @@ import { UtilsModule } from 'src/utils/utils.module';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { Payment } from 'src/payments/entities/payment.entity';
+import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { TenantManagementService } from './tenant-management';
 import { TeamService } from './team';
 import { PasswordService } from './password';
@@ -43,6 +44,7 @@ import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module
       KYCApplication,
       OfferLetter,
       Payment,
+      AdHocInvoiceLineItem,
     ]),
     AuthModule,
     forwardRef(() => WhatsappBotModule),

@@ -36,6 +36,7 @@ import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { rentToFees, renewalInvoiceToFees, sumAll, Fee } from 'src/common/billing/fees';
 import { randomUUID } from 'crypto';
 
@@ -56,6 +57,8 @@ export class TenanciesService {
     private rentIncreaseRepository: Repository<RentIncrease>,
     @InjectRepository(RenewalInvoice)
     private renewalInvoiceRepository: Repository<RenewalInvoice>,
+    @InjectRepository(AdHocInvoiceLineItem)
+    private adHocInvoiceLineItemRepository: Repository<AdHocInvoiceLineItem>,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
@@ -1140,6 +1143,30 @@ export class TenanciesService {
       if (ph.id) propertyHistoryMap.set(ph.id, ph);
     });
 
+    // Bulk-fetch ad-hoc invoice line items so charges can be split per fee.
+    const adHocInvoiceIds = Array.from(
+      new Set(
+        ledgerEntries
+          .filter(
+            (e) =>
+              e.related_entity_type === 'ad_hoc_invoice' && e.related_entity_id,
+          )
+          .map((e) => e.related_entity_id as string),
+      ),
+    );
+    const adHocLineItemsByInvoiceId = new Map<string, AdHocInvoiceLineItem[]>();
+    if (adHocInvoiceIds.length > 0) {
+      const items = await this.adHocInvoiceLineItemRepository.find({
+        where: { invoice_id: In(adHocInvoiceIds) },
+        order: { sequence: 'ASC' },
+      });
+      items.forEach((li) => {
+        const arr = adHocLineItemsByInvoiceId.get(li.invoice_id) || [];
+        arr.push(li);
+        adHocLineItemsByInvoiceId.set(li.invoice_id, arr);
+      });
+    }
+
     // Charges: negative ledger entries. Exclude:
     //   - CREDIT_APPLIED: legacy artifact from old two-step payment flow
     //   - related_entity_type = 'property_history': reversal entries created when a manual
@@ -1156,7 +1183,7 @@ export class TenanciesService {
           e.related_entity_type !== 'rent_edit' &&
           !(e.metadata as any)?.superseded,
       )
-      .map((e) => {
+      .flatMap((e) => {
         // Apply the same date resolution and description enrichment as tenant-management
         let date: Date;
         // Normalize migration entries to the same label as initial_balance charges
@@ -1201,12 +1228,28 @@ export class TenanciesService {
           date = new Date(e.created_at!);
         }
 
-        return {
-          id: `charge-${e.id}`,
-          date,
-          description,
-          balanceChange: parseFloat((e.balance_change ?? 0).toString()),
-        };
+        // Ad-hoc invoices: split into one row per line item so each fee shows
+        // by name. Falls back to a single row if line items are missing.
+        if (e.related_entity_type === 'ad_hoc_invoice' && e.related_entity_id) {
+          const lineItems = adHocLineItemsByInvoiceId.get(e.related_entity_id);
+          if (lineItems && lineItems.length > 0) {
+            return lineItems.map((li) => ({
+              id: `charge-${e.id}-${li.id}`,
+              date,
+              description: li.description,
+              balanceChange: -Number(li.amount), // negative = charge
+            }));
+          }
+        }
+
+        return [
+          {
+            id: `charge-${e.id}`,
+            date,
+            description,
+            balanceChange: parseFloat((e.balance_change ?? 0).toString()),
+          },
+        ];
       });
 
     // Manual payments from property_history (edits update in-place; deletes remove the row)

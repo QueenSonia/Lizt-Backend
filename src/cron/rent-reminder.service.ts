@@ -560,6 +560,33 @@ export class RentReminderService {
     const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
       'en-GB',
     );
+
+    // Suppress the renewal-link reminder if the period it would cover is
+    // already PAID (early tenant payment, manual mark-paid, etc.). Without
+    // this, the reminder links to a PAID invoice and payment init fails
+    // with "already paid". We seed the dedup log so the same slot isn't
+    // retried on subsequent cron ticks.
+    if (daysUntilExpiry <= 7) {
+      const alreadyPaid = await this.isTargetPeriodPaid(rent);
+      if (alreadyPaid) {
+        this.logger.log(
+          `Skipping renewal reminder for rent ${rent.id}: target period already PAID.`,
+        );
+        const baseAmountForLog = rent.rental_price ?? rent.amount_paid ?? 0;
+        const amountForLog = baseAmountForLog + (rent.service_charge || 0);
+        const formattedAmountForLog = amountForLog.toLocaleString('en-NG', {
+          style: 'currency',
+          currency: 'NGN',
+        });
+        await this.logReminderSent(
+          rent,
+          formattedAmountForLog,
+          expiryDateStr,
+          daysUntilExpiry,
+        );
+        return;
+      }
+    }
     const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
     const amountToPay = baseAmount + (rent.service_charge || 0);
     const formattedAmount = amountToPay.toLocaleString('en-NG', {
@@ -759,23 +786,7 @@ export class RentReminderService {
       const totalAmount = Math.max(0, periodCharge - walletBalance);
       const paymentFrequency = rent.payment_frequency || 'monthly';
 
-      // Determine invoice period dates
-      let startDate: Date;
-      let endDate: Date;
-
-      if (rent.payment_status === RentPaymentStatusEnum.OWING) {
-        // Current period — tenant owes for this period
-        startDate = new Date(rent.rent_start_date);
-        endDate = new Date(rent.expiry_date);
-      } else {
-        // Pre-expiry — invoice is for the upcoming next period
-        startDate = new Date(rent.expiry_date);
-        startDate.setDate(startDate.getDate() + 1);
-        endDate = this.advanceDateByOnePeriod(
-          new Date(rent.expiry_date),
-          paymentFrequency.toLowerCase(),
-        );
-      }
+      const { startDate, endDate } = this.getTargetPeriodRange(rent);
 
       // Refresh existing unpaid landlord invoice if one exists
       const existing = await this.renewalInvoiceRepository.findOne({
@@ -886,6 +897,60 @@ export class RentReminderService {
       agency_fee_recurring: !!rent.agency_fee_recurring,
       other_fees: (rent.other_fees ?? []).filter((f) => f.recurring),
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Period range / paid-period guard
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Period the next renewal invoice for this rent should cover.
+   * OWING → current (unpaid) period; otherwise → next period after expiry.
+   * Mirrors the branch used by findOrCreateRenewalInvoice.
+   */
+  private getTargetPeriodRange(rent: Rent): {
+    startDate: Date;
+    endDate: Date;
+  } {
+    if (rent.payment_status === RentPaymentStatusEnum.OWING) {
+      return {
+        startDate: new Date(rent.rent_start_date),
+        endDate: new Date(rent.expiry_date),
+      };
+    }
+    const startDate = new Date(rent.expiry_date);
+    startDate.setDate(startDate.getDate() + 1);
+    const endDate = this.advanceDateByOnePeriod(
+      new Date(rent.expiry_date),
+      (rent.payment_frequency || 'monthly').toLowerCase(),
+    );
+    return { startDate, endDate };
+  }
+
+  /**
+   * True if a PAID renewal invoice already exists for the period a
+   * renewal-link reminder would cover. Used to suppress reminders whose
+   * link would resolve to an already-paid invoice.
+   */
+  private async isTargetPeriodPaid(rent: Rent): Promise<boolean> {
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: {
+        property_id: rent.property_id,
+        tenant_id: rent.tenant_id,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+    if (!propertyTenant) return false;
+
+    const { startDate } = this.getTargetPeriodRange(rent);
+    const paid = await this.renewalInvoiceRepository.findOne({
+      where: {
+        property_tenant_id: propertyTenant.id,
+        start_date: startDate,
+        payment_status: RenewalPaymentStatus.PAID,
+      },
+    });
+    return !!paid;
   }
 
   // ---------------------------------------------------------------------------

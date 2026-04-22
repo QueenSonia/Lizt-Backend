@@ -65,7 +65,11 @@ import {
   RenewalInvoice,
   RenewalPaymentStatus,
 } from 'src/tenancies/entities/renewal-invoice.entity';
-import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import {
+  AdHocInvoice,
+  AdHocInvoiceStatus,
+} from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import {
@@ -105,6 +109,8 @@ export class PropertiesService {
     private readonly offerLetterRepository: Repository<OfferLetter>,
     @InjectRepository(AdHocInvoice)
     private readonly adHocInvoiceRepository: Repository<AdHocInvoice>,
+    @InjectRepository(AdHocInvoiceLineItem)
+    private readonly adHocInvoiceLineItemRepository: Repository<AdHocInvoiceLineItem>,
     private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
@@ -893,7 +899,13 @@ export class PropertiesService {
         `property.${queryParams.sort_by}`,
         queryParams.sort_order.toUpperCase() as 'ASC' | 'DESC',
       );
+    } else {
+      // Default: soonest expiring rents first, NULL expiries last, then by name
+      qb.orderBy('rents.expiry_date', 'ASC', 'NULLS LAST')
+        .addOrderBy('property.name', 'ASC');
     }
+    // Always tiebreak by id so pagination order is stable across pages
+    qb.addOrderBy('property.id', 'ASC');
 
     const [properties, count] = await qb
       .skip(skip)
@@ -1295,6 +1307,14 @@ export class PropertiesService {
       endDate: string | null;
       feeBreakdown: Fee[];
     } | null = null;
+    let pendingAdHocInvoiceFees: Array<{
+      invoiceId: string;
+      lineItemId: string;
+      description: string;
+      amount: number;
+      dueDate: string | null;
+      status: AdHocInvoiceStatus;
+    }> = [];
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
       const tenantKyc = tenantUser.tenant_kycs?.[0];
@@ -1381,6 +1401,35 @@ export class PropertiesService {
       );
       const totalOutstandingBalance = walletBal < 0 ? -walletBal : 0;
       const totalCreditBalance = walletBal > 0 ? walletBal : 0;
+
+      // Ad-hoc invoice line items for this tenancy — surfaced as additional
+      // charges on the current period charges list. Paid invoices are kept so
+      // the UI can show them with a "(paid)" prefix; cancelled ones are dropped.
+      const pendingAdHocInvoices = await this.adHocInvoiceRepository.find({
+        where: {
+          property_tenant_id: activeTenantRelation.id,
+          status: In([AdHocInvoiceStatus.PENDING, AdHocInvoiceStatus.PAID]),
+        },
+        relations: ['line_items'],
+        order: { created_at: 'ASC' },
+      });
+      pendingAdHocInvoiceFees = pendingAdHocInvoices.flatMap((inv) =>
+        (inv.line_items ?? [])
+          .slice()
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((li) => ({
+            invoiceId: inv.id,
+            lineItemId: li.id,
+            description: li.description,
+            amount: Number(li.amount),
+            dueDate: inv.due_date
+              ? inv.due_date instanceof Date
+                ? inv.due_date.toISOString().split('T')[0]
+                : String(inv.due_date)
+              : null,
+            status: inv.status,
+          })),
+      );
 
       currentTenant = {
         id: activeTenantRelation.tenant.id,
@@ -2088,6 +2137,7 @@ export class PropertiesService {
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
       pendingRenewalInvoice: pendingRenewalInvoice || null,
+      pendingAdHocInvoiceFees,
       rentalPrice: property.rental_price || null,
       isMarketingReady: property.is_marketing_ready || false,
       description: property.description || computedDescription,

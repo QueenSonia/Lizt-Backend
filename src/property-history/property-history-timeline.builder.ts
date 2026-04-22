@@ -22,6 +22,13 @@ export interface TimelineEvent {
   date: string;
   time: string;
   details?: string;
+  /**
+   * Serialized JSON payload for event types whose detail modal needs
+   * structured data (user-added tenancy/payment/fee). The timeline row
+   * never renders this — only `title`, `details`, and (for maintenance)
+   * `description` are shown to the user.
+   */
+  metadata?: string;
   offerLetterData?: {
     id: string;
     token: string;
@@ -608,7 +615,8 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           type: 'general',
           title: `Tenancy started`,
           description: `Tenancy period: ${startDate} – ${endDate}`,
-          details: JSON.stringify({
+          details: prop?.name || undefined,
+          metadata: JSON.stringify({
             rentAmount: parsedData.rentAmount || 0,
             serviceCharge: parsedData.serviceChargeAmount || 0,
             otherFees: parsedData.otherFees || [],
@@ -655,7 +663,8 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           type: 'general',
           title: `Payment received`,
           description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()} on ${paymentDate}`,
-          details: JSON.stringify({
+          details: prop?.name || undefined,
+          metadata: JSON.stringify({
             paymentAmount: parsedData.paymentAmount || 0,
             paymentDate,
             rawPaymentDate:
@@ -672,6 +681,50 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           amount: parsedData.paymentAmount
             ? String(parsedData.paymentAmount)
             : null,
+        });
+      }
+
+      if (ph.event_type === 'user_added_fee') {
+        const prop = ph.property;
+        let parsedData: any = {};
+        try {
+          parsedData = JSON.parse(ph.event_description || '{}');
+        } catch {
+          parsedData = {};
+        }
+        const feeDate = parsedData.feeDate
+          ? new Date(parsedData.feeDate).toLocaleDateString('en-GB')
+          : ph.move_in_date
+            ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
+            : '';
+        const eventDate = new Date(
+          parsedData.feeDate ||
+            ph.move_in_date ||
+            ph.created_at ||
+            new Date(),
+        );
+        tenancyEvents.push({
+          id: `user-added-fee-${ph.id}`,
+          type: 'general',
+          title: `Fee added`,
+          description: `Fee of ₦${Number(parsedData.feeAmount || 0).toLocaleString()}${parsedData.feeDescription ? ` — ${parsedData.feeDescription}` : ''}${feeDate ? ` on ${feeDate}` : ''}`,
+          details: prop?.name || undefined,
+          metadata: JSON.stringify({
+            feeAmount: parsedData.feeAmount || 0,
+            feeDescription: parsedData.feeDescription || '',
+            feeDate,
+            rawFeeDate:
+              parsedData.feeDate ||
+              (ph.move_in_date
+                ? new Date(ph.move_in_date).toISOString()
+                : null),
+            propertyId: ph.property_id,
+            propertyName: prop?.name || '',
+            tenantName: parsedData.tenantName || '',
+          }),
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          amount: parsedData.feeAmount ? String(parsedData.feeAmount) : null,
         });
       }
     });

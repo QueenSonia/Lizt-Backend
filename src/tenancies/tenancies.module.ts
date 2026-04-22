@@ -11,6 +11,7 @@ import { PropertyHistory } from 'src/property-history/entities/property-history.
 import { Users } from 'src/users/entities/user.entity';
 import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { RenewalInvoice } from './entities/renewal-invoice.entity';
+import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { UsersModule } from 'src/users/users.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
@@ -32,6 +33,7 @@ import { PaymentPlansModule } from 'src/payment-plans/payment-plans.module';
       Users,
       RentIncrease,
       RenewalInvoice,
+      AdHocInvoiceLineItem,
     ]),
     UsersModule,
     AuthModule,

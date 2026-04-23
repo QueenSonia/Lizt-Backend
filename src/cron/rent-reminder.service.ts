@@ -788,20 +788,22 @@ export class RentReminderService {
       });
 
       if (existing) {
-        existing.outstanding_balance = outstandingBalance;
+        // Fee snapshot (rent_amount, service_charge, fee_breakdown, …) is
+        // authoritative from the moment the landlord set it — either at
+        // auto-create below, via "Renew Tenancy", or via
+        // PATCH /renewal-invoice/by-id/:id ("Edit Next Period"). Don't
+        // re-snapshot from the Rent entity here: that path has no way to
+        // tell an intentional landlord override from stale invoice data,
+        // so it would silently clobber next-period edits.
+        const breakdown: Fee[] = Array.isArray(existing.fee_breakdown)
+          ? existing.fee_breakdown
+          : [];
+        const invoicePeriodCharge = sumAll(breakdown);
         existing.wallet_balance = walletBalance;
-        existing.total_amount = totalAmount;
+        existing.outstanding_balance = outstandingBalance;
+        existing.total_amount = Math.max(0, invoicePeriodCharge - walletBalance);
         existing.start_date = startDate;
         existing.end_date = endDate;
-        // Refresh the fee snapshot — the underlying rent may have been
-        // edited (new recurring flag, added otherFee) since last run.
-        existing.rent_amount = rentAmount;
-        existing.service_charge = serviceCharge;
-        existing.legal_fee = legalFee;
-        existing.agency_fee = agencyFee;
-        existing.caution_deposit = cautionDeposit;
-        existing.other_fees = allOtherFees;
-        existing.fee_breakdown = fees;
         await this.renewalInvoiceRepository.save(existing);
         return existing;
       }

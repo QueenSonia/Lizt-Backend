@@ -73,6 +73,10 @@ export interface TimelineEvent {
     rentFrequency: string | null;
     nextDueDate: string | null;
   };
+  amendmentData?: {
+    propertyName: string;
+    changes: string[];
+  };
 }
 
 export interface BuildTimelineContext {
@@ -267,6 +271,10 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           details: prop?.name || undefined,
           date: eventDate.toISOString(),
           time: formatTime(eventDate),
+          amendmentData: {
+            propertyName: prop?.name || '',
+            changes: parts,
+          },
         });
       }
 

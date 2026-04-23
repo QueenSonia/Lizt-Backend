@@ -76,6 +76,19 @@ export const RENT_REMINDER_SCHEDULE: Record<string, number[]> = {
   annually: [180, 90, 60, 30, 14, 7, 2, 1, 0],
 };
 
+// First reminder tick at or below this day-count switches from the standard
+// template to the renewal-link template (and creates/reuses the renewal
+// invoice). Annual tenants get a longer window so they have time to arrange
+// a year's rent.
+export const RENEWAL_TEMPLATE_THRESHOLD: Record<string, number> = {
+  monthly: 7,
+  quarterly: 7,
+  'bi-annually': 7,
+  biannually: 7,
+  annually: 30,
+};
+export const DEFAULT_RENEWAL_TEMPLATE_THRESHOLD = 7;
+
 export type NormalizedFrequency = StandardFrequency | 'custom';
 
 export function normalizeFrequency(frequency: string): NormalizedFrequency {

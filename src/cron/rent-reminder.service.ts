@@ -25,6 +25,8 @@ import {
   advanceRentPeriod,
   effectiveFrequency,
   RENT_REMINDER_SCHEDULE,
+  RENEWAL_TEMPLATE_THRESHOLD,
+  DEFAULT_RENEWAL_TEMPLATE_THRESHOLD,
 } from '../common/utils/rent-date.util';
 import {
   PaymentPlanInstallment,
@@ -527,7 +529,10 @@ export class RentReminderService {
       return;
     }
 
-    const useRenewalTemplate = daysUntilExpiry <= 7;
+    const renewalThreshold =
+      RENEWAL_TEMPLATE_THRESHOLD[effectiveFrequency(rent)] ??
+      DEFAULT_RENEWAL_TEMPLATE_THRESHOLD;
+    const useRenewalTemplate = daysUntilExpiry <= renewalThreshold;
     const templateName = useRenewalTemplate
       ? 'sendRentReminderWithRenewalTemplate'
       : 'sendRentReminderTemplate';
@@ -555,7 +560,7 @@ export class RentReminderService {
     // this, the reminder links to a PAID invoice and payment init fails
     // with "already paid". We seed the dedup log so the same slot isn't
     // retried on subsequent cron ticks.
-    if (daysUntilExpiry <= 7) {
+    if (useRenewalTemplate) {
       const alreadyPaid = await this.isTargetPeriodPaid(rent);
       if (alreadyPaid) {
         this.logger.log(

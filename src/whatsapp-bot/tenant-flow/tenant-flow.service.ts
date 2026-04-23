@@ -27,7 +27,15 @@ import {
 import { IncomingMessage } from '../utils';
 import { WhatsAppNotificationLogService } from '../whatsapp-notification-log.service';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
-import { rentToFees, sumRecurring } from 'src/common/billing/fees';
+import {
+  Fee,
+  rentToFees,
+  renewalInvoiceToFees,
+  nextPeriodFees,
+  sumRecurring,
+  sumOneTime,
+} from 'src/common/billing/fees';
+import { nextPeriodEndInclusive } from 'src/common/utils/rent-date.util';
 
 /**
  * TenantFlowService handles all tenant-specific WhatsApp message interactions.
@@ -628,6 +636,14 @@ export class TenantFlowService {
         await this.handleConfirmPayRent(from, payload);
         return;
       }
+      if (action === 'request_pp_ob') {
+        await this.handleRequestPaymentPlan(from, payload, 'ob');
+        return;
+      }
+      if (action === 'request_pp_rent') {
+        await this.handleRequestPaymentPlan(from, payload, 'rent');
+        return;
+      }
       if (action === 'confirm_tenancy_details') {
         cleanButtonId = action;
         propertyId = payload; // Extract the property ID
@@ -833,7 +849,7 @@ export class TenantFlowService {
     this.logger.log('🏠 Looking for properties for account:', accountId);
 
     const properties = await this.propertyTenantRepo.find({
-      where: { tenant_id: accountId },
+      where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
       relations: ['property', 'property.rents'],
     });
 
@@ -1408,6 +1424,7 @@ export class TenantFlowService {
 
     await this.templateSenderService.sendButtons(from, message, [
       { id: `confirm_pay_ob:${rent.property_id}`, title: 'Yes, pay now' },
+      { id: `request_pp_ob:${rent.property_id}`, title: 'Payment Plan' },
       { id: 'cancel_payment', title: 'Cancel' },
     ]);
   }
@@ -1639,14 +1656,80 @@ export class TenantFlowService {
   }
 
   /**
+   * Resolve the next-period charges for a tenant's active rent.
+   *
+   * Prefers a pending landlord-set renewal invoice (created via "Edit next
+   * period" or a silent initiate-renewal) so the prompt and the eventual
+   * invoice agree. Falls back to rolling the current rent's recurring fees
+   * forward when no pre-set invoice exists.
+   */
+  private async resolveNextPeriodCharges(rent: Rent): Promise<{
+    fees: Fee[];
+    paymentFrequency: string;
+    startDate: Date;
+    endDate: Date;
+    sourceInvoice: RenewalInvoice | null;
+  }> {
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: {
+        property_id: rent.property_id,
+        tenant_id: rent.tenant_id,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+
+    const pending = propertyTenant
+      ? await this.renewalInvoiceRepo.findOne({
+          where: {
+            property_tenant_id: propertyTenant.id,
+            token_type: 'landlord',
+            payment_status: RenewalPaymentStatus.UNPAID,
+          },
+          order: { created_at: 'DESC' },
+        })
+      : null;
+
+    if (pending) {
+      return {
+        fees: renewalInvoiceToFees(pending),
+        paymentFrequency:
+          pending.payment_frequency || rent.payment_frequency || 'Annually',
+        startDate: new Date(pending.start_date),
+        endDate: new Date(pending.end_date),
+        sourceInvoice: pending,
+      };
+    }
+
+    const paymentFrequency = rent.payment_frequency || 'Annually';
+    const startDate = new Date(rent.expiry_date || new Date());
+    startDate.setDate(startDate.getDate() + 1);
+    const endDate = nextPeriodEndInclusive(startDate, rent);
+
+    // No landlord pre-set: roll forward only the recurring fees from the
+    // current rent. One-time fees (caution, legal, agency, one-time others)
+    // were collected at move-in and shouldn't be re-billed every period.
+    return {
+      fees: nextPeriodFees(rentToFees(rent)),
+      paymentFrequency,
+      startDate,
+      endDate,
+      sourceInvoice: null,
+    };
+  }
+
+  /**
    * Send rent payment confirmation message with details before requesting landlord approval.
    */
   private async sendRentConfirmation(from: string, rent: Rent): Promise<void> {
     const formatNGN = (amt: number) =>
       amt.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' });
 
-    const rentAmount = rent.rental_price || 0;
-    const serviceCharge = rent.service_charge || 0;
+    const { fees, paymentFrequency, startDate, endDate } =
+      await this.resolveNextPeriodCharges(rent);
+
+    const recurringTotal = sumRecurring(fees);
+    const oneTimeTotal = sumOneTime(fees);
+
     const walletBalance = rent.property?.owner_id
       ? await this.tenantBalancesService.getBalance(
           rent.tenant_id,
@@ -1654,30 +1737,10 @@ export class TenantFlowService {
         )
       : 0;
     const outstandingBalance = walletBalance < 0 ? -walletBalance : 0;
-    const totalAmount = Math.max(0, rentAmount + serviceCharge - walletBalance);
-
-    const paymentFrequency = rent.payment_frequency || 'Annually';
-
-    // Calculate renewal dates
-    const startDate = new Date(rent.expiry_date || new Date());
-    startDate.setDate(startDate.getDate() + 1);
-    const endDate = new Date(startDate);
-    switch (paymentFrequency.toLowerCase()) {
-      case 'monthly':
-        endDate.setMonth(endDate.getMonth() + 1);
-        break;
-      case 'quarterly':
-        endDate.setMonth(endDate.getMonth() + 3);
-        break;
-      case 'bi-annually':
-        endDate.setMonth(endDate.getMonth() + 6);
-        break;
-      case 'annually':
-      default:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-    }
-    endDate.setDate(endDate.getDate() - 1);
+    const totalAmount = Math.max(
+      0,
+      recurringTotal + oneTimeTotal - walletBalance,
+    );
 
     const startFormatted = startDate.toLocaleDateString('en-US', {
       year: 'numeric',
@@ -1690,23 +1753,28 @@ export class TenantFlowService {
       day: 'numeric',
     });
 
-    let message = `Do you want to send a rent renewal request to your landlord for *${rent.property.name}*?\n`;
-    message += `\n*Frequency:* ${paymentFrequency}`;
-    message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
-    message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
-    if (serviceCharge > 0)
-      message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
+    let message = `Do you want to send a rent renewal request to your landlord for ${rent.property.name}?\n`;
+    message += `\nFrequency: ${paymentFrequency}`;
+    message += `\nTenancy Period: ${startFormatted} – ${endFormatted}`;
+
+    if (fees.length > 0) message += `\n`;
+    for (const fee of fees) {
+      message += `\n${fee.label}: ${formatNGN(fee.amount)}`;
+    }
+
     if (outstandingBalance > 0)
-      message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+      message += `\nOutstanding Balance: ${formatNGN(outstandingBalance)}`;
     if (walletBalance > 0)
-      message += `\n*Wallet Credit:* -${formatNGN(walletBalance)}`;
-    message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
+      message += `\nWallet Credit: -${formatNGN(walletBalance)}`;
+
+    message += `\n\nTotal: ${formatNGN(totalAmount)}`;
 
     await this.templateSenderService.sendButtons(from, message, [
       {
         id: `confirm_pay_rent:${rent.property_id}`,
         title: 'Yes, send request',
       },
+      { id: `request_pp_rent:${rent.property_id}`, title: 'Payment Plan' },
       { id: 'cancel_payment', title: 'Cancel' },
     ]);
   }
@@ -1752,26 +1820,6 @@ export class TenantFlowService {
     if (!user?.accounts?.length) return;
 
     const accountId = user.accounts[0].id;
-    // Billing v2: period charge = sum of every recurring fee on the rent
-    // (rent + service + any legal/agency/otherFees the landlord flagged
-    // recurring). One-time move-in fees were collected at attach time.
-    const fees = rentToFees(rent);
-    const recurringFees = fees.filter((f) => f.recurring);
-    const periodCharge = sumRecurring(fees);
-    const rentAmount = rent.rental_price || 0;
-    const serviceCharge = rent.service_charge || 0;
-    const legalFee = Number(rent.legal_fee || 0);
-    const agencyFee = Number(rent.agency_fee || 0);
-    const cautionDeposit = Number(rent.security_deposit || 0);
-    const recurringOtherFees = (rent.other_fees ?? []).filter((f) => f.recurring);
-    const walletBal = rent.property?.owner_id
-      ? await this.tenantBalancesService.getBalance(
-          accountId,
-          rent.property.owner_id,
-        )
-      : 0;
-    const outstandingBalance = walletBal < 0 ? -walletBal : 0;
-    const totalAmount = Math.max(0, periodCharge - walletBal);
 
     // Find propertyTenant record
     const propertyTenant = await this.propertyTenantRepo.findOne({
@@ -1790,28 +1838,37 @@ export class TenantFlowService {
       return;
     }
 
-    // Calculate renewal dates (same logic as initiateRenewal)
-    const startDate = new Date(rent.expiry_date || new Date());
-    startDate.setDate(startDate.getDate() + 1);
+    // Use the same resolver as the prompt so the saved invoice and the
+    // landlord-approval message agree with the breakdown the tenant just
+    // confirmed (including any landlord pre-set next-period charges).
+    const { fees, paymentFrequency, startDate, endDate } =
+      await this.resolveNextPeriodCharges(rent);
 
-    const paymentFrequency = rent.payment_frequency || 'Annually';
-    const endDate = new Date(startDate);
-    switch (paymentFrequency.toLowerCase()) {
-      case 'monthly':
-        endDate.setMonth(endDate.getMonth() + 1);
-        break;
-      case 'quarterly':
-        endDate.setMonth(endDate.getMonth() + 3);
-        break;
-      case 'bi-annually':
-        endDate.setMonth(endDate.getMonth() + 6);
-        break;
-      case 'annually':
-      default:
-        endDate.setFullYear(endDate.getFullYear() + 1);
-        break;
-    }
-    endDate.setDate(endDate.getDate() - 1);
+    const periodCharge = sumRecurring(fees) + sumOneTime(fees);
+    const findAmount = (kind: Fee['kind']): number =>
+      fees.find((f) => f.kind === kind)?.amount ?? 0;
+    const rentAmount = findAmount('rent');
+    const serviceCharge = findAmount('service');
+    const legalFee = findAmount('legal');
+    const agencyFee = findAmount('agency');
+    const cautionDeposit = findAmount('caution');
+    const otherFeesPayload = fees
+      .filter((f) => f.kind === 'other')
+      .map((f) => ({
+        externalId: f.externalId ?? '',
+        name: f.label,
+        amount: f.amount,
+        recurring: f.recurring,
+      }));
+
+    const walletBal = rent.property?.owner_id
+      ? await this.tenantBalancesService.getBalance(
+          accountId,
+          rent.property.owner_id,
+        )
+      : 0;
+    const outstandingBalance = walletBal < 0 ? -walletBal : 0;
+    const totalAmount = Math.max(0, periodCharge - walletBal);
 
     // If the tenant already has a pending-approval request in flight, reuse
     // it rather than queueing a second one — otherwise a tenant re-tapping
@@ -1835,8 +1892,8 @@ export class TenantFlowService {
       existing.legal_fee = legalFee;
       existing.agency_fee = agencyFee;
       existing.caution_deposit = cautionDeposit;
-      existing.other_fees = recurringOtherFees;
-      existing.fee_breakdown = recurringFees;
+      existing.other_fees = otherFeesPayload;
+      existing.fee_breakdown = fees;
       existing.total_amount = totalAmount;
       existing.outstanding_balance = outstandingBalance;
       existing.payment_frequency = paymentFrequency;
@@ -1855,8 +1912,8 @@ export class TenantFlowService {
         agency_fee: agencyFee,
         caution_deposit: cautionDeposit,
         other_charges: 0,
-        other_fees: recurringOtherFees,
-        fee_breakdown: recurringFees,
+        other_fees: otherFeesPayload,
+        fee_breakdown: fees,
         total_amount: totalAmount,
         outstanding_balance: outstandingBalance,
         token_type: 'tenant',
@@ -1904,11 +1961,15 @@ export class TenantFlowService {
     let message = `${tenantName} is requesting to pay rent for *${rent.property.name}*.\n`;
     message += `\n*Frequency:* ${paymentFrequency}`;
     message += `\n*Tenancy Period:* ${startFormatted} – ${endFormatted}`;
-    message += `\n\n*Rent:* ${formatNGN(rentAmount)}`;
-    if (serviceCharge > 0)
-      message += `\n*Service Charge:* ${formatNGN(serviceCharge)}`;
+
+    if (fees.length > 0) message += `\n`;
+    for (const fee of fees) {
+      message += `\n*${fee.label}:* ${formatNGN(fee.amount)}`;
+    }
+
     if (outstandingBalance > 0)
       message += `\n*Outstanding Balance:* ${formatNGN(outstandingBalance)}`;
+
     message += `\n\n*Total: ${formatNGN(totalAmount)}*`;
     message += `\n\nDo you approve this payment?`;
 
@@ -1924,6 +1985,213 @@ export class TenantFlowService {
       existing
         ? `You already have a rent payment request for ${rent.property.name} that's still being reviewed by your landlord. We've nudged them again — you'll be notified once they respond.`
         : `Your rent payment request for ${rent.property.name} has been sent to your landlord for approval. You'll be notified once they respond.`,
+    );
+  }
+
+  /**
+   * Handle "Payment Plan" button on the rent or OB confirmation card.
+   * Creates (or reuses) an UNPAID renewal invoice so we have a token for the
+   * request page, then DMs the tenant a link template. The landlord is not
+   * notified yet — that happens after the tenant submits the request.
+   */
+  private async handleRequestPaymentPlan(
+    from: string,
+    propertyId: string,
+    source: 'rent' | 'ob',
+  ): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) {
+      await this.templateSenderService.sendText(
+        from,
+        'No tenancy info available.',
+      );
+      return;
+    }
+
+    const accountId = user.accounts[0].id;
+
+    const rent = await this.rentRepo.findOne({
+      where: {
+        property_id: propertyId,
+        tenant_id: accountId,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property'],
+    });
+
+    if (!rent?.property?.owner_id) {
+      await this.templateSenderService.sendText(
+        from,
+        'No active tenancy found for that property.',
+      );
+      return;
+    }
+
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: {
+        property_id: rent.property_id,
+        tenant_id: accountId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+
+    if (!propertyTenant) {
+      await this.templateSenderService.sendText(
+        from,
+        'Could not find your tenancy record. Please contact your landlord.',
+      );
+      return;
+    }
+
+    const walletBal = await this.tenantBalancesService.getBalance(
+      accountId,
+      rent.property.owner_id,
+    );
+    const outstandingBalance = walletBal < 0 ? -walletBal : 0;
+
+    let token: string;
+    if (source === 'ob') {
+      if (outstandingBalance <= 0) {
+        await this.templateSenderService.sendText(
+          from,
+          'No outstanding balance found for that property.',
+        );
+        return;
+      }
+
+      const existing = await this.renewalInvoiceRepo.findOne({
+        where: {
+          property_tenant_id: propertyTenant.id,
+          token_type: 'tenant',
+          payment_status: RenewalPaymentStatus.UNPAID,
+          rent_amount: 0,
+        },
+        order: { created_at: 'DESC' },
+      });
+
+      if (existing) {
+        existing.outstanding_balance = outstandingBalance;
+        existing.total_amount = outstandingBalance;
+        existing.fee_breakdown = [
+          {
+            kind: 'other',
+            externalId: 'outstanding_balance',
+            label: 'Outstanding Balance',
+            amount: outstandingBalance,
+            recurring: false,
+          },
+        ];
+        await this.renewalInvoiceRepo.save(existing);
+        token = existing.token;
+      } else {
+        token = uuidv4();
+        const invoice = this.renewalInvoiceRepo.create({
+          token,
+          property_tenant_id: propertyTenant.id,
+          property_id: rent.property_id,
+          tenant_id: accountId,
+          start_date: rent.expiry_date || new Date(),
+          end_date: rent.expiry_date || new Date(),
+          rent_amount: 0,
+          service_charge: 0,
+          legal_fee: 0,
+          other_charges: 0,
+          total_amount: outstandingBalance,
+          outstanding_balance: outstandingBalance,
+          fee_breakdown: [
+            {
+            kind: 'other',
+            externalId: 'outstanding_balance',
+            label: 'Outstanding Balance',
+            amount: outstandingBalance,
+            recurring: false,
+          },
+          ],
+          token_type: 'tenant',
+          payment_status: RenewalPaymentStatus.UNPAID,
+          payment_frequency: rent.payment_frequency,
+        });
+        await this.renewalInvoiceRepo.save(invoice);
+      }
+    } else {
+      const fees = rentToFees(rent);
+      const recurringFees = fees.filter((f) => f.recurring);
+      const periodCharge = sumRecurring(fees);
+      const rentAmount = rent.rental_price || 0;
+      const serviceCharge = rent.service_charge || 0;
+      const legalFee = Number(rent.legal_fee || 0);
+      const agencyFee = Number(rent.agency_fee || 0);
+      const cautionDeposit = Number(rent.security_deposit || 0);
+      const recurringOtherFees = (rent.other_fees ?? []).filter(
+        (f) => f.recurring,
+      );
+      const totalAmount = Math.max(0, periodCharge - walletBal);
+
+      const startDate = new Date(rent.expiry_date || new Date());
+      startDate.setDate(startDate.getDate() + 1);
+      const paymentFrequency = rent.payment_frequency || 'Annually';
+      const endDate = nextPeriodEndInclusive(startDate, rent);
+
+      // Reuse an UNPAID rent invoice in this period if one already exists from
+      // a prior "Payment Plan" tap — keeps tokens stable across re-taps.
+      const existing = await this.renewalInvoiceRepo.findOne({
+        where: {
+          property_tenant_id: propertyTenant.id,
+          token_type: 'tenant',
+          payment_status: RenewalPaymentStatus.UNPAID,
+          rent_amount: Not(0),
+        },
+        order: { created_at: 'DESC' },
+      });
+
+      if (existing) {
+        existing.start_date = startDate;
+        existing.end_date = endDate;
+        existing.rent_amount = rentAmount;
+        existing.service_charge = serviceCharge;
+        existing.legal_fee = legalFee;
+        existing.agency_fee = agencyFee;
+        existing.caution_deposit = cautionDeposit;
+        existing.other_fees = recurringOtherFees;
+        existing.fee_breakdown = recurringFees;
+        existing.total_amount = totalAmount;
+        existing.outstanding_balance = outstandingBalance;
+        existing.payment_frequency = paymentFrequency;
+        await this.renewalInvoiceRepo.save(existing);
+        token = existing.token;
+      } else {
+        token = uuidv4();
+        const invoice = this.renewalInvoiceRepo.create({
+          token,
+          property_tenant_id: propertyTenant.id,
+          property_id: rent.property_id,
+          tenant_id: accountId,
+          start_date: startDate,
+          end_date: endDate,
+          rent_amount: rentAmount,
+          service_charge: serviceCharge,
+          legal_fee: legalFee,
+          agency_fee: agencyFee,
+          caution_deposit: cautionDeposit,
+          other_charges: 0,
+          other_fees: recurringOtherFees,
+          fee_breakdown: recurringFees,
+          total_amount: totalAmount,
+          outstanding_balance: outstandingBalance,
+          token_type: 'tenant',
+          payment_status: RenewalPaymentStatus.UNPAID,
+          payment_frequency: paymentFrequency,
+        });
+        await this.renewalInvoiceRepo.save(invoice);
+      }
+    }
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const requestUrl = `${frontendUrl}/payment-plan-request/${token}`;
+
+    await this.templateSenderService.sendText(
+      from,
+      `Your request for a payment plan is subject to landlord approval. Approval is not guaranteed, and you will be notified once your request has been reviewed.\n\n${requestUrl}`,
     );
   }
 

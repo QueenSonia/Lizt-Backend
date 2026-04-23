@@ -37,6 +37,7 @@ interface MaintenanceIssue {
   reportedDate: string;
   resolvedDate: string | null;
   priority: 'High' | 'Medium' | 'Low';
+  images: string[];
 }
 
 interface TimeLineEvent {
@@ -123,6 +124,54 @@ interface RenewalInvoiceSummary {
   paidAt: string | null;
   startDate: string | null;
   endDate: string | null;
+}
+
+interface AdHocInvoiceSummary {
+  id: string;
+  invoiceNumber: string;
+  publicToken: string;
+  receiptToken: string | null;
+  propertyName: string;
+  totalAmount: number;
+  status: string; // 'pending' | 'paid' | 'overdue' | 'cancelled'
+  dueDate: string;
+  createdAt: string;
+  paidAt: string | null;
+}
+
+interface PaymentPlanInstallmentSummary {
+  id: string;
+  sequence: number;
+  amount: number;
+  dueDate: string;
+  status: string; // 'pending' | 'paid'
+  paidAt: string | null;
+  receiptToken: string | null;
+}
+
+interface PaymentPlanSummary {
+  id: string;
+  propertyTenantId: string;
+  propertyId: string;
+  propertyName: string;
+  chargeName: string;
+  scope: string;
+  planType: string;
+  status: string; // 'active' | 'completed' | 'cancelled'
+  totalAmount: number;
+  createdAt: string;
+  installments: PaymentPlanInstallmentSummary[];
+}
+
+interface PaymentPlanRequestSummary {
+  id: string;
+  propertyTenantId: string;
+  propertyId: string;
+  propertyName: string;
+  totalAmount: number;
+  status: string; // 'pending' | 'approved' | 'declined'
+  preferredSchedule: string;
+  createdAt: string;
 }
 
 // main DTO interface
@@ -232,5 +281,8 @@ export class TenantDetailDto {
   maintenanceIssues: MaintenanceIssue[];
   history: TimeLineEvent[];
   renewalInvoices: RenewalInvoiceSummary[];
+  adHocInvoices: AdHocInvoiceSummary[];
+  paymentPlans: PaymentPlanSummary[];
+  paymentPlanRequests: PaymentPlanRequestSummary[];
   kycInfo: KycInfo;
 }

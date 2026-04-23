@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, IsNull } from 'typeorm';
+import { Repository, LessThan, IsNull, In } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron } from '@nestjs/schedule';
 import {
@@ -187,6 +187,23 @@ export class WhatsAppNotificationLogService {
       })
       .getCount();
     return count > 0;
+  }
+
+  /**
+   * Mark every PENDING log whose reference_id is in the given list as
+   * CANCELLED. Used when the source entity (e.g. a payment-plan installment)
+   * is invalidated and should no longer be reminded on.
+   */
+  async cancelPendingByReferenceIds(referenceIds: string[]): Promise<number> {
+    if (referenceIds.length === 0) return 0;
+    const result = await this.logRepository.update(
+      {
+        reference_id: In(referenceIds),
+        status: WhatsAppNotificationStatus.PENDING,
+      },
+      { status: WhatsAppNotificationStatus.CANCELLED },
+    );
+    return result.affected ?? 0;
   }
 
   /**

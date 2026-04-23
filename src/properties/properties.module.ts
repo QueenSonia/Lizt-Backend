@@ -29,6 +29,10 @@ import { DatabaseErrorHandlerService } from 'src/database/database-error-handler
 import { NotificationModule } from 'src/notifications/notification.module';
 import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
+import { PaymentPlanInstallment } from 'src/payment-plans/entities/payment-plan-installment.entity';
+import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
+import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 
 @Module({
   imports: [
@@ -45,6 +49,10 @@ import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module
       KYCApplication,
       KYCLink,
       RenewalInvoice,
+      PaymentPlanInstallment,
+      OfferLetter,
+      AdHocInvoice,
+      AdHocInvoiceLineItem,
     ]),
     RentsModule,
     UsersModule,

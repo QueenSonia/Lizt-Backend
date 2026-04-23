@@ -37,9 +37,12 @@ import { UpdateRenewalInvoiceDto } from './dto/update-renewal-invoice.dto';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { RenewalInvoiceDto } from './dto/renewal-invoice.dto';
+import { RentChangeImpactDto } from './dto/rent-change-impact.dto';
 import { TenanciesService } from 'src/tenancies/tenancies.service';
 import { RenewalPaymentService } from './renewal-payment.service';
 import { RenewalPDFService } from './renewal-pdf.service';
+import { PaymentPlanRequestsService } from '../payment-plans/payment-plan-requests.service';
+import { CreatePaymentPlanRequestDto } from '../payment-plans/dto/create-payment-plan-request.dto';
 
 @ApiTags('Tenancies')
 @Controller('tenancies')
@@ -49,6 +52,7 @@ export class TenanciesController {
     private readonly tenanciesService: TenanciesService,
     private readonly renewalPaymentService: RenewalPaymentService,
     private readonly renewalPDFService: RenewalPDFService,
+    private readonly paymentPlanRequestsService: PaymentPlanRequestsService,
   ) {}
 
   @ApiOperation({ summary: 'Renew Tenancy' })
@@ -86,6 +90,95 @@ export class TenanciesController {
   ) {
     const result = await this.tenanciesService.updateActiveTenancy(propertyTenantId, req.user.id, body);
     return { success: true, data: result };
+  }
+
+  /**
+   * POST /api/tenancies/:propertyTenantId/active-rent/preview-update
+   * Dry-run an active-rent edit and return downstream-impact issues
+   * (stale invoices, reminder replays, payment-plan drift, …) plus the
+   * computed new period. No mutations.
+   */
+  @ApiOperation({
+    summary: 'Preview Active Rent Update',
+    description:
+      'Dry-run a proposed active-rent edit. Returns typed list of downstream issues + computed new period. Does not mutate.',
+  })
+  @ApiParam({ name: 'propertyTenantId', description: 'Property tenant relationship ID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Impact computed', type: RentChangeImpactDto })
+  @ApiNotFoundResponse({ description: 'Tenancy or active rent not found' })
+  @ApiSecurity('access_token')
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @ApiBody({ type: UpdateRenewalInvoiceDto })
+  @Post(':propertyTenantId/active-rent/preview-update')
+  async previewActiveRentUpdate(
+    @Param('propertyTenantId', new ParseUUIDPipe()) propertyTenantId: string,
+    @Body() body: UpdateRenewalInvoiceDto,
+    @Req() req: any,
+  ) {
+    const impact = await this.tenanciesService.previewActiveRentUpdate(
+      propertyTenantId,
+      req.user.id,
+      body,
+    );
+    return { success: true, data: impact };
+  }
+
+  /**
+   * POST /api/tenancies/:propertyTenantId/renewal/preview
+   * Dry-run a renewal initiation and return downstream-impact issues.
+   */
+  @ApiOperation({
+    summary: 'Preview Renewal Initiation',
+    description:
+      'Dry-run a proposed renewal. Returns typed list of issues + computed next period. Does not mutate.',
+  })
+  @ApiParam({ name: 'propertyTenantId', description: 'Property tenant relationship ID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Impact computed', type: RentChangeImpactDto })
+  @ApiNotFoundResponse({ description: 'Tenancy not found' })
+  @ApiSecurity('access_token')
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @ApiBody({ type: InitiateRenewalDto })
+  @Post(':propertyTenantId/renewal/preview')
+  async previewRenewal(
+    @Param('propertyTenantId', new ParseUUIDPipe()) propertyTenantId: string,
+    @Body() body: InitiateRenewalDto,
+    @Req() req: any,
+  ) {
+    const impact = await this.tenanciesService.previewRenewal(
+      propertyTenantId,
+      req.user.id,
+      body,
+    );
+    return { success: true, data: impact };
+  }
+
+  /**
+   * POST /api/tenancies/renewal-invoice/by-id/:id/preview
+   * Dry-run a renewal-invoice edit and return downstream-impact issues.
+   */
+  @ApiOperation({
+    summary: 'Preview Renewal Invoice Update',
+    description:
+      'Dry-run a proposed renewal-invoice edit. Returns typed list of issues + computed period. Does not mutate.',
+  })
+  @ApiParam({ name: 'id', description: 'Renewal invoice UUID', type: 'string' })
+  @ApiOkResponse({ description: 'Impact computed', type: RentChangeImpactDto })
+  @ApiNotFoundResponse({ description: 'Invoice not found' })
+  @ApiSecurity('access_token')
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @ApiBody({ type: UpdateRenewalInvoiceDto })
+  @Post('renewal-invoice/by-id/:id/preview')
+  async previewRenewalInvoiceUpdate(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: UpdateRenewalInvoiceDto,
+    @Req() req: any,
+  ) {
+    const impact = await this.tenanciesService.previewRenewalInvoiceUpdate(
+      id,
+      req.user.id,
+      body,
+    );
+    return { success: true, data: impact };
   }
 
   /**
@@ -248,6 +341,32 @@ export class TenanciesController {
     return {
       success: true,
       data: invoice,
+    };
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Submit a payment plan request (tenant-facing, token-authed)',
+  })
+  @ApiParam({ name: 'token', description: 'Renewal invoice token' })
+  @ApiBody({ type: CreatePaymentPlanRequestDto })
+  @ApiOkResponse({ description: 'Payment plan request submitted' })
+  @Post('renewal-invoice/:token/payment-plan-request')
+  async submitPaymentPlanRequest(
+    @Param('token') token: string,
+    @Body() dto: CreatePaymentPlanRequestDto,
+  ) {
+    const request =
+      await this.paymentPlanRequestsService.submitFromToken(token, dto);
+    return {
+      success: true,
+      data: {
+        id: request.id,
+        status: request.status,
+        totalAmount: Number(request.total_amount),
+        preferredSchedule: request.preferred_schedule,
+        tenantNote: request.tenant_note,
+      },
     };
   }
 

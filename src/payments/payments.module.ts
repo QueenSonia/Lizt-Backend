@@ -24,6 +24,8 @@ import { NotificationModule } from '../notifications/notification.module';
 import { EventsModule } from '../events/events.module';
 import { ReceiptsModule } from '../receipts/receipts.module';
 import { TenanciesModule } from '../tenancies/tenancies.module';
+import { PaymentPlansModule } from '../payment-plans/payment-plans.module';
+import { AdHocInvoicesModule } from '../ad-hoc-invoices/ad-hoc-invoices.module';
 
 @Module({
   imports: [
@@ -51,6 +53,8 @@ import { TenanciesModule } from '../tenancies/tenancies.module';
     EventEmitterModule,
     forwardRef(() => ReceiptsModule),
     forwardRef(() => TenanciesModule),
+    forwardRef(() => PaymentPlansModule),
+    forwardRef(() => AdHocInvoicesModule),
   ],
   controllers: [WebhooksController, PaymentsController],
   providers: [PaystackService, PaystackLogger, PaymentService],

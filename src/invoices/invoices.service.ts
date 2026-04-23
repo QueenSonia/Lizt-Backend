@@ -620,7 +620,13 @@ export class InvoicesService {
   async sendReminder(id: string, landlordId: string) {
     const invoice = await this.invoiceRepository.findOne({
       where: { id, landlord_id: landlordId },
-      relations: ['property', 'kyc_application', 'tenant', 'landlord'],
+      relations: [
+        'property',
+        'kyc_application',
+        'tenant',
+        'landlord',
+        'landlord.accounts',
+      ],
     });
 
     if (!invoice) {
@@ -644,7 +650,13 @@ export class InvoicesService {
         ? `${invoice.tenant.first_name} ${invoice.tenant.last_name}`
         : 'Tenant';
 
-    const landlordName = `${invoice.landlord.first_name} ${invoice.landlord.last_name}`;
+    const landlordAccount =
+      invoice.landlord.accounts?.find((a) => a.role === 'landlord') ||
+      invoice.landlord.accounts?.[0];
+    const landlordName =
+      landlordAccount?.profile_name ||
+      `${invoice.landlord.first_name} ${invoice.landlord.last_name}`.trim() ||
+      'Landlord';
 
     await this.templateSenderService.sendInvoiceReminder({
       phone_number: tenantPhone,

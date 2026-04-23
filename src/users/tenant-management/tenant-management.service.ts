@@ -69,6 +69,10 @@ import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import { PaymentPlan } from 'src/payment-plans/entities/payment-plan.entity';
+import { PaymentPlanRequest } from 'src/payment-plans/entities/payment-plan-request.entity';
 
 /**
  * Internal interface for tenant KYC record
@@ -133,6 +137,8 @@ export class TenantManagementService {
     private readonly offerLetterRepository: Repository<OfferLetter>,
     @InjectRepository(Payment)
     private readonly paymentRepository: Repository<Payment>,
+    @InjectRepository(AdHocInvoiceLineItem)
+    private readonly adHocInvoiceLineItemRepository: Repository<AdHocInvoiceLineItem>,
     private readonly dataSource: DataSource,
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
@@ -612,6 +618,8 @@ export class TenantManagementService {
         return 'Bi-annually';
       case RentFrequency.ANNUALLY:
         return 'Annually';
+      case RentFrequency.CUSTOM:
+        return 'Custom';
       default:
         return 'Monthly';
     }
@@ -1924,6 +1932,32 @@ export class TenantManagementService {
         obEntriesByProperty.get(key)!.push(e);
       });
 
+    // For ad-hoc invoice charges, fetch the line items so the breakdown can
+    // surface each fee by name instead of one opaque "Invoice AHI-…" row.
+    const adHocInvoiceIds = Array.from(
+      new Set(
+        Array.from(obEntriesByProperty.values())
+          .flat()
+          .filter(
+            (e) =>
+              e.related_entity_type === 'ad_hoc_invoice' && e.related_entity_id,
+          )
+          .map((e) => e.related_entity_id as string),
+      ),
+    );
+    const adHocLineItemsByInvoiceId = new Map<string, AdHocInvoiceLineItem[]>();
+    if (adHocInvoiceIds.length > 0) {
+      const items = await this.adHocInvoiceLineItemRepository.find({
+        where: { invoice_id: In(adHocInvoiceIds) },
+        order: { sequence: 'ASC' },
+      });
+      items.forEach((li) => {
+        const arr = adHocLineItemsByInvoiceId.get(li.invoice_id) || [];
+        arr.push(li);
+        adHocLineItemsByInvoiceId.set(li.invoice_id, arr);
+      });
+    }
+
     const outstandingBalanceBreakdown = Array.from(
       obEntriesByProperty.entries(),
     ).map(([propId, entries]) => {
@@ -1950,7 +1984,7 @@ export class TenantManagementService {
           ? new Date(propRent.expiry_date)
           : null,
         transactions: entries
-          .map((e) => {
+          .flatMap((e) => {
             // Implement date resolution based on related entity type
             let transactionDate: Date;
             // Normalize migration entries to the same label as initial_balance charges
@@ -2005,12 +2039,28 @@ export class TenantManagementService {
               transactionDate = new Date(e.created_at!);
             }
 
-            return {
-              id: e.id,
-              type: periodDescription,
-              amount: -Number(e.balance_change), // charges are negative balance_change; expose as positive
-              date: transactionDate,
-            };
+            // Ad-hoc invoices: split into one row per line item so each fee
+            // shows by name. Fall back to a single row if line items are missing.
+            if (e.related_entity_type === 'ad_hoc_invoice' && e.related_entity_id) {
+              const lineItems = adHocLineItemsByInvoiceId.get(e.related_entity_id);
+              if (lineItems && lineItems.length > 0) {
+                return lineItems.map((li) => ({
+                  id: `${e.id}-${li.id}`,
+                  type: li.description,
+                  amount: Number(li.amount),
+                  date: transactionDate,
+                }));
+              }
+            }
+
+            return [
+              {
+                id: e.id,
+                type: periodDescription,
+                amount: -Number(e.balance_change), // charges are negative balance_change; expose as positive
+                date: transactionDate,
+              },
+            ];
           })
           .sort((a, b) => b.date.getTime() - a.date.getTime()),
       };
@@ -2168,6 +2218,113 @@ export class TenantManagementService {
           ? inv.end_date
           : inv.end_date.toISOString()
         : null,
+    }));
+
+    // Fetch ad-hoc invoices for this tenant (filtered by landlord when provided)
+    const adHocInvoiceRows = await this.dataSource
+      .getRepository(AdHocInvoice)
+      .find({
+        where: {
+          tenant_id: account.id,
+          ...(adminId ? { landlord_id: adminId } : {}),
+        },
+        relations: ['property'],
+        order: { created_at: 'DESC' },
+      });
+
+    const adHocInvoices = adHocInvoiceRows.map((inv) => ({
+      id: inv.id,
+      invoiceNumber: inv.invoice_number,
+      publicToken: inv.public_token,
+      receiptToken: inv.receipt_token || null,
+      propertyName: inv.property?.name || 'Property',
+      totalAmount: parseFloat((inv.total_amount ?? 0).toString()),
+      status: inv.status,
+      dueDate: inv.due_date
+        ? typeof inv.due_date === 'string'
+          ? inv.due_date
+          : inv.due_date.toISOString()
+        : '',
+      createdAt: inv.created_at
+        ? new Date(inv.created_at).toISOString()
+        : new Date().toISOString(),
+      paidAt: inv.paid_at
+        ? typeof inv.paid_at === 'string'
+          ? inv.paid_at
+          : inv.paid_at.toISOString()
+        : null,
+    }));
+
+    // Fetch payment plans (with installments) for this tenant
+    const paymentPlanRows = await this.dataSource
+      .getRepository(PaymentPlan)
+      .find({
+        where: {
+          tenant_id: account.id,
+          ...(adminId ? { property: { owner_id: adminId } } : {}),
+        },
+        relations: ['property', 'installments'],
+        order: { created_at: 'DESC' },
+      });
+
+    const paymentPlans = paymentPlanRows.map((plan) => ({
+      id: plan.id,
+      propertyTenantId: plan.property_tenant_id,
+      propertyId: plan.property_id,
+      propertyName: plan.property?.name || 'Property',
+      chargeName: plan.charge_name,
+      scope: plan.scope,
+      planType: plan.plan_type,
+      status: plan.status,
+      totalAmount: parseFloat((plan.total_amount ?? 0).toString()),
+      createdAt: plan.created_at
+        ? new Date(plan.created_at).toISOString()
+        : new Date().toISOString(),
+      installments: (plan.installments || [])
+        .slice()
+        .sort((a, b) => a.sequence - b.sequence)
+        .map((inst) => ({
+          id: inst.id,
+          sequence: inst.sequence,
+          amount: parseFloat((inst.amount ?? 0).toString()),
+          dueDate: inst.due_date
+            ? typeof inst.due_date === 'string'
+              ? inst.due_date
+              : inst.due_date.toISOString()
+            : '',
+          status: inst.status,
+          paidAt: inst.paid_at
+            ? typeof inst.paid_at === 'string'
+              ? inst.paid_at
+              : inst.paid_at.toISOString()
+            : null,
+          receiptToken: inst.receipt_token || null,
+        })),
+    }));
+
+    // Fetch payment plan requests for this tenant
+    const paymentPlanRequestRows = await this.dataSource
+      .getRepository(PaymentPlanRequest)
+      .find({
+        where: {
+          tenant_id: account.id,
+          ...(adminId ? { property: { owner_id: adminId } } : {}),
+        },
+        relations: ['property'],
+        order: { created_at: 'DESC' },
+      });
+
+    const paymentPlanRequests = paymentPlanRequestRows.map((req) => ({
+      id: req.id,
+      propertyTenantId: req.property_tenant_id,
+      propertyId: req.property_id,
+      propertyName: req.property?.name || 'Property',
+      totalAmount: parseFloat((req.total_amount ?? 0).toString()),
+      status: req.status,
+      preferredSchedule: req.preferred_schedule,
+      createdAt: req.created_at
+        ? new Date(req.created_at).toISOString()
+        : new Date().toISOString(),
     }));
 
     return {
@@ -2408,6 +2565,7 @@ export class TenantManagementService {
           ? new Date(sr.resolution_date).toISOString()
           : null,
         priority: sr.status === 'URGENT' ? 'High' : 'Medium',
+        images: sr.issue_images || [],
       })),
       activeTenancies: rents
         .filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)
@@ -2493,6 +2651,9 @@ export class TenantManagementService {
 
       history: history,
       renewalInvoices: renewalInvoiceSummaries,
+      adHocInvoices,
+      paymentPlans,
+      paymentPlanRequests,
       kycInfo: {
         kycStatus: kycApplication ? 'Verified' : 'Not Submitted',
         kycSubmittedDate: kycApplication?.created_at

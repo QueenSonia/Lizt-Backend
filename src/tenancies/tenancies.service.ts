@@ -2530,9 +2530,9 @@ export class TenanciesService {
         severity: 'warning',
         kind: 'reminder_replay',
         description:
-          `Under the new expiry date (${toISODate(expiry)}), the daily reminder cron will evaluate ` +
-          `offset ${daysUntil}d today. If a reminder for this offset has not already been logged in ` +
-          `WhatsApp notifications, one will be sent to the tenant on the next cron tick.`,
+          `With the new expiry date (${toISODate(expiry)}), the tenant is now ${daysUntil} day${daysUntil === 1 ? '' : 's'} away from expiry — ` +
+          `a date that normally triggers a rent reminder. If we haven't already sent this reminder today, ` +
+          `the tenant will receive a WhatsApp message shortly after you save.`,
         suggestedFix: {
           label: 'Acknowledge — I expect the tenant reminder',
           action: 'acknowledge_only',

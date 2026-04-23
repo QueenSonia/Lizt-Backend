@@ -391,6 +391,33 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
       }
 
       if (
+        ph.event_type === 'ad_hoc_invoice_created' ||
+        ph.event_type === 'ad_hoc_invoice_paid' ||
+        ph.event_type === 'ad_hoc_invoice_cancelled'
+      ) {
+        const prop = ph.property;
+        const eventDate = new Date(ph.created_at || new Date());
+        const titleMap: Record<string, string> = {
+          ad_hoc_invoice_created: 'Invoice Generated',
+          ad_hoc_invoice_paid: 'Invoice Paid',
+          ad_hoc_invoice_cancelled: 'Invoice Cancelled',
+        };
+        tenancyEvents.push({
+          id: `${ph.event_type}-${ph.id}`,
+          type: ph.event_type === 'ad_hoc_invoice_paid' ? 'receipt' : 'invoice',
+          title: titleMap[ph.event_type],
+          description:
+            ph.event_description ||
+            `${titleMap[ph.event_type]} for ${prop?.name || 'property'}.`,
+          details: prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          relatedEntityId: ph.related_entity_id || undefined,
+          relatedEntityType: 'ad_hoc_invoice',
+        });
+      }
+
+      if (
         ph.event_type === 'receipt_issued' ||
         ph.event_type === 'receipt_sent' ||
         ph.event_type === 'receipt_viewed'

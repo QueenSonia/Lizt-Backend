@@ -1270,7 +1270,6 @@ export class PropertiesService {
       )
       .where('history.property_id = :propertyId', { propertyId: id })
       .orderBy('history.created_at', 'DESC')
-      .limit(50) // Limit history to last 50 events
       .getMany();
 
     // Step 4: Load KYC applications (separate query, only recent ones)

@@ -1806,6 +1806,30 @@ export class PropertiesService {
               details: tenantName !== 'Unknown' ? tenantName : null,
               amount: null,
             };
+          case 'ad_hoc_invoice_created':
+          case 'ad_hoc_invoice_paid':
+          case 'ad_hoc_invoice_cancelled': {
+            const amountMatch = hist.event_description?.match(/₦([\d,]+)/);
+            const amount = amountMatch ? amountMatch[1] : null;
+            const titleMap: Record<string, string> = {
+              ad_hoc_invoice_created: 'Invoice generated',
+              ad_hoc_invoice_paid: 'Invoice paid',
+              ad_hoc_invoice_cancelled: 'Invoice cancelled',
+            };
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: hist.event_type,
+              title: titleMap[hist.event_type],
+              description:
+                hist.event_description ||
+                `${titleMap[hist.event_type]} for ${tenantName}`,
+              details: tenantName,
+              amount,
+              relatedEntityId: hist.related_entity_id,
+              relatedEntityType: 'ad_hoc_invoice',
+            };
+          }
           case 'receipt_issued': {
             const receiptAmountMatch =
               hist.event_description?.match(/₦([\d,]+)/);

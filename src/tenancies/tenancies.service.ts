@@ -717,6 +717,11 @@ export class TenanciesService {
 
     const newFees = rentToFees(activeRent);
 
+    // Recurring-flag deltas (e.g. landlord flipped Service Charge from
+    // one-time to recurring). These change nothing about the current
+    // period's charges, but matter for the audit trail / timeline.
+    const recurringChanges = computeRecurringChanges(oldFees, newFees);
+
     // Check if charge amounts actually changed
     const oldChargeTotal = oldFees.reduce((s, f) => s + f.amount, 0);
     const newChargeTotal = newFees.reduce((s, f) => s + f.amount, 0);
@@ -741,7 +746,7 @@ export class TenanciesService {
     if (!chargesChanged) {
       // Only non-amount fields changed (e.g. payment frequency, recurring flags, dates)
       await this.rentRepository.save(activeRent);
-      if (periodOrFrequencyChanged) {
+      if (periodOrFrequencyChanged || recurringChanges.length > 0) {
         await this.writeRentPeriodAmendedHistory(
           propertyTenant.property_id,
           propertyTenant.tenant_id,
@@ -750,6 +755,7 @@ export class TenanciesService {
           afterSnapshot,
           impact.issues,
           dto.acknowledgedIssueIds ?? [],
+          recurringChanges,
         );
       }
       return { success: true };
@@ -878,39 +884,43 @@ export class TenanciesService {
         );
       }
 
-      if (periodOrFrequencyChanged) {
-        const historyEntry = manager
-          .getRepository(PropertyHistory)
-          .create({
-            property_id: propertyId,
-            tenant_id: tenantId,
-            event_type: 'rent_period_amended',
-            event_description: rentPeriodAmendedDescription(
-              beforeSnapshot,
-              afterSnapshot,
+      // Inside this branch charges changed by definition, so always log an
+      // amendment entry — the timeline builder renders rental_price deltas
+      // from the before/after metadata even when dates/frequency stayed put.
+      const historyEntry = manager
+        .getRepository(PropertyHistory)
+        .create({
+          property_id: propertyId,
+          tenant_id: tenantId,
+          event_type: 'rent_period_amended',
+          event_description: rentPeriodAmendedDescription(
+            beforeSnapshot,
+            afterSnapshot,
+            recurringChanges,
+          ),
+          related_entity_id: rentId,
+          related_entity_type: 'rent',
+          metadata: {
+            before: beforeSnapshot,
+            after: afterSnapshot,
+            recurring_changes: recurringChanges,
+            acknowledged_issues: (dto.acknowledgedIssueIds ?? []).filter(
+              (id) => impact.issues.some((i) => i.id === id),
             ),
-            related_entity_id: rentId,
-            related_entity_type: 'rent',
-            metadata: {
-              before: beforeSnapshot,
-              after: afterSnapshot,
-              acknowledged_issues: (dto.acknowledgedIssueIds ?? []).filter(
-                (id) => impact.issues.some((i) => i.id === id),
-              ),
-            },
-          });
-        await manager.getRepository(PropertyHistory).save(historyEntry);
-      }
+          },
+        });
+      await manager.getRepository(PropertyHistory).save(historyEntry);
     });
 
     return { success: true };
   }
 
   /**
-   * Write a `rent_period_amended` property_histories entry when dates or
-   * frequency change outside the existing ledger-rewrite transaction (i.e.
-   * amounts didn't change, so no reconciliation ran). Uses the default repo
-   * since there's no outer transaction to join.
+   * Write a `rent_period_amended` property_histories entry when dates,
+   * frequency, or recurring-flag changes happen outside the existing
+   * ledger-rewrite transaction (i.e. amounts didn't change, so no
+   * reconciliation ran). Uses the default repo since there's no outer
+   * transaction to join.
    */
   private async writeRentPeriodAmendedHistory(
     propertyId: string,
@@ -920,17 +930,23 @@ export class TenanciesService {
     after: RentPeriodSnapshot,
     allIssues: RentChangeIssueDto[],
     acknowledgedIds: string[],
+    recurringChanges: RecurringChange[] = [],
   ): Promise<void> {
     const entry = this.propertyHistoryRepository.create({
       property_id: propertyId,
       tenant_id: tenantId,
       event_type: 'rent_period_amended',
-      event_description: rentPeriodAmendedDescription(before, after),
+      event_description: rentPeriodAmendedDescription(
+        before,
+        after,
+        recurringChanges,
+      ),
       related_entity_id: rentId,
       related_entity_type: 'rent',
       metadata: {
         before,
         after,
+        recurring_changes: recurringChanges,
         acknowledged_issues: acknowledgedIds.filter((id) =>
           allIssues.some((i) => i.id === id),
         ),
@@ -2727,6 +2743,34 @@ interface RentPeriodSnapshot {
   rental_price: number | string | null | undefined;
 }
 
+interface RecurringChange {
+  label: string;
+  before: boolean;
+  after: boolean;
+}
+
+function computeRecurringChanges(oldFees: Fee[], newFees: Fee[]): RecurringChange[] {
+  const changes: RecurringChange[] = [];
+  // Match non-"other" fees by kind (one per kind); match "other" fees by
+  // externalId (stable across edits). Rent is always recurring, so skip it.
+  const keyOf = (f: Fee): string =>
+    f.kind === 'other' ? `other:${f.externalId ?? ''}` : f.kind;
+  const newByKey = new Map<string, Fee>();
+  for (const nf of newFees) newByKey.set(keyOf(nf), nf);
+  for (const of of oldFees) {
+    if (of.kind === 'rent') continue;
+    const nf = newByKey.get(keyOf(of));
+    if (nf && nf.recurring !== of.recurring) {
+      changes.push({
+        label: of.label,
+        before: of.recurring,
+        after: nf.recurring,
+      });
+    }
+  }
+  return changes;
+}
+
 function datesEqual(
   a: Date | string | null | undefined,
   b: Date | string | null | undefined,
@@ -2741,6 +2785,7 @@ function datesEqual(
 function rentPeriodAmendedDescription(
   before: RentPeriodSnapshot,
   after: RentPeriodSnapshot,
+  recurringChanges: RecurringChange[] = [],
 ): string {
   const parts: string[] = [];
   if (!datesEqual(before.rent_start_date, after.rent_start_date)) {
@@ -2757,6 +2802,14 @@ function rentPeriodAmendedDescription(
     parts.push(
       `frequency ${before.payment_frequency ?? '—'} → ${after.payment_frequency ?? '—'}`,
     );
+  }
+  const madeRecurring = recurringChanges.filter((c) => c.after).map((c) => c.label);
+  const madeOneTime = recurringChanges.filter((c) => !c.after).map((c) => c.label);
+  if (madeRecurring.length > 0) {
+    parts.push(`${madeRecurring.join(', ')} made recurring`);
+  }
+  if (madeOneTime.length > 0) {
+    parts.push(`${madeOneTime.join(', ')} made one-time`);
   }
   return `Tenancy period amended: ${parts.join('; ') || 'no field changes'}`;
 }

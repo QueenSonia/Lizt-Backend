@@ -126,6 +126,25 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         const attachedDate = new Date(
           ph.created_at || ph.move_in_date || new Date(),
         );
+
+        // Parse frequency/next-due once — used by both the "Tenant attached"
+        // and "Tenancy started" events so their snapshots match.
+        const ownerComment = ph.owner_comment || '';
+        const frequencyMatch = ownerComment.match(/Frequency:\s*([^,]+)/);
+        const nextDueMatch = ownerComment.match(/Next due:\s*(.+)$/);
+        const rentFrequency = frequencyMatch
+          ? frequencyMatch[1].trim()
+          : null;
+        const nextDueDate = nextDueMatch ? nextDueMatch[1].trim() : null;
+        const tenancyDataSnapshot = {
+          tenantName,
+          propertyName: prop?.name || '',
+          rentStartDate: ph.move_in_date as unknown as Date,
+          rentAmount: ph.monthly_rent ?? null,
+          rentFrequency,
+          nextDueDate,
+        };
+
         tenancyEvents.push({
           id: `tenancy-start-${ph.id}`,
           type: 'general',
@@ -134,17 +153,11 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           details: prop?.name || undefined,
           date: attachedDate.toISOString(),
           time: formatTime(attachedDate),
+          tenancyData: tenancyDataSnapshot,
         });
 
         if (ph.move_in_date) {
           const tenancyStartDate = new Date(ph.move_in_date);
-          const ownerComment = ph.owner_comment || '';
-          const frequencyMatch = ownerComment.match(/Frequency:\s*([^,]+)/);
-          const nextDueMatch = ownerComment.match(/Next due:\s*(.+)$/);
-          const rentFrequency = frequencyMatch
-            ? frequencyMatch[1].trim()
-            : null;
-          const nextDueDate = nextDueMatch ? nextDueMatch[1].trim() : null;
 
           tenancyEvents.push({
             id: `tenancy-started-${ph.id}`,
@@ -154,14 +167,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
             details: prop?.name || undefined,
             date: tenancyStartDate.toISOString(),
             time: formatTime(tenancyStartDate),
-            tenancyData: {
-              tenantName,
-              propertyName: prop?.name || '',
-              rentStartDate: ph.move_in_date,
-              rentAmount: ph.monthly_rent ?? null,
-              rentFrequency,
-              nextDueDate,
-            },
+            tenancyData: tenancyDataSnapshot,
           });
         }
       }
@@ -188,6 +194,79 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           time: formatTime(eventDate),
           relatedEntityId: ph.related_entity_id || undefined,
           relatedEntityType: 'outstanding_balance',
+        });
+      }
+
+      if (ph.event_type === 'rent_period_amended') {
+        const prop = ph.property;
+        const eventDate = new Date(ph.created_at || new Date());
+        const meta = (ph.metadata ?? {}) as {
+          before?: {
+            rent_start_date?: string | Date | null;
+            expiry_date?: string | Date | null;
+            payment_frequency?: string | null;
+            rental_price?: number | null;
+          };
+          after?: {
+            rent_start_date?: string | Date | null;
+            expiry_date?: string | Date | null;
+            payment_frequency?: string | null;
+            rental_price?: number | null;
+          };
+          recurring_changes?: { label: string; before: boolean; after: boolean }[];
+        };
+        // Prefer a rich description built from before/after metadata (which
+        // captures rental_price too). Fall back to the stored
+        // event_description (which only covers dates + frequency) for rows
+        // written before the metadata shape was finalized.
+        const parts: string[] = [];
+        const b = meta.before;
+        const a = meta.after;
+        if (b && a) {
+          const fmt = (d: string | Date | null | undefined) =>
+            d ? formatLongDate(new Date(d)) : '—';
+          if (fmt(b.rent_start_date) !== fmt(a.rent_start_date)) {
+            parts.push(`start ${fmt(b.rent_start_date)} → ${fmt(a.rent_start_date)}`);
+          }
+          if (fmt(b.expiry_date) !== fmt(a.expiry_date)) {
+            parts.push(`expiry ${fmt(b.expiry_date)} → ${fmt(a.expiry_date)}`);
+          }
+          if ((b.payment_frequency ?? null) !== (a.payment_frequency ?? null)) {
+            parts.push(
+              `frequency ${b.payment_frequency ?? '—'} → ${a.payment_frequency ?? '—'}`,
+            );
+          }
+          if (Number(b.rental_price ?? 0) !== Number(a.rental_price ?? 0)) {
+            parts.push(
+              `rent ₦${Number(b.rental_price ?? 0).toLocaleString()} → ₦${Number(a.rental_price ?? 0).toLocaleString()}`,
+            );
+          }
+        }
+        if (Array.isArray(meta.recurring_changes) && meta.recurring_changes.length > 0) {
+          const madeRecurring = meta.recurring_changes
+            .filter((c) => c.after)
+            .map((c) => c.label);
+          const madeOneTime = meta.recurring_changes
+            .filter((c) => !c.after)
+            .map((c) => c.label);
+          if (madeRecurring.length > 0) {
+            parts.push(`${madeRecurring.join(', ')} made recurring`);
+          }
+          if (madeOneTime.length > 0) {
+            parts.push(`${madeOneTime.join(', ')} made one-time`);
+          }
+        }
+        const description = parts.length
+          ? `Tenancy amended: ${parts.join('; ')}`
+          : ph.event_description || 'Tenancy amended.';
+        tenancyEvents.push({
+          id: `tenancy-amended-${ph.id}`,
+          type: 'general',
+          title: 'Tenancy amended',
+          description,
+          details: prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
         });
       }
 

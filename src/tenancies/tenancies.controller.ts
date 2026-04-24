@@ -40,7 +40,7 @@ import { RenewalInvoiceDto } from './dto/renewal-invoice.dto';
 import { RentChangeImpactDto } from './dto/rent-change-impact.dto';
 import { TenanciesService } from 'src/tenancies/tenancies.service';
 import { RenewalPaymentService } from './renewal-payment.service';
-import { RenewalPDFService } from './renewal-pdf.service';
+import { RenewalPDFService } from 'src/pdf/renewal-pdf.service';
 import { PaymentPlanRequestsService } from '../payment-plans/payment-plan-requests.service';
 import { CreatePaymentPlanRequestDto } from '../payment-plans/dto/create-payment-plan-request.dto';
 

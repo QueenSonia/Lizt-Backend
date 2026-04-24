@@ -3,7 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { TenanciesController } from './tenancies.controller';
 import { TenanciesService } from './tenancies.service';
 import { RenewalPaymentService } from './renewal-payment.service';
-import { RenewalPDFService } from './renewal-pdf.service';
+import { PdfModule } from 'src/pdf/pdf.module';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { Property } from 'src/properties/entities/property.entity';
@@ -12,6 +12,7 @@ import { Users } from 'src/users/entities/user.entity';
 import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { RenewalInvoice } from './entities/renewal-invoice.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { UsersModule } from 'src/users/users.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
@@ -34,6 +35,7 @@ import { PaymentPlansModule } from 'src/payment-plans/payment-plans.module';
       RentIncrease,
       RenewalInvoice,
       AdHocInvoiceLineItem,
+      TenantKyc,
     ]),
     UsersModule,
     AuthModule,
@@ -45,17 +47,17 @@ import { PaymentPlansModule } from 'src/payment-plans/payment-plans.module';
     EventsModule,
     TenantBalancesModule,
     forwardRef(() => PaymentPlansModule),
+    PdfModule,
   ],
   controllers: [TenanciesController],
   providers: [
     TenanciesService,
     RenewalPaymentService,
-    RenewalPDFService,
   ],
   exports: [
     TenanciesService,
     RenewalPaymentService,
-    RenewalPDFService,
+    PdfModule,
   ],
 })
 export class TenanciesModule { }

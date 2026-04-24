@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ChatLogService } from '../chat-log.service';
+import { RenewalPDFService } from 'src/pdf/renewal-pdf.service';
 
 /**
  * Template parameter for WhatsApp message templates
@@ -23,6 +24,10 @@ interface TemplateComponent {
     | TemplateBodyParameter
     | { type: 'payload'; payload: string }
     | { type: 'text'; text: string }
+    | {
+        type: 'document';
+        document: { id: string; filename: string };
+      }
   >;
 }
 
@@ -319,7 +324,12 @@ export interface RenewalPaymentTenantParams {
   tenant_name: string;
   amount: number;
   property_name: string;
-  receipt_token?: string;
+  receipt_token: string;
+  period_start: string | Date;
+  period_end: string | Date;
+  rent_amount: number;
+  service_charge: number;
+  payment_frequency: string;
 }
 
 /**
@@ -576,6 +586,7 @@ export class TemplateSenderService {
     private readonly config: ConfigService,
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly renewalPDFService: RenewalPDFService,
   ) {}
 
   /**
@@ -1937,7 +1948,38 @@ export class TemplateSenderService {
     amount,
     property_name,
     receipt_token,
+    period_start,
+    period_end,
+    rent_amount,
+    service_charge,
+    payment_frequency,
   }: RenewalPaymentTenantParams): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    const filename = this.renewalPDFService.generateReceiptFilename(
+      property_name,
+    );
+
+    // In simulator mode, skip Puppeteer + Meta media upload entirely.
+    // The frontend simulator renders a placeholder card from the stub id.
+    const mediaId = isSimulationMode
+      ? `sim_media_${Date.now()}`
+      : await (async () => {
+          const pdfBuffer =
+            await this.renewalPDFService.generateRenewalReceiptPDF(
+              receipt_token,
+            );
+          return this.uploadDocumentToMeta(pdfBuffer, filename);
+        })();
+
+    const formatPeriodDate = (d: string | Date): string =>
+      new Date(d).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      });
+
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -1949,42 +1991,93 @@ export class TemplateSenderService {
         },
         components: [
           {
-            type: 'body',
+            type: 'header',
             parameters: [
               {
-                type: 'text',
-                text: tenant_name,
-              },
-              {
-                type: 'text',
-                text: `₦${amount.toLocaleString()}`,
-              },
-              {
-                type: 'text',
-                text: property_name,
+                type: 'document',
+                document: { id: mediaId, filename },
               },
             ],
           },
-          ...(receipt_token
-            ? [
-                {
-                  type: 'button' as const,
-                  sub_type: 'url' as const,
-                  index: '0',
-                  parameters: [
-                    {
-                      type: 'text' as const,
-                      text: receipt_token,
-                    },
-                  ],
-                },
-              ]
-            : []),
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+              { type: 'text', text: property_name },
+              { type: 'text', text: formatPeriodDate(period_start) },
+              { type: 'text', text: formatPeriodDate(period_end) },
+              { type: 'text', text: `₦${rent_amount.toLocaleString()}` },
+              { type: 'text', text: payment_frequency },
+              { type: 'text', text: `₦${service_charge.toLocaleString()}` },
+            ],
+          },
         ],
       },
     };
 
     await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Upload a document (PDF) buffer to Meta's media endpoint and return the
+   * resulting media_id. Valid for 30 days on Meta's side.
+   *
+   * Gotchas baked in:
+   *  - Form field order: `messaging_product`, then `type`, then `file` last.
+   *    undici/native-fetch FormData is order-sensitive.
+   *  - `type` must be the MIME string, not shorthand.
+   *  - The Blob's filename is what Meta stores; the recipient-facing filename
+   *    is set separately in the template `document` parameter.
+   *  - One-shot upload fits PDFs up to 100MB — don't use /uploads (Flows only).
+   */
+  private async uploadDocumentToMeta(
+    buffer: Buffer,
+    filename: string,
+  ): Promise<string> {
+    const phoneNumberId = this.config.get('WA_PHONE_NUMBER_ID');
+    const accessToken = this.config.get('CLOUD_API_ACCESS_TOKEN');
+
+    if (!phoneNumberId) {
+      throw new Error(
+        'WhatsApp phone number ID (WA_PHONE_NUMBER_ID) is not configured.',
+      );
+    }
+    if (!accessToken) {
+      throw new Error(
+        'WhatsApp access token (CLOUD_API_ACCESS_TOKEN) is not configured.',
+      );
+    }
+
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', 'application/pdf');
+    form.append(
+      'file',
+      new Blob([new Uint8Array(buffer)], { type: 'application/pdf' }),
+      filename,
+    );
+
+    const response = await fetch(
+      `https://graph.facebook.com/v19.0/${phoneNumberId}/media`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+      },
+    );
+
+    const data = (await response.json()) as { id?: string; error?: unknown };
+
+    if (!response.ok || !data.id) {
+      throw new Error(
+        `Meta media upload failed (${response.status}): ${JSON.stringify(
+          data.error ?? data,
+        )}`,
+      );
+    }
+
+    return data.id;
   }
 
   /**
@@ -3378,7 +3471,7 @@ export class TemplateSenderService {
     renewal_link:
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
     renewal_payment_tenant:
-      'Congratulations {{1}}! Your renewal payment of {{2}} for {{3}} has been confirmed.\n\nClick the button below to view your receipt.',
+      'Congratulations {{1}}!\n\nYour renewal payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
     renewal_payment_landlord:
       'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThank you.',
     renewal_receipt:

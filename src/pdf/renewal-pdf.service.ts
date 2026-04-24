@@ -2,7 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as puppeteer from 'puppeteer';
-import { RenewalInvoice } from './entities/renewal-invoice.entity';
+import { RenewalInvoice } from '../tenancies/entities/renewal-invoice.entity';
 import { renewalInvoiceToFees, Fee } from '../common/billing/fees';
 
 /**
@@ -469,6 +469,15 @@ export class RenewalPDFService {
             <p class="info-value-bold">${this.escapeHtml(propertyName)}</p>
             <p class="info-value">${this.escapeHtml(propertyAddress)}</p>
           </div>
+
+          ${
+            landlordUser?.branding?.businessName
+              ? `<div class="info-group">
+            <p class="info-label">Landlord Name</p>
+            <p class="info-value-bold">${this.escapeHtml(landlordUser.branding.businessName)}</p>
+          </div>`
+              : ''
+          }
 
           <div class="info-group">
             <p class="info-label">Tenant Name</p>

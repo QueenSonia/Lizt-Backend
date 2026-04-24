@@ -256,6 +256,17 @@ export class RenewalPaymentService {
     let paymentOption: string | null = null;
 
     if (invoice) {
+      // Idempotency: if the invoice is already paid, another path (webhook
+      // or frontend-verify) has already saved the authoritative receipt_token
+      // and sent the WhatsApp receipt. Overwriting it now would orphan the
+      // token already in the tenant's WhatsApp link.
+      if (invoice.payment_status === RenewalPaymentStatus.PAID) {
+        this.logger.log(
+          `Renewal invoice ${token} already paid; skipping (idempotent)`,
+        );
+        return;
+      }
+
       if (receiptToken) {
         invoice.receipt_token = receiptToken;
         invoice.receipt_number = `RR-${Date.now()}`;

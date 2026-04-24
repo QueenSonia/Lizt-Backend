@@ -35,6 +35,7 @@ import { WhatsAppNotificationLogService } from './whatsapp-notification-log.serv
 import { WhatsAppNotificationListener } from './whatsapp-notification.listener';
 import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
+import { PdfModule } from 'src/pdf/pdf.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module
     ChatHistoryModule,
     EventsModule,
     TenantBalancesModule,
+    PdfModule,
   ],
   controllers: [WhatsappBotController],
   providers: [

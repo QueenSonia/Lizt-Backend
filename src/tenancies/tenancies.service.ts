@@ -37,6 +37,7 @@ import {
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { rentToFees, renewalInvoiceToFees, sumAll, Fee } from 'src/common/billing/fees';
 import {
   calculateRentExpiryDate,
@@ -71,6 +72,8 @@ export class TenanciesService {
     private renewalInvoiceRepository: Repository<RenewalInvoice>,
     @InjectRepository(AdHocInvoiceLineItem)
     private adHocInvoiceLineItemRepository: Repository<AdHocInvoiceLineItem>,
+    @InjectRepository(TenantKyc)
+    private tenantKycRepository: Repository<TenantKyc>,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
@@ -1210,7 +1213,7 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    return this.formatRenewalInvoiceResponse(invoice);
+    return await this.formatRenewalInvoiceResponse(invoice);
   }
 
   /**
@@ -1234,7 +1237,7 @@ export class TenanciesService {
     }
 
     // Reuse the same formatting as getRenewalInvoice
-    return this.formatRenewalInvoiceResponse(invoice);
+    return await this.formatRenewalInvoiceResponse(invoice);
   }
 
   /**
@@ -1447,9 +1450,31 @@ export class TenanciesService {
   }
 
   /**
+   * Resolve the tenant-facing email for a given renewal invoice.
+   *
+   * Uses the KYC row scoped to the invoice's landlord (matches
+   * LandlordPersonDetail's view of the tenant), falling back to the tenant's
+   * own Account email then User email. Landlord-scoping prevents leaking
+   * another landlord's KYC email onto this receipt.
+   */
+  private async resolveTenantEmail(invoice: RenewalInvoice): Promise<string> {
+    const tenantUser = invoice.tenant.user;
+    const tenantKyc = await this.tenantKycRepository.findOne({
+      where: {
+        user_id: tenantUser.id,
+        admin_id: invoice.property.owner_id,
+      },
+      order: { updated_at: 'DESC' },
+    });
+    return tenantKyc?.email ?? invoice.tenant.email ?? tenantUser.email;
+  }
+
+  /**
    * Format renewal invoice entity into API response
    */
-  private formatRenewalInvoiceResponse(invoice: RenewalInvoice): any {
+  private async formatRenewalInvoiceResponse(
+    invoice: RenewalInvoice,
+  ): Promise<any> {
     const formatDate = (date: any): string => {
       if (typeof date === 'string') {
         return date.split('T')[0];
@@ -1462,10 +1487,7 @@ export class TenanciesService {
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
 
-    const tenantUser = invoice.tenant.user;
-    const tenantKyc = tenantUser.tenant_kycs?.[0];
-    const tenantEmail =
-      tenantKyc?.email ?? invoice.tenant.email ?? tenantUser.email;
+    const tenantEmail = await this.resolveTenantEmail(invoice);
 
     return {
       id: invoice.id,
@@ -1564,7 +1586,7 @@ export class TenanciesService {
     return {
       invoiceToken: invoice.token,
       receiptToken: invoice.receipt_token,
-      invoice: this.formatRenewalInvoiceResponse(invoice),
+      invoice: await this.formatRenewalInvoiceResponse(invoice),
       paymentReference: invoice.payment_reference,
       paidAt: invoice.paid_at
         ? typeof invoice.paid_at === 'string'
@@ -1632,10 +1654,7 @@ export class TenanciesService {
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
 
-    const tenantUser = invoice.tenant.user;
-    const tenantKyc = tenantUser.tenant_kycs?.[0];
-    const tenantEmail =
-      tenantKyc?.email ?? invoice.tenant.email ?? tenantUser.email;
+    const tenantEmail = await this.resolveTenantEmail(invoice);
 
     return {
       receiptNumber: invoice.receipt_number,
@@ -1891,6 +1910,11 @@ export class TenanciesService {
           amount,
           property_name: propertyName,
           receipt_token: invoice.receipt_token,
+          period_start: invoice.start_date,
+          period_end: invoice.end_date,
+          rent_amount: parseFloat(invoice.rent_amount.toString()),
+          service_charge: parseFloat((invoice.service_charge ?? 0).toString()),
+          payment_frequency: invoice.payment_frequency ?? 'monthly',
           landlord_id: invoice.property.owner_id,
           recipient_name: tenantName,
           property_id: invoice.property_id,
@@ -2585,13 +2609,16 @@ export class TenanciesService {
    * 'outstanding_balance' externalId) are warnings — OB amounts are
    * auto-recomputed from the post-reconciliation wallet on commit, so there
    * is nothing for the user to do beyond acknowledge the shift.
+   *
+   * Renewal commit path doesn't run wallet reconciliation or plan recompute,
+   * so the "recompute on commit" promise doesn't apply there.
    */
   private async detectOBPaymentPlanShift(
     rent: Rent,
     proposed: ProposedRentChange,
     context: PreviewContext,
   ): Promise<RentChangeIssueDto[]> {
-    if (context === 'invoice_edit') return [];
+    if (context === 'invoice_edit' || context === 'renewal') return [];
 
     const plans: Array<{ id: string; charge_name: string; total_amount: string }> =
       await this.dataSource.query(

@@ -12,6 +12,13 @@ export enum RenewalPaymentStatus {
   PENDING_APPROVAL = 'pending_approval',
 }
 
+export enum RenewalLetterStatus {
+  DRAFT = 'draft',
+  SENT = 'sent',
+  ACCEPTED = 'accepted',
+  DECLINED = 'declined',
+}
+
 @Entity('renewal_invoices')
 @Index(['token'])
 @Index(['property_tenant_id'])

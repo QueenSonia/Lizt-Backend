@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { Rent } from '../rents/entities/rent.entity';
 import {
@@ -782,12 +782,15 @@ export class RentReminderService {
 
       const { startDate, endDate } = this.getTargetPeriodRange(rent);
 
-      // Refresh existing unpaid landlord invoice if one exists
+      // Refresh existing unpaid landlord invoice if one exists.
+      // Exclude superseded rows — those are historical versions replaced by
+      // a newer letter and should never be touched by the refresh cron.
       const existing = await this.renewalInvoiceRepository.findOne({
         where: {
           property_tenant_id: propertyTenant.id,
           payment_status: RenewalPaymentStatus.UNPAID,
           token_type: 'landlord',
+          superseded_by_id: IsNull(),
         },
         order: { created_at: 'DESC' },
       });

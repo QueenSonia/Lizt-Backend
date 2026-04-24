@@ -26,7 +26,9 @@ import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import {
   RenewalInvoice,
   RenewalPaymentStatus,
+  RenewalLetterStatus,
 } from './entities/renewal-invoice.entity';
+import { sanitizeLetterHtml } from 'src/common/html/sanitize-letter-html';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { NotificationService } from 'src/notifications/notification.service';
@@ -307,12 +309,26 @@ export class TenanciesService {
         amount: number;
         recurring: boolean;
       }>;
+      letterBodyHtml?: string;
+      letterBodyFields?: Record<string, unknown>;
     },
-  ): Promise<{ token: string; link: string }> {
+  ): Promise<{
+    token: string;
+    link: string;
+    activeInvoiceId: string;
+    supersededInvoiceId: string | null;
+    letterStatus: RenewalLetterStatus;
+  }> {
     // 1. Find the PropertyTenant relationship with all necessary relations
     const propertyTenant = await this.propertyTenantRepository.findOne({
       where: { id: propertyTenantId },
-      relations: ['property', 'property.owner', 'tenant', 'tenant.user'],
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
     });
 
     if (!propertyTenant) {
@@ -463,33 +479,58 @@ export class TenanciesService {
 
     const tenantName = `${propertyTenant.tenant.user.first_name} ${propertyTenant.tenant.user.last_name}`;
 
-    // 6. Find-or-create the renewal invoice inside a transaction with row
-    // locking so two concurrent calls for the same tenant can't race.
-    const { renewalInvoice, token } = await this.dataSource.transaction(
+    const landlordAccount = propertyTenant.property.owner;
+    const landlordName =
+      landlordAccount?.profile_name ||
+      `${landlordAccount?.user?.first_name ?? ''} ${landlordAccount?.user?.last_name ?? ''}`
+        .trim() ||
+      'Your Landlord';
+
+    const sanitizedLetterHtml = sanitizeLetterHtml(body?.letterBodyHtml);
+    const letterBodyFields = body?.letterBodyFields ?? null;
+
+    // 6. Version-aware upsert inside a transaction with pessimistic row
+    // locking. Editing a letter that's already `sent` or `accepted` creates
+    // a NEW row that supersedes the previous one (we can't mutate a row
+    // whose token is in the wild — WhatsApp links must stay auditable).
+    const { invoice, supersededInvoiceId } = await this.dataSource.transaction(
       async (manager) => {
-        // Lock any existing unpaid draft/landlord invoice for this tenant to
-        // prevent concurrent updates from overwriting each other.
+        // Lock the latest NON-SUPERSEDED row for this property_tenant so two
+        // concurrent saves can't race on the version decision.
         const existingInvoice = await manager
           .getRepository(RenewalInvoice)
           .createQueryBuilder('ri')
           .setLock('pessimistic_write')
-          .where('ri.property_tenant_id = :ptId', {
-            ptId: propertyTenantId,
-          })
-          .andWhere('ri.payment_status = :status', {
-            status: RenewalPaymentStatus.UNPAID,
-          })
-          .andWhere('ri.token_type IN (:...types)', {
-            types: ['landlord', 'draft'],
-          })
+          .where('ri.property_tenant_id = :ptId', { ptId: propertyTenantId })
+          .andWhere('ri.superseded_by_id IS NULL')
           .andWhere('ri.deleted_at IS NULL')
           .orderBy('ri.created_at', 'DESC')
           .getOne();
 
-        let invoice: RenewalInvoice;
+        const shouldSupersede =
+          !!existingInvoice &&
+          (existingInvoice.letter_status === RenewalLetterStatus.SENT ||
+            existingInvoice.letter_status === RenewalLetterStatus.ACCEPTED);
 
-        if (existingInvoice) {
-          // Update existing invoice with landlord's chosen terms
+        if (
+          existingInvoice &&
+          existingInvoice.payment_status === RenewalPaymentStatus.PAID
+        ) {
+          throw new HttpException(
+            'This renewal has already been paid. Start a fresh renewal.',
+            HttpStatus.CONFLICT,
+          );
+        }
+
+        const nextLetterStatus = isSilent
+          ? RenewalLetterStatus.DRAFT
+          : RenewalLetterStatus.SENT;
+
+        let invoice: RenewalInvoice;
+        let superseded: string | null = null;
+
+        if (existingInvoice && !shouldSupersede) {
+          // In-place edit: still draft or was previously declined.
           existingInvoice.start_date = startDate;
           existingInvoice.end_date = endDate;
           existingInvoice.rent_amount = rentAmount;
@@ -505,11 +546,23 @@ export class TenanciesService {
             walletBalance < 0 ? -walletBalance : 0;
           existingInvoice.wallet_balance = walletBalance;
           existingInvoice.payment_frequency = paymentFrequency;
-          // Upgrade draft → landlord when the landlord is actually sending the notification
           existingInvoice.token_type = isSilent ? 'draft' : 'landlord';
+          // Only overwrite letter body when the landlord supplied one.
+          // (The landlord may be sending a previously-saved draft as-is.)
+          if (sanitizedLetterHtml !== null) {
+            existingInvoice.letter_body_html = sanitizedLetterHtml;
+          }
+          if (letterBodyFields !== null) {
+            existingInvoice.letter_body_fields = letterBodyFields;
+          }
+          existingInvoice.letter_status = nextLetterStatus;
+          if (!isSilent) {
+            existingInvoice.letter_sent_at = new Date();
+          }
           invoice = existingInvoice;
-        } else {
-          // Generate new token and create fresh invoice
+        } else if (existingInvoice && shouldSupersede) {
+          // Create a NEW version. Seed the letter body from the previous
+          // row so the landlord's edits land on top of what was there.
           invoice = manager.getRepository(RenewalInvoice).create({
             token: uuidv4(),
             property_tenant_id: propertyTenantId,
@@ -531,6 +584,49 @@ export class TenanciesService {
             payment_status: RenewalPaymentStatus.UNPAID,
             payment_frequency: paymentFrequency,
             token_type: isSilent ? 'draft' : 'landlord',
+            letter_body_html:
+              sanitizedLetterHtml ?? existingInvoice.letter_body_html,
+            letter_body_fields:
+              letterBodyFields ?? existingInvoice.letter_body_fields,
+            letter_status: nextLetterStatus,
+            letter_sent_at: isSilent ? null : new Date(),
+            supersedes_id: existingInvoice.id,
+          });
+          await manager.getRepository(RenewalInvoice).save(invoice);
+
+          // Lock the old row: non-null superseded_by_id redirects live
+          // traffic away from the stale token everywhere we gate on it.
+          existingInvoice.superseded_by_id = invoice.id;
+          existingInvoice.superseded_at = new Date();
+          await manager.getRepository(RenewalInvoice).save(existingInvoice);
+          superseded = existingInvoice.id;
+        } else {
+          // No existing row — fresh renewal.
+          invoice = manager.getRepository(RenewalInvoice).create({
+            token: uuidv4(),
+            property_tenant_id: propertyTenantId,
+            property_id: propertyTenant.property_id,
+            tenant_id: propertyTenant.tenant_id,
+            start_date: startDate,
+            end_date: endDate,
+            rent_amount: rentAmount,
+            service_charge: serviceCharge,
+            legal_fee: legalFee,
+            agency_fee: agencyFee,
+            caution_deposit: cautionDeposit,
+            other_charges: otherCharges,
+            other_fees: otherFees,
+            fee_breakdown: allFees,
+            total_amount: totalAmount,
+            outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
+            wallet_balance: walletBalance,
+            payment_status: RenewalPaymentStatus.UNPAID,
+            payment_frequency: paymentFrequency,
+            token_type: isSilent ? 'draft' : 'landlord',
+            letter_body_html: sanitizedLetterHtml,
+            letter_body_fields: letterBodyFields,
+            letter_status: nextLetterStatus,
+            letter_sent_at: isSilent ? null : new Date(),
           });
         }
 
@@ -542,22 +638,23 @@ export class TenanciesService {
             .create({
               property_id: propertyTenant.property_id,
               tenant_id: propertyTenant.tenant_id,
-              event_type: 'renewal_link_sent',
-              event_description: `Tenancy renewal link sent to ${tenantName}`,
-              owner_comment: `Tenancy renewal link sent to ${tenantName}`,
+              event_type: 'renewal_letter_sent',
+              event_description: `Tenancy renewal letter sent to ${tenantName}`,
+              owner_comment: `Tenancy renewal letter sent to ${tenantName}`,
               related_entity_id: invoice.id,
               related_entity_type: 'renewal_invoice',
             });
           await manager.getRepository(PropertyHistory).save(historyEntry);
         }
 
-        return { renewalInvoice: invoice, token: invoice.token };
+        return { invoice, supersededInvoiceId: superseded };
       },
     );
 
+    const token = invoice.token;
+
     if (!isSilent) {
-      // Emit event for livefeed (listener will create the detailed notification)
-      this.eventEmitter.emit('renewal.link.sent', {
+      this.eventEmitter.emit('renewal.letter.sent', {
         property_id: propertyTenant.property_id,
         property_name: propertyTenant.property.name,
         tenant_id: propertyTenant.tenant_id,
@@ -568,14 +665,12 @@ export class TenanciesService {
       });
     }
 
-    // 11. Generate renewal link
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const baseUrl = `${frontendUrl}/renewal-invoice`;
-    const link = `${baseUrl}/${token}`;
+    // New flow: the tenant opens the letter page first; the payment page at
+    // /renewal-invoice/{token} is only reachable after they accept via OTP.
+    const link = `${frontendUrl}/renewal-letters/${token}`;
 
-    // 12. Queue WhatsApp notification asynchronously (fire and forget)
-    // Skip if silent flag is set (landlord is pre-setting terms without notifying tenant yet)
-    if (!body?.silent) {
+    if (!isSilent) {
       setImmediate(() => {
         void (async () => {
           try {
@@ -583,20 +678,21 @@ export class TenanciesService {
               propertyTenant.tenant.user.phone_number,
             );
 
-            await this.whatsappNotificationLog.queue('sendRenewalLink', {
+            await this.whatsappNotificationLog.queue('sendRenewalLetterLink', {
               phone_number: tenantPhone,
               tenant_name: tenantName,
+              property_name: propertyTenant.property.name,
+              landlord_name: landlordName,
               renewal_token: token,
-              frontend_url: frontendUrl,
               landlord_id: userId,
               recipient_name: tenantName,
               property_id: propertyTenant.property_id,
             });
 
-            console.log(`Renewal link queued for ${tenantPhone}: ${link}`);
+            console.log(`Renewal letter link queued for ${tenantPhone}: ${link}`);
           } catch (error) {
             console.error(
-              'Error queueing renewal link WhatsApp notification:',
+              'Error queueing renewal letter WhatsApp notification:',
               error,
             );
           }
@@ -604,7 +700,13 @@ export class TenanciesService {
       });
     }
 
-    return { token, link };
+    return {
+      token,
+      link,
+      activeInvoiceId: invoice.id,
+      supersededInvoiceId,
+      letterStatus: invoice.letter_status,
+    };
   }
 
   /**
@@ -1213,6 +1315,26 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
+    // Gate the payment page behind letter acceptance + current-version.
+    // (OB / tenant-initiated tokens bypass this gate — they have no letter.)
+    const isLandlordInvoice = invoice.token_type === 'landlord';
+    if (isLandlordInvoice && invoice.superseded_by_id) {
+      throw new HttpException(
+        'This invoice has been updated. Your landlord has sent you a revised offer letter — please open the latest link from your WhatsApp.',
+        HttpStatus.GONE,
+      );
+    }
+    if (
+      isLandlordInvoice &&
+      invoice.letter_status !== RenewalLetterStatus.ACCEPTED &&
+      invoice.payment_status !== RenewalPaymentStatus.PAID
+    ) {
+      throw new HttpException(
+        "Your landlord's offer letter hasn't been accepted yet. Please open the renewal letter link sent to your WhatsApp and accept it before paying.",
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
     return await this.formatRenewalInvoiceResponse(invoice);
   }
 
@@ -1627,14 +1749,16 @@ export class TenanciesService {
     }
 
     // Format receipt data
-    return this.formatRenewalReceiptResponse(invoice);
+    return await this.formatRenewalReceiptResponse(invoice);
   }
 
   /**
    * Format renewal invoice entity into receipt response
    * Requirements: 4.1-4.8, 5.1-5.6
    */
-  private formatRenewalReceiptResponse(invoice: RenewalInvoice): any {
+  private async formatRenewalReceiptResponse(
+    invoice: RenewalInvoice,
+  ): Promise<any> {
     const formatDate = (date: any): string => {
       if (typeof date === 'string') {
         return date.split('T')[0];

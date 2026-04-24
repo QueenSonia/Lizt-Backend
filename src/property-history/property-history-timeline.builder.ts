@@ -627,6 +627,60 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         });
       }
 
+      if (ph.event_type === 'renewal_letter_sent') {
+        const prop = ph.property;
+        const eventDate = new Date(ph.created_at || new Date());
+        tenancyEvents.push({
+          id: `renewal-letter-sent-${ph.id}`,
+          type: 'general',
+          title: 'Renewal Letter Sent',
+          description:
+            ph.event_description ||
+            `Tenancy renewal letter sent for ${prop?.name || 'property'}.`,
+          details: prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          relatedEntityId: ph.related_entity_id || undefined,
+          relatedEntityType: 'renewal_invoice',
+        });
+      }
+
+      if (ph.event_type === 'renewal_letter_accepted') {
+        const prop = ph.property;
+        const eventDate = new Date(ph.created_at || new Date());
+        tenancyEvents.push({
+          id: `renewal-letter-accepted-${ph.id}`,
+          type: 'general',
+          title: 'Renewal Letter Accepted',
+          description:
+            ph.event_description ||
+            `Renewal letter accepted for ${prop?.name || 'property'}.`,
+          details: prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          relatedEntityId: ph.related_entity_id || undefined,
+          relatedEntityType: 'renewal_invoice',
+        });
+      }
+
+      if (ph.event_type === 'renewal_letter_declined') {
+        const prop = ph.property;
+        const eventDate = new Date(ph.created_at || new Date());
+        tenancyEvents.push({
+          id: `renewal-letter-declined-${ph.id}`,
+          type: 'general',
+          title: 'Renewal Letter Declined',
+          description:
+            ph.event_description ||
+            `Renewal letter declined for ${prop?.name || 'property'}.`,
+          details: prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          relatedEntityId: ph.related_entity_id || undefined,
+          relatedEntityType: 'renewal_invoice',
+        });
+      }
+
       if (ph.event_type === 'renewal_payment_made') {
         const prop = ph.property;
         const eventDate = new Date(ph.created_at || new Date());

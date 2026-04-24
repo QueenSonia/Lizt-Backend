@@ -224,7 +224,7 @@ export class TenanciesController {
     @Body() body: InitiateRenewalDto,
     @Req() req: any,
   ) {
-    const { token, link } = await this.tenanciesService.initiateRenewal(
+    const result = await this.tenanciesService.initiateRenewal(
       propertyTenantId,
       req.user.id,
       body,
@@ -232,10 +232,15 @@ export class TenanciesController {
 
     return {
       success: true,
-      message: 'Renewal link sent successfully',
+      message: body?.silent
+        ? 'Renewal letter saved'
+        : 'Renewal letter sent successfully',
       data: {
-        token,
-        link,
+        token: result.token,
+        link: result.link,
+        activeInvoiceId: result.activeInvoiceId,
+        supersededInvoiceId: result.supersededInvoiceId,
+        letterStatus: result.letterStatus,
         sentAt: new Date().toISOString(),
       },
     };

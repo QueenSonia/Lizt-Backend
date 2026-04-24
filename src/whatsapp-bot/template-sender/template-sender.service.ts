@@ -317,6 +317,27 @@ export interface RenewalLinkParams {
 }
 
 /**
+ * Parameters for renewal letter link (new flow — tenant must accept before invoice)
+ */
+export interface RenewalLetterLinkParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  landlord_name: string;
+  renewal_token: string;
+}
+
+/**
+ * Parameters for landlord notification when tenant declines a renewal letter
+ */
+export interface RenewalLetterDeclinedNoticeParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+}
+
+/**
  * Parameters for renewal payment confirmation to tenant
  */
 export interface RenewalPaymentTenantParams {
@@ -1887,6 +1908,78 @@ export class TemplateSenderService {
       },
     };
 
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send renewal LETTER link (new flow — tenant accepts before receiving an
+   * invoice). URL button resolves to /renewal-letters/{token} on the frontend.
+   * Template: renewal_letter_link
+   */
+  async sendRenewalLetterLink({
+    phone_number,
+    tenant_name,
+    property_name,
+    landlord_name,
+    renewal_token,
+  }: RenewalLetterLinkParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_letter_link',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: landlord_name },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: renewal_token }],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify landlord that the tenant declined the renewal letter.
+   * Template: renewal_letter_declined_landlord_notice
+   */
+  async sendRenewalLetterDeclinedNotice({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+  }: RenewalLetterDeclinedNoticeParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_letter_declined_landlord_notice',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+            ],
+          },
+        ],
+      },
+    };
     await this.sendToWhatsappAPI(payload);
   }
 
@@ -3470,6 +3563,10 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nPlease click the button below to view your invoice and make payment for your outstanding balance.',
     renewal_link:
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
+    renewal_letter_link:
+      'Hi {{1}}, your landlord {{3}} has prepared a renewal offer for {{2}}. Tap below to review and accept it.',
+    renewal_letter_declined_landlord_notice:
+      'Hi {{1}}, {{2}} has declined the renewal offer for {{3}}. Open your Lizt dashboard to decide whether to revise the offer or market the unit.',
     renewal_payment_tenant:
       'Congratulations {{1}}!\n\nYour renewal payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
     renewal_payment_landlord:

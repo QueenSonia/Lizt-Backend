@@ -162,8 +162,12 @@ export class RenewalInvoice extends BaseEntity {
   letter_body_html: string | null;
 
   /** Free-text slot overrides (landlord name override, company, tenant address lines). */
+  // `any` here is deliberate — narrower types (Record<string, unknown>) fight
+  // TypeORM's _QueryDeepPartialEntity expansion in call-sites that pass
+  // Partial<RenewalInvoice> into manager.update(). Keep the DTO types strict.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   @Column({ type: 'jsonb', nullable: true })
-  letter_body_fields: Record<string, unknown> | null;
+  letter_body_fields: Record<string, any> | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   letter_sent_at: Date | null;

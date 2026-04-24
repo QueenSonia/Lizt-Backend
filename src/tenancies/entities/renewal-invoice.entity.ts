@@ -24,6 +24,8 @@ export enum RenewalLetterStatus {
 @Index(['property_tenant_id'])
 @Index(['payment_status'])
 @Index(['created_at'])
+@Index(['letter_status'])
+@Index(['superseded_by_id'])
 export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'varchar', length: 255, unique: true })
   token: string;
@@ -145,4 +147,61 @@ export class RenewalInvoice extends BaseEntity {
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   payment_method: string | null;
+
+  // ── Renewal-letter lifecycle (distinct from payment lifecycle) ──────────
+  @Column({
+    type: 'enum',
+    enum: RenewalLetterStatus,
+    enumName: 'renewal_letter_status_enum',
+    default: RenewalLetterStatus.DRAFT,
+  })
+  letter_status: RenewalLetterStatus;
+
+  /** Sanitized HTML of the editable letter body (see common/sanitize-html config). */
+  @Column({ type: 'text', nullable: true })
+  letter_body_html: string | null;
+
+  /** Free-text slot overrides (landlord name override, company, tenant address lines). */
+  @Column({ type: 'jsonb', nullable: true })
+  letter_body_fields: Record<string, unknown> | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  letter_sent_at: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  accepted_at: Date | null;
+
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  accepted_by_phone: string | null;
+
+  /**
+   * The 6-digit code the tenant used to accept — persisted for the audit
+   * stamp only (live OTP challenges live in Redis with TTL).
+   */
+  @Column({ type: 'varchar', length: 8, nullable: true })
+  acceptance_otp: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  decision_made_at: Date | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  decision_made_ip: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  declined_at: Date | null;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  decline_reason: string | null;
+
+  // ── Supersession (cross-version integrity) ──────────────────────────────
+  /** Points from a NEW row to the version it replaces. Set at creation. */
+  @Column({ type: 'uuid', nullable: true })
+  supersedes_id: string | null;
+
+  /** Points from an OLD row to its replacement. Non-null ⇒ row is locked. */
+  @Column({ type: 'uuid', nullable: true })
+  superseded_by_id: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  superseded_at: Date | null;
 }

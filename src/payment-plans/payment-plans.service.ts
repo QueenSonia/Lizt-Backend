@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
@@ -106,7 +106,8 @@ export class PaymentPlansService {
 
     // Locate the target renewal invoice — the current unpaid landlord
     // invoice for this tenancy. Either we were handed an id explicitly,
-    // or we look up the latest unpaid one.
+    // or we look up the latest unpaid non-superseded one. Superseded rows
+    // (old letter versions replaced by a newer letter) must not be picked.
     const invoice = dto.renewalInvoiceId
       ? await this.renewalInvoiceRepository.findOne({
           where: { id: dto.renewalInvoiceId },
@@ -116,6 +117,7 @@ export class PaymentPlansService {
             property_tenant_id: dto.propertyTenantId,
             payment_status: RenewalPaymentStatus.UNPAID,
             token_type: 'landlord',
+            superseded_by_id: IsNull(),
           },
           order: { created_at: 'DESC' },
         });
@@ -1101,6 +1103,20 @@ export class PaymentPlansService {
       markedByUserId?: string;
     },
   ): Promise<void> {
+    // Idempotency: webhook and frontend-verify both race to here.
+    // Re-read status so the loser doesn't overwrite receipt_token (which is
+    // already in the wild via the winner's WhatsApp receipt link).
+    const current = await this.installmentRepository.findOne({
+      where: { id: installment.id },
+      select: ['id', 'status'],
+    });
+    if (!current || current.status === InstallmentStatus.PAID) {
+      this.logger.log(
+        `Installment ${installment.id} already paid; skipping (idempotent)`,
+      );
+      return;
+    }
+
     const paidAt = args.paidAt ?? new Date();
     const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
     const receiptNumber = `PLAN-R-${Date.now()}`;

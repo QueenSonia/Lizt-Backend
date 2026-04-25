@@ -12,11 +12,20 @@ export enum RenewalPaymentStatus {
   PENDING_APPROVAL = 'pending_approval',
 }
 
+export enum RenewalLetterStatus {
+  DRAFT = 'draft',
+  SENT = 'sent',
+  ACCEPTED = 'accepted',
+  DECLINED = 'declined',
+}
+
 @Entity('renewal_invoices')
 @Index(['token'])
 @Index(['property_tenant_id'])
 @Index(['payment_status'])
 @Index(['created_at'])
+@Index(['letter_status'])
+@Index(['superseded_by_id'])
 export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'varchar', length: 255, unique: true })
   token: string;
@@ -138,4 +147,85 @@ export class RenewalInvoice extends BaseEntity {
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   payment_method: string | null;
+
+  // ── Renewal-letter lifecycle (distinct from payment lifecycle) ──────────
+  @Column({
+    type: 'enum',
+    enum: RenewalLetterStatus,
+    enumName: 'renewal_letter_status_enum',
+    default: RenewalLetterStatus.DRAFT,
+  })
+  letter_status: RenewalLetterStatus;
+
+  /** Sanitized HTML of the editable letter body (see common/sanitize-html config). */
+  @Column({ type: 'text', nullable: true })
+  letter_body_html: string | null;
+
+  /** Free-text slot overrides (landlord name override, company, tenant address lines). */
+  // `any` here is deliberate — narrower types (Record<string, unknown>) fight
+  // TypeORM's _QueryDeepPartialEntity expansion in call-sites that pass
+  // Partial<RenewalInvoice> into manager.update(). Keep the DTO types strict.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  @Column({ type: 'jsonb', nullable: true })
+  letter_body_fields: Record<string, any> | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  letter_sent_at: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  accepted_at: Date | null;
+
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  accepted_by_phone: string | null;
+
+  /**
+   * The 6-digit code the tenant used to accept — persisted for the audit
+   * stamp only (live OTP challenges live in Redis with TTL).
+   */
+  @Column({ type: 'varchar', length: 8, nullable: true })
+  acceptance_otp: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  decision_made_at: Date | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  decision_made_ip: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  declined_at: Date | null;
+
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  declined_by_phone: string | null;
+
+  /**
+   * The 6-digit code the tenant used to decline — persisted for the audit
+   * stamp only, mirroring `acceptance_otp` (live OTP challenges live in
+   * Redis with TTL).
+   */
+  @Column({ type: 'varchar', length: 8, nullable: true })
+  decline_otp: string | null;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  decline_reason: string | null;
+
+  /**
+   * Stamped by processOverdueRents when the rent expires while the letter
+   * is still in 'sent' state — the cron flips letter_status to 'accepted'
+   * and sets this column. The tenant page renders an AUTO-RENEWED stamp
+   * variant (no OTP/phone metadata) when this is non-null.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  auto_renewed_at: Date | null;
+
+  // ── Supersession (cross-version integrity) ──────────────────────────────
+  /** Points from a NEW row to the version it replaces. Set at creation. */
+  @Column({ type: 'uuid', nullable: true })
+  supersedes_id: string | null;
+
+  /** Points from an OLD row to its replacement. Non-null ⇒ row is locked. */
+  @Column({ type: 'uuid', nullable: true })
+  superseded_by_id: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  superseded_at: Date | null;
 }

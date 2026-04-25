@@ -4,12 +4,15 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
   RenewalInvoice,
   RenewalPaymentStatus,
+  RenewalLetterStatus,
 } from './entities/renewal-invoice.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import { Property } from '../properties/entities/property.entity';
@@ -84,6 +87,25 @@ export class RenewalPaymentService {
     // Check if invoice is already paid
     if (invoice.payment_status === RenewalPaymentStatus.PAID) {
       throw new ConflictException('This invoice has already been paid');
+    }
+
+    // Same gating as getRenewalInvoice: only the current (non-superseded)
+    // landlord-type invoice whose letter has been accepted may accept payment.
+    const isLandlordInvoice = invoice.token_type === 'landlord';
+    if (isLandlordInvoice && invoice.superseded_by_id) {
+      throw new HttpException(
+        'This invoice has been updated. Your landlord has sent you a revised offer letter — please open the latest link from your WhatsApp.',
+        HttpStatus.GONE,
+      );
+    }
+    if (
+      isLandlordInvoice &&
+      invoice.letter_status !== RenewalLetterStatus.ACCEPTED
+    ) {
+      throw new HttpException(
+        "Your landlord's offer letter hasn't been accepted yet. Please open the renewal letter link sent to your WhatsApp and accept it before paying.",
+        HttpStatus.FORBIDDEN,
+      );
     }
 
     // Validate amount is positive and for custom payments, must be >= invoice total
@@ -256,6 +278,17 @@ export class RenewalPaymentService {
     let paymentOption: string | null = null;
 
     if (invoice) {
+      // Idempotency: if the invoice is already paid, another path (webhook
+      // or frontend-verify) has already saved the authoritative receipt_token
+      // and sent the WhatsApp receipt. Overwriting it now would orphan the
+      // token already in the tenant's WhatsApp link.
+      if (invoice.payment_status === RenewalPaymentStatus.PAID) {
+        this.logger.log(
+          `Renewal invoice ${token} already paid; skipping (idempotent)`,
+        );
+        return;
+      }
+
       if (receiptToken) {
         invoice.receipt_token = receiptToken;
         invoice.receipt_number = `RR-${Date.now()}`;

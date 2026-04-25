@@ -292,16 +292,9 @@ export class PropertiesService {
               tenantUser = await this.usersRepository.findOne({
                 where: { email: tenantData.email },
               });
-
-              // Update the existing user's phone to match what the landlord entered
-              if (tenantUser && tenantUser.phone_number !== normalizedPhone) {
-                console.log('📞 Updating existing user phone number:', {
-                  oldPhone: tenantUser.phone_number,
-                  newPhone: normalizedPhone,
-                });
-                tenantUser.phone_number = normalizedPhone;
-                tenantUser = await this.usersRepository.save(tenantUser);
-              }
+              // The matched user's phone stays as-is. The landlord's typed
+              // phone goes onto the per-landlord tenant_kyc row instead so
+              // we don't corrupt another landlord's view of this user.
             }
 
             if (!tenantUser) {
@@ -321,27 +314,13 @@ export class PropertiesService {
           }
         }
       } else {
-        console.log('✅ Using existing user:', {
+        console.log('✅ Reusing existing user (identity preserved):', {
           userId: tenantUser.id,
           phone: tenantUser.phone_number,
           role: tenantUser.role,
         });
-
-        // Overwrite the existing user's name with what the landlord entered
-        const nameChanged =
-          (firstName && tenantUser.first_name !== firstName) ||
-          (lastName && tenantUser.last_name !== lastName);
-        if (nameChanged) {
-          console.log('✏️ Updating existing user name from landlord input:', {
-            oldFirstName: tenantUser.first_name,
-            oldLastName: tenantUser.last_name,
-            newFirstName: firstName,
-            newLastName: lastName,
-          });
-          if (firstName) tenantUser.first_name = firstName;
-          if (lastName) tenantUser.last_name = lastName;
-          tenantUser = await this.usersRepository.save(tenantUser);
-        }
+        // The landlord's typed name does NOT overwrite the user's global
+        // identity — it lands on the per-landlord tenant_kyc row below.
       }
 
       // 6. Create tenant account
@@ -390,6 +369,45 @@ export class PropertiesService {
           }
         }
       }
+
+      // 6a. Upsert per-landlord tenant_kyc with the landlord's typed name
+      // and phone. tenant_kyc is keyed by (admin_id, phone_number) and the
+      // read path prefers tenantKyc over the shared users row, so this is
+      // what makes the property-detail and tenant-profile screens display
+      // what the landlord typed — without mutating the user's identity.
+      await queryRunner.manager
+        .createQueryBuilder()
+        .insert()
+        .into(TenantKyc)
+        .values({
+          user_id: tenantUser.id,
+          admin_id: ownerId,
+          first_name: firstName,
+          last_name: lastName,
+          phone_number: normalizedPhone,
+          email: tenantData.email ?? tenantUser.email,
+          date_of_birth: new Date('1900-01-01'),
+          gender: Gender.MALE,
+          nationality: '-',
+          current_residence: '-',
+          state_of_origin: '-',
+          marital_status: MaritalStatus.SINGLE,
+          religion: '-',
+          employment_status: EmploymentStatus.EMPLOYED,
+          occupation: '-',
+          monthly_net_income: '0',
+          contact_address: '-',
+          next_of_kin_full_name: '-',
+          next_of_kin_address: '-',
+          next_of_kin_relationship: '-',
+          next_of_kin_phone_number: '-',
+          next_of_kin_email: '-',
+        })
+        .orUpdate(
+          ['first_name', 'last_name', 'email', 'user_id'],
+          ['admin_id', 'phone_number'],
+        )
+        .execute();
 
       // 7. Get or create KYC link for landlord
       const kycLinkResponse = await this.kycLinksService.generateKYCLink(
@@ -1299,12 +1317,23 @@ export class PropertiesService {
     let currentTenant: any | null = null;
     let pendingRenewalInvoice: {
       id: string;
+      token: string;
       rentAmount: number;
       serviceCharge: number;
+      cautionDeposit: number;
+      legalFee: number;
+      agencyFee: number;
+      otherFees: unknown;
       totalAmount: number;
       paymentFrequency: string | null;
+      startDate: string | null;
       endDate: string | null;
       feeBreakdown: Fee[];
+      letterStatus: string;
+      letterBodyHtml: string | null;
+      letterBodyFields: Record<string, unknown> | null;
+      letterSentAt: string | null;
+      supersedesId: string | null;
     } | null = null;
     let pendingAdHocInvoiceFees: Array<{
       invoiceId: string;
@@ -1332,41 +1361,89 @@ export class PropertiesService {
         })[0];
 
       // Check for latest renewal invoice for this property+tenant.
-      // Scope to landlord/draft invoices — tenant-initiated invoices
-      // (e.g. WhatsApp "Pay OB") must not hide the real renewal from the UI.
+      // Scope to landlord/draft invoices (tenant-initiated "Pay OB" invoices
+      // must not hide the real renewal) AND exclude superseded rows — those
+      // are historical versions that have been replaced by a new letter.
       const latestRenewalInvoice = await this.renewalInvoiceRepository.findOne({
         where: {
           property_id: property.id,
           tenant_id: activeTenantRelation.tenant.id,
           token_type: In(['landlord', 'draft']),
+          superseded_by_id: IsNull(),
         },
         order: { created_at: 'DESC' },
         select: [
           'id',
+          'token',
           'payment_status',
           'token_type',
           'total_amount',
           'amount_paid',
           'rent_amount',
           'service_charge',
+          'caution_deposit',
+          'legal_fee',
+          'agency_fee',
+          'other_fees',
           'payment_frequency',
+          'start_date',
           'end_date',
           'fee_breakdown',
+          'letter_status',
+          'letter_body_html',
+          'letter_body_fields',
+          'letter_sent_at',
+          'supersedes_id',
+          'accepted_at',
         ],
       });
 
-      let renewalStatus: 'pending' | 'paid' | null = null;
+      let renewalStatus:
+        | 'letter_sent'
+        | 'accepted'
+        | 'revised_draft'
+        | 'declined'
+        | 'paid'
+        | null = null;
+      let isRevisionPendingSend = false;
+      let previousAcceptanceAt: Date | null = null;
       if (latestRenewalInvoice) {
         if (latestRenewalInvoice.payment_status === 'paid') {
           renewalStatus = 'paid';
-        } else if (latestRenewalInvoice.token_type === 'landlord') {
-          // Only show 'pending' badge when the tenant has actually been notified
-          renewalStatus = 'pending';
+        } else if (latestRenewalInvoice.letter_status === 'accepted') {
+          renewalStatus = 'accepted';
+        } else if (latestRenewalInvoice.letter_status === 'sent') {
+          renewalStatus = 'letter_sent';
+        } else if (latestRenewalInvoice.letter_status === 'declined') {
+          renewalStatus = 'declined';
+        } else if (
+          latestRenewalInvoice.letter_status === 'draft' &&
+          latestRenewalInvoice.supersedes_id
+        ) {
+          // Unsent edit sitting on top of a previously sent/accepted row —
+          // the tenant's existing invoice is locked until landlord Sends.
+          renewalStatus = 'revised_draft';
+          isRevisionPendingSend = true;
         }
-        // draft invoices (silent saves) do not trigger the badge
+        // Plain drafts (no supersedes_id) don't surface a badge.
+
+        if (latestRenewalInvoice.supersedes_id) {
+          const prior = await this.renewalInvoiceRepository.findOne({
+            where: { id: latestRenewalInvoice.supersedes_id },
+            select: ['accepted_at'],
+          });
+          previousAcceptanceAt = prior?.accepted_at ?? null;
+        }
       }
 
-      // Pending landlord invoice (unpaid) — the amount the tenant is expected to pay
+      // Pending landlord invoice (unpaid) — the amount the tenant is expected to pay.
+      // Also carries the letter lifecycle + last saved body so the renew screen
+      // can hydrate without a second round-trip.
+      const toIsoOrNull = (v: Date | string | null | undefined): string | null => {
+        if (!v) return null;
+        if (v instanceof Date) return v.toISOString().split('T')[0];
+        return String(v).includes('T') ? String(v).split('T')[0] : String(v);
+      };
       pendingRenewalInvoice =
         latestRenewalInvoice &&
         latestRenewalInvoice.payment_status === RenewalPaymentStatus.UNPAID &&
@@ -1374,22 +1451,43 @@ export class PropertiesService {
           latestRenewalInvoice.token_type === 'draft')
           ? {
               id: latestRenewalInvoice.id,
+              token: latestRenewalInvoice.token,
               rentAmount: parseFloat(
                 latestRenewalInvoice.rent_amount.toString(),
               ),
               serviceCharge: parseFloat(
                 (latestRenewalInvoice.service_charge || 0).toString(),
               ),
+              cautionDeposit: parseFloat(
+                ((latestRenewalInvoice as unknown as { caution_deposit?: number })
+                  .caution_deposit || 0).toString(),
+              ),
+              legalFee: parseFloat(
+                (latestRenewalInvoice.legal_fee || 0).toString(),
+              ),
+              agencyFee: parseFloat(
+                ((latestRenewalInvoice as unknown as { agency_fee?: number })
+                  .agency_fee || 0).toString(),
+              ),
+              otherFees: (latestRenewalInvoice as unknown as { other_fees?: unknown })
+                .other_fees ?? [],
               totalAmount: parseFloat(
                 latestRenewalInvoice.total_amount.toString(),
               ),
               paymentFrequency: latestRenewalInvoice.payment_frequency ?? null,
-              endDate: latestRenewalInvoice.end_date
-                ? latestRenewalInvoice.end_date instanceof Date
-                  ? latestRenewalInvoice.end_date.toISOString().split('T')[0]
-                  : String(latestRenewalInvoice.end_date)
-                : null,
+              startDate: toIsoOrNull(latestRenewalInvoice.start_date),
+              endDate: toIsoOrNull(latestRenewalInvoice.end_date),
               feeBreakdown: latestRenewalInvoice.fee_breakdown ?? [],
+              letterStatus: latestRenewalInvoice.letter_status ?? 'draft',
+              letterBodyHtml: latestRenewalInvoice.letter_body_html ?? null,
+              letterBodyFields:
+                (latestRenewalInvoice as unknown as {
+                  letter_body_fields?: Record<string, unknown> | null;
+                }).letter_body_fields ?? null,
+              letterSentAt: latestRenewalInvoice.letter_sent_at
+                ? latestRenewalInvoice.letter_sent_at.toISOString()
+                : null,
+              supersedesId: latestRenewalInvoice.supersedes_id ?? null,
             }
           : null;
 
@@ -1445,6 +1543,10 @@ export class PropertiesService {
           : 'Monthly',
         passportPhoto: tenantKycApplication?.passport_photo_url || null,
         renewalStatus,
+        isRevisionPendingSend,
+        previousAcceptanceAt: previousAcceptanceAt
+          ? previousAcceptanceAt.toISOString()
+          : null,
         outstandingBalance: totalOutstandingBalance,
         creditBalance: totalCreditBalance,
       };

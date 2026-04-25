@@ -10,6 +10,8 @@ import {
   ArrayMaxSize,
   ValidateNested,
   Min,
+  IsObject,
+  MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { OtherFeeDto } from '../../offer-letters/dto/create-offer-letter.dto';
@@ -125,4 +127,21 @@ export class InitiateRenewalDto {
   @ValidateNested({ each: true })
   @Type(() => OtherFeeDto)
   otherFees?: OtherFeeDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'Full contentEditable HTML of the renewal letter body. Server sanitizes before persisting (script/iframe/on* stripped).',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50_000)
+  letterBodyHtml?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Free-text slot overrides keyed by slot name (landlord name, company, tenant address lines, etc).',
+  })
+  @IsOptional()
+  @IsObject()
+  letterBodyFields?: Record<string, unknown>;
 }

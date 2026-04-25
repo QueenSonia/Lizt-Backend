@@ -26,7 +26,9 @@ import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import {
   RenewalInvoice,
   RenewalPaymentStatus,
+  RenewalLetterStatus,
 } from './entities/renewal-invoice.entity';
+import { sanitizeLetterHtml } from 'src/common/html/sanitize-letter-html';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { NotificationService } from 'src/notifications/notification.service';
@@ -37,6 +39,7 @@ import {
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { rentToFees, renewalInvoiceToFees, sumAll, Fee } from 'src/common/billing/fees';
 import {
   calculateRentExpiryDate,
@@ -71,6 +74,8 @@ export class TenanciesService {
     private renewalInvoiceRepository: Repository<RenewalInvoice>,
     @InjectRepository(AdHocInvoiceLineItem)
     private adHocInvoiceLineItemRepository: Repository<AdHocInvoiceLineItem>,
+    @InjectRepository(TenantKyc)
+    private tenantKycRepository: Repository<TenantKyc>,
     private readonly whatsappBotService: WhatsappBotService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
@@ -304,12 +309,26 @@ export class TenanciesService {
         amount: number;
         recurring: boolean;
       }>;
+      letterBodyHtml?: string;
+      letterBodyFields?: Record<string, unknown>;
     },
-  ): Promise<{ token: string; link: string }> {
+  ): Promise<{
+    token: string;
+    link: string;
+    activeInvoiceId: string;
+    supersededInvoiceId: string | null;
+    letterStatus: RenewalLetterStatus;
+  }> {
     // 1. Find the PropertyTenant relationship with all necessary relations
     const propertyTenant = await this.propertyTenantRepository.findOne({
       where: { id: propertyTenantId },
-      relations: ['property', 'property.owner', 'tenant', 'tenant.user'],
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'tenant',
+        'tenant.user',
+      ],
     });
 
     if (!propertyTenant) {
@@ -366,6 +385,26 @@ export class TenanciesService {
       } else {
         startDate = new Date(activeRent.expiry_date);
         startDate.setDate(startDate.getDate() + 1);
+      }
+
+      // Reject overlap with the current tenancy period. If the landlord picks
+      // a start date on or before the active rent's expiry, the renewal would
+      // double-cover days already billed under the current period — and after
+      // payment lands `markInvoiceAsPaid` would write that overlapping range
+      // onto the new rent row. Block at the boundary so the invoice never
+      // gets persisted with bad dates.
+      if (body?.startDate) {
+        const currentExpiry = new Date(activeRent.expiry_date);
+        currentExpiry.setUTCHours(0, 0, 0, 0);
+        const requestedStart = new Date(startDate);
+        requestedStart.setUTCHours(0, 0, 0, 0);
+        if (requestedStart.getTime() <= currentExpiry.getTime()) {
+          throw new BadRequestException(
+            `Start date overlaps the current tenancy period (ends ${currentExpiry
+              .toISOString()
+              .slice(0, 10)}). Choose a date after that day.`,
+          );
+        }
       }
 
       if (body?.endDate) {
@@ -460,33 +499,64 @@ export class TenanciesService {
 
     const tenantName = `${propertyTenant.tenant.user.first_name} ${propertyTenant.tenant.user.last_name}`;
 
-    // 6. Find-or-create the renewal invoice inside a transaction with row
-    // locking so two concurrent calls for the same tenant can't race.
-    const { renewalInvoice, token } = await this.dataSource.transaction(
+    const landlordAccount = propertyTenant.property.owner;
+    const landlordName =
+      landlordAccount?.profile_name ||
+      `${landlordAccount?.user?.first_name ?? ''} ${landlordAccount?.user?.last_name ?? ''}`
+        .trim() ||
+      'Your Landlord';
+
+    const sanitizedLetterHtml = sanitizeLetterHtml(body?.letterBodyHtml);
+    const letterBodyFields = body?.letterBodyFields ?? null;
+
+    // 6. Version-aware upsert inside a transaction with pessimistic row
+    // locking. Editing a letter that's already `sent` or `accepted` creates
+    // a NEW row that supersedes the previous one (we can't mutate a row
+    // whose token is in the wild — WhatsApp links must stay auditable).
+    const { invoice, supersededInvoiceId } = await this.dataSource.transaction(
       async (manager) => {
-        // Lock any existing unpaid draft/landlord invoice for this tenant to
-        // prevent concurrent updates from overwriting each other.
+        // Lock the latest open (non-superseded, non-paid) row for this
+        // property_tenant so two concurrent saves can't race on the version
+        // decision. A PAID row terminates the current renewal cycle — the
+        // next renewal is a brand-new row that doesn't supersede the paid
+        // one (the paid row is a completed chapter, not a "previous version"
+        // to revise).
         const existingInvoice = await manager
           .getRepository(RenewalInvoice)
           .createQueryBuilder('ri')
           .setLock('pessimistic_write')
-          .where('ri.property_tenant_id = :ptId', {
-            ptId: propertyTenantId,
-          })
-          .andWhere('ri.payment_status = :status', {
-            status: RenewalPaymentStatus.UNPAID,
-          })
-          .andWhere('ri.token_type IN (:...types)', {
-            types: ['landlord', 'draft'],
+          .where('ri.property_tenant_id = :ptId', { ptId: propertyTenantId })
+          .andWhere('ri.superseded_by_id IS NULL')
+          .andWhere('ri.payment_status != :paid', {
+            paid: RenewalPaymentStatus.PAID,
           })
           .andWhere('ri.deleted_at IS NULL')
           .orderBy('ri.created_at', 'DESC')
           .getOne();
 
-        let invoice: RenewalInvoice;
+        // Only supersede rows that the landlord actually authored a letter
+        // for via the new flow (letter_body_html non-null). Rows that are
+        // 'accepted' but have no body — cron auto-create or legacy
+        // migration backfill — have no real letter / OTP to protect, so
+        // editing them is safe in-place. Without this gate the landlord
+        // would accumulate a chain of useless superseded rows whenever
+        // they tweak terms on an auto-renewal.
+        const hasAuthoredLetter =
+          !!existingInvoice && existingInvoice.letter_body_html != null;
+        const shouldSupersede =
+          hasAuthoredLetter &&
+          (existingInvoice!.letter_status === RenewalLetterStatus.SENT ||
+            existingInvoice!.letter_status === RenewalLetterStatus.ACCEPTED);
 
-        if (existingInvoice) {
-          // Update existing invoice with landlord's chosen terms
+        const nextLetterStatus = isSilent
+          ? RenewalLetterStatus.DRAFT
+          : RenewalLetterStatus.SENT;
+
+        let invoice: RenewalInvoice;
+        let superseded: string | null = null;
+
+        if (existingInvoice && !shouldSupersede) {
+          // In-place edit: still draft or was previously declined.
           existingInvoice.start_date = startDate;
           existingInvoice.end_date = endDate;
           existingInvoice.rent_amount = rentAmount;
@@ -502,11 +572,23 @@ export class TenanciesService {
             walletBalance < 0 ? -walletBalance : 0;
           existingInvoice.wallet_balance = walletBalance;
           existingInvoice.payment_frequency = paymentFrequency;
-          // Upgrade draft → landlord when the landlord is actually sending the notification
           existingInvoice.token_type = isSilent ? 'draft' : 'landlord';
+          // Only overwrite letter body when the landlord supplied one.
+          // (The landlord may be sending a previously-saved draft as-is.)
+          if (sanitizedLetterHtml !== null) {
+            existingInvoice.letter_body_html = sanitizedLetterHtml;
+          }
+          if (letterBodyFields !== null) {
+            existingInvoice.letter_body_fields = letterBodyFields;
+          }
+          existingInvoice.letter_status = nextLetterStatus;
+          if (!isSilent) {
+            existingInvoice.letter_sent_at = new Date();
+          }
           invoice = existingInvoice;
-        } else {
-          // Generate new token and create fresh invoice
+        } else if (existingInvoice && shouldSupersede) {
+          // Create a NEW version. Seed the letter body from the previous
+          // row so the landlord's edits land on top of what was there.
           invoice = manager.getRepository(RenewalInvoice).create({
             token: uuidv4(),
             property_tenant_id: propertyTenantId,
@@ -528,6 +610,49 @@ export class TenanciesService {
             payment_status: RenewalPaymentStatus.UNPAID,
             payment_frequency: paymentFrequency,
             token_type: isSilent ? 'draft' : 'landlord',
+            letter_body_html:
+              sanitizedLetterHtml ?? existingInvoice.letter_body_html,
+            letter_body_fields:
+              letterBodyFields ?? existingInvoice.letter_body_fields,
+            letter_status: nextLetterStatus,
+            letter_sent_at: isSilent ? null : new Date(),
+            supersedes_id: existingInvoice.id,
+          });
+          await manager.getRepository(RenewalInvoice).save(invoice);
+
+          // Lock the old row: non-null superseded_by_id redirects live
+          // traffic away from the stale token everywhere we gate on it.
+          existingInvoice.superseded_by_id = invoice.id;
+          existingInvoice.superseded_at = new Date();
+          await manager.getRepository(RenewalInvoice).save(existingInvoice);
+          superseded = existingInvoice.id;
+        } else {
+          // No existing row — fresh renewal.
+          invoice = manager.getRepository(RenewalInvoice).create({
+            token: uuidv4(),
+            property_tenant_id: propertyTenantId,
+            property_id: propertyTenant.property_id,
+            tenant_id: propertyTenant.tenant_id,
+            start_date: startDate,
+            end_date: endDate,
+            rent_amount: rentAmount,
+            service_charge: serviceCharge,
+            legal_fee: legalFee,
+            agency_fee: agencyFee,
+            caution_deposit: cautionDeposit,
+            other_charges: otherCharges,
+            other_fees: otherFees,
+            fee_breakdown: allFees,
+            total_amount: totalAmount,
+            outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
+            wallet_balance: walletBalance,
+            payment_status: RenewalPaymentStatus.UNPAID,
+            payment_frequency: paymentFrequency,
+            token_type: isSilent ? 'draft' : 'landlord',
+            letter_body_html: sanitizedLetterHtml,
+            letter_body_fields: letterBodyFields,
+            letter_status: nextLetterStatus,
+            letter_sent_at: isSilent ? null : new Date(),
           });
         }
 
@@ -539,22 +664,23 @@ export class TenanciesService {
             .create({
               property_id: propertyTenant.property_id,
               tenant_id: propertyTenant.tenant_id,
-              event_type: 'renewal_link_sent',
-              event_description: `Tenancy renewal link sent to ${tenantName}`,
-              owner_comment: `Tenancy renewal link sent to ${tenantName}`,
+              event_type: 'renewal_letter_sent',
+              event_description: `Tenancy renewal letter sent to ${tenantName}`,
+              owner_comment: `Tenancy renewal letter sent to ${tenantName}`,
               related_entity_id: invoice.id,
               related_entity_type: 'renewal_invoice',
             });
           await manager.getRepository(PropertyHistory).save(historyEntry);
         }
 
-        return { renewalInvoice: invoice, token: invoice.token };
+        return { invoice, supersededInvoiceId: superseded };
       },
     );
 
+    const token = invoice.token;
+
     if (!isSilent) {
-      // Emit event for livefeed (listener will create the detailed notification)
-      this.eventEmitter.emit('renewal.link.sent', {
+      this.eventEmitter.emit('renewal.letter.sent', {
         property_id: propertyTenant.property_id,
         property_name: propertyTenant.property.name,
         tenant_id: propertyTenant.tenant_id,
@@ -565,14 +691,12 @@ export class TenanciesService {
       });
     }
 
-    // 11. Generate renewal link
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const baseUrl = `${frontendUrl}/renewal-invoice`;
-    const link = `${baseUrl}/${token}`;
+    // New flow: the tenant opens the letter page first; the payment page at
+    // /renewal-invoice/{token} is only reachable after they accept via OTP.
+    const link = `${frontendUrl}/renewal-letters/${token}`;
 
-    // 12. Queue WhatsApp notification asynchronously (fire and forget)
-    // Skip if silent flag is set (landlord is pre-setting terms without notifying tenant yet)
-    if (!body?.silent) {
+    if (!isSilent) {
       setImmediate(() => {
         void (async () => {
           try {
@@ -580,20 +704,21 @@ export class TenanciesService {
               propertyTenant.tenant.user.phone_number,
             );
 
-            await this.whatsappNotificationLog.queue('sendRenewalLink', {
+            await this.whatsappNotificationLog.queue('sendRenewalLetterLink', {
               phone_number: tenantPhone,
               tenant_name: tenantName,
+              property_name: propertyTenant.property.name,
+              landlord_name: landlordName,
               renewal_token: token,
-              frontend_url: frontendUrl,
               landlord_id: userId,
               recipient_name: tenantName,
               property_id: propertyTenant.property_id,
             });
 
-            console.log(`Renewal link queued for ${tenantPhone}: ${link}`);
+            console.log(`Renewal letter link queued for ${tenantPhone}: ${link}`);
           } catch (error) {
             console.error(
-              'Error queueing renewal link WhatsApp notification:',
+              'Error queueing renewal letter WhatsApp notification:',
               error,
             );
           }
@@ -601,7 +726,13 @@ export class TenanciesService {
       });
     }
 
-    return { token, link };
+    return {
+      token,
+      link,
+      activeInvoiceId: invoice.id,
+      supersededInvoiceId,
+      letterStatus: invoice.letter_status,
+    };
   }
 
   /**
@@ -1210,7 +1341,27 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    return this.formatRenewalInvoiceResponse(invoice);
+    // Gate the payment page behind letter acceptance + current-version.
+    // (OB / tenant-initiated tokens bypass this gate — they have no letter.)
+    const isLandlordInvoice = invoice.token_type === 'landlord';
+    if (isLandlordInvoice && invoice.superseded_by_id) {
+      throw new HttpException(
+        'This invoice has been updated. Your landlord has sent you a revised offer letter — please open the latest link from your WhatsApp.',
+        HttpStatus.GONE,
+      );
+    }
+    if (
+      isLandlordInvoice &&
+      invoice.letter_status !== RenewalLetterStatus.ACCEPTED &&
+      invoice.payment_status !== RenewalPaymentStatus.PAID
+    ) {
+      throw new HttpException(
+        "Your landlord's offer letter hasn't been accepted yet. Please open the renewal letter link sent to your WhatsApp and accept it before paying.",
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    return await this.formatRenewalInvoiceResponse(invoice);
   }
 
   /**
@@ -1234,7 +1385,7 @@ export class TenanciesService {
     }
 
     // Reuse the same formatting as getRenewalInvoice
-    return this.formatRenewalInvoiceResponse(invoice);
+    return await this.formatRenewalInvoiceResponse(invoice);
   }
 
   /**
@@ -1447,9 +1598,31 @@ export class TenanciesService {
   }
 
   /**
+   * Resolve the tenant-facing email for a given renewal invoice.
+   *
+   * Uses the KYC row scoped to the invoice's landlord (matches
+   * LandlordPersonDetail's view of the tenant), falling back to the tenant's
+   * own Account email then User email. Landlord-scoping prevents leaking
+   * another landlord's KYC email onto this receipt.
+   */
+  private async resolveTenantEmail(invoice: RenewalInvoice): Promise<string> {
+    const tenantUser = invoice.tenant.user;
+    const tenantKyc = await this.tenantKycRepository.findOne({
+      where: {
+        user_id: tenantUser.id,
+        admin_id: invoice.property.owner_id,
+      },
+      order: { updated_at: 'DESC' },
+    });
+    return tenantKyc?.email ?? invoice.tenant.email ?? tenantUser.email;
+  }
+
+  /**
    * Format renewal invoice entity into API response
    */
-  private formatRenewalInvoiceResponse(invoice: RenewalInvoice): any {
+  private async formatRenewalInvoiceResponse(
+    invoice: RenewalInvoice,
+  ): Promise<any> {
     const formatDate = (date: any): string => {
       if (typeof date === 'string') {
         return date.split('T')[0];
@@ -1462,10 +1635,7 @@ export class TenanciesService {
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
 
-    const tenantUser = invoice.tenant.user;
-    const tenantKyc = tenantUser.tenant_kycs?.[0];
-    const tenantEmail =
-      tenantKyc?.email ?? invoice.tenant.email ?? tenantUser.email;
+    const tenantEmail = await this.resolveTenantEmail(invoice);
 
     return {
       id: invoice.id,
@@ -1564,7 +1734,7 @@ export class TenanciesService {
     return {
       invoiceToken: invoice.token,
       receiptToken: invoice.receipt_token,
-      invoice: this.formatRenewalInvoiceResponse(invoice),
+      invoice: await this.formatRenewalInvoiceResponse(invoice),
       paymentReference: invoice.payment_reference,
       paidAt: invoice.paid_at
         ? typeof invoice.paid_at === 'string'
@@ -1605,14 +1775,16 @@ export class TenanciesService {
     }
 
     // Format receipt data
-    return this.formatRenewalReceiptResponse(invoice);
+    return await this.formatRenewalReceiptResponse(invoice);
   }
 
   /**
    * Format renewal invoice entity into receipt response
    * Requirements: 4.1-4.8, 5.1-5.6
    */
-  private formatRenewalReceiptResponse(invoice: RenewalInvoice): any {
+  private async formatRenewalReceiptResponse(
+    invoice: RenewalInvoice,
+  ): Promise<any> {
     const formatDate = (date: any): string => {
       if (typeof date === 'string') {
         return date.split('T')[0];
@@ -1632,10 +1804,7 @@ export class TenanciesService {
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
 
-    const tenantUser = invoice.tenant.user;
-    const tenantKyc = tenantUser.tenant_kycs?.[0];
-    const tenantEmail =
-      tenantKyc?.email ?? invoice.tenant.email ?? tenantUser.email;
+    const tenantEmail = await this.resolveTenantEmail(invoice);
 
     return {
       receiptNumber: invoice.receipt_number,
@@ -1770,22 +1939,133 @@ export class TenanciesService {
 
       if (isOwingRent) {
         // --- MARK CURRENT OWING RENT PAID ---
-        // Auto-renewal already created this period; just mark it paid.
-        // Also sync rental_price/service_charge/payment_frequency from the invoice
-        // so that future auto-renewals carry the landlord's chosen amount forward.
+        // Auto-renewal cron already created this period using the *previous*
+        // rent's frequency-computed dates and carried-forward fees. Now that
+        // payment has landed against the renewal_invoice — which carries the
+        // landlord's actual intended dates and fee amounts — reconcile both:
+        //
+        //  1. Snapshot what the cron already debited (from the rent row, which
+        //     mirrors what was posted to the ledger at auto-renewal time).
+        //  2. Sync rental_price / service_charge / fees / payment_frequency
+        //     AND start_date / expiry_date from the invoice onto the rent.
+        //  3. For each recurring fee whose amount changed (or that was added /
+        //     removed entirely), post a corrective ledger delta so the wallet
+        //     reflects what the landlord actually charged for this period.
+        const prevRecurringFees = rentToFees(activeRent).filter(
+          (f) => f.recurring,
+        );
+
+        // Sync money fields onto the rent row. Use explicit null-checks
+        // (not `||`) so that a deliberate 0 from the invoice — i.e. the
+        // landlord removing a fee at renewal — overwrites the previous
+        // value instead of falling back to it. Otherwise zeroed-out fees
+        // would silently persist on the rent row and re-bill on the
+        // next auto-renewal.
         activeRent.payment_status = RentPaymentStatusEnum.PAID;
         activeRent.amount_paid = parseFloat(invoice.rent_amount.toString());
         activeRent.rental_price = parseFloat(invoice.rent_amount.toString());
         activeRent.service_charge =
-          parseFloat((invoice.service_charge || 0).toString()) ||
-          activeRent.service_charge;
+          invoice.service_charge != null
+            ? parseFloat(invoice.service_charge.toString())
+            : activeRent.service_charge;
+        activeRent.legal_fee =
+          invoice.legal_fee != null
+            ? parseFloat(invoice.legal_fee.toString())
+            : activeRent.legal_fee;
+        activeRent.agency_fee =
+          invoice.agency_fee != null
+            ? parseFloat(invoice.agency_fee.toString())
+            : activeRent.agency_fee;
+        activeRent.other_fees = invoice.other_fees ?? activeRent.other_fees;
         activeRent.payment_frequency =
           invoice.payment_frequency || activeRent.payment_frequency;
+
+        // Sync dates so the landlord's edits to start_date/end_date win over
+        // the cron's frequency-computed defaults. The cron computes dates
+        // purely from frequency; the invoice carries explicit dates the
+        // landlord set in the renewal letter. Without this, edited dates are
+        // silently discarded whenever the cron auto-renews before payment.
+        if (invoice.start_date) activeRent.rent_start_date = invoice.start_date;
+        if (invoice.end_date) activeRent.expiry_date = invoice.end_date;
         activeRent.updated_at = new Date();
         await this.rentRepository.save(activeRent);
+
+        // Reconcile recurring-fee deltas against the ledger. Build a key →
+        // amount map for both sides keyed by (kind, externalId) so otherFees
+        // are matched by stable id rather than label.
+        if (!skipLedger) {
+          const newRecurringFees = renewalInvoiceToFees(invoice).filter(
+            (f) => f.recurring,
+          );
+          const feeKey = (f: Fee): string =>
+            f.kind === 'other'
+              ? `other:${f.externalId ?? f.label}`
+              : `${f.kind}`;
+          const prevByKey = new Map(prevRecurringFees.map((f) => [feeKey(f), f]));
+          const newByKey = new Map(newRecurringFees.map((f) => [feeKey(f), f]));
+          const allKeys = new Set([...prevByKey.keys(), ...newByKey.keys()]);
+
+          const periodStart = new Date(activeRent.rent_start_date)
+            .toISOString()
+            .split('T')[0];
+          const periodEnd = new Date(activeRent.expiry_date)
+            .toISOString()
+            .split('T')[0];
+
+          for (const key of allKeys) {
+            const prev = prevByKey.get(key);
+            const next = newByKey.get(key);
+            const prevAmount = prev ? prev.amount : 0;
+            const nextAmount = next ? next.amount : 0;
+            if (prevAmount === nextAmount) continue;
+
+            // delta = old - new. Negative delta = increase (more debit needed);
+            // positive = decrease (refund the over-charge). applyChange is a
+            // signed wallet movement, so a negative delta widens the debit.
+            const delta = prevAmount - nextAmount;
+            const label = (next ?? prev)!.label;
+            const kind = (next ?? prev)!.kind;
+            const externalId = (next ?? prev)!.externalId;
+            const description =
+              prev && next
+                ? `Period charge adjusted: ${label} ₦${prevAmount.toLocaleString()} → ₦${nextAmount.toLocaleString()} (${periodStart} – ${periodEnd})`
+                : next
+                  ? `New period charged: ${periodStart} – ${periodEnd} — ${label}`
+                  : `Period charge removed: ${label} (${periodStart} – ${periodEnd})`;
+
+            await this.tenantBalancesService.applyChange(
+              tenantId,
+              landlordId,
+              delta,
+              {
+                type: TenantBalanceLedgerType.AUTO_RENEWAL,
+                description,
+                propertyId: invoice.property_id,
+                relatedEntityType: 'rent',
+                relatedEntityId: activeRent.id,
+                metadata: {
+                  fee_kind: kind,
+                  ...(externalId ? { externalId } : {}),
+                  period_start: periodStart,
+                  period_end: periodEnd,
+                  reconciliation: true,
+                  prev_amount: prevAmount,
+                  new_amount: nextAmount,
+                },
+              },
+            );
+          }
+        }
       } else {
         // --- OLD FLOW: current rent was PAID/PENDING (pre-expiry payment) ---
         // Mark current period inactive and create new PAID rent for next period.
+        // Source the new rent's fees from the invoice (which carries what the
+        // landlord set in the renewal letter), falling back to the previous
+        // rent only when the invoice doesn't carry that field. Without this,
+        // any otherFees / legal_fee / agency_fee changes the landlord made in
+        // the letter would only affect period 1 (via the explicit ledger-debit
+        // loop below) and silently revert on the next auto-renewal because
+        // the cron carries forward from the rent row.
         activeRent.rent_status = RentStatusEnum.INACTIVE;
         activeRent.updated_at = new Date();
         await this.rentRepository.save(activeRent);
@@ -1800,14 +2080,21 @@ export class TenanciesService {
           security_deposit: activeRent.security_deposit,
           security_deposit_recurring: activeRent.security_deposit_recurring,
           service_charge:
-            parseFloat(invoice.service_charge.toString()) ||
-            activeRent.service_charge,
+            invoice.service_charge != null
+              ? parseFloat(invoice.service_charge.toString())
+              : activeRent.service_charge,
           service_charge_recurring: activeRent.service_charge_recurring,
-          legal_fee: activeRent.legal_fee,
+          legal_fee:
+            invoice.legal_fee != null
+              ? parseFloat(invoice.legal_fee.toString())
+              : activeRent.legal_fee,
           legal_fee_recurring: activeRent.legal_fee_recurring,
-          agency_fee: activeRent.agency_fee,
+          agency_fee:
+            invoice.agency_fee != null
+              ? parseFloat(invoice.agency_fee.toString())
+              : activeRent.agency_fee,
           agency_fee_recurring: activeRent.agency_fee_recurring,
-          other_fees: activeRent.other_fees,
+          other_fees: invoice.other_fees ?? activeRent.other_fees,
           payment_frequency:
             invoice.payment_frequency || activeRent.payment_frequency,
           payment_status: RentPaymentStatusEnum.PAID,
@@ -1891,6 +2178,11 @@ export class TenanciesService {
           amount,
           property_name: propertyName,
           receipt_token: invoice.receipt_token,
+          period_start: invoice.start_date,
+          period_end: invoice.end_date,
+          rent_amount: parseFloat(invoice.rent_amount.toString()),
+          service_charge: parseFloat((invoice.service_charge ?? 0).toString()),
+          payment_frequency: invoice.payment_frequency ?? 'monthly',
           landlord_id: invoice.property.owner_id,
           recipient_name: tenantName,
           property_id: invoice.property_id,
@@ -2585,13 +2877,16 @@ export class TenanciesService {
    * 'outstanding_balance' externalId) are warnings — OB amounts are
    * auto-recomputed from the post-reconciliation wallet on commit, so there
    * is nothing for the user to do beyond acknowledge the shift.
+   *
+   * Renewal commit path doesn't run wallet reconciliation or plan recompute,
+   * so the "recompute on commit" promise doesn't apply there.
    */
   private async detectOBPaymentPlanShift(
     rent: Rent,
     proposed: ProposedRentChange,
     context: PreviewContext,
   ): Promise<RentChangeIssueDto[]> {
-    if (context === 'invoice_edit') return [];
+    if (context === 'invoice_edit' || context === 'renewal') return [];
 
     const plans: Array<{ id: string; charge_name: string; total_amount: string }> =
       await this.dataSource.query(

@@ -40,7 +40,7 @@ import { RenewalInvoiceDto } from './dto/renewal-invoice.dto';
 import { RentChangeImpactDto } from './dto/rent-change-impact.dto';
 import { TenanciesService } from 'src/tenancies/tenancies.service';
 import { RenewalPaymentService } from './renewal-payment.service';
-import { RenewalPDFService } from './renewal-pdf.service';
+import { RenewalPDFService } from 'src/pdf/renewal-pdf.service';
 import { PaymentPlanRequestsService } from '../payment-plans/payment-plan-requests.service';
 import { CreatePaymentPlanRequestDto } from '../payment-plans/dto/create-payment-plan-request.dto';
 
@@ -224,7 +224,7 @@ export class TenanciesController {
     @Body() body: InitiateRenewalDto,
     @Req() req: any,
   ) {
-    const { token, link } = await this.tenanciesService.initiateRenewal(
+    const result = await this.tenanciesService.initiateRenewal(
       propertyTenantId,
       req.user.id,
       body,
@@ -232,10 +232,15 @@ export class TenanciesController {
 
     return {
       success: true,
-      message: 'Renewal link sent successfully',
+      message: body?.silent
+        ? 'Renewal letter saved'
+        : 'Renewal letter sent successfully',
       data: {
-        token,
-        link,
+        token: result.token,
+        link: result.link,
+        activeInvoiceId: result.activeInvoiceId,
+        supersededInvoiceId: result.supersededInvoiceId,
+        letterStatus: result.letterStatus,
         sentAt: new Date().toISOString(),
       },
     };

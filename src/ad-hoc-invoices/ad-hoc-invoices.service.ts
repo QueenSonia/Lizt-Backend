@@ -622,6 +622,20 @@ export class AdHocInvoicesService {
     invoice: AdHocInvoice,
     args: { amount: number; paystackRef: string; paidAt?: Date },
   ): Promise<void> {
+    // Idempotency: webhook and frontend-verify both race to here.
+    // Re-read status so the loser doesn't overwrite receipt_token (which is
+    // already in the wild via the winner's WhatsApp receipt link).
+    const current = await this.invoiceRepository.findOne({
+      where: { id: invoice.id },
+      select: ['id', 'status'],
+    });
+    if (!current || current.status === AdHocInvoiceStatus.PAID) {
+      this.logger.log(
+        `Ad-hoc invoice ${invoice.id} already paid; skipping (idempotent)`,
+      );
+      return;
+    }
+
     const paidAt = args.paidAt ?? new Date();
     const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
     const receiptNumber = `AHI-R-${Date.now()}`;

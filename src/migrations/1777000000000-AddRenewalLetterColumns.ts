@@ -11,8 +11,12 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * keeping in-the-wild WhatsApp tokens auditable and append-only while
  * redirecting live traffic to the current version.
  *
- * Backfills letter_status='sent' on existing unpaid landlord-type rows
- * so tokens already sent keep working under the new gating.
+ * Backfills letter_status='accepted' on existing landlord-type rows so
+ * tenants whose WhatsApp invoice link predates this feature can still
+ * pay directly (the new payment gate requires letter_status='accepted').
+ * Those rows never went through the OTP flow, so accepted_by_phone /
+ * acceptance_otp stay NULL — the tenant page suppresses the rubber
+ * stamp when those fields are absent.
  */
 export class AddRenewalLetterColumns1777000000000
   implements MigrationInterface
@@ -79,14 +83,16 @@ export class AddRenewalLetterColumns1777000000000
         WHERE "superseded_by_id" IS NULL
     `);
 
-    // Backfill existing unpaid landlord-type rows so tokens already in the
-    // wild map to letter_status='sent' under the new gating.
+    // Backfill existing landlord-type rows. Mark them as already-accepted
+    // so tenants whose WhatsApp invoice link predates the new flow can
+    // still reach the payment page (which now requires letter_status =
+    // 'accepted'). They never went through OTP, so accepted_by_phone /
+    // acceptance_otp stay NULL and the tenant page hides the stamp.
     await queryRunner.query(`
       UPDATE "renewal_invoices"
-      SET "letter_status" = 'sent',
-          "letter_sent_at" = COALESCE("updated_at", "created_at")
+      SET "letter_status" = 'accepted',
+          "accepted_at"   = COALESCE("updated_at", "created_at")
       WHERE "token_type" = 'landlord'
-        AND "payment_status" = 'unpaid'
         AND "letter_body_html" IS NULL
     `);
   }

@@ -495,14 +495,21 @@ export class TenanciesService {
     // whose token is in the wild — WhatsApp links must stay auditable).
     const { invoice, supersededInvoiceId } = await this.dataSource.transaction(
       async (manager) => {
-        // Lock the latest NON-SUPERSEDED row for this property_tenant so two
-        // concurrent saves can't race on the version decision.
+        // Lock the latest open (non-superseded, non-paid) row for this
+        // property_tenant so two concurrent saves can't race on the version
+        // decision. A PAID row terminates the current renewal cycle — the
+        // next renewal is a brand-new row that doesn't supersede the paid
+        // one (the paid row is a completed chapter, not a "previous version"
+        // to revise).
         const existingInvoice = await manager
           .getRepository(RenewalInvoice)
           .createQueryBuilder('ri')
           .setLock('pessimistic_write')
           .where('ri.property_tenant_id = :ptId', { ptId: propertyTenantId })
           .andWhere('ri.superseded_by_id IS NULL')
+          .andWhere('ri.payment_status != :paid', {
+            paid: RenewalPaymentStatus.PAID,
+          })
           .andWhere('ri.deleted_at IS NULL')
           .orderBy('ri.created_at', 'DESC')
           .getOne();
@@ -511,16 +518,6 @@ export class TenanciesService {
           !!existingInvoice &&
           (existingInvoice.letter_status === RenewalLetterStatus.SENT ||
             existingInvoice.letter_status === RenewalLetterStatus.ACCEPTED);
-
-        if (
-          existingInvoice &&
-          existingInvoice.payment_status === RenewalPaymentStatus.PAID
-        ) {
-          throw new HttpException(
-            'This renewal has already been paid. Start a fresh renewal.',
-            HttpStatus.CONFLICT,
-          );
-        }
 
         const nextLetterStatus = isSilent
           ? RenewalLetterStatus.DRAFT

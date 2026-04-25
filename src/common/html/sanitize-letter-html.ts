@@ -49,11 +49,57 @@ export function sanitizeLetterHtml(dirty: string | null | undefined): string | n
     },
     allowedStyles: {
       '*': {
+        // Typography
         'font-weight': [/^(bold|normal|[1-9]00)$/],
-        'text-decoration': [/^(underline|none|line-through)$/],
         'font-style': [/^(italic|normal)$/],
+        'font-size': [/^\d+(\.\d+)?(px|em|rem|%)$/],
+        'font-family': [/^[\w\s,'"-]+$/],
+        'line-height': [/^\d+(\.\d+)?(px|em|rem|%)?$/],
+        'text-decoration': [/^(underline|none|line-through)$/],
         'text-align': [/^(left|right|center|justify)$/],
+        'text-transform': [/^(uppercase|lowercase|capitalize|none)$/],
         color: [/^#(?:[0-9a-f]{3}){1,2}$/i, /^rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)$/i],
+
+        // Spacing — 1 to 4 length values, optionally negative or auto.
+        // The contentEditable letter emits per-side margins/paddings via
+        // React inline-style camelCase, but the captured HTML serializes
+        // them as separate longhand properties as well as occasional
+        // shorthands (e.g. page-break divider uses `60px -40px 40px`).
+        margin: [/^(-?\d+(\.\d+)?(px|em|rem|%)|auto|0)(\s+(-?\d+(\.\d+)?(px|em|rem|%)|auto|0)){0,3}$/],
+        'margin-top': [/^-?\d+(\.\d+)?(px|em|rem|%)$/],
+        'margin-right': [/^-?\d+(\.\d+)?(px|em|rem|%)$/],
+        'margin-bottom': [/^-?\d+(\.\d+)?(px|em|rem|%)$/],
+        'margin-left': [/^-?\d+(\.\d+)?(px|em|rem|%)$/],
+        padding: [/^(\d+(\.\d+)?(px|em|rem|%)|0)(\s+(\d+(\.\d+)?(px|em|rem|%)|0)){0,3}$/],
+        'padding-top': [/^\d+(\.\d+)?(px|em|rem|%)$/],
+        'padding-right': [/^\d+(\.\d+)?(px|em|rem|%)$/],
+        'padding-bottom': [/^\d+(\.\d+)?(px|em|rem|%)$/],
+        'padding-left': [/^\d+(\.\d+)?(px|em|rem|%)$/],
+
+        // Sizing — letterhead logo footprint and prose container.
+        width: [/^(\d+(\.\d+)?(px|em|rem|%)|auto)$/],
+        height: [/^(\d+(\.\d+)?(px|em|rem|%)|auto)$/],
+        'min-width': [/^(\d+(\.\d+)?(px|em|rem|%)|0|auto)$/],
+        'max-height': [/^\d+(\.\d+)?(px|em|rem|%)$/],
+
+        // Layout — flex row used for the date/recipient/logo header.
+        display: [/^(block|inline|inline-block|flex|inline-flex|grid|none)$/],
+        'justify-content': [/^(flex-start|flex-end|center|space-between|space-around|space-evenly)$/],
+        'align-items': [/^(flex-start|flex-end|center|baseline|stretch)$/],
+        gap: [/^\d+(\.\d+)?(px|em|rem)$/],
+        'flex-wrap': [/^(nowrap|wrap|wrap-reverse)$/],
+        flex: [/^[\d.\s]+(auto)?$/],
+
+        // Lists — bullets in the offer terms.
+        'list-style': [/^(disc|circle|square|decimal|none)$/],
+
+        // Borders — service-charge footnote rule and page-break divider.
+        border: [/^\d+(\.\d+)?px\s+(solid|dashed|dotted)\s+(#[0-9a-f]{3,8}|rgba?\([\d\s.,]+\))$/i],
+        'border-top': [/^\d+(\.\d+)?px\s+(solid|dashed|dotted)\s+(#[0-9a-f]{3,8}|rgba?\([\d\s.,]+\))$/i],
+
+        // Object fit — already-saved letters with embedded signature/logo
+        // imgs may carry this; harmless to allow.
+        'object-fit': [/^(contain|cover|fill|none|scale-down)$/],
       },
     },
     allowedSchemes: [],

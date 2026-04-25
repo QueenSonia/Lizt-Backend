@@ -514,10 +514,19 @@ export class TenanciesService {
           .orderBy('ri.created_at', 'DESC')
           .getOne();
 
+        // Only supersede rows that the landlord actually authored a letter
+        // for via the new flow (letter_body_html non-null). Rows that are
+        // 'accepted' but have no body — cron auto-create or legacy
+        // migration backfill — have no real letter / OTP to protect, so
+        // editing them is safe in-place. Without this gate the landlord
+        // would accumulate a chain of useless superseded rows whenever
+        // they tweak terms on an auto-renewal.
+        const hasAuthoredLetter =
+          !!existingInvoice && existingInvoice.letter_body_html != null;
         const shouldSupersede =
-          !!existingInvoice &&
-          (existingInvoice.letter_status === RenewalLetterStatus.SENT ||
-            existingInvoice.letter_status === RenewalLetterStatus.ACCEPTED);
+          hasAuthoredLetter &&
+          (existingInvoice!.letter_status === RenewalLetterStatus.SENT ||
+            existingInvoice!.letter_status === RenewalLetterStatus.ACCEPTED);
 
         const nextLetterStatus = isSilent
           ? RenewalLetterStatus.DRAFT

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { Rent } from '../rents/entities/rent.entity';
 import {
@@ -11,10 +11,14 @@ import {
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
-import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import {
+  PropertyHistory,
+  MoveOutReasonEnum,
+} from '../property-history/entities/property-history.entity';
 import {
   RenewalInvoice,
   RenewalPaymentStatus,
+  RenewalLetterStatus,
 } from '../tenancies/entities/renewal-invoice.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from '../properties/dto/create-property.dto';
@@ -25,8 +29,6 @@ import {
   advanceRentPeriod,
   effectiveFrequency,
   RENT_REMINDER_SCHEDULE,
-  RENEWAL_TEMPLATE_THRESHOLD,
-  DEFAULT_RENEWAL_TEMPLATE_THRESHOLD,
 } from '../common/utils/rent-date.util';
 import {
   PaymentPlanInstallment,
@@ -222,6 +224,8 @@ export class RentReminderService {
       .leftJoinAndSelect('rent.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
       .leftJoinAndSelect('rent.property', 'property')
+      .leftJoinAndSelect('property.owner', 'owner')
+      .leftJoinAndSelect('owner.user', 'ownerUser')
       .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
       .andWhere('DATE(rent.expiry_date) < :today', { today: todayStr })
       .getMany();
@@ -245,8 +249,53 @@ export class RentReminderService {
    *
    * If the expired rent was not PAID, the missed period amount is added to
    * the tenant's TenantBalance for that landlord.
+   *
+   * Letter-side handling at the entry point:
+   *   - declined → move tenant out, skip rent roll-forward (lease ends).
+   *   - sent     → flip to accepted + auto_renewed_at, then roll forward.
+   *   - accepted / none → roll forward as today (no-op on the letter).
    */
   private async autoRenewExpiredRent(rent: Rent, today: Date): Promise<void> {
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: {
+        property_id: rent.property_id,
+        tenant_id: rent.tenant_id,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+
+    if (propertyTenant) {
+      const latestLetter = await this.renewalInvoiceRepository.findOne({
+        where: {
+          property_tenant_id: propertyTenant.id,
+          superseded_by_id: IsNull(),
+        },
+        order: { created_at: 'DESC' },
+      });
+
+      if (latestLetter?.letter_status === RenewalLetterStatus.DECLINED) {
+        await this.handleDeclinedRenewalAtExpiry(
+          rent,
+          propertyTenant,
+          latestLetter,
+          today,
+        );
+        return;
+      }
+
+      if (latestLetter?.letter_status === RenewalLetterStatus.SENT) {
+        // Tenant didn't accept by expiry — auto-stamp the letter so the
+        // payment-page gate lets them pay the new period's invoice and
+        // the tenant page can render the AUTO-RENEWED stamp.
+        latestLetter.letter_status = RenewalLetterStatus.ACCEPTED;
+        latestLetter.auto_renewed_at = new Date();
+        await this.renewalInvoiceRepository.save(latestLetter);
+        this.logger.log(
+          `Auto-renewed letter ${latestLetter.id} (sent → accepted) at expiry of rent ${rent.id}.`,
+        );
+      }
+    }
+
     let currentRent = rent;
     let currentExpiry = new Date(rent.expiry_date);
     currentExpiry.setUTCHours(0, 0, 0, 0);
@@ -362,6 +411,79 @@ export class RentReminderService {
     }
   }
 
+  /**
+   * Tenant declined the renewal letter — at expiry, end the tenancy:
+   * mark the active rent INACTIVE, mark the property_tenant INACTIVE,
+   * record a tenant_moved_out property history entry with their decline
+   * reason, and notify the landlord. No rent roll-forward.
+   */
+  private async handleDeclinedRenewalAtExpiry(
+    rent: Rent,
+    propertyTenant: PropertyTenant,
+    letter: RenewalInvoice,
+    today: Date,
+  ): Promise<void> {
+    // 1. Mark current rent inactive (atomic — guards against concurrent runs).
+    const updateResult = await this.rentRepository.update(
+      { id: rent.id, rent_status: RentStatusEnum.ACTIVE },
+      { rent_status: RentStatusEnum.INACTIVE },
+    );
+    if (updateResult.affected === 0) {
+      this.logger.warn(
+        `Rent ${rent.id} already processed by another instance — skipping decline-move-out.`,
+      );
+      return;
+    }
+
+    // 2. End the property_tenant relationship.
+    await this.propertyTenantRepository.update(propertyTenant.id, {
+      status: TenantStatusEnum.INACTIVE,
+    });
+
+    // 3. Property history — surfaces in the timeline as a normal move-out.
+    const declineReason = letter.decline_reason?.trim() || null;
+    const description = declineReason
+      ? `Tenant declined renewal: ${declineReason}`
+      : 'Tenant declined renewal (no reason provided)';
+    await this.propertyHistoryRepository.save({
+      property_id: rent.property_id,
+      tenant_id: rent.tenant_id,
+      event_type: 'tenant_moved_out',
+      event_description: description,
+      move_out_date: today,
+      move_out_reason: MoveOutReasonEnum.OTHER,
+      owner_comment: declineReason,
+      related_entity_id: letter.id,
+      related_entity_type: 'renewal_invoice',
+    });
+
+    // 4. Landlord notification.
+    if (rent.property?.owner_id) {
+      const tenantName =
+        `${rent.tenant?.user?.first_name ?? ''} ${rent.tenant?.user?.last_name ?? ''}`.trim() ||
+        'Tenant';
+      const propName = rent.property?.name ?? 'property';
+      this.notificationService
+        .create({
+          date: new Date().toISOString(),
+          type: NotificationType.TENANCY_ENDED,
+          description: `${tenantName} declined renewal — moved out of ${propName}.`,
+          status: 'Completed',
+          property_id: rent.property_id,
+          user_id: rent.property.owner_id,
+        })
+        .catch((err) =>
+          this.logger.error(
+            `Failed to notify landlord of declined-renewal move-out for rent ${rent.id}: ${err.message}`,
+          ),
+        );
+    }
+
+    this.logger.log(
+      `Tenant ${rent.tenant_id} moved out of property ${rent.property_id} after declining renewal (rent ${rent.id} expired).`,
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Upcoming reminders (before expiry)
   // ---------------------------------------------------------------------------
@@ -391,6 +513,8 @@ export class RentReminderService {
       .leftJoinAndSelect('rent.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
       .leftJoinAndSelect('rent.property', 'property')
+      .leftJoinAndSelect('property.owner', 'owner')
+      .leftJoinAndSelect('owner.user', 'ownerUser')
       .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
       .andWhere('DATE(rent.expiry_date) IN (:...dates)', { dates: targetDates })
       .getMany();
@@ -464,6 +588,8 @@ export class RentReminderService {
       .leftJoinAndSelect('rent.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
       .leftJoinAndSelect('rent.property', 'property')
+      .leftJoinAndSelect('property.owner', 'owner')
+      .leftJoinAndSelect('owner.user', 'ownerUser')
       .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
       .andWhere('rent.payment_status = :paymentStatus', {
         paymentStatus: RentPaymentStatusEnum.OWING,
@@ -529,13 +655,83 @@ export class RentReminderService {
       return;
     }
 
-    const renewalThreshold =
-      RENEWAL_TEMPLATE_THRESHOLD[effectiveFrequency(rent)] ??
-      DEFAULT_RENEWAL_TEMPLATE_THRESHOLD;
-    const useRenewalTemplate = daysUntilExpiry <= renewalThreshold;
-    const templateName = useRenewalTemplate
-      ? 'sendRentReminderWithRenewalTemplate'
-      : 'sendRentReminderTemplate';
+    // Every reminder now goes through the renewal flow — letter link
+    // until the tenant accepts, then invoice link until they pay. The
+    // "standard rent reminder with no link" branch is gone: with the
+    // letter+OTP feature, every reminder is renewal-related.
+    const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
+    if (!renewalInvoice) {
+      // Fallback only when findOrCreate could not resolve the property
+      // tenant — preserves a useful "your rent expires" ping rather than
+      // dropping the reminder silently.
+      const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
+      const amountToPay = baseAmount + (rent.service_charge || 0);
+      const formattedAmount = amountToPay.toLocaleString('en-NG', {
+        style: 'currency',
+        currency: 'NGN',
+      });
+      const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
+        'en-GB',
+      );
+      await this.queueStandardReminder(
+        rent,
+        formattedAmount,
+        expiryDateStr,
+        daysUntilExpiry,
+      );
+      await this.logReminderSent(
+        rent,
+        formattedAmount,
+        expiryDateStr,
+        daysUntilExpiry,
+      );
+      return;
+    }
+
+    const letterStatus = renewalInvoice.letter_status;
+
+    // Tenant declined — don't send any more reminders for this period.
+    // processOverdueRents handles the move-out + history at expiry.
+    if (letterStatus === RenewalLetterStatus.DECLINED) {
+      this.logger.log(
+        `Skipping reminder for rent ${rent.id}: tenant declined renewal letter.`,
+      );
+      return;
+    }
+
+    const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
+      'en-GB',
+    );
+    const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
+    const amountToPay = baseAmount + (rent.service_charge || 0);
+    const formattedAmount = amountToPay.toLocaleString('en-NG', {
+      style: 'currency',
+      currency: 'NGN',
+    });
+
+    // Suppress reminder if the period is already PAID (early payment,
+    // manual mark-paid, etc.). Seed the dedup log so the slot is not
+    // retried on the next cron tick.
+    if (await this.isTargetPeriodPaid(rent)) {
+      this.logger.log(
+        `Skipping renewal reminder for rent ${rent.id}: target period already PAID.`,
+      );
+      await this.logReminderSent(
+        rent,
+        formattedAmount,
+        expiryDateStr,
+        daysUntilExpiry,
+      );
+      return;
+    }
+
+    // Branch by letter status:
+    //   'sent'     → letter link (sendRenewalLetterLink → /renewal-letters/{token})
+    //   'accepted' → invoice link (sendRentReminderWithRenewalTemplate → /renewal-invoice/{token})
+    const useLetterTemplate = letterStatus === RenewalLetterStatus.SENT;
+    const templateName = useLetterTemplate
+      ? 'sendRenewalLetterLink'
+      : 'sendRentReminderWithRenewalTemplate';
 
     const alreadySent =
       await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
@@ -546,67 +742,37 @@ export class RentReminderService {
 
     if (alreadySent) {
       this.logger.debug(
-        `Rent reminder already sent for rent ${rent.id} at ${daysUntilExpiry} days.`,
+        `Rent reminder already sent for rent ${rent.id} at ${daysUntilExpiry} days (${templateName}).`,
       );
       return;
     }
 
-    const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
-      'en-GB',
-    );
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
-    // Suppress the renewal-link reminder if the period it would cover is
-    // already PAID (early tenant payment, manual mark-paid, etc.). Without
-    // this, the reminder links to a PAID invoice and payment init fails
-    // with "already paid". We seed the dedup log so the same slot isn't
-    // retried on subsequent cron ticks.
-    if (useRenewalTemplate) {
-      const alreadyPaid = await this.isTargetPeriodPaid(rent);
-      if (alreadyPaid) {
-        this.logger.log(
-          `Skipping renewal reminder for rent ${rent.id}: target period already PAID.`,
-        );
-        const baseAmountForLog = rent.rental_price ?? rent.amount_paid ?? 0;
-        const amountForLog = baseAmountForLog + (rent.service_charge || 0);
-        const formattedAmountForLog = amountForLog.toLocaleString('en-NG', {
-          style: 'currency',
-          currency: 'NGN',
-        });
-        await this.logReminderSent(
-          rent,
-          formattedAmountForLog,
-          expiryDateStr,
-          daysUntilExpiry,
-        );
-        return;
-      }
-    }
-    const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
-    const amountToPay = baseAmount + (rent.service_charge || 0);
-    const formattedAmount = amountToPay.toLocaleString('en-NG', {
-      style: 'currency',
-      currency: 'NGN',
-    });
+    if (useLetterTemplate) {
+      // Resolve the landlord's display name. Fall back to a generic label
+      // if anything is missing — better than failing the WhatsApp send.
+      const landlordName =
+        rent.property?.owner?.profile_name ||
+        `${rent.property?.owner?.user?.first_name ?? ''} ${rent.property?.owner?.user?.last_name ?? ''}`.trim() ||
+        'Your Landlord';
 
-    if (useRenewalTemplate) {
-      const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
-      if (!renewalInvoice) {
-        await this.queueStandardReminder(
-          rent,
-          formattedAmount,
-          expiryDateStr,
-          daysUntilExpiry,
-        );
-        await this.logReminderSent(
-          rent,
-          formattedAmount,
-          expiryDateStr,
-          daysUntilExpiry,
-        );
-        return;
-      }
+      await this.whatsAppNotificationLogService.queue(
+        'sendRenewalLetterLink',
+        {
+          phone_number: rent.tenant.user.phone_number,
+          tenant_name: rent.tenant.user.first_name,
+          property_name: rent.property.name,
+          landlord_name: landlordName,
+          renewal_token: renewalInvoice.token,
+        },
+        rent.id,
+      );
 
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      this.logger.log(
+        `Queued renewal letter reminder for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
+      );
+    } else {
       await this.whatsAppNotificationLogService.queue(
         'sendRentReminderWithRenewalTemplate',
         {
@@ -624,14 +790,7 @@ export class RentReminderService {
       );
 
       this.logger.log(
-        `Queued rent reminder with renewal link for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
-      );
-    } else {
-      await this.queueStandardReminder(
-        rent,
-        formattedAmount,
-        expiryDateStr,
-        daysUntilExpiry,
+        `Queued rent reminder with invoice link for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
       );
     }
 
@@ -782,14 +941,16 @@ export class RentReminderService {
 
       const { startDate, endDate } = this.getTargetPeriodRange(rent);
 
-      // Refresh existing unpaid landlord invoice if one exists.
-      // Exclude superseded rows — those are historical versions replaced by
-      // a newer letter and should never be touched by the refresh cron.
+      // Refresh existing unpaid landlord/draft invoice if one exists.
+      // Exclude superseded rows — those are historical versions replaced
+      // by a newer letter and should never be touched by the refresh cron.
+      // We include token_type='draft' so the cron can promote a landlord-
+      // saved draft into a sent letter when reminders begin.
       const existing = await this.renewalInvoiceRepository.findOne({
         where: {
           property_tenant_id: propertyTenant.id,
           payment_status: RenewalPaymentStatus.UNPAID,
-          token_type: 'landlord',
+          token_type: In(['landlord', 'draft']),
           superseded_by_id: IsNull(),
         },
         order: { created_at: 'DESC' },
@@ -812,6 +973,17 @@ export class RentReminderService {
         existing.total_amount = Math.max(0, invoicePeriodCharge - walletBalance);
         existing.start_date = startDate;
         existing.end_date = endDate;
+
+        // Promote a landlord-saved draft to 'sent' on first reminder.
+        // The cron then dispatches the renewal-letter WhatsApp template
+        // (see sendRenewalReminder branching below). After this flip the
+        // tenant URL transitions from preview-only to Accept/Decline.
+        if (existing.letter_status === RenewalLetterStatus.DRAFT) {
+          existing.letter_status = RenewalLetterStatus.SENT;
+          existing.letter_sent_at = new Date();
+          existing.token_type = 'landlord';
+        }
+
         await this.renewalInvoiceRepository.save(existing);
         return existing;
       }
@@ -819,6 +991,13 @@ export class RentReminderService {
       // Auto-create. fee_breakdown is the authoritative source for the
       // tenant-facing UI; legacy scalar columns are kept for back-compat
       // with the existing renewal PDF + API consumers.
+      //
+      // letter_status='sent' on cron auto-create: every renewal now goes
+      // through the letter-then-invoice flow. letter_body_html stays NULL
+      // so the tenant page renders the standard fallback (page 1 + page 2
+      // boilerplate driven by the current structured fields). If the
+      // tenant doesn't accept by expiry, processOverdueRents flips this
+      // to 'accepted' + sets auto_renewed_at.
       const token = uuidv4();
       const renewalInvoice = this.renewalInvoiceRepository.create({
         token,
@@ -841,6 +1020,8 @@ export class RentReminderService {
         token_type: 'landlord',
         payment_status: RenewalPaymentStatus.UNPAID,
         payment_frequency: paymentFrequency,
+        letter_status: RenewalLetterStatus.SENT,
+        letter_sent_at: new Date(),
       });
 
       await this.renewalInvoiceRepository.save(renewalInvoice);

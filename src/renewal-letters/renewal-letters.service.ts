@@ -98,6 +98,9 @@ export class RenewalLettersService {
         invoice.letter_status === RenewalLetterStatus.ACCEPTED
           ? invoice.accepted_by_phone
           : null,
+      autoRenewedAt: invoice.auto_renewed_at
+        ? invoice.auto_renewed_at.toISOString()
+        : null,
       declinedAt: invoice.declined_at ? invoice.declined_at.toISOString() : null,
       isSuperseded: invoice.superseded_by_id !== null,
       phoneLastFour: null,
@@ -344,9 +347,13 @@ export class RenewalLettersService {
     if (!invoice) {
       throw new NotFoundException('Renewal letter not found');
     }
-    if (invoice.token_type !== 'landlord') {
-      // Draft tokens or tenant-initiated rows must not be reachable via the
-      // public letter endpoints.
+    // Allow both 'landlord' (sent letter) and 'draft' (saved-but-not-sent)
+    // tokens through this gate so the tenant page can render a preview
+    // for drafts. The action endpoints (accept / verify-otp / reject)
+    // independently gate on letter_status === 'sent', so drafts can only
+    // be viewed, never accepted. Tenant-initiated rows (e.g. WhatsApp
+    // "Pay OB") use a different token type and are still rejected.
+    if (invoice.token_type !== 'landlord' && invoice.token_type !== 'draft') {
       throw new NotFoundException('Renewal letter not found');
     }
     return invoice;

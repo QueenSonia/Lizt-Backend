@@ -197,6 +197,15 @@ export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'varchar', length: 500, nullable: true })
   decline_reason: string | null;
 
+  /**
+   * Stamped by processOverdueRents when the rent expires while the letter
+   * is still in 'sent' state — the cron flips letter_status to 'accepted'
+   * and sets this column. The tenant page renders an AUTO-RENEWED stamp
+   * variant (no OTP/phone metadata) when this is non-null.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  auto_renewed_at: Date | null;
+
   // ── Supersession (cross-version integrity) ──────────────────────────────
   /** Points from a NEW row to the version it replaces. Set at creation. */
   @Column({ type: 'uuid', nullable: true })

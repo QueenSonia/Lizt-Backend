@@ -292,16 +292,9 @@ export class PropertiesService {
               tenantUser = await this.usersRepository.findOne({
                 where: { email: tenantData.email },
               });
-
-              // Update the existing user's phone to match what the landlord entered
-              if (tenantUser && tenantUser.phone_number !== normalizedPhone) {
-                console.log('📞 Updating existing user phone number:', {
-                  oldPhone: tenantUser.phone_number,
-                  newPhone: normalizedPhone,
-                });
-                tenantUser.phone_number = normalizedPhone;
-                tenantUser = await this.usersRepository.save(tenantUser);
-              }
+              // The matched user's phone stays as-is. The landlord's typed
+              // phone goes onto the per-landlord tenant_kyc row instead so
+              // we don't corrupt another landlord's view of this user.
             }
 
             if (!tenantUser) {
@@ -321,27 +314,13 @@ export class PropertiesService {
           }
         }
       } else {
-        console.log('✅ Using existing user:', {
+        console.log('✅ Reusing existing user (identity preserved):', {
           userId: tenantUser.id,
           phone: tenantUser.phone_number,
           role: tenantUser.role,
         });
-
-        // Overwrite the existing user's name with what the landlord entered
-        const nameChanged =
-          (firstName && tenantUser.first_name !== firstName) ||
-          (lastName && tenantUser.last_name !== lastName);
-        if (nameChanged) {
-          console.log('✏️ Updating existing user name from landlord input:', {
-            oldFirstName: tenantUser.first_name,
-            oldLastName: tenantUser.last_name,
-            newFirstName: firstName,
-            newLastName: lastName,
-          });
-          if (firstName) tenantUser.first_name = firstName;
-          if (lastName) tenantUser.last_name = lastName;
-          tenantUser = await this.usersRepository.save(tenantUser);
-        }
+        // The landlord's typed name does NOT overwrite the user's global
+        // identity — it lands on the per-landlord tenant_kyc row below.
       }
 
       // 6. Create tenant account
@@ -390,6 +369,45 @@ export class PropertiesService {
           }
         }
       }
+
+      // 6a. Upsert per-landlord tenant_kyc with the landlord's typed name
+      // and phone. tenant_kyc is keyed by (admin_id, phone_number) and the
+      // read path prefers tenantKyc over the shared users row, so this is
+      // what makes the property-detail and tenant-profile screens display
+      // what the landlord typed — without mutating the user's identity.
+      await queryRunner.manager
+        .createQueryBuilder()
+        .insert()
+        .into(TenantKyc)
+        .values({
+          user_id: tenantUser.id,
+          admin_id: ownerId,
+          first_name: firstName,
+          last_name: lastName,
+          phone_number: normalizedPhone,
+          email: tenantData.email ?? tenantUser.email,
+          date_of_birth: new Date('1900-01-01'),
+          gender: Gender.MALE,
+          nationality: '-',
+          current_residence: '-',
+          state_of_origin: '-',
+          marital_status: MaritalStatus.SINGLE,
+          religion: '-',
+          employment_status: EmploymentStatus.EMPLOYED,
+          occupation: '-',
+          monthly_net_income: '0',
+          contact_address: '-',
+          next_of_kin_full_name: '-',
+          next_of_kin_address: '-',
+          next_of_kin_relationship: '-',
+          next_of_kin_phone_number: '-',
+          next_of_kin_email: '-',
+        })
+        .orUpdate(
+          ['first_name', 'last_name', 'email', 'user_id'],
+          ['admin_id', 'phone_number'],
+        )
+        .execute();
 
       // 7. Get or create KYC link for landlord
       const kycLinkResponse = await this.kycLinksService.generateKYCLink(

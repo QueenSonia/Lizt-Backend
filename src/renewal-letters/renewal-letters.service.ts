@@ -54,8 +54,18 @@ export class RenewalLettersService {
   async getPublicLetter(token: string): Promise<RenewalLetterPublicDto> {
     const invoice = await this.loadInvoiceByToken(token);
 
-    const { property, propertyTenant, landlordName, landlordCompany, landlordLogoUrl } =
-      await this.loadLetterContext(invoice);
+    const {
+      property,
+      propertyTenant,
+      landlordName,
+      landlordCompany,
+      landlordLogoUrl,
+      landlordSignatureUrl,
+      landlordBusinessAddress,
+      landlordContactEmail,
+      landlordContactPhone,
+      landlordWebsite,
+    } = await this.loadLetterContext(invoice);
 
     // Find the current expiry to populate the "expires on the …" sentence.
     const activeRent = await this.rentRepository.findOne({
@@ -65,6 +75,8 @@ export class RenewalLettersService {
 
     const tenantUser = propertyTenant.tenant.user;
     const tenantName = `${tenantUser.first_name ?? ''} ${tenantUser.last_name ?? ''}`.trim();
+    const tenantWhatsApp = tenantUser.phone_number ?? null;
+    const tenantEmail = tenantUser.email ?? null;
 
     return {
       token: invoice.token,
@@ -72,6 +84,9 @@ export class RenewalLettersService {
       paymentStatus: invoice.payment_status,
       letterBodyHtml: invoice.letter_body_html,
       letterBodyFields: invoice.letter_body_fields,
+      letterSentAt: invoice.letter_sent_at
+        ? invoice.letter_sent_at.toISOString()
+        : null,
       tenantName,
       propertyName: property.name,
       propertyAddress: property.location ?? null,
@@ -83,12 +98,39 @@ export class RenewalLettersService {
         invoice.service_charge !== null && invoice.service_charge !== undefined
           ? Number(invoice.service_charge)
           : null,
+      legalFee:
+        invoice.legal_fee !== null && invoice.legal_fee !== undefined
+          ? Number(invoice.legal_fee)
+          : null,
+      agencyFee:
+        invoice.agency_fee !== null && invoice.agency_fee !== undefined
+          ? Number(invoice.agency_fee)
+          : null,
+      cautionDeposit:
+        invoice.caution_deposit !== null && invoice.caution_deposit !== undefined
+          ? Number(invoice.caution_deposit)
+          : null,
+      otherFees: Array.isArray(invoice.other_fees)
+        ? invoice.other_fees.map((f) => ({
+            externalId: f.externalId,
+            name: f.name,
+            amount: Number(f.amount),
+            recurring: !!f.recurring,
+          }))
+        : null,
       paymentFrequency: invoice.payment_frequency ?? 'Annually',
       startDate: this.toIsoDate(invoice.start_date),
       endDate: this.toIsoDate(invoice.end_date),
       currentExpiryDate: activeRent?.expiry_date
         ? this.toIsoDate(activeRent.expiry_date)
         : null,
+      tenantWhatsApp,
+      tenantEmail,
+      landlordSignatureUrl,
+      landlordBusinessAddress,
+      landlordContactEmail,
+      landlordContactPhone,
+      landlordWebsite,
       acceptanceOtp:
         invoice.letter_status === RenewalLetterStatus.ACCEPTED
           ? invoice.acceptance_otp
@@ -226,25 +268,29 @@ export class RenewalLettersService {
       user_id: propertyTenant.property.owner_id,
     });
 
-    // Send the payment invoice link WhatsApp — same template the offer-letter
-    // flow uses post-accept. Fire-and-forget: failure here shouldn't block
-    // the acceptance write.
+    // Send the renewal-invoice link WhatsApp. We deliberately use
+    // `renewal_link` (URL → /renewal-invoice/{token}) rather than the
+    // offer-letter `payment_invoice_link` template (URL → /offer-letters/
+    // invoice/{token}), because the token here is a renewal_invoice token
+    // and the offer-letters page would 404 on it. Fire-and-forget: failure
+    // here shouldn't block the acceptance write.
     try {
-      await this.templateSenderService.sendPaymentInvoiceLink({
+      await this.templateSenderService.sendRenewalLink({
         phone_number: tenantPhone,
         tenant_name: tenantName,
-        property_name: property.name,
-        invoice_url: invoice.token,
+        renewal_token: invoice.token,
+        frontend_url: '',
       });
     } catch (err) {
       this.logger.error(
-        `Failed to send renewal payment-invoice-link WhatsApp: ${err.message}`,
+        `Failed to send renewal-link WhatsApp post-acceptance: ${err.message}`,
         err.stack,
       );
     }
 
     return this.getPublicLetter(token);
     void landlordName; // keep landlordName resolution for potential future notifier
+    void property; // property no longer threaded into the WhatsApp template
   }
 
   /**
@@ -392,10 +438,42 @@ export class RenewalLettersService {
       landlordUser?.branding?.businessName ||
       landlordUser?.business_name ||
       null;
+    // Prefer the admin-settings branding letterhead (where landlords now
+    // configure their logo) over the legacy logo_urls slot. This is the same
+    // source the landlord-side RenewTenancyScreen reads via useLandlordBranding,
+    // so the tenant sees the same logo the landlord saw at save time.
     const landlordLogoUrl: string | null =
-      (landlordUser?.logo_urls && landlordUser.logo_urls[0]) || null;
+      landlordUser?.branding?.letterhead ||
+      (landlordUser?.logo_urls && landlordUser.logo_urls[0]) ||
+      null;
 
-    return { property, propertyTenant, landlordName, landlordCompany, landlordLogoUrl };
+    // Branding footer fields — surfaced on the tenant page so the structural
+    // letter render can show the landlord's business address / contacts /
+    // website at the bottom of the document, matching the App.tsx design
+    // reference. All optional.
+    const landlordSignatureUrl: string | null =
+      landlordUser?.branding?.signature ?? null;
+    const landlordBusinessAddress: string | null =
+      landlordUser?.branding?.businessAddress ?? null;
+    const landlordContactEmail: string | null =
+      landlordUser?.branding?.contactEmail ?? null;
+    const landlordContactPhone: string | null =
+      landlordUser?.branding?.contactPhone ?? null;
+    const landlordWebsite: string | null =
+      landlordUser?.branding?.websiteLink ?? null;
+
+    return {
+      property,
+      propertyTenant,
+      landlordName,
+      landlordCompany,
+      landlordLogoUrl,
+      landlordSignatureUrl,
+      landlordBusinessAddress,
+      landlordContactEmail,
+      landlordContactPhone,
+      landlordWebsite,
+    };
   }
 
   private toIsoDate(value: Date | string): string {

@@ -24,7 +24,13 @@ import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from '../properties/dto/create-property.dto';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
-import { rentToFees, sumRecurring, sumAll, Fee } from '../common/billing/fees';
+import {
+  rentToFees,
+  renewalInvoiceToFees,
+  sumRecurring,
+  sumAll,
+  Fee,
+} from '../common/billing/fees';
 import {
   advanceRentPeriod,
   effectiveFrequency,
@@ -264,6 +270,21 @@ export class RentReminderService {
       },
     });
 
+    // letterSource: the unpaid SENT/ACCEPTED letter whose values should drive
+    // the next period's rent row (price, fees, dates), if one exists.
+    //   - DRAFT letters aren't honored — the landlord hasn't shared figures
+    //     with the tenant yet, so the cron shouldn't surprise either side
+    //     with a price the tenant never agreed to.
+    //   - PAID letters are skipped — markInvoiceAsPaid already settled the
+    //     period and synced the rent row, so there's nothing for the cron
+    //     to roll forward here (and the rent shouldn't even be expired-and-
+    //     ACTIVE in that case, but defense-in-depth).
+    // Applies to a SINGLE period in the multi-expiry catch-up loop below.
+    // Subsequent rolled-forward periods (N+2, N+3) fall back to plain
+    // carry-forward — we don't propagate a one-off rent change across many
+    // periods just because the cron fell several months behind.
+    let letterSource: RenewalInvoice | null = null;
+
     if (propertyTenant) {
       const latestLetter = await this.renewalInvoiceRepository.findOne({
         where: {
@@ -294,16 +315,41 @@ export class RentReminderService {
           `Auto-renewed letter ${latestLetter.id} (sent → accepted) at expiry of rent ${rent.id}.`,
         );
       }
+
+      // The SENT branch above always mutates to ACCEPTED, so by this point
+      // the only statuses that can flow through are DRAFT and ACCEPTED. We
+      // honor only ACCEPTED — DRAFT means the landlord hasn't shared the
+      // figures with the tenant yet, so the cron shouldn't surprise them.
+      if (
+        latestLetter &&
+        latestLetter.letter_status === RenewalLetterStatus.ACCEPTED &&
+        latestLetter.payment_status === RenewalPaymentStatus.UNPAID
+      ) {
+        letterSource = latestLetter;
+      }
     }
+    let letterConsumed = false;
 
     let currentRent = rent;
     let currentExpiry = new Date(rent.expiry_date);
     currentExpiry.setUTCHours(0, 0, 0, 0);
 
     while (currentExpiry < today) {
-      const nextStart = new Date(currentExpiry);
-      nextStart.setDate(nextStart.getDate() + 1);
-      const nextExpiry = advanceRentPeriod(currentExpiry, currentRent);
+      const useLetter = !!letterSource && !letterConsumed;
+
+      // When honoring a letter, take its dates verbatim — including any gap
+      // the landlord set between the old expiry and the new start. Otherwise
+      // fall back to the cron's frequency-computed default of expiry+1.
+      let nextStart: Date;
+      let nextExpiry: Date;
+      if (useLetter && letterSource) {
+        nextStart = new Date(letterSource.start_date);
+        nextExpiry = new Date(letterSource.end_date);
+      } else {
+        nextStart = new Date(currentExpiry);
+        nextStart.setDate(nextStart.getDate() + 1);
+        nextExpiry = advanceRentPeriod(currentExpiry, currentRent);
+      }
 
       // Atomically mark the current period inactive only if still ACTIVE.
       // If another cron instance already processed this rent, the update
@@ -321,46 +367,78 @@ export class RentReminderService {
       currentRent.rent_status = RentStatusEnum.INACTIVE;
 
       // Billing v2: the period charge is the sum of every recurring fee
-      // on the rent (rent + service + any legal/agency/otherFees the
-      // landlord flagged `recurring=true`). Non-recurring fees were
-      // collected once at move-in and must not re-bill each renewal.
-      const currentFees = rentToFees(currentRent);
-      const recurringFees = currentFees.filter((f) => f.recurring);
-      const periodCharge = sumRecurring(currentFees);
+      // for the new period. When using the letter, that's the snapshot the
+      // landlord saved (renewalInvoiceToFees prefers fee_breakdown when
+      // present, falling back to the scalar columns). Otherwise it's the
+      // current rent's recurring fees, carried forward.
+      let recurringFees: Fee[];
+      let periodCharge: number;
+      if (useLetter && letterSource) {
+        const letterFees = renewalInvoiceToFees(letterSource);
+        recurringFees = letterFees.filter((f) => f.recurring);
+        periodCharge = sumRecurring(letterFees);
+      } else {
+        const currentFees = rentToFees(currentRent);
+        recurringFees = currentFees.filter((f) => f.recurring);
+        periodCharge = sumRecurring(currentFees);
+      }
 
       // The expiring period's charge is already on the wallet — it was
       // posted either as INITIAL_BALANCE when the first rent was created
       // (tenant-management) or as new_period when the prior cron tick
       // created this rent. Re-billing it here would double-charge.
 
-      // Carry recurring fees forward unchanged; non-recurring fees drop out
-      // of the next period (they were move-in one-timers).
+      // Carry recurring fees forward as a fallback for any field the letter
+      // doesn't carry; non-recurring fees drop out (move-in one-timers).
       const carried = this.carryForwardFees(currentRent);
 
       // Create the new rent up-front (tentatively OWING) so the new_period
       // ledger entries can be tied to newRent.id. That link is what lets
       // the next cron run skip a double-charge for this same period.
+      // When useLetter is true, money fields source from the letter using
+      // null-safe checks (not `||`) so a deliberate 0 — landlord removing a
+      // fee at renewal — overwrites the previous value instead of falling
+      // back to the carried-forward amount.
       const newRent = this.rentRepository.create({
         property_id: currentRent.property_id,
         tenant_id: currentRent.tenant_id,
         rent_start_date: nextStart,
         expiry_date: nextExpiry,
-        rental_price: currentRent.rental_price,
+        rental_price:
+          useLetter && letterSource
+            ? Number(letterSource.rent_amount)
+            : currentRent.rental_price,
         security_deposit: carried.security_deposit,
         security_deposit_recurring: carried.security_deposit_recurring,
-        service_charge: carried.service_charge,
+        service_charge:
+          useLetter && letterSource && letterSource.service_charge != null
+            ? Number(letterSource.service_charge)
+            : carried.service_charge,
         service_charge_recurring: carried.service_charge_recurring,
-        legal_fee: carried.legal_fee,
+        legal_fee:
+          useLetter && letterSource && letterSource.legal_fee != null
+            ? Number(letterSource.legal_fee)
+            : carried.legal_fee,
         legal_fee_recurring: carried.legal_fee_recurring,
-        agency_fee: carried.agency_fee,
+        agency_fee:
+          useLetter && letterSource && letterSource.agency_fee != null
+            ? Number(letterSource.agency_fee)
+            : carried.agency_fee,
         agency_fee_recurring: carried.agency_fee_recurring,
-        other_fees: carried.other_fees,
-        payment_frequency: currentRent.payment_frequency,
+        other_fees:
+          useLetter && letterSource
+            ? letterSource.other_fees ?? carried.other_fees
+            : carried.other_fees,
+        payment_frequency:
+          useLetter && letterSource
+            ? letterSource.payment_frequency || currentRent.payment_frequency
+            : currentRent.payment_frequency,
         payment_status: RentPaymentStatusEnum.OWING,
         rent_status: RentStatusEnum.ACTIVE,
         amount_paid: 0,
       });
       await this.rentRepository.save(newRent);
+      if (useLetter) letterConsumed = true;
 
       // Apply the new period charge, tying it to the new rent so a later
       // renewal of this rent will see it's already been billed.
@@ -397,6 +475,26 @@ export class RentReminderService {
         newRent.payment_status = RentPaymentStatusEnum.PAID;
         newRent.amount_paid = periodCharge;
         await this.rentRepository.save(newRent);
+
+        // Also settle the linked renewal_invoice if we sourced from one this
+        // iteration. Without this, the rent says PAID but the invoice stays
+        // UNPAID, leaving the tenant a "phantom payable" they could pay via
+        // the invoice token — which would route through markInvoiceAsPaid's
+        // ELSE branch (PAID + ACTIVE rent) and create a duplicate rent row
+        // for the same period. Don't post a corresponding ledger entry —
+        // the period-charge debit above already accounts for the wallet
+        // movement; this is just bookkeeping on the invoice side.
+        if (useLetter && letterSource &&
+            letterSource.payment_status !== RenewalPaymentStatus.PAID) {
+          letterSource.payment_status = RenewalPaymentStatus.PAID;
+          letterSource.amount_paid = periodCharge;
+          letterSource.paid_at = new Date();
+          letterSource.payment_reference = 'wallet_credit';
+          await this.renewalInvoiceRepository.save(letterSource);
+          this.logger.log(
+            `Renewal invoice ${letterSource.id} marked PAID via wallet credit at auto-renewal of rent ${currentRent.id}.`,
+          );
+        }
       }
 
       this.logger.log(
@@ -957,13 +1055,14 @@ export class RentReminderService {
       });
 
       if (existing) {
-        // Fee snapshot (rent_amount, service_charge, fee_breakdown, …) is
-        // authoritative from the moment the landlord set it — either at
-        // auto-create below, via "Renew Tenancy", or via
-        // PATCH /renewal-invoice/by-id/:id ("Edit Next Period"). Don't
+        // Fee snapshot (rent_amount, service_charge, fee_breakdown, …) AND
+        // start/end dates are authoritative from the moment the landlord
+        // set them — either at auto-create below, via "Renew Tenancy", or
+        // via PATCH /renewal-invoice/by-id/:id ("Edit Next Period"). Don't
         // re-snapshot from the Rent entity here: that path has no way to
         // tell an intentional landlord override from stale invoice data,
-        // so it would silently clobber next-period edits.
+        // so it would silently clobber next-period edits. (Only the
+        // wallet-derived fields below should refresh on each cron tick.)
         const breakdown: Fee[] = Array.isArray(existing.fee_breakdown)
           ? existing.fee_breakdown
           : [];
@@ -971,8 +1070,6 @@ export class RentReminderService {
         existing.wallet_balance = walletBalance;
         existing.outstanding_balance = outstandingBalance;
         existing.total_amount = Math.max(0, invoicePeriodCharge - walletBalance);
-        existing.start_date = startDate;
-        existing.end_date = endDate;
 
         // Promote a landlord-saved draft to 'sent' on first reminder.
         // The cron then dispatches the renewal-letter WhatsApp template

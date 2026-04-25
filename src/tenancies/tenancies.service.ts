@@ -387,6 +387,26 @@ export class TenanciesService {
         startDate.setDate(startDate.getDate() + 1);
       }
 
+      // Reject overlap with the current tenancy period. If the landlord picks
+      // a start date on or before the active rent's expiry, the renewal would
+      // double-cover days already billed under the current period — and after
+      // payment lands `markInvoiceAsPaid` would write that overlapping range
+      // onto the new rent row. Block at the boundary so the invoice never
+      // gets persisted with bad dates.
+      if (body?.startDate) {
+        const currentExpiry = new Date(activeRent.expiry_date);
+        currentExpiry.setUTCHours(0, 0, 0, 0);
+        const requestedStart = new Date(startDate);
+        requestedStart.setUTCHours(0, 0, 0, 0);
+        if (requestedStart.getTime() <= currentExpiry.getTime()) {
+          throw new BadRequestException(
+            `Start date overlaps the current tenancy period (ends ${currentExpiry
+              .toISOString()
+              .slice(0, 10)}). Choose a date after that day.`,
+          );
+        }
+      }
+
       if (body?.endDate) {
         endDate = new Date(body.endDate);
       } else if (normalizeFrequency(paymentFrequency) === 'custom') {
@@ -1919,22 +1939,133 @@ export class TenanciesService {
 
       if (isOwingRent) {
         // --- MARK CURRENT OWING RENT PAID ---
-        // Auto-renewal already created this period; just mark it paid.
-        // Also sync rental_price/service_charge/payment_frequency from the invoice
-        // so that future auto-renewals carry the landlord's chosen amount forward.
+        // Auto-renewal cron already created this period using the *previous*
+        // rent's frequency-computed dates and carried-forward fees. Now that
+        // payment has landed against the renewal_invoice — which carries the
+        // landlord's actual intended dates and fee amounts — reconcile both:
+        //
+        //  1. Snapshot what the cron already debited (from the rent row, which
+        //     mirrors what was posted to the ledger at auto-renewal time).
+        //  2. Sync rental_price / service_charge / fees / payment_frequency
+        //     AND start_date / expiry_date from the invoice onto the rent.
+        //  3. For each recurring fee whose amount changed (or that was added /
+        //     removed entirely), post a corrective ledger delta so the wallet
+        //     reflects what the landlord actually charged for this period.
+        const prevRecurringFees = rentToFees(activeRent).filter(
+          (f) => f.recurring,
+        );
+
+        // Sync money fields onto the rent row. Use explicit null-checks
+        // (not `||`) so that a deliberate 0 from the invoice — i.e. the
+        // landlord removing a fee at renewal — overwrites the previous
+        // value instead of falling back to it. Otherwise zeroed-out fees
+        // would silently persist on the rent row and re-bill on the
+        // next auto-renewal.
         activeRent.payment_status = RentPaymentStatusEnum.PAID;
         activeRent.amount_paid = parseFloat(invoice.rent_amount.toString());
         activeRent.rental_price = parseFloat(invoice.rent_amount.toString());
         activeRent.service_charge =
-          parseFloat((invoice.service_charge || 0).toString()) ||
-          activeRent.service_charge;
+          invoice.service_charge != null
+            ? parseFloat(invoice.service_charge.toString())
+            : activeRent.service_charge;
+        activeRent.legal_fee =
+          invoice.legal_fee != null
+            ? parseFloat(invoice.legal_fee.toString())
+            : activeRent.legal_fee;
+        activeRent.agency_fee =
+          invoice.agency_fee != null
+            ? parseFloat(invoice.agency_fee.toString())
+            : activeRent.agency_fee;
+        activeRent.other_fees = invoice.other_fees ?? activeRent.other_fees;
         activeRent.payment_frequency =
           invoice.payment_frequency || activeRent.payment_frequency;
+
+        // Sync dates so the landlord's edits to start_date/end_date win over
+        // the cron's frequency-computed defaults. The cron computes dates
+        // purely from frequency; the invoice carries explicit dates the
+        // landlord set in the renewal letter. Without this, edited dates are
+        // silently discarded whenever the cron auto-renews before payment.
+        if (invoice.start_date) activeRent.rent_start_date = invoice.start_date;
+        if (invoice.end_date) activeRent.expiry_date = invoice.end_date;
         activeRent.updated_at = new Date();
         await this.rentRepository.save(activeRent);
+
+        // Reconcile recurring-fee deltas against the ledger. Build a key →
+        // amount map for both sides keyed by (kind, externalId) so otherFees
+        // are matched by stable id rather than label.
+        if (!skipLedger) {
+          const newRecurringFees = renewalInvoiceToFees(invoice).filter(
+            (f) => f.recurring,
+          );
+          const feeKey = (f: Fee): string =>
+            f.kind === 'other'
+              ? `other:${f.externalId ?? f.label}`
+              : `${f.kind}`;
+          const prevByKey = new Map(prevRecurringFees.map((f) => [feeKey(f), f]));
+          const newByKey = new Map(newRecurringFees.map((f) => [feeKey(f), f]));
+          const allKeys = new Set([...prevByKey.keys(), ...newByKey.keys()]);
+
+          const periodStart = new Date(activeRent.rent_start_date)
+            .toISOString()
+            .split('T')[0];
+          const periodEnd = new Date(activeRent.expiry_date)
+            .toISOString()
+            .split('T')[0];
+
+          for (const key of allKeys) {
+            const prev = prevByKey.get(key);
+            const next = newByKey.get(key);
+            const prevAmount = prev ? prev.amount : 0;
+            const nextAmount = next ? next.amount : 0;
+            if (prevAmount === nextAmount) continue;
+
+            // delta = old - new. Negative delta = increase (more debit needed);
+            // positive = decrease (refund the over-charge). applyChange is a
+            // signed wallet movement, so a negative delta widens the debit.
+            const delta = prevAmount - nextAmount;
+            const label = (next ?? prev)!.label;
+            const kind = (next ?? prev)!.kind;
+            const externalId = (next ?? prev)!.externalId;
+            const description =
+              prev && next
+                ? `Period charge adjusted: ${label} ₦${prevAmount.toLocaleString()} → ₦${nextAmount.toLocaleString()} (${periodStart} – ${periodEnd})`
+                : next
+                  ? `New period charged: ${periodStart} – ${periodEnd} — ${label}`
+                  : `Period charge removed: ${label} (${periodStart} – ${periodEnd})`;
+
+            await this.tenantBalancesService.applyChange(
+              tenantId,
+              landlordId,
+              delta,
+              {
+                type: TenantBalanceLedgerType.AUTO_RENEWAL,
+                description,
+                propertyId: invoice.property_id,
+                relatedEntityType: 'rent',
+                relatedEntityId: activeRent.id,
+                metadata: {
+                  fee_kind: kind,
+                  ...(externalId ? { externalId } : {}),
+                  period_start: periodStart,
+                  period_end: periodEnd,
+                  reconciliation: true,
+                  prev_amount: prevAmount,
+                  new_amount: nextAmount,
+                },
+              },
+            );
+          }
+        }
       } else {
         // --- OLD FLOW: current rent was PAID/PENDING (pre-expiry payment) ---
         // Mark current period inactive and create new PAID rent for next period.
+        // Source the new rent's fees from the invoice (which carries what the
+        // landlord set in the renewal letter), falling back to the previous
+        // rent only when the invoice doesn't carry that field. Without this,
+        // any otherFees / legal_fee / agency_fee changes the landlord made in
+        // the letter would only affect period 1 (via the explicit ledger-debit
+        // loop below) and silently revert on the next auto-renewal because
+        // the cron carries forward from the rent row.
         activeRent.rent_status = RentStatusEnum.INACTIVE;
         activeRent.updated_at = new Date();
         await this.rentRepository.save(activeRent);
@@ -1949,14 +2080,21 @@ export class TenanciesService {
           security_deposit: activeRent.security_deposit,
           security_deposit_recurring: activeRent.security_deposit_recurring,
           service_charge:
-            parseFloat(invoice.service_charge.toString()) ||
-            activeRent.service_charge,
+            invoice.service_charge != null
+              ? parseFloat(invoice.service_charge.toString())
+              : activeRent.service_charge,
           service_charge_recurring: activeRent.service_charge_recurring,
-          legal_fee: activeRent.legal_fee,
+          legal_fee:
+            invoice.legal_fee != null
+              ? parseFloat(invoice.legal_fee.toString())
+              : activeRent.legal_fee,
           legal_fee_recurring: activeRent.legal_fee_recurring,
-          agency_fee: activeRent.agency_fee,
+          agency_fee:
+            invoice.agency_fee != null
+              ? parseFloat(invoice.agency_fee.toString())
+              : activeRent.agency_fee,
           agency_fee_recurring: activeRent.agency_fee_recurring,
-          other_fees: activeRent.other_fees,
+          other_fees: invoice.other_fees ?? activeRent.other_fees,
           payment_frequency:
             invoice.payment_frequency || activeRent.payment_frequency,
           payment_status: RentPaymentStatusEnum.PAID,

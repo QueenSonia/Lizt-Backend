@@ -1332,6 +1332,7 @@ export class PropertiesService {
       letterStatus: string;
       letterBodyHtml: string | null;
       letterBodyFields: Record<string, unknown> | null;
+      letterSentAt: string | null;
       supersedesId: string | null;
     } | null = null;
     let pendingAdHocInvoiceFees: Array<{
@@ -1391,6 +1392,7 @@ export class PropertiesService {
           'letter_status',
           'letter_body_html',
           'letter_body_fields',
+          'letter_sent_at',
           'supersedes_id',
           'accepted_at',
         ],
@@ -1482,6 +1484,9 @@ export class PropertiesService {
                 (latestRenewalInvoice as unknown as {
                   letter_body_fields?: Record<string, unknown> | null;
                 }).letter_body_fields ?? null,
+              letterSentAt: latestRenewalInvoice.letter_sent_at
+                ? latestRenewalInvoice.letter_sent_at.toISOString()
+                : null,
               supersedesId: latestRenewalInvoice.supersedes_id ?? null,
             }
           : null;

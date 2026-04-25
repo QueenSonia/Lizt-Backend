@@ -22,7 +22,7 @@ import { TemplateSenderService } from '../whatsapp-bot/template-sender';
 import { UtilService } from '../utils/utility-service';
 import {
   RenewalLetterPublicDto,
-  InitiateAcceptanceResponseDto,
+  InitiateOtpResponseDto,
 } from './dto/renewal-letter-public.dto';
 
 @Injectable()
@@ -144,18 +144,41 @@ export class RenewalLettersService {
         ? invoice.auto_renewed_at.toISOString()
         : null,
       declinedAt: invoice.declined_at ? invoice.declined_at.toISOString() : null,
+      declineOtp:
+        invoice.letter_status === RenewalLetterStatus.DECLINED
+          ? invoice.decline_otp
+          : null,
+      declinedByPhone:
+        invoice.letter_status === RenewalLetterStatus.DECLINED
+          ? invoice.declined_by_phone
+          : null,
       isSuperseded: invoice.superseded_by_id !== null,
       phoneLastFour: null,
     };
   }
 
   /**
-   * Start OTP flow. Returns masked last-four so the tenant UI can confirm
-   * which number received the code. Idempotent on already-accepted rows.
+   * Start OTP flow for accept. Returns masked last-four so the tenant UI
+   * can confirm which number received the code. Idempotent on already-
+   * accepted rows.
    */
-  async initiateAcceptance(
+  async initiateAcceptance(token: string): Promise<InitiateOtpResponseDto> {
+    return this.initiateOtp(token, 'accept');
+  }
+
+  /**
+   * Start OTP flow for reject. Mirror of `initiateAcceptance`. Idempotent
+   * on already-declined rows is enforced inside `verifyOtpAndReject`; here
+   * we just refuse to send a fresh code once the row has left SENT.
+   */
+  async initiateRejection(token: string): Promise<InitiateOtpResponseDto> {
+    return this.initiateOtp(token, 'reject');
+  }
+
+  private async initiateOtp(
     token: string,
-  ): Promise<InitiateAcceptanceResponseDto> {
+    intent: 'accept' | 'reject',
+  ): Promise<InitiateOtpResponseDto> {
     const invoice = await this.loadInvoiceByToken(token);
 
     if (invoice.superseded_by_id) {
@@ -180,11 +203,13 @@ export class RenewalLettersService {
 
     // Fire-and-forget — return immediately so the tenant isn't stuck waiting
     // on Meta's API to acknowledge the template send.
-    this.otpService.initiateOTPVerification(token, phone).catch((err) => {
-      this.logger.error(
-        `Renewal OTP send failed for token ${token.substring(0, 8)}: ${err.message}`,
-      );
-    });
+    this.otpService
+      .initiateOTPVerification(token, intent, phone)
+      .catch((err) => {
+        this.logger.error(
+          `Renewal OTP (${intent}) send failed for token ${token.substring(0, 8)}: ${err.message}`,
+        );
+      });
 
     return {
       message: 'OTP is being sent to your phone number',
@@ -223,7 +248,7 @@ export class RenewalLettersService {
     }
 
     // Consume the Redis OTP (throws on wrong/expired/locked).
-    const verifiedOtp = await this.otpService.verifyOTP(token, otp);
+    const verifiedOtp = await this.otpService.verifyOTP(token, 'accept', otp);
 
     const { property, propertyTenant, landlordName } =
       await this.loadLetterContext(invoice);
@@ -288,18 +313,38 @@ export class RenewalLettersService {
       );
     }
 
+    // Notify the landlord via WhatsApp. Mirrors the decline path — fire-
+    // and-forget so a Meta outage doesn't break the acceptance write.
+    const landlordPhoneRaw =
+      propertyTenant.property.owner?.user?.phone_number ?? null;
+    if (landlordPhoneRaw) {
+      try {
+        await this.templateSenderService.sendRenewalLetterAcceptedNotice({
+          phone_number: this.utilService.normalizePhoneNumber(landlordPhoneRaw),
+          landlord_name: landlordName,
+          tenant_name: tenantName,
+          property_name: property.name,
+        });
+      } catch (err) {
+        this.logger.error(
+          `Failed to send landlord accept notice: ${err.message}`,
+          err.stack,
+        );
+      }
+    }
+
     return this.getPublicLetter(token);
-    void landlordName; // keep landlordName resolution for potential future notifier
-    void property; // property no longer threaded into the WhatsApp template
   }
 
   /**
-   * Tenant declines the renewal. Locks the row to `declined`, notifies the
-   * landlord. Cannot reach the payment page (payment gate requires
-   * letter_status=accepted).
+   * Verify OTP and mark the letter declined. Mirrors `verifyOtpAndAccept`:
+   * idempotent on already-declined rows, locks to `declined` on success,
+   * notifies the landlord. Cannot reach the payment page (payment gate
+   * requires letter_status=accepted).
    */
-  async reject(
+  async verifyOtpAndReject(
     token: string,
+    otp: string,
     reason?: string,
     ipAddress?: string,
   ): Promise<RenewalLetterPublicDto> {
@@ -313,6 +358,7 @@ export class RenewalLettersService {
     }
 
     if (invoice.letter_status === RenewalLetterStatus.DECLINED) {
+      // Idempotent — don't re-verify, don't re-fire landlord notice.
       return this.getPublicLetter(token);
     }
 
@@ -322,19 +368,27 @@ export class RenewalLettersService {
       );
     }
 
+    // Consume the Redis OTP (throws on wrong/expired/locked).
+    const verifiedOtp = await this.otpService.verifyOTP(token, 'reject', otp);
+
+    const { property, propertyTenant, landlordName } =
+      await this.loadLetterContext(invoice);
+    const tenantPhone = this.utilService.normalizePhoneNumber(
+      propertyTenant.tenant.user.phone_number,
+    );
+    const tenantName = `${propertyTenant.tenant.user.first_name ?? ''} ${
+      propertyTenant.tenant.user.last_name ?? ''
+    }`.trim();
+
     await this.renewalInvoiceRepository.update(invoice.id, {
       letter_status: RenewalLetterStatus.DECLINED,
       declined_at: new Date(),
+      declined_by_phone: tenantPhone,
+      decline_otp: verifiedOtp,
       decline_reason: reason?.trim() || null,
       decision_made_at: new Date(),
       decision_made_ip: ipAddress ?? null,
     });
-
-    const { property, propertyTenant, landlordName } =
-      await this.loadLetterContext(invoice);
-    const tenantName = `${propertyTenant.tenant.user.first_name ?? ''} ${
-      propertyTenant.tenant.user.last_name ?? ''
-    }`.trim();
 
     try {
       await this.propertyHistoryRepository.save({
@@ -395,7 +449,8 @@ export class RenewalLettersService {
     }
     // Allow both 'landlord' (sent letter) and 'draft' (saved-but-not-sent)
     // tokens through this gate so the tenant page can render a preview
-    // for drafts. The action endpoints (accept / verify-otp / reject)
+    // for drafts. The action endpoints (accept / accept/verify / reject /
+    // reject/verify)
     // independently gate on letter_status === 'sent', so drafts can only
     // be viewed, never accepted. Tenant-initiated rows (e.g. WhatsApp
     // "Pay OB") use a different token type and are still rejected.

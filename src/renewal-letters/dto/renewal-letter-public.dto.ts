@@ -64,6 +64,10 @@ export class RenewalLetterPublicDto {
   @ApiPropertyOptional() acceptedAt: string | null;
   @ApiPropertyOptional() acceptedByPhone: string | null;
 
+  // Decline-only (post-verify) — power the DECLINED stamp overlay.
+  @ApiPropertyOptional() declineOtp: string | null;
+  @ApiPropertyOptional() declinedByPhone: string | null;
+
   /**
    * Set when the cron auto-renewed at expiry (tenant didn't accept in time).
    * Drives the AUTO-RENEWED stamp variant — same shape as ACCEPTED but
@@ -81,7 +85,7 @@ export class RenewalLetterPublicDto {
   @ApiPropertyOptional() phoneLastFour: string | null;
 }
 
-export class InitiateAcceptanceResponseDto {
+export class InitiateOtpResponseDto {
   @ApiProperty() message: string;
   @ApiProperty() phoneLastFour: string;
 }

@@ -338,6 +338,16 @@ export interface RenewalLetterDeclinedNoticeParams {
 }
 
 /**
+ * Parameters for landlord notification when tenant accepts a renewal letter
+ */
+export interface RenewalLetterAcceptedNoticeParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+}
+
+/**
  * Parameters for renewal payment confirmation to tenant
  */
 export interface RenewalPaymentTenantParams {
@@ -1967,6 +1977,38 @@ export class TemplateSenderService {
       type: 'template',
       template: {
         name: 'renewal_letter_declined_landlord_notice',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+            ],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify landlord that the tenant accepted the renewal letter.
+   * Template: renewal_letter_accepted_landlord_notice
+   */
+  async sendRenewalLetterAcceptedNotice({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+  }: RenewalLetterAcceptedNoticeParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_letter_accepted_landlord_notice',
         language: { code: 'en' },
         components: [
           {

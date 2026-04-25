@@ -194,6 +194,17 @@ export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'timestamptz', nullable: true })
   declined_at: Date | null;
 
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  declined_by_phone: string | null;
+
+  /**
+   * The 6-digit code the tenant used to decline — persisted for the audit
+   * stamp only, mirroring `acceptance_otp` (live OTP challenges live in
+   * Redis with TTL).
+   */
+  @Column({ type: 'varchar', length: 8, nullable: true })
+  decline_otp: string | null;
+
   @Column({ type: 'varchar', length: 500, nullable: true })
   decline_reason: string | null;
 

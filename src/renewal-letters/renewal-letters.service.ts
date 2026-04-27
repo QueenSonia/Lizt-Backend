@@ -20,6 +20,7 @@ import {
 import { RenewalLetterOtpService } from './renewal-letter-otp.service';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender';
 import { UtilService } from '../utils/utility-service';
+import { RenewalLetterPdfService } from '../pdf/renewal-letter-pdf.service';
 import {
   RenewalLetterPublicDto,
   InitiateOtpResponseDto,
@@ -44,7 +45,61 @@ export class RenewalLettersService {
     private readonly templateSenderService: TemplateSenderService,
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly renewalLetterPdfService: RenewalLetterPdfService,
   ) {}
+
+  /**
+   * Render the signed-letter PDF and dispatch the renewal_letter_signed
+   * WhatsApp template to the tenant. Used by both accept and decline
+   * paths — the only thing that differs is the `outcome` parameter and
+   * the stamp baked into the rendered HTML (driven off letter_status
+   * which the caller has already updated to ACCEPTED/DECLINED).
+   *
+   * Wrapped in try/catch by the caller — a Cloudinary or Meta failure
+   * here must NOT unwind the accept/decline write.
+   */
+  private async dispatchSignedLetterPdf(
+    invoice: RenewalInvoice,
+    propertyName: string,
+    tenantPhone: string,
+    tenantFirstName: string,
+    outcome: 'accepted' | 'declined',
+    decisionAt: Date,
+  ): Promise<void> {
+    const pdfUrl = await this.renewalLetterPdfService.generateAndUpload(
+      invoice.id,
+    );
+    const filename = this.renewalLetterPdfService.buildFilename(
+      propertyName,
+      decisionAt,
+    );
+    const decisionDate = decisionAt.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    await this.templateSenderService.sendRenewalLetterSigned({
+      phone_number: tenantPhone,
+      tenant_first_name: tenantFirstName,
+      property_name: propertyName,
+      outcome,
+      decision_date: decisionDate,
+      pdf_url: pdfUrl,
+      pdf_filename: filename,
+    });
+  }
+
+  private firstName(fullName: string): string {
+    const HONORIFIC =
+      /^(mr|mrs|miss|ms|mx|dr|prof|sir|madam|chief|engr|hon|rev)\.?$/i;
+    return (
+      (fullName ?? '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .find((t) => !HONORIFIC.test(t)) || (fullName?.trim() || 'there')
+    );
+  }
 
   /**
    * Public letter fetch — token is supplied by tenant from their WhatsApp link.
@@ -201,18 +256,14 @@ export class RenewalLettersService {
     const phone = this.utilService.normalizePhoneNumber(rawPhone);
     const phoneLastFour = phone.slice(-4);
 
-    // Fire-and-forget — return immediately so the tenant isn't stuck waiting
-    // on Meta's API to acknowledge the template send.
-    this.otpService
-      .initiateOTPVerification(token, intent, phone)
-      .catch((err) => {
-        this.logger.error(
-          `Renewal OTP (${intent}) send failed for token ${token.substring(0, 8)}: ${err.message}`,
-        );
-      });
+    // Synchronous: surface the 60s cooldown 429 and any Meta delivery
+    // failure to the tenant. Previously fire-and-forget — which silently
+    // swallowed both, letting the modal toast "code sent" while no code
+    // actually left the system.
+    await this.otpService.initiateOTPVerification(token, intent, phone);
 
     return {
-      message: 'OTP is being sent to your phone number',
+      message: 'Verification code sent to your phone number',
       phoneLastFour,
     };
   }
@@ -326,11 +377,39 @@ export class RenewalLettersService {
           property_name: property.name,
         });
       } catch (err) {
+        const e = err as { message?: string; stack?: string };
         this.logger.error(
-          `Failed to send landlord accept notice: ${err.message}`,
-          err.stack,
+          `Failed to send landlord accept notice: ${e.message}`,
+          e.stack,
         );
       }
+    }
+
+    // Render and dispatch the signed-letter PDF to the tenant. Refetch
+    // the row so the rendered stamp reflects the just-written ACCEPTED
+    // state. Failure here must NOT unwind the accept — the row is
+    // already updated and downstream actions (payment, audit) don't
+    // depend on this artefact.
+    try {
+      const refreshed = await this.renewalInvoiceRepository.findOne({
+        where: { id: invoice.id },
+      });
+      if (refreshed) {
+        await this.dispatchSignedLetterPdf(
+          refreshed,
+          property.name,
+          tenantPhone,
+          this.firstName(tenantName),
+          'accepted',
+          refreshed.accepted_at ?? new Date(),
+        );
+      }
+    } catch (err) {
+      const e = err as { message?: string; stack?: string };
+      this.logger.error(
+        `Failed to dispatch signed renewal letter (accept): ${e.message}`,
+        e.stack,
+      );
     }
 
     return this.getPublicLetter(token);
@@ -428,11 +507,37 @@ export class RenewalLettersService {
           property_name: property.name,
         });
       } catch (err) {
+        const e = err as { message?: string; stack?: string };
         this.logger.error(
-          `Failed to send landlord decline notice: ${err.message}`,
-          err.stack,
+          `Failed to send landlord decline notice: ${e.message}`,
+          e.stack,
         );
       }
+    }
+
+    // Render and dispatch the signed-letter PDF to the tenant — same
+    // pattern as the accept path, just with `outcome: 'declined'` and
+    // the DECLINED stamp baked in via letter_status.
+    try {
+      const refreshed = await this.renewalInvoiceRepository.findOne({
+        where: { id: invoice.id },
+      });
+      if (refreshed) {
+        await this.dispatchSignedLetterPdf(
+          refreshed,
+          property.name,
+          tenantPhone,
+          this.firstName(tenantName),
+          'declined',
+          refreshed.declined_at ?? new Date(),
+        );
+      }
+    } catch (err) {
+      const e = err as { message?: string; stack?: string };
+      this.logger.error(
+        `Failed to dispatch signed renewal letter (decline): ${e.message}`,
+        e.stack,
+      );
     }
 
     return this.getPublicLetter(token);

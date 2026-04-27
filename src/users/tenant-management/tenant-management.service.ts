@@ -2181,11 +2181,14 @@ export class TenantManagementService {
         select: [
           'id',
           'token',
+          'token_type',
           'receipt_token',
           'property_id',
           'rent_amount',
           'total_amount',
           'payment_status',
+          'letter_status',
+          'letter_sent_at',
           'created_at',
           'paid_at',
           'start_date',
@@ -2196,10 +2199,21 @@ export class TenantManagementService {
     const renewalInvoiceSummaries = allRenewalInvoices.map((inv) => ({
       id: inv.id,
       token: inv.token,
+      // tokenType + letter_* surfaced so the landlord Documents tab can
+      // render a discoverable "Renewal Letter" row alongside the existing
+      // "Renewal Invoice" row, and skip tenant-token (OB-pay) rows that
+      // would 404 on the /renewal-letters/:token page.
+      tokenType: inv.token_type,
       receiptToken: inv.receipt_token || null,
       propertyName: inv.property?.name || 'Property',
       totalAmount: parseFloat((inv.total_amount ?? 0).toString()),
       paymentStatus: inv.payment_status,
+      letterStatus: inv.letter_status ?? null,
+      letterSentAt: inv.letter_sent_at
+        ? typeof inv.letter_sent_at === 'string'
+          ? inv.letter_sent_at
+          : inv.letter_sent_at.toISOString()
+        : null,
       createdAt: inv.created_at
         ? new Date(inv.created_at).toISOString()
         : new Date().toISOString(),

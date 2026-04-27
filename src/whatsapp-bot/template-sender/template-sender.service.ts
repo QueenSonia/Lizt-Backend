@@ -26,7 +26,13 @@ interface TemplateComponent {
     | { type: 'text'; text: string }
     | {
         type: 'document';
-        document: { id: string; filename: string };
+        // Meta accepts either a pre-uploaded media id OR a public URL.
+        // For renewal-letter-signed we ship the Cloudinary URL via `link`
+        // since the PDF is freshly rendered per send and there's no
+        // benefit to a separate /media upload step.
+        document:
+          | { id: string; filename: string }
+          | { link: string; filename: string };
       }
   >;
 }
@@ -345,6 +351,35 @@ export interface RenewalLetterAcceptedNoticeParams {
   landlord_name: string;
   tenant_name: string;
   property_name: string;
+}
+
+/**
+ * Parameters for the signed-letter PDF dispatch sent to the tenant after
+ * they accept or decline a renewal letter. One template handles both
+ * outcomes — `outcome` flips the body's verb between "accepted" and
+ * "declined" while every other parameter stays the same.
+ */
+export interface RenewalLetterSignedParams {
+  phone_number: string;
+  /** Used in the body greeting — pass first name for a friendly read. */
+  tenant_first_name: string;
+  property_name: string;
+  /** Lower-case verb interpolated into the body — `accepted` or `declined`. */
+  outcome: 'accepted' | 'declined';
+  /** Pre-formatted decision date (e.g. "April 27, 2026"). */
+  decision_date: string;
+  /**
+   * Public URL to the rendered PDF. Must be reachable by Meta's servers
+   * at send time — they fetch and cache the document during template
+   * delivery; later 404s are tolerated.
+   */
+  pdf_url: string;
+  /**
+   * Filename surfaced as the document title in the WhatsApp chat.
+   * Pick something tenant-readable (e.g. "Renewal Letter — Sunset
+   * Heights — 2026-04-27.pdf").
+   */
+  pdf_filename: string;
 }
 
 /**
@@ -2017,6 +2052,76 @@ export class TemplateSenderService {
               { type: 'text', text: landlord_name },
               { type: 'text', text: tenant_name },
               { type: 'text', text: property_name },
+            ],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Deliver the signed renewal-letter PDF to the tenant after they accept
+   * or decline. One template, both outcomes — the body flips on the
+   * `outcome` verb, the document header carries the same render in either
+   * case (with the appropriate ACCEPTED / DECLINED stamp baked in).
+   *
+   * Template: renewal_letter_signed
+   *
+   * Body (must be submitted to Meta exactly as below — every variable is
+   * wrapped in literal text on both sides per the project rule that Meta
+   * rejects templates with leading/trailing variables):
+   *
+   *   Hi {{1}},
+   *
+   *   Your renewal letter for *{{2}}* has been *{{3}}* on {{4}}.
+   *
+   *   The signed copy is attached above for your records.
+   *
+   * Parameters:
+   *   {{1}} tenant_first_name  e.g. "Sonia"
+   *   {{2}} property_name      e.g. "Sunset Heights — Flat 3B"
+   *   {{3}} outcome            "accepted" | "declined" (lower-case verb)
+   *   {{4}} decision_date      e.g. "April 27, 2026"
+   *
+   * Header: DOCUMENT (link) — public Cloudinary URL of the rendered PDF.
+   * No buttons (the payment link, when applicable, was already sent by
+   * sendRenewalLink in the same accept flow — this template's job is the
+   * audit artefact, not the call-to-action).
+   */
+  async sendRenewalLetterSigned({
+    phone_number,
+    tenant_first_name,
+    property_name,
+    outcome,
+    decision_date,
+    pdf_url,
+    pdf_filename,
+  }: RenewalLetterSignedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_letter_signed',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'header',
+            parameters: [
+              {
+                type: 'document',
+                document: { link: pdf_url, filename: pdf_filename },
+              },
+            ],
+          },
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_first_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: outcome },
+              { type: 'text', text: decision_date },
             ],
           },
         ],

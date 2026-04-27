@@ -797,11 +797,16 @@ export class RentReminderService {
       return;
     }
 
-    const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
+    // Source from the renewal invoice — `rent` here is the EXPIRING period,
+    // so its rental_price / expiry_date are the OLD terms. The invoice
+    // carries the next period's figures (letter values when the landlord
+    // sent one, otherwise the auto-create snapshot).
+    const expiryDateStr = new Date(renewalInvoice.end_date).toLocaleDateString(
       'en-GB',
     );
-    const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
-    const amountToPay = baseAmount + (rent.service_charge || 0);
+    const amountToPay =
+      Number(renewalInvoice.rent_amount || 0) +
+      Number(renewalInvoice.service_charge || 0);
     const formattedAmount = amountToPay.toLocaleString('en-NG', {
       style: 'currency',
       currency: 'NGN',

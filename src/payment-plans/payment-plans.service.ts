@@ -1224,6 +1224,45 @@ export class PaymentPlansService {
           const ref =
             args.paystackRef ??
             `PLAN_MANUAL_${installment.id}_${Date.now()}`;
+
+          // Don't ripple up to a superseded invoice: the landlord revised the
+          // letter, the new invoice carries the canonical terms, and writing
+          // amount_paid / running rent-advance against the old row would lock
+          // in stale dates and fees. The OB_PAYMENT credit at step 2 above is
+          // still correct (the tenant paid real money) — it just lands in the
+          // wallet as overpayment until the new invoice is paid against the
+          // refreshed wallet balance. Log a property_history entry so the
+          // landlord can see what happened.
+          if (invoice.superseded_by_id) {
+            this.logger.warn(
+              `Installment ${installment.id} on plan ${plan.id} ripple-up skipped: invoice ${invoice.id} was superseded by ${invoice.superseded_by_id}. Funds remain as wallet credit.`,
+            );
+            try {
+              await this.propertyHistoryRepository.save(
+                this.propertyHistoryRepository.create({
+                  property_id: plan.property_id,
+                  tenant_id: plan.tenant_id,
+                  event_type: 'renewal_invoice_orphaned_payment',
+                  event_description: `Installment ${installment.sequence} of "${plan.charge_name}" (₦${args.amount.toLocaleString()}) credited to tenant wallet — the linked renewal invoice was superseded by a revised letter. Cancel the plan and rebuild it against the current invoice.`,
+                  related_entity_id: installment.id,
+                  related_entity_type: 'payment_plan_installment',
+                  metadata: {
+                    payment_plan_id: plan.id,
+                    superseded_invoice_id: invoice.id,
+                    current_invoice_id: invoice.superseded_by_id,
+                    amount: args.amount,
+                    payment_method: args.method,
+                  },
+                }),
+              );
+            } catch (historyErr) {
+              this.logger.warn(
+                `Failed to log orphaned-payment history for installment ${installment.id}: ${(historyErr as Error)?.message}`,
+              );
+            }
+            return;
+          }
+
           const planCompleted = await this.dataSource
             .getRepository(PaymentPlan)
             .findOne({ where: { id: plan.id } })
@@ -1262,9 +1301,20 @@ export class PaymentPlansService {
           }
         }
       } catch (error) {
-        this.logger.warn(
-          `Invoice ripple-up for installment ${installment.id} skipped: ${error.message}`,
-        );
+        // INVOICE_SUPERSEDED races: the invoice was superseded between our
+        // pre-check and the markInvoiceAsPaid call. Treat the same way as
+        // the proactive branch above — leave the OB credit, log, move on.
+        const code = (error as { response?: { code?: string } })?.response
+          ?.code;
+        if (code === 'INVOICE_SUPERSEDED') {
+          this.logger.warn(
+            `Installment ${installment.id} ripple-up race: invoice superseded mid-flight. Funds remain as wallet credit.`,
+          );
+        } else {
+          this.logger.warn(
+            `Invoice ripple-up for installment ${installment.id} skipped: ${error.message}`,
+          );
+        }
       }
     }
 

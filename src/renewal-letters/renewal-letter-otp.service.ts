@@ -165,9 +165,10 @@ export class RenewalLetterOtpService {
       });
       this.logger.log(`Renewal OTP sent to ****${phoneNumber.slice(-4)}`);
     } catch (error) {
+      const e = error as { message?: string; stack?: string };
       this.logger.error(
-        `Failed to send renewal OTP: ${error.message}`,
-        error.stack,
+        `Failed to send renewal OTP: ${e.message}`,
+        e.stack,
       );
       throw new Error('Failed to send verification code. Please try again.');
     }
@@ -186,7 +187,10 @@ export class RenewalLetterOtpService {
     }
     const otp = this.generateOTP();
     await this.storeOTP(token, intent, otp);
-    await this.setCooldown(token, intent);
+    // Cooldown only after a confirmed WhatsApp dispatch — otherwise a Meta
+    // failure would leave the tenant locked out for 60s with no code in
+    // hand and the next Resend silently bouncing on the cooldown.
     await this.sendOTPViaWhatsApp(phoneNumber, otp);
+    await this.setCooldown(token, intent);
   }
 }

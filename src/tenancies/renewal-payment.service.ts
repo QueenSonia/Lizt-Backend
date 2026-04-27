@@ -301,13 +301,36 @@ export class RenewalPaymentService {
       await this.renewalInvoiceRepository.save(invoice);
     }
 
-    // Delegate to TenanciesService to handle invoice update, notifications, and history updates
-    await this.tenanciesService.markInvoiceAsPaid(
-      token,
-      reference,
-      amount,
-      paymentOption || undefined,
-    );
+    // Delegate to TenanciesService to handle invoice update, notifications, and history updates.
+    // INVOICE_SUPERSEDED race: the landlord revised the letter between the
+    // tenant initiating Paystack and verify/webhook landing here. The funds
+    // are real — credit them to the wallet, log, and return cleanly so
+    // Paystack doesn't retry-loop and the tenant doesn't see a hard error.
+    try {
+      await this.tenanciesService.markInvoiceAsPaid(
+        token,
+        reference,
+        amount,
+        paymentOption || undefined,
+      );
+    } catch (err) {
+      const code = (err as { response?: { code?: string } })?.response?.code;
+      const invoiceId = (err as { response?: { invoiceId?: string } })?.response
+        ?.invoiceId;
+      if (code === 'INVOICE_SUPERSEDED' && invoiceId) {
+        this.logger.warn(
+          `Renewal payment ${reference} landed on superseded invoice ${invoiceId}; crediting tenant wallet and skipping rent-advance.`,
+        );
+        await this.tenanciesService.creditOrphanedRenewalPayment({
+          invoiceId,
+          amount,
+          paymentReference: reference,
+          paymentMethod: channel,
+        });
+        return;
+      }
+      throw err;
+    }
 
     this.logger.log(
       `Successfully processed payment for renewal invoice: ${token}`,

@@ -11,6 +11,7 @@ import { PropertyHistory } from '../property-history/entities/property-history.e
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { UtilsModule } from '../utils/utils.module';
 import { AppCacheModule } from '../lib/cache';
+import { PdfModule } from '../pdf/pdf.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { AppCacheModule } from '../lib/cache';
     forwardRef(() => WhatsappBotModule),
     UtilsModule,
     AppCacheModule,
+    PdfModule,
   ],
   controllers: [RenewalLettersController],
   providers: [RenewalLettersService, RenewalLetterOtpService],

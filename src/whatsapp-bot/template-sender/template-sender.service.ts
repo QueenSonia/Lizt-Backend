@@ -3712,6 +3712,8 @@ export class TemplateSenderService {
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
     renewal_letter_link:
       'Hi {{1}}, your landlord {{3}} has prepared a renewal offer for {{2}}. Tap below to review and accept it.',
+    renewal_letter_signed:
+      'Hi {{1}},\n\nYour renewal letter for *{{2}}* has been *{{3}}* on {{4}}.\n\nThe signed copy is attached above for your records.',
     renewal_letter_declined_landlord_notice:
       'Hi {{1}}, {{2}} has declined the renewal offer for {{3}}. Open your Lizt dashboard to decide whether to revise the offer or market the unit.',
     renewal_payment_tenant:

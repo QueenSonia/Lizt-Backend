@@ -2117,11 +2117,19 @@ export class TenantFlowService {
       const fees = rentToFees(rent);
       const recurringFees = fees.filter((f) => f.recurring);
       const periodCharge = sumRecurring(fees);
+      // Scalar columns must reflect only what's actually charged on the
+      // next period (= recurring). Copying non-recurring fees here puts
+      // e.g. legal_fee into the rendered breakdown while leaving it out
+      // of total_amount — visually inconsistent and confusing.
       const rentAmount = rent.rental_price || 0;
-      const serviceCharge = rent.service_charge || 0;
-      const legalFee = Number(rent.legal_fee || 0);
-      const agencyFee = Number(rent.agency_fee || 0);
-      const cautionDeposit = Number(rent.security_deposit || 0);
+      const serviceCharge = rent.service_charge_recurring
+        ? rent.service_charge || 0
+        : 0;
+      const legalFee = rent.legal_fee_recurring ? Number(rent.legal_fee || 0) : 0;
+      const agencyFee = rent.agency_fee_recurring ? Number(rent.agency_fee || 0) : 0;
+      const cautionDeposit = rent.security_deposit_recurring
+        ? Number(rent.security_deposit || 0)
+        : 0;
       const recurringOtherFees = (rent.other_fees ?? []).filter(
         (f) => f.recurring,
       );

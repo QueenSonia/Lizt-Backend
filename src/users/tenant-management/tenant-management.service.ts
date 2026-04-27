@@ -2164,12 +2164,17 @@ export class TenantManagementService {
       ? (pendingInvoiceMap.get(activeRent.property_id) ?? null)
       : null;
 
-    // Fetch ALL renewal invoices for this tenant (for Documents tab)
+    // Fetch ALL renewal invoices for this tenant (for Documents tab).
+    // Exclude tenant-token rows: those are tenant-initiated artifacts (OB
+    // pay link / payment-plan request) created by the WhatsApp bot. They
+    // live in renewal_invoices for token routing but aren't documents the
+    // landlord authored, so they don't belong on the Documents tab.
     const allRenewalInvoices = await this.dataSource
       .getRepository(RenewalInvoice)
       .find({
         where: {
           tenant_id: account.id,
+          token_type: In(['landlord', 'draft']),
           ...(adminId
             ? {
                 property: { owner_id: adminId },

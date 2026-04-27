@@ -19,6 +19,8 @@ import { Rent } from '../rents/entities/rent.entity';
 import { Account } from '../users/entities/account.entity';
 import { Users } from '../users/entities/user.entity';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
+import { WhatsAppNotificationLog } from '../whatsapp-bot/entities/whatsapp-notification-log.entity';
+import { ChatLog } from '../whatsapp-bot/entities/chat-log.entity';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { EventsModule } from '../events/events.module';
 import { UtilsModule } from 'src/utils/utils.module';
@@ -41,6 +43,8 @@ import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module'
       Account,
       Users,
       TenantKyc,
+      WhatsAppNotificationLog,
+      ChatLog,
     ]),
     ConfigModule,
     JwtModule.registerAsync({

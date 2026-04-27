@@ -13,6 +13,9 @@ import { KYCLink } from '../../kyc-links/entities/kyc-link.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { PropertyStatusEnum } from '../../properties/dto/create-property.dto';
 import { WhatsappBotService } from '../../whatsapp-bot/whatsapp-bot.service';
+import { WhatsAppNotificationLogService } from '../../whatsapp-bot/whatsapp-notification-log.service';
+import { WhatsAppNotificationLog } from '../../whatsapp-bot/entities/whatsapp-notification-log.entity';
+import { ChatLog } from '../../whatsapp-bot/entities/chat-log.entity';
 
 // Mock uuid
 jest.mock('uuid', () => ({
@@ -52,6 +55,18 @@ describe('KYCLinksService', () => {
     sendToWhatsappAPI: jest.fn(),
   };
 
+  const mockWhatsappNotificationLogService = {
+    queue: jest.fn(),
+  };
+
+  const mockWhatsappNotificationLogRepository = {
+    findOne: jest.fn(),
+  };
+
+  const mockChatLogRepository = {
+    findOne: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -71,6 +86,18 @@ describe('KYCLinksService', () => {
         {
           provide: WhatsappBotService,
           useValue: mockWhatsappBotService,
+        },
+        {
+          provide: WhatsAppNotificationLogService,
+          useValue: mockWhatsappNotificationLogService,
+        },
+        {
+          provide: getRepositoryToken(WhatsAppNotificationLog),
+          useValue: mockWhatsappNotificationLogRepository,
+        },
+        {
+          provide: getRepositoryToken(ChatLog),
+          useValue: mockChatLogRepository,
         },
       ],
     }).compile();

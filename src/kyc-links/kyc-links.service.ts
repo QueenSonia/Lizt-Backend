@@ -17,6 +17,13 @@ import { ApplicationStatus } from './entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyStatusEnum } from '../properties/dto/create-property.dto';
 import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
+import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
+import {
+  WhatsAppNotificationLog,
+  WhatsAppNotificationStatus,
+} from '../whatsapp-bot/entities/whatsapp-notification-log.entity';
+import { ChatLog } from '../whatsapp-bot/entities/chat-log.entity';
+import { MessageStatus } from '../whatsapp-bot/entities/message-status.enum';
 import { UtilService } from '../utils/utility-service';
 
 export interface KYCLinkResponse {
@@ -49,10 +56,16 @@ export class KYCLinksService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(KYCOtp)
     private readonly kycOtpRepository: Repository<KYCOtp>,
+    @InjectRepository(WhatsAppNotificationLog)
+    private readonly whatsappNotificationLogRepository: Repository<WhatsAppNotificationLog>,
+    @InjectRepository(ChatLog)
+    private readonly chatLogRepository: Repository<ChatLog>,
     private readonly configService: ConfigService,
     private readonly jwtService: JwtService,
     @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService: WhatsappBotService,
+    @Inject(forwardRef(() => WhatsAppNotificationLogService))
+    private readonly whatsappNotificationLogService: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
   ) {}
 
@@ -364,8 +377,10 @@ export class KYCLinksService {
   }
 
   /**
-   * Send OTP to phone number for KYC verification
-   * Requirements: Phone verification for KYC applications
+   * Send OTP to phone number for KYC verification.
+   * Enqueues the WhatsApp send via WhatsAppNotificationLogService so that
+   * Meta API errors and per-recipient delivery status (sent/delivered/read/failed)
+   * can be surfaced to the frontend via /otp-status (correlated by kyc_otp.id).
    */
   async sendOTPForKYC(
     kycToken: string,
@@ -374,9 +389,9 @@ export class KYCLinksService {
     success: boolean;
     message: string;
     expiresAt?: Date;
+    kyc_otp_id?: string;
   }> {
     try {
-      // Validate KYC token first
       const tokenValidation = await this.validateKYCToken(kycToken);
       if (!tokenValidation.valid) {
         throw new BadRequestException(
@@ -384,7 +399,6 @@ export class KYCLinksService {
         );
       }
 
-      // Validate phone number
       const phoneValidation = this.validatePhoneNumber(phoneNumber);
       if (!phoneValidation.isValid) {
         throw new BadRequestException(
@@ -394,8 +408,6 @@ export class KYCLinksService {
 
       const normalizedPhone = phoneValidation.normalizedPhone!;
 
-      // Check for ANY recent OTP attempt (active, expired, or verified)
-      // This prevents rate limit bypass by checking regardless of OTP status
       const recentOtp = await this.kycOtpRepository.findOne({
         where: {
           phone_number: normalizedPhone,
@@ -406,18 +418,15 @@ export class KYCLinksService {
         },
       });
 
-      // Rate limit: prevent OTP requests within 60 seconds of last attempt
       if (recentOtp) {
         const timeDiff = Date.now() - recentOtp.created_at.getTime();
         if (timeDiff < 60000) {
-          // 1 minute
           throw new BadRequestException(
             'OTP already sent recently. Please wait before requesting again.',
           );
         }
       }
 
-      // Deactivate any existing OTPs for this phone and token
       await this.kycOtpRepository.update(
         {
           phone_number: normalizedPhone,
@@ -429,12 +438,10 @@ export class KYCLinksService {
         },
       );
 
-      // Generate new OTP
       const otpCode = this.utilService.generateOTP(6);
       const expiresAt = new Date();
-      expiresAt.setMinutes(expiresAt.getMinutes() + 10); // 10 minutes expiry
+      expiresAt.setMinutes(expiresAt.getMinutes() + 10);
 
-      // Save OTP to database
       const kycOtp = this.kycOtpRepository.create({
         phone_number: normalizedPhone,
         otp_code: otpCode,
@@ -446,55 +453,22 @@ export class KYCLinksService {
 
       await this.kycOtpRepository.save(kycOtp);
 
-      // Send OTP via WhatsApp using authentication template
-      // Template: kyc_otp_verification (must be registered in WhatsApp Business Manager)
-      // Authentication templates have a special format with OTP button
-      const payload = {
-        messaging_product: 'whatsapp',
-        to: normalizedPhone,
-        type: 'template',
-        template: {
-          name: 'kyc_otp_verification',
-          language: {
-            code: 'en',
-          },
-          components: [
-            {
-              type: 'body',
-              parameters: [
-                {
-                  type: 'text',
-                  text: otpCode,
-                },
-              ],
-            },
-            {
-              type: 'button',
-              sub_type: 'url',
-              index: '0',
-              parameters: [
-                {
-                  type: 'text',
-                  text: otpCode,
-                },
-              ],
-            },
-          ],
+      // Enqueue the WhatsApp send. The queue handles retries (3x, every 5min)
+      // and records the wamid + Meta API errors on the log row keyed by reference_id.
+      await this.whatsappNotificationLogService.queue(
+        'sendKYCOTPVerification',
+        {
+          phone_number: normalizedPhone,
+          otp_code: otpCode,
         },
-      };
-
-      try {
-        await this.whatsappBotService.sendToWhatsappAPI(payload);
-      } catch (error) {
-        console.error('Failed to send OTP via WhatsApp:', error);
-        // Don't fail the entire operation if WhatsApp fails
-        // The OTP is still saved and can be used
-      }
+        kycOtp.id,
+      );
 
       return {
         success: true,
-        message: 'OTP sent successfully to your phone number',
+        message: 'OTP queued for delivery',
         expiresAt,
+        kyc_otp_id: kycOtp.id,
       };
     } catch (error) {
       console.error('Error sending OTP:', error);
@@ -505,6 +479,90 @@ export class KYCLinksService {
         'Failed to send OTP. Please try again.',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
+    }
+  }
+
+  /**
+   * Read OTP delivery status by kyc_otp_id, joining queue and chat_logs.
+   * Surfaces both Meta API rejection (queue's last_error) and per-recipient
+   * lifecycle (chat_logs.status / error_code / error_reason from webhook).
+   */
+  async getOTPStatusForKYC(
+    kycToken: string,
+    kycOtpId: string,
+  ): Promise<{
+    success: boolean;
+    queueStatus: 'pending' | 'sent' | 'failed' | 'cancelled';
+    attempts: number;
+    lastError: string | null;
+    metaStatus: 'sent' | 'delivered' | 'read' | 'failed' | null;
+    errorCode: string | null;
+    errorReason: string | null;
+  }> {
+    const tokenValidation = await this.validateKYCToken(kycToken);
+    if (!tokenValidation.valid) {
+      throw new BadRequestException(
+        tokenValidation.error || 'Invalid KYC token',
+      );
+    }
+
+    const otp = await this.kycOtpRepository.findOne({
+      where: { id: kycOtpId, kyc_token: kycToken },
+    });
+    if (!otp) {
+      throw new BadRequestException('OTP not found for this KYC token');
+    }
+
+    const queueRow = await this.whatsappNotificationLogRepository.findOne({
+      where: { reference_id: kycOtpId },
+      order: { created_at: 'DESC' },
+    });
+
+    let metaStatus: 'sent' | 'delivered' | 'read' | 'failed' | null = null;
+    let errorCode: string | null = null;
+    let errorReason: string | null = null;
+
+    if (queueRow?.whatsapp_message_id) {
+      const chatLog = await this.chatLogRepository.findOne({
+        where: { whatsapp_message_id: queueRow.whatsapp_message_id },
+      });
+      if (chatLog) {
+        metaStatus = this.mapMessageStatusToWire(chatLog.status);
+        errorCode = chatLog.error_code ?? null;
+        errorReason = chatLog.error_reason ?? null;
+      }
+    }
+
+    return {
+      success: true,
+      queueStatus: queueRow
+        ? (queueRow.status as
+            | 'pending'
+            | 'sent'
+            | 'failed'
+            | 'cancelled')
+        : 'pending',
+      attempts: queueRow?.attempts ?? 0,
+      lastError: queueRow?.last_error ?? null,
+      metaStatus,
+      errorCode,
+      errorReason,
+    };
+  }
+
+  private mapMessageStatusToWire(
+    status: MessageStatus,
+  ): 'sent' | 'delivered' | 'read' | 'failed' {
+    switch (status) {
+      case MessageStatus.DELIVERED:
+        return 'delivered';
+      case MessageStatus.READ:
+        return 'read';
+      case MessageStatus.FAILED:
+        return 'failed';
+      case MessageStatus.SENT:
+      default:
+        return 'sent';
     }
   }
 

@@ -4,6 +4,7 @@ import {
   Get,
   Body,
   Param,
+  Query,
   Req,
   UseGuards,
   ValidationPipe,
@@ -146,6 +147,43 @@ export class KYCLinksController {
       return {
         success: false,
         message: error.message || 'Failed to verify OTP',
+      };
+    }
+  }
+
+  /**
+   * Get OTP delivery status (public endpoint)
+   * GET /api/kyc/:token/otp-status?kyc_otp_id=...
+   * Returns queue-level status (Meta API acceptance/rejection) AND
+   * per-recipient status (sent/delivered/read/failed from Meta webhook).
+   */
+  @SkipAuth()
+  @Get('kyc/:token/otp-status')
+  async getOTPStatusForKYC(
+    @Param('token') token: string,
+    @Query('kyc_otp_id') kycOtpId: string,
+  ): Promise<{
+    success: boolean;
+    message?: string;
+    queueStatus?: 'pending' | 'sent' | 'failed' | 'cancelled';
+    attempts?: number;
+    lastError?: string | null;
+    metaStatus?: 'sent' | 'delivered' | 'read' | 'failed' | null;
+    errorCode?: string | null;
+    errorReason?: string | null;
+  }> {
+    if (!kycOtpId) {
+      return {
+        success: false,
+        message: 'kyc_otp_id query parameter is required',
+      };
+    }
+    try {
+      return await this.kycLinksService.getOTPStatusForKYC(token, kycOtpId);
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || 'Failed to get OTP status',
       };
     }
   }

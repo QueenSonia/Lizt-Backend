@@ -230,6 +230,14 @@ export interface OTPAuthenticationParams {
 }
 
 /**
+ * Parameters for KYC OTP verification template
+ */
+export interface KYCOTPVerificationParams {
+  phone_number: string;
+  otp_code: string;
+}
+
+/**
  * Parameters for offer letter status notification to landlord
  */
 export interface OfferLetterStatusNotificationParams {
@@ -1457,6 +1465,55 @@ export class TemplateSenderService {
     };
 
     await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send KYC OTP verification code via WhatsApp.
+   * Uses the `kyc_otp_verification` authentication template.
+   * Returns the Meta wamid so the queue can correlate with chat_logs status webhooks.
+   */
+  async sendKYCOTPVerification({
+    phone_number,
+    otp_code,
+  }: KYCOTPVerificationParams): Promise<{ wamid?: string }> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'kyc_otp_verification',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: otp_code,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: otp_code,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    const response = (await this.sendToWhatsappAPI(payload)) as
+      | { messages?: Array<{ id?: string }> }
+      | undefined;
+    return { wamid: response?.messages?.[0]?.id };
   }
 
   /**

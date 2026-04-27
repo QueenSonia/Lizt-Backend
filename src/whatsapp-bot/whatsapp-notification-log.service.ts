@@ -60,7 +60,7 @@ export class WhatsAppNotificationLogService {
     }
 
     try {
-      await this.dispatch(log.type, log.payload);
+      const dispatchResult = await this.dispatch(log.type, log.payload);
 
       const attempts = log.attempts + 1;
       await this.logRepository.update(logId, {
@@ -68,6 +68,7 @@ export class WhatsAppNotificationLogService {
         attempts,
         last_attempted_at: new Date(),
         last_error: null,
+        whatsapp_message_id: dispatchResult?.wamid ?? null,
       });
 
       if (log.payload.landlord_id && log.payload.recipient_name) {
@@ -150,18 +151,24 @@ export class WhatsAppNotificationLogService {
 
   /**
    * Call the correct TemplateSenderService method based on the notification type.
+   * Senders may return `{ wamid }` so the queue can persist it for later
+   * correlation with chat_logs (delivery / read / failed status from webhook).
    */
   private async dispatch(
     type: string,
     payload: Record<string, any>,
-  ): Promise<void> {
+  ): Promise<{ wamid?: string } | void> {
     const method = (this.templateSenderService as any)[type];
 
     if (typeof method !== 'function') {
       throw new Error(`Unknown WhatsApp notification type: ${type}`);
     }
 
-    await method.call(this.templateSenderService, payload);
+    const result = await method.call(this.templateSenderService, payload);
+    if (result && typeof result === 'object' && 'wamid' in result) {
+      return { wamid: (result as { wamid?: string }).wamid };
+    }
+    return;
   }
 
   /**

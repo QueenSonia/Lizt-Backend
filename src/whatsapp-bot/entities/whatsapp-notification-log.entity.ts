@@ -37,4 +37,8 @@ export class WhatsAppNotificationLog extends BaseEntity {
   /** Optional reference to the entity that triggered this notification */
   @Column({ type: 'uuid', nullable: true })
   reference_id: string | null;
+
+  /** Meta wamid returned by sendToWhatsappAPI; correlates with chat_logs.whatsapp_message_id */
+  @Column({ type: 'varchar', nullable: true })
+  whatsapp_message_id: string | null;
 }

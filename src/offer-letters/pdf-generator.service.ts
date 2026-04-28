@@ -1,7 +1,9 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import * as puppeteer from 'puppeteer';
+import type { Browser } from 'puppeteer';
+
+import { launchBrowser } from '../common/puppeteer-launch';
 import { OfferLetter, TermsOfTenancy } from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
@@ -112,18 +114,10 @@ export class PDFGeneratorService {
    * Convert HTML to PDF using Puppeteer
    */
   private async htmlToPDF(html: string): Promise<Buffer> {
-    let browser: puppeteer.Browser | null = null;
+    let browser: Browser | null = null;
 
     try {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-        ],
-      });
+      browser = await launchBrowser();
 
       const page = await browser.newPage();
       await page.setContent(html, {

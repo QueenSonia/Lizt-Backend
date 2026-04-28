@@ -797,11 +797,16 @@ export class RentReminderService {
       return;
     }
 
-    const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
+    // Source from the renewal invoice — `rent` here is the EXPIRING period,
+    // so its rental_price / expiry_date are the OLD terms. The invoice
+    // carries the next period's figures (letter values when the landlord
+    // sent one, otherwise the auto-create snapshot).
+    const expiryDateStr = new Date(renewalInvoice.end_date).toLocaleDateString(
       'en-GB',
     );
-    const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
-    const amountToPay = baseAmount + (rent.service_charge || 0);
+    const amountToPay =
+      Number(renewalInvoice.rent_amount || 0) +
+      Number(renewalInvoice.service_charge || 0);
     const formattedAmount = amountToPay.toLocaleString('en-NG', {
       style: 'currency',
       currency: 'NGN',
@@ -848,12 +853,12 @@ export class RentReminderService {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
     if (useLetterTemplate) {
-      // Resolve the landlord's display name. Fall back to a generic label
-      // if anything is missing — better than failing the WhatsApp send.
-      const landlordName =
-        rent.property?.owner?.profile_name ||
-        `${rent.property?.owner?.user?.first_name ?? ''} ${rent.property?.owner?.user?.last_name ?? ''}`.trim() ||
-        'Your Landlord';
+      // Current period's expiry, formatted as "5 May 2026" — the body
+      // tells the tenant when their existing tenancy ends.
+      const currentExpiryStr = new Date(rent.expiry_date).toLocaleDateString(
+        'en-GB',
+        { day: 'numeric', month: 'long', year: 'numeric' },
+      );
 
       await this.whatsAppNotificationLogService.queue(
         'sendRenewalLetterLink',
@@ -861,7 +866,7 @@ export class RentReminderService {
           phone_number: rent.tenant.user.phone_number,
           tenant_name: rent.tenant.user.first_name,
           property_name: rent.property.name,
-          landlord_name: landlordName,
+          expiry_date: currentExpiryStr,
           renewal_token: renewalInvoice.token,
         },
         rent.id,

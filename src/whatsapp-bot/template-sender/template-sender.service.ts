@@ -26,7 +26,13 @@ interface TemplateComponent {
     | { type: 'text'; text: string }
     | {
         type: 'document';
-        document: { id: string; filename: string };
+        // Meta accepts either a pre-uploaded media id OR a public URL.
+        // For renewal-letter-signed we ship the Cloudinary URL via `link`
+        // since the PDF is freshly rendered per send and there's no
+        // benefit to a separate /media upload step.
+        document:
+          | { id: string; filename: string }
+          | { link: string; filename: string };
       }
   >;
 }
@@ -224,6 +230,14 @@ export interface OTPAuthenticationParams {
 }
 
 /**
+ * Parameters for KYC OTP verification template
+ */
+export interface KYCOTPVerificationParams {
+  phone_number: string;
+  otp_code: string;
+}
+
+/**
  * Parameters for offer letter status notification to landlord
  */
 export interface OfferLetterStatusNotificationParams {
@@ -307,11 +321,28 @@ export interface TenantRaceConditionParams {
 }
 
 /**
- * Parameters for renewal link notification to tenant
+ * Parameters for outstanding-balance link sent to tenant.
+ * Single-variable body keyed off tenant name; the renewal_token resolves
+ * to /renewal-invoice/{token} via the URL button.
+ */
+export interface OutstandingBalanceLinkParams {
+  phone_number: string;
+  tenant_name: string;
+  renewal_token: string;
+  frontend_url: string;
+}
+
+/**
+ * Parameters for renewal link notification to tenant (post-acceptance).
+ * Body now embeds the new period's date range so the tenant sees
+ * exactly what the payment covers before opening the link.
  */
 export interface RenewalLinkParams {
   phone_number: string;
   tenant_name: string;
+  property_name: string;
+  start_date: string;
+  end_date: string;
   renewal_token: string;
   frontend_url: string;
 }
@@ -323,7 +354,7 @@ export interface RenewalLetterLinkParams {
   phone_number: string;
   tenant_name: string;
   property_name: string;
-  landlord_name: string;
+  expiry_date: string;
   renewal_token: string;
 }
 
@@ -345,6 +376,35 @@ export interface RenewalLetterAcceptedNoticeParams {
   landlord_name: string;
   tenant_name: string;
   property_name: string;
+}
+
+/**
+ * Parameters for the signed-letter PDF dispatch sent to the tenant after
+ * they accept or decline a renewal letter. One template handles both
+ * outcomes — `outcome` flips the body's verb between "accepted" and
+ * "declined" while every other parameter stays the same.
+ */
+export interface RenewalLetterSignedParams {
+  phone_number: string;
+  /** Used in the body greeting — pass first name for a friendly read. */
+  tenant_first_name: string;
+  property_name: string;
+  /** Lower-case verb interpolated into the body — `accepted` or `declined`. */
+  outcome: 'accepted' | 'declined';
+  /** Pre-formatted decision date (e.g. "April 27, 2026"). */
+  decision_date: string;
+  /**
+   * Public URL to the rendered PDF. Must be reachable by Meta's servers
+   * at send time — they fetch and cache the document during template
+   * delivery; later 404s are tolerated.
+   */
+  pdf_url: string;
+  /**
+   * Filename surfaced as the document title in the WhatsApp chat.
+   * Pick something tenant-readable (e.g. "Renewal Letter — Sunset
+   * Heights — 2026-04-27.pdf").
+   */
+  pdf_filename: string;
 }
 
 /**
@@ -1425,6 +1485,55 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send KYC OTP verification code via WhatsApp.
+   * Uses the `kyc_otp_verification` authentication template.
+   * Returns the Meta wamid so the queue can correlate with chat_logs status webhooks.
+   */
+  async sendKYCOTPVerification({
+    phone_number,
+    otp_code,
+  }: KYCOTPVerificationParams): Promise<{ wamid?: string }> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'kyc_otp_verification',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: otp_code,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: otp_code,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    const response = (await this.sendToWhatsappAPI(payload)) as
+      | { messages?: Array<{ id?: string }> }
+      | undefined;
+    return { wamid: response?.messages?.[0]?.id };
+  }
+
+  /**
    * Send offer letter status notification to landlord via WhatsApp
    * Notifies landlord when tenant accepts or rejects an offer letter
    * Requirements: 9.4, 9.8
@@ -1881,6 +1990,9 @@ export class TemplateSenderService {
   async sendRenewalLink({
     phone_number,
     tenant_name,
+    property_name,
+    start_date,
+    end_date,
     renewal_token,
     frontend_url: _frontend_url,
   }: RenewalLinkParams): Promise<void> {
@@ -1897,10 +2009,10 @@ export class TemplateSenderService {
           {
             type: 'body',
             parameters: [
-              {
-                type: 'text',
-                text: tenant_name,
-              },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: start_date },
+              { type: 'text', text: end_date },
             ],
           },
           {
@@ -1930,7 +2042,7 @@ export class TemplateSenderService {
     phone_number,
     tenant_name,
     property_name,
-    landlord_name,
+    expiry_date,
     renewal_token,
   }: RenewalLetterLinkParams): Promise<void> {
     const payload: WhatsAppPayload = {
@@ -1946,7 +2058,7 @@ export class TemplateSenderService {
             parameters: [
               { type: 'text', text: tenant_name },
               { type: 'text', text: property_name },
-              { type: 'text', text: landlord_name },
+              { type: 'text', text: expiry_date },
             ],
           },
           {
@@ -2026,6 +2138,76 @@ export class TemplateSenderService {
   }
 
   /**
+   * Deliver the signed renewal-letter PDF to the tenant after they accept
+   * or decline. One template, both outcomes — the body flips on the
+   * `outcome` verb, the document header carries the same render in either
+   * case (with the appropriate ACCEPTED / DECLINED stamp baked in).
+   *
+   * Template: renewal_letter_signed
+   *
+   * Body (must be submitted to Meta exactly as below — every variable is
+   * wrapped in literal text on both sides per the project rule that Meta
+   * rejects templates with leading/trailing variables):
+   *
+   *   Hi {{1}},
+   *
+   *   Your renewal letter for *{{2}}* has been *{{3}}* on {{4}}.
+   *
+   *   The signed copy is attached above for your records.
+   *
+   * Parameters:
+   *   {{1}} tenant_first_name  e.g. "Sonia"
+   *   {{2}} property_name      e.g. "Sunset Heights — Flat 3B"
+   *   {{3}} outcome            "accepted" | "declined" (lower-case verb)
+   *   {{4}} decision_date      e.g. "April 27, 2026"
+   *
+   * Header: DOCUMENT (link) — public Cloudinary URL of the rendered PDF.
+   * No buttons (the payment link, when applicable, was already sent by
+   * sendRenewalLink in the same accept flow — this template's job is the
+   * audit artefact, not the call-to-action).
+   */
+  async sendRenewalLetterSigned({
+    phone_number,
+    tenant_first_name,
+    property_name,
+    outcome,
+    decision_date,
+    pdf_url,
+    pdf_filename,
+  }: RenewalLetterSignedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_letter_signed',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'header',
+            parameters: [
+              {
+                type: 'document',
+                document: { link: pdf_url, filename: pdf_filename },
+              },
+            ],
+          },
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_first_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: outcome },
+              { type: 'text', text: decision_date },
+            ],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send outstanding balance invoice link to tenant
    * Template: outstanding_balance_link
    */
@@ -2034,7 +2216,7 @@ export class TemplateSenderService {
     tenant_name,
     renewal_token,
     frontend_url: _frontend_url,
-  }: RenewalLinkParams): Promise<void> {
+  }: OutstandingBalanceLinkParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -3607,6 +3789,8 @@ export class TemplateSenderService {
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
     renewal_letter_link:
       'Hi {{1}}, your landlord {{3}} has prepared a renewal offer for {{2}}. Tap below to review and accept it.',
+    renewal_letter_signed:
+      'Hi {{1}},\n\nYour renewal letter for *{{2}}* has been *{{3}}* on {{4}}.\n\nThe signed copy is attached above for your records.',
     renewal_letter_declined_landlord_notice:
       'Hi {{1}}, {{2}} has declined the renewal offer for {{3}}. Open your Lizt dashboard to decide whether to revise the offer or market the unit.',
     renewal_payment_tenant:

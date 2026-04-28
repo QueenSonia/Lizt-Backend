@@ -2,7 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as crypto from 'crypto';
-import * as puppeteer from 'puppeteer';
+import type { Browser } from 'puppeteer';
+
+import { launchBrowser } from '../common/puppeteer-launch';
 import { Receipt } from './entities/receipt.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
@@ -200,17 +202,9 @@ export class ReceiptGeneratorService {
   }
 
   private async htmlToPDF(html: string): Promise<Buffer> {
-    let browser: puppeteer.Browser | null = null;
+    let browser: Browser | null = null;
     try {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-        ],
-      });
+      browser = await launchBrowser();
 
       const page = await browser.newPage();
       await page.setContent(html, {

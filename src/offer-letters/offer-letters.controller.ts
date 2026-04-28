@@ -142,14 +142,29 @@ export class OfferLettersController {
       throw new NotFoundException('Offer letter not found');
     }
 
-    // OPTIMIZATION: Check if cached PDF exists and is recent (within 24 hours)
+    // OPTIMIZATION: Check if cached PDF exists and is recent (within 24
+    // hours) AND post-dates the most recent status change. The latter is
+    // critical — `generatePDFInBackground` only fires on create/update, so
+    // a tenant who accepts within 24h of the original render would
+    // otherwise be served a stale PENDING PDF (no ACCEPTED stamp). Bump
+    // the cache invariant to also check decision_made_at and sent_at.
     if (offerLetter.pdf_url && offerLetter.pdf_generated_at) {
-      const hoursSinceGeneration =
-        (Date.now() - new Date(offerLetter.pdf_generated_at).getTime()) /
-        (1000 * 60 * 60);
+      const generatedAt = new Date(offerLetter.pdf_generated_at).getTime();
+      const hoursSinceGeneration = (Date.now() - generatedAt) / (1000 * 60 * 60);
+      const latestEvent = Math.max(
+        offerLetter.decision_made_at
+          ? new Date(offerLetter.decision_made_at).getTime()
+          : 0,
+        offerLetter.sent_at
+          ? new Date(offerLetter.sent_at).getTime()
+          : 0,
+        offerLetter.accepted_at
+          ? new Date(offerLetter.accepted_at).getTime()
+          : 0,
+      );
+      const cacheCoversLatestEvent = generatedAt >= latestEvent;
 
-      // Use cached PDF if less than 24 hours old
-      if (hoursSinceGeneration < 24) {
+      if (hoursSinceGeneration < 24 && cacheCoversLatestEvent) {
         try {
           // Verify URL is accessible
           const response = await fetch(offerLetter.pdf_url, {

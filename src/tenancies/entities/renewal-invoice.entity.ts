@@ -217,6 +217,21 @@ export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'timestamptz', nullable: true })
   auto_renewed_at: Date | null;
 
+  // ── PDF caching ─────────────────────────────────────────────────────────
+  /**
+   * Cloudinary URL of the most recently rendered renewal-letter PDF.
+   * Generated post-accept/post-decline (and on demand from the download
+   * endpoints). Stale by design — the download endpoint re-renders if
+   * either letter_status or letter_body_html has moved since
+   * pdf_generated_at, so a landlord edit between sends invalidates the
+   * cache without an explicit cache bust.
+   */
+  @Column({ type: 'text', nullable: true })
+  pdf_url: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  pdf_generated_at: Date | null;
+
   // ── Supersession (cross-version integrity) ──────────────────────────────
   /** Points from a NEW row to the version it replaces. Set at creation. */
   @Column({ type: 'uuid', nullable: true })

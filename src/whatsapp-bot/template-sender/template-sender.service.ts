@@ -321,11 +321,28 @@ export interface TenantRaceConditionParams {
 }
 
 /**
- * Parameters for renewal link notification to tenant
+ * Parameters for outstanding-balance link sent to tenant.
+ * Single-variable body keyed off tenant name; the renewal_token resolves
+ * to /renewal-invoice/{token} via the URL button.
+ */
+export interface OutstandingBalanceLinkParams {
+  phone_number: string;
+  tenant_name: string;
+  renewal_token: string;
+  frontend_url: string;
+}
+
+/**
+ * Parameters for renewal link notification to tenant (post-acceptance).
+ * Body now embeds the new period's date range so the tenant sees
+ * exactly what the payment covers before opening the link.
  */
 export interface RenewalLinkParams {
   phone_number: string;
   tenant_name: string;
+  property_name: string;
+  start_date: string;
+  end_date: string;
   renewal_token: string;
   frontend_url: string;
 }
@@ -337,7 +354,7 @@ export interface RenewalLetterLinkParams {
   phone_number: string;
   tenant_name: string;
   property_name: string;
-  landlord_name: string;
+  expiry_date: string;
   renewal_token: string;
 }
 
@@ -1973,6 +1990,9 @@ export class TemplateSenderService {
   async sendRenewalLink({
     phone_number,
     tenant_name,
+    property_name,
+    start_date,
+    end_date,
     renewal_token,
     frontend_url: _frontend_url,
   }: RenewalLinkParams): Promise<void> {
@@ -1989,10 +2009,10 @@ export class TemplateSenderService {
           {
             type: 'body',
             parameters: [
-              {
-                type: 'text',
-                text: tenant_name,
-              },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: start_date },
+              { type: 'text', text: end_date },
             ],
           },
           {
@@ -2022,7 +2042,7 @@ export class TemplateSenderService {
     phone_number,
     tenant_name,
     property_name,
-    landlord_name,
+    expiry_date,
     renewal_token,
   }: RenewalLetterLinkParams): Promise<void> {
     const payload: WhatsAppPayload = {
@@ -2038,7 +2058,7 @@ export class TemplateSenderService {
             parameters: [
               { type: 'text', text: tenant_name },
               { type: 'text', text: property_name },
-              { type: 'text', text: landlord_name },
+              { type: 'text', text: expiry_date },
             ],
           },
           {
@@ -2196,7 +2216,7 @@ export class TemplateSenderService {
     tenant_name,
     renewal_token,
     frontend_url: _frontend_url,
-  }: RenewalLinkParams): Promise<void> {
+  }: OutstandingBalanceLinkParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,

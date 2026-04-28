@@ -221,9 +221,19 @@ export class LandlordFlow {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const tenantName = `${this.utilService.toSentenceCase(invoice.tenant.user.first_name)}`;
 
+    const fmtDate = (d: Date | string) =>
+      new Date(d).toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      });
+
     await this.templateSenderService.sendRenewalLink({
       phone_number: tenantPhone,
       tenant_name: tenantName,
+      property_name: invoice.property.name,
+      start_date: fmtDate(invoice.start_date),
+      end_date: fmtDate(invoice.end_date),
       renewal_token: invoice.token,
       frontend_url: frontendUrl,
     });

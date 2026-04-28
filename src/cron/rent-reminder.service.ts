@@ -853,12 +853,12 @@ export class RentReminderService {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
     if (useLetterTemplate) {
-      // Resolve the landlord's display name. Fall back to a generic label
-      // if anything is missing — better than failing the WhatsApp send.
-      const landlordName =
-        rent.property?.owner?.profile_name ||
-        `${rent.property?.owner?.user?.first_name ?? ''} ${rent.property?.owner?.user?.last_name ?? ''}`.trim() ||
-        'Your Landlord';
+      // Current period's expiry, formatted as "5 May 2026" — the body
+      // tells the tenant when their existing tenancy ends.
+      const currentExpiryStr = new Date(rent.expiry_date).toLocaleDateString(
+        'en-GB',
+        { day: 'numeric', month: 'long', year: 'numeric' },
+      );
 
       await this.whatsAppNotificationLogService.queue(
         'sendRenewalLetterLink',
@@ -866,7 +866,7 @@ export class RentReminderService {
           phone_number: rent.tenant.user.phone_number,
           tenant_name: rent.tenant.user.first_name,
           property_name: rent.property.name,
-          landlord_name: landlordName,
+          expiry_date: currentExpiryStr,
           renewal_token: renewalInvoice.token,
         },
         rent.id,

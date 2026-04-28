@@ -2518,7 +2518,7 @@ export class TenantManagementService {
       // Tenancy Proposal Information
       intendedUseOfProperty: kycApplication?.intended_use_of_property ?? null,
       numberOfOccupants: kycApplication?.number_of_occupants ?? null,
-      numberOfCarsOwned: null,
+      numberOfCarsOwned: kycApplication?.parking_needs ?? null,
       proposedRentAmount: kycApplication?.proposed_rent_amount ?? null,
       rentPaymentFrequency: kycApplication?.rent_payment_frequency ?? null,
       additionalNotes: kycApplication?.additional_notes ?? null,

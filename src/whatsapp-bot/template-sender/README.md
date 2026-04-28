@@ -15,15 +15,18 @@ The following templates are configured for the tenancy renewal invoice flow:
 **Parameters**:
 
 - `{{1}}` - Tenant name
+- `{{2}}` - Property name
+- `{{3}}` - Tenancy start date (e.g. `5 May 2026`)
+- `{{4}}` - Tenancy end date (e.g. `4 May 2027`)
 
 **Button**: URL button with renewal invoice link
 
 **Message**:
 
 ```
-Hi {{1}}, your landlord has initiated a tenancy renewal.
-
-Please use the link below to view your renewal invoice and complete payment.
+Hi {{1}}, your renewal rent invoice for {{2}} is ready.
+This payment covers your tenancy from {{3}} to {{4}}.
+You can safely view your invoice and make your payment using the link below:
 ```
 
 **Usage**:
@@ -32,6 +35,9 @@ Please use the link below to view your renewal invoice and complete payment.
 await templateSenderService.sendRenewalLink({
   phone_number: '+2348012345678',
   tenant_name: 'John Doe',
+  property_name: 'Lekki Gardens Apartment',
+  start_date: '5 May 2026',
+  end_date: '4 May 2027',
   renewal_token: 'abc123...',
   frontend_url: 'https://lizt.co',
 });

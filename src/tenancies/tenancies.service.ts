@@ -508,12 +508,6 @@ export class TenanciesService {
 
     const tenantName = `${propertyTenant.tenant.user.first_name} ${propertyTenant.tenant.user.last_name}`;
 
-    const landlordAccount = propertyTenant.property.owner;
-    const landlordName =
-      landlordAccount?.profile_name ||
-      `${landlordAccount?.user?.first_name ?? ''} ${landlordAccount?.user?.last_name ?? ''}`.trim() ||
-      'Your Landlord';
-
     const sanitizedLetterHtml = sanitizeLetterHtml(body?.letterBodyHtml);
     const letterBodyFields = body?.letterBodyFields ?? null;
 
@@ -756,11 +750,19 @@ export class TenanciesService {
               propertyTenant.tenant.user.phone_number,
             );
 
+            const currentExpiryStr = new Date(
+              activeRent.expiry_date,
+            ).toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'long',
+              year: 'numeric',
+            });
+
             await this.whatsappNotificationLog.queue('sendRenewalLetterLink', {
               phone_number: tenantPhone,
               tenant_name: tenantName,
               property_name: propertyTenant.property.name,
-              landlord_name: landlordName,
+              expiry_date: currentExpiryStr,
               renewal_token: token,
               landlord_id: userId,
               recipient_name: tenantName,

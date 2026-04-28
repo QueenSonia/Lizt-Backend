@@ -351,9 +351,18 @@ export class RenewalLettersService {
     // and the offer-letters page would 404 on it. Fire-and-forget: failure
     // here shouldn't block the acceptance write.
     try {
+      const fmtDate = (d: Date | string) =>
+        new Date(d).toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        });
       await this.templateSenderService.sendRenewalLink({
         phone_number: tenantPhone,
         tenant_name: tenantName,
+        property_name: property.name,
+        start_date: fmtDate(invoice.start_date),
+        end_date: fmtDate(invoice.end_date),
         renewal_token: invoice.token,
         frontend_url: '',
       });

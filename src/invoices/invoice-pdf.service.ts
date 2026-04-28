@@ -1,7 +1,9 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import * as puppeteer from 'puppeteer';
+import type { Browser } from 'puppeteer';
+
+import { launchBrowser } from '../common/puppeteer-launch';
 import { Invoice } from './entities/invoice.entity';
 
 @Injectable()
@@ -34,18 +36,10 @@ export class InvoicePDFService {
   }
 
   private async htmlToPDF(html: string): Promise<Buffer> {
-    let browser: puppeteer.Browser | null = null;
+    let browser: Browser | null = null;
 
     try {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-        ],
-      });
+      browser = await launchBrowser();
 
       const page = await browser.newPage();
       await page.setContent(html, {

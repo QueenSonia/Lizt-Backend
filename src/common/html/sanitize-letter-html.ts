@@ -42,8 +42,15 @@ export function sanitizeLetterHtml(dirty: string | null | undefined): string | n
       '*': ['style'],
       span: ['style', 'data-field', 'class'],
       div: ['style', 'data-field', 'class'],
-      p: ['style', 'class'],
-      li: ['style'],
+      // `p` and `li` carry data-field anchors too (e.g. the footer
+      // emits <p data-field="footerBusinessAddress"> via renderLetterFooter).
+      // Without listing data-field here, the sanitizer strips the anchors
+      // on save, the tenant-page splitter loses its footer reference, and
+      // the SignatureBlock falls through to the end-of-doc fallback —
+      // landing AFTER the footer instead of between the Acceptance of
+      // Terms paragraph and the footer.
+      p: ['style', 'data-field', 'class'],
+      li: ['style', 'data-field'],
       ul: ['style'],
       ol: ['style'],
     },

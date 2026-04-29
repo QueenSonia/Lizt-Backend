@@ -1096,11 +1096,16 @@ export class TenantAttachmentService {
       },
     });
 
-    // Prepare email - use application email if provided, otherwise empty string
+    // Use the application email if it looks like one; otherwise fall back to
+    // a phone-based placeholder so downstream @IsEmail checks (e.g. Paystack
+    // payment init) don't reject the row. Mirrors the placeholder format used
+    // when creating a new Users row above.
     const emailToUse =
-      application.email && application.email.trim() !== ''
+      application.email &&
+      application.email.trim() !== '' &&
+      application.email.includes('@')
         ? application.email
-        : '';
+        : `tenant_${application.phone_number}@placeholder.lizt.app`;
 
     // Prepare all KYC data from application - matching current KYC form fields
     const tenantKycData = {

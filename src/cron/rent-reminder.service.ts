@@ -797,16 +797,22 @@ export class RentReminderService {
       return;
     }
 
-    // Source from the renewal invoice — `rent` here is the EXPIRING period,
-    // so its rental_price / expiry_date are the OLD terms. The invoice
-    // carries the next period's figures (letter values when the landlord
-    // sent one, otherwise the auto-create snapshot).
-    const expiryDateStr = new Date(renewalInvoice.end_date).toLocaleDateString(
+    // The "due on" date in the body is the CURRENT rent's expiry — that's
+    // when the next period's payment becomes due. Showing the next period's
+    // end (renewalInvoice.end_date) was confusing and made the day-0/day-1
+    // "today/tomorrow" framing nonsensical. The Meta body was edited to drop
+    // the literal "on" before {{4}}, so we inject the right preposition (or
+    // day word) here. Landlord livefeed logs reuse the plain date.
+    const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
       'en-GB',
     );
-    const amountToPay =
-      Number(renewalInvoice.rent_amount || 0) +
-      Number(renewalInvoice.service_charge || 0);
+    const bodyExpiryDateStr =
+      daysUntilExpiry === 0
+        ? `today, ${expiryDateStr}`
+        : daysUntilExpiry === 1
+          ? `tomorrow, ${expiryDateStr}`
+          : `on ${expiryDateStr}`;
+    const amountToPay = Number(renewalInvoice.total_amount || 0);
     const formattedAmount = amountToPay.toLocaleString('en-NG', {
       style: 'currency',
       currency: 'NGN',
@@ -883,7 +889,7 @@ export class RentReminderService {
           tenant_name: rent.tenant.user.first_name,
           property_name: rent.property.name,
           rent_amount: formattedAmount,
-          expiry_date: expiryDateStr,
+          expiry_date: bodyExpiryDateStr,
           renewal_token: renewalInvoice.token,
           frontend_url: frontendUrl,
           payment_frequency: rent.payment_frequency || 'Monthly',
@@ -953,12 +959,13 @@ export class RentReminderService {
       return;
     }
 
-    const baseAmount = rent.rental_price ?? rent.amount_paid ?? 0;
-    const amountToPay = baseAmount + (rent.service_charge || 0);
-    const formattedAmount = amountToPay.toLocaleString('en-NG', {
-      style: 'currency',
-      currency: 'NGN',
-    });
+    // Mirror the figure the tenant sees on the invoice page: sum of every
+    // fee on the renewal invoice, minus wallet credit. `total_amount` is
+    // refreshed on each cron tick by findOrCreateRenewalInvoice above.
+    const formattedAmount = Number(renewalInvoice.total_amount).toLocaleString(
+      'en-NG',
+      { style: 'currency', currency: 'NGN' },
+    );
 
     const startDateStr = new Date(rent.rent_start_date).toLocaleDateString(
       'en-GB',

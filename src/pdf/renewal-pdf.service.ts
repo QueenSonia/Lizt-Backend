@@ -552,6 +552,7 @@ export class RenewalPDFService {
           </div>`,
       )
       .join('');
+    const walletBalance = Number(invoice.wallet_balance);
     const totalAmount = this.formatCurrency(Number(invoice.total_amount));
 
     // Get landlord logo URL (document layer - top right)
@@ -764,6 +765,24 @@ export class RenewalPDFService {
           <h2 class="charges-title">Payment Breakdown</h2>
 
           ${receiptFeeRowsHtml}
+
+          ${
+            walletBalance > 0
+              ? `<div class="charge-row">
+            <span class="charge-label" style="color:#059669;">Wallet Credit Applied</span>
+            <span class="charge-amount" style="color:#059669;">-${this.formatCurrency(walletBalance)}</span>
+          </div>`
+              : ''
+          }
+
+          ${
+            walletBalance < 0
+              ? `<div class="charge-row">
+            <span class="charge-label">Previous Outstanding Balance</span>
+            <span class="charge-amount">+${this.formatCurrency(Math.abs(walletBalance))}</span>
+          </div>`
+              : ''
+          }
 
           <!-- Total amount -->
           <div class="total-row">

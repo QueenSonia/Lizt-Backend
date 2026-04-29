@@ -2283,6 +2283,7 @@ export class TenanciesService {
           rent_amount: parseFloat(invoice.rent_amount.toString()),
           service_charge: parseFloat((invoice.service_charge ?? 0).toString()),
           payment_frequency: invoice.payment_frequency ?? 'monthly',
+          frontend_url: process.env.FRONTEND_URL || 'http://localhost:3000',
           landlord_id: invoice.property.owner_id,
           recipient_name: tenantName,
           property_id: invoice.property_id,

@@ -529,7 +529,9 @@ export class PropertiesService {
           first_name: firstName,
           last_name: lastName,
           phone_number: normalizedPhone,
-          email: tenantData.email || '-',
+          email:
+            tenantData.email ||
+            `${normalizedPhone.replace('+', '')}@placeholder.lizt.app`,
           // Placeholder defaults for required fields — tenant will complete these via KYC form
           contact_address: '-',
           date_of_birth: new Date('1900-01-01'),

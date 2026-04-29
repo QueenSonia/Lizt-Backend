@@ -65,6 +65,12 @@ interface WhatsAppPayload {
     footer?: { text: string };
     action: Record<string, unknown>;
   };
+  /**
+   * Out-of-band metadata for our own consumers (chat log + simulator socket).
+   * Stripped before the payload is sent to Meta. Use sparingly — for things
+   * like a viewable URL that pairs with a media-id document header.
+   */
+  _lizt_meta?: Record<string, unknown>;
 }
 
 /**
@@ -421,6 +427,7 @@ export interface RenewalPaymentTenantParams {
   rent_amount: number;
   service_charge: number;
   payment_frequency: string;
+  frontend_url: string;
 }
 
 /**
@@ -2270,6 +2277,7 @@ export class TemplateSenderService {
     rent_amount,
     service_charge,
     payment_frequency,
+    frontend_url,
   }: RenewalPaymentTenantParams): Promise<void> {
     const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
     const isSimulationMode = this.validateSimulationMode(simulatorMode);
@@ -2330,6 +2338,12 @@ export class TemplateSenderService {
             ],
           },
         ],
+      },
+      // Receipt PDF is attached as a Meta media_id, which isn't a public URL.
+      // Stash a viewable URL out-of-band so the simulator preview and the
+      // landlord's WhatsApp tab can make the document card clickable.
+      _lizt_meta: {
+        renewal_receipt_url: `${frontend_url}/renewal-receipt/${receipt_token}`,
       },
     };
 
@@ -2830,6 +2844,12 @@ export class TemplateSenderService {
       let response: Response;
       let data: Record<string, unknown>;
 
+      // Strip our out-of-band metadata field — Meta's API only accepts
+      // its own schema. We keep `payload._lizt_meta` for the chat-log
+      // path below.
+      const { _lizt_meta: _stripMeta, ...metaPayload } = payload;
+      void _stripMeta;
+
       try {
         response = await fetch(
           `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
@@ -2839,7 +2859,7 @@ export class TemplateSenderService {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${accessToken}`,
             },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(metaPayload),
           },
         );
 
@@ -3794,7 +3814,7 @@ export class TemplateSenderService {
     renewal_letter_declined_landlord_notice:
       'Hi {{1}}, {{2}} has declined the renewal offer for {{3}}. Open your Lizt dashboard to decide whether to revise the offer or market the unit.',
     renewal_payment_tenant:
-      'Congratulations {{1}}!\n\nYour renewal payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
+      'Congratulations {{1}}!\n\nYour payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
     renewal_payment_landlord:
       'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThank you.',
     renewal_receipt:
@@ -3805,6 +3825,8 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nThis is a friendly reminder that your next {{2}} rent for {{3}} is due on {{4}}.\n\nAmount due: {{5}}\n\nPlease use the link below to view your invoice and complete your payment.',
     rent_overdue:
       'Hi {{1}},\n\nYour rent for {{2}} was due on {{3}} and is now overdue.\n\nAmount due: {{4}}\n\nPlease make payment as soon as possible to avoid additional charges.\n\nThank you for your prompt attention to this matter.',
+    rent_overdue_with_renewal:
+      "Hello {{1}},\n\nThis is a reminder that we haven't received your payment of {{2}} for the tenancy period of {{3}} for {{4}}.\n\nWe'd like you to maintain a good payment history and relationship with us.\nPlease tap on the link below to view your invoice and make payment.",
     installment_reminder:
       'Hi {{1}},\n\nThis is a reminder for installment {{2}} of your {{3}} payment plan at {{4}}.\n\nAmount: {{5}}\nDue date: {{6}}\n\nPlease use the link below to complete your payment.',
     installment_receipt_tenant:

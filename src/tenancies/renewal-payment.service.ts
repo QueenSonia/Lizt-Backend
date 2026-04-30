@@ -108,17 +108,34 @@ export class RenewalPaymentService {
       );
     }
 
-    // Validate amount is positive and for custom payments, must be >= invoice total
+    // Validate amount is positive
     const invoiceTotal = Number(invoice.total_amount);
+    const amountPaidSoFar = Number(invoice.amount_paid ?? 0);
+    const remaining = Math.max(0, invoiceTotal - amountPaidSoFar);
     if (amount <= 0) {
       throw new BadRequestException('Payment amount must be greater than 0');
     }
 
-    // For custom payments, amount must be >= total invoice amount
-    if (paymentOption === 'custom' && amount < invoiceTotal) {
-      throw new BadRequestException(
-        `Custom payment amount (₦${amount}) must be at least the total invoice amount (₦${invoiceTotal})`,
+    // Custom payments: tenants can pay any positive amount only when the
+    // renewal start_date is more than 14 days away (the renewal still has
+    // time to complete via top-ups). Inside the 14-day window, the floor
+    // becomes the *remaining* outstanding so the renewal still closes on
+    // time — using `remaining` (not invoiceTotal) so a tenant who has
+    // already paid partials isn't asked to pay the full original total.
+    if (paymentOption === 'custom') {
+      const PARTIAL_PAYMENT_WINDOW_DAYS = 14;
+      const startDate = new Date(invoice.start_date);
+      const today = new Date();
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const daysUntilStart = Math.floor(
+        (startDate.getTime() - today.getTime()) / msPerDay,
       );
+
+      if (daysUntilStart <= PARTIAL_PAYMENT_WINDOW_DAYS && amount < remaining) {
+        throw new BadRequestException(
+          `Renewal is due in ${daysUntilStart} day(s). Please pay at least ₦${remaining.toLocaleString()} to complete this renewal.`,
+        );
+      }
     }
 
     // Store payment option on the invoice for post-payment processing
@@ -278,13 +295,17 @@ export class RenewalPaymentService {
     let paymentOption: string | null = null;
 
     if (invoice) {
-      // Idempotency: if the invoice is already paid, another path (webhook
-      // or frontend-verify) has already saved the authoritative receipt_token
-      // and sent the WhatsApp receipt. Overwriting it now would orphan the
-      // token already in the tenant's WhatsApp link.
-      if (invoice.payment_status === RenewalPaymentStatus.PAID) {
+      // Per-reference idempotency: with partial payments, status alone is
+      // not enough — a PARTIAL invoice is still a valid target for further
+      // payments. Replays of the same Paystack reference (webhook +
+      // frontend-verify race) early-return so receipt_token / receipt_number
+      // aren't overwritten and orphan a WhatsApp link already sent.
+      const alreadyApplied = (invoice.payment_history ?? []).some(
+        (p) => p.reference === reference,
+      );
+      if (alreadyApplied) {
         this.logger.log(
-          `Renewal invoice ${token} already paid; skipping (idempotent)`,
+          `Renewal invoice ${token} already has payment ${reference}; skipping (idempotent)`,
         );
         return;
       }
@@ -293,7 +314,9 @@ export class RenewalPaymentService {
         invoice.receipt_token = receiptToken;
         invoice.receipt_number = `RR-${Date.now()}`;
       }
-      invoice.amount_paid = amount;
+      // Note: do NOT write amount_paid here — markInvoiceAsPaid recomputes it
+      // as the cumulative sum of payment_history. Overwriting with the single
+      // payment amount would erase prior partials.
       if (channel) {
         invoice.payment_method = channel;
       }
@@ -373,10 +396,14 @@ export class RenewalPaymentService {
       throw new Error(`Renewal invoice not found: ${renewalInvoiceId}`);
     }
 
-    // Already paid — idempotent, just return
-    if (invoice.payment_status === RenewalPaymentStatus.PAID) {
+    // Per-reference idempotency. Status alone is no longer sufficient now
+    // that PARTIAL invoices accept further payments; key on the reference.
+    const alreadyApplied = (invoice.payment_history ?? []).some(
+      (p) => p.reference === reference,
+    );
+    if (alreadyApplied) {
       this.logger.log(
-        'Renewal invoice already paid (webhook idempotency), skipping',
+        'Renewal invoice already has this payment (webhook idempotency), skipping',
         { renewalInvoiceId, reference },
       );
       return;

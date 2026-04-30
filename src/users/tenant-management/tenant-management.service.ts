@@ -2212,6 +2212,7 @@ export class TenantManagementService {
           'rent_amount',
           'total_amount',
           'payment_status',
+          'approval_status',
           'letter_status',
           'letter_sent_at',
           'created_at',
@@ -2233,6 +2234,7 @@ export class TenantManagementService {
       propertyName: inv.property?.name || 'Property',
       totalAmount: parseFloat((inv.total_amount ?? 0).toString()),
       paymentStatus: inv.payment_status,
+      approvalStatus: inv.approval_status ?? null,
       letterStatus: inv.letter_status ?? null,
       letterSentAt: inv.letter_sent_at
         ? typeof inv.letter_sent_at === 'string'

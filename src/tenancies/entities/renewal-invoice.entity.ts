@@ -105,6 +105,19 @@ export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   amount_paid: number | null;
 
+  /**
+   * Per-payment audit trail. Each Paystack-confirmed payment appends one
+   * entry. `amount_paid` is the running sum. Idempotency on a top-up
+   * checks whether `reference` is already present.
+   */
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  payment_history: Array<{
+    reference: string;
+    amount: number;
+    paid_at: string;
+    channel?: string;
+  }>;
+
   @Column({ type: 'varchar', length: 30, nullable: true })
   payment_option: string | null;
 
@@ -165,7 +178,7 @@ export class RenewalInvoice extends BaseEntity {
   // `any` here is deliberate — narrower types (Record<string, unknown>) fight
   // TypeORM's _QueryDeepPartialEntity expansion in call-sites that pass
   // Partial<RenewalInvoice> into manager.update(). Keep the DTO types strict.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   @Column({ type: 'jsonb', nullable: true })
   letter_body_fields: Record<string, any> | null;
 

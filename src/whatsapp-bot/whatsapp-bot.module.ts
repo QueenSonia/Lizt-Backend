@@ -28,7 +28,9 @@ import { ChatHistoryModule } from './chat-history.module';
 import { SimulatorGateway } from './simulator/simulator.gateway';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 import { TemplateSenderService } from './template-sender';
-import { TenantFlowService } from './tenant-flow';
+import { TenantFlowService, NextPeriodStateResolver } from './tenant-flow';
+import { PaymentPlan } from 'src/payment-plans/entities/payment-plan.entity';
+import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { LandlordFlowService } from './landlord-flow';
 import { WhatsAppNotificationLog } from './entities/whatsapp-notification-log.entity';
 import { WhatsAppNotificationLogService } from './whatsapp-notification-log.service';
@@ -53,6 +55,8 @@ import { PdfModule } from 'src/pdf/pdf.module';
       KYCApplication,
       WhatsAppNotificationLog,
       RenewalInvoice,
+      PaymentPlan,
+      PropertyHistory,
     ]),
     ServiceRequestsModule,
     forwardRef(() => UsersModule),
@@ -67,6 +71,7 @@ import { PdfModule } from 'src/pdf/pdf.module';
   providers: [
     TemplateSenderService,
     TenantFlowService,
+    NextPeriodStateResolver,
     LandlordFlowService,
     WhatsappBotService,
     LandlordFlow,

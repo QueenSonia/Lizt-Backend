@@ -1723,9 +1723,29 @@ export class TenantManagementService {
       );
     }
 
-    // Query KYC application separately to get all data and document URLs
+    // Query KYC application separately to get all data and document URLs.
+    //
+    // Scope by active tenancy property so a stray public-form submission for an
+    // unrelated property doesn't override the displayed profile. Falls back to
+    // tenant_id + recency when the tenant has no active tenancy under this
+    // landlord (past tenants, applicants mid-attach), preserving the historical
+    // view path.
+    const activeTenancies = await this.propertyTenantRepository
+      .createQueryBuilder('pt')
+      .innerJoin('pt.property', 'p')
+      .where('pt.tenant_id = :tenantId', { tenantId })
+      .andWhere('pt.status = :status', { status: TenantStatusEnum.ACTIVE })
+      .andWhere('p.owner_id = :adminId', { adminId })
+      .select(['pt.property_id'])
+      .getMany();
+
+    const activePropertyIds = activeTenancies.map((t) => t.property_id);
+
     const kycApplication = await this.kycApplicationRepository.findOne({
-      where: { tenant_id: tenantId },
+      where:
+        activePropertyIds.length > 0
+          ? { tenant_id: tenantId, property_id: In(activePropertyIds) }
+          : { tenant_id: tenantId },
       order: { created_at: 'DESC' },
     });
 

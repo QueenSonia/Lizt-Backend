@@ -9,7 +9,10 @@ import {
   ValidateIf,
   IsIn,
   IsUrl,
+  IsArray,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import {
   EmploymentStatus,
   Gender,
@@ -215,6 +218,15 @@ export class BaseKYCApplicationFieldsDto {
   @IsString()
   user_agent?: string;
 
+  // Per-view tracking: every form mount in the applicant's session is captured
+  // client-side and sent here at submit time, so each view becomes one
+  // PropertyHistory row attributed to the submitting applicant.
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => KYCViewEventDto)
+  view_events?: KYCViewEventDto[];
+
   // Document URLs (from Cloudinary - always https://)
   @IsUrl(
     { require_protocol: true },
@@ -247,4 +259,17 @@ export class BaseKYCApplicationFieldsDto {
   )
   @IsNotEmpty()
   business_proof_url?: string;
+}
+
+export class KYCViewEventDto {
+  @IsDateString()
+  at: string;
+
+  @IsOptional()
+  @IsString()
+  ip?: string;
+
+  @IsOptional()
+  @IsString()
+  ua?: string;
 }

@@ -478,12 +478,16 @@ export class RenewalLettersService {
       decision_made_ip: ipAddress ?? null,
     });
 
+    const trimmedReason = reason?.trim() || null;
+
     try {
       await this.propertyHistoryRepository.save({
         property_id: invoice.property_id,
         tenant_id: invoice.tenant_id,
         event_type: 'renewal_letter_declined',
-        event_description: `${tenantName} declined the renewal letter for ${property.name}`,
+        event_description: trimmedReason
+          ? `${tenantName} declined the renewal letter for ${property.name}. Reason: ${trimmedReason}`
+          : `${tenantName} declined the renewal letter for ${property.name}`,
         related_entity_id: invoice.id,
         related_entity_type: 'renewal_invoice',
       });
@@ -494,13 +498,15 @@ export class RenewalLettersService {
     }
 
     // Livefeed — decline is time-sensitive, the landlord sees it alongside
-    // the WhatsApp notice.
+    // the WhatsApp notice. Reason (if any) is forwarded so the listener can
+    // surface it in the in-app notification description.
     this.eventEmitter.emit('renewal.letter.declined', {
       property_id: invoice.property_id,
       property_name: property.name,
       tenant_id: invoice.tenant_id,
       tenant_name: tenantName,
       user_id: propertyTenant.property.owner_id,
+      reason: trimmedReason ?? undefined,
     });
 
     // Notify the landlord via WhatsApp. Required notification — still

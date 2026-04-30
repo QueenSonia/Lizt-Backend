@@ -1,4 +1,10 @@
-import { IsString, IsNotEmpty, IsNumberString } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsNumberString,
+  IsOptional,
+  IsBoolean,
+} from 'class-validator';
 import { BaseKYCApplicationFieldsDto } from './base-kyc-application-fields.dto';
 
 /**
@@ -38,4 +44,11 @@ export class CreateKYCApplicationDto extends BaseKYCApplicationFieldsDto {
   @IsString()
   @IsNotEmpty()
   rent_payment_frequency: string;
+
+  // Set true on a retry after the applicant confirmed they want to overwrite
+  // their existing PENDING application for this property. Without it, the
+  // service throws PENDING_APPLICATION_EXISTS so the frontend can prompt.
+  @IsOptional()
+  @IsBoolean()
+  update_existing?: boolean;
 }

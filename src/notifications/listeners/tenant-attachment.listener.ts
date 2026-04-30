@@ -51,7 +51,10 @@ export interface RenewalLetterAcceptedEvent {
   user_id: string;
 }
 
-export interface RenewalLetterDeclinedEvent extends RenewalLetterAcceptedEvent {}
+export interface RenewalLetterDeclinedEvent extends RenewalLetterAcceptedEvent {
+  /** Optional reason the tenant typed when declining; trimmed, may be ''. */
+  reason?: string;
+}
 
 export interface RenewalPaymentReceivedEvent {
   property_id: string;
@@ -150,10 +153,14 @@ export class TenantAttachmentListener {
 
   @OnEvent('renewal.letter.declined')
   async handleRenewalLetterDeclined(event: RenewalLetterDeclinedEvent) {
+    const reason = event.reason?.trim();
+    const description = reason
+      ? `${event.tenant_name} declined the renewal letter for ${event.property_name}. Reason: ${reason}`
+      : `${event.tenant_name} declined the renewal letter for ${event.property_name}.`;
     await this.notificationService.create({
       date: new Date().toISOString(),
       type: NotificationType.RENEWAL_LETTER_DECLINED,
-      description: `${event.tenant_name} declined the renewal letter for ${event.property_name}.`,
+      description,
       status: 'Completed',
       property_id: event.property_id,
       user_id: event.user_id,

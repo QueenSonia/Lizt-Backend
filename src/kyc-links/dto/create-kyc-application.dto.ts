@@ -4,8 +4,10 @@ import {
   IsNumberString,
   IsOptional,
   IsBoolean,
+  IsPhoneNumber,
 } from 'class-validator';
 import { BaseKYCApplicationFieldsDto } from './base-kyc-application-fields.dto';
+import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 
 /**
  * DTO for KYC Application submission (full submission by tenant).
@@ -44,6 +46,16 @@ export class CreateKYCApplicationDto extends BaseKYCApplicationFieldsDto {
   @IsString()
   @IsNotEmpty()
   rent_payment_frequency: string;
+
+  // Referral agent fields are required for the new-tenant flow (Step 3 is shown).
+  @IsString()
+  @IsNotEmpty()
+  referral_agent_full_name: string;
+
+  @IsNotEmpty()
+  @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
+  referral_agent_phone_number: string;
 
   // Set true on a retry after the applicant confirmed they want to overwrite
   // their existing PENDING application for this property. Without it, the

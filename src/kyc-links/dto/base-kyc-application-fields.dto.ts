@@ -9,7 +9,10 @@ import {
   ValidateIf,
   IsIn,
   IsUrl,
+  IsArray,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import {
   EmploymentStatus,
   Gender,
@@ -164,14 +167,17 @@ export class BaseKYCApplicationFieldsDto {
   @IsEmail()
   next_of_kin_email: string;
 
-  // Referral Agent Information (required)
+  // Referral Agent Information — required for new_tenant, optional for property_addition.
+  // Subclasses (CreateKYCApplicationDto, PropertyAdditionKYCDto) re-declare with the
+  // appropriate @IsNotEmpty()/@IsOptional() decorators for their flow.
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  referral_agent_full_name: string;
+  referral_agent_full_name?: string;
 
+  @IsOptional()
   @IsPhoneNumber('NG')
   @NormalizePhoneNumber()
-  referral_agent_phone_number: string;
+  referral_agent_phone_number?: string;
 
   // Tenancy Information
   @IsOptional()
@@ -215,6 +221,15 @@ export class BaseKYCApplicationFieldsDto {
   @IsString()
   user_agent?: string;
 
+  // Per-view tracking: every form mount in the applicant's session is captured
+  // client-side and sent here at submit time, so each view becomes one
+  // PropertyHistory row attributed to the submitting applicant.
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => KYCViewEventDto)
+  view_events?: KYCViewEventDto[];
+
   // Document URLs (from Cloudinary - always https://)
   @IsUrl(
     { require_protocol: true },
@@ -247,4 +262,17 @@ export class BaseKYCApplicationFieldsDto {
   )
   @IsNotEmpty()
   business_proof_url?: string;
+}
+
+export class KYCViewEventDto {
+  @IsDateString()
+  at: string;
+
+  @IsOptional()
+  @IsString()
+  ip?: string;
+
+  @IsOptional()
+  @IsString()
+  ua?: string;
 }

@@ -385,6 +385,40 @@ export interface RenewalLetterAcceptedNoticeParams {
 }
 
 /**
+ * Parameters for landlord notification when a tenant requests a rent renewal
+ * via the WhatsApp bot. Quick-reply Approve/Decline buttons carry the
+ * invoice id in their payloads.
+ */
+export interface RenewalRequestLandlordParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  invoice_id: string;
+}
+
+/**
+ * Parameters for tenant notification when the landlord approves their
+ * rent renewal request. URL button resolves to /renewal-letters/{token}.
+ */
+export interface RenewalRequestApprovedParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  renewal_token: string;
+}
+
+/**
+ * Parameters for tenant notification when the landlord declines their
+ * rent renewal request.
+ */
+export interface RenewalRequestDeclinedParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+}
+
+/**
  * Parameters for the signed-letter PDF dispatch sent to the tenant after
  * they accept or decline a renewal letter. One template handles both
  * outcomes — `outcome` flips the body's verb between "accepted" and
@@ -2081,6 +2115,132 @@ export class TemplateSenderService {
   }
 
   /**
+   * DM the landlord when a tenant taps "Pay Rent" on the bot — quick-reply
+   * Approve/Decline buttons carry the invoice id so the response handler
+   * knows which row to flip.
+   * Template: renewal_request_landlord
+   */
+  async sendRenewalRequestLandlord({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    invoice_id,
+  }: RenewalRequestLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_request_landlord',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `approve_rent_request:${invoice_id}`,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `decline_rent_request:${invoice_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Tell the tenant their renewal request was approved. URL button opens
+   * the renewal letter page (/renewal-letters/{token}) where the existing
+   * OTP-acceptance flow takes over.
+   * Template: renewal_request_approved
+   */
+  async sendRenewalRequestApproved({
+    phone_number,
+    tenant_name,
+    property_name,
+    renewal_token,
+  }: RenewalRequestApprovedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_request_approved',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: renewal_token }],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Tell the tenant their renewal request was declined.
+   * Template: renewal_request_declined
+   */
+  async sendRenewalRequestDeclined({
+    phone_number,
+    tenant_name,
+    property_name,
+  }: RenewalRequestDeclinedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'renewal_request_declined',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+            ],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Notify landlord that the tenant declined the renewal letter.
    * Template: renewal_letter_declined_landlord_notice
    */
@@ -2282,9 +2442,8 @@ export class TemplateSenderService {
     const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
     const isSimulationMode = this.validateSimulationMode(simulatorMode);
 
-    const filename = this.renewalPDFService.generateReceiptFilename(
-      property_name,
-    );
+    const filename =
+      this.renewalPDFService.generateReceiptFilename(property_name);
 
     // In simulator mode, skip Puppeteer + Meta media upload entirely.
     // The frontend simulator renders a placeholder card from the stub id.
@@ -3572,9 +3731,7 @@ export class TemplateSenderService {
         components: [
           {
             type: 'body',
-            parameters: [
-              { type: 'text', text: `₦${amount.toLocaleString()}` },
-            ],
+            parameters: [{ type: 'text', text: `₦${amount.toLocaleString()}` }],
           },
           {
             type: 'button',
@@ -3642,7 +3799,10 @@ export class TemplateSenderService {
       `Preferred schedule: ${preferred_schedule || 'No preference'}`,
     ];
     if (tenant_note) lines.push(`Note: ${tenant_note}`);
-    lines.push('', 'Your landlord will review the request and respond on WhatsApp.');
+    lines.push(
+      '',
+      'Your landlord will review the request and respond on WhatsApp.',
+    );
 
     await this.sendText(phone_number, lines.join('\n'));
   }
@@ -3809,6 +3969,12 @@ export class TemplateSenderService {
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
     renewal_letter_link:
       'Hi {{1}}, your landlord {{3}} has prepared a renewal offer for {{2}}. Tap below to review and accept it.',
+    renewal_request_landlord:
+      'Hi {{1}}, {{2}} is requesting to renew their rent for {{3}}. Do you approve this request?',
+    renewal_request_approved:
+      'Hi {{1}}, your landlord has approved your tenancy renewal request for {{2}}. Tap the link below to view your renewal letter.',
+    renewal_request_declined:
+      'Hi {{1}}, your landlord has declined your tenancy renewal request for {{2}}. Please contact them directly to discuss.',
     renewal_letter_signed:
       'Hi {{1}},\n\nYour renewal letter for *{{2}}* has been *{{3}}* on {{4}}.\n\nThe signed copy is attached above for your records.',
     renewal_letter_declined_landlord_notice:

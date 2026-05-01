@@ -5,12 +5,10 @@ import {
   Body,
   Param,
   Query,
-  Req,
   UseGuards,
   ValidationPipe,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
@@ -186,25 +184,6 @@ export class KYCLinksController {
         message: error.message || 'Failed to get OTP status',
       };
     }
-  }
-
-  /**
-   * Track when a user opens the KYC form (public endpoint)
-   * POST /api/kyc/:token/track-open
-   * Records timestamp, IP address, and device info
-   */
-  @SkipAuth()
-  @Post('kyc/:token/track-open')
-  async trackFormOpen(
-    @Param('token') token: string,
-    @Body('ipAddress') ipAddress?: string,
-    @Req() req?: Request,
-  ): Promise<{
-    success: boolean;
-    message: string;
-  }> {
-    const userAgent = req?.headers['user-agent'];
-    return this.kycApplicationService.trackFormOpen(token, ipAddress, userAgent);
   }
 
   /**

@@ -124,6 +124,24 @@ export class CacheService {
     return await this.cache.set(key, stringifiedValue, 'EX', ttlSeconds);
   }
 
+  /**
+   * Atomic SET-IF-ABSENT with TTL — returns true if the key was set (caller
+   * holds the lock), false if it already existed (someone else holds it).
+   * Used to debounce duplicate request-side webhooks (e.g. tenant
+   * double-taps "Pay Rent" before the first response arrives).
+   */
+  async setNx(key: string, value: any, ttlSeconds: number): Promise<boolean> {
+    const stringifiedValue = this.stringifyIfNeeded(value);
+    const result = await this.cache.set(
+      key,
+      stringifiedValue,
+      'EX',
+      ttlSeconds,
+      'NX',
+    );
+    return result === 'OK';
+  }
+
   async delete(key: string) {
     return await this.cache.del(key);
   }

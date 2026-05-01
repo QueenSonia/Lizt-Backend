@@ -79,6 +79,60 @@ export class KYCApplicationService {
   ) {}
 
   /**
+   * Build one `kyc_form_viewed` PropertyHistory entity per view_event.
+   *
+   * The frontend captures every form-page mount in sessionStorage and ships
+   * the array at submit, so each entry becomes one timeline row attributed
+   * to the submitting applicant. Falls back to a single row derived from
+   * the application's form_opened_at column for clients that don't send
+   * view_events.
+   *
+   * Returns unsaved entities — the caller appends them to its own
+   * historyEvents batch and persists everything in one save().
+   */
+  private buildKYCViewHistoryRows(args: {
+    propertyId: string;
+    applicationId: string;
+    firstName: string;
+    lastName: string;
+    viewEvents?: Array<{ at: string; ip?: string; ua?: string }>;
+    fallbackOpenedAt?: Date | string | null;
+    fallbackOpenedIp?: string | null;
+    fallbackUserAgent?: string | null;
+    propertyHistoryRepo: Repository<PropertyHistory>;
+  }): Array<Partial<PropertyHistory>> {
+    let events = (args.viewEvents || []).filter((v) => v && v.at);
+
+    if (events.length === 0 && args.fallbackOpenedAt) {
+      const at =
+        args.fallbackOpenedAt instanceof Date
+          ? args.fallbackOpenedAt.toISOString()
+          : new Date(args.fallbackOpenedAt).toISOString();
+      events = [
+        {
+          at,
+          ip: args.fallbackOpenedIp || undefined,
+          ua: args.fallbackUserAgent || undefined,
+        },
+      ];
+    }
+
+    return events.map((v) => {
+      const openedDate = new Date(v.at);
+      const ipInfo = v.ip ? ` from IP ${v.ip}` : '';
+      const deviceInfo = v.ua ? ` — ${v.ua}` : '';
+      return args.propertyHistoryRepo.create({
+        property_id: args.propertyId,
+        event_type: 'kyc_form_viewed',
+        event_description: `KYC form opened by ${args.firstName} ${args.lastName} on ${openedDate.toLocaleDateString('en-GB')} at ${openedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}${ipInfo}${deviceInfo}`,
+        related_entity_id: args.applicationId,
+        related_entity_type: 'kyc_application',
+        created_at: openedDate,
+      });
+    });
+  }
+
+  /**
    * Submit KYC application for a property using a valid token
    * Requirements: 3.1, 3.2, 3.4
    */
@@ -172,9 +226,21 @@ export class KYCApplicationService {
       } else {
         // If existing application has no tenant_id, check its status
         if (existingApplication.status === ApplicationStatus.PENDING) {
-          throw new ConflictException(
-            `User with phone number ${kycData.phone_number} has a pending application for this property`,
-          );
+          // Allow the applicant to update their own pending application after
+          // they've explicitly confirmed (frontend retries with update_existing
+          // = true on PENDING_APPLICATION_EXISTS).
+          if (kycData.update_existing) {
+            return await this.updatePendingApplication(
+              existingApplication,
+              kycLink,
+              kycData,
+            );
+          }
+          throw new ConflictException({
+            code: 'PENDING_APPLICATION_EXISTS',
+            application_id: existingApplication.id,
+            message: `User with phone number ${kycData.phone_number} has a pending application for this property`,
+          });
         }
 
         if (
@@ -271,26 +337,21 @@ export class KYCApplicationService {
 
       const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
 
-      // If form_opened_at was captured, create a "form viewed" event
-      if (applicationWithRelations.form_opened_at) {
-        const openedDate = new Date(applicationWithRelations.form_opened_at);
-        const ipInfo = applicationWithRelations.form_opened_ip
-          ? ` from IP ${applicationWithRelations.form_opened_ip}`
-          : '';
-        const deviceInfo = applicationWithRelations.user_agent
-          ? ` — ${applicationWithRelations.user_agent}`
-          : '';
-        historyEvents.push(
-          propertyHistoryRepo.create({
-            property_id: kycData.property_id,
-            event_type: 'kyc_form_viewed',
-            event_description: `KYC form opened by ${kycData.first_name} ${kycData.last_name} on ${openedDate.toLocaleDateString('en-GB')} at ${openedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}${ipInfo}${deviceInfo}`,
-            related_entity_id: savedApplication.id,
-            related_entity_type: 'kyc_application',
-            created_at: openedDate,
-          }),
-        );
-      }
+      // One "form viewed" event per session-captured view (or fallback to
+      // form_opened_at for clients that don't send view_events).
+      historyEvents.push(
+        ...this.buildKYCViewHistoryRows({
+          propertyId: kycData.property_id,
+          applicationId: savedApplication.id,
+          firstName: kycData.first_name,
+          lastName: kycData.last_name,
+          viewEvents: kycData.view_events,
+          fallbackOpenedAt: applicationWithRelations.form_opened_at,
+          fallbackOpenedIp: applicationWithRelations.form_opened_ip,
+          fallbackUserAgent: applicationWithRelations.user_agent,
+          propertyHistoryRepo,
+        }),
+      );
 
       // Create "application submitted" event
       historyEvents.push(
@@ -426,6 +487,177 @@ export class KYCApplicationService {
     }
 
     return applicationWithRelations;
+  }
+
+  /**
+   * Update an existing PENDING application in place after the applicant has
+   * confirmed they want to overwrite their previous answers. Rate-limited to
+   * MAX_RESUBMISSIONS resubmissions counted from kyc_application_resubmitted
+   * property_history rows for this application.
+   */
+  private async updatePendingApplication(
+    existing: KYCApplication,
+    _kycLink: KYCLink,
+    kycData: CreateKYCApplicationDto,
+  ): Promise<KYCApplication> {
+    const MAX_RESUBMISSIONS = 2; // 2 updates after the original = 3 total submissions
+
+    const { PropertyHistory } = await import(
+      '../property-history/entities/property-history.entity'
+    );
+    const propertyHistoryRepo =
+      this.kycApplicationRepository.manager.getRepository(PropertyHistory);
+
+    const resubmissionCount = await propertyHistoryRepo.count({
+      where: {
+        related_entity_id: existing.id,
+        related_entity_type: 'kyc_application',
+        event_type: 'kyc_application_resubmitted',
+      },
+    });
+
+    if (resubmissionCount >= MAX_RESUBMISSIONS) {
+      throw new ConflictException({
+        code: 'PENDING_UPDATE_LIMIT_REACHED',
+        application_id: existing.id,
+        message:
+          'You have reached the maximum number of updates for this application. Please contact the landlord directly.',
+      });
+    }
+
+    const updateData: Partial<KYCApplication> = {
+      ...this.mapCommonFieldsToEntity(kycData),
+      first_name: kycData.first_name,
+      last_name: kycData.last_name,
+      status: ApplicationStatus.PENDING,
+      decision_made_at: new Date(),
+      decision_made_ip: kycData.decision_made_ip,
+      user_agent: kycData.user_agent,
+    };
+    if (kycData.form_opened_at) {
+      updateData.form_opened_at = new Date(kycData.form_opened_at);
+    }
+    if (kycData.form_opened_ip) {
+      updateData.form_opened_ip = kycData.form_opened_ip;
+    }
+
+    await this.kycApplicationRepository.update(existing.id, updateData);
+
+    const updated = await this.kycApplicationRepository.findOne({
+      where: { id: existing.id },
+      relations: ['property', 'kyc_link'],
+    });
+    if (!updated) {
+      throw new Error('Failed to retrieve updated KYC application');
+    }
+
+    // Timeline event so the landlord can see the row was edited.
+    try {
+      await propertyHistoryRepo.save(
+        propertyHistoryRepo.create({
+          property_id: updated.property_id,
+          event_type: 'kyc_application_resubmitted',
+          event_description: `${updated.first_name} ${updated.last_name} updated their KYC application for ${updated.property?.name || 'property'}`,
+          related_entity_id: updated.id,
+          related_entity_type: 'kyc_application',
+        }),
+      );
+    } catch (error) {
+      console.error(
+        'Failed to create kyc_application_resubmitted history event:',
+        error,
+      );
+    }
+
+    // Reuse the existing KYC_SUBMITTED notification so the landlord sees the
+    // resubmission in their notification stream. Description tweaked so they
+    // can tell it's an update vs. a brand-new submission.
+    try {
+      if (this.notificationService && updated.property) {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.KYC_SUBMITTED,
+          description: `${updated.first_name} ${updated.last_name} updated their KYC application for ${updated.property.name}`,
+          status: 'Pending',
+          property_id: updated.property_id,
+          user_id: updated.property.owner_id,
+        });
+      }
+    } catch (error) {
+      console.error(
+        'Failed to create KYC resubmission notification:',
+        error,
+      );
+    }
+
+    // Same WebSocket event as the create path — landlord UI just refetches
+    // the list, which now reflects the updated fields.
+    try {
+      if (this.eventsGateway && updated.property) {
+        this.eventsGateway.emitKYCSubmission(
+          updated.property_id,
+          updated.property.owner_id,
+          {
+            id: updated.id,
+            firstName: updated.first_name,
+            lastName: updated.last_name,
+            email: updated.email,
+            phoneNumber: updated.phone_number,
+          },
+        );
+      }
+    } catch (error) {
+      console.error('Failed to emit KYC resubmission event:', error);
+    }
+
+    // Notify the landlord on WhatsApp so they re-review the row. Skip the
+    // tenant confirmation (they're on the form right now) and the agent
+    // notification (already sent on the original submission) to keep
+    // resubmission noise down.
+    if (this.whatsappNotificationLog && updated.property) {
+      try {
+        const property = updated.property;
+        const landlord = await this.propertyRepository
+          .createQueryBuilder('property')
+          .leftJoinAndSelect('property.owner', 'owner')
+          .leftJoinAndSelect('owner.user', 'user')
+          .where('property.id = :propertyId', { propertyId: property.id })
+          .getOne();
+
+        if (landlord?.owner?.user?.phone_number) {
+          const landlordPhone = this.utilService.normalizePhoneNumber(
+            landlord.owner.user.phone_number,
+          );
+          const landlordName =
+            landlord.owner.profile_name ||
+            `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
+          const frontendUrl =
+            this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
+
+          await this.whatsappNotificationLog.queue(
+            'sendKYCApplicationNotification',
+            {
+              phone_number: landlordPhone,
+              landlord_name: landlordName,
+              tenant_name: `${updated.first_name} ${updated.last_name}`,
+              property_name: property.name,
+              application_id: updated.id,
+              frontend_url: frontendUrl,
+              landlord_id: landlord.owner.user.id,
+              recipient_name: landlordName,
+            },
+            updated.id,
+          );
+        }
+      } catch (error) {
+        console.error(
+          'Failed to queue landlord KYC resubmission notification:',
+          error,
+        );
+      }
+    }
+
+    return updated;
   }
 
   /**
@@ -939,135 +1171,6 @@ export class KYCApplicationService {
     }
 
     return kycLink;
-  }
-  /**
-   * Track when a KYC form is opened by a visitor.
-   * Records timestamp, IP address, and device info.
-   * Creates a PropertyHistory record on every open (with 30s spam cooldown).
-   * Tracks all visitors — if an application exists, ties history to the property.
-   */
-  async trackFormOpen(
-    token: string,
-    ipAddress?: string,
-    userAgent?: string,
-  ): Promise<{
-    success: boolean;
-    message: string;
-  }> {
-    try {
-      const kycLink = await this.validateKYCToken(token);
-
-      // Find any application for this token (not just PENDING_COMPLETION)
-      const application = await this.kycApplicationRepository.findOne({
-        where: { kyc_link_id: kycLink.id },
-        order: { created_at: 'DESC' },
-      });
-
-      // Update form_opened_at on the application if one exists (always overwrite)
-      if (application) {
-        const updateData: Record<string, unknown> = {
-          form_opened_at: new Date(),
-        };
-        if (ipAddress) {
-          updateData.form_opened_ip = ipAddress;
-        }
-        await this.kycApplicationRepository.update(application.id, updateData);
-      }
-
-      // Parse device info from User-Agent
-      let deviceInfo = 'Unknown Device';
-      if (userAgent) {
-        const os = /iPhone/i.test(userAgent)
-          ? 'iPhone'
-          : /iPad/i.test(userAgent)
-            ? 'iPad'
-            : /Android/i.test(userAgent)
-              ? 'Android'
-              : /Windows/i.test(userAgent)
-                ? 'Windows'
-                : /Macintosh/i.test(userAgent)
-                  ? 'Mac'
-                  : /Linux/i.test(userAgent)
-                    ? 'Linux'
-                    : 'Unknown OS';
-
-        const browser = /Edg/i.test(userAgent)
-          ? 'Edge'
-          : /Chrome/i.test(userAgent)
-            ? 'Chrome'
-            : /Firefox/i.test(userAgent)
-              ? 'Firefox'
-              : /Safari/i.test(userAgent)
-                ? 'Safari'
-                : 'Unknown Browser';
-
-        deviceInfo = `${browser} on ${os}`;
-      }
-
-      // Create PropertyHistory record only if we have an application (need property_id)
-      if (application?.property_id) {
-        try {
-          const { PropertyHistory } = await import(
-            '../property-history/entities/property-history.entity'
-          );
-          const propertyHistoryRepo =
-            this.kycApplicationRepository.manager.getRepository(
-              PropertyHistory,
-            );
-
-          // Spam prevention: skip if a record was created within the last 30 seconds
-          const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
-          const recentRecord = await propertyHistoryRepo.findOne({
-            where: {
-              related_entity_id: application.id,
-              related_entity_type: 'kyc_application',
-              event_type: 'kyc_form_viewed',
-            },
-            order: { created_at: 'DESC' },
-          });
-
-          if (
-            recentRecord &&
-            recentRecord.created_at && new Date(recentRecord.created_at) > thirtySecondsAgo
-          ) {
-            return {
-              success: true,
-              message: 'Form open tracked (cooldown active)',
-            };
-          }
-
-          const formattedDate = new Date().toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-          });
-          const formattedTime = new Date().toLocaleTimeString('en-US', {
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true,
-          });
-
-          await propertyHistoryRepo.save({
-            property_id: application.property_id,
-            tenant_id: application.tenant_id || null,
-            event_type: 'kyc_form_viewed',
-            event_description: `KYC form viewed — ${ipAddress || 'Unknown IP'} — ${deviceInfo} — ${formattedDate} at ${formattedTime}`,
-            related_entity_id: application.id,
-            related_entity_type: 'kyc_application',
-          });
-        } catch (historyError) {
-          console.error(
-            'Failed to create KYC form view history:',
-            historyError,
-          );
-        }
-      }
-
-      return { success: true, message: 'Form open tracked successfully' };
-    } catch (error) {
-      console.error('Error tracking form open:', error);
-      return { success: true, message: 'Form open tracking skipped' };
-    }
   }
 
   /**
@@ -1616,26 +1719,21 @@ export class KYCApplicationService {
 
         const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
 
-        // If form_opened_at was captured, create a "form viewed" event
-        if (updatedKyc.form_opened_at) {
-          const openedDate = new Date(updatedKyc.form_opened_at);
-          const ipInfo = updatedKyc.form_opened_ip
-            ? ` from IP ${updatedKyc.form_opened_ip}`
-            : '';
-          const deviceInfo = updatedKyc.user_agent
-            ? ` — ${updatedKyc.user_agent}`
-            : '';
-          historyEvents.push(
-            propertyHistoryRepo.create({
-              property_id: updatedKyc.property_id,
-              event_type: 'kyc_form_viewed',
-              event_description: `KYC form opened by ${updatedKyc.first_name} ${updatedKyc.last_name} on ${openedDate.toLocaleDateString('en-GB')} at ${openedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}${ipInfo}${deviceInfo}`,
-              related_entity_id: updatedKyc.id,
-              related_entity_type: 'kyc_application',
-              created_at: openedDate,
-            }),
-          );
-        }
+        // One "form viewed" event per session-captured view (or fallback to
+        // form_opened_at for clients that don't send view_events).
+        historyEvents.push(
+          ...this.buildKYCViewHistoryRows({
+            propertyId: updatedKyc.property_id,
+            applicationId: updatedKyc.id,
+            firstName: updatedKyc.first_name,
+            lastName: updatedKyc.last_name,
+            viewEvents: completionData.view_events,
+            fallbackOpenedAt: updatedKyc.form_opened_at,
+            fallbackOpenedIp: updatedKyc.form_opened_ip,
+            fallbackUserAgent: updatedKyc.user_agent,
+            propertyHistoryRepo,
+          }),
+        );
 
         // Create "application submitted" event for completion
         historyEvents.push(
@@ -2242,19 +2340,21 @@ export class KYCApplicationService {
 
       const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
 
-      if (savedApplication.form_opened_at) {
-        const openedDate = new Date(savedApplication.form_opened_at);
-        historyEvents.push(
-          propertyHistoryRepo.create({
-            property_id: savedApplication.property_id,
-            event_type: 'kyc_form_viewed',
-            event_description: `KYC form opened by ${savedApplication.first_name} ${savedApplication.last_name} on ${openedDate.toLocaleDateString('en-GB')} at ${openedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`,
-            related_entity_id: savedApplication.id,
-            related_entity_type: 'kyc_application',
-            created_at: openedDate,
-          }),
-        );
-      }
+      // One "form viewed" event per session-captured view (or fallback to
+      // form_opened_at for clients that don't send view_events).
+      historyEvents.push(
+        ...this.buildKYCViewHistoryRows({
+          propertyId: savedApplication.property_id,
+          applicationId: savedApplication.id,
+          firstName: savedApplication.first_name,
+          lastName: savedApplication.last_name,
+          viewEvents: kycData.view_events,
+          fallbackOpenedAt: savedApplication.form_opened_at,
+          fallbackOpenedIp: savedApplication.form_opened_ip,
+          fallbackUserAgent: savedApplication.user_agent,
+          propertyHistoryRepo,
+        }),
+      );
 
       historyEvents.push(
         propertyHistoryRepo.create({

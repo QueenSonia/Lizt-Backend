@@ -45,7 +45,6 @@ import {
   PaymentPlanStatus,
 } from '../payment-plans/entities/payment-plan.entity';
 
-
 @Injectable()
 export class RentReminderService {
   private readonly logger = new Logger(RentReminderService.name);
@@ -427,7 +426,7 @@ export class RentReminderService {
         agency_fee_recurring: carried.agency_fee_recurring,
         other_fees:
           useLetter && letterSource
-            ? letterSource.other_fees ?? carried.other_fees
+            ? (letterSource.other_fees ?? carried.other_fees)
             : carried.other_fees,
         payment_frequency:
           useLetter && letterSource
@@ -484,8 +483,11 @@ export class RentReminderService {
         // for the same period. Don't post a corresponding ledger entry —
         // the period-charge debit above already accounts for the wallet
         // movement; this is just bookkeeping on the invoice side.
-        if (useLetter && letterSource &&
-            letterSource.payment_status !== RenewalPaymentStatus.PAID) {
+        if (
+          useLetter &&
+          letterSource &&
+          letterSource.payment_status !== RenewalPaymentStatus.PAID
+        ) {
           letterSource.payment_status = RenewalPaymentStatus.PAID;
           letterSource.amount_paid = periodCharge;
           letterSource.paid_at = new Date();
@@ -812,7 +814,16 @@ export class RentReminderService {
         : daysUntilExpiry === 1
           ? `tomorrow, ${expiryDateStr}`
           : `on ${expiryDateStr}`;
-    const amountToPay = Number(renewalInvoice.total_amount || 0);
+    // For PARTIAL invoices, the "Amount due" we surface is the remaining
+    // balance (total - prior payments), not the original total — the same
+    // template body works for both fresh and partial cases since the {{5}}
+    // slot is just "Amount due".
+    const totalAmount = Number(renewalInvoice.total_amount || 0);
+    const amountPaidSoFar = Number(renewalInvoice.amount_paid ?? 0);
+    const amountToPay =
+      renewalInvoice.payment_status === RenewalPaymentStatus.PARTIAL
+        ? Math.max(0, totalAmount - amountPaidSoFar)
+        : totalAmount;
     const formattedAmount = amountToPay.toLocaleString('en-NG', {
       style: 'currency',
       currency: 'NGN',
@@ -837,6 +848,8 @@ export class RentReminderService {
     // Branch by letter status:
     //   'sent'     → letter link (sendRenewalLetterLink → /renewal-letters/{token})
     //   'accepted' → invoice link (sendRentReminderWithRenewalTemplate → /renewal-invoice/{token})
+    // PARTIAL invoices use the same accepted-letter template; only the
+    // amount-due variable differs (remaining vs total — handled above).
     const useLetterTemplate = letterStatus === RenewalLetterStatus.SENT;
     const templateName = useLetterTemplate
       ? 'sendRenewalLetterLink'
@@ -1051,15 +1064,22 @@ export class RentReminderService {
 
       const { startDate, endDate } = this.getTargetPeriodRange(rent);
 
-      // Refresh existing unpaid landlord/draft invoice if one exists.
+      // Refresh existing unpaid/partial landlord/draft invoice if one exists.
       // Exclude superseded rows — those are historical versions replaced
       // by a newer letter and should never be touched by the refresh cron.
       // We include token_type='draft' so the cron can promote a landlord-
-      // saved draft into a sent letter when reminders begin.
+      // saved draft into a sent letter when reminders begin. PARTIAL is
+      // included so the partial-balance reminder fires on the same cadence
+      // as full reminders; the wallet-derived field refresh below is
+      // suppressed for partials because the tenant has already committed
+      // to the original total via real payments.
       const existing = await this.renewalInvoiceRepository.findOne({
         where: {
           property_tenant_id: propertyTenant.id,
-          payment_status: RenewalPaymentStatus.UNPAID,
+          payment_status: In([
+            RenewalPaymentStatus.UNPAID,
+            RenewalPaymentStatus.PARTIAL,
+          ]),
           token_type: In(['landlord', 'draft']),
           superseded_by_id: IsNull(),
         },
@@ -1075,13 +1095,26 @@ export class RentReminderService {
         // tell an intentional landlord override from stale invoice data,
         // so it would silently clobber next-period edits. (Only the
         // wallet-derived fields below should refresh on each cron tick.)
-        const breakdown: Fee[] = Array.isArray(existing.fee_breakdown)
-          ? existing.fee_breakdown
-          : [];
-        const invoicePeriodCharge = sumAll(breakdown);
-        existing.wallet_balance = walletBalance;
-        existing.outstanding_balance = outstandingBalance;
-        existing.total_amount = Math.max(0, invoicePeriodCharge - walletBalance);
+        // Suppress the wallet-derived field refresh once the tenant has
+        // started paying (PARTIAL). amount_paid > 0 means real payments are
+        // recorded in payment_history; rewriting total_amount from the
+        // current wallet would zero out the bill mid-flow (the partial
+        // payments inflated the wallet) and lose the original commitment.
+        const hasPartialPayments =
+          Number(existing.amount_paid ?? 0) > 0 ||
+          existing.payment_status === RenewalPaymentStatus.PARTIAL;
+        if (!hasPartialPayments) {
+          const breakdown: Fee[] = Array.isArray(existing.fee_breakdown)
+            ? existing.fee_breakdown
+            : [];
+          const invoicePeriodCharge = sumAll(breakdown);
+          existing.wallet_balance = walletBalance;
+          existing.outstanding_balance = outstandingBalance;
+          existing.total_amount = Math.max(
+            0,
+            invoicePeriodCharge - walletBalance,
+          );
+        }
 
         // Promote a landlord-saved draft to 'sent' on first reminder.
         // The cron then dispatches the renewal-letter WhatsApp template

@@ -120,6 +120,7 @@ interface RenewalInvoiceSummary {
   propertyName: string;
   totalAmount: number;
   paymentStatus: string;
+  approvalStatus: string | null;
   createdAt: string;
   paidAt: string | null;
   startDate: string | null;

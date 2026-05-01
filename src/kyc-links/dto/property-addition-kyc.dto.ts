@@ -3,8 +3,10 @@ import {
   IsNotEmpty,
   IsOptional,
   IsNumberString,
+  IsPhoneNumber,
 } from 'class-validator';
 import { BaseKYCApplicationFieldsDto } from './base-kyc-application-fields.dto';
+import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 
 /**
  * DTO for Property Addition KYC submission.
@@ -42,4 +44,15 @@ export class PropertyAdditionKYCDto extends BaseKYCApplicationFieldsDto {
   @IsOptional()
   @IsString()
   rent_payment_frequency?: string;
+
+  // Referral agent fields live on the hidden Tenancy step in the property-addition flow,
+  // so the applicant has no way to fill them — make optional here.
+  @IsOptional()
+  @IsString()
+  referral_agent_full_name?: string;
+
+  @IsOptional()
+  @IsPhoneNumber('NG')
+  @NormalizePhoneNumber()
+  referral_agent_phone_number?: string;
 }

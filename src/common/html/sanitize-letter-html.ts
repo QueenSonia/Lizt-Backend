@@ -96,6 +96,13 @@ export function sanitizeLetterHtml(dirty: string | null | undefined): string | n
         gap: [/^\d+(\.\d+)?(px|em|rem)$/],
         'flex-wrap': [/^(nowrap|wrap|wrap-reverse)$/],
         flex: [/^[\d.\s]+(auto)?$/],
+        // Per-axis flex controls — used by the two-column terms list rows
+        // (label column locked at 140px, value column flexes). flex-shrink
+        // keeps the label from being squeezed; flex-basis sets the locked
+        // width.
+        'flex-shrink': [/^\d+(\.\d+)?$/],
+        'flex-grow': [/^\d+(\.\d+)?$/],
+        'flex-basis': [/^(\d+(\.\d+)?(px|em|rem|%)|auto)$/],
 
         // Lists — bullets in the offer terms.
         'list-style': [/^(disc|circle|square|decimal|none)$/],

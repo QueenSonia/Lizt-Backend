@@ -381,7 +381,10 @@ export class TenanciesService {
     let startDate: Date;
     let endDate: Date;
 
-    if (activeRent.payment_status === RentPaymentStatusEnum.OWING) {
+    const isCurrentOwingPeriod =
+      activeRent.payment_status === RentPaymentStatusEnum.OWING;
+
+    if (isCurrentOwingPeriod) {
       startDate = new Date(activeRent.rent_start_date);
       endDate = new Date(activeRent.expiry_date);
     } else {
@@ -441,13 +444,36 @@ export class TenanciesService {
     // per-field overrides from the request body over the active rent's
     // current values. Every body field is optional; omitted fields fall
     // back to the rent so "Renew" pre-fills correctly.
+    //
+    // One-time fee fallback is period-dependent: the OWING current-period
+    // invoice still inherits caution/legal/agency from activeRent (the
+    // tenant hasn't paid for move-in), but next-period invoices must NOT
+    // — those activeRent values are the move-in fees and would silently
+    // re-bill at every renewal. For next-period invoices a one-time fee
+    // only makes it onto the bill if the landlord explicitly typed an
+    // amount in the request body. Same rule applies to one-time
+    // otherFees entries.
     const rentAmount = body?.rentAmount || activeRent.rental_price || 0;
     const serviceCharge =
       body?.serviceCharge ?? (activeRent.service_charge || 0);
     const cautionDeposit =
-      body?.cautionDeposit ?? Number(activeRent.security_deposit || 0);
-    const legalFee = body?.legalFee ?? Number(activeRent.legal_fee || 0);
-    const agencyFee = body?.agencyFee ?? Number(activeRent.agency_fee || 0);
+      body?.cautionDeposit !== undefined
+        ? Number(body.cautionDeposit)
+        : isCurrentOwingPeriod
+          ? Number(activeRent.security_deposit || 0)
+          : 0;
+    const legalFee =
+      body?.legalFee !== undefined
+        ? Number(body.legalFee)
+        : isCurrentOwingPeriod
+          ? Number(activeRent.legal_fee || 0)
+          : 0;
+    const agencyFee =
+      body?.agencyFee !== undefined
+        ? Number(body.agencyFee)
+        : isCurrentOwingPeriod
+          ? Number(activeRent.agency_fee || 0)
+          : 0;
 
     const serviceChargeRecurring =
       body?.serviceChargeRecurring ??
@@ -462,14 +488,18 @@ export class TenanciesService {
     const agencyFeeRecurring =
       body?.agencyFeeRecurring ?? activeRent.agency_fee_recurring ?? false;
 
-    const otherFees = (body?.otherFees ?? activeRent.other_fees ?? []).map(
-      (f) => ({
-        externalId: f.externalId ?? randomUUID(),
-        name: f.name,
-        amount: f.amount,
-        recurring: f.recurring,
-      }),
-    );
+    const otherFeesSource =
+      body?.otherFees !== undefined
+        ? body.otherFees
+        : isCurrentOwingPeriod
+          ? (activeRent.other_fees ?? [])
+          : (activeRent.other_fees ?? []).filter((f) => f.recurring);
+    const otherFees = otherFeesSource.map((f) => ({
+      externalId: f.externalId ?? randomUUID(),
+      name: f.name,
+      amount: f.amount,
+      recurring: f.recurring,
+    }));
 
     // Build the Fee[] via the shared helper so the same classification
     // rules apply here as in the rent pipeline.
@@ -486,10 +516,13 @@ export class TenanciesService {
       other_fees: otherFees,
       payment_frequency: paymentFrequency,
     });
-    // Landlord-driven renewal bills every fee set in the Edit Tenancy modal
-    // (rent + service + caution + legal + agency + otherFees) regardless of
-    // the per-fee recurring flag. The recurring flag governs auto-renewal
-    // (year 2+ cron), not this current-period invoice.
+    // Landlord-driven renewal bills every fee that survived the
+    // period-dependent fallback above. For the OWING current-period invoice
+    // that's every fee set in Edit Tenancy (move-in obligation). For
+    // next-period invoices it's recurring fees + any one-time amount the
+    // landlord explicitly typed in the form. The recurring flag governs
+    // auto-renewal (year 2+ cron); pushIfPositive in rentToFees has already
+    // dropped zero-amount lines, so sumAll here is the right total either way.
     const periodCharge = sumAll(allFees);
 
     const landlordId = propertyTenant.property.owner_id;

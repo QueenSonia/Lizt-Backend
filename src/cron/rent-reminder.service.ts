@@ -1039,19 +1039,29 @@ export class RentReminderService {
 
       const landlordId = rent.property.owner_id;
 
-      // Billing v2: snapshot the full Fee[] from the rent — every fee the
-      // landlord set in Edit Tenancy goes into `fee_breakdown`, recurring or
-      // not. The invoice total is the sum of all of them (minus wallet).
-      // The recurring flag is only consulted by the auto-renewal ledger
-      // charging path (above), not by this invoice snapshot.
-      const fees: Fee[] = rentToFees(rent);
+      // Billing v2: snapshot the Fee[] from the rent into `fee_breakdown`.
+      //
+      // Period-dependent rule: an OWING current-period invoice bills every
+      // fee on the rent (the tenant hasn't paid the original move-in yet).
+      // A next-period invoice strips one-time fees first — caution / legal /
+      // agency / one-time otherFees were collected at move-in and must not
+      // re-bill at every renewal. We mirror this through carryForwardFees
+      // so rentToFees and the legacy scalar columns below see the same
+      // adjusted values.
+      const isCurrentOwingPeriod =
+        rent.payment_status === RentPaymentStatusEnum.OWING;
+      const sourceRent = isCurrentOwingPeriod
+        ? rent
+        : ({ ...rent, ...this.carryForwardFees(rent) } as Rent);
+
+      const fees: Fee[] = rentToFees(sourceRent);
       const periodCharge = sumAll(fees);
-      const rentAmount = rent.rental_price ?? rent.amount_paid ?? 0;
-      const serviceCharge = rent.service_charge || 0;
-      const legalFee = Number(rent.legal_fee || 0);
-      const agencyFee = Number(rent.agency_fee || 0);
-      const cautionDeposit = Number(rent.security_deposit || 0);
-      const allOtherFees = rent.other_fees ?? [];
+      const rentAmount = sourceRent.rental_price ?? sourceRent.amount_paid ?? 0;
+      const serviceCharge = sourceRent.service_charge || 0;
+      const legalFee = Number(sourceRent.legal_fee || 0);
+      const agencyFee = Number(sourceRent.agency_fee || 0);
+      const cautionDeposit = Number(sourceRent.security_deposit || 0);
+      const allOtherFees = sourceRent.other_fees ?? [];
 
       const walletBalance = await this.tenantBalancesService.getBalance(
         rent.tenant_id,

@@ -505,6 +505,26 @@ export class RentReminderService {
           (coveredByWallet ? 'PAID by wallet' : 'OWING'),
       );
 
+      // Audit-log the new period on the tenant/property timeline. Anchored to
+      // the new rent so the entry survives even if the linked letter is later
+      // superseded; move_in/move_out carry the period dates so the timeline
+      // builder can render the event on the period-start day.
+      const periodHistory = this.propertyHistoryRepository.create({
+        property_id: newRent.property_id,
+        tenant_id: newRent.tenant_id,
+        event_type: 'renewal_period_started',
+        event_description:
+          `Renewal period started: ${nextStart.toISOString().split('T')[0]} – ${nextExpiry.toISOString().split('T')[0]}. ` +
+          `Rent: ₦${Number(newRent.rental_price).toLocaleString()}. ` +
+          (coveredByWallet ? 'Covered by wallet credit.' : 'Awaiting payment.'),
+        related_entity_id: newRent.id,
+        related_entity_type: 'rent',
+        move_in_date: nextStart,
+        move_out_date: nextExpiry,
+        monthly_rent: Number(newRent.rental_price),
+      });
+      await this.propertyHistoryRepository.save(periodHistory);
+
       currentRent = newRent;
       currentExpiry = new Date(nextExpiry);
       currentExpiry.setUTCHours(0, 0, 0, 0);

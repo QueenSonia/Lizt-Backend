@@ -300,6 +300,45 @@ export class TenanciesController {
   }
 
   /**
+   * POST /api/tenancies/renewal-invoice/by-id/:id/realign-period
+   * Shift an unpaid renewal invoice's start_date and end_date to match the
+   * new "next period" implied by the active rent's expiry. Counterpart to
+   * the acknowledge_only path on the stale_renewal_invoice blocker — the
+   * landlord chooses to fix the desync rather than just record it.
+   *
+   * Dates only: rent amount, fees, fee_breakdown, total_amount, and tied
+   * payment plans are NOT touched. The frontend confirm modal explains the
+   * scope to the user before this endpoint is hit.
+   */
+  @ApiOperation({
+    summary: 'Realign Renewal Invoice Period',
+    description:
+      'Shift an unpaid renewal invoice\'s start_date and end_date to the new next-period implied by the active rent. Dates only — fees, rent amount, total, and tied payment plans are left untouched.',
+  })
+  @ApiParam({ name: 'id', description: 'Renewal invoice UUID', type: 'string' })
+  @ApiOkResponse({ description: 'Invoice period realigned' })
+  @ApiBadRequestResponse({
+    description:
+      'Invoice is paid/superseded/draft, already aligned, or active rent is missing required data',
+  })
+  @ApiNotFoundResponse({
+    description: 'Invoice or active rent not found',
+  })
+  @ApiSecurity('access_token')
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Post('renewal-invoice/by-id/:id/realign-period')
+  async realignRenewalInvoicePeriod(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: any,
+  ) {
+    const result = await this.tenanciesService.realignRenewalInvoicePeriod(
+      id,
+      req.user.id,
+    );
+    return { success: true, data: result };
+  }
+
+  /**
    * GET /api/tenancies/renewal-invoice/:token/wallet-history
    * Get wallet ledger history for a renewal invoice (public, by token)
    */

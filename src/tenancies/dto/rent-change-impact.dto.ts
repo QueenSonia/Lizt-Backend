@@ -14,7 +14,8 @@ export type RentChangeIssueKind =
 export type RentChangeSuggestedAction =
   | 'adjust_amount'
   | 'acknowledge_only'
-  | 'update_reminder_dedup';
+  | 'update_reminder_dedup'
+  | 'realign_invoice_period';
 
 export class RentChangeSuggestedFixDto {
   @ApiProperty({ example: 'Acknowledge desync' })
@@ -22,14 +23,19 @@ export class RentChangeSuggestedFixDto {
 
   @ApiProperty({
     description:
-      'Machine-readable action hint the frontend can map to a button style. adjust_amount = auto-fix; acknowledge_only = just record & move on; update_reminder_dedup = bump last_reminder_sent_on.',
-    enum: ['adjust_amount', 'acknowledge_only', 'update_reminder_dedup'],
+      'Machine-readable action hint the frontend can map to a button style. adjust_amount = auto-fix; acknowledge_only = just record & move on; update_reminder_dedup = bump last_reminder_sent_on; realign_invoice_period = open confirm modal then call POST /tenancies/renewal-invoice/:id/realign-period.',
+    enum: [
+      'adjust_amount',
+      'acknowledge_only',
+      'update_reminder_dedup',
+      'realign_invoice_period',
+    ],
   })
   action: RentChangeSuggestedAction;
 
   @ApiPropertyOptional({
     description:
-      'Opaque payload the backend needs if this fix is applied. E.g. { deltaMinor: -2500000 } for adjust_amount.',
+      'Opaque payload the backend needs if this fix is applied. E.g. { deltaMinor: -2500000 } for adjust_amount; { renewalInvoiceId } for realign_invoice_period.',
   })
   payload?: Record<string, unknown>;
 }
@@ -63,6 +69,13 @@ export class RentChangeIssueDto {
 
   @ApiPropertyOptional({ type: () => RentChangeSuggestedFixDto, nullable: true })
   suggestedFix: RentChangeSuggestedFixDto | null;
+
+  @ApiPropertyOptional({
+    type: () => [RentChangeSuggestedFixDto],
+    description:
+      'Additional fixes the user can pick instead of the primary suggestedFix. Frontend renders these as secondary buttons. Currently only set on stale_renewal_invoice issues, where the user can either acknowledge-only or realign the invoice period.',
+  })
+  alternativeFixes?: RentChangeSuggestedFixDto[];
 }
 
 export class RentChangeComputedDto {

@@ -218,6 +218,14 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
             rental_price?: number | null;
           };
           recurring_changes?: { label: string; before: boolean; after: boolean }[];
+          fee_changes?: {
+            kind: string;
+            externalId?: string;
+            label: string;
+            change: 'added' | 'removed' | 'amount';
+            before: number;
+            after: number;
+          }[];
         };
         // Prefer a rich description built from before/after metadata (which
         // captures rental_price too). Fall back to the stored
@@ -244,6 +252,21 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
             parts.push(
               `rent ₦${Number(b.rental_price ?? 0).toLocaleString()} → ₦${Number(a.rental_price ?? 0).toLocaleString()}`,
             );
+          }
+        }
+        if (Array.isArray(meta.fee_changes) && meta.fee_changes.length > 0) {
+          for (const fc of meta.fee_changes) {
+            if (fc.change === 'added') {
+              parts.push(
+                `${fc.label} added (₦${Number(fc.after ?? 0).toLocaleString()})`,
+              );
+            } else if (fc.change === 'removed') {
+              parts.push(`${fc.label} removed`);
+            } else {
+              parts.push(
+                `${fc.label} ₦${Number(fc.before ?? 0).toLocaleString()} → ₦${Number(fc.after ?? 0).toLocaleString()}`,
+              );
+            }
           }
         }
         if (Array.isArray(meta.recurring_changes) && meta.recurring_changes.length > 0) {
@@ -678,6 +701,37 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           time: formatTime(eventDate),
           relatedEntityId: ph.related_entity_id || undefined,
           relatedEntityType: 'renewal_invoice',
+        });
+      }
+
+      if (ph.event_type === 'renewal_period_started') {
+        const prop = ph.property;
+        // Anchor on move_in_date (the period's start) so the event lands on
+        // the day the new tenancy period begins, not the cron run timestamp.
+        const eventDate = new Date(
+          ph.move_in_date || ph.created_at || new Date(),
+        );
+        const startLabel = ph.move_in_date
+          ? formatLongDate(new Date(ph.move_in_date))
+          : null;
+        const endLabel = ph.move_out_date
+          ? formatLongDate(new Date(ph.move_out_date))
+          : null;
+        const periodText =
+          startLabel && endLabel ? ` (${startLabel} – ${endLabel})` : '';
+        const rentText = ph.monthly_rent
+          ? ` — Rent: ₦${Number(ph.monthly_rent).toLocaleString()}`
+          : '';
+        tenancyEvents.push({
+          id: `renewal-period-started-${ph.id}`,
+          type: 'general',
+          title: 'Renewal Period Started',
+          description: `New tenancy period started for ${prop?.name || 'property'}${periodText}${rentText}.`,
+          details: prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          relatedEntityId: ph.related_entity_id || undefined,
+          relatedEntityType: ph.related_entity_type || undefined,
         });
       }
 

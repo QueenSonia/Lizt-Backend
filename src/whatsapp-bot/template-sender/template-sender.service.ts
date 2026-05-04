@@ -699,6 +699,46 @@ export interface PaymentPlanRequestDecisionTenantParams {
 }
 
 /**
+ * Parameters for the landlord heads-up when a tenant reviews their tenancy
+ * details on WhatsApp (Yes, correct / No, not correct).
+ */
+export interface TenancyDetailsReviewLandlordParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  tenant_phone_number: string;
+  property_name: string;
+  // Fixed phrase: "Confirmed correct" or "Flagged as incorrect".
+  status: string;
+}
+
+/**
+ * Parameters for the follow-up landlord notification carrying the tenant's
+ * free-text explanation of what's wrong with their tenancy details.
+ */
+export interface TenancyDetailsDisputeReasonLandlordParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  // Sanitized: capped, URLs and phone-shaped runs stripped.
+  reason: string;
+  tenant_phone_number: string;
+}
+
+/**
+ * Parameters for the tenant heads-up when the landlord saves an edit to the
+ * current tenancy via EditTenancyModal. `property_id` is embedded in the Hi
+ * button's payload so the click handler knows which tenancy to confirm.
+ */
+export interface TenancyDetailsUpdatedTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  property_id: string;
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -3879,6 +3919,131 @@ export class TemplateSenderService {
     await this.sendToWhatsappAPI(payload);
   }
 
+  /**
+   * Notify the landlord that the tenant has just reviewed their tenancy
+   * details on WhatsApp. Fires for both Yes and No — `status` carries the
+   * outcome ("Confirmed correct" or "Flagged as incorrect").
+   * Template: tenancy_details_review_landlord
+   */
+  async sendTenancyDetailsReviewLandlord({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    tenant_phone_number,
+    property_name,
+    status,
+  }: TenancyDetailsReviewLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenancy_details_review_landlord',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: this.toDisplayName(landlord_name) },
+              { type: 'text', text: this.toDisplayName(tenant_name) },
+              { type: 'text', text: tenant_phone_number },
+              { type: 'text', text: property_name },
+              { type: 'text', text: status },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify the landlord with the tenant's free-text explanation of what's
+   * wrong with their tenancy details. Fired after the tenant replies to the
+   * "what's incorrect?" prompt.
+   * Template: tenancy_details_dispute_reason_landlord
+   */
+  async sendTenancyDetailsDisputeReasonLandlord({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    reason,
+    tenant_phone_number,
+  }: TenancyDetailsDisputeReasonLandlordParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenancy_details_dispute_reason_landlord',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: this.toDisplayName(landlord_name) },
+              { type: 'text', text: this.toDisplayName(tenant_name) },
+              { type: 'text', text: property_name },
+              { type: 'text', text: reason },
+              { type: 'text', text: tenant_phone_number },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify the tenant that the landlord has just edited their current
+   * tenancy details. The Confirm details quick-reply routes through the
+   * existing `handleConfirmTenancyDetails` flow (same as the original
+   * `welcome_tenant` template), so a single click takes the tenant to the
+   * Yes/No re-confirmation card.
+   * Template: tenancy_details_updated_tenant
+   */
+  async sendTenancyDetailsUpdatedTenant({
+    phone_number,
+    tenant_name,
+    property_name,
+    property_id,
+  }: TenancyDetailsUpdatedTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenancy_details_updated_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: this.toDisplayName(tenant_name) },
+              { type: 'text', text: property_name },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `confirm_tenancy_details:${property_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   // ----------------------------------------------------------------------
   // Internal API method
   // ----------------------------------------------------------------------
@@ -3968,7 +4133,7 @@ export class TemplateSenderService {
     renewal_link:
       'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
     renewal_letter_link:
-      'Hi {{1}}, your landlord {{3}} has prepared a renewal offer for {{2}}. Tap below to review and accept it.',
+      'Hi {{1}},\n\nThis is a friendly reminder that your tenancy for {{2}} is due to expire on {{3}}.\n\nYour landlord has provided an offer for a new tenancy period. Please tap on the link to review.',
     renewal_request_landlord:
       'Hi {{1}}, {{2}} is requesting to renew their rent for {{3}}. Do you approve this request?',
     renewal_request_approved:
@@ -4015,6 +4180,12 @@ export class TemplateSenderService {
       'Hi {{1}},\n\n{{2}} has requested a payment plan for {{3}}.\n\nTotal due: {{4}}\nPreferred schedule: {{5}}\nNote: {{6}}\n\nReview and respond from your dashboard.',
     payment_plan_request_declined:
       'Hi {{1}}, your payment plan request for {{2}} was declined.\n\nReason: {{3}}.\n\nPlease contact your landlord for more info',
+    tenancy_details_review_landlord:
+      'Hi {{1}}, \n\nYour tenant {{2}} ({{3}}) just reviewed the tenancy details on record for {{4}}.\n\nTheir response: {{5}}\n\nLog in to your dashboard if you need to update anything.',
+    tenancy_details_dispute_reason_landlord:
+      "Hi {{1}}, \n\nYour tenant {{2}} has shared what's incorrect about the tenancy details for {{3}}.\n\nIssue: {{4}}\n\nPlease follow up with them at {{5}} to resolve this.",
+    tenancy_details_updated_tenant:
+      'Hi {{1}},\n\nYour landlord has updated the tenancy details for {{2}}.\n\nPlease confirm your updated tenancy details to continue.',
   };
 
   /**

@@ -361,15 +361,58 @@ export class TenantManagementService {
     return await this.dataSource.transaction(async (manager) => {
       console.log('data received = ', dto);
       try {
-        // 1. Verify tenant exists
-        const tenantAccount = await manager.getRepository(Account).findOne({
+        // 1. Verify tenant exists. Resolve to the TENANT-role account if a
+        // different role was supplied — common when the same human is both
+        // a tenant and a team_member / facility_manager under the same
+        // landlord, and the picker on the frontend hands over the wrong
+        // account id. Without this guard, property_tenants/rents would
+        // anchor on a non-tenant account and the WhatsApp tenant menu +
+        // wallet lookups (both keyed on tenant-role accounts) would skip
+        // the attachment entirely.
+        const suppliedAccount = await manager.getRepository(Account).findOne({
           where: { id: tenantId },
           relations: ['user'],
         });
 
-        if (!tenantAccount) {
+        if (!suppliedAccount) {
           throw new NotFoundException('Tenant not found');
         }
+
+        let tenantAccount = suppliedAccount;
+        if (suppliedAccount.role !== RolesEnum.TENANT) {
+          if (!suppliedAccount.user) {
+            // Defensive: a role-mismatched account without a loaded user
+            // can't be promoted. Fail loudly rather than silently writing
+            // the wrong tenant_id.
+            throw new HttpException(
+              'Supplied account is not a tenant and has no associated user to resolve from.',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          const tenantRoleAccount = await manager
+            .getRepository(Account)
+            .findOne({
+              where: {
+                userId: suppliedAccount.user.id,
+                role: RolesEnum.TENANT,
+              },
+              relations: ['user'],
+            });
+          if (!tenantRoleAccount) {
+            throw new HttpException(
+              `The supplied account is a ${suppliedAccount.role}, not a tenant, and the user has no tenant-role account. Create the tenant first before attaching them to a property.`,
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          this.logger.warn(
+            `[attachTenantToProperty] Promoted supplied ${suppliedAccount.role} account ${suppliedAccount.id} → tenant account ${tenantRoleAccount.id} (userId ${suppliedAccount.user.id})`,
+          );
+          tenantAccount = tenantRoleAccount;
+        }
+        // Mutate the param so every downstream write (rent, property_tenant,
+        // ledger, property_history, livefeed event) anchors on the tenant
+        // account — never the supplied non-tenant id.
+        tenantId = tenantAccount.id;
 
         // 2. Verify property exists and belongs to this landlord
         const property = await manager.getRepository(Property).findOne({
@@ -1725,29 +1768,19 @@ export class TenantManagementService {
 
     // Query KYC application separately to get all data and document URLs.
     //
-    // Scope by active tenancy property so a stray public-form submission for an
-    // unrelated property doesn't override the displayed profile. Falls back to
-    // tenant_id + recency when the tenant has no active tenancy under this
-    // landlord (past tenants, applicants mid-attach), preserving the historical
-    // view path.
-    const activeTenancies = await this.propertyTenantRepository
-      .createQueryBuilder('pt')
-      .innerJoin('pt.property', 'p')
-      .where('pt.tenant_id = :tenantId', { tenantId })
-      .andWhere('pt.status = :status', { status: TenantStatusEnum.ACTIVE })
-      .andWhere('p.owner_id = :adminId', { adminId })
-      .select(['pt.property_id'])
-      .getMany();
-
-    const activePropertyIds = activeTenancies.map((t) => t.property_id);
-
-    const kycApplication = await this.kycApplicationRepository.findOne({
-      where:
-        activePropertyIds.length > 0
-          ? { tenant_id: tenantId, property_id: In(activePropertyIds) }
-          : { tenant_id: tenantId },
-      order: { created_at: 'DESC' },
-    });
+    // Scope by landlord (via property.owner_id) rather than by the tenant's
+    // currently-active property. A tenant can submit KYC for one property but
+    // be attached to another (or be a past tenant with no active rent at all);
+    // tying the lookup to the active property dropped their KYC entirely in
+    // those cases. Landlord scope alone keeps cross-landlord submissions out
+    // while preserving this tenant's own application within this landlord.
+    const kycApplication = await this.kycApplicationRepository
+      .createQueryBuilder('app')
+      .innerJoin('app.property', 'property')
+      .where('app.tenant_id = :tenantId', { tenantId })
+      .andWhere('property.owner_id = :adminId', { adminId })
+      .orderBy('app.created_at', 'DESC')
+      .getOne();
 
     // Query offer letters for this tenant (via KYC applications)
     const kycApplications = await this.kycApplicationRepository.find({

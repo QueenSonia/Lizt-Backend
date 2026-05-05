@@ -4131,7 +4131,7 @@ export class TemplateSenderService {
     outstanding_balance_link:
       'Hi {{1}},\n\nPlease click the button below to view your invoice and make payment for your outstanding balance.',
     renewal_link:
-      'Hi {{1}}, your landlord has initiated a tenancy renewal.\n\nPlease use the link below to view your renewal invoice and complete payment.',
+      'Hi {{1}}, your renewal rent invoice for {{2}} is ready.\nThis payment covers your tenancy from {{3}} to {{4}}.\nYou can safely view your invoice and make your payment using the link below:',
     renewal_letter_link:
       'Hi {{1}},\n\nThis is a friendly reminder that your tenancy for {{2}} is due to expire on {{3}}.\n\nYour landlord has provided an offer for a new tenancy period. Please tap on the link to review.',
     renewal_request_landlord:

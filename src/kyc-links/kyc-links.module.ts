@@ -27,6 +27,7 @@ import { UtilsModule } from 'src/utils/utils.module';
 import { NotificationModule } from '../notifications/notification.module';
 import { ReceiptsModule } from '../receipts/receipts.module';
 import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module';
+import { PropertyHistoryModule } from '../property-history/property-history.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module'
     UtilsModule,
     forwardRef(() => ReceiptsModule),
     TenantBalancesModule,
+    PropertyHistoryModule,
   ],
   controllers: [KYCApplicationController, KYCLinksController],
   providers: [KYCLinksService, KYCApplicationService, TenantAttachmentService],

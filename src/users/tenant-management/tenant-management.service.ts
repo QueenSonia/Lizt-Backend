@@ -22,10 +22,17 @@ import { Property } from 'src/properties/entities/property.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { buildTimelineEvents } from 'src/property-history/property-history-timeline.builder';
+import { PropertyHistoryService } from 'src/property-history/property-history.service';
 import {
   KYCApplication,
   ApplicationStatus,
 } from 'src/kyc-links/entities/kyc-application.entity';
+import {
+  TenantKyc,
+  Gender,
+  MaritalStatus,
+  EmploymentStatus,
+} from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import {
   OfferLetter,
   OfferLetterStatus,
@@ -145,6 +152,7 @@ export class TenantManagementService {
     @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService: WhatsappBotService,
     private readonly tenantBalancesService: TenantBalancesService,
+    private readonly propertyHistoryService: PropertyHistoryService,
   ) {}
 
   /**
@@ -1011,7 +1019,11 @@ export class TenantManagementService {
     };
 
     // 3. Handle existing user or create new tenant
-    const result = await this.handleTenantFromKyc(landlordId, tenantKycDto);
+    const result = await this.handleTenantFromKyc(
+      landlordId,
+      tenantKycDto,
+      kycApplication,
+    );
 
     // 4. Update KYC application status to approved and set tenant_id
     await this.kycApplicationRepository.update(dto.kycApplicationId, {
@@ -1055,6 +1067,7 @@ export class TenantManagementService {
   private async handleTenantFromKyc(
     landlordId: string,
     dto: TenantKycFromApplicationDto,
+    kycApplication: KYCApplication,
   ): Promise<{
     tenantUser: Users;
     tenantAccount: Account;
@@ -1292,6 +1305,116 @@ export class TenantManagementService {
           .save(tenantAccount);
       }
 
+      // 5b. Upsert per-landlord tenant_kyc snapshot from the application data.
+      // Keyed by (admin_id, phone_number) — the table's unique index — so
+      // re-runs and Path-C placeholder rows on the same phone are overwritten
+      // atomically rather than colliding. Done inside the transaction so the
+      // attach is all-or-nothing.
+      //
+      // Why every column is in the orUpdate list: we want the latest KYC
+      // submission to be authoritative. A Path-C placeholder may have '-'
+      // stubs everywhere, and a prior Path-A/B attach may have stale fields
+      // from an earlier submission — both should be replaced wholesale.
+      await manager
+        .createQueryBuilder()
+        .insert()
+        .into(TenantKyc)
+        .values({
+          user_id: tenantUser.id,
+          admin_id: landlordId,
+          phone_number: normalizedPhone,
+          first_name: kycApplication.first_name ?? first_name,
+          last_name: kycApplication.last_name ?? last_name,
+          email:
+            kycApplication.email &&
+            kycApplication.email.trim() !== '' &&
+            kycApplication.email.includes('@')
+              ? kycApplication.email
+              : `tenant_${normalizedPhone}@placeholder.lizt.app`,
+          date_of_birth: kycApplication.date_of_birth ?? new Date('1900-01-01'),
+          gender: (kycApplication.gender as Gender) ?? Gender.MALE,
+          nationality: kycApplication.nationality ?? '-',
+          state_of_origin: kycApplication.state_of_origin ?? '-',
+          marital_status:
+            (kycApplication.marital_status as MaritalStatus) ??
+            MaritalStatus.SINGLE,
+          religion: kycApplication.religion ?? '-',
+          current_residence: kycApplication.contact_address ?? '-',
+          contact_address: kycApplication.contact_address ?? '-',
+          employment_status:
+            (kycApplication.employment_status as EmploymentStatus) ??
+            EmploymentStatus.EMPLOYED,
+          occupation:
+            kycApplication.occupation ??
+            kycApplication.nature_of_business ??
+            '-',
+          job_title: kycApplication.job_title ?? undefined,
+          employer_name:
+            kycApplication.employer_name ??
+            kycApplication.business_name ??
+            undefined,
+          work_address:
+            kycApplication.work_address ??
+            kycApplication.business_address ??
+            undefined,
+          work_phone_number: kycApplication.work_phone_number ?? undefined,
+          length_of_employment:
+            kycApplication.length_of_employment ?? undefined,
+          monthly_net_income: kycApplication.monthly_net_income ?? '0',
+          nature_of_business: kycApplication.nature_of_business ?? undefined,
+          business_name: kycApplication.business_name ?? undefined,
+          business_address: kycApplication.business_address ?? undefined,
+          business_duration: kycApplication.business_duration ?? undefined,
+          next_of_kin_full_name: kycApplication.next_of_kin_full_name ?? '-',
+          next_of_kin_address: kycApplication.next_of_kin_address ?? '-',
+          next_of_kin_relationship:
+            kycApplication.next_of_kin_relationship ?? '-',
+          next_of_kin_phone_number:
+            kycApplication.next_of_kin_phone_number ?? '-',
+          next_of_kin_email: kycApplication.next_of_kin_email ?? '-',
+          referral_agent_full_name:
+            kycApplication.referral_agent_full_name ?? undefined,
+          referral_agent_phone_number:
+            kycApplication.referral_agent_phone_number ?? undefined,
+        })
+        .orUpdate(
+          [
+            'user_id',
+            'first_name',
+            'last_name',
+            'email',
+            'date_of_birth',
+            'gender',
+            'nationality',
+            'state_of_origin',
+            'marital_status',
+            'religion',
+            'current_residence',
+            'contact_address',
+            'employment_status',
+            'occupation',
+            'job_title',
+            'employer_name',
+            'work_address',
+            'work_phone_number',
+            'length_of_employment',
+            'monthly_net_income',
+            'nature_of_business',
+            'business_name',
+            'business_address',
+            'business_duration',
+            'next_of_kin_full_name',
+            'next_of_kin_address',
+            'next_of_kin_relationship',
+            'next_of_kin_phone_number',
+            'next_of_kin_email',
+            'referral_agent_full_name',
+            'referral_agent_phone_number',
+          ],
+          ['admin_id', 'phone_number'],
+        )
+        .execute();
+
       // 6. Create rent record — Billing v2 persists every fee + recurring
       // flag + otherFees so downstream money events (renewal cron,
       // property history) can reconstruct the fee set.
@@ -1376,6 +1499,17 @@ export class TenantManagementService {
       });
 
       await manager.getRepository(PropertyHistory).save(propertyHistory);
+
+      // 9b. Replay applicant-staged history (Add History entries the
+      // landlord recorded against the KYC applicant pre-attach). Must run
+      // INSIDE the tx — a clash throw rolls back the entire attach.
+      await this.propertyHistoryService.replayStagedApplicantHistory(
+        kycApplication.id,
+        tenantAccount.id,
+        landlordId,
+        property_id,
+        manager,
+      );
 
       // 10. Send WhatsApp notification to tenant and emit live feed event
       try {

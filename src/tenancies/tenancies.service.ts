@@ -712,6 +712,21 @@ export class TenanciesService {
           invoice.auto_renewed_at = new Date();
         }
 
+        // Sending the letter is itself an act of approval. If a tenant-
+        // initiated request was sitting on this row (approval_status='pending'),
+        // the dashboard send must clear it — otherwise the tenant's invoice
+        // page stays gated on "Pending Landlord Approval" forever, even after
+        // they accept the letter and pay. Mirrors landlordflow.ts:305-325 so
+        // the WhatsApp-approve and dashboard-send paths converge on the same
+        // post-state. Skip in silent/draft mode: saving a draft is not yet a
+        // decision on the request.
+        if (!isSilent) {
+          invoice.approval_status = 'approved';
+          if (invoice.payment_status === RenewalPaymentStatus.PENDING_APPROVAL) {
+            invoice.payment_status = RenewalPaymentStatus.UNPAID;
+          }
+        }
+
         await manager.getRepository(RenewalInvoice).save(invoice);
 
         // Filter the caller's acknowledgements against the impact issues we

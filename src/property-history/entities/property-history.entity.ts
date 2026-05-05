@@ -68,6 +68,15 @@ export class PropertyHistory extends BaseEntity {
   @Column({ type: 'jsonb', nullable: true })
   metadata?: Record<string, any> | null;
 
+  // Lightweight receipt scheme for `user_added_payment` rows only — mirrors
+  // the AdHocInvoice / PaymentPlanInstallment / RenewalInvoice pattern.
+  // Other event_types leave these NULL.
+  @Column({ type: 'varchar', length: 64, nullable: true, unique: true })
+  receipt_token?: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  receipt_number?: string | null;
+
   @ManyToOne(() => Property, (p) => p.property_histories, {
     onDelete: 'CASCADE',
   })

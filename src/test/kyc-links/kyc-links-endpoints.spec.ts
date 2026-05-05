@@ -1,6 +1,5 @@
 import { KYCLinksService } from '../../kyc-links/kyc-links.service';
 import { KYCApplicationService } from '../../kyc-links/kyc-application.service';
-import { TenantAttachmentService } from '../../kyc-links/tenant-attachment.service';
 
 /**
  * API Endpoint Tests for KYC Links Feature
@@ -13,7 +12,6 @@ import { TenantAttachmentService } from '../../kyc-links/tenant-attachment.servi
 describe('KYC Links API Endpoints', () => {
   let kycLinksService: KYCLinksService;
   let kycApplicationService: KYCApplicationService;
-  let tenantAttachmentService: TenantAttachmentService;
 
   const mockKycLinksService = {
     generateKYCLink: jest.fn(),
@@ -28,14 +26,9 @@ describe('KYC Links API Endpoints', () => {
     getApplicationById: jest.fn(),
   };
 
-  const mockTenantAttachmentService = {
-    attachTenantToProperty: jest.fn(),
-  };
-
   beforeEach(() => {
     kycLinksService = mockKycLinksService as any;
     kycApplicationService = mockKycApplicationService as any;
-    tenantAttachmentService = mockTenantAttachmentService as any;
     jest.clearAllMocks();
   });
 
@@ -309,63 +302,6 @@ describe('KYC Links API Endpoints', () => {
     });
   });
 
-  describe('POST /api/kyc-applications/:applicationId/attach', () => {
-    it('should attach tenant to property successfully', async () => {
-      // Arrange
-      const applicationId = 'application-123';
-      const landlordId = 'landlord-123';
-      const tenancyDetails = {
-        rentAmount: 500000,
-        rentDueDate: 15,
-        rentFrequency: 'monthly' as any,
-        tenancyStartDate: '2024-01-01',
-      };
-      const mockResult = {
-        success: true,
-        tenantId: 'tenant-123',
-        propertyId: 'property-123',
-        message: 'Tenant successfully attached to property',
-      };
-
-      mockTenantAttachmentService.attachTenantToProperty.mockResolvedValue(
-        mockResult,
-      );
-
-      // Act
-      const result = await tenantAttachmentService.attachTenantToProperty(
-        applicationId,
-        tenancyDetails as any,
-        landlordId,
-      );
-
-      // Assert
-      expect(
-        tenantAttachmentService.attachTenantToProperty,
-      ).toHaveBeenCalledWith(applicationId, tenancyDetails, landlordId);
-      expect(result.success).toBe(true);
-      expect(result.tenantId).toBe('tenant-123');
-    });
-
-    it('should handle application not found error', async () => {
-      // Arrange
-      const applicationId = 'invalid-application';
-      const landlordId = 'landlord-123';
-      const tenancyDetails = { rentAmount: 500000 };
-      mockTenantAttachmentService.attachTenantToProperty.mockRejectedValue(
-        new Error('KYC application not found'),
-      );
-
-      // Act & Assert
-      await expect(
-        tenantAttachmentService.attachTenantToProperty(
-          applicationId,
-          tenancyDetails as any,
-          landlordId,
-        ),
-      ).rejects.toThrow('KYC application not found');
-    });
-  });
-
   describe('Authentication and Authorization Requirements', () => {
     it('should document endpoint authentication requirements', () => {
       // This test documents the authentication requirements for each endpoint
@@ -375,11 +311,10 @@ describe('KYC Links API Endpoints', () => {
         'GET /api/kyc/:token/validate': 'public',
         'POST /api/kyc/:token/submit': 'public',
         'GET /api/properties/:propertyId/kyc-applications': 'landlord',
-        'POST /api/kyc-applications/:applicationId/attach': 'landlord',
       };
 
       // Verify that we have documented all required endpoints
-      expect(Object.keys(endpointAuth)).toHaveLength(6);
+      expect(Object.keys(endpointAuth)).toHaveLength(5);
       expect(endpointAuth['GET /api/kyc/:token/validate']).toBe('public');
       expect(endpointAuth['POST /api/kyc/:token/submit']).toBe('public');
     });

@@ -26,6 +26,7 @@ import { TenantManagementService } from './tenant-management';
 import { TeamService } from './team';
 import { PasswordService } from './password';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
+import { PropertyHistoryModule } from 'src/property-history/property-history.module';
 
 @Global()
 @Module({
@@ -50,6 +51,7 @@ import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module
     forwardRef(() => WhatsappBotModule),
     UtilsModule,
     TenantBalancesModule,
+    PropertyHistoryModule,
   ],
   controllers: [UsersController],
   providers: [

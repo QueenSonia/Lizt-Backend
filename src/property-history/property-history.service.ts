@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, IsNull, Repository } from 'typeorm';
 import {
   CreatePropertyHistoryDto,
   PropertyHistoryFilter,
@@ -24,6 +24,24 @@ import {
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { rentToFees, sumRecurring } from 'src/common/billing/fees';
+import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
+import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * Mint a receipt token + number pair for a `user_added_payment` row at
+ * create time. Token format mirrors AdHocInvoice's pattern (so logs are
+ * self-describing); number prefix `PHR-` distinguishes property-history
+ * receipts from `AHI-R-`/`PLAN-R-`/`RR-` in exports.
+ */
+function mintPaymentReceiptIds(): {
+  receipt_token: string;
+  receipt_number: string;
+} {
+  return {
+    receipt_token: 'receipt_' + Date.now() + '_' + uuidv4().substring(0, 8),
+    receipt_number: 'PHR-' + Date.now(),
+  };
+}
 
 @Injectable()
 export class PropertyHistoryService {
@@ -38,6 +56,8 @@ export class PropertyHistoryService {
     private readonly rentRepository: Repository<Rent>,
     @InjectRepository(TenantBalanceLedger)
     private readonly ledgerRepository: Repository<TenantBalanceLedger>,
+    @InjectRepository(KYCApplication)
+    private readonly kycApplicationRepository: Repository<KYCApplication>,
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
     private readonly tenantBalancesService: TenantBalancesService,
@@ -54,8 +74,16 @@ export class PropertyHistoryService {
       );
     }
 
+    const isStagedApplicant =
+      !data.tenant_id &&
+      data.related_entity_type === 'kyc_application' &&
+      !!data.related_entity_id;
+
     // Handle tenancy history entries: clash detection + outstanding balance update
     if (data.event_type === 'user_added_tenancy') {
+      if (isStagedApplicant) {
+        return this.handleStagedTenancyEntry(data);
+      }
       if (!data.tenant_id || data.tenant_id.trim() === '') {
         throw new HttpException(
           'Tenant ID is required for tenancy entries',
@@ -67,6 +95,9 @@ export class PropertyHistoryService {
 
     // Handle payment history entries: outstanding balance reduction
     if (data.event_type === 'user_added_payment') {
+      if (isStagedApplicant) {
+        return this.handleStagedPaymentEntry(data);
+      }
       if (!data.tenant_id || data.tenant_id.trim() === '') {
         throw new HttpException(
           'Tenant ID is required for payment entries',
@@ -78,6 +109,13 @@ export class PropertyHistoryService {
 
     // Handle fee history entries: outstanding balance increase
     if (data.event_type === 'user_added_fee') {
+      // Defence-in-depth: applicants can't stage fees — explicitly out of scope.
+      if (isStagedApplicant) {
+        throw new HttpException(
+          'Fee entries are not supported for KYC applicants',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
       if (!data.tenant_id || data.tenant_id.trim() === '') {
         throw new HttpException(
           'Tenant ID is required for fee entries',
@@ -114,24 +152,24 @@ export class PropertyHistoryService {
       );
     }
 
-    // Check for clashes with existing rent records on this property
-    const clashingRents = await this.rentRepository
-      .createQueryBuilder('rent')
-      .where('rent.property_id = :propertyId', { propertyId: data.property_id })
-      .andWhere('rent.rent_start_date < :endDate', {
-        endDate: endDate.toISOString(),
-      })
-      .andWhere('rent.expiry_date > :startDate', {
-        startDate: startDate.toISOString(),
-      })
-      .getMany();
+    const clash = await this.detectTenancyClash({
+      propertyId: data.property_id,
+      startDate,
+      endDate,
+    });
 
-    if (clashingRents.length > 0) {
+    if (clash) {
       throw new HttpException(
         'This tenancy period overlaps with an existing tenancy record for this property',
         HttpStatus.CONFLICT,
       );
     }
+
+    // Scope the row to this tenant so the KYC applicant timeline filter
+    // (kyc-application.service.getApplicationTimeline) excludes it from
+    // other applicants/tenants on the same property.
+    data.related_entity_type = 'tenant';
+    data.related_entity_id = data.tenant_id;
 
     // Save the history entry
     const saved = await this.propertyHistoryRepository.save(data);
@@ -202,6 +240,15 @@ export class PropertyHistoryService {
       );
     }
 
+    // Scope the row to this tenant — see handleTenancyHistoryEntry.
+    data.related_entity_type = 'tenant';
+    data.related_entity_id = data.tenant_id;
+
+    // Mint a lightweight receipt token + number. Receipt content is
+    // regenerated live from this row at download time, so subsequent
+    // edits to amount/date propagate without any extra work.
+    Object.assign(data, mintPaymentReceiptIds());
+
     // Save the history entry
     const saved = await this.propertyHistoryRepository.save(data);
 
@@ -260,6 +307,10 @@ export class PropertyHistoryService {
       );
     }
 
+    // Scope the row to this tenant — see handleTenancyHistoryEntry.
+    data.related_entity_type = 'tenant';
+    data.related_entity_id = data.tenant_id;
+
     // Save the history entry
     const saved = await this.propertyHistoryRepository.save(data);
 
@@ -291,6 +342,102 @@ export class PropertyHistoryService {
     await this.createHistoryNotification(data, saved);
 
     return saved;
+  }
+
+  /**
+   * Looks up the KYC application by id and verifies it lives on the same
+   * property the staged row targets. Returns the application so callers
+   * can use it for notification context if needed. Throws if missing or
+   * scope-mismatched. Centralised here so both create and update use it.
+   */
+  private async assertStagedApplicantScope(
+    applicationId: string,
+    propertyId: string,
+  ): Promise<KYCApplication> {
+    const application = await this.kycApplicationRepository.findOne({
+      where: { id: applicationId },
+    });
+
+    if (!application) {
+      throw new HttpException(
+        'KYC application not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    if (application.property_id !== propertyId) {
+      throw new HttpException(
+        'KYC application does not belong to this property',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    return application;
+  }
+
+  private async handleStagedTenancyEntry(
+    data: CreatePropertyHistoryDto,
+  ): Promise<PropertyHistory> {
+    const startDate = new Date(data.move_in_date!);
+    const endDate = new Date(data.move_out_date!);
+
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      throw new HttpException('Invalid tenancy dates', HttpStatus.BAD_REQUEST);
+    }
+
+    if (startDate >= endDate) {
+      throw new HttpException(
+        'Tenancy start date must be before end date',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    await this.assertStagedApplicantScope(
+      data.related_entity_id!,
+      data.property_id,
+    );
+
+    const clash = await this.detectTenancyClash({
+      propertyId: data.property_id,
+      startDate,
+      endDate,
+    });
+
+    if (clash) {
+      throw new HttpException(
+        'This tenancy period overlaps with an existing tenancy record for this property',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    // No Rent, no ledger — those land at attach time via replay.
+    return this.propertyHistoryRepository.save(data);
+  }
+
+  private async handleStagedPaymentEntry(
+    data: CreatePropertyHistoryDto,
+  ): Promise<PropertyHistory> {
+    const parsedData = JSON.parse(data.event_description || '{}');
+    const paymentAmount = parsedData.paymentAmount || 0;
+
+    if (paymentAmount <= 0) {
+      throw new HttpException(
+        'Payment amount must be greater than 0',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    await this.assertStagedApplicantScope(
+      data.related_entity_id!,
+      data.property_id,
+    );
+
+    // Mint a receipt token + number even pre-attach. The token survives
+    // replay's re-tag (we don't touch these columns there), so the same
+    // receipt URL works across the applicant→tenant boundary.
+    Object.assign(data, mintPaymentReceiptIds());
+
+    return this.propertyHistoryRepository.save(data);
   }
 
   private async createHistoryNotification(
@@ -405,6 +552,28 @@ export class PropertyHistoryService {
   async updatePropertyHistoryById(id: string, data: UpdatePropertyHistoryDto) {
     const existing = await this.getPropertyHistoryById(id);
 
+    // Defence-in-depth: the modal locks property selection in applicant mode,
+    // but reject property_id changes for staged rows here too.
+    if (
+      this.isStagedApplicantRow(existing) &&
+      data.property_id &&
+      data.property_id !== existing.property_id
+    ) {
+      throw new HttpException(
+        'Cannot change property_id of a staged applicant entry',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    if (this.isStagedApplicantRow(existing)) {
+      if (existing.event_type === 'user_added_tenancy') {
+        return this.handleUpdateStagedTenancyEntry(id, existing, data);
+      }
+      if (existing.event_type === 'user_added_payment') {
+        return this.handleUpdateStagedPaymentEntry(id, existing, data);
+      }
+    }
+
     if (existing.event_type === 'user_added_tenancy') {
       return this.handleUpdateTenancyHistoryEntry(id, existing, data);
     }
@@ -439,6 +608,13 @@ export class PropertyHistoryService {
       );
     }
 
+    if (data.property_id && data.property_id !== existing.property_id) {
+      throw new HttpException(
+        'Cannot change property_id of an existing tenancy entry',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     // Find the associated rent created with this history entry (match by tenant + old dates)
     const existingRent =
       existing.tenant_id && existing.move_in_date
@@ -451,25 +627,15 @@ export class PropertyHistoryService {
           })
         : null;
 
-    // Clash check against active rents on this property, excluding the associated rent
-    const clashQuery = this.rentRepository
-      .createQueryBuilder('rent')
-      .where('rent.property_id = :propertyId', {
-        propertyId: existing.property_id,
-      })
-      .andWhere('rent.rent_start_date < :endDate', {
-        endDate: newEndDate.toISOString(),
-      })
-      .andWhere('rent.expiry_date > :startDate', {
-        startDate: newStartDate.toISOString(),
-      });
+    const clash = await this.detectTenancyClash({
+      propertyId: existing.property_id,
+      startDate: newStartDate,
+      endDate: newEndDate,
+      excludeRentId: existingRent?.id,
+      excludeHistoryId: id,
+    });
 
-    if (existingRent) {
-      clashQuery.andWhere('rent.id != :rentId', { rentId: existingRent.id });
-    }
-
-    const clashingRents = await clashQuery.getMany();
-    if (clashingRents.length > 0) {
+    if (clash) {
       throw new HttpException(
         'This tenancy period overlaps with an existing tenancy record for this property',
         HttpStatus.CONFLICT,
@@ -689,8 +855,84 @@ export class PropertyHistoryService {
     return this.getPropertyHistoryById(id);
   }
 
+  private async handleUpdateStagedTenancyEntry(
+    id: string,
+    existing: PropertyHistory,
+    data: UpdatePropertyHistoryDto,
+  ): Promise<PropertyHistory> {
+    const newStartDate = new Date(data.move_in_date!);
+    const newEndDate = new Date(data.move_out_date!);
+
+    if (isNaN(newStartDate.getTime()) || isNaN(newEndDate.getTime())) {
+      throw new HttpException('Invalid tenancy dates', HttpStatus.BAD_REQUEST);
+    }
+
+    if (newStartDate >= newEndDate) {
+      throw new HttpException(
+        'Tenancy start date must be before end date',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const clash = await this.detectTenancyClash({
+      propertyId: existing.property_id,
+      startDate: newStartDate,
+      endDate: newEndDate,
+      excludeHistoryId: id,
+    });
+
+    if (clash) {
+      throw new HttpException(
+        'This tenancy period overlaps with an existing tenancy record for this property',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    // No Rent lookup, no ledger reversal/charge — those land at attach time.
+    await this.propertyHistoryRepository.update(id, {
+      move_in_date: data.move_in_date,
+      move_out_date: data.move_out_date,
+      event_description: data.event_description,
+    });
+
+    return this.getPropertyHistoryById(id);
+  }
+
+  private async handleUpdateStagedPaymentEntry(
+    id: string,
+    existing: PropertyHistory,
+    data: UpdatePropertyHistoryDto,
+  ): Promise<PropertyHistory> {
+    const newParsedData = JSON.parse(data.event_description || '{}');
+    const newPaymentAmount: number = newParsedData.paymentAmount || 0;
+
+    if (newPaymentAmount <= 0) {
+      throw new HttpException(
+        'Payment amount must be greater than 0',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // For payments, move_in_date holds the payment date (set client-side)
+    // and feeds syncRentPaymentStatus's ASC ordering after replay.
+    await this.propertyHistoryRepository.update(id, {
+      move_in_date: data.move_in_date,
+      event_description: data.event_description,
+    });
+
+    return this.getPropertyHistoryById(id);
+  }
+
   async deletePropertyHistoryById(id: string) {
     const existing = await this.getPropertyHistoryById(id);
+
+    // Staged-applicant rows have no Rent, no ledger — short-circuit to
+    // a plain delete. The reverseBalancesFor* helpers already early-return
+    // on missing tenant_id; this guard makes intent explicit and skips
+    // their unnecessary lookups.
+    if (this.isStagedApplicantRow(existing)) {
+      return this.propertyHistoryRepository.delete(id);
+    }
 
     if (existing.event_type === 'user_added_tenancy') {
       await this.reverseBalancesForTenancyEntry(existing);
@@ -707,6 +949,27 @@ export class PropertyHistoryService {
     existing: PropertyHistory,
   ): Promise<void> {
     if (!existing.tenant_id) return;
+
+    // Drop the Rent row created by handleTenancyHistoryEntry. Match key
+    // mirrors handleUpdateTenancyHistoryEntry's lookup.
+    if (existing.move_in_date) {
+      const linkedRent = await this.rentRepository.findOne({
+        where: {
+          tenant_id: existing.tenant_id,
+          rent_start_date: existing.move_in_date,
+          rent_status: RentStatusEnum.INACTIVE,
+        },
+      });
+      if (linkedRent) {
+        await this.rentRepository.delete(linkedRent.id);
+        // Re-allocate prior payments oldest-first across the remaining
+        // inactive rents now that this one is gone.
+        await this.syncRentPaymentStatus(
+          existing.tenant_id,
+          existing.property_id,
+        );
+      }
+    }
 
     const parsedData = JSON.parse(existing.event_description || '{}');
     const totalAmount: number = parsedData.totalAmount || 0;
@@ -828,8 +1091,13 @@ export class PropertyHistoryService {
   private async syncRentPaymentStatus(
     tenantId: string,
     propertyId: string,
+    manager?: EntityManager,
   ): Promise<void> {
-    const paymentHistories = await this.propertyHistoryRepository.find({
+    const phRepo =
+      manager?.getRepository(PropertyHistory) ?? this.propertyHistoryRepository;
+    const rentRepo = manager?.getRepository(Rent) ?? this.rentRepository;
+
+    const paymentHistories = await phRepo.find({
       where: {
         tenant_id: tenantId,
         property_id: propertyId,
@@ -847,7 +1115,7 @@ export class PropertyHistoryService {
       }
     }, 0);
 
-    const inactiveRents = await this.rentRepository.find({
+    const inactiveRents = await rentRepo.find({
       where: {
         tenant_id: tenantId,
         property_id: propertyId,
@@ -875,7 +1143,278 @@ export class PropertyHistoryService {
       }
     }
 
-    await this.rentRepository.save(inactiveRents);
+    await rentRepo.save(inactiveRents);
+  }
+
+  /**
+   * A row is "staged-applicant" iff it has no tenant_id, was added via the
+   * Add History flow against a KYC application, and is one of the two
+   * event types that have a replay path at attach time. These rows live
+   * in property_histories with `tenant_id IS NULL` and the
+   * ('kyc_application', applicationId) scope so the applicant timeline
+   * filter can include them without leaking to other applicants.
+   */
+  private isStagedApplicantRow(row: {
+    tenant_id?: string | null;
+    related_entity_type?: string | null;
+    event_type?: string | null;
+  }): boolean {
+    return (
+      !row.tenant_id &&
+      row.related_entity_type === 'kyc_application' &&
+      (row.event_type === 'user_added_tenancy' ||
+        row.event_type === 'user_added_payment')
+    );
+  }
+
+  /**
+   * Unified clash detection across two sources:
+   *   - existing Rent rows on the property (current tenant-mode logic)
+   *   - staged-applicant tenancy rows in property_histories (tenant_id IS NULL)
+   *
+   * `manager` makes in-flight transaction writes visible (notably the new
+   * ACTIVE Rent created during attach). Pass `excludeRentId` and/or
+   * `excludeHistoryId` when running on update so the row being edited
+   * doesn't clash with itself.
+   */
+  private async detectTenancyClash(params: {
+    propertyId: string;
+    startDate: Date;
+    endDate: Date;
+    excludeRentId?: string;
+    excludeHistoryId?: string;
+    manager?: EntityManager;
+  }): Promise<{ kind: 'rent' | 'staged_tenancy'; id: string } | null> {
+    const {
+      propertyId,
+      startDate,
+      endDate,
+      excludeRentId,
+      excludeHistoryId,
+      manager,
+    } = params;
+    const rentRepo = manager?.getRepository(Rent) ?? this.rentRepository;
+    const phRepo =
+      manager?.getRepository(PropertyHistory) ?? this.propertyHistoryRepository;
+
+    const rentQuery = rentRepo
+      .createQueryBuilder('rent')
+      .where('rent.property_id = :propertyId', { propertyId })
+      .andWhere('rent.rent_start_date < :endDate', {
+        endDate: endDate.toISOString(),
+      })
+      .andWhere('rent.expiry_date > :startDate', {
+        startDate: startDate.toISOString(),
+      });
+
+    if (excludeRentId) {
+      rentQuery.andWhere('rent.id != :rentId', { rentId: excludeRentId });
+    }
+
+    const clashingRent = await rentQuery.getOne();
+    if (clashingRent) {
+      return { kind: 'rent', id: clashingRent.id };
+    }
+
+    // Staged-applicant tenancies: tenant_id IS NULL is critical — replay
+    // re-tags rows with a tenant_id, and including those would double-count
+    // against the Rent counterpart that replay creates.
+    const stagedQuery = phRepo
+      .createQueryBuilder('ph')
+      .where('ph.property_id = :propertyId', { propertyId })
+      .andWhere('ph.event_type = :eventType', {
+        eventType: 'user_added_tenancy',
+      })
+      .andWhere('ph.tenant_id IS NULL')
+      .andWhere('ph.move_in_date < :endDate', {
+        endDate: endDate.toISOString(),
+      })
+      .andWhere('ph.move_out_date > :startDate', {
+        startDate: startDate.toISOString(),
+      });
+
+    if (excludeHistoryId) {
+      stagedQuery.andWhere('ph.id != :historyId', {
+        historyId: excludeHistoryId,
+      });
+    }
+
+    const clashingStaged = await stagedQuery.getOne();
+    if (clashingStaged) {
+      return { kind: 'staged_tenancy', id: clashingStaged.id };
+    }
+
+    return null;
+  }
+
+  /**
+   * Replay applicant-staged history rows into tenant-mode shape inside
+   * the caller's attach transaction.
+   *
+   * Tenancies are replayed first because payments allocate against rents
+   * via `syncRentPaymentStatus` and the rents must exist before allocation.
+   *
+   * The Rent rows and ledger keys this method writes must be bit-for-bit
+   * indistinguishable from what `handleTenancyHistoryEntry` /
+   * `handlePaymentHistoryEntry` would produce — that's the invariant
+   * that lets post-attach edits and deletes use the existing tenant-mode
+   * handlers without any branch.
+   *
+   * On clash (an attach-time ACTIVE Rent overlapping a staged tenancy),
+   * a structured HttpException is thrown with `code: 'STAGED_TENANCY_CLASH'`
+   * and `stagedHistoryId` for inline UX resolution. The throw rolls back
+   * the entire attach transaction.
+   */
+  async replayStagedApplicantHistory(
+    applicationId: string,
+    tenantId: string,
+    landlordId: string,
+    propertyId: string,
+    manager: EntityManager,
+  ): Promise<{ tenanciesReplayed: number; paymentsReplayed: number }> {
+    const phRepo = manager.getRepository(PropertyHistory);
+    const rentRepo = manager.getRepository(Rent);
+
+    const stagedRows = await phRepo.find({
+      where: {
+        related_entity_type: 'kyc_application',
+        related_entity_id: applicationId,
+        tenant_id: IsNull(),
+      },
+      order: { created_at: 'ASC' },
+    });
+
+    const tenancyRows = stagedRows.filter(
+      (r) => r.event_type === 'user_added_tenancy',
+    );
+    const paymentRows = stagedRows.filter(
+      (r) => r.event_type === 'user_added_payment',
+    );
+
+    let tenanciesReplayed = 0;
+    let paymentsReplayed = 0;
+
+    for (const row of tenancyRows) {
+      if (!row.move_in_date || !row.move_out_date) continue;
+
+      const startDate = new Date(row.move_in_date);
+      const endDate = new Date(row.move_out_date);
+
+      const clash = await this.detectTenancyClash({
+        propertyId,
+        startDate,
+        endDate,
+        excludeHistoryId: row.id,
+        manager,
+      });
+
+      if (clash) {
+        throw new HttpException(
+          {
+            code: 'STAGED_TENANCY_CLASH',
+            message:
+              'A staged tenancy entry overlaps with the new tenancy or another existing tenancy on this property',
+            stagedHistoryId: row.id,
+            clashKind: clash.kind,
+            clashId: clash.id,
+          },
+          HttpStatus.CONFLICT,
+        );
+      }
+
+      const parsed = JSON.parse(row.event_description || '{}');
+      const totalAmount: number = parsed.totalAmount || 0;
+      const rentAmount: number = parsed.rentAmount || 0;
+      const serviceChargeAmount: number = parsed.serviceChargeAmount || 0;
+
+      // Belt-and-braces idempotency: if a previous run already created the
+      // INACTIVE Rent for this row but failed to re-tag, skip Rent + ledger
+      // and just re-tag.
+      let rent = await rentRepo.findOne({
+        where: {
+          tenant_id: tenantId,
+          property_id: propertyId,
+          rent_start_date: startDate,
+          rent_status: RentStatusEnum.INACTIVE,
+        },
+      });
+
+      if (!rent) {
+        rent = rentRepo.create({
+          property_id: propertyId,
+          tenant_id: tenantId,
+          rent_start_date: startDate,
+          expiry_date: endDate,
+          rental_price: rentAmount,
+          service_charge: serviceChargeAmount,
+          amount_paid: 0,
+          payment_status: RentPaymentStatusEnum.PAID,
+          rent_status: RentStatusEnum.INACTIVE,
+        });
+        await rentRepo.save(rent);
+
+        if (totalAmount > 0) {
+          await this.tenantBalancesService.applyChange(
+            tenantId,
+            landlordId,
+            -totalAmount,
+            {
+              type: TenantBalanceLedgerType.INITIAL_BALANCE,
+              description: 'Historical tenancy recorded',
+              propertyId,
+              relatedEntityType: 'rent',
+              relatedEntityId: rent.id,
+            },
+            undefined,
+            manager,
+          );
+        }
+      }
+
+      await phRepo.update(row.id, {
+        tenant_id: tenantId,
+        related_entity_type: 'tenant',
+        related_entity_id: tenantId,
+      });
+
+      tenanciesReplayed++;
+    }
+
+    for (const row of paymentRows) {
+      const parsed = JSON.parse(row.event_description || '{}');
+      const paymentAmount: number = parsed.paymentAmount || 0;
+
+      if (paymentAmount > 0) {
+        await this.tenantBalancesService.applyChange(
+          tenantId,
+          landlordId,
+          paymentAmount,
+          {
+            type: TenantBalanceLedgerType.OB_PAYMENT,
+            description: `Manual payment of ₦${paymentAmount.toLocaleString()} received`,
+            propertyId,
+            relatedEntityType: 'property_history',
+            relatedEntityId: row.id,
+          },
+          undefined,
+          manager,
+        );
+      }
+
+      await phRepo.update(row.id, {
+        tenant_id: tenantId,
+        related_entity_type: 'tenant',
+        related_entity_id: tenantId,
+      });
+
+      paymentsReplayed++;
+    }
+
+    if (tenanciesReplayed > 0 || paymentsReplayed > 0) {
+      await this.syncRentPaymentStatus(tenantId, propertyId, manager);
+    }
+
+    return { tenanciesReplayed, paymentsReplayed };
   }
 
   async getPropertyHistoryByTenantId(

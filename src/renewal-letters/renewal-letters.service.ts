@@ -120,6 +120,7 @@ export class RenewalLettersService {
       landlordContactEmail,
       landlordContactPhone,
       landlordWebsite,
+      landlordBodyFont,
     } = await this.loadLetterContext(invoice);
 
     // Find the current expiry to populate the "expires on the …" sentence.
@@ -186,6 +187,7 @@ export class RenewalLettersService {
       landlordContactEmail,
       landlordContactPhone,
       landlordWebsite,
+      letterBodyFont: landlordBodyFont,
       acceptanceOtp:
         invoice.letter_status === RenewalLetterStatus.ACCEPTED
           ? invoice.acceptance_otp
@@ -636,6 +638,8 @@ export class RenewalLettersService {
       landlordUser?.branding?.contactPhone ?? null;
     const landlordWebsite: string | null =
       landlordUser?.branding?.websiteLink ?? null;
+    const landlordBodyFont: string | null =
+      landlordUser?.branding?.bodyFont ?? null;
 
     return {
       property,
@@ -648,6 +652,7 @@ export class RenewalLettersService {
       landlordContactEmail,
       landlordContactPhone,
       landlordWebsite,
+      landlordBodyFont,
     };
   }
 

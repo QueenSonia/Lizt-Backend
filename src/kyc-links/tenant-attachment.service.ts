@@ -1,10 +1,4 @@
-import {
-  Injectable,
-  NotFoundException,
-  BadRequestException,
-  ForbiddenException,
-  ConflictException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import {
@@ -20,7 +14,7 @@ import { Account } from '../users/entities/account.entity';
 import { Users } from '../users/entities/user.entity';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
-import { AttachTenantDto, RentFrequency } from './dto/attach-tenant.dto';
+import { RentFrequency } from './dto/attach-tenant.dto';
 import {
   PropertyStatusEnum,
   TenantStatusEnum,
@@ -37,6 +31,7 @@ import { UtilService } from '../utils/utility-service';
 import { ReceiptsService } from '../receipts/receipts.service';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
+import { PropertyHistoryService } from '../property-history/property-history.service';
 import {
   offerLetterToFees,
   sumRecurring,
@@ -69,398 +64,8 @@ export class TenantAttachmentService {
     private readonly utilService: UtilService,
     private readonly receiptsService: ReceiptsService,
     private readonly tenantBalancesService: TenantBalancesService,
+    private readonly propertyHistoryService: PropertyHistoryService,
   ) {}
-
-  /**
-   * Attach tenant to property with tenancy details
-   * Requirements: 5.1, 5.2, 5.4, 5.5
-   */
-  async attachTenantToProperty(
-    applicationId: string,
-    tenancyDetails: AttachTenantDto,
-    landlordId: string,
-  ): Promise<{
-    success: boolean;
-    tenantId: string;
-    propertyId: string;
-    message: string;
-  }> {
-    console.log('Attaching tenant with data:', {
-      applicationId,
-      tenancyDetails,
-      landlordId,
-    });
-
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
-    try {
-      // Get the KYC application with relations
-      const application = await queryRunner.manager.findOne(KYCApplication, {
-        where: { id: applicationId },
-        relations: ['property', 'kyc_link'],
-      });
-
-      console.log('Found KYC application:', {
-        id: application?.id,
-        first_name: application?.first_name,
-        last_name: application?.last_name,
-        email: application?.email,
-        phone_number: application?.phone_number,
-        date_of_birth: application?.date_of_birth,
-        gender: application?.gender,
-        nationality: application?.nationality,
-        marital_status: application?.marital_status,
-        employment_status: application?.employment_status,
-      });
-
-      if (!application) {
-        throw new NotFoundException('KYC application not found');
-      }
-
-      // Validate property ownership
-      if (application.property.owner_id !== landlordId) {
-        throw new ForbiddenException(
-          'You are not authorized to attach tenants to this property',
-        );
-      }
-
-      // Validate application status
-      if (application.status !== ApplicationStatus.PENDING) {
-        throw new BadRequestException(
-          'Only pending applications can be used for tenant attachment',
-        );
-      }
-
-      // Validate property status
-      if (
-        application.property.property_status === PropertyStatusEnum.OCCUPIED
-      ) {
-        throw new ConflictException(
-          'Property is already occupied. Cannot attach another tenant.',
-        );
-      }
-
-      // Validate tenancy details
-      this.validateTenancyDetails(tenancyDetails);
-
-      // Create or get tenant account
-      const tenantAccount = await this.createOrGetTenantAccount(
-        application,
-        queryRunner.manager,
-      );
-
-      // NOTE: Cleanup logic removed to support multi-landlord tenancy
-      // A tenant can now be active in multiple properties across different landlords
-      // Each landlord sees only their own tenant assignments via property ownership filtering
-
-      // Parse rent start date
-      const rentStartDate = tenancyDetails.tenancyStartDate
-        ? new Date(tenancyDetails.tenancyStartDate)
-        : new Date();
-
-      // Calculate next rent due date (primary tracking mechanism)
-      // Due day is derived from the start date (e.g., if start is 15th, due day is 15th)
-      const nextRentDueDate = calculateRentExpiryDate(
-        rentStartDate,
-        tenancyDetails.rentFrequency,
-      );
-
-      // Create rent record
-      const rent = queryRunner.manager.create(Rent, {
-        tenant_id: tenantAccount.id,
-        property_id: application.property_id,
-        rent_start_date: rentStartDate,
-        rental_price: tenancyDetails.rentAmount,
-        security_deposit: tenancyDetails.securityDeposit || 0,
-        service_charge: tenancyDetails.serviceCharge || 0,
-        payment_frequency: this.mapRentFrequencyToPaymentFrequency(
-          tenancyDetails.rentFrequency,
-        ),
-        rent_status: RentStatusEnum.ACTIVE,
-        payment_status: RentPaymentStatusEnum.PENDING,
-        amount_paid: 0,
-        expiry_date: nextRentDueDate,
-      });
-
-      await queryRunner.manager.save(rent);
-
-      // Record each charge as its own ledger entry so the tenant's
-      // outstanding balance breakdown shows rent, service charge and
-      // security deposit as separate line items.
-      if (tenancyDetails.rentAmount > 0) {
-        await this.tenantBalancesService.applyChange(
-          tenantAccount.id,
-          landlordId,
-          -tenancyDetails.rentAmount,
-          {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Rent',
-            propertyId: application.property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-          },
-          undefined,
-          queryRunner.manager,
-        );
-      }
-
-      if ((tenancyDetails.serviceCharge || 0) > 0) {
-        await this.tenantBalancesService.applyChange(
-          tenantAccount.id,
-          landlordId,
-          -(tenancyDetails.serviceCharge || 0),
-          {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Service charge',
-            propertyId: application.property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-          },
-          undefined,
-          queryRunner.manager,
-        );
-      }
-
-      if ((tenancyDetails.securityDeposit || 0) > 0) {
-        await this.tenantBalancesService.applyChange(
-          tenantAccount.id,
-          landlordId,
-          -(tenancyDetails.securityDeposit || 0),
-          {
-            type: TenantBalanceLedgerType.INITIAL_BALANCE,
-            description: 'Security deposit',
-            propertyId: application.property_id,
-            relatedEntityType: 'rent',
-            relatedEntityId: rent.id,
-          },
-          undefined,
-          queryRunner.manager,
-        );
-      }
-
-      // Create property-tenant relationship
-      const propertyTenant = queryRunner.manager.create(PropertyTenant, {
-        property_id: application.property_id,
-        tenant_id: tenantAccount.id,
-        status: TenantStatusEnum.ACTIVE,
-      });
-
-      await queryRunner.manager.save(propertyTenant);
-
-      // Update property status to OCCUPIED and remove from marketing
-      await queryRunner.manager.update(Property, application.property_id, {
-        property_status: PropertyStatusEnum.OCCUPIED,
-        is_marketing_ready: false,
-      });
-
-      // Create property history record
-      const propertyHistory = queryRunner.manager.create(PropertyHistory, {
-        property_id: application.property_id,
-        tenant_id: tenantAccount.id,
-        event_type: 'tenancy_started',
-        move_in_date: DateService.getStartOfTheDay(rentStartDate),
-        monthly_rent: tenancyDetails.rentAmount,
-        owner_comment: `Tenant attached via KYC application ${applicationId}. Rent: ₦${tenancyDetails.rentAmount.toLocaleString()}, Frequency: ${tenancyDetails.rentFrequency}, Next due: ${nextRentDueDate.toLocaleDateString()}`,
-        tenant_comment: null,
-        move_out_date: null,
-        move_out_reason: null,
-      });
-
-      await queryRunner.manager.save(propertyHistory);
-
-      // Create property history event for KYC application approval
-      const formattedDate = new Date().toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
-      const formattedTime = new Date().toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-      });
-
-      const applicantName = `${application.first_name} ${application.last_name}`;
-      const kycApprovalHistory = queryRunner.manager.create(PropertyHistory, {
-        property_id: application.property_id,
-        tenant_id: tenantAccount.id,
-        event_type: 'kyc_application_approved',
-        event_description: `KYC application approved for ${applicantName} — ${formattedDate} at ${formattedTime}`,
-        related_entity_id: applicationId,
-        related_entity_type: 'kyc_application',
-      });
-
-      await queryRunner.manager.save(kycApprovalHistory);
-
-      // Update application status to APPROVED and link to tenant
-      await queryRunner.manager.update(KYCApplication, applicationId, {
-        status: ApplicationStatus.APPROVED,
-        tenant_id: tenantAccount.id,
-      });
-
-      // Backfill tenant_id on applicant-phase property history records
-      // These events (KYC submitted, offer letter sent/accepted, invoice generated/sent, etc.)
-      // were created before the tenant account existed, so they have tenant_id = NULL
-      try {
-        const backfillResult = await queryRunner.manager
-          .createQueryBuilder()
-          .update(PropertyHistory)
-          .set({ tenant_id: tenantAccount.id })
-          .where('property_id = :propertyId', {
-            propertyId: application.property_id,
-          })
-          .andWhere('tenant_id IS NULL')
-          .execute();
-
-        console.log(
-          `Backfilled tenant_id on ${backfillResult.affected} applicant-phase property history records`,
-        );
-      } catch (backfillError) {
-        console.error(
-          'Failed to backfill tenant_id on property history records:',
-          backfillError,
-        );
-        // Don't fail the attachment — backfill is best-effort
-      }
-
-      // Reject all other pending applications for this property
-      await this.rejectOtherApplications(
-        application.property_id,
-        applicationId,
-        queryRunner.manager,
-      );
-
-      // Note: KYC links are now general per landlord, not property-specific
-      // No need to deactivate KYC links when attaching tenant to a property
-
-      // CRITICAL: Verify data integrity before committing
-      console.log('Verifying data integrity before commit...');
-
-      const verifyPropertyTenant = await queryRunner.manager.findOne(
-        PropertyTenant,
-        {
-          where: {
-            property_id: application.property_id,
-            tenant_id: tenantAccount.id,
-            status: TenantStatusEnum.ACTIVE,
-          },
-        },
-      );
-
-      const verifyRent = await queryRunner.manager.findOne(Rent, {
-        where: {
-          property_id: application.property_id,
-          tenant_id: tenantAccount.id,
-          rent_status: RentStatusEnum.ACTIVE,
-        },
-      });
-
-      const verifyProperty = await queryRunner.manager.findOne(Property, {
-        where: { id: application.property_id },
-      });
-
-      const verifyApplication = await queryRunner.manager.findOne(
-        KYCApplication,
-        {
-          where: { id: applicationId },
-        },
-      );
-
-      // Validate all critical records were created/updated correctly
-      if (!verifyPropertyTenant) {
-        throw new Error(
-          'Data integrity check failed: PropertyTenant relationship not created',
-        );
-      }
-
-      if (!verifyRent) {
-        throw new Error('Data integrity check failed: Rent record not created');
-      }
-
-      if (
-        !verifyProperty ||
-        verifyProperty.property_status !== PropertyStatusEnum.OCCUPIED
-      ) {
-        throw new Error(
-          `Data integrity check failed: Property status is ${verifyProperty?.property_status}, expected OCCUPIED`,
-        );
-      }
-
-      if (
-        !verifyApplication ||
-        verifyApplication.status !== ApplicationStatus.APPROVED
-      ) {
-        throw new Error(
-          `Data integrity check failed: Application status is ${verifyApplication?.status}, expected APPROVED`,
-        );
-      }
-
-      if (
-        !verifyApplication.tenant_id ||
-        verifyApplication.tenant_id !== tenantAccount.id
-      ) {
-        throw new Error(
-          'Data integrity check failed: Application not linked to tenant',
-        );
-      }
-
-      console.log('Data integrity verification passed:', {
-        propertyTenantId: verifyPropertyTenant.id,
-        rentId: verifyRent.id,
-        propertyStatus: verifyProperty.property_status,
-        applicationStatus: verifyApplication.status,
-        tenantLinked: verifyApplication.tenant_id === tenantAccount.id,
-      });
-
-      await queryRunner.commitTransaction();
-
-      console.log('Tenant attachment completed successfully:', {
-        tenantId: tenantAccount.id,
-        propertyId: application.property_id,
-        applicationId: applicationId,
-      });
-
-      // Send WhatsApp notification to tenant after successful attachment
-      try {
-        await this.sendTenantAttachmentWhatsAppNotification(
-          tenantAccount,
-          application,
-          tenancyDetails,
-          rentStartDate,
-        );
-      } catch (whatsappError) {
-        // Log WhatsApp error but don't fail the entire operation
-        console.error(
-          'Failed to send WhatsApp notification to tenant:',
-          whatsappError,
-        );
-        // Continue with success response even if WhatsApp fails
-      }
-
-      return {
-        success: true,
-        tenantId: tenantAccount.id,
-        propertyId: application.property_id,
-        message: 'Tenant successfully attached to property',
-      };
-    } catch (error) {
-      await queryRunner.rollbackTransaction();
-      console.error('Tenant attachment error:', error);
-      console.error('Error details:', {
-        message: error.message,
-        code: error.code,
-        detail: error.detail,
-        constraint: error.constraint,
-        table: error.table,
-        column: error.column,
-      });
-      throw error;
-    } finally {
-      await queryRunner.release();
-    }
-  }
 
   /**
    * Attach tenant from offer letter (for payment system)
@@ -680,6 +285,19 @@ export class TenantAttachmentService {
       propertyHistoryId: propertyHistory.id,
     });
 
+    // Replay applicant-staged history (Add History entries the landlord
+    // recorded against the applicant pre-attach). Runs INSIDE the existing
+    // attach tx — a clash throw rolls the entire attach back. Must run
+    // BEFORE the backfill block below, so the backfill's `tenant_id IS NULL`
+    // clause naturally skips the rows replay just re-tagged.
+    await this.propertyHistoryService.replayStagedApplicantHistory(
+      application.id,
+      tenantAccount.id,
+      offerLetter.landlord_id,
+      offerLetter.property_id,
+      manager,
+    );
+
     // Create property history event for KYC application approval
     const formattedDate = new Date().toLocaleDateString('en-US', {
       month: 'short',
@@ -844,19 +462,6 @@ export class TenantAttachmentService {
     }
   }
 
-  /**
-   * Deactivate KYC links when property becomes occupied
-   * Requirements: 5.5, 6.3, 6.4
-   */
-  private async deactivateKYCLinks(
-    propertyId: string,
-    manager: any,
-  ): Promise<void> {
-    // No longer needed - KYC links are general per landlord
-    console.log(
-      `KYC links are now general per landlord, not deactivating for property ${propertyId}`,
-    );
-  }
 
   /**
    * Create or get tenant account from KYC application data
@@ -1174,26 +779,6 @@ export class TenantAttachmentService {
   }
 
   /**
-   * Validate tenancy details
-   * Requirements: 5.1, 5.2
-   */
-  private validateTenancyDetails(tenancyDetails: AttachTenantDto): void {
-    if (tenancyDetails.rentAmount <= 0) {
-      throw new BadRequestException('Rent amount must be greater than 0');
-    }
-
-    // Tenancy start date validation removed - allow past dates
-
-    if (tenancyDetails.securityDeposit && tenancyDetails.securityDeposit < 0) {
-      throw new BadRequestException('Security deposit cannot be negative');
-    }
-
-    if (tenancyDetails.serviceCharge && tenancyDetails.serviceCharge < 0) {
-      throw new BadRequestException('Service charge cannot be negative');
-    }
-  }
-
-  /**
    * Map RentFrequency enum to payment frequency string
    * Requirements: 5.1, 5.2
    */
@@ -1211,103 +796,6 @@ export class TenantAttachmentService {
         return 'Custom';
       default:
         return 'Monthly';
-    }
-  }
-
-  /**
-   * Clean up existing tenant assignments to prevent orphaned records
-   * This method ensures a tenant can only be assigned to one property at a time
-   * Requirements: Data integrity, prevent duplicate tenant assignments
-   */
-  private async cleanupExistingTenantAssignments(
-    tenantId: string,
-    manager: any,
-  ): Promise<void> {
-    console.log(`Cleaning up existing assignments for tenant: ${tenantId}`);
-
-    try {
-      // 1. Find all existing active rent records for this tenant
-      const existingRents = await manager.find(Rent, {
-        where: {
-          tenant_id: tenantId,
-          rent_status: RentStatusEnum.ACTIVE,
-        },
-        relations: ['property'],
-      });
-
-      console.log(
-        `Found ${existingRents.length} existing active rent records for tenant ${tenantId}`,
-      );
-
-      // 2. For each existing rent record, clean up the assignment
-      for (const rent of existingRents) {
-        console.log(
-          `Cleaning up rent record ${rent.id} for property ${rent.property_id}`,
-        );
-
-        // Deactivate the rent record
-        await manager.update(Rent, rent.id, {
-          rent_status: RentStatusEnum.INACTIVE,
-          payment_status: RentPaymentStatusEnum.OWING,
-        });
-
-        // Deactivate property-tenant relationship
-        await manager.update(
-          PropertyTenant,
-          {
-            tenant_id: tenantId,
-            property_id: rent.property_id,
-            status: TenantStatusEnum.ACTIVE,
-          },
-          { status: TenantStatusEnum.INACTIVE },
-        );
-
-        // Update property status back to VACANT if it was OCCUPIED
-        const property = await manager.findOne(Property, {
-          where: { id: rent.property_id },
-        });
-
-        if (
-          property &&
-          property.property_status === PropertyStatusEnum.OCCUPIED
-        ) {
-          await manager.update(Property, rent.property_id, {
-            property_status: PropertyStatusEnum.VACANT,
-          });
-
-          console.log(`Updated property ${rent.property_id} status to VACANT`);
-        }
-
-        // Create property history record for the move-out
-        const propertyHistory = manager.create(PropertyHistory, {
-          property_id: rent.property_id,
-          tenant_id: tenantId,
-          move_in_date: rent.rent_start_date,
-          move_out_date: DateService.getStartOfTheDay(new Date()),
-          move_out_reason: 'other',
-          monthly_rent: rent.rental_price,
-          owner_comment: 'Tenant reassigned to another property via KYC system',
-          tenant_comment: null,
-        });
-
-        await manager.save(propertyHistory);
-
-        console.log(
-          `Created move-out history record for property ${rent.property_id}`,
-        );
-      }
-
-      console.log(
-        `Successfully cleaned up ${existingRents.length} existing assignments for tenant ${tenantId}`,
-      );
-    } catch (error) {
-      console.error(
-        `Error cleaning up existing tenant assignments for tenant ${tenantId}:`,
-        error,
-      );
-      throw new Error(
-        `Failed to clean up existing tenant assignments: ${error.message}`,
-      );
     }
   }
 
@@ -1463,125 +951,4 @@ export class TenantAttachmentService {
     }
   }
 
-  /**
-   * Send WhatsApp notification to tenant after successful attachment
-   * Uses existing 'tenant_welcome' WhatsApp template
-   */
-  private async sendTenantAttachmentWhatsAppNotification(
-    tenantAccount: Account,
-    application: KYCApplication,
-    tenancyDetails: AttachTenantDto,
-    tenancyStartDate: Date,
-    offerLetterId?: string,
-  ): Promise<void> {
-    try {
-      // Validate phone number
-      const phoneNumber = tenantAccount.user.phone_number;
-      if (!phoneNumber) {
-        console.warn(
-          `No phone number found for tenant ${tenantAccount.id}, skipping WhatsApp notification`,
-        );
-        return;
-      }
-
-      // Normalize phone number to international format
-      const normalizedPhone =
-        this.utilService.normalizePhoneNumber(phoneNumber);
-      if (!normalizedPhone) {
-        console.warn(
-          `Invalid phone number format for tenant ${tenantAccount.id}: ${phoneNumber}`,
-        );
-        return;
-      }
-
-      // Get landlord/agency information
-      const landlord = await this.accountRepository.findOne({
-        where: { id: application.property.owner_id },
-        relations: ['user'],
-      });
-
-      // Use agency name (profile_name) if available, otherwise fallback to personal name
-      const agencyName = landlord?.profile_name
-        ? landlord.profile_name
-        : landlord?.user
-          ? `${this.utilService.toSentenceCase(landlord.user.first_name)} ${this.utilService.toSentenceCase(landlord.user.last_name)}`
-          : 'Your Landlord';
-
-      // Format tenant name
-      const tenantName = `${this.utilService.toSentenceCase(tenantAccount.user.first_name)} ${this.utilService.toSentenceCase(tenantAccount.user.last_name)}`;
-
-      // Property name
-      const propertyName = application.property.name;
-
-      // Look up receipt link if offer letter ID is available
-      let receiptLink: string | undefined;
-      if (offerLetterId) {
-        try {
-          const receipt =
-            await this.receiptsService.findMostRecentByOfferLetterId(
-              offerLetterId,
-            );
-          if (receipt) {
-            const frontendUrl =
-              process.env.FRONTEND_URL || 'https://www.lizt.co';
-            receiptLink = `${frontendUrl}/receipt/${receipt.token}`;
-          }
-        } catch (receiptError) {
-          console.warn(
-            'Failed to look up receipt for WhatsApp notification:',
-            receiptError.message,
-          );
-          // Continue without receipt link
-        }
-      }
-
-      console.log('Sending tenant attachment WhatsApp notification:', {
-        phoneNumber: normalizedPhone,
-        tenantName,
-        propertyName,
-        agencyName,
-        receiptLink: receiptLink || 'none',
-      });
-
-      // Send WhatsApp notification using welcome_tenant template
-      await this.whatsappBotService.sendTenantAttachmentNotification({
-        phone_number: normalizedPhone,
-        tenant_name: tenantName,
-        landlord_name: agencyName,
-        property_name: propertyName,
-        property_id: application.property_id,
-      });
-
-      console.log(
-        `WhatsApp notification sent successfully to tenant ${tenantAccount.id} at ${normalizedPhone}`,
-      );
-    } catch (error) {
-      console.error('Error sending tenant attachment WhatsApp notification:', {
-        error: error.message,
-        stack: error.stack,
-        tenantId: tenantAccount.id,
-      });
-      // Don't throw - we don't want to fail the entire operation if WhatsApp fails
-    }
-  }
-
-  /**
-   * Format rent frequency for user-friendly display
-   */
-  private formatRentFrequencyForDisplay(frequency: RentFrequency): string {
-    switch (frequency) {
-      case RentFrequency.MONTHLY:
-        return 'Monthly';
-      case RentFrequency.QUARTERLY:
-        return 'Quarterly';
-      case RentFrequency.BI_ANNUALLY:
-        return 'Bi-Annually';
-      case RentFrequency.ANNUALLY:
-        return 'Annually';
-      case RentFrequency.CUSTOM:
-        return 'Custom';
-      default:
-        return 'Monthly';
-    }
-  }
 }

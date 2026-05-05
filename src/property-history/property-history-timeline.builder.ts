@@ -897,6 +897,11 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
             propertyId: ph.property_id,
             propertyName: prop?.name || '',
             tenantName: parsedData.tenantName || '',
+            // Lightweight receipt minted at create-time. NULL on
+            // pre-feature legacy rows; the frontend hides the receipt
+            // buttons in that case.
+            receiptToken: ph.receipt_token || null,
+            receiptNumber: ph.receipt_number || null,
           }),
           date: eventDate.toISOString(),
           time: formatTime(eventDate),

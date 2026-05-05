@@ -345,7 +345,7 @@ export class PaymentHistoryPdfService {
 
       <h2 class="section-title">Payment Summary</h2>
       <div class="row">
-        <span class="l">Manual payment received</span>
+        <span class="l">Payment received</span>
         <span class="r">${totalAmount}</span>
       </div>
       <div class="total-row">

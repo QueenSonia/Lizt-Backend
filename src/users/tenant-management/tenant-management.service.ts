@@ -1841,6 +1841,8 @@ export class TenantManagementService {
         'property_histories.created_at',
         'property_histories.related_entity_id',
         'property_histories.related_entity_type',
+        'property_histories.receipt_token',
+        'property_histories.receipt_number',
       ])
       .leftJoin('property_histories.property', 'past_property')
       .addSelect([

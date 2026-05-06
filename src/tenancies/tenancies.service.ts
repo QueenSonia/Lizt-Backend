@@ -2294,15 +2294,19 @@ export class TenanciesService {
       throw new NotFoundException('Receipt not found');
     }
 
-    // Check if invoice is paid (access control requirement 8.3)
-    if (invoice.payment_status !== RenewalPaymentStatus.PAID) {
+    // Block only when no real payment has been recorded. PARTIAL is a valid
+    // receipt state — the unified template renders a non-zero remaining
+    // balance row in that case.
+    if (
+      invoice.payment_status !== RenewalPaymentStatus.PAID &&
+      invoice.payment_status !== RenewalPaymentStatus.PARTIAL
+    ) {
       throw new HttpException(
         'Receipt not available - payment required',
         HttpStatus.GONE,
       );
     }
 
-    // Format receipt data
     return await this.formatRenewalReceiptResponse(invoice);
   }
 
@@ -2876,8 +2880,51 @@ export class TenanciesService {
             },
           );
         }
+      } else {
+        // Partial renewal payment — send the same renewal-receipt template.
+        // The attached PDF (UnifiedReceipt) renders the partial amount
+        // with the remaining-balance row in orange, so the document itself
+        // makes the partial state visually obvious.
+        await this.whatsappNotificationLog.queue('sendRenewalPaymentTenant', {
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          amount,
+          property_name: propertyName,
+          receipt_token: invoice.receipt_token,
+          period_start: invoice.start_date,
+          period_end: invoice.end_date,
+          rent_amount: parseFloat(invoice.rent_amount.toString()),
+          service_charge: parseFloat((invoice.service_charge ?? 0).toString()),
+          payment_frequency: invoice.payment_frequency ?? 'monthly',
+          frontend_url: process.env.FRONTEND_URL || 'http://localhost:3000',
+          landlord_id: invoice.property.owner_id,
+          recipient_name: tenantName,
+          property_id: invoice.property_id,
+        });
+
+        if (invoice.property.owner?.user?.phone_number) {
+          const landlordPhone = this.utilService.normalizePhoneNumber(
+            invoice.property.owner.user.phone_number,
+          );
+          const landlordName =
+            invoice.property.owner.profile_name ||
+            invoice.property.owner.user.first_name;
+
+          await this.whatsappNotificationLog.queue(
+            'sendRenewalPaymentLandlord',
+            {
+              phone_number: landlordPhone,
+              landlord_name: landlordName,
+              tenant_name: tenantName,
+              amount,
+              property_name: propertyName,
+              landlord_id: invoice.property.owner_id,
+              recipient_name: landlordName,
+              property_id: invoice.property_id,
+            },
+          );
+        }
       }
-      // Partial case: no WhatsApp; reminders + in-app livefeed cover it.
     } catch (error) {
       console.error('Error queueing payment notifications:', error);
       // Non-blocking - continue even if queueing fails

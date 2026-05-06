@@ -68,7 +68,10 @@ export class RenewalPDFService {
       throw new NotFoundException('Receipt not found');
     }
 
-    if (invoice.payment_status !== 'paid') {
+    if (
+      invoice.payment_status !== 'paid' &&
+      invoice.payment_status !== 'partial'
+    ) {
       throw new NotFoundException('Receipt not available - payment required');
     }
 

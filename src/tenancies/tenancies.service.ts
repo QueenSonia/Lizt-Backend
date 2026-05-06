@@ -2806,6 +2806,16 @@ export class TenanciesService {
       const tenantPhone = this.utilService.normalizePhoneNumber(
         invoice.tenant.user.phone_number,
       );
+      // OB-only tenant tokens have rent_amount=0 and a single
+      // outstanding_balance fee. The renewal_payment_tenant template has
+      // fixed Rent/Service rows that would render as ₦0 here, and the
+      // landlord's "completed their renewal payment" copy is wrong on a
+      // partial. Skip WhatsApp on partial OB payments — Paystack already
+      // confirmed receipt, the in-app state shows the remaining balance,
+      // and the OB-completed branch above fires when fully paid.
+      const isOBOnlyTenantToken =
+        invoice.token_type === 'tenant' &&
+        parseFloat(invoice.rent_amount.toString()) === 0;
       if (isWalletAutoCompletion) {
         // No WhatsApp — there's no real payment to receipt. Tenant sees the
         // completed state on the renewal-invoice page; landlord sees livefeed.
@@ -2887,6 +2897,9 @@ export class TenanciesService {
             },
           );
         }
+      } else if (isOBOnlyTenantToken) {
+        // Partial OB payment on a tenant-token, OB-only invoice — no
+        // WhatsApp (see isOBOnlyTenantToken comment above).
       } else {
         // Partial renewal payment — send the same renewal-receipt template.
         // The attached PDF (UnifiedReceipt) renders the partial amount

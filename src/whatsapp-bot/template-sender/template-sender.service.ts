@@ -483,7 +483,6 @@ export interface OutstandingBalancePaidTenantParams {
   tenant_name: string;
   amount: number;
   property_name: string;
-  remaining_balance: number;
 }
 
 /**
@@ -495,7 +494,6 @@ export interface OutstandingBalancePaidLandlordParams {
   tenant_name: string;
   amount: number;
   property_name: string;
-  remaining_balance: number;
 }
 
 /**
@@ -2669,7 +2667,6 @@ export class TemplateSenderService {
     tenant_name,
     amount,
     property_name,
-    remaining_balance,
   }: OutstandingBalancePaidTenantParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -2696,10 +2693,6 @@ export class TemplateSenderService {
                 type: 'text',
                 text: property_name,
               },
-              {
-                type: 'text',
-                text: `₦${remaining_balance.toLocaleString()}`,
-              },
             ],
           },
         ],
@@ -2719,7 +2712,6 @@ export class TemplateSenderService {
     tenant_name,
     amount,
     property_name,
-    remaining_balance,
   }: OutstandingBalancePaidLandlordParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -2749,10 +2741,6 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: property_name,
-              },
-              {
-                type: 'text',
-                text: `₦${remaining_balance.toLocaleString()}`,
               },
             ],
           },
@@ -4130,6 +4118,10 @@ export class TemplateSenderService {
     landlord_main_menu: 'Hello {{1}}, What do you want to do today?',
     outstanding_balance_link:
       'Hi {{1}},\n\nPlease click the button below to view your invoice and make payment for your outstanding balance.',
+    outstanding_balance_paid_tenant:
+      'Hi {{1}},\n\nYour payment of {{2}} for {{3}} has been received. Thank you for staying on top of your rent.',
+    outstanding_balance_paid_landlord:
+      'Hello {{1}},\n\n{{2}} has paid their outstanding balance of {{3}} for {{4}}.\n\nView details in your dashboard.',
     renewal_link:
       'Hi {{1}}, your renewal rent invoice for {{2}} is ready.\n\nThis invoice covers your tenancy from {{3}} to {{4}}.\n\nYou can safely view your invoice and make your payment using the link below.',
     renewal_letter_link:

@@ -2243,8 +2243,16 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    // Check if invoice is paid
-    if (invoice.payment_status !== RenewalPaymentStatus.PAID) {
+    // Renewal invoices support partial payments (custom amounts >14 days
+    // out — see renewal-payment.service.ts). After Paystack returns, the
+    // tenant page navigates to /success regardless of whether the payment
+    // closed the invoice, so PARTIAL must be a valid state here too.
+    // Frontend reads paymentStatus/amountPaid/totalAmount and renders a
+    // partial-confirmation variant.
+    if (
+      invoice.payment_status !== RenewalPaymentStatus.PAID &&
+      invoice.payment_status !== RenewalPaymentStatus.PARTIAL
+    ) {
       throw new HttpException(
         'Invoice not paid - success data not available',
         HttpStatus.GONE,

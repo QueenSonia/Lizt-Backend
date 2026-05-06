@@ -10,7 +10,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
 import { rentToFees } from 'src/common/billing/fees';
@@ -2354,23 +2354,29 @@ export class TenantManagementService {
       ? (pendingInvoiceMap.get(activeRent.property_id) ?? null)
       : null;
 
-    // Fetch ALL renewal invoices for this tenant (for Documents tab).
-    // Exclude tenant-token rows: those are tenant-initiated artifacts (OB
-    // pay link / payment-plan request) created by the WhatsApp bot. They
-    // live in renewal_invoices for token routing but aren't documents the
-    // landlord authored, so they don't belong on the Documents tab.
+    // Fetch renewal invoices for the Documents tab.
+    // Default: landlord/draft rows (the documents the landlord authored).
+    // Also: tenant-token rows that have a receipt_token, i.e., have at
+    // least one real Paystack payment landed (full or partial). Empty
+    // tenant-token rows are still excluded — those are OB pay-link /
+    // payment-plan-request scaffolding the bot creates, not documents.
+    const ownerScope = adminId ? { property: { owner_id: adminId } } : {};
     const allRenewalInvoices = await this.dataSource
       .getRepository(RenewalInvoice)
       .find({
-        where: {
-          tenant_id: account.id,
-          token_type: In(['landlord', 'draft']),
-          ...(adminId
-            ? {
-                property: { owner_id: adminId },
-              }
-            : {}),
-        },
+        where: [
+          {
+            tenant_id: account.id,
+            token_type: In(['landlord', 'draft']),
+            ...ownerScope,
+          },
+          {
+            tenant_id: account.id,
+            token_type: 'tenant',
+            receipt_token: Not(IsNull()),
+            ...ownerScope,
+          },
+        ],
         relations: ['property'],
         order: { created_at: 'DESC' },
         select: [

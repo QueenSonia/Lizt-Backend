@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import type { Browser } from 'puppeteer';
 
 import { launchBrowser } from '../common/puppeteer-launch';
+import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
 import { RenewalInvoice } from '../tenancies/entities/renewal-invoice.entity';
 import { renewalInvoiceToFees, Fee } from '../common/billing/fees';
 
@@ -529,314 +530,54 @@ export class RenewalPDFService {
     `;
   }
   /**
-   * Generate HTML for renewal receipt PDF
-   * Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 9.1, 9.2, 9.3, 9.4, 9.5
+   * Generate HTML for renewal receipt PDF using the unified template.
    */
   private generateReceiptHTML(invoice: RenewalInvoice): string {
     const propertyName = invoice.property?.name || 'Property';
-    const propertyAddress = invoice.property?.location || 'Lagos, Nigeria';
-    const tenantName = invoice.tenant?.user
-      ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
+    const tenantUser = invoice.tenant?.user as any;
+    const tenantName = tenantUser
+      ? `${tenantUser.first_name ?? ''} ${tenantUser.last_name ?? ''}`.trim()
       : 'Tenant';
-
-    const paymentDate = this.formatDate(invoice.paid_at || new Date());
-    const paymentReference = invoice.payment_reference || 'N/A';
-    const receiptNumber = invoice.receipt_number || 'N/A';
+    const tenantPhone: string | null = tenantUser?.phone_number ?? null;
 
     const fees: Fee[] = renewalInvoiceToFees(invoice);
-    const receiptFeeRowsHtml = fees
-      .map(
-        (f) => `<div class="charge-row">
-            <span class="charge-label">${this.escapeHtml(f.label)}</span>
-            <span class="charge-amount">${this.formatCurrency(f.amount)}</span>
-          </div>`,
-      )
-      .join('');
-    const walletBalance = Number(invoice.wallet_balance);
-    const totalAmountNum = Number(invoice.total_amount);
-    const totalCharged = this.formatCurrency(totalAmountNum);
-    const amountPaidNum = Number(invoice.amount_paid ?? totalAmountNum);
-    const totalPaid = this.formatCurrency(amountPaidNum);
-    const excessAmount = Math.max(0, amountPaidNum - totalAmountNum);
-    const paymentHistory = Array.isArray(invoice.payment_history)
-      ? invoice.payment_history
-      : [];
-    const paymentHistoryRowsHtml =
-      paymentHistory.length > 1
-        ? paymentHistory
-            .map(
-              (p) => `<div class="charge-row" style="font-size:12px; padding:8px 0;">
-            <span class="charge-label">${this.formatDate(p.paid_at)}${p.channel ? ` &middot; ${this.escapeHtml(p.channel)}` : ''}</span>
-            <span class="charge-amount">${this.formatCurrency(Number(p.amount))}</span>
-          </div>`,
-            )
-            .join('')
-        : '';
+    const rows: Array<{ label: string; amount: number }> = fees
+      .filter((f) => Number(f.amount) > 0)
+      .map((f) => ({ label: f.label, amount: Number(f.amount) }));
 
-    // Get landlord logo URL (document layer - top right)
+    const walletBalance = Number(invoice.wallet_balance) || 0;
+    if (walletBalance > 0) {
+      rows.push({ label: 'Wallet credit applied', amount: -walletBalance });
+    } else if (walletBalance < 0) {
+      rows.push({ label: 'Outstanding balance offset', amount: -walletBalance });
+    }
+
+    const totalAmountNum = Number(invoice.total_amount) || 0;
+    const amountPaidNum = Number(invoice.amount_paid ?? totalAmountNum) || 0;
+    const remaining = Math.max(totalAmountNum - amountPaidNum, 0);
+
     const landlordUser = (invoice.property as any)?.owner?.user;
+    const branding = landlordUser?.branding ?? {};
     const landlordLogoUrl =
-      landlordUser?.logo_urls?.[0] ||
-      landlordUser?.branding?.letterhead ||
-      null;
-    const landlordName =
-      landlordUser?.branding?.businessName ||
-      (landlordUser
-        ? `${landlordUser.first_name} ${landlordUser.last_name}`
-        : 'Landlord');
+      landlordUser?.logo_urls?.[0] ?? branding?.letterhead ?? null;
 
-    return `
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payment Receipt - ${this.escapeHtml(propertyName)}</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-    <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
-      body {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        background: #f9fafb;
-        color: #1a1b23;
-      }
-      .receipt-wrapper {
-        display: flex;
-        justify-content: center;
-        padding: 20px;
-      }
-      .receipt-card {
-        background: #fff;
-        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-        max-width: 850px;
-        width: 100%;
-        padding: 48px;
-        position: relative;
-      }
-      /* Document layer - Landlord logo at top right */
-      .document-header {
-        display: flex;
-        justify-content: flex-end;
-        margin-bottom: 32px;
-      }
-      .landlord-logo {
-        height: 50px;
-        width: auto;
-        object-fit: contain;
-      }
-      .receipt-title {
-        font-size: 24px;
-        line-height: 32px;
-        font-weight: 700;
-        color: #1a1b23;
-        margin-bottom: 32px;
-        text-align: center;
-      }
-      .receipt-info-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 24px;
-        margin-bottom: 32px;
-      }
-      .info-section {
-        margin-bottom: 24px;
-      }
-      .info-group {
-        margin-bottom: 16px;
-      }
-      .info-label {
-        font-size: 12px;
-        line-height: 16px;
-        color: #6b7280;
-        margin-bottom: 4px;
-        font-weight: 500;
-      }
-      .info-value {
-        font-size: 14px;
-        line-height: 20px;
-        color: #1a1b23;
-        font-weight: 600;
-      }
-      .gradient-separator {
-        height: 1px;
-        background: linear-gradient(to right, transparent, #d1d5db, transparent);
-        margin: 32px 0;
-      }
-      .charges-section {
-        margin-bottom: 32px;
-      }
-      .charges-title {
-        font-size: 16px;
-        line-height: 24px;
-        font-weight: 700;
-        color: #1a1b23;
-        margin-bottom: 24px;
-        text-align: center;
-      }
-      .charge-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 12px 0;
-        border-bottom: 1px solid #e5e7eb;
-      }
-      .charge-label {
-        font-size: 14px;
-        line-height: 20px;
-        color: #1a1b23;
-      }
-      .charge-amount {
-        font-size: 14px;
-        line-height: 20px;
-        color: #1a1b23;
-        font-weight: 600;
-      }
-      .total-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 16px 0;
-        margin-top: 16px;
-        border-top: 2px solid #111827;
-        background: #f9fafb;
-        padding: 16px;
-        border-radius: 8px;
-      }
-      .total-label {
-        font-size: 16px;
-        line-height: 24px;
-        color: #1a1b23;
-        font-weight: 700;
-      }
-      .total-amount {
-        font-size: 20px;
-        line-height: 28px;
-        color: #1a1b23;
-        font-weight: 700;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="receipt-wrapper">
-      <div class="receipt-card">
-
-        ${
-          landlordLogoUrl
-            ? `<!-- Document layer - Landlord logo at top right -->
-        <div class="document-header">
-          <img alt="${this.escapeHtml(landlordName)}" src="${this.escapeHtml(landlordLogoUrl)}" class="landlord-logo" />
-        </div>`
-            : ''
-        }
-
-        <!-- Receipt title -->
-        <h1 class="receipt-title">Payment Receipt</h1>
-
-        <!-- Receipt information grid -->
-        <div class="receipt-info-grid">
-          <div class="info-section">
-            <div class="info-group">
-              <p class="info-label">Receipt Number</p>
-              <p class="info-value">${this.escapeHtml(receiptNumber)}</p>
-            </div>
-
-            <div class="info-group">
-              <p class="info-label">Transaction Reference</p>
-              <p class="info-value">${this.escapeHtml(paymentReference)}</p>
-            </div>
-
-            <div class="info-group">
-              <p class="info-label">Payment Date</p>
-              <p class="info-value">${paymentDate}</p>
-            </div>
-          </div>
-
-          <div class="info-section">
-            <div class="info-group">
-              <p class="info-label">Property Name</p>
-              <p class="info-value">${this.escapeHtml(propertyName)}</p>
-            </div>
-
-            <div class="info-group">
-              <p class="info-label">Property Address</p>
-              <p class="info-value">${this.escapeHtml(propertyAddress)}</p>
-            </div>
-
-            <div class="info-group">
-              <p class="info-label">Tenant Name</p>
-              <p class="info-value">${this.escapeHtml(tenantName)}</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Gradient separator -->
-        <div class="gradient-separator"></div>
-
-        <!-- Payment breakdown -->
-        <div class="charges-section">
-          <h2 class="charges-title">Payment Breakdown</h2>
-
-          ${receiptFeeRowsHtml}
-
-          ${
-            walletBalance > 0
-              ? `<div class="charge-row">
-            <span class="charge-label" style="color:#059669;">Rent Advance Applied</span>
-            <span class="charge-amount" style="color:#059669;">-${this.formatCurrency(walletBalance)}</span>
-          </div>`
-              : ''
-          }
-
-          ${
-            walletBalance < 0
-              ? `<div class="charge-row">
-            <span class="charge-label">Previous Outstanding Balance</span>
-            <span class="charge-amount">+${this.formatCurrency(Math.abs(walletBalance))}</span>
-          </div>`
-              : ''
-          }
-
-          <!-- Total charged (the invoice total) -->
-          <div class="charge-row" style="border-top:1px solid #e5e7eb; padding-top:12px; margin-top:8px;">
-            <span class="charge-label" style="font-weight:600;">Total Charged</span>
-            <span class="charge-amount" style="font-weight:600;">${totalCharged}</span>
-          </div>
-
-          ${
-            paymentHistoryRowsHtml
-              ? `<div style="margin-top:16px;">
-            <p class="info-label" style="margin-bottom:8px;">Payments Received</p>
-            ${paymentHistoryRowsHtml}
-          </div>`
-              : ''
-          }
-
-          ${
-            excessAmount > 0
-              ? `<div class="charge-row" style="color:#059669;">
-            <span class="charge-label">Excess Applied as Rent Advance</span>
-            <span class="charge-amount">+${this.formatCurrency(excessAmount)}</span>
-          </div>`
-              : ''
-          }
-
-          <!-- Total paid (what the tenant actually paid) -->
-          <div class="total-row">
-            <span class="total-label">Total Amount Paid</span>
-            <span class="total-amount">${totalPaid}</span>
-          </div>
-        </div>
-
-      </div>
-    </div>
-  </body>
-  </html>
-      `;
+    return renderUnifiedReceiptHTML({
+      receiptNumber: invoice.receipt_number || 'N/A',
+      tenantName,
+      tenantPhone,
+      propertyName,
+      paymentDate: invoice.paid_at ?? null,
+      paymentMethod: invoice.payment_method ?? null,
+      landlord: {
+        logoUrl: landlordLogoUrl,
+        businessName: branding?.businessName ?? null,
+        phone: branding?.contactPhone ?? null,
+        email: branding?.contactEmail ?? null,
+        address: branding?.businessAddress ?? null,
+      },
+      descriptionRows: rows,
+      amountPaid: amountPaidNum,
+      remainingBalance: remaining,
+    });
   }
 }

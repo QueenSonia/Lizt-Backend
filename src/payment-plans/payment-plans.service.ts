@@ -1015,6 +1015,7 @@ export class PaymentPlansService {
   async markInstallmentPaidFromWebhook(data: {
     reference: string;
     amount: number;
+    channel?: string;
     metadata?: { payment_plan_installment_id?: string };
   }): Promise<void> {
     const installmentId = data.metadata?.payment_plan_installment_id;
@@ -1050,6 +1051,7 @@ export class PaymentPlansService {
       paystackRef: data.reference,
       amount: amountInNaira,
       method: InstallmentPaymentMethod.PAYSTACK,
+      channel: data.channel,
     });
   }
 
@@ -1097,6 +1099,7 @@ export class PaymentPlansService {
     args: {
       amount: number;
       method: InstallmentPaymentMethod;
+      channel?: string;
       paystackRef?: string;
       paidAt?: Date;
       note?: string;
@@ -1138,7 +1141,10 @@ export class PaymentPlansService {
         status: InstallmentStatus.PAID,
         paid_at: paidAt,
         amount_paid: args.amount,
-        payment_method: args.method,
+        // For Paystack payments, persist the actual channel
+        // (card / bank_transfer / ussd / ...) so receipts can show it.
+        // For manual payments, fall through to the category enum.
+        payment_method: (args.channel ?? args.method) as InstallmentPaymentMethod,
         paystack_reference: args.paystackRef ?? null,
         manual_payment_note: args.note ?? null,
         marked_paid_by_user_id: args.markedByUserId ?? null,

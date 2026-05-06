@@ -148,12 +148,14 @@ export class WebhooksController {
             ? this.paymentPlansService.markInstallmentPaidFromWebhook({
                 reference: body.data.reference,
                 amount: body.data.amount,
+                channel: body.data.channel,
                 metadata: body.data.metadata,
               })
             : isAdHocInvoice
               ? this.adHocInvoicesService.markInvoicePaidFromWebhook({
                   reference: body.data.reference,
                   amount: body.data.amount,
+                  channel: body.data.channel,
                   metadata: body.data.metadata,
                 })
               : isRenewalPayment

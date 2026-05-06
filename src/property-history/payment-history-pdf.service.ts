@@ -106,8 +106,9 @@ export class PaymentHistoryPdfService {
     const propertyName = property?.name || 'Property';
     const propertyAddress = property?.location || '';
 
-    const tenantName = await this.resolveTenantName(row, parsed);
-    const tenantPhone = this.resolveTenantPhone(row, parsed);
+    const kycApp = await this.loadKycFallback(row);
+    const tenantName = this.resolveTenantName(row, parsed, kycApp);
+    const tenantPhone = this.resolveTenantPhone(row, parsed, kycApp);
     const branding = this.resolveLandlordBranding(row);
 
     return {
@@ -131,10 +132,12 @@ export class PaymentHistoryPdfService {
   private resolveTenantPhone(
     row: PropertyHistory,
     parsed: any,
+    kycApp: KYCApplication | null,
   ): string | null {
     const tenantUser = (row.tenant as any)?.user;
     if (tenantUser?.phone_number) return String(tenantUser.phone_number);
     if (parsed.tenantPhone) return String(parsed.tenantPhone);
+    if (kycApp?.phone_number) return String(kycApp.phone_number);
     return null;
   }
 
@@ -147,11 +150,31 @@ export class PaymentHistoryPdfService {
     }
   }
 
-  private async resolveTenantName(
+  /**
+   * Load the linked KYCApplication for staged-applicant rows (tenant_id=NULL).
+   * Returns null when not applicable, so callers don't need to repeat the
+   * related_entity_type guard.
+   */
+  private async loadKycFallback(
+    row: PropertyHistory,
+  ): Promise<KYCApplication | null> {
+    if ((row.tenant as any)?.user) return null;
+    if (
+      row.related_entity_type !== 'kyc_application' ||
+      !row.related_entity_id
+    ) {
+      return null;
+    }
+    return this.kycApplicationRepository.findOne({
+      where: { id: row.related_entity_id },
+    });
+  }
+
+  private resolveTenantName(
     row: PropertyHistory,
     parsed: any,
-  ): Promise<string> {
-    // Tenant-mode: pull from the linked Account → Users.
+    kycApp: KYCApplication | null,
+  ): string {
     const tenantUser = (row.tenant as any)?.user;
     if (tenantUser) {
       return (
@@ -160,18 +183,12 @@ export class PaymentHistoryPdfService {
         'Tenant'
       );
     }
-    // Staged-applicant mode: tenant_id is NULL pre-attach. Pull from the
-    // event_description JSON (modal already stamps `tenantName` there)
-    // or fall back to the linked KYCApplication.
     if (parsed.tenantName) return String(parsed.tenantName);
-    if (row.related_entity_type === 'kyc_application' && row.related_entity_id) {
-      const app = await this.kycApplicationRepository.findOne({
-        where: { id: row.related_entity_id },
-      });
-      if (app) {
-        return `${app.first_name ?? ''} ${app.last_name ?? ''}`.trim() ||
-          'Applicant';
-      }
+    if (kycApp) {
+      return (
+        `${kycApp.first_name ?? ''} ${kycApp.last_name ?? ''}`.trim() ||
+        'Applicant'
+      );
     }
     return 'Tenant';
   }

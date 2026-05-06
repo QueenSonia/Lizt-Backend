@@ -2352,7 +2352,7 @@ export class TenanciesService {
       propertyName: invoice.property.name,
       propertyAddress: invoice.property.location,
 
-      // Payment Breakdown
+      // Payment Breakdown — legacy scalar shape kept for back-compat.
       charges: {
         rentAmount: parseFloat(invoice.rent_amount.toString()),
         serviceCharge:
@@ -2360,6 +2360,13 @@ export class TenanciesService {
         legalFee: parseFloat(invoice.legal_fee.toString()) || undefined,
         otherCharges: parseFloat(invoice.other_charges.toString()) || undefined,
       },
+      // Billing v2 normalized breakdown — preferred over `charges` when
+      // present. OB-only invoices (tenant-token pay-out flow) only have
+      // an "Outstanding Balance" line here, with rent/service/legal
+      // scalars all zero.
+      feeBreakdown: Array.isArray(invoice.fee_breakdown)
+        ? invoice.fee_breakdown
+        : undefined,
       totalAmount: parseFloat(invoice.total_amount.toString()),
       /**
        * Signed wallet balance at invoice creation.

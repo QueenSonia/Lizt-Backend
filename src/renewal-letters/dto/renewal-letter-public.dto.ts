@@ -59,6 +59,12 @@ export class RenewalLetterPublicDto {
   @ApiPropertyOptional() landlordContactPhone: string | null;
   @ApiPropertyOptional() landlordWebsite: string | null;
 
+  // bodyFont selected in AdminSettings → Branding. Drives the prose
+  // typography on the tenant page (and the Puppeteer PDF render) so the
+  // letter matches the landlord's chosen font instead of being hardcoded.
+  // Null when the landlord hasn't set one — client falls back to a serif.
+  @ApiPropertyOptional() letterBodyFont: string | null;
+
   // Acceptance-only (post-verify) — power the ACCEPTED stamp overlay.
   @ApiPropertyOptional() acceptanceOtp: string | null;
   @ApiPropertyOptional() acceptedAt: string | null;

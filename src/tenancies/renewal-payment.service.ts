@@ -122,7 +122,15 @@ export class RenewalPaymentService {
     // becomes the *remaining* outstanding so the renewal still closes on
     // time — using `remaining` (not invoiceTotal) so a tenant who has
     // already paid partials isn't asked to pay the full original total.
-    if (paymentOption === 'custom') {
+    //
+    // OB invoices share renewal_invoices but have no renewal deadline, and
+    // their start_date is set to rent.expiry_date (often past), which would
+    // otherwise trip the floor on every attempt. Skip the gate for them.
+    const isOutstandingBalanceInvoice =
+      invoice.token_type === 'tenant' &&
+      Number(invoice.rent_amount || 0) === 0;
+
+    if (paymentOption === 'custom' && !isOutstandingBalanceInvoice) {
       const PARTIAL_PAYMENT_WINDOW_DAYS = 14;
       const startDate = new Date(invoice.start_date);
       const today = new Date();

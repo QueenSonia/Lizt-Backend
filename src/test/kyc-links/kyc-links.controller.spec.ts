@@ -1,13 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { KYCLinksController } from '../../kyc-links/kyc-links.controller';
 import { KYCLinksService } from '../../kyc-links/kyc-links.service';
 import { TenantAttachmentService } from '../../kyc-links/tenant-attachment.service';
 import { KYCApplicationService } from '../../kyc-links/kyc-application.service';
-import {
-  AttachTenantDto,
-  RentFrequency,
-} from '../../kyc-links/dto/attach-tenant.dto';
 import { Account } from '../../users/entities/account.entity';
 
 describe('KYCLinksController', () => {
@@ -18,9 +14,7 @@ describe('KYCLinksController', () => {
     validateKYCToken: jest.fn(),
   };
 
-  const mockTenantAttachmentService = {
-    attachTenantToProperty: jest.fn(),
-  };
+  const mockTenantAttachmentService = {};
 
   const mockKycApplicationService = {};
 
@@ -158,120 +152,9 @@ describe('KYCLinksController', () => {
     });
   });
 
-  describe('attachTenantToProperty', () => {
-    const applicationId = 'application-123';
-    const attachTenantDto: AttachTenantDto = {
-      rentAmount: 500000,
-      rentFrequency: RentFrequency.MONTHLY,
-      tenancyStartDate: '2024-01-01',
-      securityDeposit: 100000,
-      serviceCharge: 50000,
-    };
-
-    const mockAttachmentResult = {
-      success: true,
-      tenantId: 'tenant-123',
-      propertyId: 'property-123',
-      message: 'Tenant successfully attached to property',
-    };
-
-    it('should attach tenant to property successfully', async () => {
-      mockTenantAttachmentService.attachTenantToProperty.mockResolvedValue(
-        mockAttachmentResult,
-      );
-
-      const result = await controller.attachTenantToProperty(
-        applicationId,
-        attachTenantDto,
-        mockUser,
-      );
-
-      expect(
-        mockTenantAttachmentService.attachTenantToProperty,
-      ).toHaveBeenCalledWith(applicationId, attachTenantDto, mockUser.id);
-      expect(result).toEqual({
-        success: true,
-        message: 'Tenant successfully attached to property',
-        data: {
-          tenantId: 'tenant-123',
-          propertyId: 'property-123',
-        },
-      });
-    });
-
-    it('should handle attachment service errors', async () => {
-      mockTenantAttachmentService.attachTenantToProperty.mockRejectedValue(
-        new NotFoundException('KYC application not found'),
-      );
-
-      await expect(
-        controller.attachTenantToProperty(
-          applicationId,
-          attachTenantDto,
-          mockUser,
-        ),
-      ).rejects.toThrow(NotFoundException);
-    });
-
-    it('should handle validation errors in DTO', async () => {
-      const invalidDto = {
-        ...attachTenantDto,
-        rentAmount: -1000,
-      };
-      mockTenantAttachmentService.attachTenantToProperty.mockRejectedValue(
-        new BadRequestException('Rent amount must be greater than 0'),
-      );
-
-      await expect(
-        controller.attachTenantToProperty(applicationId, invalidDto, mockUser),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('should handle attachment failure', async () => {
-      const failureResult = {
-        success: false,
-        tenantId: '',
-        propertyId: '',
-        message: 'Property is already occupied',
-      };
-      mockTenantAttachmentService.attachTenantToProperty.mockResolvedValue(
-        failureResult,
-      );
-
-      const result = await controller.attachTenantToProperty(
-        applicationId,
-        attachTenantDto,
-        mockUser,
-      );
-
-      expect(result).toEqual({
-        success: false,
-        message: 'Property is already occupied',
-        data: {
-          tenantId: '',
-          propertyId: '',
-        },
-      });
-    });
-  });
-
-  describe('Input Validation', () => {
-    it('should validate UUID format for applicationId in attachTenantToProperty', async () => {
-      const invalidApplicationId = 'not-a-uuid';
-
-      expect(invalidApplicationId).not.toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-      );
-    });
-  });
-
   describe('Authentication and Authorization', () => {
     it('should require landlord role for generateKYCLink', () => {
       expect(typeof controller.generateKYCLink).toBe('function');
-    });
-
-    it('should require landlord role for attachTenantToProperty', () => {
-      expect(typeof controller.attachTenantToProperty).toBe('function');
     });
 
     it('should allow public access for validateKYCToken', () => {

@@ -21,7 +21,6 @@ import {
   PropertyKYCData,
 } from './kyc-links.service';
 import { TenantAttachmentService } from './tenant-attachment.service';
-import { AttachTenantDto } from './dto/attach-tenant.dto';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { SendOTPDto } from './dto/send-otp.dto';
 import { KycVerifyOTPDto } from './dto/verify-otp.dto';
@@ -343,42 +342,6 @@ export class KYCLinksController {
       success: true,
       message: 'Tenant KYC applications retrieved successfully',
       applications,
-    };
-  }
-
-  /**
-   * Attach tenant to property from KYC application (landlord only)
-   * POST /api/kyc-applications/:applicationId/attach
-   * Requirements: 5.1, 5.2, 5.4, 5.5
-   */
-  @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
-  @Post('kyc-applications/:applicationId/attach')
-  async attachTenantToProperty(
-    @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @Body(ValidationPipe) attachTenantDto: AttachTenantDto,
-    @CurrentUser() user: Account,
-  ): Promise<{
-    success: boolean;
-    message: string;
-    data: {
-      tenantId: string;
-      propertyId: string;
-    };
-  }> {
-    const result = await this.tenantAttachmentService.attachTenantToProperty(
-      applicationId,
-      attachTenantDto,
-      user.id,
-    );
-
-    return {
-      success: result.success,
-      message: result.message,
-      data: {
-        tenantId: result.tenantId,
-        propertyId: result.propertyId,
-      },
     };
   }
 

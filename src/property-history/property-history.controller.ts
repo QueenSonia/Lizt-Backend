@@ -9,7 +9,11 @@ import {
   Query,
   ParseUUIDPipe,
   Req,
+  Res,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
+import { Response } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -22,6 +26,8 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { PropertyHistoryService } from './property-history.service';
+import { PaymentHistoryPdfService } from './payment-history-pdf.service';
+import { Public } from '../auth/public.decorator';
 import {
   CreatePropertyHistoryDto,
   PropertyHistoryFilter,
@@ -34,7 +40,60 @@ import { PropertyHistoryPaginationResponseDto } from './dto/paginate.dto';
 export class PropertyHistoryController {
   constructor(
     private readonly propertyHistoryService: PropertyHistoryService,
+    private readonly paymentHistoryPdfService: PaymentHistoryPdfService,
   ) {}
+
+  @ApiOperation({
+    summary: 'Get payment-history receipt by token (public)',
+  })
+  @ApiOkResponse({ description: 'Receipt view' })
+  @Public()
+  @Get('receipts/:token')
+  async getPaymentReceiptView(@Param('token') token: string) {
+    const data = await this.paymentHistoryPdfService.getPaymentReceiptView(
+      token,
+    );
+    return { success: true, data };
+  }
+
+  @ApiOperation({
+    summary: 'Download payment-history receipt PDF by token (public)',
+  })
+  @ApiOkResponse({
+    description: 'PDF stream',
+    content: {
+      'application/pdf': { schema: { type: 'string', format: 'binary' } },
+    },
+  })
+  @Public()
+  @Get('receipts/:token/download')
+  async downloadPaymentReceipt(
+    @Param('token') token: string,
+    @Res() res: Response,
+  ) {
+    try {
+      const view =
+        await this.paymentHistoryPdfService.getPaymentReceiptView(token);
+      const pdf =
+        await this.paymentHistoryPdfService.generatePaymentReceiptPDF(token);
+      const filename =
+        this.paymentHistoryPdfService.generateReceiptFilename(
+          view.property?.name,
+          view.receiptDate ? new Date(view.receiptDate) : new Date(),
+        );
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${filename}"`,
+      );
+      res.send(pdf);
+    } catch (error: any) {
+      throw new HttpException(
+        error?.message || 'Failed to download receipt',
+        error?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 
   @ApiOperation({ summary: 'Create Property History' })
   @ApiBody({ type: CreatePropertyHistoryDto })

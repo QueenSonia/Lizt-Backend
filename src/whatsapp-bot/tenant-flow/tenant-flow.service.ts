@@ -29,6 +29,8 @@ import {
   TemplateSenderService,
   ButtonDefinition,
   FacilityServiceRequestParams,
+  TenancyDetailsReviewLandlordParams,
+  TenancyDetailsDisputeReasonLandlordParams,
 } from '../template-sender';
 import { IncomingMessage } from '../utils';
 import { WhatsAppNotificationLogService } from '../whatsapp-notification-log.service';
@@ -180,6 +182,11 @@ export class TenantFlowService {
       userState?.startsWith('awaiting_description:')
     ) {
       await this.handleServiceRequestDescription(from, text, userState);
+      return;
+    }
+
+    if (userState?.startsWith('awaiting_tenancy_dispute_reason:')) {
+      await this.handleTenancyDisputeReason(from, text, userState);
       return;
     }
 
@@ -911,15 +918,20 @@ export class TenantFlowService {
         year: 'numeric',
       });
 
+      const recurringFees = rentToFees(rent).filter((f) => f.recurring);
+      const feeLines = recurringFees
+        .map(
+          (f) =>
+            `• ${f.label}: ${f.amount.toLocaleString('en-NG', {
+              style: 'currency',
+              currency: 'NGN',
+            })}`,
+        )
+        .join('\n');
+
       await this.templateSenderService.sendText(
         from,
-        `Here are your tenancy details for ${item.property.name}:\n• Rent: ${rent.rental_price.toLocaleString(
-          'en-NG',
-          {
-            style: 'currency',
-            currency: 'NGN',
-          },
-        )}\n• Tenancy term: ${startDate} to ${endDate}`,
+        `Here are your tenancy details for ${item.property.name}:\n${feeLines}\n• Tenancy term: ${startDate} to ${endDate}`,
       );
 
       await this.cache.set(
@@ -1516,10 +1528,37 @@ export class TenantFlowService {
       order: { created_at: 'DESC' },
     });
 
+    // Canonical OB shape: a single Fee carrying the outstanding amount with
+    // externalId 'outstanding_balance'. Several consumers (refreshInvoiceTotals
+    // auto-PAID flip, payment-plan-requests source classification, payment-plan
+    // charge resolution) discriminate on this shape. Without it OB invoices
+    // get misclassified as payment-plan invoices.
+    const obFee: Fee = {
+      kind: 'other',
+      label: 'Outstanding Balance',
+      amount: outstandingBalance,
+      recurring: false,
+      externalId: 'outstanding_balance',
+    };
+
     let token: string;
     if (existing) {
       existing.outstanding_balance = outstandingBalance;
       existing.total_amount = outstandingBalance;
+      // Backfill legacy rows (created before fee_breakdown was populated)
+      // and sync the amount on already-canonical rows.
+      const breakdown = Array.isArray(existing.fee_breakdown)
+        ? existing.fee_breakdown
+        : [];
+      existing.fee_breakdown = breakdown.some(
+        (f) => f.externalId === 'outstanding_balance',
+      )
+        ? breakdown.map((f) =>
+            f.externalId === 'outstanding_balance'
+              ? { ...f, amount: outstandingBalance }
+              : f,
+          )
+        : [obFee];
       await this.renewalInvoiceRepo.save(existing);
       token = existing.token;
     } else {
@@ -1535,6 +1574,7 @@ export class TenantFlowService {
         service_charge: 0,
         legal_fee: 0,
         other_charges: 0,
+        fee_breakdown: [obFee],
         total_amount: outstandingBalance,
         outstanding_balance: outstandingBalance,
         token_type: 'tenant',
@@ -2269,6 +2309,14 @@ export class TenantFlowService {
       property.name,
     );
 
+    // Stash the property the tenant is reviewing so the Yes/No handlers can
+    // resolve which landlord to notify. Button reply IDs carry no payload.
+    await this.cache.set(
+      `tenancy_confirmation_pending_${from}`,
+      property.id,
+      this.SESSION_TIMEOUT_MS,
+    );
+
     await this.templateSenderService.sendButtons(from, detailsMessage, [
       { id: 'tenancy_details_correct', title: 'Yes, correct' },
       { id: 'tenancy_details_incorrect', title: 'No, not correct' },
@@ -2277,8 +2325,29 @@ export class TenantFlowService {
 
   /**
    * Handle "Yes, correct" response — tenant confirmed their tenancy details.
+   * Also notifies the landlord with status "Confirmed correct".
    */
   private async handleTenancyDetailsCorrect(from: string): Promise<void> {
+    const propertyId = await this.cache.get(
+      `tenancy_confirmation_pending_${from}`,
+    );
+    await this.cache.delete(`tenancy_confirmation_pending_${from}`);
+
+    if (propertyId) {
+      try {
+        await this.queueTenancyReviewLandlordNotification(
+          from,
+          propertyId,
+          'Confirmed correct',
+        );
+      } catch (err) {
+        this.logger.error(
+          'Failed to queue landlord tenancy-review notification:',
+          err,
+        );
+      }
+    }
+
     await this.templateSenderService.sendButtons(
       from,
       `Great, you're all set.\n\nYou can now use Lizt to report issues, make payments and stay updated.\n\nSimply tap Hi to get started.`,
@@ -2288,11 +2357,207 @@ export class TenantFlowService {
 
   /**
    * Handle "No, not correct" response — tenant says details are wrong.
+   * Notifies the landlord (status "Flagged as incorrect"), then prompts the
+   * tenant for a free-text description of what's wrong. The reply is routed
+   * by `cachedResponse` via the `awaiting_tenancy_dispute_reason:<id>` state.
    */
   private async handleTenancyDetailsIncorrect(from: string): Promise<void> {
+    const propertyId = await this.cache.get(
+      `tenancy_confirmation_pending_${from}`,
+    );
+    await this.cache.delete(`tenancy_confirmation_pending_${from}`);
+
+    if (propertyId) {
+      try {
+        await this.queueTenancyReviewLandlordNotification(
+          from,
+          propertyId,
+          'Flagged as incorrect',
+        );
+      } catch (err) {
+        this.logger.error(
+          'Failed to queue landlord tenancy-review notification:',
+          err,
+        );
+      }
+
+      await this.cache.set(
+        `service_request_state_${from}`,
+        `awaiting_tenancy_dispute_reason:${propertyId}`,
+        this.SESSION_TIMEOUT_MS,
+      );
+    }
+
     await this.templateSenderService.sendText(
       from,
-      `Thanks for letting us know.\n\nPlease contact your landlord or property manager to update your tenancy details before continuing.`,
+      `Thanks for letting us know. Could you briefly tell us what's incorrect? Just type a short description.`,
+    );
+  }
+
+  /**
+   * Resolve landlord + tenant for the given phone/property and queue a
+   * `tenancy_details_review_landlord` template via the notification log.
+   * No-ops silently if either side is missing — caller logs at outer scope.
+   */
+  private async queueTenancyReviewLandlordNotification(
+    from: string,
+    propertyId: string,
+    status: 'Confirmed correct' | 'Flagged as incorrect',
+  ): Promise<void> {
+    const property = await this.propertyRepo.findOne({
+      where: { id: propertyId },
+      relations: ['owner', 'owner.user'],
+    });
+
+    if (!property?.owner?.user?.phone_number) {
+      this.logger.warn(
+        `Cannot notify landlord of tenancy review: owner data missing for property ${propertyId}`,
+      );
+      return;
+    }
+
+    const tenant = await this.findTenantByPhone(from);
+    if (!tenant) {
+      this.logger.warn(
+        `Cannot notify landlord of tenancy review: tenant not found for ${from}`,
+      );
+      return;
+    }
+
+    const params: TenancyDetailsReviewLandlordParams = {
+      phone_number: this.utilService.normalizePhoneNumber(
+        property.owner.user.phone_number,
+      ),
+      landlord_name: this.utilService.toSentenceCase(
+        property.owner.user.first_name,
+      ),
+      tenant_name: `${this.utilService.toSentenceCase(
+        tenant.first_name,
+      )} ${this.utilService.toSentenceCase(tenant.last_name)}`,
+      tenant_phone_number: this.toLocalPhone(tenant.phone_number),
+      property_name: property.name,
+      status,
+    };
+
+    await this.notificationLogService.queue(
+      'sendTenancyDetailsReviewLandlord',
+      params,
+    );
+  }
+
+  /**
+   * Handle the tenant's free-text dispute reason (Option B).
+   * Sanitizes input — caps length, strips URLs and phone-shaped digit runs
+   * — to keep the rendered Meta template within accepted bounds.
+   */
+  private async handleTenancyDisputeReason(
+    from: string,
+    text: string,
+    userState: string,
+  ): Promise<void> {
+    const propertyId = userState.split(':')[1];
+    if (!propertyId) {
+      await this.cache.delete(`service_request_state_${from}`);
+      await this.showTenantMenu(from);
+      return;
+    }
+
+    const sanitized = this.sanitizeDisputeReason(text);
+    if (!sanitized) {
+      // Keep the state so the next reply still routes here.
+      await this.templateSenderService.sendText(
+        from,
+        `Sorry, we couldn't read that. Could you describe what's incorrect in a short sentence (no links or phone numbers please)?`,
+      );
+      return;
+    }
+
+    await this.cache.delete(`service_request_state_${from}`);
+
+    try {
+      await this.queueTenancyDisputeReasonLandlordNotification(
+        from,
+        propertyId,
+        sanitized,
+      );
+    } catch (err) {
+      this.logger.error(
+        'Failed to queue landlord dispute-reason notification:',
+        err,
+      );
+    }
+
+    await this.templateSenderService.sendText(
+      from,
+      `Thanks. We've shared this with your landlord — they'll be in touch.`,
+    );
+  }
+
+  /**
+   * Cap to 250 chars, strip URLs and any 7+ digit run (likely a phone
+   * number), collapse whitespace. Returns trimmed string, or empty if
+   * nothing usable remains.
+   */
+  private sanitizeDisputeReason(raw: string): string {
+    if (!raw) return '';
+    const stripped = raw
+      .replace(/https?:\/\/\S+/gi, '')
+      .replace(/\bwww\.\S+/gi, '')
+      .replace(/\b[a-z0-9-]+\.[a-z]{2,}\b/gi, '')
+      .replace(/\d{7,}/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!stripped) return '';
+    return stripped.length > 250 ? `${stripped.slice(0, 247)}...` : stripped;
+  }
+
+  /**
+   * Resolve landlord + tenant and queue a
+   * `tenancy_details_dispute_reason_landlord` template.
+   */
+  private async queueTenancyDisputeReasonLandlordNotification(
+    from: string,
+    propertyId: string,
+    reason: string,
+  ): Promise<void> {
+    const property = await this.propertyRepo.findOne({
+      where: { id: propertyId },
+      relations: ['owner', 'owner.user'],
+    });
+
+    if (!property?.owner?.user?.phone_number) {
+      this.logger.warn(
+        `Cannot notify landlord of dispute reason: owner data missing for property ${propertyId}`,
+      );
+      return;
+    }
+
+    const tenant = await this.findTenantByPhone(from);
+    if (!tenant) {
+      this.logger.warn(
+        `Cannot notify landlord of dispute reason: tenant not found for ${from}`,
+      );
+      return;
+    }
+
+    const params: TenancyDetailsDisputeReasonLandlordParams = {
+      phone_number: this.utilService.normalizePhoneNumber(
+        property.owner.user.phone_number,
+      ),
+      landlord_name: this.utilService.toSentenceCase(
+        property.owner.user.first_name,
+      ),
+      tenant_name: `${this.utilService.toSentenceCase(
+        tenant.first_name,
+      )} ${this.utilService.toSentenceCase(tenant.last_name)}`,
+      property_name: property.name,
+      reason,
+      tenant_phone_number: this.toLocalPhone(tenant.phone_number),
+    };
+
+    await this.notificationLogService.queue(
+      'sendTenancyDetailsDisputeReasonLandlord',
+      params,
     );
   }
 

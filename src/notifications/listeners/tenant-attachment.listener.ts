@@ -75,6 +75,16 @@ export interface OutstandingBalanceRecordedEvent {
   amount: number;
 }
 
+export interface TenancyAmendedEvent {
+  property_id: string;
+  property_name: string;
+  tenant_id: string;
+  tenant_name: string;
+  user_id: string; // landlord/owner id
+  /** Plain-text diff, e.g. "start ... → ...; expiry ... → ...; rent ₦X → ₦Y". */
+  summary: string;
+}
+
 @Injectable()
 export class TenantAttachmentListener {
   constructor(private readonly notificationService: NotificationService) {}
@@ -187,6 +197,19 @@ export class TenantAttachmentListener {
       date: new Date().toISOString(),
       type: NotificationType.OUTSTANDING_BALANCE_RECORDED,
       description: `Outstanding balance of ₦${event.amount.toLocaleString()} recorded for ${event.tenant_name} at ${event.property_name}.`,
+      status: 'Completed',
+      property_id: event.property_id,
+      user_id: event.user_id,
+    });
+  }
+
+  @OnEvent('tenancy.amended')
+  async handleTenancyAmended(event: TenancyAmendedEvent) {
+    const suffix = event.summary ? ` — ${event.summary}` : '';
+    await this.notificationService.create({
+      date: new Date().toISOString(),
+      type: NotificationType.TENANCY_AMENDED,
+      description: `Tenancy details updated for ${event.tenant_name} at ${event.property_name}${suffix}.`,
       status: 'Completed',
       property_id: event.property_id,
       user_id: event.user_id,

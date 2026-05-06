@@ -25,8 +25,10 @@ The following templates are configured for the tenancy renewal invoice flow:
 
 ```
 Hi {{1}}, your renewal rent invoice for {{2}} is ready.
-This payment covers your tenancy from {{3}} to {{4}}.
-You can safely view your invoice and make your payment using the link below:
+
+This invoice covers your tenancy from {{3}} to {{4}}.
+
+You can safely view your invoice and make your payment using the link below.
 ```
 
 **Usage**:
@@ -106,6 +108,31 @@ await templateSenderService.sendRenewalPaymentLandlord({
   property_name: 'Lekki Gardens Apartment',
 });
 ```
+
+### 4. tenancy_details_updated_tenant
+
+**Purpose**: Notify tenant that their landlord has edited the active tenancy and prompt them to re-confirm
+
+**Template Name**: `tenancy_details_updated_tenant`
+
+**Parameters**:
+
+- `{{1}}` - Tenant first name
+- `{{2}}` - Property name
+
+**Button**: Quick-reply button — `Confirm details` with payload `confirm_tenancy_details:{property_id}` (reuses the same dispatcher route as `welcome_tenant`, so a single tap takes the tenant to the Yes/No re-confirmation card)
+
+**Message**:
+
+```
+Hi {{1}},
+
+Your landlord has updated the tenancy details for {{2}}.
+
+Please confirm your updated tenancy details to continue.
+```
+
+**Usage**: Sent from `notifyTenantOfTenancyEdit` in `tenancies.service.ts` at the end of `updateActiveTenancy`, gated on `chargesChanged || periodOrFrequencyChanged || recurringChanges.length > 0` so no-op saves don't fire.
 
 ## Configuration
 

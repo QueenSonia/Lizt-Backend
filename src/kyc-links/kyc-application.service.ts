@@ -2182,12 +2182,16 @@ export class KYCApplicationService {
     // or one of its offer letters. All other types (tenancy_record, rent,
     // service_request, property_history, renewal_invoice, ...) are treated as
     // property-wide and pass through.
+    // 'tenant' scopes user-added history entries (Add History button) so they
+    // stay on the owning tenant's timeline and don't leak to other applicants
+    // / tenants on the same property.
     const applicantScopedTypes = [
       'kyc_application',
       'offer_letter',
       'invoice',
       'receipt',
       'payment',
+      'tenant',
     ];
 
     const qb = this.propertyHistoryRepository

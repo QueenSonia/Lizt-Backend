@@ -496,7 +496,7 @@ export class RenewalPDFService {
           ${
             walletBalance > 0
               ? `<div class="charge-row">
-            <span class="charge-label" style="color:#059669;">Wallet Credit Applied</span>
+            <span class="charge-label" style="color:#059669;">Rent Advance Applied</span>
             <span class="charge-amount" style="color:#059669;">-${this.formatCurrency(walletBalance)}</span>
           </div>`
               : ''
@@ -553,7 +553,25 @@ export class RenewalPDFService {
       )
       .join('');
     const walletBalance = Number(invoice.wallet_balance);
-    const totalAmount = this.formatCurrency(Number(invoice.total_amount));
+    const totalAmountNum = Number(invoice.total_amount);
+    const totalCharged = this.formatCurrency(totalAmountNum);
+    const amountPaidNum = Number(invoice.amount_paid ?? totalAmountNum);
+    const totalPaid = this.formatCurrency(amountPaidNum);
+    const excessAmount = Math.max(0, amountPaidNum - totalAmountNum);
+    const paymentHistory = Array.isArray(invoice.payment_history)
+      ? invoice.payment_history
+      : [];
+    const paymentHistoryRowsHtml =
+      paymentHistory.length > 1
+        ? paymentHistory
+            .map(
+              (p) => `<div class="charge-row" style="font-size:12px; padding:8px 0;">
+            <span class="charge-label">${this.formatDate(p.paid_at)}${p.channel ? ` &middot; ${this.escapeHtml(p.channel)}` : ''}</span>
+            <span class="charge-amount">${this.formatCurrency(Number(p.amount))}</span>
+          </div>`,
+            )
+            .join('')
+        : '';
 
     // Get landlord logo URL (document layer - top right)
     const landlordUser = (invoice.property as any)?.owner?.user;
@@ -769,7 +787,7 @@ export class RenewalPDFService {
           ${
             walletBalance > 0
               ? `<div class="charge-row">
-            <span class="charge-label" style="color:#059669;">Wallet Credit Applied</span>
+            <span class="charge-label" style="color:#059669;">Rent Advance Applied</span>
             <span class="charge-amount" style="color:#059669;">-${this.formatCurrency(walletBalance)}</span>
           </div>`
               : ''
@@ -784,10 +802,34 @@ export class RenewalPDFService {
               : ''
           }
 
-          <!-- Total amount -->
+          <!-- Total charged (the invoice total) -->
+          <div class="charge-row" style="border-top:1px solid #e5e7eb; padding-top:12px; margin-top:8px;">
+            <span class="charge-label" style="font-weight:600;">Total Charged</span>
+            <span class="charge-amount" style="font-weight:600;">${totalCharged}</span>
+          </div>
+
+          ${
+            paymentHistoryRowsHtml
+              ? `<div style="margin-top:16px;">
+            <p class="info-label" style="margin-bottom:8px;">Payments Received</p>
+            ${paymentHistoryRowsHtml}
+          </div>`
+              : ''
+          }
+
+          ${
+            excessAmount > 0
+              ? `<div class="charge-row" style="color:#059669;">
+            <span class="charge-label">Excess Applied as Rent Advance</span>
+            <span class="charge-amount">+${this.formatCurrency(excessAmount)}</span>
+          </div>`
+              : ''
+          }
+
+          <!-- Total paid (what the tenant actually paid) -->
           <div class="total-row">
             <span class="total-label">Total Amount Paid</span>
-            <span class="total-amount">${totalAmount}</span>
+            <span class="total-amount">${totalPaid}</span>
           </div>
         </div>
 

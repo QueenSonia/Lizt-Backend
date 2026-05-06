@@ -120,6 +120,7 @@ export class RenewalLettersService {
       landlordContactEmail,
       landlordContactPhone,
       landlordWebsite,
+      landlordBodyFont,
     } = await this.loadLetterContext(invoice);
 
     // Find the current expiry to populate the "expires on the …" sentence.
@@ -186,6 +187,7 @@ export class RenewalLettersService {
       landlordContactEmail,
       landlordContactPhone,
       landlordWebsite,
+      letterBodyFont: landlordBodyFont,
       acceptanceOtp:
         invoice.letter_status === RenewalLetterStatus.ACCEPTED
           ? invoice.acceptance_otp
@@ -344,6 +346,33 @@ export class RenewalLettersService {
       user_id: propertyTenant.property.owner_id,
     });
 
+    // Render and dispatch the signed-letter PDF to the tenant FIRST so it
+    // arrives ahead of the payment link. Refetch the row so the rendered
+    // stamp reflects the just-written ACCEPTED state. Failure here must NOT
+    // unwind the accept — the row is already updated and downstream actions
+    // (payment, audit) don't depend on this artefact.
+    try {
+      const refreshed = await this.renewalInvoiceRepository.findOne({
+        where: { id: invoice.id },
+      });
+      if (refreshed) {
+        await this.dispatchSignedLetterPdf(
+          refreshed,
+          property.name,
+          tenantPhone,
+          this.firstName(tenantName),
+          'accepted',
+          refreshed.accepted_at ?? new Date(),
+        );
+      }
+    } catch (err) {
+      const e = err as { message?: string; stack?: string };
+      this.logger.error(
+        `Failed to dispatch signed renewal letter (accept): ${e.message}`,
+        e.stack,
+      );
+    }
+
     // Send the renewal-invoice link WhatsApp. We deliberately use
     // `renewal_link` (URL → /renewal-invoice/{token}) rather than the
     // offer-letter `payment_invoice_link` template (URL → /offer-letters/
@@ -392,33 +421,6 @@ export class RenewalLettersService {
           e.stack,
         );
       }
-    }
-
-    // Render and dispatch the signed-letter PDF to the tenant. Refetch
-    // the row so the rendered stamp reflects the just-written ACCEPTED
-    // state. Failure here must NOT unwind the accept — the row is
-    // already updated and downstream actions (payment, audit) don't
-    // depend on this artefact.
-    try {
-      const refreshed = await this.renewalInvoiceRepository.findOne({
-        where: { id: invoice.id },
-      });
-      if (refreshed) {
-        await this.dispatchSignedLetterPdf(
-          refreshed,
-          property.name,
-          tenantPhone,
-          this.firstName(tenantName),
-          'accepted',
-          refreshed.accepted_at ?? new Date(),
-        );
-      }
-    } catch (err) {
-      const e = err as { message?: string; stack?: string };
-      this.logger.error(
-        `Failed to dispatch signed renewal letter (accept): ${e.message}`,
-        e.stack,
-      );
     }
 
     return this.getPublicLetter(token);
@@ -636,6 +638,8 @@ export class RenewalLettersService {
       landlordUser?.branding?.contactPhone ?? null;
     const landlordWebsite: string | null =
       landlordUser?.branding?.websiteLink ?? null;
+    const landlordBodyFont: string | null =
+      landlordUser?.branding?.bodyFont ?? null;
 
     return {
       property,
@@ -648,6 +652,7 @@ export class RenewalLettersService {
       landlordContactEmail,
       landlordContactPhone,
       landlordWebsite,
+      landlordBodyFont,
     };
   }
 

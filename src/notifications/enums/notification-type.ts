@@ -10,6 +10,7 @@ export enum NotificationType {
   TENANT_ATTACHED = 'Tenant Attached',
   TENANCY_ENDED = 'Tenancy Ended',
   TENANCY_RENEWED = 'Tenancy Renewed',
+  TENANCY_AMENDED = 'Tenancy Amended',
   RENEWAL_LINK_SENT = 'Renewal Link Sent',
   RENEWAL_LETTER_SENT = 'Renewal Letter Sent',
   RENEWAL_LETTER_ACCEPTED = 'Renewal Letter Accepted',

@@ -1843,6 +1843,7 @@ export class TenantManagementService {
         'property_histories.related_entity_type',
         'property_histories.receipt_token',
         'property_histories.receipt_number',
+        'property_histories.metadata',
       ])
       .leftJoin('property_histories.property', 'past_property')
       .addSelect([

@@ -1080,6 +1080,13 @@ export class TenanciesService {
       );
       if (anyChange) {
         await this.notifyTenantOfTenancyEdit(propertyTenant, activeRent.id);
+        this.emitTenancyAmended(
+          propertyTenant,
+          beforeSnapshot,
+          afterSnapshot,
+          recurringChanges,
+          feeChanges,
+        );
       }
       return { success: true };
     }
@@ -1249,6 +1256,13 @@ export class TenanciesService {
     // Charges changed by definition in this branch, so anyChange is always
     // true here — fire the tenant heads-up.
     await this.notifyTenantOfTenancyEdit(propertyTenant, activeRent.id);
+    this.emitTenancyAmended(
+      propertyTenant,
+      beforeSnapshot,
+      afterSnapshot,
+      recurringChanges,
+      feeChanges,
+    );
 
     return { success: true };
   }
@@ -1290,6 +1304,39 @@ export class TenanciesService {
     } catch (err) {
       console.error('Failed to queue tenancy-edit tenant notification:', err);
     }
+  }
+
+  /**
+   * Emit `tenancy.amended` so the notifications listener writes a
+   * landlord-facing live-feed/notification row matching the
+   * `rent_period_amended` property_histories entry. Fire-and-forget — a
+   * listener failure must not unwind the rent edit.
+   */
+  private emitTenancyAmended(
+    propertyTenant: PropertyTenant,
+    before: RentPeriodSnapshot,
+    after: RentPeriodSnapshot,
+    recurringChanges: RecurringChange[],
+    feeChanges: FeeChange[],
+  ): void {
+    const tenantUser = propertyTenant.tenant?.user;
+    const tenantName =
+      `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+      'Tenant';
+    const summary = rentPeriodAmendedDescription(
+      before,
+      after,
+      recurringChanges,
+      feeChanges,
+    ).replace(/^Tenancy period amended:\s*/, '');
+    this.eventEmitter.emit('tenancy.amended', {
+      property_id: propertyTenant.property_id,
+      property_name: propertyTenant.property?.name ?? '',
+      tenant_id: propertyTenant.tenant_id,
+      tenant_name: tenantName,
+      user_id: propertyTenant.property?.owner_id,
+      summary,
+    });
   }
 
   /**

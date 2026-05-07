@@ -129,7 +129,7 @@ Hi {{1}},
 
 Your landlord has updated the tenancy details for {{2}}.
 
-Please confirm your updated tenancy details to continue.
+Please confirm your updated tenancy details.
 ```
 
 **Usage**: Sent from `notifyTenantOfTenancyEdit` in `tenancies.service.ts` at the end of `updateActiveTenancy`, gated on `chargesChanged || periodOrFrequencyChanged || recurringChanges.length > 0` so no-op saves don't fire.

@@ -4177,7 +4177,7 @@ export class TemplateSenderService {
     tenancy_details_dispute_reason_landlord:
       "Hi {{1}}, \n\nYour tenant {{2}} has shared what's incorrect about the tenancy details for {{3}}.\n\nIssue: {{4}}\n\nPlease follow up with them at {{5}} to resolve this.",
     tenancy_details_updated_tenant:
-      'Hi {{1}},\n\nYour landlord has updated the tenancy details for {{2}}.\n\nPlease confirm your updated tenancy details to continue.',
+      'Hi {{1}},\n\nYour landlord has updated the tenancy details for {{2}}.\n\nPlease confirm your updated tenancy details.',
   };
 
   /**

@@ -341,6 +341,7 @@ export class PropertiesService {
           tenantAccount = queryRunner.manager.create(Account, {
             userId: tenantUser.id,
             email: tenantUser.email,
+            roles: [RolesEnum.TENANT],
             role: RolesEnum.TENANT,
             is_verified: false,
             creator_id: ownerId,

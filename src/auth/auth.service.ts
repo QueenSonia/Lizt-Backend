@@ -35,6 +35,44 @@ export class AuthService {
     });
   }
 
+  /**
+   * Sign a short-lived (5 min) JWT used during multi-role login. The token
+   * carries the candidate accountId + the roles the user is allowed to pick
+   * from. It is NOT a session token — `purpose: 'role-selection'` distinguishes
+   * it from access/refresh tokens so it cannot be misused as one.
+   */
+  async generateRoleSelectionTicket(payload: {
+    accountId: string;
+    userId: string;
+    availableRoles: string[];
+  }): Promise<string> {
+    return await this.jwtService.signAsync(
+      { ...payload, purpose: 'role-selection' },
+      {
+        secret: this.configService.get<string>('JWT_SECRET'),
+        issuer: 'PANDA-HOMES',
+        expiresIn: '5m',
+      },
+    );
+  }
+
+  async verifyRoleSelectionTicket(
+    token: string,
+  ): Promise<{ accountId: string; userId: string; availableRoles: string[] }> {
+    const payload = await this.jwtService.verifyAsync(token, {
+      secret: this.configService.get<string>('JWT_SECRET'),
+      issuer: 'PANDA-HOMES',
+    });
+    if (payload?.purpose !== 'role-selection') {
+      throw new Error('Token is not a role-selection ticket');
+    }
+    return {
+      accountId: payload.accountId,
+      userId: payload.userId,
+      availableRoles: payload.availableRoles,
+    };
+  }
+
   async generateRefreshToken(
     accountId: string,
     userAgent?: string,

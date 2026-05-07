@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import sgMail from '@sendgrid/mail';
 import { randomBytes, randomInt } from 'crypto';
 import { normalizePhoneNumber } from './phone-number.transformer';
+import { MEMORABLE_PASSWORD_WORDLIST } from './memorable-password.wordlist';
 
 dotenv.config();
 
@@ -56,11 +57,26 @@ export class UtilService {
     }
   };
 
-  generatePassword = async () => {
-    const plainPassword = randomBytes(8).toString('hex'); // e.g., 16 chars random password
-    const hashedPassword = await this.hashPassword(plainPassword);
-    return hashedPassword;
+  /**
+   * Generate a memorable temporary password (e.g. "panda-river-glass-42")
+   * along with its bcrypt hash.
+   *
+   * Returns BOTH the plain string (for delivery via WhatsApp / email) and the
+   * hashed value (for storage). Callers must keep the plain value out of any
+   * persistent state — it should be sent and forgotten.
+   */
+  generatePassword = async (): Promise<{ plain: string; hash: string }> => {
+    const plain = this.generateMemorablePassword();
+    const hash = await this.hashPassword(plain);
+    return { plain, hash };
   };
+
+  private generateMemorablePassword(): string {
+    const list = MEMORABLE_PASSWORD_WORDLIST;
+    const word = (): string => list[randomInt(0, list.length)];
+    const digits = String(randomInt(10, 100)); // 10..99 inclusive
+    return `${word()}-${word()}-${word()}-${digits}`;
+  }
 
   hashPassword = async (password: string) => {
     const saltRounds = 10;

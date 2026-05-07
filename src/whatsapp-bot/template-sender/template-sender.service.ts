@@ -95,6 +95,13 @@ export interface FMTemplateParams {
   name: string;
   team: string;
   role: string;
+  /**
+   * Plain-text temporary password to embed in the welcome message. Sent only
+   * when an FM is given fresh credentials (new account, or non-FM role being
+   * elevated to FM). Omitted when the FM is being added to an additional team
+   * and their existing password still works.
+   */
+  temporary_password?: string;
 }
 
 /**
@@ -842,43 +849,73 @@ export class TemplateSenderService {
   }
 
   /**
-   * Send facility manager template
+   * Send facility manager template.
+   *
+   * When `temporary_password` is provided, sends the `facility_manager_with_password`
+   * variant which includes a 4th body slot for the credential. Otherwise sends the
+   * original `facility_manager` template (no password slot).
+   *
+   * Both templates need to be approved by Meta — the with_password variant is
+   * a new template introduced alongside multi-role login.
    */
   async sendToFacilityManagerWithTemplate({
     phone_number,
     name,
     team,
     role,
+    temporary_password,
   }: FMTemplateParams): Promise<void> {
+    const baseParameters: Array<{
+      type: 'text';
+      parameter_name: string;
+      text: string;
+    }> = [
+      {
+        type: 'text',
+        parameter_name: 'name',
+        text: name,
+      },
+      {
+        type: 'text',
+        parameter_name: 'team',
+        text: team,
+      },
+      {
+        type: 'text',
+        parameter_name: 'role',
+        text: role,
+      },
+    ];
+
+    const hasPassword =
+      typeof temporary_password === 'string' && temporary_password.length > 0;
+
+    const parameters = hasPassword
+      ? [
+          ...baseParameters,
+          {
+            type: 'text' as const,
+            parameter_name: 'temporary_password',
+            text: temporary_password!,
+          },
+        ]
+      : baseParameters;
+
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
       type: 'template',
       template: {
-        name: 'facility_manager',
+        name: hasPassword
+          ? 'facility_manager_with_password'
+          : 'facility_manager',
         language: {
           code: 'en',
         },
         components: [
           {
             type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                parameter_name: 'name',
-                text: name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'team',
-                text: team,
-              },
-              {
-                type: 'text',
-                parameter_name: 'role',
-                text: role,
-              },
-            ],
+            parameters,
           },
         ],
       },

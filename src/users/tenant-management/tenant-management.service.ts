@@ -235,14 +235,16 @@ export class TenantManagementService {
         await manager.getRepository(Users).save(tenantUser);
 
         // 3. Create tenant account
-        const generatedPassword = await this.utilService.generatePassword();
+        const { hash: generatedPasswordHash } =
+          await this.utilService.generatePassword();
 
         const userAccount = manager.getRepository(Account).create({
           user: tenantUser,
           email,
-          password: generatedPassword,
+          password: generatedPasswordHash,
           is_verified: true,
           profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          roles: [RolesEnum.TENANT],
           role: RolesEnum.TENANT,
           creator_id: user_id,
         });
@@ -807,14 +809,16 @@ export class TenantManagementService {
         await manager.getRepository(Users).save(tenantUser);
 
         // 3. Create tenant account
-        const generatedPassword = await this.utilService.generatePassword();
+        const { hash: generatedPasswordHash } =
+          await this.utilService.generatePassword();
 
         const userAccount = manager.getRepository(Account).create({
           user: tenantUser,
           email,
-          password: generatedPassword,
+          password: generatedPasswordHash,
           is_verified: true,
           profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          roles: [RolesEnum.TENANT],
           role: RolesEnum.TENANT,
           creator_id: user_id,
         });
@@ -1297,6 +1301,7 @@ export class TenantManagementService {
 
         tenantAccount = manager.getRepository(Account).create({
           userId: tenantUser.id,
+          roles: [RolesEnum.TENANT],
           role: RolesEnum.TENANT,
           email: accountEmail,
         });

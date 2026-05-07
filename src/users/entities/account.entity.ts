@@ -2,6 +2,7 @@ import { BaseEntity, RolesEnum } from 'src/base.entity';
 import {
   Column,
   Entity,
+  Index,
   ManyToOne,
   OneToMany,
   OneToOne,
@@ -22,6 +23,7 @@ import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 
 @Entity('accounts')
 export class Account extends BaseEntity {
+  @Index('IDX_accounts_email_unique', { unique: true })
   @Column({ nullable: false, type: 'varchar' })
   email: string;
 
@@ -37,8 +39,19 @@ export class Account extends BaseEntity {
   @Column({
     type: 'enum',
     enum: RolesEnum,
+    array: true,
+    default: '{}',
   })
-  role: RolesEnum;
+  roles: RolesEnum[];
+
+  // Kept temporarily for back-compat — mirrors roles[0] on every write.
+  // Future cleanup: migrate `account.role` reads to `account.roles.includes(X)` and drop this column.
+  @Column({
+    type: 'enum',
+    enum: RolesEnum,
+    nullable: true,
+  })
+  role: RolesEnum | null;
 
   @Column({ nullable: true })
   creator_id: string;

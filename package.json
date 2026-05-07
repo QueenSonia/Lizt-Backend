@@ -30,7 +30,8 @@
     "migration:run": "npm run typeorm -- migration:run -d src/data-source.ts",
     "restore:tenants": "ts-node -r tsconfig-paths/register scripts/restore-deactivated-tenants.ts",
     "diagnose-kyc": "ts-node -r tsconfig-paths/register scripts/diagnose-missing-kyc.ts",
-    "security-monitor": "ts-node -r tsconfig-paths/register scripts/security-monitor.ts"
+    "security-monitor": "ts-node -r tsconfig-paths/register scripts/security-monitor.ts",
+    "script:reissue-fm-passwords": "ts-node -r tsconfig-paths/register scripts/reissue-fm-passwords.ts"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.1",

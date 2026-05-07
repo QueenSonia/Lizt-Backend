@@ -79,6 +79,7 @@ import { AccountCacheService } from 'src/auth/account-cache.service';
 import { TenantManagementService } from './tenant-management';
 import { TeamService, TeamMemberInput } from './team';
 import { PasswordService } from './password';
+import { isPlaceholderEmail } from 'src/utils/placeholder-email';
 
 @Injectable()
 export class UsersService {
@@ -270,6 +271,7 @@ export class UsersService {
         user,
         creator_id: creatorId,
         email,
+        roles: [userRole],
         role: userRole,
         profile_name: `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`,
         is_verified: false,
@@ -697,15 +699,14 @@ export class UsersService {
       throw new BadRequestException('Invalid email or phone number format');
     }
 
-    // Build query conditions based on identifier type
+    // Match by email OR by user.phone_number — no role filter, since multi-role
+    // login needs to see every role attached to this identity.
     const whereCondition = isEmail
-      ? { email: identifier.toLowerCase().trim(), role: RolesEnum.LANDLORD }
+      ? { email: identifier.toLowerCase().trim() }
       : {
           user: { phone_number: identifier.replace(/[\s\-()+]/g, '') },
-          role: RolesEnum.LANDLORD,
         };
 
-    // Single query for landlord account only
     const account = await this.accountRepository.findOne({
       where: whereCondition,
       relations: ['user'],
@@ -739,16 +740,103 @@ export class UsersService {
     // Clear rate limit on successful login
     await this.cache.delete(rateLimitKey);
 
+    // Filter to roles the multi-role sign-in supports today (landlord + FM only).
+    // The roles[] column is the source of truth; fall back to scalar role for
+    // legacy rows that haven't been backfilled yet.
+    const accountRoles =
+      account.roles?.length > 0
+        ? account.roles
+        : account.role
+          ? [account.role]
+          : [];
+
+    const allowedRoles = accountRoles.filter(
+      (r) =>
+        r === RolesEnum.LANDLORD || r === RolesEnum.FACILITY_MANAGER,
+    );
+
+    if (allowedRoles.length === 0) {
+      throw new ForbiddenException(
+        'This account does not have access to a sign-in surface yet.',
+      );
+    }
+
+    if (allowedRoles.length === 1) {
+      return this.issueSession(account, allowedRoles[0], res, req);
+    }
+
+    // Multi-role: hand back a 5-min role-selection ticket. NO session cookies set.
+    const roleSelectionToken = await this.authService.generateRoleSelectionTicket({
+      accountId: account.id,
+      userId: account.user.id,
+      availableRoles: allowedRoles,
+    });
+
+    return res.status(HttpStatus.OK).json({
+      requiresRoleSelection: true,
+      roleSelectionToken,
+      availableRoles: allowedRoles,
+    });
+  }
+
+  /**
+   * Exchange a role-selection ticket for a real session. Called after the
+   * multi-role login flow when the user has picked a role from the picker.
+   */
+  async selectRoleAfterLogin(
+    data: { roleSelectionToken: string; role: RolesEnum },
+    res: Response,
+    req?: any,
+  ) {
+    let payload: { accountId: string; userId: string; availableRoles: string[] };
+    try {
+      payload = await this.authService.verifyRoleSelectionTicket(
+        data.roleSelectionToken,
+      );
+    } catch (err) {
+      // Expired, malformed, or wrong purpose → ask the user to sign in again.
+      throw new UnauthorizedException(
+        'Role-selection session expired. Please sign in again.',
+      );
+    }
+
+    if (!payload.availableRoles.includes(data.role)) {
+      throw new ForbiddenException(
+        'Selected role is not available for this account.',
+      );
+    }
+
+    const account = await this.accountRepository.findOne({
+      where: { id: payload.accountId },
+      relations: ['user'],
+    });
+
+    if (!account) {
+      throw new UnauthorizedException('Account no longer exists.');
+    }
+
+    return this.issueSession(account, data.role, res, req);
+  }
+
+  /**
+   * Mint access + refresh tokens, set cookies, return the user shape.
+   * Shared between single-role login and the post-picker select-role exchange.
+   */
+  private async issueSession(
+    account: Account,
+    activeRole: RolesEnum,
+    res: Response,
+    req?: any,
+  ) {
     const tokenPayload = {
       id: account.id,
       first_name: account.user.first_name,
       last_name: account.user.last_name,
       email: account.email,
       phone_number: account.user.phone_number,
-      role: account.role,
+      role: activeRole,
     };
 
-    // Generate access token (7 days) and refresh token (30 days)
     const access_token =
       await this.authService.generateAccessToken(tokenPayload);
     const refresh_token = await this.authService.generateRefreshToken(
@@ -760,7 +848,6 @@ export class UsersService {
     const isProduction =
       this.configService.get<string>('NODE_ENV') === 'production';
 
-    // Set access token cookie (7 days)
     res.cookie('access_token', access_token, {
       httpOnly: true,
       secure: isProduction,
@@ -769,7 +856,6 @@ export class UsersService {
       path: '/',
     });
 
-    // Set refresh token cookie (30 days)
     res.cookie('refresh_token', refresh_token, {
       httpOnly: true,
       secure: isProduction,
@@ -786,7 +872,8 @@ export class UsersService {
         email: account.email,
         phone_number: account.user.phone_number,
         profile_name: account.profile_name,
-        role: account.role,
+        role: activeRole,
+        roles: account.roles ?? (account.role ? [account.role] : []),
         is_verified: account.is_verified,
         logo_urls: account.user.logo_urls,
         creator_id: account.creator_id,
@@ -1175,24 +1262,52 @@ export class UsersService {
   async createLandlord(
     data: CreateLandlordDto,
   ): Promise<Omit<Users, 'password'>> {
-    const existingAccount = await this.accountRepository.findOne({
-      where: { email: data.email, role: RolesEnum.LANDLORD },
+    if (!data.password) {
+      throw new BadRequestException('Password is required');
+    }
+
+    const hashedPassword = await this.utilService.hashPassword(data.password);
+
+    // Look up an existing account by email, then fall back to phone (via the
+    // linked user) so we catch legacy placeholder-email FM rows that share a
+    // phone with this landlord. See team.service.ts for the same pattern.
+    let existingAccount = await this.accountRepository.findOne({
+      where: { email: data.email },
+      relations: ['user'],
     });
 
-    if (existingAccount) {
+    if (!existingAccount && data.phone_number) {
+      existingAccount = await this.accountRepository.findOne({
+        where: { user: { phone_number: data.phone_number } },
+        relations: ['user'],
+      });
+    }
+
+    if (existingAccount?.roles?.includes(RolesEnum.LANDLORD)) {
       throw new BadRequestException(
         'Landlord Account with this email already exists',
       );
     }
 
-    if (!data.password) {
-      throw new BadRequestException('Password is required');
+    // If we hit by phone but the existing account holds a different REAL email,
+    // that's a real-data conflict — same phone bound to two different people.
+    if (
+      existingAccount &&
+      existingAccount.email !== data.email &&
+      !isPlaceholderEmail(existingAccount.email) &&
+      !isPlaceholderEmail(data.email)
+    ) {
+      throw new BadRequestException(
+        `Phone ${data.phone_number} is already linked to a different account (${existingAccount.email}).`,
+      );
     }
 
-    let user = await this.usersRepository.findOne({
-      where: { phone_number: data.phone_number },
-    });
-    console.log({ user });
+    let user =
+      existingAccount?.user ??
+      (await this.usersRepository.findOne({
+        where: { phone_number: data.phone_number },
+      }));
+
     if (!user) {
       user = await this.usersRepository.save({
         phone_number: data.phone_number,
@@ -1204,16 +1319,44 @@ export class UsersService {
       });
     }
 
-    const landlordAccount = this.accountRepository.create({
-      user,
-      email: data.email,
-      password: await this.utilService.hashPassword(data.password),
-      role: RolesEnum.LANDLORD,
-      profile_name: data.agency_name,
-      is_verified: true,
-    });
+    if (existingAccount) {
+      // Email reconciliation: if existing email is placeholder and incoming is
+      // real, upgrade. Otherwise keep existing.
+      if (
+        existingAccount.email !== data.email &&
+        isPlaceholderEmail(existingAccount.email) &&
+        !isPlaceholderEmail(data.email)
+      ) {
+        existingAccount.email = data.email;
+      }
 
-    await this.accountRepository.save(landlordAccount);
+      // Promote: append LANDLORD to roles[] and overwrite password with the
+      // user-chosen one. The landlord-set password becomes the canonical
+      // credential for this identity going forward — multi-role login then
+      // resolves the picker between Landlord and any other roles they hold.
+      existingAccount.roles = Array.from(
+        new Set([...(existingAccount.roles ?? []), RolesEnum.LANDLORD]),
+      );
+      existingAccount.role = existingAccount.roles[0];
+      existingAccount.password = hashedPassword;
+      existingAccount.profile_name =
+        existingAccount.profile_name ?? data.agency_name;
+      existingAccount.is_verified = true;
+      await this.accountRepository.save(existingAccount);
+      await this.accountCacheService.invalidate(existingAccount.id);
+    } else {
+      const landlordAccount = this.accountRepository.create({
+        user,
+        email: data.email,
+        password: hashedPassword,
+        roles: [RolesEnum.LANDLORD],
+        role: RolesEnum.LANDLORD,
+        profile_name: data.agency_name,
+        is_verified: true,
+      });
+
+      await this.accountRepository.save(landlordAccount);
+    }
 
     const { password, ...result } = user;
     return result as Omit<Users, 'password'>;
@@ -1255,6 +1398,7 @@ export class UsersService {
       user,
       email: data.email,
       password: await this.utilService.hashPassword(data.password),
+      roles: [RolesEnum.ADMIN],
       role: RolesEnum.ADMIN,
       profile_name: `${user.first_name}'s Admin Account`,
       is_verified: true,
@@ -1341,6 +1485,7 @@ export class UsersService {
       password: data.password
         ? await this.utilService.hashPassword(data.password)
         : '',
+      roles: [RolesEnum.REP],
       role: RolesEnum.REP,
       profile_name: `${data.first_name} ${data.last_name}`,
       is_verified: true,

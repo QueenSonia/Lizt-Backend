@@ -29,6 +29,7 @@ import {
   UploadLogoDto,
   UserFilter,
 } from './dto/create-user.dto';
+import { SelectRoleDto } from './dto/select-role.dto';
 import { AttachTenantFromKycDto } from './dto/attach-tenant-from-kyc.dto';
 import { AttachTenantToPropertyDto } from './dto/attach-tenant-to-property.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -389,6 +390,26 @@ export class UsersController {
     } catch (error) {
       throw error;
     }
+  }
+
+  @ApiOperation({
+    summary: 'Select role after multi-role sign-in',
+    description:
+      'When /users/login returns requiresRoleSelection=true, the client calls this endpoint with the role-selection ticket and the chosen role to receive a real session.',
+  })
+  @ApiBody({ type: SelectRoleDto })
+  @ApiOkResponse({ description: 'Session issued for the selected role' })
+  @ApiUnauthorizedResponse({
+    description: 'Ticket missing, expired, or invalid',
+  })
+  @SkipAuth()
+  @Post('login/select-role')
+  async selectRoleAfterLogin(
+    @Body() body: SelectRoleDto,
+    @Res() res: Response,
+    @Req() req: any,
+  ) {
+    return this.usersService.selectRoleAfterLogin(body, res, req);
   }
 
   @ApiOperation({

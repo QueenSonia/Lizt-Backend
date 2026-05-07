@@ -535,6 +535,7 @@ export class TenantAttachmentService {
           tenantAccount = manager.create(Account, {
             email: emailToUse,
             userId: existingUser.id,
+            roles: [RolesEnum.TENANT],
             role: RolesEnum.TENANT,
             is_verified: false,
             password: null,
@@ -668,6 +669,7 @@ export class TenantAttachmentService {
     tenantAccount = manager.create(Account, {
       email: emailToUse,
       userId: savedUser.id,
+      roles: [RolesEnum.TENANT],
       role: RolesEnum.TENANT,
       is_verified: false,
       password: null, // Tenant will set password when they first log in

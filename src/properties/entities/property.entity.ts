@@ -8,6 +8,7 @@ import { PropertyHistory } from 'src/property-history/entities/property-history.
 import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 import { Account } from 'src/users/entities/account.entity';
+import { TeamMember } from 'src/users/entities/team-member.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
@@ -68,6 +69,13 @@ export class Property extends BaseEntity {
 
   @Column({ nullable: true, type: 'text' })
   comment?: string | null;
+
+  @Column({ nullable: true, type: 'uuid' })
+  facility_manager_id: string | null;
+
+  @ManyToOne(() => TeamMember, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'facility_manager_id', referencedColumnName: 'id' })
+  facility_manager?: TeamMember | null;
 
   @OneToMany(() => PropertyTenant, (t) => t.property)
   property_tenants: PropertyTenant[];

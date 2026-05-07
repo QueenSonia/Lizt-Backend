@@ -7,6 +7,7 @@ import {
   Delete,
   Query,
   ParseUUIDPipe,
+  Patch,
   Put,
   UseInterceptors,
   UploadedFiles,
@@ -416,6 +417,25 @@ export class PropertiesController {
     } catch (error) {
       throw error;
     }
+  }
+
+  @ApiOperation({ summary: 'Reassign / unassign facility manager on a property' })
+  @ApiOkResponse({ description: 'Facility manager updated' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Patch(':id/facility-manager')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async setPropertyFacilityManager(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: { facility_manager_id: string | null },
+    @CurrentUser() requester: Account,
+  ) {
+    return this.propertiesService.setPropertyFacilityManager(
+      requester.id,
+      id,
+      body?.facility_manager_id ?? null,
+    );
   }
 
   @ApiOperation({ summary: 'Update Property' })

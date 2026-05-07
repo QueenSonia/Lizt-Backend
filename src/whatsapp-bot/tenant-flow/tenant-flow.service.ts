@@ -1207,10 +1207,12 @@ export class TenantFlowService {
         );
       }
 
-      // Notify all FMs for this landlord's team
-      const fms = await this.serviceRequestService.findFacilityManagersForOwner(
-        property.owner_id,
-      );
+      // Notify the FM assigned to this specific property (0..1).
+      // Properties without an assigned FM only ping the landlord above.
+      const fms =
+        await this.serviceRequestService.findFacilityManagerForProperty(
+          property.id,
+        );
       for (const fm of fms) {
         if (fm.account?.user?.phone_number) {
           await this.templateSenderService.sendText(

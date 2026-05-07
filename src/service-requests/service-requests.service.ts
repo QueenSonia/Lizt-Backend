@@ -109,7 +109,14 @@ export class ServiceRequestsService {
 
     const tenantExistInProperty = await this.propertyTenantRepository.findOne({
       where: whereClause,
-      relations: ['tenant', 'tenant.user', 'property'],
+      relations: [
+        'tenant',
+        'tenant.user',
+        'property',
+        'property.facility_manager',
+        'property.facility_manager.account',
+        'property.facility_manager.account.user',
+      ],
     });
 
     if (!tenantExistInProperty?.id) {
@@ -119,24 +126,22 @@ export class ServiceRequestsService {
       );
     }
 
-    // 1. Find all facility managers for the property's team
-    const facilityManagers = await this.teamMemberRepository.find({
-      where: {
-        team: { creatorId: tenantExistInProperty.property.owner_id },
-        role: RolesEnum.FACILITY_MANAGER,
-      },
-      relations: ['team', 'account', 'account.user'],
-    });
-
-    // Fix #5: If no FMs exist, continue — landlord will still be notified
-    const selected_managers = facilityManagers
-      .filter((manager) => manager.account?.user?.phone_number)
-      .map((manager) => ({
-        phone_number: this.utilService.normalizePhoneNumber(
-          manager.account.user.phone_number,
-        ),
-        name: this.utilService.toSentenceCase(manager.account.user.first_name),
-      }));
+    // 1. Resolve the FM assigned to this specific property (0..1).
+    //    Properties without an assigned FM yield an empty list — the landlord
+    //    is still notified separately via the `service.created` event.
+    const assignedFm = tenantExistInProperty.property.facility_manager;
+    const selected_managers = assignedFm?.account?.user?.phone_number
+      ? [
+          {
+            phone_number: this.utilService.normalizePhoneNumber(
+              assignedFm.account.user.phone_number,
+            ),
+            name: this.utilService.toSentenceCase(
+              assignedFm.account.user.first_name,
+            ),
+          },
+        ]
+      : [];
 
     const requestId = this.utilService.generateServiceRequestId();
 
@@ -206,6 +211,7 @@ export class ServiceRequestsService {
   async getAllServiceRequests(
     user_id: string,
     queryParams: ServiceRequestFilter,
+    role?: string,
   ) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
@@ -217,13 +223,43 @@ export class ServiceRequestsService {
 
     const query = await buildServiceRequestFilter(queryParams);
 
+    // Role-aware scoping:
+    // - LANDLORD: requests on properties they own.
+    // - FACILITY_MANAGER: requests on properties currently assigned to a
+    //   team_member row that belongs to this account. An FM with no
+    //   assignments naturally sees an empty list.
+    let propertyFilter: Record<string, unknown>;
+    if (role === RolesEnum.FACILITY_MANAGER) {
+      const myTeamMemberships = await this.teamMemberRepository.find({
+        where: {
+          accountId: user_id,
+          role: RolesEnum.FACILITY_MANAGER,
+        },
+        select: { id: true },
+      });
+      const tmIds = myTeamMemberships.map((m) => m.id);
+      if (tmIds.length === 0) {
+        return {
+          service_requests: [],
+          pagination: {
+            totalRows: 0,
+            perPage: size,
+            currentPage: page,
+            totalPages: 0,
+            hasNextPage: false,
+          },
+        };
+      }
+      propertyFilter = { facility_manager_id: In(tmIds) };
+    } else {
+      propertyFilter = { owner_id: user_id };
+    }
+
     const [serviceRequests, count] =
       await this.serviceRequestRepository.findAndCount({
         where: {
           ...query,
-          property: {
-            owner_id: user_id,
-          },
+          property: propertyFilter,
         },
         relations: [
           'tenant',
@@ -637,16 +673,25 @@ export class ServiceRequestsService {
   }
 
   /**
-   * Find all facility managers belonging to a landlord's team.
-   * Used by tenant-flow to notify all FMs on resolution confirmation.
+   * Find the facility manager assigned to a specific property (0..1). Used
+   * by tenant-flow to notify the assigned FM on resolution confirmation.
+   * Returns an empty array when no FM is assigned — the landlord is still
+   * notified through their own notification path.
    */
-  async findFacilityManagersForOwner(ownerId: string): Promise<TeamMember[]> {
-    return this.teamMemberRepository.find({
-      where: {
-        team: { creatorId: ownerId },
-        role: RolesEnum.FACILITY_MANAGER,
-      },
-      relations: ['account', 'account.user'],
-    });
+  async findFacilityManagerForProperty(
+    propertyId: string,
+  ): Promise<TeamMember[]> {
+    const fm = await this.teamMemberRepository
+      .createQueryBuilder('tm')
+      .leftJoinAndSelect('tm.account', 'account')
+      .leftJoinAndSelect('account.user', 'user')
+      .innerJoin(
+        'properties',
+        'property',
+        'property.facility_manager_id = tm.id AND property.id = :propertyId',
+        { propertyId },
+      )
+      .getOne();
+    return fm ? [fm] : [];
   }
 }

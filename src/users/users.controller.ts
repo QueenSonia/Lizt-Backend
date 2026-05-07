@@ -626,6 +626,7 @@ export class UsersController {
       first_name: string;
       last_name: string;
       phone_number: string;
+      property_ids?: string[];
     },
     @Req() req: any,
   ) {

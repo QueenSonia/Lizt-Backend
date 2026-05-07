@@ -76,7 +76,12 @@ export class ServiceRequestsController {
   @Get()
   getAllServiceRequests(@Query() query: ServiceRequestFilter, @Req() req: any) {
     const user_id = req?.user?.id;
-    return this.serviceRequestsService.getAllServiceRequests(user_id, query);
+    const role = req?.user?.role;
+    return this.serviceRequestsService.getAllServiceRequests(
+      user_id,
+      query,
+      role,
+    );
   }
 
   @ApiOperation({ summary: 'Get Pending and Urgent Requests' })

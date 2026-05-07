@@ -9,7 +9,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { RolesEnum } from 'src/base.entity';
 import { Account } from '../entities/account.entity';
 import { Team } from '../entities/team.entity';
@@ -20,6 +20,8 @@ import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { AccountCacheService } from 'src/auth/account-cache.service';
 import { isPlaceholderEmail } from 'src/utils/placeholder-email';
+import { Property } from 'src/properties/entities/property.entity';
+import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 
 /**
  * Input type for creating a new team member
@@ -31,6 +33,13 @@ export interface TeamMemberInput {
   first_name: string;
   last_name: string;
   phone_number: string;
+  /**
+   * Optional list of property IDs to assign to this FM at creation time.
+   * Each property must belong to the calling landlord and must not already
+   * be assigned to another FM (the FE disables those rows; including them
+   * here is treated as a stale-state error and rejected with 409).
+   */
+  property_ids?: string[];
 }
 
 /**
@@ -283,6 +292,70 @@ export class TeamService {
         });
 
         await manager.getRepository(TeamMember).save(newTeamMember);
+
+        // 8b. Assign properties to this new FM, if requested. Validation
+        // mirrors the FE state: each ID must belong to the landlord, and
+        // none can already be assigned to another FM (FE disables those
+        // rows; receiving one here means the FE list is stale).
+        const requestedPropertyIds = (teamMember.property_ids ?? []).filter(
+          Boolean,
+        );
+        if (requestedPropertyIds.length > 0) {
+          const propRepo = manager.getRepository(Property);
+          const properties = await propRepo.find({
+            where: { id: In(requestedPropertyIds) },
+          });
+
+          const foundIds = new Set(properties.map((p) => p.id));
+          const missing = requestedPropertyIds.filter((id) => !foundIds.has(id));
+          const wrongOwner = properties.filter((p) => p.owner_id !== userId);
+          if (missing.length > 0 || wrongOwner.length > 0) {
+            throw new ForbiddenException(
+              'One or more properties were not found or do not belong to you',
+            );
+          }
+
+          const taken = properties.filter(
+            (p) => p.facility_manager_id && p.facility_manager_id !== newTeamMember.id,
+          );
+          if (taken.length > 0) {
+            throw new ConflictException(
+              `Property "${taken[0].name}" is already assigned to another facility manager`,
+            );
+          }
+
+          await propRepo
+            .createQueryBuilder()
+            .update(Property)
+            .set({ facility_manager_id: newTeamMember.id })
+            .where('id IN (:...ids)', { ids: requestedPropertyIds })
+            .andWhere('owner_id = :ownerId', { ownerId: userId })
+            .execute();
+
+          // Write one history row per newly assigned property.
+          const phRepo = manager.getRepository(PropertyHistory);
+          const newFmName =
+            userAccount.profile_name?.trim() ||
+            `${teamMember.first_name} ${teamMember.last_name}`.trim() ||
+            null;
+          for (const p of properties) {
+            await phRepo.save({
+              property_id: p.id,
+              tenant_id: null,
+              event_type: 'facility_manager_assigned',
+              event_description: JSON.stringify({
+                propertyName: p.name,
+                previousFacilityManagerId: null,
+                previousFacilityManagerName: null,
+                newFacilityManagerId: newTeamMember.id,
+                newFacilityManagerName: newFmName,
+                actorId: userId,
+              }),
+              related_entity_type: 'team_member',
+              related_entity_id: newTeamMember.id,
+            });
+          }
+        }
 
         // 9. Send WhatsApp notification to the new team member.
         // Only include the temporary password when we actually (re)issued one;

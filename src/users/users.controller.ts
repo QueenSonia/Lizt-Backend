@@ -15,6 +15,7 @@ import {
   UploadedFiles,
   UploadedFile,
   Patch,
+  HttpException,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { SyncTenantDataService } from './sync-tenant-data.service';
@@ -448,13 +449,31 @@ export class UsersController {
 
   @SkipAuth()
   @Post('forgot-password')
-  async forgotPassword(@Body() body: { email: string }, @Res() res: Response) {
+  async forgotPassword(
+    @Body() body: { identifier?: string; email?: string },
+    @Res() res: Response,
+  ) {
     try {
-      const { email } = body;
-      await this.usersService.forgotPassword(email);
-      return res.status(200).json({ message: 'Check your Email' });
+      // Accept `identifier` (new) or `email` (legacy) so old clients keep
+      // working while the FE migrates to phone-or-email.
+      const raw = body.identifier ?? body.email;
+      if (!raw || typeof raw !== 'string' || !raw.trim()) {
+        return res
+          .status(400)
+          .json({ message: 'identifier (email or phone) is required' });
+      }
+      const result = await this.usersService.forgotPassword(raw);
+      return res.status(200).json(result);
     } catch (error) {
-      return res.status(500).json({ message: 'Internal Server Error' });
+      const status =
+        error instanceof HttpException ? error.getStatus() : 500;
+      const message =
+        error instanceof HttpException
+          ? error.getResponse()
+          : 'Internal Server Error';
+      return res.status(status).json(
+        typeof message === 'string' ? { message } : message,
+      );
     }
   }
 

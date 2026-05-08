@@ -1013,8 +1013,8 @@ export class UsersService {
    * Initiates the forgot password flow.
    * Delegates to PasswordService.
    */
-  async forgotPassword(email: string) {
-    return this.passwordService.forgotPassword(email);
+  async forgotPassword(identifier: string) {
+    return this.passwordService.forgotPassword(identifier);
   }
 
   /**

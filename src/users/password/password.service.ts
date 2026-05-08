@@ -186,7 +186,7 @@ export class PasswordService {
         const emailContent = clientForgotPasswordTemplate(otp);
         await this.utilService.sendEmail(
           user.email,
-          EmailSubject.WELCOME_EMAIL,
+          EmailSubject.LIZT_OTP,
           emailContent,
         );
         return { message: 'OTP sent to email', token };
@@ -319,7 +319,7 @@ export class PasswordService {
       const emailContent = clientForgotPasswordTemplate(newOtp);
       await this.utilService.sendEmail(
         user.email,
-        EmailSubject.RESEND_OTP,
+        EmailSubject.LIZT_OTP,
         emailContent,
       );
     }

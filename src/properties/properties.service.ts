@@ -844,6 +844,106 @@ export class PropertiesService {
     }
   }
 
+  /**
+   * Properties this facility manager manages — across all the landlords
+   * (TeamMember rows) they belong to. Powers the FM Properties screen and
+   * is also the source of truth for the FM landlord pill-bar (one entry per
+   * unique owner) and the FM activity-feed/socket subscriptions.
+   *
+   * Includes:
+   *   - landlord (owner) profile (id, profile_name, first/last name)
+   *   - active rent → current tenant name + phone (for the property header)
+   *   - open_request_count: count of service requests on this property whose
+   *     status is NOT in (RESOLVED, CLOSED).
+   */
+  async getManagedProperties(userId: string) {
+    const properties = await this.propertyRepository
+      .createQueryBuilder('property')
+      .innerJoin('property.facility_manager', 'fm')
+      .innerJoin('fm.account', 'fmAccount')
+      .innerJoin('fmAccount.user', 'fmUser')
+      .leftJoinAndSelect('property.owner', 'owner')
+      .leftJoinAndSelect('owner.user', 'ownerUser')
+      .leftJoinAndSelect(
+        'property.rents',
+        'rent',
+        'rent.rent_status = :activeStatus AND rent.deleted_at IS NULL',
+        { activeStatus: RentStatusEnum.ACTIVE },
+      )
+      .leftJoinAndSelect('rent.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'tenantUser')
+      .where('fmUser.id = :userId', { userId })
+      .andWhere('fm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
+      .andWhere('property.deleted_at IS NULL')
+      .orderBy('property.created_at', 'DESC')
+      .getMany();
+
+    if (properties.length === 0) {
+      return [];
+    }
+
+    const propertyIds = properties.map((p) => p.id);
+
+    // Per-property counts of "open" requests (not resolved, not closed).
+    const counts = await this.propertyRepository.manager
+      .createQueryBuilder()
+      .select('sr.property_id', 'property_id')
+      .addSelect('COUNT(*)::int', 'open_count')
+      .from('service_requests', 'sr')
+      .where('sr.property_id IN (:...propertyIds)', { propertyIds })
+      .andWhere('sr.deleted_at IS NULL')
+      .andWhere('sr.status NOT IN (:...closedStatuses)', {
+        closedStatuses: [
+          ServiceRequestStatusEnum.RESOLVED,
+          ServiceRequestStatusEnum.CLOSED,
+        ],
+      })
+      .groupBy('sr.property_id')
+      .getRawMany();
+
+    const countByProperty = new Map<string, number>();
+    for (const row of counts) {
+      countByProperty.set(row.property_id, Number(row.open_count) || 0);
+    }
+
+    return properties.map((p) => {
+      const activeRent = p.rents?.[0];
+      const tenantUser = activeRent?.tenant?.user;
+      const tenantFirst = tenantUser?.first_name ?? null;
+      const tenantLast = tenantUser?.last_name ?? null;
+      const tenantName =
+        [tenantFirst, tenantLast].filter(Boolean).join(' ') || null;
+
+      const ownerUser = p.owner?.user;
+      const ownerDisplay =
+        p.owner?.profile_name ||
+        [ownerUser?.first_name, ownerUser?.last_name]
+          .filter(Boolean)
+          .join(' ') ||
+        null;
+
+      return {
+        id: p.id,
+        name: p.name,
+        location: p.location,
+        property_type: p.property_type,
+        property_status: p.property_status,
+        owner_id: p.owner_id,
+        landlord_display_name: ownerDisplay,
+        tenant: tenantUser
+          ? {
+              id: tenantUser.id,
+              name: tenantName,
+              phone_number: tenantUser.phone_number ?? null,
+              email: tenantUser.email ?? null,
+            }
+          : null,
+        active_rent_id: activeRent?.id ?? null,
+        open_request_count: countByProperty.get(p.id) ?? 0,
+      };
+    });
+  }
+
   async getAllProperties(queryParams: PropertyFilter) {
     const page = queryParams.page
       ? Number(queryParams.page)
@@ -1210,16 +1310,19 @@ export class PropertiesService {
 
     // 3. Format Service Requests
     const serviceRequests = property.service_requests.map((sr) => {
-      const tenantUser = sr.tenant.user;
-      const tenantKyc = tenantUser.tenant_kycs?.[0]; // Filtered by admin_id in query
+      // tenant is nullable for FM-created requests (common areas, etc.)
+      const tenantUser = sr.tenant?.user ?? null;
+      const tenantKyc = tenantUser?.tenant_kycs?.[0]; // Filtered by admin_id in query
 
-      // Prioritize TenantKyc data for consistency
-      const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
-      const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+      const firstName =
+        tenantKyc?.first_name ?? tenantUser?.first_name ?? '';
+      const lastName = tenantKyc?.last_name ?? tenantUser?.last_name ?? '';
+      const tenantName =
+        `${firstName} ${lastName}`.trim() || sr.tenant_name || 'Facility Manager';
 
       return {
         id: sr.id,
-        tenantName: `${firstName} ${lastName}`,
+        tenantName,
         propertyName: property.name,
         messagePreview: sr.description.substring(0, 100) + '...',
         dateReported: sr.date_reported.toISOString(),
@@ -2985,14 +3088,11 @@ export class PropertiesService {
         'COUNT(DISTINCT property.id) as total_properties',
         'COUNT(DISTINCT tenant.id) as total_tenants',
         'COUNT(DISTINCT CASE WHEN rent.expiry_date <= :dueDate THEN tenant.id END) as due_tenants',
-        'COUNT(DISTINCT CASE WHEN requests.status IN (:...statuses) THEN requests.id END) as unresolved_requests',
+        'COUNT(DISTINCT CASE WHEN requests.status = :notApprovedStatus OR requests.is_urgent = true THEN requests.id END) as unresolved_requests',
       ])
       .setParameters({
         dueDate: DateService.addDays(new Date(), 7),
-        statuses: [
-          ServiceRequestStatusEnum.PENDING,
-          ServiceRequestStatusEnum.URGENT,
-        ],
+        notApprovedStatus: ServiceRequestStatusEnum.NOT_APPROVED,
       })
       .getRawOne();
 

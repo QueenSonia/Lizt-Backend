@@ -335,13 +335,24 @@ export class TenantFlowService {
     // Set a 30-second dedup window
     await this.cache.set(dedupeKey, '1', 30 * 1000);
 
+    if (!selectedPropertyId) {
+      await this.templateSenderService.sendText(
+        from,
+        'We could not determine which property this request is for. Please try again.',
+      );
+      await this.cache.delete(`service_request_state_${from}`);
+      return;
+    }
+
     try {
       const new_service_request =
-        await this.serviceRequestService.createServiceRequest({
-          tenant_id: user.accounts[0].id,
-          property_id: selectedPropertyId,
-          text,
-        });
+        await this.serviceRequestService.createServiceRequest(
+          {
+            property_id: selectedPropertyId,
+            text,
+          },
+          { id: user.id, role: RolesEnum.TENANT },
+        );
 
       if (new_service_request) {
         const {
@@ -1106,14 +1117,20 @@ export class TenantFlowService {
     });
 
     if (latestResolvedRequest) {
+      // The query filters by tenant.user.phone_number, so for matched rows
+      // tenant + tenant.user are guaranteed populated despite the nullable
+      // tenant column on the entity.
+      const tenantUser = latestResolvedRequest.tenant?.user;
       await this.serviceRequestService.updateStatus(
         latestResolvedRequest.id,
         ServiceRequestStatusEnum.CLOSED,
         'Tenant confirmed issue is fully resolved via WhatsApp',
         {
-          id: latestResolvedRequest.tenant.user.id,
+          id: tenantUser?.id ?? 'system',
           role: 'tenant',
-          name: `${latestResolvedRequest.tenant.user.first_name} ${latestResolvedRequest.tenant.user.last_name}`,
+          name: tenantUser
+            ? `${tenantUser.first_name} ${tenantUser.last_name}`
+            : 'Tenant',
         },
       );
 
@@ -1151,14 +1168,17 @@ export class TenantFlowService {
     });
 
     if (latestResolvedRequest) {
+      const tenantUser = latestResolvedRequest.tenant?.user;
       await this.serviceRequestService.updateStatus(
         latestResolvedRequest.id,
         ServiceRequestStatusEnum.REOPENED,
         'Tenant reported issue is not fully resolved via WhatsApp',
         {
-          id: latestResolvedRequest.tenant.user.id,
+          id: tenantUser?.id ?? 'system',
           role: 'tenant',
-          name: `${latestResolvedRequest.tenant.user.first_name} ${latestResolvedRequest.tenant.user.last_name}`,
+          name: tenantUser
+            ? `${tenantUser.first_name} ${tenantUser.last_name}`
+            : 'Tenant',
         },
       );
 

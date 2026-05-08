@@ -1387,6 +1387,64 @@ export class TemplateSenderService {
   }
 
   /**
+   * FM-targeted ping that fires when a landlord approves a service request
+   * (NOT_APPROVED → APPROVED). Reuses the same parameter shape as
+   * `sendFacilityServiceRequest`. The template body is registered separately
+   * in Meta Business Manager — this code only references the template name.
+   */
+  async sendFacilityServiceRequestApproved({
+    phone_number,
+    property_name,
+    service_request,
+    tenant_name,
+    tenant_phone_number,
+    date_created,
+  }: Omit<FacilityServiceRequestParams, 'is_landlord'>): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'fm_service_request_approved',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: service_request },
+              { type: 'text', text: date_created },
+              { type: 'text', text: tenant_phone_number },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              { type: 'payload', payload: 'view_all_service_requests' },
+            ],
+          },
+        ],
+      },
+    };
+
+    try {
+      await this.sendToWhatsappAPI(payload);
+    } catch (err) {
+      // If Meta hasn't approved the new template yet (or the name is
+      // unregistered), the API call returns an error. Log and swallow so
+      // the rest of the approval flow isn't blocked while we wait on Meta.
+      console.warn(
+        `[fm_service_request_approved] template send failed (template may be unregistered with Meta): ${
+          (err as Error)?.message ?? err
+        }`,
+      );
+    }
+  }
+
+  /**
    * Send KYC completion link to existing tenant via WhatsApp
    */
   async sendKYCCompletionLink({

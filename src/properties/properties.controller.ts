@@ -212,6 +212,20 @@ export class PropertiesController {
     return this.propertiesService.fetchAllVacantProperties(requester.id);
   }
 
+  @ApiOperation({
+    summary: 'Properties managed by the requesting facility manager',
+    description:
+      "Returns every property whose facility_manager_id maps to one of this user's TeamMember rows (across all landlords they work for). Each row includes: landlord display name (for the FM's landlord pill bar), the active tenant's name + phone (for the property header), and the count of open service requests on that property.",
+  })
+  @ApiOkResponse({ description: 'List of FM-managed properties' })
+  @ApiSecurity('access_token')
+  @Get('/managed')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.FACILITY_MANAGER)
+  async getManagedProperties(@CurrentUser() requester: Account) {
+    return this.propertiesService.getManagedProperties(requester.id);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('/marketing-ready')
   getMarketingReadyProperties(

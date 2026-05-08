@@ -192,11 +192,15 @@ export const buildRentFilter = async (queryParams: RentFilter) => {
 export const buildServiceRequestFilter = async (
   queryParams: ServiceRequestFilter,
 ) => {
-  const query = {};
+  const query: Record<string, unknown> = {};
   if (queryParams?.tenant_id) query['tenant_id'] = queryParams.tenant_id;
   if (queryParams?.property_id) query['property_id'] = queryParams.property_id;
   if (queryParams?.status) query['status'] = queryParams.status.toLowerCase();
-  //   query['property'] = { owner_id: queryParams.owner_id };
+  if (queryParams?.scope) query['scope'] = queryParams.scope;
+  if (queryParams?.creator_type)
+    query['creator_type'] = queryParams.creator_type;
+  if (typeof queryParams?.is_urgent === 'boolean')
+    query['is_urgent'] = queryParams.is_urgent;
 
   if (queryParams?.start_date && queryParams?.end_date) {
     const regex = /^\d{4}-\d{2}-\d{2}$/;

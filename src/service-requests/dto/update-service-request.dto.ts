@@ -3,8 +3,18 @@ import {
   CreateServiceRequestDto,
   ServiceRequestStatusEnum,
 } from './create-service-request.dto';
-import { Transform } from 'class-transformer';
-import { IsDateString, IsEnum, IsOptional } from 'class-validator';
+import { JobCategoryEnum } from './job-category.enum';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsBoolean,
+  IsDateString,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class UpdateServiceRequestDto extends PartialType(
   CreateServiceRequestDto,
@@ -118,4 +128,65 @@ export class UpdateServiceRequestResponseDto {
   @IsOptional()
   @Transform(({ value }) => value?.trim() || undefined)
   property_id?: string;
+
+  @ApiProperty({
+    description: 'Mark the request as urgent (independent of status)',
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === '' || value === null) return undefined;
+    return value === true || value === 'true';
+  })
+  @IsBoolean()
+  is_urgent?: boolean;
+
+  @ApiProperty({
+    description:
+      "Tenant's message when reopening a resolved request. Required when transitioning to 'reopened'.",
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => value?.trim() || undefined)
+  reopen_message?: string;
+
+  @ApiProperty({
+    example: 4500000,
+    description:
+      'Cost incurred resolving the issue, in NGN minor units (kobo). Optional. Required only as part of a resolve transition payload when the FM ticked "yes" on cost.',
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  resolution_cost_minor?: number;
+
+  @ApiProperty({
+    enum: JobCategoryEnum,
+    description:
+      "Category of work done to resolve the issue. Required when transitioning to 'resolved'.",
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsEnum(JobCategoryEnum)
+  resolution_category?: JobCategoryEnum;
+
+  @ApiProperty({
+    example: 'Replaced kitchen tap washer; tested for leaks.',
+    description:
+      "Free-text summary of the resolution. Required when transitioning to 'resolved'.",
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  @Transform(({ value }) => value?.trim() || undefined)
+  resolution_summary?: string;
 }

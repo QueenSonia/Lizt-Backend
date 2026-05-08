@@ -1,22 +1,32 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsNotEmpty,
-  IsString,
-  IsOptional,
-  IsUUID,
+  IsBoolean,
   IsDateString,
+  IsEnum,
+  IsNotEmpty,
   IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
 } from 'class-validator';
 
 export enum ServiceRequestStatusEnum {
-  PENDING = 'pending',
-  OPEN = 'open',
-  IN_PROGRESS = 'in_progress',
+  NOT_APPROVED = 'not_approved',
+  APPROVED = 'approved',
   RESOLVED = 'resolved',
-  CLOSED = 'closed',
   REOPENED = 'reopened',
-  URGENT = 'urgent',
+  CLOSED = 'closed',
+}
+
+export enum ServiceRequestScopeEnum {
+  UNIT = 'unit',
+  COMMON_AREA = 'common_area',
+}
+
+export enum ServiceRequestCreatorTypeEnum {
+  TENANT = 'tenant',
+  FACILITY_MANAGER = 'facility_manager',
 }
 
 export class CreateServiceRequestDto {
@@ -24,11 +34,22 @@ export class CreateServiceRequestDto {
   text: string;
 
   @IsUUID()
-  tenant_id: string;
+  property_id: string;
 
+  @ApiProperty({
+    enum: ServiceRequestScopeEnum,
+    required: false,
+    default: ServiceRequestScopeEnum.UNIT,
+  })
   @IsOptional()
-  @IsUUID()
-  property_id?: string;
+  @IsEnum(ServiceRequestScopeEnum)
+  scope?: ServiceRequestScopeEnum;
+
+  @ApiProperty({ required: false, default: false })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  is_urgent?: boolean;
 }
 
 export class ServiceRequestFilter {
@@ -45,6 +66,22 @@ export class ServiceRequestFilter {
   @IsOptional()
   @IsString()
   status?: string;
+
+  @IsOptional()
+  @IsEnum(ServiceRequestScopeEnum)
+  scope?: ServiceRequestScopeEnum;
+
+  @IsOptional()
+  @IsEnum(ServiceRequestCreatorTypeEnum)
+  creator_type?: ServiceRequestCreatorTypeEnum;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === '' || value === null) return undefined;
+    return value === true || value === 'true';
+  })
+  @IsBoolean()
+  is_urgent?: boolean;
 
   @IsOptional()
   @IsDateString()

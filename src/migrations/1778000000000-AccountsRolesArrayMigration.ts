@@ -67,7 +67,9 @@ export class AccountsRolesArrayMigration1778000000000
         canonical_id uuid;
         merged_roles ${this.quote(enumType)}[];
         merged_password varchar;
-        merged_creator_id uuid;
+        -- accounts.creator_id is varchar in the schema (TypeORM @Column default
+        -- for the string type), even though it stores UUID strings. Match it.
+        merged_creator_id varchar;
         merged_profile_name varchar;
         merged_user_id uuid;
         non_canonical_ids uuid[];
@@ -159,8 +161,11 @@ export class AccountsRolesArrayMigration1778000000000
                 AND ccu.column_name = 'id'
                 AND tc.table_schema = 'public'
             LOOP
+              -- Cast both sides through text so the rerouting works whether
+              -- the FK column is uuid (the common case) or varchar (e.g.
+              -- accounts.creator_id, which stores UUID strings as text).
               EXECUTE format(
-                'UPDATE %I SET %I = %L WHERE %I = ANY(%L::uuid[])',
+                'UPDATE %I SET %I = %L WHERE %I::text = ANY(%L::text[])',
                 fk_ref.tbl, fk_ref.col, canonical_id, fk_ref.col, non_canonical_ids
               );
             END LOOP;

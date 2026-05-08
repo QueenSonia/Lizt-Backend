@@ -382,9 +382,9 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           title = 'Service Request Closed';
         } else if (status.toLowerCase() === 'reopened') {
           title = 'Service Request Reopened';
-        } else if (status.toLowerCase() === 'in_progress') {
-          title = 'Service Request In Progress';
-        } else if (status.toLowerCase() === 'open') {
+        } else if (status.toLowerCase() === 'approved') {
+          title = 'Service Request Approved';
+        } else if (status.toLowerCase() === 'not_approved') {
           title = 'Service Request Opened';
         }
 

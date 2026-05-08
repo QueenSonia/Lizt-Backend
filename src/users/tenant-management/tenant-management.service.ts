@@ -2786,7 +2786,7 @@ export class TenantManagementService {
         resolvedDate: sr.resolution_date
           ? new Date(sr.resolution_date).toISOString()
           : null,
-        priority: sr.status === 'URGENT' ? 'High' : 'Medium',
+        priority: sr.is_urgent ? 'High' : 'Medium',
         images: sr.issue_images || [],
       })),
       activeTenancies: rents

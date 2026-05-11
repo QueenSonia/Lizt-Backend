@@ -197,10 +197,16 @@ export class PaymentHistoryPdfService {
     const paymentDate = row.move_in_date ?? row.created_at ?? null;
 
     const property = row.property as any;
-    const propertyName = property?.name || 'Property';
-    const propertyAddress = property?.location || '';
-
     const kycApp = await this.loadKycFallback(row);
+    // Staged-applicant rows have no formal tenant on a property yet, so the
+    // receipt's "Property" field is misleading — show `-` instead of the
+    // property the applicant was being staged against.
+    const isStagedApplicant = !row.tenant_id && !!kycApp;
+    const propertyName = isStagedApplicant
+      ? '-'
+      : property?.name || 'Property';
+    const propertyAddress = isStagedApplicant ? '' : property?.location || '';
+
     const tenantName = this.resolveTenantName(row, parsed, kycApp);
     const tenantPhone = this.resolveTenantPhone(row, parsed, kycApp);
     const branding = this.resolveLandlordBranding(row);

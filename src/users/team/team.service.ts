@@ -9,7 +9,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { RolesEnum } from 'src/base.entity';
 import { Account } from '../entities/account.entity';
 import { Team } from '../entities/team.entity';
@@ -19,6 +19,9 @@ import { TeamMemberDto } from '../dto/team-member.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { AccountCacheService } from 'src/auth/account-cache.service';
+import { isPlaceholderEmail } from 'src/utils/placeholder-email';
+import { Property } from 'src/properties/entities/property.entity';
+import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 
 /**
  * Input type for creating a new team member
@@ -30,6 +33,13 @@ export interface TeamMemberInput {
   first_name: string;
   last_name: string;
   phone_number: string;
+  /**
+   * Optional list of property IDs to assign to this FM at creation time.
+   * Each property must belong to the calling landlord and must not already
+   * be assigned to another FM (the FE disables those rows; including them
+   * here is treated as a stale-state error and rejected with 409).
+   */
+  property_ids?: string[];
 }
 
 /**
@@ -133,14 +143,10 @@ export class TeamService {
           );
         }
 
-        // 3. Ensure collaborator is not already a member
-        const existingMember = await manager.getRepository(TeamMember).findOne({
-          where: { email: teamMember.email, teamId: team.id },
-        });
-
-        if (existingMember) {
-          throw new ConflictException('Collaborator already in team');
-        }
+        // 3. (deferred) — duplicate-membership check moved below, after we
+        //    resolve the canonical Account by email-or-phone. Checking by
+        //    email at this stage misses dupes added via the legacy fake-email
+        //    forms, where every add gets a unique synthetic email.
 
         // 4. Normalize phone number
         let normalizedPhoneNumber = teamMember.phone_number.replace(/\D/g, '');
@@ -165,29 +171,118 @@ export class TeamService {
           });
         }
 
-        // 6. Check if user already has an account with the specified role
+        // 6. Find any account for this person — by email first, falling back
+        //    to phone via the linked user. The phone fallback exists because
+        //    two legacy FE forms (LandlordFacilityManagers, LandlordFacility)
+        //    submit a synthesised `fm_<ts>@temp.facility` instead of a real
+        //    email, so an email-only lookup would miss real overlaps with
+        //    landlord/tenant accounts that share the same phone.
         let userAccount = await manager.getRepository(Account).findOne({
-          where: {
-            user: { id: user.id },
-            role: teamMember.role,
-          },
+          where: { email: teamMember.email },
+          relations: ['user'],
         });
 
         if (!userAccount) {
-          const generatedPassword = await this.utilService.generatePassword();
+          userAccount = await manager.getRepository(Account).findOne({
+            where: { user: { phone_number: normalizedPhoneNumber } },
+            relations: ['user'],
+          });
+        }
+
+        // Email reconciliation when we hit by phone:
+        //   - existing placeholder + incoming real → upgrade existing email
+        //   - existing real + incoming placeholder → keep existing
+        //   - both real but different → conflict (real data inconsistency)
+        let emailWasRewritten = false;
+        if (userAccount && userAccount.email !== teamMember.email) {
+          const existingIsPlaceholder = isPlaceholderEmail(userAccount.email);
+          const incomingIsPlaceholder = isPlaceholderEmail(teamMember.email);
+          if (existingIsPlaceholder && !incomingIsPlaceholder) {
+            // self-heal: rewrite placeholder → real email
+            userAccount.email = teamMember.email;
+            emailWasRewritten = true;
+          } else if (!existingIsPlaceholder && incomingIsPlaceholder) {
+            // keep existing real email — nothing to do
+          } else if (!existingIsPlaceholder && !incomingIsPlaceholder) {
+            throw new ConflictException(
+              `Phone ${normalizedPhoneNumber} is already linked to an account with a different email (${userAccount.email}).`,
+            );
+          }
+          // both placeholder: leave existing email alone
+        }
+
+        // Decide whether to (re)generate a password.
+        //
+        // YES if:
+        //   - we're creating a brand-new account, OR
+        //   - the existing account has no usable login credentials (no LANDLORD
+        //     role and no FM role yet — e.g. a tenant being elevated to FM).
+        //
+        // NO if:
+        //   - the existing account is a landlord (their password is user-set;
+        //     leave it alone — they sign in with the same creds for both
+        //     roles), OR
+        //   - already an FM in another team (existing creds still work).
+        const hasLandlordRole = !!userAccount?.roles?.includes(
+          RolesEnum.LANDLORD,
+        );
+        const alreadyHasFmRole = !!userAccount?.roles?.includes(
+          RolesEnum.FACILITY_MANAGER,
+        );
+
+        let plainPasswordToSend: string | null = null;
+
+        if (!userAccount) {
+          // Brand new identity → generate password and send it.
+          const { plain, hash } = await this.utilService.generatePassword();
+          plainPasswordToSend = plain;
           userAccount = manager.getRepository(Account).create({
             user,
             email: teamMember.email,
-            password: generatedPassword,
+            password: hash,
+            roles: [teamMember.role],
             role: teamMember.role,
             profile_name: `${teamMember.first_name} ${teamMember.last_name}`,
             is_verified: true,
           });
-
           await manager.getRepository(Account).save(userAccount);
+        } else if (!alreadyHasFmRole) {
+          // Existing account being elevated into FM. Always append the role.
+          // Only regenerate the password if the account doesn't already have
+          // a usable sign-in surface (i.e. no LANDLORD role).
+          if (!hasLandlordRole) {
+            const { plain, hash } = await this.utilService.generatePassword();
+            plainPasswordToSend = plain;
+            userAccount.password = hash;
+          }
+          userAccount.roles = [
+            ...(userAccount.roles ?? []),
+            teamMember.role,
+          ];
+          userAccount.role = userAccount.roles[0];
+          userAccount.is_verified = true;
+          await manager.getRepository(Account).save(userAccount);
+          await this.accountCacheService.invalidate(userAccount.id);
+        } else if (emailWasRewritten) {
+          // Already FM in another team but we self-healed their placeholder
+          // email — persist the rewrite so future logins by email work.
+          await manager.getRepository(Account).save(userAccount);
+          await this.accountCacheService.invalidate(userAccount.id);
+        }
+        // else: already an FM (in another team), no email change — keep
+        // their existing password and row.
+
+        // 7. Now that we know the canonical account, check whether this person
+        //    is already in this team (by accountId, not by email — emails can
+        //    differ across legacy forms even for the same person).
+        const existingMember = await manager.getRepository(TeamMember).findOne({
+          where: { accountId: userAccount.id, teamId: team.id },
+        });
+        if (existingMember) {
+          throw new ConflictException('Collaborator already in team');
         }
 
-        // 7. Add collaborator to team
+        // 8. Add collaborator to team
         const newTeamMember = manager.getRepository(TeamMember).create({
           email: teamMember.email,
           permissions: teamMember.permissions,
@@ -198,12 +293,79 @@ export class TeamService {
 
         await manager.getRepository(TeamMember).save(newTeamMember);
 
-        // 8. Send WhatsApp notification to the new team member
+        // 8b. Assign properties to this new FM, if requested. Validation
+        // mirrors the FE state: each ID must belong to the landlord, and
+        // none can already be assigned to another FM (FE disables those
+        // rows; receiving one here means the FE list is stale).
+        const requestedPropertyIds = (teamMember.property_ids ?? []).filter(
+          Boolean,
+        );
+        if (requestedPropertyIds.length > 0) {
+          const propRepo = manager.getRepository(Property);
+          const properties = await propRepo.find({
+            where: { id: In(requestedPropertyIds) },
+          });
+
+          const foundIds = new Set(properties.map((p) => p.id));
+          const missing = requestedPropertyIds.filter((id) => !foundIds.has(id));
+          const wrongOwner = properties.filter((p) => p.owner_id !== userId);
+          if (missing.length > 0 || wrongOwner.length > 0) {
+            throw new ForbiddenException(
+              'One or more properties were not found or do not belong to you',
+            );
+          }
+
+          const taken = properties.filter(
+            (p) => p.facility_manager_id && p.facility_manager_id !== newTeamMember.id,
+          );
+          if (taken.length > 0) {
+            throw new ConflictException(
+              `Property "${taken[0].name}" is already assigned to another facility manager`,
+            );
+          }
+
+          await propRepo
+            .createQueryBuilder()
+            .update(Property)
+            .set({ facility_manager_id: newTeamMember.id })
+            .where('id IN (:...ids)', { ids: requestedPropertyIds })
+            .andWhere('owner_id = :ownerId', { ownerId: userId })
+            .execute();
+
+          // Write one history row per newly assigned property.
+          const phRepo = manager.getRepository(PropertyHistory);
+          const newFmName =
+            userAccount.profile_name?.trim() ||
+            `${teamMember.first_name} ${teamMember.last_name}`.trim() ||
+            null;
+          for (const p of properties) {
+            await phRepo.save({
+              property_id: p.id,
+              tenant_id: null,
+              event_type: 'facility_manager_assigned',
+              event_description: JSON.stringify({
+                propertyName: p.name,
+                previousFacilityManagerId: null,
+                previousFacilityManagerName: null,
+                newFacilityManagerId: newTeamMember.id,
+                newFacilityManagerName: newFmName,
+                actorId: userId,
+              }),
+              related_entity_type: 'team_member',
+              related_entity_id: newTeamMember.id,
+            });
+          }
+        }
+
+        // 9. Send WhatsApp notification to the new team member.
+        // Only include the temporary password when we actually (re)issued one;
+        // for an FM joining an additional team, their existing creds still work.
         await this.whatsappBotService.sendToFacilityManagerWithTemplate({
           phone_number: normalizedPhoneNumber,
           name: this.utilService.toSentenceCase(teamMember.first_name),
           team: team.name,
           role: 'Facility Manager',
+          temporary_password: plainPasswordToSend ?? undefined,
         });
 
         return newTeamMember;

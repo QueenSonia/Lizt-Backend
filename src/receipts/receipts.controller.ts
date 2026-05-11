@@ -47,6 +47,26 @@ export class ReceiptsController {
   }
 
   /**
+   * Download receipt PDF by public token (no auth — token is the bearer)
+   * GET /receipts/public/:token/download
+   */
+  @SkipAuth()
+  @Get('public/:token/download')
+  async downloadByToken(
+    @Param('token') token: string,
+    @Res() res: Response,
+  ) {
+    const { receipt, pdf } =
+      await this.receiptsService.downloadPDFByToken(token);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="receipt-${receipt.receipt_number}.pdf"`,
+      'Content-Length': pdf.length,
+    });
+    res.send(pdf);
+  }
+
+  /**
    * Get all receipts for an offer letter
    * GET /receipts/by-offer/:offerLetterId
    * Requirements: 7.1

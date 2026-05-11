@@ -7,6 +7,7 @@ import {
   Delete,
   Query,
   ParseUUIDPipe,
+  Patch,
   Put,
   UseInterceptors,
   UploadedFiles,
@@ -209,6 +210,20 @@ export class PropertiesController {
   @Get('/vacant')
   getVacantProperties(@CurrentUser() requester: Account): Promise<Property[]> {
     return this.propertiesService.fetchAllVacantProperties(requester.id);
+  }
+
+  @ApiOperation({
+    summary: 'Properties managed by the requesting facility manager',
+    description:
+      "Returns every property whose facility_manager_id maps to one of this user's TeamMember rows (across all landlords they work for). Each row includes: landlord display name (for the FM's landlord pill bar), the active tenant's name + phone (for the property header), and the count of open service requests on that property.",
+  })
+  @ApiOkResponse({ description: 'List of FM-managed properties' })
+  @ApiSecurity('access_token')
+  @Get('/managed')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.FACILITY_MANAGER)
+  async getManagedProperties(@CurrentUser() requester: Account) {
+    return this.propertiesService.getManagedProperties(requester.id);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -416,6 +431,25 @@ export class PropertiesController {
     } catch (error) {
       throw error;
     }
+  }
+
+  @ApiOperation({ summary: 'Reassign / unassign facility manager on a property' })
+  @ApiOkResponse({ description: 'Facility manager updated' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Patch(':id/facility-manager')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async setPropertyFacilityManager(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: { facility_manager_id: string | null },
+    @CurrentUser() requester: Account,
+  ) {
+    return this.propertiesService.setPropertyFacilityManager(
+      requester.id,
+      id,
+      body?.facility_manager_id ?? null,
+    );
   }
 
   @ApiOperation({ summary: 'Update Property' })

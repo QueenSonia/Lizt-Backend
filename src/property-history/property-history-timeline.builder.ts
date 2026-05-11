@@ -382,9 +382,9 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           title = 'Service Request Closed';
         } else if (status.toLowerCase() === 'reopened') {
           title = 'Service Request Reopened';
-        } else if (status.toLowerCase() === 'in_progress') {
-          title = 'Service Request In Progress';
-        } else if (status.toLowerCase() === 'open') {
+        } else if (status.toLowerCase() === 'approved') {
+          title = 'Service Request Approved';
+        } else if (status.toLowerCase() === 'not_approved') {
           title = 'Service Request Opened';
         }
 
@@ -884,10 +884,11 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           id: `user-added-payment-${ph.id}`,
           type: 'general',
           title: `Payment received`,
-          description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()} on ${paymentDate}`,
+          description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()}${parsedData.paymentDescription ? ` — ${parsedData.paymentDescription}` : ''} on ${paymentDate}`,
           details: prop?.name || undefined,
           metadata: JSON.stringify({
             paymentAmount: parsedData.paymentAmount || 0,
+            paymentDescription: parsedData.paymentDescription || '',
             paymentDate,
             rawPaymentDate:
               parsedData.paymentDate ||

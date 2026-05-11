@@ -14,7 +14,7 @@ import {
 import { UpdatePropertyDto } from './dto/update-property.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Property } from './entities/property.entity';
-import { DataSource, In, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
 import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
 import { DateService } from 'src/utils/date.helper';
@@ -77,6 +77,26 @@ import {
   Fee,
 } from 'src/common/billing/fees';
 import { randomUUID } from 'crypto';
+import { TeamMember } from 'src/users/entities/team-member.entity';
+
+/**
+ * Compose a display name for a facility-manager TeamMember row using the
+ * same fallback chain as `getTeamMembers`: account.profile_name first, then
+ * `${first_name} ${last_name}` from the linked user. Returns null when no FM
+ * is attached.
+ */
+function composeFacilityManagerName(
+  fm: TeamMember | null | undefined,
+): string | null {
+  if (!fm) return null;
+  const acc = fm.account;
+  const profileName = acc?.profile_name?.trim();
+  if (profileName) return profileName;
+  const u = acc?.user;
+  if (!u) return null;
+  const composed = `${u.first_name ?? ''} ${u.last_name ?? ''}`.trim();
+  return composed || null;
+}
 
 @Injectable()
 export class PropertiesService {
@@ -341,6 +361,7 @@ export class PropertiesService {
           tenantAccount = queryRunner.manager.create(Account, {
             userId: tenantUser.id,
             email: tenantUser.email,
+            roles: [RolesEnum.TENANT],
             role: RolesEnum.TENANT,
             is_verified: false,
             creator_id: ownerId,
@@ -823,6 +844,106 @@ export class PropertiesService {
     }
   }
 
+  /**
+   * Properties this facility manager manages — across all the landlords
+   * (TeamMember rows) they belong to. Powers the FM Properties screen and
+   * is also the source of truth for the FM landlord pill-bar (one entry per
+   * unique owner) and the FM activity-feed/socket subscriptions.
+   *
+   * Includes:
+   *   - landlord (owner) profile (id, profile_name, first/last name)
+   *   - active rent → current tenant name + phone (for the property header)
+   *   - open_request_count: count of service requests on this property whose
+   *     status is NOT in (RESOLVED, CLOSED).
+   */
+  async getManagedProperties(userId: string) {
+    const properties = await this.propertyRepository
+      .createQueryBuilder('property')
+      .innerJoin('property.facility_manager', 'fm')
+      .innerJoin('fm.account', 'fmAccount')
+      .innerJoin('fmAccount.user', 'fmUser')
+      .leftJoinAndSelect('property.owner', 'owner')
+      .leftJoinAndSelect('owner.user', 'ownerUser')
+      .leftJoinAndSelect(
+        'property.rents',
+        'rent',
+        'rent.rent_status = :activeStatus AND rent.deleted_at IS NULL',
+        { activeStatus: RentStatusEnum.ACTIVE },
+      )
+      .leftJoinAndSelect('rent.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'tenantUser')
+      .where('fmUser.id = :userId', { userId })
+      .andWhere('fm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
+      .andWhere('property.deleted_at IS NULL')
+      .orderBy('property.created_at', 'DESC')
+      .getMany();
+
+    if (properties.length === 0) {
+      return [];
+    }
+
+    const propertyIds = properties.map((p) => p.id);
+
+    // Per-property counts of "open" requests (not resolved, not closed).
+    const counts = await this.propertyRepository.manager
+      .createQueryBuilder()
+      .select('sr.property_id', 'property_id')
+      .addSelect('COUNT(*)::int', 'open_count')
+      .from('service_requests', 'sr')
+      .where('sr.property_id IN (:...propertyIds)', { propertyIds })
+      .andWhere('sr.deleted_at IS NULL')
+      .andWhere('sr.status NOT IN (:...closedStatuses)', {
+        closedStatuses: [
+          ServiceRequestStatusEnum.RESOLVED,
+          ServiceRequestStatusEnum.CLOSED,
+        ],
+      })
+      .groupBy('sr.property_id')
+      .getRawMany();
+
+    const countByProperty = new Map<string, number>();
+    for (const row of counts) {
+      countByProperty.set(row.property_id, Number(row.open_count) || 0);
+    }
+
+    return properties.map((p) => {
+      const activeRent = p.rents?.[0];
+      const tenantUser = activeRent?.tenant?.user;
+      const tenantFirst = tenantUser?.first_name ?? null;
+      const tenantLast = tenantUser?.last_name ?? null;
+      const tenantName =
+        [tenantFirst, tenantLast].filter(Boolean).join(' ') || null;
+
+      const ownerUser = p.owner?.user;
+      const ownerDisplay =
+        p.owner?.profile_name ||
+        [ownerUser?.first_name, ownerUser?.last_name]
+          .filter(Boolean)
+          .join(' ') ||
+        null;
+
+      return {
+        id: p.id,
+        name: p.name,
+        location: p.location,
+        property_type: p.property_type,
+        property_status: p.property_status,
+        owner_id: p.owner_id,
+        landlord_display_name: ownerDisplay,
+        tenant: tenantUser
+          ? {
+              id: tenantUser.id,
+              name: tenantName,
+              phone_number: tenantUser.phone_number ?? null,
+              email: tenantUser.email ?? null,
+            }
+          : null,
+        active_rent_id: activeRent?.id ?? null,
+        open_request_count: countByProperty.get(p.id) ?? 0,
+      };
+    });
+  }
+
   async getAllProperties(queryParams: PropertyFilter) {
     const page = queryParams.page
       ? Number(queryParams.page)
@@ -847,6 +968,19 @@ export class PropertiesService {
         'property.rental_price',
         'property.is_marketing_ready',
         'property.owner_id',
+        'property.facility_manager_id',
+      ])
+      // Facility manager (optional) — pull just enough to compose a display name
+      .leftJoin('property.facility_manager', 'fm')
+      .leftJoin('fm.account', 'fmAccount')
+      .leftJoin('fmAccount.user', 'fmUser')
+      .addSelect([
+        'fm.id',
+        'fmAccount.id',
+        'fmAccount.profile_name',
+        'fmUser.id',
+        'fmUser.first_name',
+        'fmUser.last_name',
       ])
       // Only load active rents with needed columns
       .leftJoin(
@@ -934,8 +1068,13 @@ export class PropertiesService {
 
     const totalPages = Math.ceil(count / size);
 
+    const propertiesWithFm = properties.map((p) => ({
+      ...p,
+      facility_manager_name: composeFacilityManagerName(p.facility_manager),
+    }));
+
     return {
-      properties,
+      properties: propertiesWithFm,
       pagination: {
         totalRows: count,
         perPage: size,
@@ -1171,16 +1310,19 @@ export class PropertiesService {
 
     // 3. Format Service Requests
     const serviceRequests = property.service_requests.map((sr) => {
-      const tenantUser = sr.tenant.user;
-      const tenantKyc = tenantUser.tenant_kycs?.[0]; // Filtered by admin_id in query
+      // tenant is nullable for FM-created requests (common areas, etc.)
+      const tenantUser = sr.tenant?.user ?? null;
+      const tenantKyc = tenantUser?.tenant_kycs?.[0]; // Filtered by admin_id in query
 
-      // Prioritize TenantKyc data for consistency
-      const firstName = tenantKyc?.first_name ?? tenantUser.first_name;
-      const lastName = tenantKyc?.last_name ?? tenantUser.last_name;
+      const firstName =
+        tenantKyc?.first_name ?? tenantUser?.first_name ?? '';
+      const lastName = tenantKyc?.last_name ?? tenantUser?.last_name ?? '';
+      const tenantName =
+        `${firstName} ${lastName}`.trim() || sr.tenant_name || 'Facility Manager';
 
       return {
         id: sr.id,
-        tenantName: `${firstName} ${lastName}`,
+        tenantName,
         propertyName: property.name,
         messagePreview: sr.description.substring(0, 100) + '...',
         dateReported: sr.date_reported.toISOString(),
@@ -1232,6 +1374,140 @@ export class PropertiesService {
     };
   }
 
+  /**
+   * Reassign / unassign the FM on a single property. Only the property's
+   * landlord can call this; the new FM (if any) must be in the landlord's
+   * team. Writes a `facility_manager_*` row to property_histories so the
+   * timeline reflects the change. Same-FM submissions are no-ops.
+   */
+  async setPropertyFacilityManager(
+    landlordId: string,
+    propertyId: string,
+    facilityManagerId: string | null,
+  ): Promise<{
+    facility_manager_id: string | null;
+    facility_manager_name: string | null;
+  }> {
+    return this.dataSource.transaction(async (manager) => {
+      const property = await manager
+        .getRepository(Property)
+        .findOne({ where: { id: propertyId } });
+      if (!property) {
+        throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+      }
+      if (property.owner_id !== landlordId) {
+        throw new ForbiddenException(
+          'You do not own this property',
+        );
+      }
+
+      let newFm: TeamMember | null = null;
+      if (facilityManagerId) {
+        newFm = await manager.getRepository(TeamMember).findOne({
+          where: { id: facilityManagerId },
+          relations: ['team', 'account', 'account.user'],
+        });
+        if (!newFm) {
+          throw new ForbiddenException('Facility manager not found');
+        }
+        if (newFm.team?.creatorId !== landlordId) {
+          throw new ForbiddenException(
+            'This facility manager is not in your team',
+          );
+        }
+        if (newFm.role !== RolesEnum.FACILITY_MANAGER) {
+          throw new ForbiddenException(
+            'Selected team member is not a facility manager',
+          );
+        }
+      }
+
+      const previousId = property.facility_manager_id;
+      const newId = facilityManagerId;
+
+      let previousFm: TeamMember | null = null;
+      if (previousId) {
+        previousFm = await manager.getRepository(TeamMember).findOne({
+          where: { id: previousId },
+          relations: ['account', 'account.user'],
+        });
+      }
+
+      if (previousId === newId) {
+        // No-op; don't write a history row.
+        return {
+          facility_manager_id: previousId ?? null,
+          facility_manager_name: composeFacilityManagerName(
+            previousFm ?? newFm,
+          ),
+        };
+      }
+
+      await manager
+        .getRepository(Property)
+        .update(
+          { id: propertyId, owner_id: landlordId },
+          { facility_manager_id: newId },
+        );
+
+      await this.writeFacilityManagerHistory(manager, {
+        propertyId,
+        propertyName: property.name,
+        landlordId,
+        previousFm,
+        newFm,
+      });
+
+      return {
+        facility_manager_id: newId,
+        facility_manager_name: composeFacilityManagerName(newFm),
+      };
+    });
+  }
+
+  /**
+   * Write a single property-history row capturing an FM transition. Picks
+   * the correct event_type from the (previous, new) pair so the timeline
+   * transformer can render the right title/details.
+   */
+  private async writeFacilityManagerHistory(
+    manager: EntityManager,
+    args: {
+      propertyId: string;
+      propertyName: string;
+      landlordId: string;
+      previousFm: TeamMember | null;
+      newFm: TeamMember | null;
+    },
+  ): Promise<void> {
+    const previousId = args.previousFm?.id ?? null;
+    const newId = args.newFm?.id ?? null;
+    if (previousId === newId) return;
+
+    let event_type: string;
+    if (!previousId && newId) event_type = 'facility_manager_assigned';
+    else if (previousId && !newId) event_type = 'facility_manager_unassigned';
+    else event_type = 'facility_manager_reassigned';
+
+    const event_description = JSON.stringify({
+      propertyName: args.propertyName,
+      previousFacilityManagerId: previousId,
+      previousFacilityManagerName: composeFacilityManagerName(args.previousFm),
+      newFacilityManagerId: newId,
+      newFacilityManagerName: composeFacilityManagerName(args.newFm),
+      actorId: args.landlordId,
+    });
+
+    await manager.getRepository(PropertyHistory).save({
+      property_id: args.propertyId,
+      tenant_id: null,
+      event_type,
+      event_description,
+      related_entity_type: 'team_member',
+      related_entity_id: newId ?? previousId,
+    });
+  }
+
   async getPropertyDetails(id: string): Promise<any> {
     // Step 1: Load basic property data with only active rent (most critical data)
     const property = await this.propertyRepository
@@ -1244,6 +1520,9 @@ export class PropertiesService {
       )
       .leftJoinAndSelect('rent.tenant', 'rentTenant')
       .leftJoinAndSelect('rentTenant.user', 'rentTenantUser')
+      .leftJoinAndSelect('property.facility_manager', 'fm')
+      .leftJoinAndSelect('fm.account', 'fmAccount')
+      .leftJoinAndSelect('fmAccount.user', 'fmUser')
       .where('property.id = :id', { id })
       .getOne();
 
@@ -2170,16 +2449,54 @@ export class PropertiesService {
                 hist.move_in_date ||
                 hist.created_at,
               eventType: 'user_added_payment',
-              title: `Payment received`,
-              description: `Payment of ₦${Number(paymentAmount).toLocaleString()} on ${paymentDate}`,
+              title: `Payment received${parsedPayment.paymentDescription ? ` — ${parsedPayment.paymentDescription}` : ''}`,
+              description: `Payment of ₦${Number(paymentAmount).toLocaleString()}${parsedPayment.paymentDescription ? ` — ${parsedPayment.paymentDescription}` : ''} on ${paymentDate}`,
               details: JSON.stringify({
                 paymentAmount,
+                paymentDescription: parsedPayment.paymentDescription || '',
                 paymentDate,
                 propertyName: parsedPayment.propertyName || '',
                 tenantName,
               }),
               amount: paymentAmount,
               isUserAdded: true,
+            };
+          }
+          case 'facility_manager_assigned':
+          case 'facility_manager_reassigned':
+          case 'facility_manager_unassigned': {
+            let parsedFm: any = {};
+            try {
+              parsedFm = JSON.parse(hist.event_description || '{}');
+            } catch {
+              parsedFm = {};
+            }
+            const prevName: string | null =
+              parsedFm.previousFacilityManagerName ?? null;
+            const newName: string | null =
+              parsedFm.newFacilityManagerName ?? null;
+            let title: string;
+            let details: string;
+            if (hist.event_type === 'facility_manager_assigned') {
+              title = 'Facility Manager Assigned';
+              details = newName ?? 'Unknown';
+            } else if (hist.event_type === 'facility_manager_reassigned') {
+              title = 'Facility Manager Reassigned';
+              details =
+                prevName && newName
+                  ? `${prevName} → ${newName}`
+                  : (newName ?? prevName ?? 'Unknown');
+            } else {
+              title = 'Facility Manager Unassigned';
+              details = prevName ?? 'Unknown';
+            }
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: hist.event_type,
+              title,
+              description: details,
+              details,
             };
           }
           default:
@@ -2268,6 +2585,8 @@ export class PropertiesService {
       rentalPrice: property.rental_price || null,
       isMarketingReady: property.is_marketing_ready || false,
       description: property.description || computedDescription,
+      facility_manager_id: property.facility_manager_id ?? null,
+      facility_manager_name: composeFacilityManagerName(property.facility_manager),
       currentTenant,
       history,
       kycApplications: kycApplicationsFormatted,
@@ -2770,14 +3089,11 @@ export class PropertiesService {
         'COUNT(DISTINCT property.id) as total_properties',
         'COUNT(DISTINCT tenant.id) as total_tenants',
         'COUNT(DISTINCT CASE WHEN rent.expiry_date <= :dueDate THEN tenant.id END) as due_tenants',
-        'COUNT(DISTINCT CASE WHEN requests.status IN (:...statuses) THEN requests.id END) as unresolved_requests',
+        'COUNT(DISTINCT CASE WHEN requests.status = :notApprovedStatus OR requests.is_urgent = true THEN requests.id END) as unresolved_requests',
       ])
       .setParameters({
         dueDate: DateService.addDays(new Date(), 7),
-        statuses: [
-          ServiceRequestStatusEnum.PENDING,
-          ServiceRequestStatusEnum.URGENT,
-        ],
+        notApprovedStatus: ServiceRequestStatusEnum.NOT_APPROVED,
       })
       .getRawOne();
 

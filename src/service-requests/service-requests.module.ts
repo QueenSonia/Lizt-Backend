@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ServiceRequest } from './entities/service-request.entity';
 import { ServiceRequestStatusHistory } from './entities/service-request-status-history.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { Property } from 'src/properties/entities/property.entity';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { AutoServiceRequest } from './entities/auto-service-request.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
@@ -17,6 +18,7 @@ import { UtilsModule } from 'src/utils/utils.module';
       ServiceRequestStatusHistory,
       AutoServiceRequest,
       PropertyTenant,
+      Property,
       TeamMember,
     ]),
     UtilsModule,

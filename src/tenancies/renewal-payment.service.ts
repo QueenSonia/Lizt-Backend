@@ -116,21 +116,26 @@ export class RenewalPaymentService {
       throw new BadRequestException('Payment amount must be greater than 0');
     }
 
-    // Custom payments: tenants can pay any positive amount only when the
-    // renewal start_date is more than 14 days away (the renewal still has
-    // time to complete via top-ups). Inside the 14-day window, the floor
-    // becomes the *remaining* outstanding so the renewal still closes on
-    // time — using `remaining` (not invoiceTotal) so a tenant who has
-    // already paid partials isn't asked to pay the full original total.
+    // Custom (partial) payments are only valid on rent renewals, and only
+    // when the renewal start_date is more than 14 days away. Inside the
+    // 14-day window, the floor becomes the *remaining* outstanding so the
+    // renewal still closes on time — using `remaining` (not invoiceTotal)
+    // so a tenant who has already paid partials isn't asked to pay the
+    // full original total.
     //
-    // OB invoices share renewal_invoices but have no renewal deadline, and
-    // their start_date is set to rent.expiry_date (often past), which would
-    // otherwise trip the floor on every attempt. Skip the gate for them.
+    // OB invoices (tenant token, rent=0) must be paid in full — there's
+    // no renewal-period structure to scaffold a partial payment around.
     const isOutstandingBalanceInvoice =
       invoice.token_type === 'tenant' &&
       Number(invoice.rent_amount || 0) === 0;
 
-    if (paymentOption === 'custom' && !isOutstandingBalanceInvoice) {
+    if (paymentOption === 'custom') {
+      if (isOutstandingBalanceInvoice) {
+        throw new BadRequestException(
+          `Outstanding balance must be paid in full (₦${remaining.toLocaleString()}).`,
+        );
+      }
+
       const PARTIAL_PAYMENT_WINDOW_DAYS = 14;
       const startDate = new Date(invoice.start_date);
       const today = new Date();

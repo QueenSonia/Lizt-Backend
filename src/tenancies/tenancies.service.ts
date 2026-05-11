@@ -846,13 +846,22 @@ export class TenanciesService {
               propertyTenant.tenant.user.phone_number,
             );
 
-            const currentExpiryStr = new Date(
-              activeRent.expiry_date,
-            ).toLocaleDateString('en-GB', {
+            const expiryDateOnly = new Date(activeRent.expiry_date);
+            const expiryStr = expiryDateOnly.toLocaleDateString('en-GB', {
               day: 'numeric',
               month: 'long',
               year: 'numeric',
             });
+            const todayMidnight = new Date().setHours(0, 0, 0, 0);
+            const daysUntilExpiry = Math.ceil(
+              (expiryDateOnly.getTime() - todayMidnight) / 86_400_000,
+            );
+            const currentExpiryStr =
+              daysUntilExpiry === 0
+                ? `today, ${expiryStr}`
+                : daysUntilExpiry === 1
+                  ? `tomorrow, ${expiryStr}`
+                  : `on ${expiryStr}`;
 
             await this.whatsappNotificationLog.queue('sendRenewalLetterLink', {
               phone_number: tenantPhone,
@@ -2243,8 +2252,16 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    // Check if invoice is paid
-    if (invoice.payment_status !== RenewalPaymentStatus.PAID) {
+    // Renewal invoices support partial payments (custom amounts >14 days
+    // out — see renewal-payment.service.ts). After Paystack returns, the
+    // tenant page navigates to /success regardless of whether the payment
+    // closed the invoice, so PARTIAL must be a valid state here too.
+    // Frontend reads paymentStatus/amountPaid/totalAmount and renders a
+    // partial-confirmation variant.
+    if (
+      invoice.payment_status !== RenewalPaymentStatus.PAID &&
+      invoice.payment_status !== RenewalPaymentStatus.PARTIAL
+    ) {
       throw new HttpException(
         'Invoice not paid - success data not available',
         HttpStatus.GONE,
@@ -2286,15 +2303,19 @@ export class TenanciesService {
       throw new NotFoundException('Receipt not found');
     }
 
-    // Check if invoice is paid (access control requirement 8.3)
-    if (invoice.payment_status !== RenewalPaymentStatus.PAID) {
+    // Block only when no real payment has been recorded. PARTIAL is a valid
+    // receipt state — the unified template renders a non-zero remaining
+    // balance row in that case.
+    if (
+      invoice.payment_status !== RenewalPaymentStatus.PAID &&
+      invoice.payment_status !== RenewalPaymentStatus.PARTIAL
+    ) {
       throw new HttpException(
         'Receipt not available - payment required',
         HttpStatus.GONE,
       );
     }
 
-    // Format receipt data
     return await this.formatRenewalReceiptResponse(invoice);
   }
 
@@ -2340,7 +2361,7 @@ export class TenanciesService {
       propertyName: invoice.property.name,
       propertyAddress: invoice.property.location,
 
-      // Payment Breakdown
+      // Payment Breakdown — legacy scalar shape kept for back-compat.
       charges: {
         rentAmount: parseFloat(invoice.rent_amount.toString()),
         serviceCharge:
@@ -2348,6 +2369,13 @@ export class TenanciesService {
         legalFee: parseFloat(invoice.legal_fee.toString()) || undefined,
         otherCharges: parseFloat(invoice.other_charges.toString()) || undefined,
       },
+      // Billing v2 normalized breakdown — preferred over `charges` when
+      // present. OB-only invoices (tenant-token pay-out flow) only have
+      // an "Outstanding Balance" line here, with rent/service/legal
+      // scalars all zero.
+      feeBreakdown: Array.isArray(invoice.fee_breakdown)
+        ? invoice.fee_breakdown
+        : undefined,
       totalAmount: parseFloat(invoice.total_amount.toString()),
       /**
        * Signed wallet balance at invoice creation.
@@ -2787,6 +2815,16 @@ export class TenanciesService {
       const tenantPhone = this.utilService.normalizePhoneNumber(
         invoice.tenant.user.phone_number,
       );
+      // OB-only tenant tokens have rent_amount=0 and a single
+      // outstanding_balance fee. The renewal_payment_tenant template has
+      // fixed Rent/Service rows that would render as ₦0 here, and the
+      // landlord's "completed their renewal payment" copy is wrong on a
+      // partial. Skip WhatsApp on partial OB payments — Paystack already
+      // confirmed receipt, the in-app state shows the remaining balance,
+      // and the OB-completed branch above fires when fully paid.
+      const isOBOnlyTenantToken =
+        invoice.token_type === 'tenant' &&
+        parseFloat(invoice.rent_amount.toString()) === 0;
       if (isWalletAutoCompletion) {
         // No WhatsApp — there's no real payment to receipt. Tenant sees the
         // completed state on the renewal-invoice page; landlord sees livefeed.
@@ -2840,7 +2878,6 @@ export class TenanciesService {
             tenant_name: tenantName,
             amount,
             property_name: propertyName,
-            remaining_balance: newOutstandingBalance,
             landlord_id: invoice.property.owner_id,
             recipient_name: tenantName,
           },
@@ -2862,14 +2899,59 @@ export class TenanciesService {
               tenant_name: tenantName,
               amount,
               property_name: propertyName,
-              remaining_balance: newOutstandingBalance,
               landlord_id: invoice.property.owner_id,
               recipient_name: landlordName,
             },
           );
         }
+      } else if (isOBOnlyTenantToken) {
+        // Partial OB payment on a tenant-token, OB-only invoice — no
+        // WhatsApp (see isOBOnlyTenantToken comment above).
+      } else {
+        // Partial renewal payment — send the same renewal-receipt template.
+        // The attached PDF (UnifiedReceipt) renders the partial amount
+        // with the remaining-balance row in orange, so the document itself
+        // makes the partial state visually obvious.
+        await this.whatsappNotificationLog.queue('sendRenewalPaymentTenant', {
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          amount,
+          property_name: propertyName,
+          receipt_token: invoice.receipt_token,
+          period_start: invoice.start_date,
+          period_end: invoice.end_date,
+          rent_amount: parseFloat(invoice.rent_amount.toString()),
+          service_charge: parseFloat((invoice.service_charge ?? 0).toString()),
+          payment_frequency: invoice.payment_frequency ?? 'monthly',
+          frontend_url: process.env.FRONTEND_URL || 'http://localhost:3000',
+          landlord_id: invoice.property.owner_id,
+          recipient_name: tenantName,
+          property_id: invoice.property_id,
+        });
+
+        if (invoice.property.owner?.user?.phone_number) {
+          const landlordPhone = this.utilService.normalizePhoneNumber(
+            invoice.property.owner.user.phone_number,
+          );
+          const landlordName =
+            invoice.property.owner.profile_name ||
+            invoice.property.owner.user.first_name;
+
+          await this.whatsappNotificationLog.queue(
+            'sendRenewalPaymentLandlord',
+            {
+              phone_number: landlordPhone,
+              landlord_name: landlordName,
+              tenant_name: tenantName,
+              amount,
+              property_name: propertyName,
+              landlord_id: invoice.property.owner_id,
+              recipient_name: landlordName,
+              property_id: invoice.property_id,
+            },
+          );
+        }
       }
-      // Partial case: no WhatsApp; reminders + in-app livefeed cover it.
     } catch (error) {
       console.error('Error queueing payment notifications:', error);
       // Non-blocking - continue even if queueing fails

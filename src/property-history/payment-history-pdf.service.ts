@@ -1,16 +1,26 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import type { Browser } from 'puppeteer';
 
 import { launchBrowser } from '../common/puppeteer-launch';
+import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
 import { PropertyHistory } from './entities/property-history.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
+import { TemplateSenderService } from '../whatsapp-bot/template-sender';
 
 export interface PaymentReceiptView {
   receiptNumber: string;
   receiptDate: string | null;
   paymentAmount: number;
+  paymentDescription: string | null;
   paymentMethod: string;
   paymentReference: string | null;
   property: {
@@ -20,6 +30,7 @@ export interface PaymentReceiptView {
   };
   tenant: {
     name: string;
+    phone: string | null;
   };
   landlordBranding: {
     businessName: string;
@@ -46,7 +57,92 @@ export class PaymentHistoryPdfService {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     @InjectRepository(KYCApplication)
     private readonly kycApplicationRepository: Repository<KYCApplication>,
+    private readonly templateSenderService: TemplateSenderService,
+    private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * Step 1 of the two-message WhatsApp flow: send the text-only payment
+   * confirmation (template `payment_receipt_tenant`) with a Download receipt
+   * Quick Reply button. When the tenant taps the button, the tenant-flow
+   * webhook handler emits `whatsapp.button.payment_receipt_download` which
+   * `onPaymentReceiptDownloadButtonTap` (below) responds to by sending the
+   * PDF (Msg 2). Manual trigger from landlord — no idempotency guard.
+   */
+  async sendReceiptViaWhatsApp(receiptToken: string): Promise<void> {
+    const row = await this.loadRow(receiptToken);
+    const view = await this.buildView(row);
+
+    if (!view.tenant.phone) {
+      throw new BadRequestException(
+        'No phone number on record for this tenant — cannot send receipt.',
+      );
+    }
+
+    const firstName = view.tenant.name.split(/\s+/)[0] || 'there';
+
+    await this.templateSenderService.sendPaymentReceiptTenant({
+      phone_number: view.tenant.phone,
+      tenant_first_name: firstName,
+      amount: view.paymentAmount,
+      description: view.paymentDescription || 'Payment received',
+      receipt_token: receiptToken,
+    });
+  }
+
+  /**
+   * Step 2 of the two-message WhatsApp flow: generate the PDF live and send
+   * it via the `payment_receipt_attachment_tenant` template. The `phone`
+   * arg comes from the webhook (the tenant who actually tapped the button)
+   * — we don't trust the row's tenant_phone for routing because the row's
+   * receipt_token is the only thing that identifies the receipt.
+   */
+  async sendReceiptAttachmentViaWhatsApp(
+    receiptToken: string,
+    phone: string,
+  ): Promise<void> {
+    const row = await this.loadRow(receiptToken);
+    const view = await this.buildView(row);
+
+    const pdfBuffer = await this.generatePaymentReceiptPDF(receiptToken);
+    const pdfFilename = this.generateReceiptFilename(
+      view.property?.name,
+      view.receiptDate ? new Date(view.receiptDate) : new Date(),
+    );
+    const frontendUrl =
+      this.configService.get<string>('FRONTEND_URL') ||
+      'http://localhost:3000';
+
+    await this.templateSenderService.sendPaymentReceiptAttachmentTenant({
+      phone_number: phone,
+      pdf_buffer: pdfBuffer,
+      pdf_filename: pdfFilename,
+      receipt_token: receiptToken,
+      frontend_url: frontendUrl,
+    });
+  }
+
+  /**
+   * Webhook bridge: the tenant tapped the Download receipt Quick Reply on
+   * Msg 1. The tenant-flow service emits this event with the receipt token
+   * (parsed from the button payload) and the tenant's phone (the webhook
+   * `from`). Errors are caught here because we don't want a PDF generation
+   * failure to bubble back into the WhatsApp bot's webhook reply pipeline.
+   */
+  @OnEvent('whatsapp.button.payment_receipt_download')
+  async onPaymentReceiptDownloadButtonTap(event: {
+    token: string;
+    phone: string;
+  }): Promise<void> {
+    try {
+      await this.sendReceiptAttachmentViaWhatsApp(event.token, event.phone);
+    } catch (err) {
+      this.logger.error(
+        `Failed to deliver payment receipt PDF for token ${event.token}: ${(err as Error).message}`,
+        (err as Error).stack,
+      );
+    }
+  }
 
   async getPaymentReceiptView(
     receiptToken: string,
@@ -104,7 +200,9 @@ export class PaymentHistoryPdfService {
     const propertyName = property?.name || 'Property';
     const propertyAddress = property?.location || '';
 
-    const tenantName = await this.resolveTenantName(row, parsed);
+    const kycApp = await this.loadKycFallback(row);
+    const tenantName = this.resolveTenantName(row, parsed, kycApp);
+    const tenantPhone = this.resolveTenantPhone(row, parsed, kycApp);
     const branding = this.resolveLandlordBranding(row);
 
     return {
@@ -113,6 +211,7 @@ export class PaymentHistoryPdfService {
         ? new Date(paymentDate).toISOString()
         : null,
       paymentAmount,
+      paymentDescription: parsed.paymentDescription || null,
       paymentMethod: 'Manual',
       paymentReference: parsed.paymentReference || null,
       property: {
@@ -120,9 +219,21 @@ export class PaymentHistoryPdfService {
         name: propertyName,
         address: propertyAddress,
       },
-      tenant: { name: tenantName },
+      tenant: { name: tenantName, phone: tenantPhone },
       landlordBranding: branding,
     };
+  }
+
+  private resolveTenantPhone(
+    row: PropertyHistory,
+    parsed: any,
+    kycApp: KYCApplication | null,
+  ): string | null {
+    const tenantUser = (row.tenant as any)?.user;
+    if (tenantUser?.phone_number) return String(tenantUser.phone_number);
+    if (parsed.tenantPhone) return String(parsed.tenantPhone);
+    if (kycApp?.phone_number) return String(kycApp.phone_number);
+    return null;
   }
 
   private parseDescription(desc: string | null | undefined): any {
@@ -134,11 +245,31 @@ export class PaymentHistoryPdfService {
     }
   }
 
-  private async resolveTenantName(
+  /**
+   * Load the linked KYCApplication for staged-applicant rows (tenant_id=NULL).
+   * Returns null when not applicable, so callers don't need to repeat the
+   * related_entity_type guard.
+   */
+  private async loadKycFallback(
+    row: PropertyHistory,
+  ): Promise<KYCApplication | null> {
+    if ((row.tenant as any)?.user) return null;
+    if (
+      row.related_entity_type !== 'kyc_application' ||
+      !row.related_entity_id
+    ) {
+      return null;
+    }
+    return this.kycApplicationRepository.findOne({
+      where: { id: row.related_entity_id },
+    });
+  }
+
+  private resolveTenantName(
     row: PropertyHistory,
     parsed: any,
-  ): Promise<string> {
-    // Tenant-mode: pull from the linked Account → Users.
+    kycApp: KYCApplication | null,
+  ): string {
     const tenantUser = (row.tenant as any)?.user;
     if (tenantUser) {
       return (
@@ -147,18 +278,12 @@ export class PaymentHistoryPdfService {
         'Tenant'
       );
     }
-    // Staged-applicant mode: tenant_id is NULL pre-attach. Pull from the
-    // event_description JSON (modal already stamps `tenantName` there)
-    // or fall back to the linked KYCApplication.
     if (parsed.tenantName) return String(parsed.tenantName);
-    if (row.related_entity_type === 'kyc_application' && row.related_entity_id) {
-      const app = await this.kycApplicationRepository.findOne({
-        where: { id: row.related_entity_id },
-      });
-      if (app) {
-        return `${app.first_name ?? ''} ${app.last_name ?? ''}`.trim() ||
-          'Applicant';
-      }
+    if (kycApp) {
+      return (
+        `${kycApp.first_name ?? ''} ${kycApp.last_name ?? ''}`.trim() ||
+        'Applicant'
+      );
     }
     return 'Tenant';
   }
@@ -194,8 +319,13 @@ export class PaymentHistoryPdfService {
     try {
       browser = await launchBrowser();
       const page = await browser.newPage();
+      // On Linux (production) use `networkidle0` to ensure every external
+      // asset (logos on Cloudinary, etc.) has fully settled before printing.
+      // On Windows/Mac dev laptops, slow external fetches can hang past the
+      // 15s timeout, so fall back to `load` — the page is fully painted, just
+      // not guaranteed to have zero in-flight connections.
       await page.setContent(html, {
-        waitUntil: 'networkidle0',
+        waitUntil: process.platform === 'linux' ? 'networkidle0' : 'load',
         timeout: 15000,
       });
       const pdf = await page.pdf({
@@ -220,141 +350,30 @@ export class PaymentHistoryPdfService {
     }
   }
 
-  private formatCurrency(amount: number): string {
-    if (amount === null || amount === undefined || isNaN(Number(amount))) {
-      return '₦0';
-    }
-    const parts = Number(amount).toFixed(2).split('.');
-    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    return `₦${parts.join('.')}`;
-  }
-
-  private formatDate(date: string | null): string {
-    if (!date) return '—';
-    return new Date(date).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
+  private generateReceiptHTML(view: PaymentReceiptView): string {
+    const b = view.landlordBranding;
+    return renderUnifiedReceiptHTML({
+      receiptNumber: view.receiptNumber,
+      tenantName: view.tenant.name,
+      tenantPhone: view.tenant.phone,
+      propertyName: view.property.name,
+      paymentDate: view.receiptDate,
+      paymentMethod: view.paymentMethod,
+      landlord: {
+        logoUrl: b.logoUrl,
+        businessName: b.businessName,
+        phone: b.contactPhone,
+        email: b.contactEmail,
+        address: b.businessAddress,
+      },
+      descriptionRows: [
+        {
+          label: view.paymentDescription || 'Payment received',
+          amount: view.paymentAmount,
+        },
+      ],
+      amountPaid: view.paymentAmount,
     });
   }
 
-  private escapeHtml(text: string | null | undefined): string {
-    if (!text) return '';
-    const map: Record<string, string> = {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    };
-    return String(text).replace(/[&<>"']/g, (c) => map[c]);
-  }
-
-  private generateReceiptHTML(view: PaymentReceiptView): string {
-    const b = view.landlordBranding;
-    const totalAmount = this.formatCurrency(view.paymentAmount);
-    const paymentDate = this.formatDate(view.receiptDate);
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Payment Receipt — ${this.escapeHtml(view.receiptNumber)}</title>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:'Inter', system-ui, sans-serif; background:#f9fafb; color:#1a1b23; }
-    .wrapper { display:flex; justify-content:center; padding:20px; }
-    .card { background:#fff; max-width:850px; width:100%; padding:48px; position:relative; box-shadow:0 1px 2px rgba(0,0,0,0.05); }
-    .branding-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:32px; }
-    .branding-left p { font-size:10px; color:#4b5563; line-height:14px; }
-    .branding-left .biz-name { font-size:12px; font-weight:700; color:#1a1b23; margin-bottom:4px; }
-    .branding-right img { height:50px; width:auto; object-fit:contain; }
-    .title { font-size:24px; font-weight:700; color:#1a1b23; margin-bottom:32px; text-align:center; }
-    .info-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:32px; }
-    .info-group { margin-bottom:16px; }
-    .info-label { font-size:12px; color:#6b7280; margin-bottom:4px; font-weight:500; }
-    .info-value { font-size:14px; color:#1a1b23; font-weight:600; }
-    .separator { height:1px; background:linear-gradient(to right, transparent, #d1d5db, transparent); margin:32px 0; }
-    .section-title { font-size:16px; font-weight:700; color:#1a1b23; margin-bottom:24px; text-align:center; }
-    .row { display:flex; justify-content:space-between; padding:12px 0; border-bottom:1px solid #e5e7eb; }
-    .row .l { font-size:14px; color:#1a1b23; }
-    .row .r { font-size:14px; color:#1a1b23; font-weight:600; }
-    .total-row { display:flex; justify-content:space-between; align-items:center; margin-top:16px; padding:16px; background:#f9fafb; border-top:2px solid #111827; border-radius:8px; }
-    .total-label { font-size:16px; font-weight:700; color:#1a1b23; }
-    .total-amount { font-size:20px; font-weight:700; color:#1a1b23; }
-  </style>
-</head>
-<body>
-  <div class="wrapper">
-    <div class="card">
-      ${
-        b.businessName || b.logoUrl
-          ? `<div class="branding-header">
-              <div class="branding-left">
-                ${b.businessName ? `<p class="biz-name">${this.escapeHtml(b.businessName)}</p>` : ''}
-                ${b.businessAddress ? `<p>${this.escapeHtml(b.businessAddress)}</p>` : ''}
-                ${b.contactPhone ? `<p>${this.escapeHtml(b.contactPhone)}</p>` : ''}
-                ${b.contactEmail ? `<p>${this.escapeHtml(b.contactEmail)}</p>` : ''}
-              </div>
-              ${b.logoUrl ? `<div class="branding-right"><img src="${this.escapeHtml(b.logoUrl)}" alt="${this.escapeHtml(b.businessName)}" /></div>` : ''}
-            </div>`
-          : ''
-      }
-
-      <h1 class="title">Payment Receipt</h1>
-
-      <div class="info-grid">
-        <div>
-          <div class="info-group">
-            <p class="info-label">Receipt Number</p>
-            <p class="info-value">${this.escapeHtml(view.receiptNumber)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Payment Date</p>
-            <p class="info-value">${paymentDate}</p>
-          </div>
-          ${
-            view.paymentReference
-              ? `<div class="info-group">
-                  <p class="info-label">Reference</p>
-                  <p class="info-value">${this.escapeHtml(view.paymentReference)}</p>
-                </div>`
-              : ''
-          }
-          <div class="info-group">
-            <p class="info-label">Method</p>
-            <p class="info-value">${this.escapeHtml(view.paymentMethod)}</p>
-          </div>
-        </div>
-        <div>
-          <div class="info-group">
-            <p class="info-label">Property</p>
-            <p class="info-value">${this.escapeHtml(view.property.name)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Property Address</p>
-            <p class="info-value">${this.escapeHtml(view.property.address)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Received From</p>
-            <p class="info-value">${this.escapeHtml(view.tenant.name)}</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="separator"></div>
-
-      <h2 class="section-title">Payment Summary</h2>
-      <div class="row">
-        <span class="l">Payment received</span>
-        <span class="r">${totalAmount}</span>
-      </div>
-      <div class="total-row">
-        <span class="total-label">Total Amount Paid</span>
-        <span class="total-amount">${totalAmount}</span>
-      </div>
-    </div>
-  </div>
-</body>
-</html>`;
-  }
 }

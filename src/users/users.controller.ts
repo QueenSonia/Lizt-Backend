@@ -15,6 +15,7 @@ import {
   UploadedFiles,
   UploadedFile,
   Patch,
+  HttpException,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { SyncTenantDataService } from './sync-tenant-data.service';
@@ -29,6 +30,7 @@ import {
   UploadLogoDto,
   UserFilter,
 } from './dto/create-user.dto';
+import { SelectRoleDto } from './dto/select-role.dto';
 import { AttachTenantFromKycDto } from './dto/attach-tenant-from-kyc.dto';
 import { AttachTenantToPropertyDto } from './dto/attach-tenant-to-property.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -392,6 +394,26 @@ export class UsersController {
   }
 
   @ApiOperation({
+    summary: 'Select role after multi-role sign-in',
+    description:
+      'When /users/login returns requiresRoleSelection=true, the client calls this endpoint with the role-selection ticket and the chosen role to receive a real session.',
+  })
+  @ApiBody({ type: SelectRoleDto })
+  @ApiOkResponse({ description: 'Session issued for the selected role' })
+  @ApiUnauthorizedResponse({
+    description: 'Ticket missing, expired, or invalid',
+  })
+  @SkipAuth()
+  @Post('login/select-role')
+  async selectRoleAfterLogin(
+    @Body() body: SelectRoleDto,
+    @Res() res: Response,
+    @Req() req: any,
+  ) {
+    return this.usersService.selectRoleAfterLogin(body, res, req);
+  }
+
+  @ApiOperation({
     summary: 'Logout User',
     description: 'User successfully logged out',
   })
@@ -427,13 +449,31 @@ export class UsersController {
 
   @SkipAuth()
   @Post('forgot-password')
-  async forgotPassword(@Body() body: { email: string }, @Res() res: Response) {
+  async forgotPassword(
+    @Body() body: { identifier?: string; email?: string },
+    @Res() res: Response,
+  ) {
     try {
-      const { email } = body;
-      await this.usersService.forgotPassword(email);
-      return res.status(200).json({ message: 'Check your Email' });
+      // Accept `identifier` (new) or `email` (legacy) so old clients keep
+      // working while the FE migrates to phone-or-email.
+      const raw = body.identifier ?? body.email;
+      if (!raw || typeof raw !== 'string' || !raw.trim()) {
+        return res
+          .status(400)
+          .json({ message: 'identifier (email or phone) is required' });
+      }
+      const result = await this.usersService.forgotPassword(raw);
+      return res.status(200).json(result);
     } catch (error) {
-      return res.status(500).json({ message: 'Internal Server Error' });
+      const status =
+        error instanceof HttpException ? error.getStatus() : 500;
+      const message =
+        error instanceof HttpException
+          ? error.getResponse()
+          : 'Internal Server Error';
+      return res.status(status).json(
+        typeof message === 'string' ? { message } : message,
+      );
     }
   }
 
@@ -605,6 +645,7 @@ export class UsersController {
       first_name: string;
       last_name: string;
       phone_number: string;
+      property_ids?: string[];
     },
     @Req() req: any,
   ) {

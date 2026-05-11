@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import type { Browser } from 'puppeteer';
 
 import { launchBrowser } from '../common/puppeteer-launch';
+import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
 
 import {
   AdHocInvoice,
@@ -300,131 +301,56 @@ export class AdHocInvoicePdfService {
 </html>`;
   }
 
+
   private generateReceiptHTML(invoice: AdHocInvoice): string {
     const property = invoice.property;
     const propertyName = property?.name || 'Property';
-    const propertyAddress = property?.location || '';
-    const tenantName = this.tenantName(invoice);
-    const { logoUrl, name: landlordName, branding } =
-      this.landlordInfo(invoice);
+    const tenantUser = invoice.tenant?.user as
+      | { first_name?: string; last_name?: string; phone_number?: string | null }
+      | undefined;
+    const tenantName = tenantUser
+      ? `${tenantUser.first_name ?? ''} ${tenantUser.last_name ?? ''}`.trim()
+      : 'Tenant';
+    const tenantPhone = tenantUser?.phone_number ?? null;
 
-    const paymentDate = this.formatDate(invoice.paid_at);
-    const paymentReference = invoice.payment_reference || 'N/A';
-    const receiptNumber = invoice.receipt_number || 'N/A';
-    const totalAmount = this.formatCurrency(Number(invoice.total_amount));
-    const lineItems = (invoice.line_items ?? [])
+    const landlordUser = (property as any)?.owner?.user;
+    const branding = landlordUser?.branding ?? {};
+    const logoUrl =
+      landlordUser?.logo_urls?.[0] ?? branding?.letterhead ?? null;
+
+    const sortedItems = (invoice.line_items ?? [])
       .slice()
       .sort((a, b) => a.sequence - b.sequence);
+    const rows = sortedItems.length
+      ? sortedItems.map((it) => ({
+          label: it.description,
+          amount: Number(it.amount) || 0,
+        }))
+      : [
+          {
+            label: `Invoice ${invoice.invoice_number}`,
+            amount: Number(invoice.total_amount) || 0,
+          },
+        ];
 
-    const lineItemRowsHtml = lineItems
-      .map(
-        (item) => `<div class="row">
-          <span class="l">${this.escapeHtml(item.description)}</span>
-          <span class="r">${this.formatCurrency(Number(item.amount))}</span>
-        </div>`,
-      )
-      .join('');
+    const amountPaid = Number(invoice.total_amount) || 0;
 
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Payment Receipt — ${this.escapeHtml(invoice.invoice_number)}</title>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:'Inter', system-ui, sans-serif; background:#f9fafb; color:#1a1b23; }
-    .wrapper { display:flex; justify-content:center; padding:20px; }
-    .card { background:#fff; max-width:850px; width:100%; padding:48px; position:relative; box-shadow:0 1px 2px rgba(0,0,0,0.05); }
-    .branding-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:32px; }
-    .branding-left p { font-size:10px; color:#4b5563; line-height:14px; }
-    .branding-left .biz-name { font-size:12px; font-weight:700; color:#1a1b23; margin-bottom:4px; }
-    .branding-right img { height:50px; width:auto; object-fit:contain; }
-    .title { font-size:24px; font-weight:700; color:#1a1b23; margin-bottom:32px; text-align:center; }
-    .info-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:32px; }
-    .info-group { margin-bottom:16px; }
-    .info-label { font-size:12px; color:#6b7280; margin-bottom:4px; font-weight:500; }
-    .info-value { font-size:14px; color:#1a1b23; font-weight:600; }
-    .separator { height:1px; background:linear-gradient(to right, transparent, #d1d5db, transparent); margin:32px 0; }
-    .section-title { font-size:16px; font-weight:700; color:#1a1b23; margin-bottom:24px; text-align:center; }
-    .row { display:flex; justify-content:space-between; padding:12px 0; border-bottom:1px solid #e5e7eb; }
-    .row .l { font-size:14px; color:#1a1b23; }
-    .row .r { font-size:14px; color:#1a1b23; font-weight:600; }
-    .total-row { display:flex; justify-content:space-between; align-items:center; margin-top:16px; padding:16px; background:#f9fafb; border-top:2px solid #111827; border-radius:8px; }
-    .total-label { font-size:16px; font-weight:700; color:#1a1b23; }
-    .total-amount { font-size:20px; font-weight:700; color:#1a1b23; }
-  </style>
-</head>
-<body>
-  <div class="wrapper">
-    <div class="card">
-      ${
-        branding || logoUrl
-          ? `<div class="branding-header">
-              <div class="branding-left">
-                ${branding?.businessName ? `<p class="biz-name">${this.escapeHtml(branding.businessName)}</p>` : ''}
-                ${branding?.businessAddress ? `<p>${this.escapeHtml(branding.businessAddress)}</p>` : ''}
-                ${branding?.contactPhone ? `<p>${this.escapeHtml(branding.contactPhone)}</p>` : ''}
-                ${branding?.contactEmail ? `<p>${this.escapeHtml(branding.contactEmail)}</p>` : ''}
-              </div>
-              ${logoUrl ? `<div class="branding-right"><img src="${this.escapeHtml(logoUrl)}" alt="${this.escapeHtml(landlordName)}" /></div>` : ''}
-            </div>`
-          : ''
-      }
-
-      <h1 class="title">Payment Receipt</h1>
-
-      <div class="info-grid">
-        <div>
-          <div class="info-group">
-            <p class="info-label">Receipt Number</p>
-            <p class="info-value">${this.escapeHtml(receiptNumber)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Invoice Number</p>
-            <p class="info-value">${this.escapeHtml(invoice.invoice_number)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Transaction Reference</p>
-            <p class="info-value">${this.escapeHtml(paymentReference)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Payment Date</p>
-            <p class="info-value">${paymentDate}</p>
-          </div>
-        </div>
-        <div>
-          <div class="info-group">
-            <p class="info-label">Property</p>
-            <p class="info-value">${this.escapeHtml(propertyName)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Property Address</p>
-            <p class="info-value">${this.escapeHtml(propertyAddress)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Tenant</p>
-            <p class="info-value">${this.escapeHtml(tenantName)}</p>
-          </div>
-          <div class="info-group">
-            <p class="info-label">Method</p>
-            <p class="info-value">Paystack</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="separator"></div>
-
-      <h2 class="section-title">Payment Breakdown</h2>
-
-      ${lineItemRowsHtml}
-
-      <div class="total-row">
-        <span class="total-label">Total Amount Paid</span>
-        <span class="total-amount">${totalAmount}</span>
-      </div>
-    </div>
-  </div>
-</body>
-</html>`;
+    return renderUnifiedReceiptHTML({
+      receiptNumber: invoice.receipt_number ?? invoice.receipt_token ?? 'N/A',
+      tenantName,
+      tenantPhone,
+      propertyName,
+      paymentDate: invoice.paid_at ?? null,
+      paymentMethod: invoice.payment_method ?? null,
+      landlord: {
+        logoUrl,
+        businessName: branding?.businessName ?? null,
+        phone: branding?.contactPhone ?? null,
+        email: branding?.contactEmail ?? null,
+        address: branding?.businessAddress ?? null,
+      },
+      descriptionRows: rows,
+      amountPaid,
+    });
   }
 }

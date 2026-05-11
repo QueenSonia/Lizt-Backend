@@ -95,6 +95,18 @@ export class PropertyHistoryController {
     }
   }
 
+  @ApiOperation({
+    summary: 'Send payment-history receipt to tenant via WhatsApp',
+  })
+  @ApiOkResponse({ description: 'Receipt sent' })
+  @ApiBadRequestResponse({ description: 'Tenant has no phone on record' })
+  @ApiSecurity('access_token')
+  @Post('receipts/:token/send-whatsapp')
+  async sendReceiptViaWhatsApp(@Param('token') token: string) {
+    await this.paymentHistoryPdfService.sendReceiptViaWhatsApp(token);
+    return { success: true };
+  }
+
   @ApiOperation({ summary: 'Create Property History' })
   @ApiBody({ type: CreatePropertyHistoryDto })
   @ApiCreatedResponse({ description: 'Property history created successfully' })

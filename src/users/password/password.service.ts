@@ -1,4 +1,10 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import {
+  forwardRef,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, QueryRunner, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
@@ -13,6 +19,7 @@ import {
   EmailSubject,
 } from 'src/utils/email-template';
 import { RolesEnum } from 'src/base.entity';
+import { TemplateSenderService } from 'src/whatsapp-bot/template-sender';
 
 /**
  * Result type for forgot password operation
@@ -53,7 +60,33 @@ export class PasswordService {
     private readonly dataSource: DataSource,
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
+    @Inject(forwardRef(() => TemplateSenderService))
+    private readonly templateSenderService: TemplateSenderService,
   ) {}
+
+  /**
+   * Classify a forgot-password identifier as email or phone.
+   * Mirrors the detection logic used by /users/login so users can use the
+   * same string they sign in with.
+   */
+  private classifyIdentifier(
+    identifier: string,
+  ): { kind: 'email'; value: string } | { kind: 'phone'; value: string } {
+    const trimmed = identifier.trim();
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+    const isPhone = /^[+]?[\d\s\-()]{10,}$/.test(trimmed.replace(/\s/g, ''));
+
+    if (isEmail) {
+      return { kind: 'email', value: trimmed.toLowerCase() };
+    }
+    if (isPhone) {
+      return { kind: 'phone', value: trimmed.replace(/[\s\-()+]/g, '') };
+    }
+    throw new HttpException(
+      'Invalid email or phone number format',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
 
   /**
    * Validates a password reset token.
@@ -106,14 +139,30 @@ export class PasswordService {
   }
 
   /**
-   * Initiates the forgot password flow by generating an OTP
-   * and sending it to the user's email.
-   * @param email The user's email address
+   * Initiates the forgot-password flow. Accepts either an email or a phone
+   * number; delivers the OTP on whichever channel matches the identifier
+   * format. Email identifier → SendGrid email, phone identifier → WhatsApp
+   * authentication template (`offer_letter_otp`, reused).
+   *
+   * The channel used is persisted on the password_reset_token row so a later
+   * resendOtp can re-send via the same channel without re-prompting the user.
+   *
+   * @param identifier The user's email or phone number
    * @returns Object containing success message and token
    */
-  async forgotPassword(email: string): Promise<ForgotPasswordResult> {
+  async forgotPassword(identifier: string): Promise<ForgotPasswordResult> {
     try {
-      const user = await this.accountRepository.findOne({ where: { email } });
+      const classified = this.classifyIdentifier(identifier);
+
+      const user =
+        classified.kind === 'email'
+          ? await this.accountRepository.findOne({
+              where: { email: classified.value },
+            })
+          : await this.accountRepository.findOne({
+              where: { user: { phone_number: classified.value } },
+              relations: ['user'],
+            });
 
       if (!user) {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
@@ -122,26 +171,52 @@ export class PasswordService {
       const otp = this.utilService.generateOTP(6);
       const token = uuidv4();
       const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 5 minutes
+      const channel: 'email' | 'whatsapp' =
+        classified.kind === 'email' ? 'email' : 'whatsapp';
 
       await this.passwordResetRepository.save({
         user_id: user.id,
         token,
         otp,
         expires_at,
+        channel,
       });
 
-      const emailContent = clientForgotPasswordTemplate(otp);
+      if (channel === 'email') {
+        const emailContent = clientForgotPasswordTemplate(otp);
+        await this.utilService.sendEmail(
+          user.email,
+          EmailSubject.LIZT_OTP,
+          emailContent,
+        );
+        return { message: 'OTP sent to email', token };
+      }
 
-      await this.utilService.sendEmail(
-        email,
-        EmailSubject.WELCOME_EMAIL,
-        emailContent,
-      );
+      // WhatsApp path. The phone may live on the joined user row even when
+      // the account was looked up by email, so always re-load relations to
+      // be safe.
+      const phone =
+        user.user?.phone_number ??
+        (
+          await this.accountRepository.findOne({
+            where: { id: user.id },
+            relations: ['user'],
+          })
+        )?.user?.phone_number;
 
-      return {
-        message: 'OTP sent to email',
-        token,
-      };
+      if (!phone) {
+        throw new HttpException(
+          'Account has no phone number on file; cannot send WhatsApp OTP',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      await this.templateSenderService.sendOTPAuthentication({
+        phone_number: phone,
+        otp_code: otp,
+      });
+
+      return { message: 'OTP sent to WhatsApp', token };
     } catch (error) {
       console.error('[ForgotPassword Error]', error);
       if (error instanceof HttpException) {
@@ -214,20 +289,40 @@ export class PasswordService {
     const newOtp = this.utilService.generateOTP(6);
     const newToken = uuidv4();
     const expires_at = new Date(Date.now() + 1000 * 60 * 5); // 5 minutes
+    const channel = resetEntry.channel ?? 'email';
 
     await this.passwordResetRepository.save({
       user_id: user.id,
       token: newToken,
       otp: newOtp,
       expires_at,
+      channel,
     });
 
-    const emailContent = clientForgotPasswordTemplate(newOtp);
-    await this.utilService.sendEmail(
-      user.email,
-      EmailSubject.RESEND_OTP,
-      emailContent,
-    );
+    if (channel === 'whatsapp') {
+      const accountWithUser = await this.accountRepository.findOne({
+        where: { id: user.id },
+        relations: ['user'],
+      });
+      const phone = accountWithUser?.user?.phone_number;
+      if (!phone) {
+        throw new HttpException(
+          'Account has no phone number on file; cannot resend WhatsApp OTP',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      await this.templateSenderService.sendOTPAuthentication({
+        phone_number: phone,
+        otp_code: newOtp,
+      });
+    } else {
+      const emailContent = clientForgotPasswordTemplate(newOtp);
+      await this.utilService.sendEmail(
+        user.email,
+        EmailSubject.LIZT_OTP,
+        emailContent,
+      );
+    }
 
     return {
       message: 'OTP resent successfully',
@@ -264,12 +359,21 @@ export class PasswordService {
 
     if (!user.is_verified) {
       user.is_verified = true;
-      this.eventEmitter.emit('user.signup', {
-        user_id: user.id,
-        profile_name: user.profile_name,
-        property_id: user.property_tenants[0]?.property_id,
-        role: RolesEnum.TENANT,
-      });
+
+      // Only fire the tenant-flavored signup notification for accounts that
+      // are actually tenants. This used to fire unconditionally, which sent
+      // a "now have access to the tenant dashboard" notification to FMs and
+      // landlords completing first-time password setup — wrong audience.
+      const isTenant =
+        user.roles?.includes(RolesEnum.TENANT) || user.role === RolesEnum.TENANT;
+      if (isTenant) {
+        this.eventEmitter.emit('user.signup', {
+          user_id: user.id,
+          profile_name: user.profile_name,
+          property_id: user.property_tenants[0]?.property_id,
+          role: RolesEnum.TENANT,
+        });
+      }
     }
 
     await this.accountRepository.save(user);

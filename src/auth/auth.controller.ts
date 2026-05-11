@@ -54,7 +54,7 @@ export class AuthController {
       last_name: account.user.last_name,
       email: account.email,
       phone_number: account.user.phone_number,
-      role: account.role,
+      role: account.role ?? account.roles?.[0] ?? '',
     };
 
     const newAccessToken =

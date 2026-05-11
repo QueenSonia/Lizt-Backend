@@ -3,6 +3,7 @@ export enum EmailSubject {
   COMPLETE_PROFILE = 'Kindly Complete Your Profile',
   SEND_RENT_REMINDER = 'Rent Payment Reminder',
   RESEND_OTP = 'OTP Request',
+  LIZT_OTP = 'Lizt OTP',
 }
 
 export const clientSignUpEmailTemplate = (tenant: string, link: string) => `
@@ -112,7 +113,7 @@ export const clientForgotPasswordTemplate = (otp: string) => `
       
       <!-- Validity notice -->
       <p style="font-size: 16px; color: #6B7280; line-height: 1.6; margin: 0 0 25px 0;">
-        This OTP is valid for the next 10 minutes. If you did not request a password reset, please ignore this email.
+        This OTP is valid for the next 5 minutes. If you did not request a password reset, please ignore this email.
       </p>
       
       <!-- Closing -->

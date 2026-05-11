@@ -13,31 +13,27 @@ export class ServiceRequestStatusHistory extends BaseEntity {
     nullable: true,
     type: 'enum',
     enum: [
-      ServiceRequestStatusEnum.PENDING,
-      ServiceRequestStatusEnum.OPEN,
-      ServiceRequestStatusEnum.IN_PROGRESS,
+      ServiceRequestStatusEnum.NOT_APPROVED,
+      ServiceRequestStatusEnum.APPROVED,
       ServiceRequestStatusEnum.RESOLVED,
-      ServiceRequestStatusEnum.CLOSED,
       ServiceRequestStatusEnum.REOPENED,
-      ServiceRequestStatusEnum.URGENT,
+      ServiceRequestStatusEnum.CLOSED,
     ],
   })
-  previous_status: string | null;
+  previous_status: ServiceRequestStatusEnum | null;
 
   @Column({
     nullable: false,
     type: 'enum',
     enum: [
-      ServiceRequestStatusEnum.PENDING,
-      ServiceRequestStatusEnum.OPEN,
-      ServiceRequestStatusEnum.IN_PROGRESS,
+      ServiceRequestStatusEnum.NOT_APPROVED,
+      ServiceRequestStatusEnum.APPROVED,
       ServiceRequestStatusEnum.RESOLVED,
-      ServiceRequestStatusEnum.CLOSED,
       ServiceRequestStatusEnum.REOPENED,
-      ServiceRequestStatusEnum.URGENT,
+      ServiceRequestStatusEnum.CLOSED,
     ],
   })
-  new_status: string;
+  new_status: ServiceRequestStatusEnum;
 
   @Column({ nullable: false, type: 'uuid' })
   changed_by_user_id: string;

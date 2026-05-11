@@ -103,9 +103,29 @@ export class ReceiptsService {
   }
 
   async downloadPDF(id: string, landlordId: string): Promise<Buffer> {
-    const receipt = await this.findById(id, landlordId);
+    await this.findById(id, landlordId);
+    return this.downloadPDFById(id);
+  }
 
-    // If PDF already exists, fetch it
+  /**
+   * Variant for the public-token endpoint — caller has already verified the
+   * token, so no landlord ownership check needed.
+   */
+  async downloadPDFByToken(token: string): Promise<{
+    receipt: Receipt;
+    pdf: Buffer;
+  }> {
+    const receipt = await this.findByToken(token);
+    const pdf = await this.downloadPDFById(receipt.id);
+    return { receipt, pdf };
+  }
+
+  private async downloadPDFById(id: string): Promise<Buffer> {
+    const receipt = await this.receiptRepository.findOne({ where: { id } });
+    if (!receipt) {
+      throw new NotFoundException('Receipt not found');
+    }
+
     if (receipt.pdf_url) {
       try {
         const response = await fetch(receipt.pdf_url);
@@ -116,12 +136,11 @@ export class ReceiptsService {
       } catch (err) {
         this.logger.warn(
           `Failed to fetch existing PDF for receipt ${id}, regenerating`,
-          err.message,
+          (err as Error).message,
         );
       }
     }
 
-    // Generate on-the-fly
     return this.receiptGeneratorService.generateReceiptPDF(id);
   }
 

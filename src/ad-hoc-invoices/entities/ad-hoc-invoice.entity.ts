@@ -83,6 +83,10 @@ export class AdHocInvoice extends BaseEntity {
   @Column({ type: 'varchar', length: 100, nullable: true })
   payment_reference: string | null;
 
+  /** Paystack channel from verify response (card, bank_transfer, ussd, etc.). */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  payment_method: string | null;
+
   /** Set on successful payment — used for the public receipt page. */
   @Column({ type: 'varchar', length: 64, nullable: true })
   receipt_token: string | null;

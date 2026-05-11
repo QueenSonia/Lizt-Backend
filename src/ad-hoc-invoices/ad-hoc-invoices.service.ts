@@ -394,6 +394,7 @@ export class AdHocInvoicesService {
         await this.markInvoicePaidFromWebhook({
           reference: data.reference,
           amount: data.amount,
+          channel: data.channel,
           metadata: {
             ad_hoc_invoice_id: invoice.id,
             public_token: invoice.public_token,
@@ -519,6 +520,7 @@ export class AdHocInvoicesService {
           : invoice.paid_at
         : null,
       paymentReference: invoice.payment_reference ?? null,
+      paymentMethod: invoice.payment_method ?? null,
       amount: Number(invoice.total_amount),
       invoice: {
         id: invoice.id,
@@ -550,6 +552,7 @@ export class AdHocInvoicesService {
   async markInvoicePaidFromWebhook(data: {
     reference: string;
     amount: number;
+    channel?: string;
     metadata?: { ad_hoc_invoice_id?: string; public_token?: string };
   }): Promise<void> {
     const invoiceId = data.metadata?.ad_hoc_invoice_id;
@@ -611,6 +614,7 @@ export class AdHocInvoicesService {
     await this.markInvoicePaid(invoice, {
       amount: amountInNaira,
       paystackRef: data.reference,
+      channel: data.channel ?? undefined,
     });
   }
 
@@ -620,7 +624,12 @@ export class AdHocInvoicesService {
 
   private async markInvoicePaid(
     invoice: AdHocInvoice,
-    args: { amount: number; paystackRef: string; paidAt?: Date },
+    args: {
+      amount: number;
+      paystackRef: string;
+      channel?: string;
+      paidAt?: Date;
+    },
   ): Promise<void> {
     // Idempotency: webhook and frontend-verify both race to here.
     // Re-read status so the loser doesn't overwrite receipt_token (which is
@@ -645,6 +654,7 @@ export class AdHocInvoicesService {
         status: AdHocInvoiceStatus.PAID,
         paid_at: paidAt,
         payment_reference: args.paystackRef,
+        payment_method: args.channel ?? null,
         receipt_token: receiptToken,
         receipt_number: receiptNumber,
       });

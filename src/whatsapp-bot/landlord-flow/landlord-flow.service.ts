@@ -1,6 +1,6 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not } from 'typeorm';
+import { Repository, In } from 'typeorm';
 
 import { Users } from 'src/users/entities/user.entity';
 import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
@@ -84,15 +84,13 @@ export class LandlordFlowService {
       return;
     }
 
+    // Acknowledging via WhatsApp used to flip status to APPROVED, bypassing
+    // the landlord-approval gate. The redesigned policy reserves approval
+    // exclusively for the landlord (web), so this command is disabled for FM.
     if (lowerText === 'acknowledge request') {
-      await this.cache.set(
-        `service_request_state_facility_${from}`,
-        'acknowledged',
-        this.SESSION_TIMEOUT_MS,
-      );
       await this.templateSenderService.sendText(
         from,
-        'Please provide the request ID to acknowledge',
+        'Acknowledging requests is no longer available on WhatsApp. Approvals now happen on the web app.',
       );
       return;
     }
@@ -148,23 +146,21 @@ export class LandlordFlowService {
       return;
     }
 
-    if (facilityState === 'acknowledged') {
-      await this.handleAcknowledgedState(from, text);
-      return;
-    }
-
-    if (facilityState === 'resolve-or-update') {
-      await this.handleResolveOrUpdateState(from, text);
-      return;
-    }
-
-    if (facilityState === 'awaiting_update') {
-      await this.handleAwaitingUpdateState(from, text);
-      return;
-    }
-
-    if (facilityState === 'awaiting_resolution') {
-      await this.handleAwaitingResolutionState(from, text);
+    // Legacy state-changing flows (acknowledged / resolve-or-update /
+    // awaiting_update / awaiting_resolution) are no longer reachable from
+    // WhatsApp — the FM surface is read-only. If a stale cache entry resurfaces,
+    // clear it and nudge the FM to the web app.
+    if (
+      facilityState === 'acknowledged' ||
+      facilityState === 'resolve-or-update' ||
+      facilityState === 'awaiting_update' ||
+      facilityState === 'awaiting_resolution'
+    ) {
+      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.templateSenderService.sendText(
+        from,
+        'Updating or resolving requests is now done in the web app. Type "menu" to see other options.',
+      );
       return;
     }
 
@@ -209,7 +205,22 @@ export class LandlordFlowService {
       return;
     }
 
-    if (!serviceRequest.tenant?.user || !serviceRequest.property) {
+    // Defensive: even though the list query filters to visible states, the
+    // user could type a stale number. Reject anything outside the visible set.
+    const FM_VISIBLE_STATUSES: ServiceRequestStatusEnum[] = [
+      ServiceRequestStatusEnum.APPROVED,
+      ServiceRequestStatusEnum.RESOLVED,
+      ServiceRequestStatusEnum.REOPENED,
+    ];
+    if (!FM_VISIBLE_STATUSES.includes(serviceRequest.status)) {
+      await this.templateSenderService.sendText(
+        from,
+        "That request isn't visible here. Open the web app for full details.",
+      );
+      return;
+    }
+
+    if (!serviceRequest.property) {
       await this.templateSenderService.sendText(
         from,
         'Unable to load full request details. Please contact support.',
@@ -218,17 +229,23 @@ export class LandlordFlowService {
     }
 
     const statusLabel = this.getStatusLabel(serviceRequest.status);
+    const tenantUser = serviceRequest.tenant?.user;
+    const reporterLine = tenantUser
+      ? `Tenant: ${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}\n`
+      : `Reporter: ${serviceRequest.tenant_name || 'Facility manager'}\n`;
 
     await this.templateSenderService.sendText(
       from,
-      `*${serviceRequest.description}*\n\nTenant: ${this.utilService.toSentenceCase(serviceRequest.tenant.user.first_name)} ${this.utilService.toSentenceCase(serviceRequest.tenant.user.last_name)}\nProperty: ${serviceRequest.property.name}\nStatus: ${statusLabel}`,
+      `*${serviceRequest.description}*\n\n${reporterLine}Property: ${serviceRequest.property.name}\nStatus: ${statusLabel}`,
     );
 
+    // Marking resolved now happens in the web app (we capture cost +
+    // category + summary there). The detail card on WhatsApp is read-only.
     await this.templateSenderService.sendButtons(
       from,
       'What would you like to do?',
       [
-        { id: `mark_resolved:${serviceRequest.id}`, title: 'Mark as Resolved' },
+        { id: 'open_in_web_app', title: 'Open in web app' },
         { id: 'back_to_list', title: 'Back to List' },
       ],
     );
@@ -248,14 +265,16 @@ export class LandlordFlowService {
       return 'Unknown';
     }
     switch (status) {
-      case ServiceRequestStatusEnum.OPEN:
-        return 'Open';
+      case ServiceRequestStatusEnum.NOT_APPROVED:
+        return 'Pending Approval';
+      case ServiceRequestStatusEnum.APPROVED:
+        return 'Approved';
       case ServiceRequestStatusEnum.RESOLVED:
         return 'Resolved';
       case ServiceRequestStatusEnum.REOPENED:
         return 'Reopened';
-      case ServiceRequestStatusEnum.IN_PROGRESS:
-        return 'In Progress';
+      case ServiceRequestStatusEnum.CLOSED:
+        return 'Closed';
       default:
         return status;
     }
@@ -289,10 +308,12 @@ export class LandlordFlowService {
       return;
     }
 
-    // Update status via service to track history
+    // FM acknowledging via WhatsApp moves the request into the "approved &
+    // being worked on" state. This bypasses the landlord-approval gate
+    // because the WhatsApp ack flow is intentionally out-of-band.
     await this.serviceRequestService.updateStatus(
       serviceRequest.id,
-      ServiceRequestStatusEnum.IN_PROGRESS,
+      ServiceRequestStatusEnum.APPROVED,
       `Acknowledged by facility manager via WhatsApp`,
       {
         id: serviceRequest.facilityManager?.account?.user?.id || 'system',
@@ -591,9 +612,16 @@ export class LandlordFlowService {
           break;
         }
 
-        // Handle dynamic button IDs like "mark_resolved:requestId"
-        if (buttonId.startsWith('mark_resolved:')) {
-          await this.handleMarkResolved(from, buttonId);
+        // mark_resolved: postbacks could still arrive from older menu cards
+        // cached on the user's device. Reject them — the action moved to web.
+        if (
+          buttonId.startsWith('mark_resolved:') ||
+          buttonId === 'open_in_web_app'
+        ) {
+          await this.templateSenderService.sendText(
+            from,
+            'Please mark this request resolved in the web app — we now require cost and category details.',
+          );
         } else {
           await this.templateSenderService.sendText(
             from,
@@ -619,12 +647,20 @@ export class LandlordFlowService {
       return;
     }
 
+    // FM-on-WhatsApp is read-only and limited to live work. We hide
+    // NOT_APPROVED (pending landlord approval; FM cannot act yet) and
+    // CLOSED (finalized; nothing to do). Approved + resolved + reopened
+    // remain visible as a quick at-a-glance check from chat.
     const serviceRequests = await this.serviceRequestRepo.find({
       where: {
         property: {
           owner_id: teamMemberInfo.team.creatorId,
         },
-        status: Not(ServiceRequestStatusEnum.CLOSED),
+        status: In([
+          ServiceRequestStatusEnum.APPROVED,
+          ServiceRequestStatusEnum.RESOLVED,
+          ServiceRequestStatusEnum.REOPENED,
+        ]),
       },
       relations: ['tenant', 'tenant.user', 'property'],
     });
@@ -675,7 +711,9 @@ export class LandlordFlowService {
         `- Email: ${teamMemberAccountInfo.account.email}\n` +
         `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
         `- Role: ${this.utilService.toSentenceCase(
-          teamMemberAccountInfo.account.role,
+          teamMemberAccountInfo.account.role ??
+            teamMemberAccountInfo.account.roles?.[0] ??
+            '',
         )}`,
     );
 

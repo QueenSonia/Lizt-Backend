@@ -4,12 +4,16 @@ import {
   JoinColumn,
   ManyToOne,
   OneToMany,
-  OneToOne,
 } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { Users } from '../../users/entities/user.entity';
 import { Property } from '../../properties/entities/property.entity';
-import { ServiceRequestStatusEnum } from '../dto/create-service-request.dto';
+import {
+  ServiceRequestCreatorTypeEnum,
+  ServiceRequestScopeEnum,
+  ServiceRequestStatusEnum,
+} from '../dto/create-service-request.dto';
+import { JobCategoryEnum } from '../dto/job-category.enum';
 import { Account } from 'src/users/entities/account.entity';
 import { ChatMessage } from 'src/chat/chat-message.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
@@ -51,31 +55,70 @@ export class ServiceRequest extends BaseEntity {
   @Column('text', { nullable: true })
   notes: string;
 
+  @Column({ nullable: true, type: 'integer' })
+  resolution_cost_minor?: number | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 64 })
+  resolution_category?: JobCategoryEnum | null;
+
+  @Column({ nullable: true, type: 'text' })
+  resolution_summary?: string | null;
+
   @Column({
     nullable: false,
     type: 'enum',
     enum: [
-      ServiceRequestStatusEnum.PENDING,
-      ServiceRequestStatusEnum.OPEN,
-      ServiceRequestStatusEnum.IN_PROGRESS,
+      ServiceRequestStatusEnum.NOT_APPROVED,
+      ServiceRequestStatusEnum.APPROVED,
       ServiceRequestStatusEnum.RESOLVED,
-      ServiceRequestStatusEnum.CLOSED,
       ServiceRequestStatusEnum.REOPENED,
-      ServiceRequestStatusEnum.URGENT,
+      ServiceRequestStatusEnum.CLOSED,
     ],
-    default: ServiceRequestStatusEnum.PENDING,
+    default: ServiceRequestStatusEnum.NOT_APPROVED,
   })
-  status: string | null;
+  status: ServiceRequestStatusEnum;
 
-  @Column({ nullable: false, type: 'uuid' })
-  tenant_id: string;
+  @Column({ nullable: false, type: 'boolean', default: false })
+  is_urgent: boolean;
+
+  @Column({
+    nullable: false,
+    type: 'enum',
+    enum: [
+      ServiceRequestScopeEnum.UNIT,
+      ServiceRequestScopeEnum.COMMON_AREA,
+    ],
+    default: ServiceRequestScopeEnum.UNIT,
+  })
+  scope: ServiceRequestScopeEnum;
+
+  @Column({
+    nullable: false,
+    type: 'enum',
+    enum: [
+      ServiceRequestCreatorTypeEnum.TENANT,
+      ServiceRequestCreatorTypeEnum.FACILITY_MANAGER,
+    ],
+    default: ServiceRequestCreatorTypeEnum.TENANT,
+  })
+  creator_type: ServiceRequestCreatorTypeEnum;
+
+  @Column({ nullable: true, type: 'uuid' })
+  creator_user_id: string | null;
+
+  @ManyToOne(() => Users, { onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'creator_user_id', referencedColumnName: 'id' })
+  creator: Users | null;
+
+  @Column({ nullable: true, type: 'uuid' })
+  tenant_id: string | null;
 
   @Column({ nullable: false, type: 'uuid' })
   property_id: string;
 
   @ManyToOne(() => Account, (u) => u.service_requests)
   @JoinColumn({ name: 'tenant_id', referencedColumnName: 'id' })
-  tenant: Account;
+  tenant: Account | null;
 
   @ManyToOne(() => Property, (p) => p.service_requests, {
     onDelete: 'CASCADE',

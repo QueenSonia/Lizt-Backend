@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, Not, In } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
@@ -91,6 +92,7 @@ export class TenantFlowService {
     private readonly notificationLogService: WhatsAppNotificationLogService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly nextPeriodStateResolver: NextPeriodStateResolver,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -335,13 +337,24 @@ export class TenantFlowService {
     // Set a 30-second dedup window
     await this.cache.set(dedupeKey, '1', 30 * 1000);
 
+    if (!selectedPropertyId) {
+      await this.templateSenderService.sendText(
+        from,
+        'We could not determine which property this request is for. Please try again.',
+      );
+      await this.cache.delete(`service_request_state_${from}`);
+      return;
+    }
+
     try {
       const new_service_request =
-        await this.serviceRequestService.createServiceRequest({
-          tenant_id: user.accounts[0].id,
-          property_id: selectedPropertyId,
-          text,
-        });
+        await this.serviceRequestService.createServiceRequest(
+          {
+            property_id: selectedPropertyId,
+            text,
+          },
+          { id: user.id, role: RolesEnum.TENANT },
+        );
 
       if (new_service_request) {
         const {
@@ -648,6 +661,17 @@ export class TenantFlowService {
       }
       if (action === 'confirm_pay_rent') {
         await this.handleConfirmPayRent(from, payload);
+        return;
+      }
+      if (action === 'send_payment_receipt') {
+        // Tenant tapped "Download receipt" on the payment_receipt_tenant
+        // template. Delegate to PaymentHistoryPdfService via event-emitter
+        // so this module doesn't need a direct dependency on PropertyHistoryModule
+        // (which already depends on us for TemplateSenderService).
+        this.eventEmitter.emit('whatsapp.button.payment_receipt_download', {
+          token: payload,
+          phone: from,
+        });
         return;
       }
       if (action === 'confirm_tenancy_details') {
@@ -1106,14 +1130,20 @@ export class TenantFlowService {
     });
 
     if (latestResolvedRequest) {
+      // The query filters by tenant.user.phone_number, so for matched rows
+      // tenant + tenant.user are guaranteed populated despite the nullable
+      // tenant column on the entity.
+      const tenantUser = latestResolvedRequest.tenant?.user;
       await this.serviceRequestService.updateStatus(
         latestResolvedRequest.id,
         ServiceRequestStatusEnum.CLOSED,
         'Tenant confirmed issue is fully resolved via WhatsApp',
         {
-          id: latestResolvedRequest.tenant.user.id,
+          id: tenantUser?.id ?? 'system',
           role: 'tenant',
-          name: `${latestResolvedRequest.tenant.user.first_name} ${latestResolvedRequest.tenant.user.last_name}`,
+          name: tenantUser
+            ? `${tenantUser.first_name} ${tenantUser.last_name}`
+            : 'Tenant',
         },
       );
 
@@ -1151,14 +1181,17 @@ export class TenantFlowService {
     });
 
     if (latestResolvedRequest) {
+      const tenantUser = latestResolvedRequest.tenant?.user;
       await this.serviceRequestService.updateStatus(
         latestResolvedRequest.id,
         ServiceRequestStatusEnum.REOPENED,
         'Tenant reported issue is not fully resolved via WhatsApp',
         {
-          id: latestResolvedRequest.tenant.user.id,
+          id: tenantUser?.id ?? 'system',
           role: 'tenant',
-          name: `${latestResolvedRequest.tenant.user.first_name} ${latestResolvedRequest.tenant.user.last_name}`,
+          name: tenantUser
+            ? `${tenantUser.first_name} ${tenantUser.last_name}`
+            : 'Tenant',
         },
       );
 
@@ -1207,10 +1240,12 @@ export class TenantFlowService {
         );
       }
 
-      // Notify all FMs for this landlord's team
-      const fms = await this.serviceRequestService.findFacilityManagersForOwner(
-        property.owner_id,
-      );
+      // Notify the FM assigned to this specific property (0..1).
+      // Properties without an assigned FM only ping the landlord above.
+      const fms =
+        await this.serviceRequestService.findFacilityManagerForProperty(
+          property.id,
+        );
       for (const fm of fms) {
         if (fm.account?.user?.phone_number) {
           await this.templateSenderService.sendText(

@@ -95,6 +95,13 @@ export interface FMTemplateParams {
   name: string;
   team: string;
   role: string;
+  /**
+   * Plain-text temporary password to embed in the welcome message. Sent only
+   * when an FM is given fresh credentials (new account, or non-FM role being
+   * elevated to FM). Omitted when the FM is being added to an additional team
+   * and their existing password still works.
+   */
+  temporary_password?: string;
 }
 
 /**
@@ -448,6 +455,35 @@ export interface RenewalLetterSignedParams {
 }
 
 /**
+ * Parameters for the text-only payment-history receipt notification to
+ * tenant (Msg 1 of the two-message flow). Body has 3 variables; the
+ * "Download receipt" Quick Reply button carries the receipt_token in its
+ * payload — when the tenant taps it, the webhook handler triggers
+ * sendPaymentReceiptAttachmentTenant for the PDF (Msg 2).
+ */
+export interface PaymentReceiptTenantParams {
+  phone_number: string;
+  tenant_first_name: string;
+  amount: number;
+  description: string;
+  receipt_token: string;
+}
+
+/**
+ * Parameters for the PDF receipt delivery (Msg 2). Sent in response to
+ * the tenant tapping the Download receipt Quick Reply button on Msg 1.
+ * The PDF buffer is regenerated live from the property_histories row at
+ * dispatch time so any edits to amount/description propagate.
+ */
+export interface PaymentReceiptAttachmentTenantParams {
+  phone_number: string;
+  pdf_buffer: Buffer;
+  pdf_filename: string;
+  receipt_token: string;
+  frontend_url: string;
+}
+
+/**
  * Parameters for renewal payment confirmation to tenant
  */
 export interface RenewalPaymentTenantParams {
@@ -483,7 +519,6 @@ export interface OutstandingBalancePaidTenantParams {
   tenant_name: string;
   amount: number;
   property_name: string;
-  remaining_balance: number;
 }
 
 /**
@@ -495,7 +530,6 @@ export interface OutstandingBalancePaidLandlordParams {
   tenant_name: string;
   amount: number;
   property_name: string;
-  remaining_balance: number;
 }
 
 /**
@@ -844,43 +878,73 @@ export class TemplateSenderService {
   }
 
   /**
-   * Send facility manager template
+   * Send facility manager template.
+   *
+   * When `temporary_password` is provided, sends the `facility_manager_with_password`
+   * variant which includes a 4th body slot for the credential. Otherwise sends the
+   * original `facility_manager` template (no password slot).
+   *
+   * Both templates need to be approved by Meta — the with_password variant is
+   * a new template introduced alongside multi-role login.
    */
   async sendToFacilityManagerWithTemplate({
     phone_number,
     name,
     team,
     role,
+    temporary_password,
   }: FMTemplateParams): Promise<void> {
+    const baseParameters: Array<{
+      type: 'text';
+      parameter_name: string;
+      text: string;
+    }> = [
+      {
+        type: 'text',
+        parameter_name: 'name',
+        text: name,
+      },
+      {
+        type: 'text',
+        parameter_name: 'team',
+        text: team,
+      },
+      {
+        type: 'text',
+        parameter_name: 'role',
+        text: role,
+      },
+    ];
+
+    const hasPassword =
+      typeof temporary_password === 'string' && temporary_password.length > 0;
+
+    const parameters = hasPassword
+      ? [
+          ...baseParameters,
+          {
+            type: 'text' as const,
+            parameter_name: 'temporary_password',
+            text: temporary_password!,
+          },
+        ]
+      : baseParameters;
+
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
       type: 'template',
       template: {
-        name: 'facility_manager',
+        name: hasPassword
+          ? 'facility_manager_with_password'
+          : 'facility_manager',
         language: {
           code: 'en',
         },
         components: [
           {
             type: 'body',
-            parameters: [
-              {
-                type: 'text',
-                parameter_name: 'name',
-                text: name,
-              },
-              {
-                type: 'text',
-                parameter_name: 'team',
-                text: team,
-              },
-              {
-                type: 'text',
-                parameter_name: 'role',
-                text: role,
-              },
-            ],
+            parameters,
           },
         ],
       },
@@ -1349,6 +1413,64 @@ export class TemplateSenderService {
     };
 
     await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * FM-targeted ping that fires when a landlord approves a service request
+   * (NOT_APPROVED → APPROVED). Reuses the same parameter shape as
+   * `sendFacilityServiceRequest`. The template body is registered separately
+   * in Meta Business Manager — this code only references the template name.
+   */
+  async sendFacilityServiceRequestApproved({
+    phone_number,
+    property_name,
+    service_request,
+    tenant_name,
+    tenant_phone_number,
+    date_created,
+  }: Omit<FacilityServiceRequestParams, 'is_landlord'>): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'fm_service_request_approved',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: service_request },
+              { type: 'text', text: date_created },
+              { type: 'text', text: tenant_phone_number },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              { type: 'payload', payload: 'view_all_service_requests' },
+            ],
+          },
+        ],
+      },
+    };
+
+    try {
+      await this.sendToWhatsappAPI(payload);
+    } catch (err) {
+      // If Meta hasn't approved the new template yet (or the name is
+      // unregistered), the API call returns an error. Log and swallow so
+      // the rest of the approval flow isn't blocked while we wait on Meta.
+      console.warn(
+        `[fm_service_request_approved] template send failed (template may be unregistered with Meta): ${
+          (err as Error)?.message ?? err
+        }`,
+      );
+    }
   }
 
   /**
@@ -2541,8 +2663,113 @@ export class TemplateSenderService {
       // Receipt PDF is attached as a Meta media_id, which isn't a public URL.
       // Stash a viewable URL out-of-band so the simulator preview and the
       // landlord's WhatsApp tab can make the document card clickable.
+      // Points at the backend download endpoint (proxied via Next.js's
+      // /api/proxy on the frontend) so clicking the document card in the
+      // landlord's chat history streams the same PDF the tenant got,
+      // instead of opening the intermediate receipt view page.
       _lizt_meta: {
-        renewal_receipt_url: `${frontend_url}/renewal-receipt/${receipt_token}`,
+        renewal_receipt_url: `${frontend_url}/api/proxy/tenancies/renewal-receipt/${receipt_token}/download`,
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the text-only payment-history receipt notification (Msg 1 of 2).
+   * Body has 3 vars; a Quick Reply button "Download receipt" carries the
+   * receipt_token in its payload — when the tenant taps it, the tenant-flow
+   * webhook handler emits `whatsapp.button.payment_receipt_download` and
+   * `PaymentHistoryPdfService` responds by sending the PDF attachment
+   * template (sendPaymentReceiptAttachmentTenant, Msg 2).
+   * Template: payment_receipt_tenant
+   */
+  async sendPaymentReceiptTenant({
+    phone_number,
+    tenant_first_name,
+    amount,
+    description,
+    receipt_token,
+  }: PaymentReceiptTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_receipt_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_first_name },
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+              { type: 'text', text: description },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `send_payment_receipt:${receipt_token}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the PDF receipt attachment (Msg 2 of 2). Fired by the tenant-flow
+   * webhook handler in response to a Download receipt button tap on Msg 1.
+   * Template: payment_receipt_attachment_tenant — PDF document header with
+   * a short fixed body (no template variables).
+   */
+  async sendPaymentReceiptAttachmentTenant({
+    phone_number,
+    pdf_buffer,
+    pdf_filename,
+    receipt_token,
+    frontend_url,
+  }: PaymentReceiptAttachmentTenantParams): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    // Simulator skips Puppeteer + Meta upload; the frontend renders a
+    // placeholder card from the stub media id.
+    const mediaId = isSimulationMode
+      ? `sim_media_${Date.now()}`
+      : await this.uploadDocumentToMeta(pdf_buffer, pdf_filename);
+
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_receipt_attachment_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'header',
+            parameters: [
+              {
+                type: 'document',
+                document: { id: mediaId, filename: pdf_filename },
+              },
+            ],
+          },
+        ],
+      },
+      // Same out-of-band URL pattern as before — lets the simulator and the
+      // landlord's WhatsApp tab make the document card a one-click download.
+      _lizt_meta: {
+        payment_receipt_url: `${frontend_url}/api/proxy/property-history/receipts/${receipt_token}/download`,
       },
     };
 
@@ -2669,7 +2896,6 @@ export class TemplateSenderService {
     tenant_name,
     amount,
     property_name,
-    remaining_balance,
   }: OutstandingBalancePaidTenantParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -2696,10 +2922,6 @@ export class TemplateSenderService {
                 type: 'text',
                 text: property_name,
               },
-              {
-                type: 'text',
-                text: `₦${remaining_balance.toLocaleString()}`,
-              },
             ],
           },
         ],
@@ -2719,7 +2941,6 @@ export class TemplateSenderService {
     tenant_name,
     amount,
     property_name,
-    remaining_balance,
   }: OutstandingBalancePaidLandlordParams): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
@@ -2749,10 +2970,6 @@ export class TemplateSenderService {
               {
                 type: 'text',
                 text: property_name,
-              },
-              {
-                type: 'text',
-                text: `₦${remaining_balance.toLocaleString()}`,
               },
             ],
           },
@@ -4130,6 +4347,10 @@ export class TemplateSenderService {
     landlord_main_menu: 'Hello {{1}}, What do you want to do today?',
     outstanding_balance_link:
       'Hi {{1}},\n\nPlease click the button below to view your invoice and make payment for your outstanding balance.',
+    outstanding_balance_paid_tenant:
+      'Hi {{1}},\n\nYour payment of {{2}} for {{3}} has been received. Thank you for staying on top of your rent.',
+    outstanding_balance_paid_landlord:
+      'Hello {{1}},\n\n{{2}} has paid their outstanding balance of {{3}} for {{4}}.\n\nView details in your dashboard.',
     renewal_link:
       'Hi {{1}}, your renewal rent invoice for {{2}} is ready.\n\nThis invoice covers your tenancy from {{3}} to {{4}}.\n\nYou can safely view your invoice and make your payment using the link below.',
     renewal_letter_link:
@@ -4146,6 +4367,10 @@ export class TemplateSenderService {
       'Hi {{1}}, {{2}} has declined the renewal offer for {{3}}. Open your Lizt dashboard to decide whether to revise the offer or market the unit.',
     renewal_payment_tenant:
       'Congratulations {{1}}!\n\nYour payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
+    payment_receipt_tenant:
+      'Hi {{1}},\n\nYour payment of {{2}} for {{3}} has been successfully confirmed by Property Kraft.\n\nTap the button below to download your receipt.\n\nThank you.',
+    payment_receipt_attachment_tenant:
+      'Here is your payment receipt from Property Kraft.\n\nThank you,',
     renewal_payment_landlord:
       'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThank you.',
     renewal_receipt:
@@ -4185,7 +4410,7 @@ export class TemplateSenderService {
     tenancy_details_dispute_reason_landlord:
       "Hi {{1}}, \n\nYour tenant {{2}} has shared what's incorrect about the tenancy details for {{3}}.\n\nIssue: {{4}}\n\nPlease follow up with them at {{5}} to resolve this.",
     tenancy_details_updated_tenant:
-      'Hi {{1}},\n\nYour landlord has updated the tenancy details for {{2}}.\n\nPlease confirm your updated tenancy details to continue.',
+      'Hi {{1}},\n\nYour landlord has updated the tenancy details for {{2}}.\n\nPlease confirm your updated tenancy details.',
   };
 
   /**

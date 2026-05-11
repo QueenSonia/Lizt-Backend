@@ -455,6 +455,35 @@ export interface RenewalLetterSignedParams {
 }
 
 /**
+ * Parameters for the text-only payment-history receipt notification to
+ * tenant (Msg 1 of the two-message flow). Body has 3 variables; the
+ * "Download receipt" Quick Reply button carries the receipt_token in its
+ * payload — when the tenant taps it, the webhook handler triggers
+ * sendPaymentReceiptAttachmentTenant for the PDF (Msg 2).
+ */
+export interface PaymentReceiptTenantParams {
+  phone_number: string;
+  tenant_first_name: string;
+  amount: number;
+  description: string;
+  receipt_token: string;
+}
+
+/**
+ * Parameters for the PDF receipt delivery (Msg 2). Sent in response to
+ * the tenant tapping the Download receipt Quick Reply button on Msg 1.
+ * The PDF buffer is regenerated live from the property_histories row at
+ * dispatch time so any edits to amount/description propagate.
+ */
+export interface PaymentReceiptAttachmentTenantParams {
+  phone_number: string;
+  pdf_buffer: Buffer;
+  pdf_filename: string;
+  receipt_token: string;
+  frontend_url: string;
+}
+
+/**
  * Parameters for renewal payment confirmation to tenant
  */
 export interface RenewalPaymentTenantParams {
@@ -2634,8 +2663,113 @@ export class TemplateSenderService {
       // Receipt PDF is attached as a Meta media_id, which isn't a public URL.
       // Stash a viewable URL out-of-band so the simulator preview and the
       // landlord's WhatsApp tab can make the document card clickable.
+      // Points at the backend download endpoint (proxied via Next.js's
+      // /api/proxy on the frontend) so clicking the document card in the
+      // landlord's chat history streams the same PDF the tenant got,
+      // instead of opening the intermediate receipt view page.
       _lizt_meta: {
-        renewal_receipt_url: `${frontend_url}/renewal-receipt/${receipt_token}`,
+        renewal_receipt_url: `${frontend_url}/api/proxy/tenancies/renewal-receipt/${receipt_token}/download`,
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the text-only payment-history receipt notification (Msg 1 of 2).
+   * Body has 3 vars; a Quick Reply button "Download receipt" carries the
+   * receipt_token in its payload — when the tenant taps it, the tenant-flow
+   * webhook handler emits `whatsapp.button.payment_receipt_download` and
+   * `PaymentHistoryPdfService` responds by sending the PDF attachment
+   * template (sendPaymentReceiptAttachmentTenant, Msg 2).
+   * Template: payment_receipt_tenant
+   */
+  async sendPaymentReceiptTenant({
+    phone_number,
+    tenant_first_name,
+    amount,
+    description,
+    receipt_token,
+  }: PaymentReceiptTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_receipt_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_first_name },
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+              { type: 'text', text: description },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `send_payment_receipt:${receipt_token}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the PDF receipt attachment (Msg 2 of 2). Fired by the tenant-flow
+   * webhook handler in response to a Download receipt button tap on Msg 1.
+   * Template: payment_receipt_attachment_tenant — PDF document header with
+   * a short fixed body (no template variables).
+   */
+  async sendPaymentReceiptAttachmentTenant({
+    phone_number,
+    pdf_buffer,
+    pdf_filename,
+    receipt_token,
+    frontend_url,
+  }: PaymentReceiptAttachmentTenantParams): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    // Simulator skips Puppeteer + Meta upload; the frontend renders a
+    // placeholder card from the stub media id.
+    const mediaId = isSimulationMode
+      ? `sim_media_${Date.now()}`
+      : await this.uploadDocumentToMeta(pdf_buffer, pdf_filename);
+
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_receipt_attachment_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'header',
+            parameters: [
+              {
+                type: 'document',
+                document: { id: mediaId, filename: pdf_filename },
+              },
+            ],
+          },
+        ],
+      },
+      // Same out-of-band URL pattern as before — lets the simulator and the
+      // landlord's WhatsApp tab make the document card a one-click download.
+      _lizt_meta: {
+        payment_receipt_url: `${frontend_url}/api/proxy/property-history/receipts/${receipt_token}/download`,
       },
     };
 
@@ -4233,6 +4367,10 @@ export class TemplateSenderService {
       'Hi {{1}}, {{2}} has declined the renewal offer for {{3}}. Open your Lizt dashboard to decide whether to revise the offer or market the unit.',
     renewal_payment_tenant:
       'Congratulations {{1}}!\n\nYour payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
+    payment_receipt_tenant:
+      'Hi {{1}},\n\nYour payment of {{2}} for {{3}} has been successfully confirmed by Property Kraft.\n\nTap the button below to download your receipt.\n\nThank you.',
+    payment_receipt_attachment_tenant:
+      'Here is your payment receipt from Property Kraft.\n\nThank you,',
     renewal_payment_landlord:
       'Hello {{1}}, {{2}} has completed their renewal payment of {{3}} for {{4}}.\n\nThank you.',
     renewal_receipt:

@@ -57,7 +57,6 @@ function formatDateLong(input: string | Date | null): string {
  */
 export function renderUnifiedReceiptHTML(
   data: UnifiedReceiptTemplateData,
-  options: { liztLogoSrc?: string } = {},
 ): string {
   const total = data.descriptionRows.reduce(
     (sum, r) => sum + (Number(r.amount) || 0),
@@ -65,9 +64,6 @@ export function renderUnifiedReceiptHTML(
   );
   const showRemaining = typeof data.remainingBalance === 'number';
   const remainingPositive = (data.remainingBalance ?? 0) > 0;
-  const liztLogo =
-    options.liztLogoSrc ??
-    'https://www.lizt.ng/lizt.svg'; // public domain fallback
 
   const landlordLogoBlock = data.landlord.logoUrl
     ? `<img src="${escapeHtml(data.landlord.logoUrl)}" alt="${escapeHtml(
@@ -132,8 +128,6 @@ export function renderUnifiedReceiptHTML(
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
-    .lizt-bar { padding: 16px 24px; }
-    .lizt-bar img { height: 40px; width: auto; }
     .card-wrap { display: flex; justify-content: center; padding: 0 16px 32px; }
     .card {
       background: #ffffff;
@@ -236,7 +230,6 @@ export function renderUnifiedReceiptHTML(
   </style>
 </head>
 <body>
-  <div class="lizt-bar"><img src="${escapeHtml(liztLogo)}" alt="Lizt" /></div>
   <div class="card-wrap">
     <div class="card">
       <div class="header">

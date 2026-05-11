@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, Not, In } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
@@ -91,6 +92,7 @@ export class TenantFlowService {
     private readonly notificationLogService: WhatsAppNotificationLogService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly nextPeriodStateResolver: NextPeriodStateResolver,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -659,6 +661,17 @@ export class TenantFlowService {
       }
       if (action === 'confirm_pay_rent') {
         await this.handleConfirmPayRent(from, payload);
+        return;
+      }
+      if (action === 'send_payment_receipt') {
+        // Tenant tapped "Download receipt" on the payment_receipt_tenant
+        // template. Delegate to PaymentHistoryPdfService via event-emitter
+        // so this module doesn't need a direct dependency on PropertyHistoryModule
+        // (which already depends on us for TemplateSenderService).
+        this.eventEmitter.emit('whatsapp.button.payment_receipt_download', {
+          token: payload,
+          phone: from,
+        });
         return;
       }
       if (action === 'confirm_tenancy_details') {

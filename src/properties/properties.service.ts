@@ -2449,10 +2449,11 @@ export class PropertiesService {
                 hist.move_in_date ||
                 hist.created_at,
               eventType: 'user_added_payment',
-              title: `Payment received`,
-              description: `Payment of ₦${Number(paymentAmount).toLocaleString()} on ${paymentDate}`,
+              title: `Payment received${parsedPayment.paymentDescription ? ` — ${parsedPayment.paymentDescription}` : ''}`,
+              description: `Payment of ₦${Number(paymentAmount).toLocaleString()}${parsedPayment.paymentDescription ? ` — ${parsedPayment.paymentDescription}` : ''} on ${paymentDate}`,
               details: JSON.stringify({
                 paymentAmount,
+                paymentDescription: parsedPayment.paymentDescription || '',
                 paymentDate,
                 propertyName: parsedPayment.propertyName || '',
                 tenantName,

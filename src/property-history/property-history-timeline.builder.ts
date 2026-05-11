@@ -884,10 +884,11 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           id: `user-added-payment-${ph.id}`,
           type: 'general',
           title: `Payment received`,
-          description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()} on ${paymentDate}`,
+          description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()}${parsedData.paymentDescription ? ` — ${parsedData.paymentDescription}` : ''} on ${paymentDate}`,
           details: prop?.name || undefined,
           metadata: JSON.stringify({
             paymentAmount: parsedData.paymentAmount || 0,
+            paymentDescription: parsedData.paymentDescription || '',
             paymentDate,
             rawPaymentDate:
               parsedData.paymentDate ||

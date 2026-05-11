@@ -846,13 +846,22 @@ export class TenanciesService {
               propertyTenant.tenant.user.phone_number,
             );
 
-            const currentExpiryStr = new Date(
-              activeRent.expiry_date,
-            ).toLocaleDateString('en-GB', {
+            const expiryDateOnly = new Date(activeRent.expiry_date);
+            const expiryStr = expiryDateOnly.toLocaleDateString('en-GB', {
               day: 'numeric',
               month: 'long',
               year: 'numeric',
             });
+            const todayMidnight = new Date().setHours(0, 0, 0, 0);
+            const daysUntilExpiry = Math.ceil(
+              (expiryDateOnly.getTime() - todayMidnight) / 86_400_000,
+            );
+            const currentExpiryStr =
+              daysUntilExpiry === 0
+                ? `today, ${expiryStr}`
+                : daysUntilExpiry === 1
+                  ? `tomorrow, ${expiryStr}`
+                  : `on ${expiryStr}`;
 
             await this.whatsappNotificationLog.queue('sendRenewalLetterLink', {
               phone_number: tenantPhone,

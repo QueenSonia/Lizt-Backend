@@ -1,4 +1,11 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import type { Browser } from 'puppeteer';
@@ -7,11 +14,13 @@ import { launchBrowser } from '../common/puppeteer-launch';
 import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
 import { PropertyHistory } from './entities/property-history.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
+import { TemplateSenderService } from '../whatsapp-bot/template-sender';
 
 export interface PaymentReceiptView {
   receiptNumber: string;
   receiptDate: string | null;
   paymentAmount: number;
+  paymentDescription: string | null;
   paymentMethod: string;
   paymentReference: string | null;
   property: {
@@ -48,7 +57,92 @@ export class PaymentHistoryPdfService {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     @InjectRepository(KYCApplication)
     private readonly kycApplicationRepository: Repository<KYCApplication>,
+    private readonly templateSenderService: TemplateSenderService,
+    private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * Step 1 of the two-message WhatsApp flow: send the text-only payment
+   * confirmation (template `payment_receipt_tenant`) with a Download receipt
+   * Quick Reply button. When the tenant taps the button, the tenant-flow
+   * webhook handler emits `whatsapp.button.payment_receipt_download` which
+   * `onPaymentReceiptDownloadButtonTap` (below) responds to by sending the
+   * PDF (Msg 2). Manual trigger from landlord — no idempotency guard.
+   */
+  async sendReceiptViaWhatsApp(receiptToken: string): Promise<void> {
+    const row = await this.loadRow(receiptToken);
+    const view = await this.buildView(row);
+
+    if (!view.tenant.phone) {
+      throw new BadRequestException(
+        'No phone number on record for this tenant — cannot send receipt.',
+      );
+    }
+
+    const firstName = view.tenant.name.split(/\s+/)[0] || 'there';
+
+    await this.templateSenderService.sendPaymentReceiptTenant({
+      phone_number: view.tenant.phone,
+      tenant_first_name: firstName,
+      amount: view.paymentAmount,
+      description: view.paymentDescription || 'Payment received',
+      receipt_token: receiptToken,
+    });
+  }
+
+  /**
+   * Step 2 of the two-message WhatsApp flow: generate the PDF live and send
+   * it via the `payment_receipt_attachment_tenant` template. The `phone`
+   * arg comes from the webhook (the tenant who actually tapped the button)
+   * — we don't trust the row's tenant_phone for routing because the row's
+   * receipt_token is the only thing that identifies the receipt.
+   */
+  async sendReceiptAttachmentViaWhatsApp(
+    receiptToken: string,
+    phone: string,
+  ): Promise<void> {
+    const row = await this.loadRow(receiptToken);
+    const view = await this.buildView(row);
+
+    const pdfBuffer = await this.generatePaymentReceiptPDF(receiptToken);
+    const pdfFilename = this.generateReceiptFilename(
+      view.property?.name,
+      view.receiptDate ? new Date(view.receiptDate) : new Date(),
+    );
+    const frontendUrl =
+      this.configService.get<string>('FRONTEND_URL') ||
+      'http://localhost:3000';
+
+    await this.templateSenderService.sendPaymentReceiptAttachmentTenant({
+      phone_number: phone,
+      pdf_buffer: pdfBuffer,
+      pdf_filename: pdfFilename,
+      receipt_token: receiptToken,
+      frontend_url: frontendUrl,
+    });
+  }
+
+  /**
+   * Webhook bridge: the tenant tapped the Download receipt Quick Reply on
+   * Msg 1. The tenant-flow service emits this event with the receipt token
+   * (parsed from the button payload) and the tenant's phone (the webhook
+   * `from`). Errors are caught here because we don't want a PDF generation
+   * failure to bubble back into the WhatsApp bot's webhook reply pipeline.
+   */
+  @OnEvent('whatsapp.button.payment_receipt_download')
+  async onPaymentReceiptDownloadButtonTap(event: {
+    token: string;
+    phone: string;
+  }): Promise<void> {
+    try {
+      await this.sendReceiptAttachmentViaWhatsApp(event.token, event.phone);
+    } catch (err) {
+      this.logger.error(
+        `Failed to deliver payment receipt PDF for token ${event.token}: ${(err as Error).message}`,
+        (err as Error).stack,
+      );
+    }
+  }
 
   async getPaymentReceiptView(
     receiptToken: string,
@@ -117,6 +211,7 @@ export class PaymentHistoryPdfService {
         ? new Date(paymentDate).toISOString()
         : null,
       paymentAmount,
+      paymentDescription: parsed.paymentDescription || null,
       paymentMethod: 'Manual',
       paymentReference: parsed.paymentReference || null,
       property: {
@@ -224,8 +319,13 @@ export class PaymentHistoryPdfService {
     try {
       browser = await launchBrowser();
       const page = await browser.newPage();
+      // On Linux (production) use `networkidle0` to ensure every external
+      // asset (logos on Cloudinary, etc.) has fully settled before printing.
+      // On Windows/Mac dev laptops, slow external fetches can hang past the
+      // 15s timeout, so fall back to `load` — the page is fully painted, just
+      // not guaranteed to have zero in-flight connections.
       await page.setContent(html, {
-        waitUntil: 'networkidle0',
+        waitUntil: process.platform === 'linux' ? 'networkidle0' : 'load',
         timeout: 15000,
       });
       const pdf = await page.pdf({
@@ -267,7 +367,10 @@ export class PaymentHistoryPdfService {
         address: b.businessAddress,
       },
       descriptionRows: [
-        { label: 'Payment received', amount: view.paymentAmount },
+        {
+          label: view.paymentDescription || 'Payment received',
+          amount: view.paymentAmount,
+        },
       ],
       amountPaid: view.paymentAmount,
     });

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PropertyHistoryService } from './property-history.service';
 import { PaymentHistoryPdfService } from './payment-history-pdf.service';
@@ -11,6 +11,7 @@ import { Rent } from '../rents/entities/rent.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { TenantBalanceLedger } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
+import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
     NotificationModule,
     EventsModule,
     TenantBalancesModule,
+    forwardRef(() => WhatsappBotModule),
   ],
   controllers: [PropertyHistoryController],
   providers: [PropertyHistoryService, PaymentHistoryPdfService],

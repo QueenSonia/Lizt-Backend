@@ -243,7 +243,7 @@ export function renderUnifiedReceiptHTML(
       <div class="info-grid">
         <div>
           <div class="info-group">
-            <p class="info-label">Tenant</p>
+            <p class="info-label">Received from</p>
             <p class="info-value info-value-strong">${escapeHtml(data.tenantName)}</p>
           </div>
           ${

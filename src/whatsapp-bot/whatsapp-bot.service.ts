@@ -603,6 +603,30 @@ export class WhatsappBotService implements OnModuleInit {
         ].includes(role as any),
     });
 
+    // Universal button interception — runs BEFORE role-based routing so
+    // that applicants (no role) and any other recipient who taps a
+    // payment-receipt Download button still get the PDF, instead of
+    // falling through to the generic KYC-pending response in the default
+    // branch. The button payload was minted by sendPaymentReceiptTenant
+    // with format `send_payment_receipt:<receipt_token>`.
+    const incomingBtn =
+      (message as any).button ??
+      (message as any).interactive?.button_reply;
+    const incomingBtnPayload =
+      incomingBtn?.payload || incomingBtn?.id || null;
+    if (
+      typeof incomingBtnPayload === 'string' &&
+      incomingBtnPayload.startsWith('send_payment_receipt:')
+    ) {
+      const token = incomingBtnPayload.split(':')[1];
+      const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
+      this.eventEmitter.emit('whatsapp.button.payment_receipt_download', {
+        token,
+        phone: tenantPhone,
+      });
+      return;
+    }
+
     switch (role) {
       case RolesEnum.FACILITY_MANAGER: {
         console.log('Facility Manager Message');

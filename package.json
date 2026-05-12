@@ -10,7 +10,7 @@
     "db:dev:up": "docker compose up dev-db redis pgadmin -d",
     "db:dev:restart": "npm db:dev:rm && npm db:dev:up",
     "build:render": "tsc -p tsconfig.build.json",
-    "build": "nest build",
+    "build": "cross-env NODE_OPTIONS=--max-old-space-size=2048 nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",

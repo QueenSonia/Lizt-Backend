@@ -7,11 +7,12 @@ import {
   Param,
   Query,
   Req,
+  Res,
   UseGuards,
   ValidationPipe,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
@@ -20,6 +21,7 @@ import { SkipAuth } from '../auth/auth.decorator';
 import { Public } from '../auth/public.decorator';
 import { KycVerifiedGuard } from './guards/kyc-verified.guard';
 import { KYCApplicationService } from './kyc-application.service';
+import { KycPdfService } from './kyc-pdf.service';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import {
   KYCApplication,
@@ -31,7 +33,41 @@ import { PropertyAdditionKYCDto } from './dto/property-addition-kyc.dto';
 
 @Controller('api')
 export class KYCApplicationController {
-  constructor(private readonly kycApplicationService: KYCApplicationService) {}
+  constructor(
+    private readonly kycApplicationService: KYCApplicationService,
+    private readonly kycPdfService: KycPdfService,
+  ) {}
+
+  /**
+   * Stream the KYC application PDF for landlord download.
+   * Used by the WhatsApp simulator + landlord chat-history doc card
+   * (the URL is shipped in `_lizt_meta.kyc_application_pdf_url` on the
+   * kyc_application_attachment_landlord template).
+   * GET /api/kyc-applications/:applicationId/pdf
+   */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles('landlord')
+  @Get('kyc-applications/:applicationId/pdf')
+  async downloadKycApplicationPdf(
+    @Param('applicationId', ParseUUIDPipe) applicationId: string,
+    @CurrentUser() user: Account,
+    @Res() res: Response,
+  ): Promise<void> {
+    // Authorize via the existing service path (validates landlord owns
+    // the property linked to the application; throws on mismatch).
+    await this.kycApplicationService.getApplicationById(applicationId, user.id);
+
+    const { buffer, filename } =
+      await this.kycPdfService.generatePdfForLandlord(applicationId);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${filename}"`,
+    );
+    res.setHeader('Content-Length', buffer.length.toString());
+    res.send(buffer);
+  }
 
   /**
    * Submit KYC application (public endpoint - no authentication required)

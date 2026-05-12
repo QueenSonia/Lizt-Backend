@@ -168,6 +168,23 @@ export interface KYCApplicationNotificationParams {
 }
 
 /**
+ * Parameters for the KYC application PDF delivery (Msg 2 of the Download
+ * KYC flow). Sent in response to the landlord tapping the Download KYC
+ * Quick Reply on Msg 1 (`tenant_application_notification`). The PDF is
+ * regenerated live from the kyc_applications row at dispatch time so
+ * any field edits propagate.
+ */
+export interface KYCApplicationAttachmentLandlordParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  application_id: string;
+  pdf_buffer: Buffer;
+  pdf_filename: string;
+  frontend_url: string;
+}
+
+/**
  * Parameters for KYC submission confirmation
  */
 export interface KYCSubmissionConfirmationParams {
@@ -1226,7 +1243,90 @@ export class TemplateSenderService {
               },
             ],
           },
+          // Quick-reply Download KYC: lands in LandlordFlow.handleInteractive
+          // (templates/landlord/landlordflow.ts) which emits
+          // `whatsapp.button.kyc_application_download` so KycPdfService can
+          // ship Msg 2 (sendKYCApplicationAttachmentLandlord) with the PDF.
+          // Meta accepts URL CTA + quick-reply in the same template provided
+          // the groups stay consecutive — quick-reply lives at index 1 here.
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: '1',
+            parameters: [
+              {
+                type: 'payload',
+                payload: `download_kyc:${application_id}`,
+              },
+            ],
+          },
         ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the KYC application PDF attachment (Msg 2 of the Download KYC
+   * flow). Fired by KycPdfService.onDownloadKycButtonTap in response to a
+   * Download KYC quick-reply on Msg 1 (`tenant_application_notification`).
+   * Template: kyc_application_attachment_landlord — PDF document header,
+   * body has two variables ({{1}}=tenant name, {{2}}=property name).
+   */
+  async sendKYCApplicationAttachmentLandlord({
+    phone_number,
+    tenant_name,
+    property_name,
+    application_id,
+    pdf_buffer,
+    pdf_filename,
+    frontend_url,
+  }: KYCApplicationAttachmentLandlordParams): Promise<void> {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    const isSimulationMode = this.validateSimulationMode(simulatorMode);
+
+    // Simulator skips @react-pdf render + Meta upload; the frontend renders
+    // a placeholder card from the stub media id (sim_media_*).
+    const mediaId = isSimulationMode
+      ? `sim_media_${Date.now()}`
+      : await this.uploadDocumentToMeta(pdf_buffer, pdf_filename);
+
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'kyc_application_attachment_landlord',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'header',
+            parameters: [
+              {
+                type: 'document',
+                document: { id: mediaId, filename: pdf_filename },
+              },
+            ],
+          },
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+            ],
+          },
+        ],
+      },
+      // Pair the media-id header with an out-of-band download URL so the
+      // simulator + landlord chat-history can offer a one-click download
+      // (Meta's media_id is opaque to the frontend). Mirrors the
+      // payment_receipt_url pattern used by sendPaymentReceiptAttachmentTenant.
+      _lizt_meta: {
+        // Frontend proxy at /api/proxy/[...path] forwards to <BACKEND>/<path>;
+        // KYCApplicationController uses @Controller('api') so the backend
+        // route is /api/kyc-applications/:id/pdf — hence the doubled /api/.
+        kyc_application_pdf_url: `${frontend_url}/api/proxy/api/kyc-applications/${application_id}/pdf`,
       },
     };
 
@@ -4309,7 +4409,9 @@ export class TemplateSenderService {
     service_request_confirmation:
       'Hi {{1}} 👋🏽\n\nYour service request about "{{2}}" has been marked as resolved.\n\nCan you confirm if everything is fixed?',
     tenant_application_notification:
-      'A KYC application was submitted by {{2}} for the property {{3}}, assigned to {{1}}.\n\nUse the link below to view the application.',
+      'A KYC application was submitted by {{2}} for the property {{3}}, assigned to {{1}}.\n\nUse the links below to view or download the application.',
+    kyc_application_attachment_landlord:
+      'Attached is the KYC application from {{1}} for {{2}}.\n\nThank you.',
     kyc_submission_confirmation:
       "Hello {{1}}, Your KYC form has been submitted. The landlord is reviewing your details, and we'll keep you updated.",
     agent_kyc_notification:

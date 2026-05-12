@@ -162,6 +162,18 @@ export class LandlordFlow {
       await this.handleDeclineRentRequest(from, buttonId);
       return;
     }
+    // Landlord tapped Download KYC on tenant_application_notification.
+    // Hand off via event-emitter so this file doesn't depend on
+    // KYCLinksModule (which would create a cycle). KycPdfService listens
+    // and ships the kyc_application_attachment_landlord template (Msg 2).
+    if (buttonId.startsWith('download_kyc:')) {
+      const applicationId = buttonId.split('download_kyc:')[1];
+      this.eventEmitter.emit('whatsapp.button.kyc_application_download', {
+        applicationId,
+        phone: from,
+      });
+      return;
+    }
 
     const handlers: Record<string, () => Promise<void>> = {
       // URL buttons (view_properties, view_maintenance) redirect automatically

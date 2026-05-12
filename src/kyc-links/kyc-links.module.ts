@@ -5,6 +5,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { KYCLinksService } from './kyc-links.service';
 import { KYCApplicationService } from './kyc-application.service';
 import { TenantAttachmentService } from './tenant-attachment.service';
+import { KycPdfService } from './kyc-pdf.service';
 import { KYCApplicationController } from './kyc-application.controller';
 import { KYCLinksController } from './kyc-links.controller';
 import { KYCLink } from './entities/kyc-link.entity';
@@ -64,7 +65,12 @@ import { PropertyHistoryModule } from '../property-history/property-history.modu
     PropertyHistoryModule,
   ],
   controllers: [KYCApplicationController, KYCLinksController],
-  providers: [KYCLinksService, KYCApplicationService, TenantAttachmentService],
+  providers: [
+    KYCLinksService,
+    KYCApplicationService,
+    TenantAttachmentService,
+    KycPdfService,
+  ],
   exports: [KYCLinksService, KYCApplicationService, TenantAttachmentService],
 })
 export class KYCLinksModule {}

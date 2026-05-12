@@ -2546,7 +2546,24 @@ export class TenanciesService {
       const isOwingRent =
         activeRent.payment_status === RentPaymentStatusEnum.OWING;
 
-      if (isOwingRent) {
+      // The active rent is "stale" when its period ended before the invoice's
+      // new period begins. Happens for non-monthly tenancies under the
+      // monthly-only auto-renewal policy: the cron skips the roll-forward, so
+      // the OLD rent stays ACTIVE+OWING with an expired expiry_date until the
+      // tenant pays. Even though payment_status === OWING here, this rent
+      // does NOT represent the new period — date-shifting it forward via the
+      // isOwingRent branch below would silently overwrite the prior period's
+      // boundary in `rents` history. Route to the ELSE branch instead so a
+      // fresh PAID rent is created for the new period (the wallet credit at
+      // the bottom settles both the new period charge and any prior debt).
+      const activeRentExpiry = activeRent.expiry_date
+        ? new Date(activeRent.expiry_date)
+        : null;
+      const invoicePeriodStart = new Date(invoice.start_date);
+      const isStaleExpired =
+        activeRentExpiry !== null && activeRentExpiry < invoicePeriodStart;
+
+      if (isOwingRent && !isStaleExpired) {
         // --- MARK CURRENT OWING RENT PAID ---
         // Auto-renewal cron already created this period using the *previous*
         // rent's frequency-computed dates and carried-forward fees. Now that

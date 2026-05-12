@@ -284,25 +284,49 @@ export class RentReminderService {
     // periods just because the cron fell several months behind.
     let letterSource: RenewalInvoice | null = null;
 
+    const latestLetter = propertyTenant
+      ? await this.renewalInvoiceRepository.findOne({
+          where: {
+            property_tenant_id: propertyTenant.id,
+            superseded_by_id: IsNull(),
+          },
+          order: { created_at: 'DESC' },
+        })
+      : null;
+
+    // DECLINED letter ends the tenancy regardless of frequency — the tenant
+    // gave an explicit move-out signal, so non-monthly tenants still get the
+    // move-out flow (not the "floating" treatment below).
+    if (
+      propertyTenant &&
+      latestLetter?.letter_status === RenewalLetterStatus.DECLINED
+    ) {
+      await this.handleDeclinedRenewalAtExpiry(
+        rent,
+        propertyTenant,
+        latestLetter,
+        today,
+      );
+      return;
+    }
+
+    // Auto-renewal is currently restricted to monthly tenancies. Non-monthly
+    // (quarterly / bi-annual / annual / equivalent custom) tenants do NOT
+    // auto-renew on cron: the old rent stays ACTIVE+OWING with an expired
+    // expiry_date, and processPostExpiryReminders fires day-1/day-7 overdue
+    // reminders against it. The tenancy "floats" until product decides how
+    // to handle non-monthly renewals end-to-end.
+    // Context: Tunji called out an annual tenant being auto-renewed to a
+    // ₦13.5M bill after an unsigned letter (2026-05-11) — for now treat
+    // these as missed-payment cases only, no rent advance.
+    if (effectiveFrequency(rent) !== 'monthly') {
+      this.logger.log(
+        `Skipping auto-renewal for rent ${rent.id}: non-monthly frequency (${rent.payment_frequency}). Post-expiry reminders will pick it up.`,
+      );
+      return;
+    }
+
     if (propertyTenant) {
-      const latestLetter = await this.renewalInvoiceRepository.findOne({
-        where: {
-          property_tenant_id: propertyTenant.id,
-          superseded_by_id: IsNull(),
-        },
-        order: { created_at: 'DESC' },
-      });
-
-      if (latestLetter?.letter_status === RenewalLetterStatus.DECLINED) {
-        await this.handleDeclinedRenewalAtExpiry(
-          rent,
-          propertyTenant,
-          latestLetter,
-          today,
-        );
-        return;
-      }
-
       if (latestLetter?.letter_status === RenewalLetterStatus.SENT) {
         // Tenant didn't accept by expiry — auto-stamp the letter so the
         // payment-page gate lets them pay the new period's invoice and
@@ -689,8 +713,23 @@ export class RentReminderService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Sends the overdue reminder on day 1 and day 7 after auto-renewal,
-   * if the tenant still hasn't paid (payment_status = OWING).
+   * Sends the overdue reminder on day 1 and day 7 after the period rolled
+   * over, if the tenant still hasn't paid for the next period.
+   *
+   * Two cases hit this path:
+   *  1. **Auto-renewed (monthly)**: cron created a new ACTIVE+OWING rent
+   *     starting today. Reminder fires when rent_start_date is today or 7
+   *     days ago. The rent's own payment_status === OWING is meaningful
+   *     here — the cron stamps it that way for the unpaid new period — so
+   *     we use it as a filter.
+   *  2. **Floating (non-monthly)**: cron skipped auto-renewal per the
+   *     monthly-only policy. The OLD rent stays ACTIVE with an expired
+   *     expiry_date; its payment_status reflects the prior period's state
+   *     (often stale — e.g. 'pending' even when the wallet shows the prior
+   *     period was paid via OB). For this branch we do NOT filter on the
+   *     rent's payment_status; sendOverdueReminder→findOrCreateRenewalInvoice
+   *     uses the renewal_invoice's payment_status as the source of truth
+   *     for whether the next period is still owed.
    */
   private async processPostExpiryReminders() {
     this.logger.log('Processing post-expiry rent reminders...');
@@ -699,6 +738,9 @@ export class RentReminderService {
     today.setUTCHours(0, 0, 0, 0);
 
     const todayStr = today.toISOString().split('T')[0];
+    const oneDayAgo = new Date(today);
+    oneDayAgo.setUTCDate(today.getUTCDate() - 1);
+    const oneDayAgoStr = oneDayAgo.toISOString().split('T')[0];
     const sevenDaysAgo = new Date(today);
     sevenDaysAgo.setUTCDate(today.getUTCDate() - 7);
     const sevenDaysAgoStr = sevenDaysAgo.toISOString().split('T')[0];
@@ -711,26 +753,43 @@ export class RentReminderService {
       .leftJoinAndSelect('property.owner', 'owner')
       .leftJoinAndSelect('owner.user', 'ownerUser')
       .where('rent.rent_status = :status', { status: RentStatusEnum.ACTIVE })
-      .andWhere('rent.payment_status = :paymentStatus', {
-        paymentStatus: RentPaymentStatusEnum.OWING,
-      })
-      .andWhere('DATE(rent.rent_start_date) IN (:...startDates)', {
-        startDates: [todayStr, sevenDaysAgoStr],
-      })
+      .andWhere(
+        `(
+          (rent.payment_status = :paymentStatus
+            AND DATE(rent.rent_start_date) IN (:...startDates))
+          OR
+          DATE(rent.expiry_date) IN (:...expiryDates)
+        )`,
+        {
+          paymentStatus: RentPaymentStatusEnum.OWING,
+          startDates: [todayStr, sevenDaysAgoStr],
+          expiryDates: [oneDayAgoStr, sevenDaysAgoStr],
+        },
+      )
       .getMany();
 
     this.logger.log(
-      `Found ${rents.length} newly-renewed owing rents to remind.`,
+      `Found ${rents.length} owing rents to remind (renewed or floating).`,
     );
 
     for (const rent of rents) {
       try {
+        const expiry = new Date(rent.expiry_date);
+        expiry.setUTCHours(0, 0, 0, 0);
         const rentStart = new Date(rent.rent_start_date);
         rentStart.setUTCHours(0, 0, 0, 0);
-        const daysAfterRenewal = Math.floor(
-          (today.getTime() - rentStart.getTime()) / (1000 * 60 * 60 * 24),
+
+        // Floating case: the rent's own period has already ended (expiry
+        // < today). Use expiry_date as the anchor so day-1 / day-7 line up
+        // with "1 day past expiry" / "7 days past expiry". Otherwise this
+        // is an auto-renewed rent whose new period just started today (or
+        // 7 days ago) — anchor on rent_start_date as before.
+        const isFloating = expiry < today;
+        const anchor = isFloating ? expiry : rentStart;
+        const daysAfterEvent = Math.floor(
+          (today.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24),
         );
-        await this.sendReminderIfNotSent(rent, -daysAfterRenewal);
+        await this.sendReminderIfNotSent(rent, -daysAfterEvent);
       } catch (error) {
         this.logger.error(
           `Failed to process post-expiry reminder for rent ${rent.id}`,

@@ -11,6 +11,7 @@ import { AutoMaintenanceRequest } from './entities/auto-maintenance-request.enti
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { UtilsModule } from 'src/utils/utils.module';
 import { CommonArea } from 'src/common-areas/entities/common-area.entity';
+import { Account } from 'src/users/entities/account.entity';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { CommonArea } from 'src/common-areas/entities/common-area.entity';
       Property,
       TeamMember,
       CommonArea,
+      Account,
     ]),
     UtilsModule,
   ],

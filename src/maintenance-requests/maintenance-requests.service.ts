@@ -16,7 +16,7 @@ import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-re
 import { InjectRepository } from '@nestjs/typeorm';
 import { MaintenanceRequest } from './entities/maintenance-request.entity';
 import { MaintenanceRequestStatusHistory } from './entities/maintenance-request-status-history.entity';
-import { In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { buildMaintenanceRequestFilter } from 'src/filters/query-filter';
 import { UtilService } from 'src/utils/utility-service';
 import { config } from 'src/config';
@@ -27,6 +27,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { RolesEnum } from 'src/base.entity';
 import { CommonArea } from 'src/common-areas/entities/common-area.entity';
+import { Account } from 'src/users/entities/account.entity';
 
 export interface TawkWebhookPayload {
   event: 'chat:start' | 'chat:end';
@@ -73,9 +74,36 @@ export class MaintenanceRequestsService {
     private readonly teamMemberRepository: Repository<TeamMember>,
     @InjectRepository(CommonArea)
     private readonly commonAreaRepository: Repository<CommonArea>,
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
+    private readonly dataSource: DataSource,
     private readonly eventEmitter: EventEmitter2,
     private readonly utilService: UtilService,
   ) {}
+
+  /**
+   * JWT sessions carry `account.id` as `req.user.id`. The status-history table's
+   * `changed_by_user_id` column is FK'd to `users.id`, not `accounts.id`, so
+   * inserting account.id directly triggers a 23503 FK violation that the
+   * exception filter surfaces as a 400 "Invalid reference". Every dashboard
+   * write path must resolve account → user.id before writing history.
+   *
+   * WhatsApp flows already pass `tenant.user.id` / `account.user.id` directly
+   * so they bypass this helper.
+   */
+  private async resolveActorUserId(accountId: string): Promise<string> {
+    const account = await this.accountRepository.findOne({
+      where: { id: accountId },
+      relations: ['user'],
+    });
+    if (!account?.user?.id) {
+      throw new HttpException(
+        'Could not resolve current user for audit log',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    return account.user.id;
+  }
 
   async createMaintenanceRequest(
     data: CreateMaintenanceRequestDto,
@@ -305,11 +333,12 @@ export class MaintenanceRequestsService {
 
     const savedRequest = await this.maintenanceRequestRepository.save(request);
 
+    const fmUserId = await this.resolveActorUserId(actor.id);
     await this.createStatusHistoryEntry(
       savedRequest.id,
       null,
       MaintenanceRequestStatusEnum.NOT_APPROVED,
-      actor.id,
+      fmUserId,
       'facility_manager',
       `Maintenance request created by ${fmName}`,
     );
@@ -399,11 +428,12 @@ export class MaintenanceRequestsService {
 
     const savedRequest = await this.maintenanceRequestRepository.save(request);
 
+    const fmUserId = await this.resolveActorUserId(actor.id);
     await this.createStatusHistoryEntry(
       savedRequest.id,
       null,
       MaintenanceRequestStatusEnum.NOT_APPROVED,
-      actor.id,
+      fmUserId,
       'facility_manager',
       `Maintenance request created by ${fmName}`,
     );
@@ -797,35 +827,48 @@ export class MaintenanceRequestsService {
       safeUpdate.reopened_at = new Date();
     }
 
-    if (Object.keys(safeUpdate).length > 0) {
-      await this.maintenanceRequestRepository.update(id, safeUpdate);
-    }
+    // Resolve user.id once up-front (read-only, fine to do outside the txn).
+    // The status-history row's changed_by_user_id FK points at users.id, but
+    // `userId` here is the JWT's account.id — see resolveActorUserId.
+    const isStatusChange = !!(targetStatus && targetStatus !== previousStatus);
+    const actorUserId = isStatusChange
+      ? await this.resolveActorUserId(userId)
+      : null;
+
+    // Status update + history insert must be atomic — otherwise a failed
+    // history insert leaves the entity flipped but the audit trail missing,
+    // and the mutation returns an error so the FE never invalidates.
+    await this.dataSource.transaction(async (manager) => {
+      if (Object.keys(safeUpdate).length > 0) {
+        await manager.update(MaintenanceRequest, id, safeUpdate);
+      }
+      if (isStatusChange) {
+        const reasonParts: string[] = [
+          `Status updated via API from ${previousStatus} to ${targetStatus}`,
+        ];
+        if (
+          targetStatus === MaintenanceRequestStatusEnum.REOPENED &&
+          data.reopen_message
+        ) {
+          reasonParts.push(`Reopen reason: ${data.reopen_message}`);
+        }
+        await this.createStatusHistoryEntry(
+          id,
+          previousStatus,
+          targetStatus as MaintenanceRequestStatusEnum,
+          actorUserId as string,
+          actorRole,
+          reasonParts.join(' — '),
+          data.reopen_message,
+          manager,
+        );
+      }
+    });
 
     const updatedMaintenanceRequest = await this.maintenanceRequestRepository.findOne({
       where: { id },
       relations: ['property', 'common_area'],
     });
-
-    if (targetStatus && targetStatus !== previousStatus) {
-      const reasonParts: string[] = [
-        `Status updated via API from ${previousStatus} to ${targetStatus}`,
-      ];
-      if (
-        targetStatus === MaintenanceRequestStatusEnum.REOPENED &&
-        data.reopen_message
-      ) {
-        reasonParts.push(`Reopen reason: ${data.reopen_message}`);
-      }
-      await this.createStatusHistoryEntry(
-        id,
-        previousStatus,
-        targetStatus,
-        userId,
-        actorRole,
-        reasonParts.join(' — '),
-        data.reopen_message,
-      );
-    }
 
     if (
       updatedMaintenanceRequest &&
@@ -1469,8 +1512,12 @@ export class MaintenanceRequestsService {
     changedByRole: string,
     changeReason?: string,
     notes?: string,
+    manager?: EntityManager,
   ): Promise<MaintenanceRequestStatusHistory> {
-    const historyEntry = this.statusHistoryRepository.create({
+    const repo = manager
+      ? manager.getRepository(MaintenanceRequestStatusHistory)
+      : this.statusHistoryRepository;
+    const historyEntry = repo.create({
       maintenance_request_id: maintenanceRequestId,
       previous_status: previousStatus,
       new_status: newStatus,
@@ -1481,7 +1528,7 @@ export class MaintenanceRequestsService {
       changed_at: new Date(),
     });
 
-    return await this.statusHistoryRepository.save(historyEntry);
+    return await repo.save(historyEntry);
   }
 
   /**
@@ -1549,11 +1596,12 @@ export class MaintenanceRequestsService {
     // Record the change in status-history. This is not a status transition —
     // we keep prev_status === new_status and lean on `change_reason` for the
     // audit-trail rendering.
+    const landlordUserId = await this.resolveActorUserId(landlordAccountId);
     await this.createStatusHistoryEntry(
       requestId,
       sr.status,
       sr.status,
-      landlordAccountId,
+      landlordUserId,
       'landlord',
       `assignee_changed: ${previousAssignee ?? 'unassigned'} → ${teamMemberId ?? 'unassigned'}`,
     );

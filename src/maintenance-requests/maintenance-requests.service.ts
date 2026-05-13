@@ -1135,10 +1135,19 @@ export class MaintenanceRequestsService {
       .andWhere('sr.deleted_at IS NULL');
 
     if (options?.landlordId) {
+      // `landlordId` is the landlord's Account.id (matches property.owner_id).
+      // For common-area scope we need the landlord's User.id to compare
+      // against commonAreaOwner.id — resolve it from the FM's team data,
+      // which is already loaded.
+      const filterUserId =
+        teamMemberships.find(
+          (tm) => tm.team?.creator?.id === options.landlordId,
+        )?.team?.creator?.user?.id ?? null;
       qb.andWhere(
-        '(property.owner_id = :landlordId OR commonAreaOwner.id = :landlordId)',
+        '(property.owner_id = :landlordAccountId OR commonAreaOwner.id = :landlordUserId)',
         {
-          landlordId: options.landlordId,
+          landlordAccountId: options.landlordId,
+          landlordUserId: filterUserId ?? '__none__',
         },
       );
     }

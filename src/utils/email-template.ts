@@ -1,4 +1,4 @@
-export enum EmailSubject {
+﻿export enum EmailSubject {
   WELCOME_EMAIL = 'Welcome to Panda Homes!',
   COMPLETE_PROFILE = 'Kindly Complete Your Profile',
   SEND_RENT_REMINDER = 'Rent Payment Reminder',
@@ -34,7 +34,7 @@ export const clientSignUpEmailTemplate = (tenant: string, link: string) => `
       <ul style="margin: 0 0 30px 0; padding-left: 20px;">
         <li style="font-size: 16px; color: #374151; line-height: 1.6; margin-bottom: 8px;">View your rent, lease terms, and payment history</li>
         <li style="font-size: 16px; color: #374151; line-height: 1.6; margin-bottom: 8px;">Receive notices and updates from your property manager</li>
-        <li style="font-size: 16px; color: #374151; line-height: 1.6; margin-bottom: 8px;">Track and submit maintenance/service requests</li>
+        <li style="font-size: 16px; color: #374151; line-height: 1.6; margin-bottom: 8px;">Track and submit maintenance/maintenance requests</li>
         <li style="font-size: 16px; color: #374151; line-height: 1.6; margin-bottom: 8px;">Access all your documents anytime, anywhere</li>
       </ul>
       

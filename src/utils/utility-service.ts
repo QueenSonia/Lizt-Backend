@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+﻿import { Injectable } from '@nestjs/common';
 import { transporter } from './nodemailer-config';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
@@ -93,7 +93,7 @@ export class UtilService {
     return uuidv4();
   }
 
-  generateServiceRequestId(): string {
+  generateMaintenanceRequestId(): string {
     const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp
     const random = Math.random().toString(36).substring(2, 5).toUpperCase();
     return `#SR${timestamp}${random}`; // e.g., #SR893124X9K

@@ -1,8 +1,8 @@
 import { ApiProperty, PartialType } from '@nestjs/swagger';
 import {
-  CreateServiceRequestDto,
-  ServiceRequestStatusEnum,
-} from './create-service-request.dto';
+  CreateMaintenanceRequestDto,
+  MaintenanceRequestStatusEnum,
+} from './create-maintenance-request.dto';
 import { JobCategoryEnum } from './job-category.enum';
 import { Transform, Type } from 'class-transformer';
 import {
@@ -16,11 +16,11 @@ import {
   Min,
 } from 'class-validator';
 
-export class UpdateServiceRequestDto extends PartialType(
-  CreateServiceRequestDto,
+export class UpdateMaintenanceRequestDto extends PartialType(
+  CreateMaintenanceRequestDto,
 ) {}
 
-export class UpdateServiceRequestResponseDto {
+export class UpdateMaintenanceRequestResponseDto {
   @ApiProperty({
     example: 'John Doe',
     description: 'Name of the tenant',
@@ -43,15 +43,15 @@ export class UpdateServiceRequestResponseDto {
 
   @ApiProperty({
     example: 'urgent',
-    enum: ServiceRequestStatusEnum,
-    description: 'Status of the service request',
+    enum: MaintenanceRequestStatusEnum,
+    description: 'Status of the maintenance request',
     required: false,
     nullable: true,
   })
   @IsOptional()
-  @IsEnum(ServiceRequestStatusEnum)
+  @IsEnum(MaintenanceRequestStatusEnum)
   @Transform(({ value }) => value?.trim() || undefined)
-  status?: ServiceRequestStatusEnum;
+  status?: MaintenanceRequestStatusEnum;
 
   @ApiProperty({
     example: 'Carpentry',

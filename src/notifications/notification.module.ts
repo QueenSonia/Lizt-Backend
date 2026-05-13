@@ -1,4 +1,4 @@
-import { forwardRef, Module } from '@nestjs/common';
+﻿import { forwardRef, Module } from '@nestjs/common';
 import { NotificationService } from './notification.service';
 import { NotificationController } from './notification.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -8,11 +8,12 @@ import { PushNotificationService } from './push-notification.service';
 import { NoticeAgreementListener } from './listeners/notice-agreement.listener';
 import { UserAddedListener } from './listeners/user-added.listener';
 import { PropertyListener } from './listeners/property-created.listener';
-import { ServiceRequestListener } from './listeners/service-request.listener';
+import { MaintenanceRequestListener } from './listeners/maintenance-request.listener';
 import { UserSignUpListener } from './listeners/user-signup.listener';
 import { TenantAttachmentListener } from './listeners/tenant-attachment.listener';
 import { Property } from 'src/properties/entities/property.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { UtilService } from 'src/utils/utility-service';
 
@@ -23,6 +24,7 @@ import { UtilService } from 'src/utils/utility-service';
       PushSubscription,
       Property,
       TeamMember,
+      MaintenanceRequest,
     ]),
     forwardRef(() => WhatsappBotModule),
   ],
@@ -34,7 +36,7 @@ import { UtilService } from 'src/utils/utility-service';
     UserAddedListener,
     UserSignUpListener,
     PropertyListener,
-    ServiceRequestListener,
+    MaintenanceRequestListener,
     TenantAttachmentListener,
     UtilService,
   ],

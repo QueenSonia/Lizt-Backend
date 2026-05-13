@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
@@ -12,8 +12,8 @@ export const SCREEN_RESPONSES: any = {
     data: {
       tenant_default_actions: [
         {
-          id: 'service_request',
-          title: '\ud83d\udee0 Service Request',
+          id: 'maintenance_request',
+          title: '\ud83d\udee0 Maintenance Request',
         },
         {
           id: 'view_tenancy',
@@ -33,8 +33,8 @@ export const SCREEN_RESPONSES: any = {
       },
     },
   },
-  SERVICE_REQUEST: {
-    screen: 'SERVICE_REQUEST',
+  MAINTENANCE_REQUEST: {
+    screen: 'MAINTENANCE_REQUEST',
     data: {
       request_actions: [
         {

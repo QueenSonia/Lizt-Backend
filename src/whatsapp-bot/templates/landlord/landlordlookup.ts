@@ -1,10 +1,10 @@
-import { ConfigService } from '@nestjs/config';
+﻿import { ConfigService } from '@nestjs/config';
 import { RolesEnum } from 'src/base.entity';
 import { CacheService } from 'src/lib/cache';
 import { Property } from 'src/properties/entities/property.entity';
 import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { UtilService } from 'src/utils/utility-service';
@@ -27,7 +27,7 @@ export class LandlordLookup {
     private readonly usersRepo: Repository<Users>,
     private readonly accountRepo: Repository<Account>,
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
-    private readonly serviceRequestRepo: Repository<ServiceRequest>,
+    private readonly maintenanceRequestRepo: Repository<MaintenanceRequest>,
     private readonly utilService: UtilService,
     private readonly kycLinksService: KYCLinksService,
     private readonly chatLogService?: ChatLogService,
@@ -37,7 +37,7 @@ export class LandlordLookup {
   }
 
   private key(from: string) {
-    return `service_request_state_landlord_${from}`;
+    return `maintenance_request_state_landlord_${from}`;
   }
 
   async handleGenerateKYCLinkText(from: string, text: string) {
@@ -51,7 +51,7 @@ export class LandlordLookup {
         from,
         'Thanks! You have exited landlord flow.',
       );
-      await this.cache.delete(`service_request_state_landlord_${from}`);
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
     } else {
       const ownerUser = await this.usersRepo.findOne({
         where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
@@ -267,7 +267,7 @@ export class LandlordLookup {
     );
 
     await this.cache.set(
-      `service_request_state_landlord_${from}`,
+      `maintenance_request_state_landlord_${from}`,
       JSON.stringify({
         type: 'tenancy',
         ids: propertyTenants.map((pt) => pt.id),
@@ -301,19 +301,19 @@ export class LandlordLookup {
       return;
     }
 
-    const serviceRequests = await this.serviceRequestRepo.find({
+    const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: { property: { owner_id: landlordAccount.id } },
       relations: ['property', 'tenant', 'tenant.user', 'facilityManager'],
       order: { date_reported: 'DESC' },
     });
 
-    if (!serviceRequests?.length) {
+    if (!maintenanceRequests?.length) {
       await this.whatsappUtil.sendText(from, 'No maintenance requests found.');
       return;
     }
 
     let maintenanceMessage = 'Here are open maintenance requests:\n';
-    for (const [i, req] of serviceRequests.entries()) {
+    for (const [i, req] of maintenanceRequests.entries()) {
       const reportedDate = new Date(req.date_reported).toLocaleDateString(
         'en-NG',
         {
@@ -333,10 +333,10 @@ export class LandlordLookup {
     );
 
     await this.cache.set(
-      `service_request_state_landlord_${from}`,
+      `maintenance_request_state_landlord_${from}`,
       JSON.stringify({
         type: 'maintenance',
-        ids: serviceRequests.map((req) => req.id),
+        ids: maintenanceRequests.map((req) => req.id),
         step: 'no_step',
         data: {},
       }),

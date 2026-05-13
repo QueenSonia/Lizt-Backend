@@ -1,15 +1,15 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+﻿import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 
 import { Users } from 'src/users/entities/user.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
-import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
-import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
+import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
+import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import { TemplateSenderService, ButtonDefinition } from '../template-sender';
 import { IncomingMessage } from '../utils';
 import { LandlordFlow } from '../templates/landlord/landlordflow';
@@ -32,15 +32,15 @@ export class LandlordFlowService {
     @InjectRepository(Users)
     private readonly usersRepo: Repository<Users>,
 
-    @InjectRepository(ServiceRequest)
-    private readonly serviceRequestRepo: Repository<ServiceRequest>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly maintenanceRequestRepo: Repository<MaintenanceRequest>,
 
     @InjectRepository(TeamMember)
     private readonly teamMemberRepo: Repository<TeamMember>,
 
     private readonly cache: CacheService,
     private readonly utilService: UtilService,
-    private readonly serviceRequestService: ServiceRequestsService,
+    private readonly maintenanceRequestService: MaintenanceRequestsService,
     private readonly templateSenderService: TemplateSenderService,
     private readonly landlordFlow: LandlordFlow,
 
@@ -97,7 +97,7 @@ export class LandlordFlowService {
 
     if (lowerText === 'menu') {
       await this.templateSenderService.sendButtons(from, 'Menu Options', [
-        { id: 'service_request', title: 'Resolve request' },
+        { id: 'maintenance_request', title: 'Resolve request' },
         { id: 'view_account_info', title: 'View Account Info' },
         { id: 'visit_site', title: 'Visit our website' },
       ]);
@@ -107,8 +107,8 @@ export class LandlordFlowService {
     if (lowerText === 'done') {
       // Batch delete both keys in one call
       await this.cache.deleteMultiple([
-        `service_request_state_${from}`,
-        `service_request_state_facility_${from}`,
+        `maintenance_request_state_${from}`,
+        `maintenance_request_state_facility_${from}`,
       ]);
       await this.templateSenderService.sendText(
         from,
@@ -127,7 +127,7 @@ export class LandlordFlowService {
    */
   async cachedFacilityResponse(from: string, text: string): Promise<void> {
     const facilityState = await this.cache.get(
-      `service_request_state_facility_${from}`,
+      `maintenance_request_state_facility_${from}`,
     );
 
     // Handle viewing specific request by number
@@ -156,7 +156,7 @@ export class LandlordFlowService {
       facilityState === 'awaiting_update' ||
       facilityState === 'awaiting_resolution'
     ) {
-      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.cache.delete(`maintenance_request_state_facility_${from}`);
       await this.templateSenderService.sendText(
         from,
         'Updating or resolving requests is now done in the web app. Type "menu" to see other options.',
@@ -192,12 +192,12 @@ export class LandlordFlowService {
     }
 
     const requestId = requestIds[selectedIndex];
-    const serviceRequest = await this.serviceRequestRepo.findOne({
+    const maintenanceRequest = await this.maintenanceRequestRepo.findOne({
       where: { id: requestId },
       relations: ['tenant', 'tenant.user', 'property'],
     });
 
-    if (!serviceRequest) {
+    if (!maintenanceRequest) {
       await this.templateSenderService.sendText(
         from,
         "I couldn't find that request. Please try again.",
@@ -207,12 +207,12 @@ export class LandlordFlowService {
 
     // Defensive: even though the list query filters to visible states, the
     // user could type a stale number. Reject anything outside the visible set.
-    const FM_VISIBLE_STATUSES: ServiceRequestStatusEnum[] = [
-      ServiceRequestStatusEnum.APPROVED,
-      ServiceRequestStatusEnum.RESOLVED,
-      ServiceRequestStatusEnum.REOPENED,
+    const FM_VISIBLE_STATUSES: MaintenanceRequestStatusEnum[] = [
+      MaintenanceRequestStatusEnum.APPROVED,
+      MaintenanceRequestStatusEnum.RESOLVED,
+      MaintenanceRequestStatusEnum.REOPENED,
     ];
-    if (!FM_VISIBLE_STATUSES.includes(serviceRequest.status)) {
+    if (!FM_VISIBLE_STATUSES.includes(maintenanceRequest.status)) {
       await this.templateSenderService.sendText(
         from,
         "That request isn't visible here. Open the web app for full details.",
@@ -220,7 +220,7 @@ export class LandlordFlowService {
       return;
     }
 
-    if (!serviceRequest.property) {
+    if (!maintenanceRequest.property) {
       await this.templateSenderService.sendText(
         from,
         'Unable to load full request details. Please contact support.',
@@ -228,15 +228,15 @@ export class LandlordFlowService {
       return;
     }
 
-    const statusLabel = this.getStatusLabel(serviceRequest.status);
-    const tenantUser = serviceRequest.tenant?.user;
+    const statusLabel = this.getStatusLabel(maintenanceRequest.status);
+    const tenantUser = maintenanceRequest.tenant?.user;
     const reporterLine = tenantUser
       ? `Tenant: ${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}\n`
-      : `Reporter: ${serviceRequest.tenant_name || 'Facility manager'}\n`;
+      : `Reporter: ${maintenanceRequest.tenant_name || 'Facility manager'}\n`;
 
     await this.templateSenderService.sendText(
       from,
-      `*${serviceRequest.description}*\n\n${reporterLine}Property: ${serviceRequest.property.name}\nStatus: ${statusLabel}`,
+      `*${maintenanceRequest.description}*\n\n${reporterLine}Property: ${maintenanceRequest.property.name}\nStatus: ${statusLabel}`,
     );
 
     // Marking resolved now happens in the web app (we capture cost +
@@ -251,8 +251,8 @@ export class LandlordFlowService {
     );
 
     await this.cache.set(
-      `service_request_state_facility_${from}`,
-      `viewing_request:${serviceRequest.id}`,
+      `maintenance_request_state_facility_${from}`,
+      `viewing_request:${maintenanceRequest.id}`,
       this.SESSION_TIMEOUT_MS,
     );
   }
@@ -265,15 +265,15 @@ export class LandlordFlowService {
       return 'Unknown';
     }
     switch (status) {
-      case ServiceRequestStatusEnum.NOT_APPROVED:
+      case MaintenanceRequestStatusEnum.NOT_APPROVED:
         return 'Pending Approval';
-      case ServiceRequestStatusEnum.APPROVED:
+      case MaintenanceRequestStatusEnum.APPROVED:
         return 'Approved';
-      case ServiceRequestStatusEnum.RESOLVED:
+      case MaintenanceRequestStatusEnum.RESOLVED:
         return 'Resolved';
-      case ServiceRequestStatusEnum.REOPENED:
+      case MaintenanceRequestStatusEnum.REOPENED:
         return 'Reopened';
-      case ServiceRequestStatusEnum.CLOSED:
+      case MaintenanceRequestStatusEnum.CLOSED:
         return 'Closed';
       default:
         return status;
@@ -287,7 +287,7 @@ export class LandlordFlowService {
     from: string,
     text: string,
   ): Promise<void> {
-    const serviceRequest = await this.serviceRequestRepo.findOne({
+    const maintenanceRequest = await this.maintenanceRequestRepo.findOne({
       where: {
         request_id: text,
       },
@@ -299,48 +299,48 @@ export class LandlordFlowService {
       ],
     });
 
-    if (!serviceRequest) {
+    if (!maintenanceRequest) {
       await this.templateSenderService.sendText(
         from,
-        'No service requests found with that ID. try again',
+        'No maintenance requests found with that ID. try again',
       );
-      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.cache.delete(`maintenance_request_state_facility_${from}`);
       return;
     }
 
     // FM acknowledging via WhatsApp moves the request into the "approved &
     // being worked on" state. This bypasses the landlord-approval gate
     // because the WhatsApp ack flow is intentionally out-of-band.
-    await this.serviceRequestService.updateStatus(
-      serviceRequest.id,
-      ServiceRequestStatusEnum.APPROVED,
+    await this.maintenanceRequestService.updateStatus(
+      maintenanceRequest.id,
+      MaintenanceRequestStatusEnum.APPROVED,
       `Acknowledged by facility manager via WhatsApp`,
       {
-        id: serviceRequest.facilityManager?.account?.user?.id || 'system',
+        id: maintenanceRequest.facilityManager?.account?.user?.id || 'system',
         role: 'facility_manager',
         name:
-          serviceRequest.facilityManager?.account?.profile_name ||
+          maintenanceRequest.facilityManager?.account?.profile_name ||
           'Facility Manager',
       },
     );
 
     await this.templateSenderService.sendText(
       from,
-      `You have acknowledged service request ID: ${text}`,
+      `You have acknowledged maintenance request ID: ${text}`,
     );
 
-    if (serviceRequest.tenant?.user?.phone_number) {
+    if (maintenanceRequest.tenant?.user?.phone_number) {
       await this.templateSenderService.sendText(
         this.utilService.normalizePhoneNumber(
-          serviceRequest.tenant.user.phone_number,
+          maintenanceRequest.tenant.user.phone_number,
         ),
-        `Your service request with ID: ${text} is being processed by ${this.utilService.toSentenceCase(
-          serviceRequest.facilityManager?.account?.profile_name || 'your facility manager',
+        `Your maintenance request with ID: ${text} is being processed by ${this.utilService.toSentenceCase(
+          maintenanceRequest.facilityManager?.account?.profile_name || 'your facility manager',
         )}.`,
       );
     }
 
-    await this.cache.delete(`service_request_state_facility_${from}`);
+    await this.cache.delete(`maintenance_request_state_facility_${from}`);
   }
 
   /**
@@ -352,7 +352,7 @@ export class LandlordFlowService {
   ): Promise<void> {
     if (text.toLowerCase() === 'update') {
       await this.cache.set(
-        `service_request_state_facility_${from}`,
+        `maintenance_request_state_facility_${from}`,
         'awaiting_update',
         this.SESSION_TIMEOUT_MS,
       );
@@ -365,7 +365,7 @@ export class LandlordFlowService {
 
     if (text.toLowerCase() === 'resolve') {
       await this.cache.set(
-        `service_request_state_facility_${from}`,
+        `maintenance_request_state_facility_${from}`,
         'awaiting_resolution',
         this.SESSION_TIMEOUT_MS,
       );
@@ -404,40 +404,40 @@ export class LandlordFlowService {
       return;
     }
 
-    const serviceRequest = await this.serviceRequestRepo.findOne({
+    const maintenanceRequest = await this.maintenanceRequestRepo.findOne({
       where: {
         request_id: requestId.trim(),
       },
       relations: ['tenant', 'tenant.user', 'facilityManager'],
     });
 
-    if (!serviceRequest) {
+    if (!maintenanceRequest) {
       await this.templateSenderService.sendText(
         from,
-        'No service requests found with that ID. try again',
+        'No maintenance requests found with that ID. try again',
       );
-      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.cache.delete(`maintenance_request_state_facility_${from}`);
       return;
     }
 
-    serviceRequest.notes = feedback;
-    await this.serviceRequestRepo.save(serviceRequest);
+    maintenanceRequest.notes = feedback;
+    await this.maintenanceRequestRepo.save(maintenanceRequest);
 
     await this.templateSenderService.sendText(
       from,
-      `You have updated service request ID: ${requestId.trim()}`,
+      `You have updated maintenance request ID: ${requestId.trim()}`,
     );
 
-    if (serviceRequest.tenant?.user?.phone_number) {
+    if (maintenanceRequest.tenant?.user?.phone_number) {
       await this.templateSenderService.sendText(
         this.utilService.normalizePhoneNumber(
-          serviceRequest.tenant.user.phone_number,
+          maintenanceRequest.tenant.user.phone_number,
         ),
-        `Update on your service request with ID: ${requestId.trim()} - ${feedback}`,
+        `Update on your maintenance request with ID: ${requestId.trim()} - ${feedback}`,
       );
     }
 
-    await this.cache.delete(`service_request_state_facility_${from}`);
+    await this.cache.delete(`maintenance_request_state_facility_${from}`);
   }
 
   /**
@@ -457,46 +457,46 @@ export class LandlordFlowService {
       return;
     }
 
-    const serviceRequest = await this.serviceRequestRepo.findOne({
+    const maintenanceRequest = await this.maintenanceRequestRepo.findOne({
       where: {
         request_id: requestId,
       },
       relations: ['tenant', 'tenant.user', 'facilityManager'],
     });
 
-    if (!serviceRequest) {
+    if (!maintenanceRequest) {
       await this.templateSenderService.sendText(
         from,
-        'No service requests found with that ID. try again',
+        'No maintenance requests found with that ID. try again',
       );
-      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.cache.delete(`maintenance_request_state_facility_${from}`);
       return;
     }
 
-    await this.serviceRequestService.updateStatus(
-      serviceRequest.id,
-      ServiceRequestStatusEnum.RESOLVED,
+    await this.maintenanceRequestService.updateStatus(
+      maintenanceRequest.id,
+      MaintenanceRequestStatusEnum.RESOLVED,
     );
 
     await this.templateSenderService.sendText(
       from,
-      `You have resolved service request ID: ${requestId}. Waiting for tenant confirmation.`,
+      `You have resolved maintenance request ID: ${requestId}. Waiting for tenant confirmation.`,
     );
 
-    if (serviceRequest.tenant?.user?.phone_number) {
+    if (maintenanceRequest.tenant?.user?.phone_number) {
       await this.templateSenderService.sendTenantConfirmationTemplate({
         phone_number: this.utilService.normalizePhoneNumber(
-          serviceRequest.tenant.user.phone_number,
+          maintenanceRequest.tenant.user.phone_number,
         ),
         tenant_name: this.utilService.toSentenceCase(
-          serviceRequest.tenant.user.first_name,
+          maintenanceRequest.tenant.user.first_name,
         ),
-        request_description: serviceRequest.description,
-        request_id: serviceRequest.request_id,
+        request_description: maintenanceRequest.description,
+        request_id: maintenanceRequest.request_id,
       });
     }
 
-    await this.cache.delete(`service_request_state_facility_${from}`);
+    await this.cache.delete(`maintenance_request_state_facility_${from}`);
   }
 
   /**
@@ -514,7 +514,7 @@ export class LandlordFlowService {
           user.first_name,
         )} Welcome to Property Kraft! What would you like to do today?`,
         [
-          { id: 'service_request', title: 'Service Requests' },
+          { id: 'maintenance_request', title: 'Maintenance Requests' },
           { id: 'view_account_info', title: 'Account Info' },
           { id: 'visit_site', title: 'Visit Website' },
         ],
@@ -573,9 +573,9 @@ export class LandlordFlowService {
     }
 
     switch (buttonId) {
-      case 'view_all_service_requests':
-      case 'service_request':
-        await this.handleViewAllServiceRequests(from);
+      case 'view_all_maintenance_requests':
+      case 'maintenance_request':
+        await this.handleViewAllMaintenanceRequests(from);
         break;
 
       case 'view_account_info':
@@ -594,11 +594,11 @@ export class LandlordFlowService {
           from,
           'What would you like to do?',
           [
-            { id: 'service_request', title: 'View all requests' },
+            { id: 'maintenance_request', title: 'View all requests' },
             { id: 'view_account_info', title: 'View Account Info' },
           ],
         );
-        await this.cache.delete(`service_request_state_facility_${from}`);
+        await this.cache.delete(`maintenance_request_state_facility_${from}`);
         break;
 
       default:
@@ -632,10 +632,10 @@ export class LandlordFlowService {
   }
 
   /**
-   * Handle view all service requests button
+   * Handle view all maintenance requests button
    */
-  private async handleViewAllServiceRequests(from: string): Promise<void> {
-    this.logger.log('✅ Matched view_all_service_requests or service_request');
+  private async handleViewAllMaintenanceRequests(from: string): Promise<void> {
+    this.logger.log('✅ Matched view_all_maintenance_requests or maintenance_request');
 
     const teamMemberInfo = await this.findTeamMemberByPhone(from);
 
@@ -651,31 +651,32 @@ export class LandlordFlowService {
     // NOT_APPROVED (pending landlord approval; FM cannot act yet) and
     // CLOSED (finalized; nothing to do). Approved + resolved + reopened
     // remain visible as a quick at-a-glance check from chat.
-    const serviceRequests = await this.serviceRequestRepo.find({
+    const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: {
         property: {
           owner_id: teamMemberInfo.team.creatorId,
         },
         status: In([
-          ServiceRequestStatusEnum.APPROVED,
-          ServiceRequestStatusEnum.RESOLVED,
-          ServiceRequestStatusEnum.REOPENED,
+          MaintenanceRequestStatusEnum.APPROVED,
+          MaintenanceRequestStatusEnum.RESOLVED,
+          MaintenanceRequestStatusEnum.REOPENED,
         ]),
       },
       relations: ['tenant', 'tenant.user', 'property'],
     });
 
-    if (!serviceRequests.length) {
+    if (!maintenanceRequests.length) {
       await this.templateSenderService.sendText(
         from,
-        'No service requests found.',
+        'No maintenance requests found.',
       );
       return;
     }
 
-    let response = 'Here are all service requests:\n\n';
-    serviceRequests.forEach((req, i) => {
-      response += `${i + 1}. ${req.description} (${req.property.name})\n\n`;
+    let response = 'Here are all maintenance requests:\n\n';
+    maintenanceRequests.forEach((req, i) => {
+      const location = req.property?.name ?? req.property_name ?? 'Common area';
+      response += `${i + 1}. ${req.description} (${location})\n\n`;
     });
 
     response += 'Reply with a number to view details.';
@@ -683,8 +684,8 @@ export class LandlordFlowService {
     await this.templateSenderService.sendText(from, response);
 
     await this.cache.set(
-      `service_request_state_facility_${from}`,
-      `view_request_list:${JSON.stringify(serviceRequests.map((r) => r.id))}`,
+      `maintenance_request_state_facility_${from}`,
+      `view_request_list:${JSON.stringify(maintenanceRequests.map((r) => r.id))}`,
       this.SESSION_TIMEOUT_MS,
     );
   }
@@ -732,35 +733,35 @@ export class LandlordFlowService {
   ): Promise<void> {
     const requestId = buttonId.split('mark_resolved:')[1];
 
-    const serviceRequest = await this.serviceRequestRepo.findOne({
+    const maintenanceRequest = await this.maintenanceRequestRepo.findOne({
       where: { id: requestId },
       relations: ['tenant', 'tenant.user', 'facilityManager'],
     });
 
-    if (!serviceRequest) {
+    if (!maintenanceRequest) {
       await this.templateSenderService.sendText(
         from,
         "I couldn't find that request.",
       );
-      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.cache.delete(`maintenance_request_state_facility_${from}`);
       return;
     }
 
-    if (serviceRequest.status === ServiceRequestStatusEnum.CLOSED) {
+    if (maintenanceRequest.status === MaintenanceRequestStatusEnum.CLOSED) {
       await this.templateSenderService.sendText(
         from,
         'This request has already been closed.',
       );
-      await this.cache.delete(`service_request_state_facility_${from}`);
+      await this.cache.delete(`maintenance_request_state_facility_${from}`);
       return;
     }
 
     // Get facility manager info
     const facilityManager = await this.findTeamMemberByPhone(from);
 
-    await this.serviceRequestService.updateStatus(
-      serviceRequest.id,
-      ServiceRequestStatusEnum.RESOLVED,
+    await this.maintenanceRequestService.updateStatus(
+      maintenanceRequest.id,
+      MaintenanceRequestStatusEnum.RESOLVED,
       'Facility manager marked as resolved via WhatsApp',
       {
         id: facilityManager?.account?.user?.id || 'system',
@@ -774,24 +775,24 @@ export class LandlordFlowService {
       "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
     );
 
-    if (serviceRequest.tenant?.user?.phone_number) {
+    if (maintenanceRequest.tenant?.user?.phone_number) {
       try {
         await this.templateSenderService.sendTenantConfirmationTemplate({
           phone_number: this.utilService.normalizePhoneNumber(
-            serviceRequest.tenant.user.phone_number,
+            maintenanceRequest.tenant.user.phone_number,
           ),
           tenant_name: this.utilService.toSentenceCase(
-            serviceRequest.tenant.user.first_name,
+            maintenanceRequest.tenant.user.first_name,
           ),
-          request_description: serviceRequest.description,
-          request_id: serviceRequest.request_id,
+          request_description: maintenanceRequest.description,
+          request_id: maintenanceRequest.request_id,
         });
       } catch (error) {
         this.logger.error('Failed to send tenant confirmation:', error);
       }
     }
 
-    await this.cache.delete(`service_request_state_facility_${from}`);
+    await this.cache.delete(`maintenance_request_state_facility_${from}`);
   }
 
   /**

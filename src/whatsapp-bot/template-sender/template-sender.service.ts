@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+﻿import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ChatLogService } from '../chat-log.service';
@@ -203,14 +203,14 @@ export interface AgentKYCNotificationParams {
 }
 
 /**
- * Parameters for facility service request
+ * Parameters for facility maintenance request
  */
-export interface FacilityServiceRequestParams {
+export interface FacilityMaintenanceRequestParams {
   phone_number: string;
   manager_name: string;
   property_name: string;
   property_location: string;
-  service_request: string;
+  maintenance_request: string;
   tenant_name: string;
   tenant_phone_number: string;
   date_created: string;
@@ -1115,7 +1115,7 @@ export class TemplateSenderService {
   }
 
   /**
-   * Send tenant confirmation template for service requests
+   * Send tenant confirmation template for maintenance requests
    */
   async sendTenantConfirmationTemplate({
     phone_number,
@@ -1128,7 +1128,7 @@ export class TemplateSenderService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'service_request_confirmation',
+        name: 'maintenance_request_confirmation',
         language: {
           code: 'en',
         },
@@ -1411,24 +1411,24 @@ export class TemplateSenderService {
   }
 
   /**
-   * Send facility service request notification
+   * Send facility maintenance request notification
    */
-  async sendFacilityServiceRequest({
+  async sendFacilityMaintenanceRequest({
     phone_number,
     property_name,
-    service_request,
+    maintenance_request,
     tenant_name,
     tenant_phone_number,
     date_created,
     is_landlord = false,
-  }: FacilityServiceRequestParams): Promise<void> {
+  }: FacilityMaintenanceRequestParams): Promise<void> {
     if (is_landlord) {
       const payload: WhatsAppPayload = {
         messaging_product: 'whatsapp',
         to: phone_number,
         type: 'template',
         template: {
-          name: 'landlord_service_request_notification',
+          name: 'landlord_maintenance_request_notification',
           language: {
             code: 'en',
           },
@@ -1446,7 +1446,7 @@ export class TemplateSenderService {
                 },
                 {
                   type: 'text',
-                  text: service_request,
+                  text: maintenance_request,
                 },
                 {
                   type: 'text',
@@ -1467,7 +1467,7 @@ export class TemplateSenderService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'fm_service_request_notification',
+        name: 'fm_maintenance_request_notification',
         language: {
           code: 'en',
         },
@@ -1485,7 +1485,7 @@ export class TemplateSenderService {
               },
               {
                 type: 'text',
-                text: service_request,
+                text: maintenance_request,
               },
               {
                 type: 'text',
@@ -1504,7 +1504,7 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'payload',
-                payload: 'view_all_service_requests',
+                payload: 'view_all_maintenance_requests',
               },
             ],
           },
@@ -1516,25 +1516,25 @@ export class TemplateSenderService {
   }
 
   /**
-   * FM-targeted ping that fires when a landlord approves a service request
+   * FM-targeted ping that fires when a landlord approves a maintenance request
    * (NOT_APPROVED → APPROVED). Reuses the same parameter shape as
-   * `sendFacilityServiceRequest`. The template body is registered separately
+   * `sendFacilityMaintenanceRequest`. The template body is registered separately
    * in Meta Business Manager — this code only references the template name.
    */
-  async sendFacilityServiceRequestApproved({
+  async sendFacilityMaintenanceRequestApproved({
     phone_number,
     property_name,
-    service_request,
+    maintenance_request,
     tenant_name,
     tenant_phone_number,
     date_created,
-  }: Omit<FacilityServiceRequestParams, 'is_landlord'>): Promise<void> {
+  }: Omit<FacilityMaintenanceRequestParams, 'is_landlord'>): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
       type: 'template',
       template: {
-        name: 'fm_service_request_approved',
+        name: 'fm_maintenance_request_approved',
         language: { code: 'en' },
         components: [
           {
@@ -1542,7 +1542,7 @@ export class TemplateSenderService {
             parameters: [
               { type: 'text', text: tenant_name },
               { type: 'text', text: property_name },
-              { type: 'text', text: service_request },
+              { type: 'text', text: maintenance_request },
               { type: 'text', text: date_created },
               { type: 'text', text: tenant_phone_number },
             ],
@@ -1552,7 +1552,7 @@ export class TemplateSenderService {
             sub_type: 'quick_reply',
             index: 0,
             parameters: [
-              { type: 'payload', payload: 'view_all_service_requests' },
+              { type: 'payload', payload: 'view_all_maintenance_requests' },
             ],
           },
         ],
@@ -1566,7 +1566,7 @@ export class TemplateSenderService {
       // unregistered), the API call returns an error. Log and swallow so
       // the rest of the approval flow isn't blocked while we wait on Meta.
       console.warn(
-        `[fm_service_request_approved] template send failed (template may be unregistered with Meta): ${
+        `[fm_maintenance_request_approved] template send failed (template may be unregistered with Meta): ${
           (err as Error)?.message ?? err
         }`,
       );
@@ -4406,8 +4406,8 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nYour landlord, {{2}}, is using Lizt by Property Kraft — a tenancy management app — to manage {{3}} and make your rental experience smooth and stress-free.\n\nWith Lizt, you can handle everything about your home in one place — from getting important updates, tracking rent, reporting issues easily, and staying connected throughout your tenancy.\n\nReply Hi to get started.\n\n— The Lizt Team',
     welcome_tenant:
       'Hi {{1}},\n\n{{2}} has added you as a tenant for {{3}} on Lizt.\n\nPlease confirm your tenancy details to continue setup.',
-    service_request_confirmation:
-      'Hi {{1}} 👋🏽\n\nYour service request about "{{2}}" has been marked as resolved.\n\nCan you confirm if everything is fixed?',
+    maintenance_request_confirmation:
+      'Hi {{1}} 👋🏽\n\nYour maintenance request about "{{2}}" has been marked as resolved.\n\nCan you confirm if everything is fixed?',
     tenant_application_notification:
       'A KYC application was submitted by {{2}} for the property {{3}}, assigned to {{1}}.\n\nUse the links below to view or download the application.',
     kyc_application_attachment_landlord:
@@ -4416,10 +4416,10 @@ export class TemplateSenderService {
       "Hello {{1}}, Your KYC form has been submitted. The landlord is reviewing your details, and we'll keep you updated.",
     agent_kyc_notification:
       'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
-    landlord_service_request_notification:
-      'Service Request Notification\n\nA new service request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}} on record.',
-    fm_service_request_notification:
-      'A new service request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nPhone: {{5}}\nProperty: {{2}}\nReported: {{4}} on record.',
+    landlord_maintenance_request_notification:
+      'Maintenance Request Notification\n\nA new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}} on record.',
+    fm_maintenance_request_notification:
+      'A new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nPhone: {{5}}\nProperty: {{2}}\nReported: {{4}} on record.',
     kyc_completion_link:
       'Hello {{1}},\n\n{{2}} has added you as a tenant for {{3}} using Lizt by Property Kraft — a tenancy management app designed to make your rental experience simple and stress-free.\n\nWith Lizt, you can receive important updates, track rent, and manage everything about your tenancy in one place.\n\nPlease {{4}} your KYC information using the link below to get started:',
     kyc_completion_notification:
@@ -4470,7 +4470,7 @@ export class TemplateSenderService {
     renewal_payment_tenant:
       'Congratulations {{1}}!\n\nYour payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
     payment_receipt_tenant:
-      'Hi {{1}},\n\nYour payment of {{2}} for {{3}} has been successfully confirmed by Property Kraft.\n\nTap the button below to download your receipt.\n\nThank you.',
+      'Hi {{1}},\n\nYour payment of {{2}} for *{{3}}* has been successfully confirmed by Property Kraft.\n\nTap the button below to download your receipt.\n\nThank you.',
     payment_receipt_attachment_tenant:
       'Here is your payment receipt from Property Kraft.\n\nThank you,',
     renewal_payment_landlord:

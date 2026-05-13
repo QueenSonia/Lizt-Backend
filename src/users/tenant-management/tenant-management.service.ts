@@ -1,4 +1,4 @@
-import {
+﻿import {
   ConflictException,
   ForbiddenException,
   forwardRef,
@@ -1823,15 +1823,15 @@ export class TenantManagementService {
         'property.property_type',
         'property.owner_id',
       ])
-      .leftJoin('account.service_requests', 'service_requests')
+      .leftJoin('account.maintenance_requests', 'maintenance_requests')
       .addSelect([
-        'service_requests.id',
-        'service_requests.description',
-        'service_requests.status',
-        'service_requests.date_reported',
-        'service_requests.created_at',
+        'maintenance_requests.id',
+        'maintenance_requests.description',
+        'maintenance_requests.status',
+        'maintenance_requests.date_reported',
+        'maintenance_requests.created_at',
       ])
-      .leftJoin('service_requests.property', 'sr_property')
+      .leftJoin('maintenance_requests.property', 'sr_property')
       .addSelect(['sr_property.id', 'sr_property.name', 'sr_property.location'])
       .leftJoin('account.property_histories', 'property_histories')
       .addSelect([
@@ -1893,7 +1893,7 @@ export class TenantManagementService {
       found: !!tenantAccount?.id,
       propertyHistoriesCount: tenantAccount?.property_histories?.length || 0,
       rentsCount: tenantAccount?.rents?.length || 0,
-      serviceRequestsCount: tenantAccount?.service_requests?.length || 0,
+      maintenanceRequestsCount: tenantAccount?.maintenance_requests?.length || 0,
     });
 
     if (!tenantAccount?.id) {
@@ -2261,11 +2261,11 @@ export class TenantManagementService {
       };
     });
 
-    const serviceRequests = adminId
-      ? account.service_requests?.filter(
+    const maintenanceRequests = adminId
+      ? account.maintenance_requests?.filter(
           (sr) => sr.property?.owner_id === adminId,
         ) || []
-      : account.service_requests || [];
+      : account.maintenance_requests || [];
 
     const propertyHistories = adminId
       ? account.property_histories?.filter(
@@ -2306,7 +2306,7 @@ export class TenantManagementService {
       `${user?.first_name || ''} ${user?.last_name || ''}`.trim() || 'Tenant';
     const history = buildTimelineEvents({
       propertyHistories,
-      serviceRequests,
+      maintenanceRequests,
       offerLetters: offerLetters || [],
       payments: payments || [],
       tenantName,
@@ -2777,7 +2777,7 @@ export class TenantManagementService {
 
       // Aggregated Lists
       documents: documents,
-      maintenanceIssues: (account.service_requests || []).map((sr) => ({
+      maintenanceIssues: (account.maintenance_requests || []).map((sr) => ({
         id: sr.id,
         title: sr.issue_category,
         description: sr.description,
@@ -2954,9 +2954,9 @@ export class TenantManagementService {
   }
 
   /**
-   * Helper to get service request update description
+   * Helper to get maintenance request update description
    */
-  private getServiceRequestUpdateDescription(status: string): string {
+  private getMaintenanceRequestUpdateDescription(status: string): string {
     switch (status.toLowerCase()) {
       case 'resolved':
         return 'Issue fixed and marked as resolved.';
@@ -2965,7 +2965,7 @@ export class TenantManagementService {
       case 'reopened':
         return 'Tenant reopened the request: issue not fully resolved.';
       default:
-        return 'Service request updated.';
+        return 'Maintenance request updated.';
     }
   }
 }

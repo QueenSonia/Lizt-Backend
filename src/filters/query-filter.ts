@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus } from '@nestjs/common';
+﻿import { HttpException, HttpStatus } from '@nestjs/common';
 import { PropertyFilter } from 'src/properties/dto/create-property.dto';
 import { RentFilter } from 'src/rents/dto/create-rent.dto';
 import { UserFilter } from 'src/users/dto/create-user.dto';
@@ -9,7 +9,7 @@ import {
   In,
   SelectQueryBuilder,
 } from 'typeorm';
-import { ServiceRequestFilter } from 'src/service-requests/dto/create-service-request.dto';
+import { MaintenanceRequestFilter } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { PropertyHistoryFilter } from 'src/property-history/dto/create-property-history.dto';
 import { Property } from 'src/properties/entities/property.entity';
 
@@ -189,8 +189,8 @@ export const buildRentFilter = async (queryParams: RentFilter) => {
   return query;
 };
 
-export const buildServiceRequestFilter = async (
-  queryParams: ServiceRequestFilter,
+export const buildMaintenanceRequestFilter = async (
+  queryParams: MaintenanceRequestFilter,
 ) => {
   const query: Record<string, unknown> = {};
   if (queryParams?.tenant_id) query['tenant_id'] = queryParams.tenant_id;

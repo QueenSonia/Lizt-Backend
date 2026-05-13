@@ -1,4 +1,4 @@
-import { NotificationType } from '../enums/notification-type';
+﻿import { NotificationType } from '../enums/notification-type';
 
 export class CreateNotificationDto {
   date: string;
@@ -7,5 +7,5 @@ export class CreateNotificationDto {
   status: 'Pending' | 'Completed';
   property_id: string;
   user_id: string;
-  service_request_id?: string;
+  maintenance_request_id?: string;
 }

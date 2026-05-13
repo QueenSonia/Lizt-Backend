@@ -1,4 +1,4 @@
-import {
+﻿import {
   Controller,
   Get,
   Post,
@@ -199,7 +199,7 @@ export class PropertyHistoryController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('tenant-property/:property_id')
-  async getServiceRequestsByTenantAndProperty(
+  async getMaintenanceRequestsByTenantAndProperty(
     @Param('property_id', new ParseUUIDPipe()) property_id: string,
     @Query() query: PropertyHistoryFilter,
     @Req() req: any,

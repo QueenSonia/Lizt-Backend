@@ -1,8 +1,8 @@
-import { Repository } from 'typeorm';
+﻿import { Repository } from 'typeorm';
 import { CacheService } from 'src/lib/cache';
 import { RolesEnum } from 'src/base.entity';
 import { Users } from 'src/users/entities/user.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
@@ -17,7 +17,7 @@ export class LandlordInteractive {
 
   constructor(
     private usersRepo: Repository<Users>,
-    private serviceRequestRepo: Repository<ServiceRequest>,
+    private maintenanceRequestRepo: Repository<MaintenanceRequest>,
     private propertyTenantRepo: Repository<PropertyTenant>,
     private cache: CacheService,
     private chatLogService?: ChatLogService,
@@ -101,7 +101,7 @@ export class LandlordInteractive {
     );
 
     await this.cache.set(
-      `service_request_state_landlord_${from}`,
+      `maintenance_request_state_landlord_${from}`,
       JSON.stringify({
         type: 'tenancy',
         ids: propertyTenants.map((pt) => pt.id),
@@ -123,7 +123,7 @@ export class LandlordInteractive {
       return;
     }
 
-    const serviceRequests = await this.serviceRequestRepo.find({
+    const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: { property: { owner_id: ownerUser.accounts[0].id } },
       relations: [
         'property',
@@ -135,13 +135,13 @@ export class LandlordInteractive {
       order: { date_reported: 'DESC' },
     });
 
-    if (!serviceRequests?.length) {
+    if (!maintenanceRequests?.length) {
       await this.whatsappUtil.sendText(from, 'No maintenance requests found.');
       return;
     }
 
     let maintenanceMessage = 'Here are open maintenance requests:\n';
-    for (const [i, req] of serviceRequests.entries()) {
+    for (const [i, req] of maintenanceRequests.entries()) {
       const reportedDate = new Date(req.date_reported).toLocaleDateString(
         'en-NG',
         {
@@ -161,10 +161,10 @@ export class LandlordInteractive {
     );
 
     await this.cache.set(
-      `service_request_state_landlord_${from}`,
+      `maintenance_request_state_landlord_${from}`,
       JSON.stringify({
         type: 'maintenance',
-        ids: serviceRequests.map((req) => req.id),
+        ids: maintenanceRequests.map((req) => req.id),
         step: 'no_step',
         data: {},
       }),
@@ -184,7 +184,7 @@ export class LandlordInteractive {
       `Got it! You selected ${id}. Before we connect you with our team, may we have your full name?`,
     );
     await this.cache.set(
-      `service_request_state_default_${from}`,
+      `maintenance_request_state_default_${from}`,
       `property_owner_options_${id}`,
       this.SESSION_TIMEOUT_MS,
     );

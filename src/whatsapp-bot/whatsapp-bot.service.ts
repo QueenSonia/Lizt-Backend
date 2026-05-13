@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+﻿import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { ILike, Not, In, Repository } from 'typeorm';
@@ -6,17 +6,17 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import WhatsApp from 'whatsapp';
 import { Users } from 'src/users/entities/user.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { CacheService } from 'src/lib/cache';
 
 import { SCREEN_RESPONSES } from './flows';
 import { RolesEnum } from 'src/base.entity';
 import { UsersService } from 'src/users/users.service';
-import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
+import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { IncomingMessage } from './utils';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
-import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
+import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { PropertiesService } from 'src/properties/properties.service';
 import { Waitlist } from 'src/users/entities/waitlist.entity';
@@ -44,7 +44,7 @@ import {
   KYCApplicationNotificationParams,
   KYCSubmissionConfirmationParams,
   AgentKYCNotificationParams,
-  FacilityServiceRequestParams,
+  FacilityMaintenanceRequestParams,
   KYCCompletionLinkParams,
   KYCCompletionNotificationParams,
   ButtonDefinition,
@@ -54,7 +54,7 @@ import { LandlordFlowService } from './landlord-flow';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
-  { id: 'service_request', title: 'Service request' },
+  { id: 'maintenance_request', title: 'Maintenance request' },
   { id: 'view_tenancy', title: 'View tenancy details' },
   { id: 'payment', title: 'Payment' },
 ];
@@ -71,8 +71,8 @@ export class WhatsappBotService implements OnModuleInit {
     @InjectRepository(Users)
     private usersRepo: Repository<Users>,
 
-    @InjectRepository(ServiceRequest)
-    private readonly serviceRequestRepo: Repository<ServiceRequest>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly maintenanceRequestRepo: Repository<MaintenanceRequest>,
 
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
@@ -94,7 +94,7 @@ export class WhatsappBotService implements OnModuleInit {
 
     private readonly flow: LandlordFlow,
 
-    private readonly serviceRequestService: ServiceRequestsService,
+    private readonly maintenanceRequestService: MaintenanceRequestsService,
     private readonly cache: CacheService,
     private readonly config: ConfigService,
     private readonly utilService: UtilService,
@@ -167,9 +167,9 @@ export class WhatsappBotService implements OnModuleInit {
     if (action === 'data_exchange') {
       switch (screen) {
         case 'WELCOME_SCREEN':
-          return { ...SCREEN_RESPONSES.SERVICE_REQUEST };
+          return { ...SCREEN_RESPONSES.MAINTENANCE_REQUEST };
 
-        case 'SERVICE_REQUEST':
+        case 'MAINTENANCE_REQUEST':
           return { ...SCREEN_RESPONSES.REPORT_ISSUE_INPUT };
 
         case 'REPORT_ISSUE_INPUT':
@@ -418,7 +418,7 @@ export class WhatsappBotService implements OnModuleInit {
             userPhone,
             `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
             [
-              { id: 'service_request', title: 'View requests' },
+              { id: 'maintenance_request', title: 'View requests' },
               { id: 'view_account_info', title: 'Account Info' },
               { id: 'visit_site', title: 'Visit website' },
             ],
@@ -435,7 +435,7 @@ export class WhatsappBotService implements OnModuleInit {
               user?.first_name || '',
             )} What would you like to do?`,
             [
-              { id: 'service_request', title: 'Service request' },
+              { id: 'maintenance_request', title: 'Maintenance request' },
               { id: 'view_tenancy', title: 'View tenancy details' },
               { id: 'payment', title: 'Payment' },
             ],
@@ -786,8 +786,8 @@ export class WhatsappBotService implements OnModuleInit {
     if (text.toLowerCase() === 'done') {
       // Batch delete both keys in one call
       await this.cache.deleteMultiple([
-        `service_request_state_${from}`,
-        `service_request_state_default_${from}`,
+        `maintenance_request_state_${from}`,
+        `maintenance_request_state_default_${from}`,
       ]);
       await this.sendText(from, 'Thank you!  Your session has ended.');
       return;
@@ -797,7 +797,7 @@ export class WhatsappBotService implements OnModuleInit {
 
   async handleDefaultCachedResponse(from, text) {
     const default_state = await this.cache.get(
-      `service_request_state_default_${from}`,
+      `maintenance_request_state_default_${from}`,
     );
 
     if (default_state && default_state.includes('property_owner_options')) {
@@ -827,7 +827,7 @@ export class WhatsappBotService implements OnModuleInit {
       );
 
       await this.cache.set(
-        `service_request_state_default_${from}`,
+        `maintenance_request_state_default_${from}`,
         `share_referral`,
         this.SESSION_TIMEOUT_MS, // now in ms,
       );
@@ -875,7 +875,7 @@ export class WhatsappBotService implements OnModuleInit {
         'Thank you for sharing a referral with us, your session has ended',
       );
 
-      await this.cache.delete(`service_request_state_default_${from}`);
+      await this.cache.delete(`maintenance_request_state_default_${from}`);
       return;
     } else {
       await this.sendButtons(
@@ -901,7 +901,7 @@ export class WhatsappBotService implements OnModuleInit {
           `Great! As a Property Owner, you can use Lizt to:\n 
      1. Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries.\n 
      2. Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you.\n 
-     3. Maintenance Management – tenants can log service requests with you for quick action. \n Please choose one of the options below:`,
+     3. Maintenance Management – tenants can log maintenance requests with you for quick action. \n Please choose one of the options below:`,
           [
             { id: 'rent_reminder', title: 'Rent Reminders' },
             { id: 'reminder_collection', title: 'Reminders/Collection' },
@@ -917,7 +917,7 @@ export class WhatsappBotService implements OnModuleInit {
           `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`,
         );
         await this.cache.set(
-          `service_request_state_default_${from}`,
+          `maintenance_request_state_default_${from}`,
           `property_owner_options_${buttonReply.id}`,
           this.SESSION_TIMEOUT_MS, // now in ms,
         );
@@ -1085,10 +1085,10 @@ export class WhatsappBotService implements OnModuleInit {
     return this.templateSenderService.sendAgentKYCNotification(params);
   }
 
-  async sendFacilityServiceRequest(
-    params: FacilityServiceRequestParams,
+  async sendFacilityMaintenanceRequest(
+    params: FacilityMaintenanceRequestParams,
   ): Promise<void> {
-    return this.templateSenderService.sendFacilityServiceRequest(params);
+    return this.templateSenderService.sendFacilityMaintenanceRequest(params);
   }
 
   /**

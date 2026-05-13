@@ -10,7 +10,7 @@ import {
   Index,
 } from 'typeorm';
 
-export enum ServiceRequestStatus {
+export enum AutoMaintenanceRequestStatus {
   OPEN = 'open',
   IN_PROGRESS = 'in_progress',
   PENDING = 'pending',
@@ -19,14 +19,14 @@ export enum ServiceRequestStatus {
   CANCELLED = 'cancelled',
 }
 
-export enum ServiceRequestPriority {
+export enum AutoMaintenanceRequestPriority {
   LOW = 'low',
   MEDIUM = 'medium',
   HIGH = 'high',
   URGENT = 'urgent',
 }
 
-export enum ServiceRequestSource {
+export enum AutoMaintenanceRequestSource {
   TAWK_CHAT = 'tawk_chat',
   EMAIL = 'email',
   PHONE = 'phone',
@@ -54,11 +54,11 @@ export interface TawkMetadata {
   }>;
 }
 
-@Entity('auto_service_requests')
+@Entity('auto_maintenance_requests')
 @Index(['propertyTenant', 'status'])
 @Index(['source', 'createdAt'])
 @Index(['externalId', 'source'], { unique: true })
-export class AutoServiceRequest {
+export class AutoMaintenanceRequest {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
@@ -70,23 +70,23 @@ export class AutoServiceRequest {
 
   @Column({
     type: 'enum',
-    enum: ServiceRequestStatus,
-    default: ServiceRequestStatus.OPEN,
+    enum: AutoMaintenanceRequestStatus,
+    default: AutoMaintenanceRequestStatus.OPEN,
   })
-  status: ServiceRequestStatus;
+  status: AutoMaintenanceRequestStatus;
 
   @Column({
     type: 'enum',
-    enum: ServiceRequestPriority,
-    default: ServiceRequestPriority.MEDIUM,
+    enum: AutoMaintenanceRequestPriority,
+    default: AutoMaintenanceRequestPriority.MEDIUM,
   })
-  priority: ServiceRequestPriority;
+  priority: AutoMaintenanceRequestPriority;
 
   @Column({
     type: 'enum',
-    enum: ServiceRequestSource,
+    enum: AutoMaintenanceRequestSource,
   })
-  source: ServiceRequestSource;
+  source: AutoMaintenanceRequestSource;
 
   @Column({ name: 'external_id', nullable: true, length: 255 })
   externalId: string; // Tawk chat ID or other external reference
@@ -150,7 +150,7 @@ export class AutoServiceRequest {
     return (
       this.dueDate &&
       this.dueDate < new Date() &&
-      this.status !== ServiceRequestStatus.CLOSED
+      this.status !== AutoMaintenanceRequestStatus.CLOSED
     );
   }
 
@@ -164,7 +164,7 @@ export class AutoServiceRequest {
 
   // Helper methods
   markAsResolved(resolutionNotes?: string): void {
-    this.status = ServiceRequestStatus.RESOLVED;
+    this.status = AutoMaintenanceRequestStatus.RESOLVED;
     this.resolvedAt = new Date();
     if (resolutionNotes) {
       this.resolutionNotes = resolutionNotes;
@@ -174,8 +174,8 @@ export class AutoServiceRequest {
   assignTo(assignee: string): void {
     this.assignedTo = assignee;
     this.assignedAt = new Date();
-    if (this.status === ServiceRequestStatus.OPEN) {
-      this.status = ServiceRequestStatus.IN_PROGRESS;
+    if (this.status === AutoMaintenanceRequestStatus.OPEN) {
+      this.status = AutoMaintenanceRequestStatus.IN_PROGRESS;
     }
   }
 
@@ -195,7 +195,7 @@ export class AutoServiceRequest {
   }
 
   updateTawkMetadata(updates: Partial<TawkMetadata>): void {
-    if (this.source === ServiceRequestSource.TAWK_CHAT) {
+    if (this.source === AutoMaintenanceRequestSource.TAWK_CHAT) {
       this.metadata = {
         ...((this.metadata as TawkMetadata) || {}),
         ...updates,

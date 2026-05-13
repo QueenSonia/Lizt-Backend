@@ -1,4 +1,4 @@
-import {
+﻿import {
   Controller,
   Get,
   Post,
@@ -339,26 +339,26 @@ export class WhatsappBotController {
     }
   }
 
-  @Post('/facility-service-request')
-  async sendToFacilityServiceRequest(@Req() req: ExpressRequest) {
+  @Post('/facility-maintenance-request')
+  async sendToFacilityMaintenanceRequest(@Req() req: ExpressRequest) {
     try {
       const {
         phone_number,
         manager_name,
         property_name,
         property_location,
-        service_request,
+        maintenance_request,
         tenant_name,
         tenant_phone_number,
         date_created,
       } = req.body;
-      const response = await this.whatsappBotService.sendFacilityServiceRequest(
+      const response = await this.whatsappBotService.sendFacilityMaintenanceRequest(
         {
           phone_number,
           manager_name,
           property_name,
           property_location,
-          service_request,
+          maintenance_request,
           tenant_name,
           tenant_phone_number,
           date_created,

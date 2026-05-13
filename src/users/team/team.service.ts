@@ -1,4 +1,4 @@
-import {
+﻿import {
   ConflictException,
   ForbiddenException,
   forwardRef,
@@ -9,7 +9,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { RolesEnum } from 'src/base.entity';
 import { Account } from '../entities/account.entity';
 import { Team } from '../entities/team.entity';
@@ -20,8 +20,6 @@ import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { AccountCacheService } from 'src/auth/account-cache.service';
 import { isPlaceholderEmail } from 'src/utils/placeholder-email';
-import { Property } from 'src/properties/entities/property.entity';
-import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 
 /**
  * Input type for creating a new team member
@@ -33,13 +31,6 @@ export interface TeamMemberInput {
   first_name: string;
   last_name: string;
   phone_number: string;
-  /**
-   * Optional list of property IDs to assign to this FM at creation time.
-   * Each property must belong to the calling landlord and must not already
-   * be assigned to another FM (the FE disables those rows; including them
-   * here is treated as a stale-state error and rejected with 409).
-   */
-  property_ids?: string[];
 }
 
 /**
@@ -293,70 +284,6 @@ export class TeamService {
 
         await manager.getRepository(TeamMember).save(newTeamMember);
 
-        // 8b. Assign properties to this new FM, if requested. Validation
-        // mirrors the FE state: each ID must belong to the landlord, and
-        // none can already be assigned to another FM (FE disables those
-        // rows; receiving one here means the FE list is stale).
-        const requestedPropertyIds = (teamMember.property_ids ?? []).filter(
-          Boolean,
-        );
-        if (requestedPropertyIds.length > 0) {
-          const propRepo = manager.getRepository(Property);
-          const properties = await propRepo.find({
-            where: { id: In(requestedPropertyIds) },
-          });
-
-          const foundIds = new Set(properties.map((p) => p.id));
-          const missing = requestedPropertyIds.filter((id) => !foundIds.has(id));
-          const wrongOwner = properties.filter((p) => p.owner_id !== userId);
-          if (missing.length > 0 || wrongOwner.length > 0) {
-            throw new ForbiddenException(
-              'One or more properties were not found or do not belong to you',
-            );
-          }
-
-          const taken = properties.filter(
-            (p) => p.facility_manager_id && p.facility_manager_id !== newTeamMember.id,
-          );
-          if (taken.length > 0) {
-            throw new ConflictException(
-              `Property "${taken[0].name}" is already assigned to another facility manager`,
-            );
-          }
-
-          await propRepo
-            .createQueryBuilder()
-            .update(Property)
-            .set({ facility_manager_id: newTeamMember.id })
-            .where('id IN (:...ids)', { ids: requestedPropertyIds })
-            .andWhere('owner_id = :ownerId', { ownerId: userId })
-            .execute();
-
-          // Write one history row per newly assigned property.
-          const phRepo = manager.getRepository(PropertyHistory);
-          const newFmName =
-            userAccount.profile_name?.trim() ||
-            `${teamMember.first_name} ${teamMember.last_name}`.trim() ||
-            null;
-          for (const p of properties) {
-            await phRepo.save({
-              property_id: p.id,
-              tenant_id: null,
-              event_type: 'facility_manager_assigned',
-              event_description: JSON.stringify({
-                propertyName: p.name,
-                previousFacilityManagerId: null,
-                previousFacilityManagerName: null,
-                newFacilityManagerId: newTeamMember.id,
-                newFacilityManagerName: newFmName,
-                actorId: userId,
-              }),
-              related_entity_type: 'team_member',
-              related_entity_id: newTeamMember.id,
-            });
-          }
-        }
-
         // 9. Send WhatsApp notification to the new team member.
         // Only include the temporary password when we actually (re)issued one;
         // for an FM joining an additional team, their existing creds still work.
@@ -378,6 +305,93 @@ export class TeamService {
         );
       }
     });
+  }
+
+  /**
+   * Landlords the requesting facility manager is teamed with. One row per
+   * unique landlord, with the count of open maintenance requests currently
+   * assigned to the requester on that landlord's properties / common areas.
+   *
+   * Returns an empty array if the requester is not an FM or sits on no teams.
+   */
+  async getMyLandlords(
+    requesterUserId: string,
+  ): Promise<
+    {
+      accountId: string;
+      userId: string;
+      displayName: string;
+      openRequestCount: number;
+    }[]
+  > {
+    // 1. Every team_member row for this user where role=FACILITY_MANAGER.
+    //    Pull team.creator (Account) and team.creator.user (Users) so we can
+    //    build the landlord summary directly from the row.
+    const memberships = await this.teamMemberRepository
+      .createQueryBuilder('tm')
+      .innerJoinAndSelect('tm.team', 'team')
+      .innerJoinAndSelect('team.creator', 'creator')
+      .innerJoinAndSelect('creator.user', 'creatorUser')
+      .innerJoin('tm.account', 'fmAccount')
+      .innerJoin('fmAccount.user', 'fmUser')
+      .where('fmUser.id = :userId', { userId: requesterUserId })
+      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
+      .getMany();
+
+    if (memberships.length === 0) {
+      return [];
+    }
+
+    const tmIds = memberships.map((m) => m.id);
+
+    // 2. Count open SRs assigned to any of those TeamMember ids, keyed by
+    //    the FK so we can re-attach to the landlord.
+    const rawCounts = await this.dataSource
+      .createQueryBuilder()
+      .select('sr.assigned_to', 'assigned_to')
+      .addSelect('COUNT(*)::int', 'open_count')
+      .from('maintenance_requests', 'sr')
+      .where('sr.assigned_to IN (:...tmIds)', { tmIds })
+      .andWhere('sr.deleted_at IS NULL')
+      .andWhere("sr.status NOT IN ('resolved', 'closed')")
+      .groupBy('sr.assigned_to')
+      .getRawMany<{ assigned_to: string; open_count: number }>();
+
+    const openCountByTm = new Map<string, number>();
+    for (const row of rawCounts) {
+      openCountByTm.set(row.assigned_to, Number(row.open_count) || 0);
+    }
+
+    // 3. Reduce memberships to one row per landlord, summing the open counts
+    //    across all TeamMember rows belonging to that landlord (an FM rarely
+    //    has more than one TM row per team, but be defensive).
+    const byLandlord = new Map<
+      string,
+      { accountId: string; userId: string; displayName: string; openRequestCount: number }
+    >();
+    for (const m of memberships) {
+      const account = m.team?.creator;
+      const user = account?.user;
+      if (!account || !user) continue;
+      const displayName =
+        account.profile_name?.trim() ||
+        `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() ||
+        'Landlord';
+      const prev = byLandlord.get(account.id);
+      const openForThisTm = openCountByTm.get(m.id) ?? 0;
+      if (prev) {
+        prev.openRequestCount += openForThisTm;
+      } else {
+        byLandlord.set(account.id, {
+          accountId: account.id,
+          userId: user.id,
+          displayName,
+          openRequestCount: openForThisTm,
+        });
+      }
+    }
+
+    return Array.from(byLandlord.values());
   }
 
   /**

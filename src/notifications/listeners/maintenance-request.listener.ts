@@ -1,0 +1,225 @@
+﻿import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { NotificationService } from '../notification.service';
+
+import { NotificationType } from '../enums/notification-type';
+import { MaintenanceRequestCreatedEvent } from '../events/maintenance-request.event';
+import { Property } from 'src/properties/entities/property.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
+import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
+import { TemplateSenderService } from 'src/whatsapp-bot/template-sender';
+import { UtilService } from 'src/utils/utility-service';
+
+@Injectable()
+export class MaintenanceRequestListener {
+  private readonly logger = new Logger(MaintenanceRequestListener.name);
+
+  // 60-second in-memory dedup for FM "approved" pings — defends against the
+  // landlord double-clicking the approve button. Map<request_id, ts>.
+  private readonly approvalPingSeen = new Map<string, number>();
+  private readonly APPROVAL_PING_DEDUP_MS = 60_000;
+
+  constructor(
+    private notificationService: NotificationService,
+    @InjectRepository(Property)
+    private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly maintenanceRequestRepository: Repository<MaintenanceRequest>,
+    @Inject(forwardRef(() => TemplateSenderService))
+    private readonly templateSenderService: TemplateSenderService,
+    private readonly utilService: UtilService,
+  ) {}
+
+  @OnEvent('maintenance.created')
+  async handle(event: MaintenanceRequestCreatedEvent) {
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.MAINTENANCE_REQUEST,
+        description: `${event.tenant_name} made a maintenance request for ${event.property_name}.
+${event.description}`,
+        status: 'Pending',
+        property_id: event.property_id,
+        user_id: event.landlord_id,
+        maintenance_request_id: event.maintenance_request_id,
+      });
+    } catch (error) {
+      this.logger.error('Failed to create maintenance request notification', error);
+    }
+  }
+
+  @OnEvent('maintenance.assigned')
+  async handleAssigned(event: {
+    maintenance_request_id: string;
+    request_id: string;
+    previous_assignee: string | null;
+    new_assignee: string | null;
+    landlord_id: string;
+    property_id: string | null;
+    common_area_id: string | null;
+  }): Promise<void> {
+    if (!event?.new_assignee) {
+      // Unassignment — nothing to ping.
+      return;
+    }
+    try {
+      const sr = await this.maintenanceRequestRepository
+        .createQueryBuilder('sr')
+        .leftJoinAndSelect('sr.facilityManager', 'fm')
+        .leftJoinAndSelect('fm.account', 'fmAccount')
+        .leftJoinAndSelect('fmAccount.user', 'fmUser')
+        .leftJoinAndSelect('sr.property', 'property')
+        .leftJoinAndSelect('sr.common_area', 'commonArea')
+        .leftJoinAndSelect('sr.tenant', 'tenant')
+        .leftJoinAndSelect('tenant.user', 'tenantUser')
+        .where('sr.id = :id', { id: event.maintenance_request_id })
+        .getOne();
+
+      if (!sr) return;
+      const fmUser = sr.facilityManager?.account?.user;
+      if (!fmUser?.phone_number) return;
+
+      const phone = this.utilService.normalizePhoneNumber(fmUser.phone_number);
+      const propertyName =
+        sr.property?.name ?? sr.common_area?.name ?? sr.property_name ?? '';
+      const propertyLocation =
+        sr.property?.location ?? sr.common_area?.address ?? '';
+      const tenantPhoneRaw = sr.tenant?.user?.phone_number ?? '';
+      const tenantName = sr.tenant_name ?? '—';
+      const managerName =
+        sr.facilityManager.account.profile_name ||
+        [fmUser.first_name, fmUser.last_name].filter(Boolean).join(' ') ||
+        'Facility Manager';
+
+      await this.templateSenderService.sendFacilityMaintenanceRequest({
+        phone_number: phone,
+        manager_name: managerName,
+        property_name: propertyName,
+        property_location: propertyLocation,
+        maintenance_request: sr?.description ?? '',
+        tenant_name: tenantName,
+        tenant_phone_number: tenantPhoneRaw,
+        date_created: new Date().toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        }),
+        is_landlord: false,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to send FM assigned template for request ${event.request_id}: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
+  @OnEvent('maintenance.updated')
+  async handleUpdate(event: any) {
+    try {
+      const statusChangeText = event.previous_status
+        ? `changed from ${event.previous_status} to ${event.status}`
+        : `status: ${event.status}`;
+
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.MAINTENANCE_REQUEST,
+        description: `Maintenance request for ${event.property_name}.
+status ${statusChangeText}`,
+        status: 'Pending',
+        property_id: event.property_id,
+        user_id: event.landlord_id,
+        maintenance_request_id: event.request_id,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create maintenance request update notification',
+        error,
+      );
+    }
+
+    // FM-targeted WhatsApp ping when the landlord approves a request.
+    if (
+      event?.previous_status === MaintenanceRequestStatusEnum.NOT_APPROVED &&
+      event?.status === MaintenanceRequestStatusEnum.APPROVED &&
+      event?.property_id
+    ) {
+      await this.pingFacilityManagerOnApproval(event);
+    }
+  }
+
+  private async pingFacilityManagerOnApproval(event: any): Promise<void> {
+    const requestKey: string = event.request_id;
+    const now = Date.now();
+    const lastSeen = this.approvalPingSeen.get(requestKey);
+    if (lastSeen && now - lastSeen < this.APPROVAL_PING_DEDUP_MS) {
+      return;
+    }
+    this.approvalPingSeen.set(requestKey, now);
+
+    try {
+      // Resolve the assigned FM (if any) via maintenance_requests.assigned_to,
+      // not via property.facility_manager — facility managers are now
+      // pinned to maintenance requests, not properties.
+      const sr = await this.maintenanceRequestRepository
+        .createQueryBuilder('sr')
+        .leftJoinAndSelect('sr.facilityManager', 'fm')
+        .leftJoinAndSelect('fm.account', 'fmAccount')
+        .leftJoinAndSelect('fmAccount.user', 'fmUser')
+        .where('sr.id = :id', { id: event.request_id })
+        .getOne();
+
+      if (!sr?.facilityManager?.account?.user?.phone_number) {
+        // No assigned FM yet, or the assignee lacks a phone — nothing to ping.
+        return;
+      }
+
+      const property = await this.propertyRepository
+        .createQueryBuilder('property')
+        .leftJoinAndSelect(
+          'property.rents',
+          'rent',
+          'rent.rent_status = :activeStatus AND rent.deleted_at IS NULL',
+          { activeStatus: 'active' },
+        )
+        .leftJoinAndSelect('rent.tenant', 'tenant')
+        .leftJoinAndSelect('tenant.user', 'tenantUser')
+        .where('property.id = :id', { id: event.property_id })
+        .getOne();
+
+      const fmUser = sr.facilityManager.account.user;
+      const fmAccount = sr.facilityManager.account;
+      const phone = this.utilService.normalizePhoneNumber(fmUser.phone_number);
+      const tenantPhoneRaw = property?.rents?.[0]?.tenant?.user?.phone_number;
+      const tenantPhone = tenantPhoneRaw ?? '';
+      const managerName =
+        fmAccount.profile_name ||
+        [fmUser.first_name, fmUser.last_name].filter(Boolean).join(' ') ||
+        'Facility Manager';
+
+      await this.templateSenderService.sendFacilityMaintenanceRequestApproved({
+        phone_number: phone,
+        manager_name: managerName,
+        property_name: event.property_name,
+        property_location: property?.location ?? '',
+        maintenance_request: event.description,
+        tenant_name: event.tenant_name,
+        tenant_phone_number: tenantPhone,
+        date_created:
+          (event.updated_at instanceof Date
+            ? event.updated_at
+            : new Date(event.updated_at ?? Date.now())
+          ).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+          }),
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to send FM approval template for request ${event.request_id}: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+}

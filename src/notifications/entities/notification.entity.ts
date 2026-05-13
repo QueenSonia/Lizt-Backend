@@ -1,4 +1,4 @@
-// entities/notification.entity.ts
+﻿// entities/notification.entity.ts
 import {
   Entity,
   Column,
@@ -11,7 +11,7 @@ import { NotificationType } from '../enums/notification-type';
 import { Account } from 'src/users/entities/account.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { BaseEntity } from 'src/base.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 
 @Entity()
 export class Notification extends BaseEntity {
@@ -34,7 +34,7 @@ export class Notification extends BaseEntity {
   user_id: string;
 
   @Column({ type: 'uuid', nullable: true })
-  service_request_id: string;
+  maintenance_request_id: string;
 
   @ManyToOne(() => Property, (property) => property.notification, {
     onDelete: 'CASCADE',
@@ -46,9 +46,9 @@ export class Notification extends BaseEntity {
   @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })
   user: Account; // <-- snake_case and UUID
 
-  @ManyToOne(() => ServiceRequest, (request) => request.notifications, {
+  @ManyToOne(() => MaintenanceRequest, (request) => request.notifications, {
     onDelete: 'CASCADE',
   })
-  @JoinColumn({ name: 'service_request_id', referencedColumnName: 'id' })
-  serviceRequest: ServiceRequest;
+  @JoinColumn({ name: 'maintenance_request_id', referencedColumnName: 'id' })
+  maintenanceRequest: MaintenanceRequest;
 }

@@ -1,10 +1,10 @@
-import { Injectable, Inject, forwardRef, Logger } from '@nestjs/common';
+﻿import { Injectable, Inject, forwardRef, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RolesEnum } from 'src/base.entity';
 import { CacheService } from 'src/lib/cache';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
 import { Repository } from 'typeorm';
@@ -57,8 +57,8 @@ export class LandlordFlow {
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
 
-    @InjectRepository(ServiceRequest)
-    private readonly serviceRequestRepo: Repository<ServiceRequest>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly maintenanceRequestRepo: Repository<MaintenanceRequest>,
 
     @InjectRepository(Rent)
     private readonly rentRepo: Repository<Rent>,
@@ -87,7 +87,7 @@ export class LandlordFlow {
       usersRepo,
       accountRepo,
       propertyTenantRepo,
-      serviceRequestRepo,
+      maintenanceRequestRepo,
       utilService,
       kycLinksService,
       chatLogService,
@@ -116,7 +116,7 @@ export class LandlordFlow {
       return;
     }
 
-    const raw = await this.cache.get(`service_request_state_landlord_${from}`);
+    const raw = await this.cache.get(`maintenance_request_state_landlord_${from}`);
     if (!raw) {
       await this.lookup.handleExitOrMenu(from, text);
       return;

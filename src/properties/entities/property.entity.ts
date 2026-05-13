@@ -1,14 +1,13 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
+﻿import { Column, Entity, JoinColumn, ManyToOne, OneToMany } from 'typeorm';
 import { BaseEntity } from '../../base.entity';
 import { PropertyStatusEnum } from '../dto/create-property.dto';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { PropertyTenant } from './property-tenants.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 import { Account } from 'src/users/entities/account.entity';
-import { TeamMember } from 'src/users/entities/team-member.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
@@ -70,13 +69,6 @@ export class Property extends BaseEntity {
   @Column({ nullable: true, type: 'text' })
   comment?: string | null;
 
-  @Column({ nullable: true, type: 'uuid' })
-  facility_manager_id: string | null;
-
-  @ManyToOne(() => TeamMember, { nullable: true, onDelete: 'SET NULL' })
-  @JoinColumn({ name: 'facility_manager_id', referencedColumnName: 'id' })
-  facility_manager?: TeamMember | null;
-
   @OneToMany(() => PropertyTenant, (t) => t.property)
   property_tenants: PropertyTenant[];
 
@@ -87,8 +79,8 @@ export class Property extends BaseEntity {
   @OneToMany(() => Rent, (r) => r.property)
   rents: Rent[];
 
-  @OneToMany(() => ServiceRequest, (sr) => sr.property)
-  service_requests: ServiceRequest[];
+  @OneToMany(() => MaintenanceRequest, (sr) => sr.property)
+  maintenance_requests: MaintenanceRequest[];
 
   @OneToMany(() => PropertyHistory, (ph) => ph.property)
   property_histories: PropertyHistory[];

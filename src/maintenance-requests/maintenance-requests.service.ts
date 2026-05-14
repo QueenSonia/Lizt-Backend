@@ -1297,12 +1297,20 @@ export class MaintenanceRequestsService {
     maintenanceRequest: MaintenanceRequest,
     userId: string,
   ): Promise<'landlord' | 'tenant' | 'facility_manager' | null> {
-    const landlordUserId =
-      maintenanceRequest.property?.owner_id ??
-      maintenanceRequest.common_area?.owner_id ??
-      null;
+    // `userId` is the requester's Account.id (set by JwtAuthGuard, which
+    // resolves the JWT payload to the full Account entity).
+    //
+    // The two scopes store owner ids in different shapes:
+    //   property.owner_id      → landlord's Account.id
+    //   common_area.owner_id   → landlord's User.id
+    // We must match each against the right column.
+    const propertyOwnerAccountId = maintenanceRequest.property?.owner_id ?? null;
+    const commonAreaOwnerUserId =
+      maintenanceRequest.common_area?.owner_id ?? null;
 
-    if (landlordUserId && landlordUserId === userId) return 'landlord';
+    if (propertyOwnerAccountId && propertyOwnerAccountId === userId) {
+      return 'landlord';
+    }
     if (
       maintenanceRequest.tenant_id &&
       (await this.isTenantUser(maintenanceRequest, userId))
@@ -1317,20 +1325,31 @@ export class MaintenanceRequestsService {
         ? 'facility_manager'
         : 'tenant';
     }
-    if (!landlordUserId) return null;
+    if (!propertyOwnerAccountId && !commonAreaOwnerUserId) return null;
 
     // FM teamed with the landlord that owns the property or common area.
-    const fm = await this.teamMemberRepository
+    // Match the requester by Account.id (NOT User.id) and match the landlord
+    // by Account.id for properties / User.id for common areas.
+    const fmQuery = this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .innerJoin('team.creator', 'creatorAccount')
-      .innerJoin('creatorAccount.user', 'landlordUser')
+      .leftJoin('creatorAccount.user', 'landlordUser')
       .innerJoin('tm.account', 'fmAccount')
-      .innerJoin('fmAccount.user', 'fmUser')
-      .where('fmUser.id = :userId', { userId })
-      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('landlordUser.id = :landlordUserId', { landlordUserId })
-      .getOne();
+      .where('fmAccount.id = :userId', { userId })
+      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER });
+
+    if (propertyOwnerAccountId) {
+      fmQuery.andWhere('creatorAccount.id = :ownerId', {
+        ownerId: propertyOwnerAccountId,
+      });
+    } else {
+      fmQuery.andWhere('landlordUser.id = :ownerId', {
+        ownerId: commonAreaOwnerUserId,
+      });
+    }
+
+    const fm = await fmQuery.getOne();
     return fm ? 'facility_manager' : null;
   }
 

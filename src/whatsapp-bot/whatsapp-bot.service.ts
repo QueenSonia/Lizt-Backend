@@ -506,14 +506,21 @@ export class WhatsappBotService implements OnModuleInit {
         });
         role = selectedRole as RolesEnum;
       } else {
-        const hasFM = user.accounts.some(
-          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
+        // Read from accounts.roles[] (authoritative) with accounts.role
+        // (legacy singular, mirrors roles[0]) as a fallback. A multi-role
+        // account like {tenant, facility_manager} has role='tenant' but
+        // roles contains both — without this, the FM role is invisible.
+        const accountHasRole = (acc: Account, r: RolesEnum) =>
+          acc.roles?.includes(r) || acc.role === r;
+
+        const hasFM = user.accounts.some((acc) =>
+          accountHasRole(acc, RolesEnum.FACILITY_MANAGER),
         );
-        const hasLandlord = user.accounts.some(
-          (acc) => acc.role === RolesEnum.LANDLORD,
+        const hasLandlord = user.accounts.some((acc) =>
+          accountHasRole(acc, RolesEnum.LANDLORD),
         );
-        let hasTenant = user.accounts.some(
-          (acc) => acc.role === RolesEnum.TENANT,
+        let hasTenant = user.accounts.some((acc) =>
+          accountHasRole(acc, RolesEnum.TENANT),
         );
 
         // The same phone number may map to a separate tenant user record.
@@ -563,22 +570,22 @@ export class WhatsappBotService implements OnModuleInit {
         }
 
         // Single role - use priority order
-        const facilityAccount = user.accounts.find(
-          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
+        const facilityAccount = user.accounts.find((acc) =>
+          accountHasRole(acc, RolesEnum.FACILITY_MANAGER),
         );
         if (facilityAccount) {
           console.log('✅ Found FACILITY_MANAGER account:', facilityAccount.id);
           role = RolesEnum.FACILITY_MANAGER;
         } else {
-          const landlordAccount = user.accounts.find(
-            (acc) => acc.role === RolesEnum.LANDLORD,
+          const landlordAccount = user.accounts.find((acc) =>
+            accountHasRole(acc, RolesEnum.LANDLORD),
           );
           if (landlordAccount) {
             console.log('✅ Found LANDLORD account:', landlordAccount.id);
             role = RolesEnum.LANDLORD;
           } else {
-            const tenantAccount = user.accounts.find(
-              (acc) => acc.role === RolesEnum.TENANT,
+            const tenantAccount = user.accounts.find((acc) =>
+              accountHasRole(acc, RolesEnum.TENANT),
             );
             if (tenantAccount) {
               console.log('✅ Found TENANT account:', tenantAccount.id);
@@ -657,7 +664,9 @@ export class WhatsappBotService implements OnModuleInit {
       case RolesEnum.TENANT: {
         console.log('In tenant');
 
-        // Silently ignore tenants with no active property-tenant relationships
+        // Convert email to phone number for WhatsApp messaging
+        const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
+
         const tenantAccount = user?.accounts?.find(
           (acc) => acc.role === RolesEnum.TENANT,
         );
@@ -670,14 +679,15 @@ export class WhatsappBotService implements OnModuleInit {
           });
           if (activeCount === 0) {
             console.log(
-              `🔇 Tenant ${tenantAccount.id} has no active properties — silently ignoring message`,
+              `🔇 Tenant ${tenantAccount.id} has no active tenancies — replying and stopping`,
+            );
+            await this.sendText(
+              tenantPhone,
+              'No active tenancy found on your account. If you believe this is a mistake, please contact your landlord.',
             );
             return;
           }
         }
-
-        // Convert email to phone number for WhatsApp messaging
-        const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
 
         // Delegate to TenantFlowService
         // Requirements: 2.5

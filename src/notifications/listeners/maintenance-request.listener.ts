@@ -11,6 +11,8 @@ import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenanc
 import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { TemplateSenderService } from 'src/whatsapp-bot/template-sender';
 import { UtilService } from 'src/utils/utility-service';
+import { TeamMember } from 'src/users/entities/team-member.entity';
+import { RolesEnum } from 'src/base.entity';
 
 @Injectable()
 export class MaintenanceRequestListener {
@@ -27,6 +29,8 @@ export class MaintenanceRequestListener {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(MaintenanceRequest)
     private readonly maintenanceRequestRepository: Repository<MaintenanceRequest>,
+    @InjectRepository(TeamMember)
+    private readonly teamMemberRepository: Repository<TeamMember>,
     @Inject(forwardRef(() => TemplateSenderService))
     private readonly templateSenderService: TemplateSenderService,
     private readonly utilService: UtilService,
@@ -64,6 +68,7 @@ ${event.description}`,
       // Unassignment — nothing to ping.
       return;
     }
+
     try {
       const sr = await this.maintenanceRequestRepository
         .createQueryBuilder('sr')
@@ -78,39 +83,65 @@ ${event.description}`,
         .getOne();
 
       if (!sr) return;
-      const fmUser = sr.facilityManager?.account?.user;
-      if (!fmUser?.phone_number) return;
 
-      const phone = this.utilService.normalizePhoneNumber(fmUser.phone_number);
+      // Resolve the assignee's display name once — every FM on the team
+      // sees the same body referencing the same assignee.
+      const assigneeUser = sr.facilityManager?.account?.user;
+      const assigneeName =
+        sr.facilityManager?.account?.profile_name ||
+        [assigneeUser?.first_name, assigneeUser?.last_name]
+          .filter(Boolean)
+          .join(' ') ||
+        'a facility manager';
+
       const propertyName =
         sr.property?.name ?? sr.common_area?.name ?? sr.property_name ?? '';
-      const propertyLocation =
-        sr.property?.location ?? sr.common_area?.address ?? '';
-      const tenantPhoneRaw = sr.tenant?.user?.phone_number ?? '';
       const tenantName = sr.tenant_name ?? '—';
-      const managerName =
-        sr.facilityManager.account.profile_name ||
-        [fmUser.first_name, fmUser.last_name].filter(Boolean).join(' ') ||
-        'Facility Manager';
+      const description = sr.description ?? '';
+      // Render tenant phone in Nigerian local format (0xxx) to match the
+      // existing fm_maintenance_request_notification precedent.
+      const tenantPhoneRaw = sr.tenant?.user?.phone_number ?? '';
+      const tenantPhoneLocal = tenantPhoneRaw
+        ? tenantPhoneRaw.startsWith('234')
+          ? '0' + tenantPhoneRaw.slice(3)
+          : tenantPhoneRaw.replace(/^\+234/, '0')
+        : '—';
 
-      await this.templateSenderService.sendFacilityMaintenanceRequest({
-        phone_number: phone,
-        manager_name: managerName,
-        property_name: propertyName,
-        property_location: propertyLocation,
-        maintenance_request: sr?.description ?? '',
-        tenant_name: tenantName,
-        tenant_phone_number: tenantPhoneRaw,
-        date_created: new Date().toLocaleDateString('en-GB', {
-          day: 'numeric',
-          month: 'long',
-          year: 'numeric',
-        }),
-        is_landlord: false,
-      });
+      // Fan out to every FM on the landlord's team (including the assignee
+      // — see template doc comment for the redundancy tradeoff).
+      const teamFms = await this.teamMemberRepository
+        .createQueryBuilder('tm')
+        .leftJoinAndSelect('tm.account', 'account')
+        .leftJoinAndSelect('account.user', 'user')
+        .innerJoin('tm.team', 'team')
+        .where('team.creatorId = :landlordAccountId', {
+          landlordAccountId: event.landlord_id,
+        })
+        .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
+        .getMany();
+
+      for (const fm of teamFms) {
+        const phoneRaw = fm.account?.user?.phone_number;
+        if (!phoneRaw) continue;
+        try {
+          const phone = this.utilService.normalizePhoneNumber(phoneRaw);
+          await this.templateSenderService.sendFmAssignmentNotification({
+            phone_number: phone,
+            manager_name: assigneeName,
+            tenant_name: tenantName,
+            tenant_phone_number: tenantPhoneLocal,
+            property_name: propertyName,
+            maintenance_request: description,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `Failed to send fm_assignment_notification to FM ${fm.id} for request ${event.request_id}: ${(err as Error)?.message ?? err}`,
+          );
+        }
+      }
     } catch (err) {
       this.logger.warn(
-        `Failed to send FM assigned template for request ${event.request_id}: ${(err as Error)?.message ?? err}`,
+        `Failed to fan out assignment notifications for request ${event.request_id}: ${(err as Error)?.message ?? err}`,
       );
     }
   }
@@ -140,10 +171,14 @@ status ${statusChangeText}`,
     }
 
     // FM-targeted WhatsApp ping when the landlord approves a request.
+    // Skipped when the source operation is also emitting maintenance.assigned
+    // for the same transaction — the assignment fan-out already covers the
+    // assigned FM, and double-pinging would be noisy.
     if (
       event?.previous_status === MaintenanceRequestStatusEnum.NOT_APPROVED &&
       event?.status === MaintenanceRequestStatusEnum.APPROVED &&
-      event?.property_id
+      event?.property_id &&
+      !event?.skip_approval_ping
     ) {
       await this.pingFacilityManagerOnApproval(event);
     }

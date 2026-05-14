@@ -215,6 +215,23 @@ export interface FacilityMaintenanceRequestParams {
   tenant_phone_number: string;
   date_created: string;
   is_landlord?: boolean;
+  // Required when is_landlord=true — populates the dynamic Assign/Reject
+  // button payloads on the landlord template.
+  maintenance_request_id?: string;
+}
+
+/**
+ * Parameters for FM assignment notification. Sent to every FM on the
+ * landlord's team whenever a maintenance request is assigned (web or
+ * WhatsApp).
+ */
+export interface FmAssignmentNotificationParams {
+  phone_number: string;
+  manager_name: string;
+  tenant_name: string;
+  tenant_phone_number: string;
+  property_name: string;
+  maintenance_request: string;
 }
 
 /**
@@ -1421,8 +1438,18 @@ export class TemplateSenderService {
     tenant_phone_number,
     date_created,
     is_landlord = false,
+    maintenance_request_id,
   }: FacilityMaintenanceRequestParams): Promise<void> {
     if (is_landlord) {
+      if (!maintenance_request_id) {
+        // Without the request id we can't build the Assign/Reject button
+        // payloads, so the template wouldn't be actionable. Refuse rather
+        // than send a button-less message that contradicts the registered
+        // template definition.
+        throw new Error(
+          'maintenance_request_id is required when is_landlord=true',
+        );
+      }
       const payload: WhatsAppPayload = {
         messaging_product: 'whatsapp',
         to: phone_number,
@@ -1454,6 +1481,28 @@ export class TemplateSenderService {
                 },
               ],
             },
+            {
+              type: 'button',
+              sub_type: 'quick_reply',
+              index: 0,
+              parameters: [
+                {
+                  type: 'payload',
+                  payload: `landlord_approve_mr:${maintenance_request_id}`,
+                },
+              ],
+            },
+            {
+              type: 'button',
+              sub_type: 'quick_reply',
+              index: 1,
+              parameters: [
+                {
+                  type: 'payload',
+                  payload: `landlord_reject_mr:${maintenance_request_id}`,
+                },
+              ],
+            },
           ],
         },
       };
@@ -1477,7 +1526,15 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'text',
+                text: maintenance_request,
+              },
+              {
+                type: 'text',
                 text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: tenant_phone_number,
               },
               {
                 type: 'text',
@@ -1485,15 +1542,7 @@ export class TemplateSenderService {
               },
               {
                 type: 'text',
-                text: maintenance_request,
-              },
-              {
-                type: 'text',
                 text: date_created,
-              },
-              {
-                type: 'text',
-                text: tenant_phone_number,
               },
             ],
           },
@@ -1567,6 +1616,66 @@ export class TemplateSenderService {
       // the rest of the approval flow isn't blocked while we wait on Meta.
       console.warn(
         `[fm_maintenance_request_approved] template send failed (template may be unregistered with Meta): ${
+          (err as Error)?.message ?? err
+        }`,
+      );
+    }
+  }
+
+  /**
+   * FM-targeted ping fired on every maintenance.assigned event. Sent to
+   * every FM on the landlord's team (including the assignee) so the team
+   * has shared awareness. The assigned FM's display name is rendered in
+   * {{1}}, so each recipient reads "assigned to <name>" — slight redundancy
+   * for the assignee, but avoids needing a second template + Meta approval
+   * for a "to you" variant.
+   */
+  async sendFmAssignmentNotification({
+    phone_number,
+    manager_name,
+    tenant_name,
+    tenant_phone_number,
+    property_name,
+    maintenance_request,
+  }: FmAssignmentNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'fm_assignment_notification',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: manager_name },
+              { type: 'text', text: maintenance_request },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: tenant_phone_number },
+              { type: 'text', text: property_name },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              { type: 'payload', payload: 'view_all_maintenance_requests' },
+            ],
+          },
+        ],
+      },
+    };
+
+    try {
+      await this.sendToWhatsappAPI(payload);
+    } catch (err) {
+      // Same defense as fm_maintenance_request_approved — swallow Meta
+      // approval gaps so a single template hiccup doesn't break the
+      // fan-out loop.
+      console.warn(
+        `[fm_assignment_notification] template send failed (template may be unregistered with Meta): ${
           (err as Error)?.message ?? err
         }`,
       );
@@ -4417,9 +4526,11 @@ export class TemplateSenderService {
     agent_kyc_notification:
       'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
     landlord_maintenance_request_notification:
-      'Maintenance Request Notification\n\nA new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}} on record.',
+      'A new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}} on record.',
     fm_maintenance_request_notification:
-      'A new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nPhone: {{5}}\nProperty: {{2}}\nReported: {{4}} on record.',
+      'A new service request has been created.\n\nIssue: {{1}}\nTenant: {{2}}\nPhone: {{3}}\nProperty: {{4}}\nReported: {{5}} on record.',
+    fm_assignment_notification:
+      'A maintenance request has been assigned to {{1}}.\n\nIssue: {{2}}\nTenant: {{3}}\nPhone: {{4}}\nProperty: {{5}}\n\nPlease attend to this.',
     kyc_completion_link:
       'Hello {{1}},\n\n{{2}} has added you as a tenant for {{3}} using Lizt by Property Kraft — a tenancy management app designed to make your rental experience simple and stress-free.\n\nWith Lizt, you can receive important updates, track rent, and manage everything about your tenancy in one place.\n\nPlease {{4}} your KYC information using the link below to get started:',
     kyc_completion_notification:

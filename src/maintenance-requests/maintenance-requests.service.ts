@@ -1627,6 +1627,247 @@ export class MaintenanceRequestsService {
   }
 
   /**
+   * Landlord rejects a maintenance request from WhatsApp. Only allowed from
+   * NOT_APPROVED — anything already approved/assigned/closed has to take the
+   * web-app path. Writes a status-history row and emits maintenance.updated
+   * so the in-app notification listener fires.
+   */
+  async rejectMaintenanceRequest(
+    requestId: string,
+    landlordAccountId: string,
+    reason?: string | null,
+  ): Promise<MaintenanceRequest> {
+    const sr = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+      relations: ['property', 'common_area'],
+    });
+    if (!sr) {
+      throw new NotFoundException('Maintenance request not found');
+    }
+
+    const ownerAccountId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
+    if (ownerAccountId !== landlordAccountId) {
+      throw new HttpException(
+        'You do not own this request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    if (sr.status !== MaintenanceRequestStatusEnum.NOT_APPROVED) {
+      throw new HttpException(
+        `Request is no longer pending approval (current status: ${sr.status})`,
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const previousStatus = sr.status;
+    const landlordUserId = await this.resolveActorUserId(landlordAccountId);
+    const trimmedReason = reason?.trim() || null;
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.update(MaintenanceRequest, requestId, {
+        status: MaintenanceRequestStatusEnum.REJECTED,
+        rejection_reason: trimmedReason,
+      });
+      await this.createStatusHistoryEntry(
+        requestId,
+        previousStatus,
+        MaintenanceRequestStatusEnum.REJECTED,
+        landlordUserId,
+        'landlord',
+        'Landlord rejected via WhatsApp',
+        trimmedReason ?? undefined,
+        manager,
+      );
+    });
+
+    const updated = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+      relations: ['property', 'common_area'],
+    });
+
+    if (updated) {
+      try {
+        this.eventEmitter.emit('maintenance.updated', {
+          request_id: updated.id,
+          status: updated.status,
+          previous_status: previousStatus,
+          is_urgent: updated.is_urgent,
+          tenant_name: updated.tenant_name,
+          property_name: updated.property_name,
+          property_id: updated.property_id,
+          common_area_id: updated.common_area_id,
+          common_area_name: updated.common_area?.name ?? null,
+          landlord_id:
+            updated.property?.owner_id ?? updated.common_area?.owner_id ?? null,
+          tenant_id: updated.tenant_id,
+          creator_type: updated.creator_type,
+          creator_user_id: updated.creator_user_id,
+          description: updated.description,
+          updated_at: new Date(),
+          actor: { id: landlordUserId, role: 'landlord' },
+        });
+      } catch (error) {
+        this.logger.error(
+          'Failed to emit maintenance.updated after reject:',
+          error,
+        );
+      }
+    }
+
+    return updated as MaintenanceRequest;
+  }
+
+  /**
+   * Landlord approves a maintenance request AND assigns an FM in a single
+   * transaction — the WhatsApp Approve flow couples the two because the
+   * FM "View all requests" surface hides NOT_APPROVED, so an assign
+   * without an approve would silently strand the request.
+   *
+   * Source status must be NOT_APPROVED (409 otherwise). Emits both
+   * `maintenance.updated` (status flip) and `maintenance.assigned`
+   * (assignee change → fans out fm_assignment_notification to the whole
+   * team). Sets `skip_approval_ping: true` on the updated event so the
+   * listener doesn't ALSO send fm_maintenance_request_approved to the
+   * assignee — the assignment notification already covers them.
+   */
+  async approveAndAssignMaintenanceRequest(
+    requestId: string,
+    teamMemberId: string,
+    landlordAccountId: string,
+  ): Promise<MaintenanceRequest> {
+    const sr = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+      relations: ['property', 'common_area'],
+    });
+    if (!sr) {
+      throw new NotFoundException('Maintenance request not found');
+    }
+
+    const ownerAccountId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
+    if (ownerAccountId !== landlordAccountId) {
+      throw new HttpException(
+        'You do not own this request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    if (sr.status !== MaintenanceRequestStatusEnum.NOT_APPROVED) {
+      throw new HttpException(
+        `Request is no longer pending approval (current status: ${sr.status})`,
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const tm = await this.teamMemberRepository.findOne({
+      where: { id: teamMemberId },
+      relations: ['team'],
+    });
+    if (!tm) {
+      throw new HttpException(
+        'Facility manager not found',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (tm.team?.creatorId !== landlordAccountId) {
+      throw new HttpException(
+        'Assignee must be a facility manager on your team',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (tm.role !== RolesEnum.FACILITY_MANAGER) {
+      throw new HttpException(
+        'Assignee must be a facility manager',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+
+    const previousStatus = sr.status;
+    const previousAssignee = sr.assigned_to ?? null;
+    const landlordUserId = await this.resolveActorUserId(landlordAccountId);
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.update(MaintenanceRequest, requestId, {
+        status: MaintenanceRequestStatusEnum.APPROVED,
+        assigned_to: teamMemberId as any,
+      });
+      await this.createStatusHistoryEntry(
+        requestId,
+        previousStatus,
+        MaintenanceRequestStatusEnum.APPROVED,
+        landlordUserId,
+        'landlord',
+        'Landlord approved & assigned via WhatsApp',
+        undefined,
+        manager,
+      );
+    });
+
+    const updated = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+      relations: [
+        'property',
+        'common_area',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
+    });
+
+    if (updated) {
+      try {
+        this.eventEmitter.emit('maintenance.updated', {
+          request_id: updated.id,
+          status: updated.status,
+          previous_status: previousStatus,
+          is_urgent: updated.is_urgent,
+          tenant_name: updated.tenant_name,
+          property_name: updated.property_name,
+          property_id: updated.property_id,
+          common_area_id: updated.common_area_id,
+          common_area_name: updated.common_area?.name ?? null,
+          landlord_id: landlordAccountId,
+          tenant_id: updated.tenant_id,
+          creator_type: updated.creator_type,
+          creator_user_id: updated.creator_user_id,
+          description: updated.description,
+          updated_at: new Date(),
+          actor: { id: landlordUserId, role: 'landlord' },
+          // Suppress the FM "request approved" template — the assignment
+          // fan-out below already covers the assignee.
+          skip_approval_ping: true,
+        });
+      } catch (error) {
+        this.logger.error(
+          'Failed to emit maintenance.updated after approve+assign:',
+          error,
+        );
+      }
+
+      try {
+        this.eventEmitter.emit('maintenance.assigned', {
+          maintenance_request_id: requestId,
+          request_id: updated.request_id,
+          previous_assignee: previousAssignee,
+          new_assignee: teamMemberId,
+          landlord_id: landlordAccountId,
+          property_id: updated.property_id,
+          common_area_id: updated.common_area_id,
+        });
+      } catch (error) {
+        this.logger.error(
+          'Failed to emit maintenance.assigned after approve+assign:',
+          error,
+        );
+      }
+    }
+
+    return updated as MaintenanceRequest;
+  }
+
+  /**
    * Every FM on the landlord's team. Used for stakeholder fan-out when a
    * maintenance request is filed (or any other property-level event that
    * should notify the whole team rather than a single per-property FM).

@@ -8,7 +8,10 @@ import { UtilService } from 'src/utils/utility-service';
 import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
+import {
+  MaintenanceRequestCreatorTypeEnum,
+  MaintenanceRequestStatusEnum,
+} from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 
 @Injectable()
@@ -31,7 +34,7 @@ export class ChatService {
     if (sendMessageDto.sender === MessageSender.TENANT) {
       const propertyTenant = await this.propertyTenantRepo.findOne({
         where: { tenant_id: userId, status: TenantStatusEnum.ACTIVE },
-        relations: ['property', 'tenant'],
+        relations: ['property', 'tenant', 'tenant.user'],
       });
 
       if (!propertyTenant) {
@@ -54,6 +57,8 @@ export class ChatService {
           date_reported: new Date(),
           description: sendMessageDto.content,
           request_id: sendMessageDto.requestId, // assuming requestId is passed in sendMessageDto
+          creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
+          creator_user_id: propertyTenant.tenant.user?.id ?? null,
         });
 
         (await this.maintenanceRequestRepo.save(maintenanceRequest)) as any;

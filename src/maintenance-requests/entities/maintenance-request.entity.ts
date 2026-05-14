@@ -56,6 +56,9 @@ export class MaintenanceRequest extends BaseEntity {
   @Column('text', { nullable: true })
   notes: string;
 
+  @Column('text', { nullable: true })
+  rejection_reason: string | null;
+
   @Column({ nullable: true, type: 'integer' })
   resolution_cost_minor?: number | null;
 
@@ -74,6 +77,7 @@ export class MaintenanceRequest extends BaseEntity {
       MaintenanceRequestStatusEnum.RESOLVED,
       MaintenanceRequestStatusEnum.REOPENED,
       MaintenanceRequestStatusEnum.CLOSED,
+      MaintenanceRequestStatusEnum.REJECTED,
     ],
     default: MaintenanceRequestStatusEnum.NOT_APPROVED,
   })

@@ -23,7 +23,10 @@ import { PaymentPlanScope } from 'src/payment-plans/entities/payment-plan.entity
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
-import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
+import {
+  MaintenanceRequestCreatorTypeEnum,
+  MaintenanceRequestStatusEnum,
+} from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import {
@@ -499,6 +502,18 @@ export class TenantFlowService {
 
     const tenantLocalPhone = this.toLocalPhone(user.phone_number);
 
+    if (!maintenanceRequestId) {
+      // Without the request id we can't build the landlord template's
+      // Assign/Reject button payloads. Bail rather than send a broken
+      // template — this should never happen in the WhatsApp create path
+      // (the id is available before notifications fire) but the type
+      // signature still allows it.
+      this.logger.warn(
+        `Cannot notify landlord: missing maintenance_request_id for property ${propertyId}`,
+      );
+      return;
+    }
+
     const params: FacilityMaintenanceRequestParams = {
       phone_number: adminPhoneNumber,
       manager_name: this.utilService.toSentenceCase(
@@ -511,6 +526,7 @@ export class TenantFlowService {
       tenant_phone_number: tenantLocalPhone,
       date_created: this.formatDateLagos(createdAt),
       is_landlord: true,
+      maintenance_request_id: maintenanceRequestId,
     };
 
     await this.notificationLogService.queue(
@@ -552,10 +568,17 @@ export class TenantFlowService {
     const escapedText = text.replace(/[%_]/g, '\\$&');
     const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: {
-        tenant: { user: { phone_number: normalizedPhone } },
+        creator: { phone_number: normalizedPhone },
+        creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
         description: ILike(`%${escapedText}%`),
+        status: Not(
+          In([
+            MaintenanceRequestStatusEnum.CLOSED,
+            MaintenanceRequestStatusEnum.REJECTED,
+          ]),
+        ),
       },
-      relations: ['tenant'],
+      relations: ['tenant', 'creator'],
     });
 
     if (!maintenanceRequests.length) {
@@ -979,10 +1002,16 @@ export class TenantFlowService {
 
     const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: {
-        tenant: { user: { phone_number: normalizedPhone } },
-        status: Not(MaintenanceRequestStatusEnum.CLOSED),
+        creator: { phone_number: normalizedPhone },
+        creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
+        status: Not(
+          In([
+            MaintenanceRequestStatusEnum.CLOSED,
+            MaintenanceRequestStatusEnum.REJECTED,
+          ]),
+        ),
       },
-      relations: ['tenant'],
+      relations: ['tenant', 'creator'],
       order: { created_at: 'DESC' },
     });
 
@@ -994,7 +1023,7 @@ export class TenantFlowService {
       return;
     }
 
-    let response = 'Here are your recent maintenance requests:\n\n';
+    let response = 'Here are all your maintenance requests:\n\n';
     maintenanceRequests.forEach((req) => {
       const date = req.created_at ? new Date(req.created_at) : new Date();
       const formattedDate = date.toLocaleDateString('en-GB', {
@@ -2601,9 +2630,9 @@ export class TenantFlowService {
 
   /**
    * Find tenant by phone number.
-   * Filters user.accounts to only those that appear as tenant_id in PropertyTenant,
-   * so callers can safely use accounts[0] as the active tenant account regardless
-   * of what role label the account has.
+   * Hard-filters user.accounts to TENANT-role accounts that also appear as
+   * tenant_id in PropertyTenant. Returns null if no account survives, so
+   * callers can trust accounts[0] is a real, role-correct tenant account.
    */
   private async findTenantByPhone(phoneNumber: string): Promise<Users | null> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
@@ -2637,17 +2666,10 @@ export class TenantFlowService {
     const tenantAccountIds = new Set(tenantRecords.map((r) => r.tenant_id));
     if (!tenantAccountIds.size) return null;
 
-    // Keep only accounts that are used as tenant_id in PropertyTenant.
-    // Sort so proper TENANT-role accounts come first — callers using accounts[0]
-    // will get the cleanest account when both old (FM/landlord) and new (tenant)
-    // records exist for the same user.
-    user.accounts = user.accounts
-      .filter((a) => tenantAccountIds.has(a.id))
-      .sort((a, b) => {
-        if (a.role === RolesEnum.TENANT && b.role !== RolesEnum.TENANT) return -1;
-        if (a.role !== RolesEnum.TENANT && b.role === RolesEnum.TENANT) return 1;
-        return 0;
-      });
+    user.accounts = user.accounts.filter(
+      (a) => a.role === RolesEnum.TENANT && tenantAccountIds.has(a.id),
+    );
+    if (!user.accounts.length) return null;
     return user;
   }
 }

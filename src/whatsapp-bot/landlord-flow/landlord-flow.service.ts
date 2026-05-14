@@ -650,12 +650,15 @@ export class LandlordFlowService {
     // FM-on-WhatsApp is read-only and limited to live work. We hide
     // NOT_APPROVED (pending landlord approval; FM cannot act yet) and
     // CLOSED (finalized; nothing to do). Approved + resolved + reopened
-    // remain visible as a quick at-a-glance check from chat.
+    // remain visible as a quick at-a-glance check from chat. Further
+    // scoped to requests assigned to this specific FM — team-wide
+    // visibility is on the web app.
     const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: {
         property: {
           owner_id: teamMemberInfo.team.creatorId,
         },
+        assigned_to: teamMemberInfo.id,
         status: In([
           MaintenanceRequestStatusEnum.APPROVED,
           MaintenanceRequestStatusEnum.RESOLVED,
@@ -668,7 +671,7 @@ export class LandlordFlowService {
     if (!maintenanceRequests.length) {
       await this.templateSenderService.sendText(
         from,
-        'No maintenance requests found.',
+        'No maintenance requests assigned to you.',
       );
       return;
     }

@@ -17,6 +17,7 @@ export enum MaintenanceRequestStatusEnum {
   RESOLVED = 'resolved',
   REOPENED = 'reopened',
   CLOSED = 'closed',
+  REJECTED = 'rejected',
 }
 
 export enum MaintenanceRequestScopeEnum {

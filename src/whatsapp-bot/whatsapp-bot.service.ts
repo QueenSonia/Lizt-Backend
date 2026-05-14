@@ -256,9 +256,14 @@ export class WhatsappBotService implements OnModuleInit {
           if (confirmationTarget.phone_number) {
             const firstName =
               confirmationTarget.profile_name?.split(' ')[0] ?? 'there';
+            const frontendUrl =
+              process.env.FRONTEND_URL || 'http://localhost:3000';
+            const dashboardUrl = `${frontendUrl}/facility-manager`;
             const body =
               `Hi ${firstName} 👋\n\n` +
-              `Your password has been set. You can now sign in to Lizt using your phone number and the password you just chose.\n\n` +
+              `Your password has been set: ${newPassword}\n\n` +
+              `You can now sign in to Lizt using your phone number and the password you just chose.\n\n` +
+              `Open your dashboard: ${dashboardUrl}\n\n` +
               `Welcome aboard!`;
             this.sendText(confirmationTarget.phone_number, body).catch((err) =>
               this.logger.error(

@@ -148,15 +148,156 @@ export class LandlordFlow {
       return;
     }
 
-    const { type } = raw;
-
-    console.log({ type });
+    const state = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const { type, ids } = state ?? {};
 
     if (type === 'generate_kyc_link') {
       await this.lookup.handleGenerateKYCLinkText(from, text);
+    } else if (type === 'maintenance') {
+      await this.handleMaintenanceDigitReply(from, text, ids);
+    } else if (type === 'tenancy') {
+      await this.handleTenancyDigitReply(from, text, ids);
     } else {
       await this.lookup.handleExitOrMenu(from, text);
     }
+  }
+
+  /**
+   * Resolve digit reply against the cached maintenance request id list,
+   * show the picked request's detail, and (if still NOT_APPROVED) offer
+   * Approve / Reject buttons that reuse the existing button-handler
+   * payloads. Clears the cache when done so the next text falls back to
+   * the menu instead of looping here.
+   */
+  private async handleMaintenanceDigitReply(
+    from: string,
+    text: string,
+    ids: string[] | undefined,
+  ): Promise<void> {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+      await this.lookup.handleExitOrMenu(from, text);
+      return;
+    }
+
+    const idx = parseInt(text.trim(), 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= ids.length) {
+      await this.whatsappUtil.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number from the list.',
+      );
+      return;
+    }
+
+    const sr = await this.maintenanceRequestRepo.findOne({
+      where: { id: ids[idx] },
+      relations: ['property', 'tenant', 'tenant.user', 'facilityManager', 'facilityManager.account', 'facilityManager.account.user'],
+    });
+
+    if (!sr) {
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+      await this.whatsappUtil.sendText(from, 'That request was not found.');
+      return;
+    }
+
+    const reportedDate = new Date(sr.date_reported).toLocaleDateString(
+      'en-NG',
+      { year: 'numeric', month: 'short', day: 'numeric' },
+    );
+    const reporter = sr.tenant?.user
+      ? `${sr.tenant.user.first_name} ${sr.tenant.user.last_name}`.trim()
+      : sr.tenant_name || 'Facility manager';
+    const assignee = sr.facilityManager?.account?.profile_name
+      || [sr.facilityManager?.account?.user?.first_name, sr.facilityManager?.account?.user?.last_name].filter(Boolean).join(' ')
+      || null;
+
+    const lines = [
+      `*${sr.description}*`,
+      '',
+      `Property: ${sr.property?.name ?? sr.property_name ?? '—'}`,
+      `Category: ${sr.issue_category}`,
+      `Reporter: ${reporter}`,
+      `Reported: ${reportedDate}`,
+      `Status: ${sr.status}`,
+    ];
+    if (assignee) lines.push(`Assigned to: ${assignee}`);
+
+    await this.whatsappUtil.sendText(from, lines.join('\n'));
+
+    if (sr.status === MaintenanceRequestStatusEnum.NOT_APPROVED) {
+      await this.whatsappUtil.sendButtons(
+        from,
+        'What would you like to do with this request?',
+        [
+          { id: `landlord_approve_mr:${sr.id}`, title: 'Approve' },
+          { id: `landlord_reject_mr:${sr.id}`, title: 'Reject' },
+        ],
+      );
+    }
+
+    await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+  }
+
+  /**
+   * Resolve digit reply against the cached property-tenant id list and
+   * show a one-shot summary for the picked tenancy. View-only; the
+   * landlord acts on tenancies from the web app.
+   */
+  private async handleTenancyDigitReply(
+    from: string,
+    text: string,
+    ids: string[] | undefined,
+  ): Promise<void> {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+      await this.lookup.handleExitOrMenu(from, text);
+      return;
+    }
+
+    const idx = parseInt(text.trim(), 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= ids.length) {
+      await this.whatsappUtil.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number from the list.',
+      );
+      return;
+    }
+
+    const pt = await this.propertyTenantRepo.findOne({
+      where: { id: ids[idx] },
+      relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
+    });
+
+    if (!pt) {
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+      await this.whatsappUtil.sendText(from, 'That tenancy was not found.');
+      return;
+    }
+
+    const latestRent = pt.property?.rents?.[pt.property.rents.length - 1] || null;
+    const tenantName = pt.tenant?.user
+      ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`.trim()
+      : 'Vacant';
+    const tenantPhone = pt.tenant?.user?.phone_number || '—';
+    const rentAmount = latestRent?.rental_price
+      ? Number(latestRent.rental_price).toLocaleString('en-NG', { style: 'currency', currency: 'NGN' })
+      : '——';
+    const expiry = latestRent?.expiry_date
+      ? new Date(latestRent.expiry_date).toLocaleDateString('en-NG', { year: 'numeric', month: 'short', day: 'numeric' })
+      : '——';
+
+    const lines = [
+      `*${pt.property?.name ?? 'Tenancy'}*`,
+      '',
+      `Tenant: ${tenantName}`,
+      `Phone: ${tenantPhone}`,
+      `Rent: ${rentAmount}/yr`,
+      `Next rent due: ${expiry}`,
+      `Status: ${pt.status}`,
+    ];
+
+    await this.whatsappUtil.sendText(from, lines.join('\n'));
+    await this.cache.delete(`maintenance_request_state_landlord_${from}`);
   }
 
   /**

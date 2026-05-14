@@ -266,7 +266,7 @@ export class MaintenanceRequestsService {
 
     const fmTeamMembers = await this.teamMemberRepository.find({
       where: {
-        account: { user: { id: actor.id } },
+        account: { id: actor.id },
         role: RolesEnum.FACILITY_MANAGER,
       },
       relations: ['account', 'account.user', 'team'],
@@ -498,7 +498,7 @@ export class MaintenanceRequestsService {
     if (role === RolesEnum.FACILITY_MANAGER) {
       const myTeamMemberships = await this.teamMemberRepository.find({
         where: {
-          account: { user: { id: user_id } },
+          account: { id: user_id },
           role: RolesEnum.FACILITY_MANAGER,
         },
         relations: ['account', 'account.user', 'team', 'team.creator', 'team.creator.user'],
@@ -1131,7 +1131,7 @@ export class MaintenanceRequestsService {
 
     const teamMemberships = await this.teamMemberRepository.find({
       where: {
-        account: { user: { id: userId } },
+        account: { id: userId },
         role: RolesEnum.FACILITY_MANAGER,
       },
       relations: [

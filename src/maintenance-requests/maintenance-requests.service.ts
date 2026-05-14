@@ -738,6 +738,7 @@ export class MaintenanceRequestsService {
         actorRole,
         maintenanceRequest.creator_type,
         data.reopen_message,
+        maintenanceRequest.assigned_to,
       );
     }
     const isReopenSelfLoop =
@@ -750,6 +751,7 @@ export class MaintenanceRequestsService {
         actorRole,
         maintenanceRequest.creator_type,
         data.reopen_message,
+        maintenanceRequest.assigned_to,
       );
     }
 
@@ -845,7 +847,7 @@ export class MaintenanceRequestsService {
       }
       if (isStatusChange) {
         const reasonParts: string[] = [
-          `Status updated via API from ${previousStatus} to ${targetStatus}`,
+          `Status updated via Dashboard from ${previousStatus} to ${targetStatus}`,
         ];
         if (
           targetStatus === MaintenanceRequestStatusEnum.REOPENED &&
@@ -1377,6 +1379,7 @@ export class MaintenanceRequestsService {
     actorRole: 'landlord' | 'tenant' | 'facility_manager',
     creatorType: MaintenanceRequestCreatorTypeEnum,
     reopenMessage?: string,
+    assignedTo?: string | null,
   ): void {
     const transition = `${from}->${to}`;
     const tenantIsCreator =
@@ -1390,6 +1393,12 @@ export class MaintenanceRequestsService {
           throw new HttpException(
             'Only the landlord can approve a maintenance request',
             HttpStatus.FORBIDDEN,
+          );
+        }
+        if (!assignedTo) {
+          throw new HttpException(
+            'Assign a facility manager before approving',
+            HttpStatus.BAD_REQUEST,
           );
         }
         return;

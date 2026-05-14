@@ -240,7 +240,7 @@ export class WhatsappBotService implements OnModuleInit {
               confirmationTarget.profile_name?.split(' ')[0] ?? 'there';
             const body =
               `Hi ${firstName} 👋\n\n` +
-              `Your password has been set. You can now sign in to Lizt using your email and the password you just chose.\n\n` +
+              `Your password has been set. You can now sign in to Lizt using your phone number and the password you just chose.\n\n` +
               `Welcome aboard!`;
             this.sendText(confirmationTarget.phone_number, body).catch((err) =>
               this.logger.error(

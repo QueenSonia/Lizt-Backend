@@ -560,7 +560,27 @@ export class TeamService {
       throw new ForbiddenException('You cannot delete this team member');
     }
 
-    // 4. Delete the team member
+    // 4. Refuse if there are open SRs assigned to this FM. Closed/resolved
+    //    requests get their assigned_to set to NULL via the FK (SET NULL),
+    //    so history is preserved — but open work would be silently abandoned.
+    const openCount = await this.dataSource
+      .createQueryBuilder()
+      .from('maintenance_requests', 'sr')
+      .where('sr.assigned_to = :tmId', { tmId: id })
+      .andWhere('sr.deleted_at IS NULL')
+      .andWhere("sr.status NOT IN ('resolved', 'closed')")
+      .getCount();
+
+    if (openCount > 0) {
+      throw new HttpException(
+        `This facility manager has ${openCount} open maintenance request${
+          openCount === 1 ? '' : 's'
+        }. Reassign them before removing the team member.`,
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    // 5. Delete the team member
     await this.teamMemberRepository.remove(teamMember);
 
     return { success: true, message: 'Team member deleted successfully' };

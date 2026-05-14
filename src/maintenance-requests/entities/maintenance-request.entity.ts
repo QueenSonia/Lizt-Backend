@@ -149,11 +149,11 @@ export class MaintenanceRequest extends BaseEntity {
   notifications: Notification[];
 
   @Column({ nullable: true, type: 'uuid' })
-  assigned_to: string;
+  assigned_to: string | null;
 
-  @ManyToOne(() => TeamMember, (tm) => tm.account, { onDelete: 'CASCADE' })
+  @ManyToOne(() => TeamMember, (tm) => tm.account, { onDelete: 'SET NULL' })
   @JoinColumn({ name: 'assigned_to', referencedColumnName: 'id' })
-  facilityManager: TeamMember;
+  facilityManager: TeamMember | null;
 
   @OneToMany(
     () => MaintenanceRequestStatusHistory,

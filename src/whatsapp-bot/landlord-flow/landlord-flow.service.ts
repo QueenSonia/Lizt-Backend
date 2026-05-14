@@ -230,24 +230,33 @@ export class LandlordFlowService {
 
     const statusLabel = this.getStatusLabel(maintenanceRequest.status);
     const tenantUser = maintenanceRequest.tenant?.user;
-    const reporterLine = tenantUser
-      ? `Tenant: ${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}\n`
+    const reporterLines = tenantUser
+      ? `Tenant: ${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}\n` +
+        (tenantUser.phone_number ? `Phone: ${tenantUser.phone_number}\n` : '')
       : `Reporter: ${maintenanceRequest.tenant_name || 'Facility manager'}\n`;
 
     await this.templateSenderService.sendText(
       from,
-      `*${maintenanceRequest.description}*\n\n${reporterLine}Property: ${maintenanceRequest.property.name}\nStatus: ${statusLabel}`,
+      `*${maintenanceRequest.description}*\n\n${reporterLines}Property: ${maintenanceRequest.property.name}\nStatus: ${statusLabel}`,
     );
 
     // Marking resolved now happens in the web app (we capture cost +
     // category + summary there). The detail card on WhatsApp is read-only.
+    // CTA URL message takes only one button, so "Back to List" goes in a
+    // separate reply-button message right after.
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const dashboardUrl = `${frontendUrl}/facility-manager/issues`;
+    await this.templateSenderService.sendCtaUrl(
+      from,
+      'Tap below to manage this request in your dashboard — we capture cost, category, and summary there when marking it resolved.',
+      'Open in web app',
+      dashboardUrl,
+    );
+
     await this.templateSenderService.sendButtons(
       from,
-      'What would you like to do?',
-      [
-        { id: 'open_in_web_app', title: 'Open in web app' },
-        { id: 'back_to_list', title: 'Back to List' },
-      ],
+      'Or return to the list:',
+      [{ id: 'back_to_list', title: 'Back to List' }],
     );
 
     await this.cache.set(

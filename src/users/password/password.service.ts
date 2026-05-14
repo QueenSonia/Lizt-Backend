@@ -357,18 +357,19 @@ export class PasswordService {
   /**
    * Transport-agnostic password reset. Used by the HTTP `resetPassword`
    * endpoint AND the WhatsApp Flow webhook (FM password setup). Returns
-   * the affected user_id; throws HttpException on invalid token / missing
-   * user, same as the HTTP path. Token row is deleted on success.
+   * the affected user_id (and phone, for post-set confirmation messaging);
+   * throws HttpException on invalid token / missing user, same as the HTTP
+   * path. Token row is deleted on success.
    */
   async resetPasswordCore(
     token: string,
     newPassword: string,
-  ): Promise<{ user_id: string }> {
+  ): Promise<{ user_id: string; phone_number?: string; profile_name?: string }> {
     const resetEntry = await this.validateResetToken(token);
 
     const user = await this.accountRepository.findOne({
       where: { id: resetEntry.user_id },
-      relations: ['property_tenants'],
+      relations: ['property_tenants', 'user'],
     });
 
     if (!user) {
@@ -400,7 +401,11 @@ export class PasswordService {
 
     await this.passwordResetRepository.delete({ id: resetEntry.id });
 
-    return { user_id: user.id };
+    return {
+      user_id: user.id,
+      phone_number: user.user?.phone_number,
+      profile_name: user.profile_name,
+    };
   }
 
   /**

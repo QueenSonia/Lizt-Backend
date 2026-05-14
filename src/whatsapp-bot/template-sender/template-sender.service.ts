@@ -71,7 +71,7 @@ interface WhatsAppPayload {
     body: string;
   };
   interactive?: {
-    type: 'button' | 'flow';
+    type: 'button' | 'flow' | 'cta_url';
     body: { text: string };
     footer?: { text: string };
     action: Record<string, unknown>;
@@ -3335,6 +3335,40 @@ export class TemplateSenderService {
   /**
    * Send interactive button message
    */
+  /**
+   * Send an interactive CTA-URL message. The single button opens the given
+   * URL in the FM/tenant's browser. Free-form (non-template) message — only
+   * works within Meta's 24h customer-service window.
+   */
+  async sendCtaUrl(
+    to: string,
+    text: string,
+    displayText: string,
+    url: string,
+    footer?: string,
+  ): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'cta_url',
+        body: { text },
+        ...(footer && { footer: { text: footer } }),
+        action: {
+          name: 'cta_url',
+          parameters: {
+            display_text: displayText,
+            url,
+          },
+        },
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   async sendButtons(
     to: string,
     text: string = 'Hello, welcome to Property Kraft',

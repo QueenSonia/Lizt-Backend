@@ -211,8 +211,15 @@ export class WhatsappBotService implements OnModuleInit {
             return { ...SCREEN_RESPONSES.FM_LINK_EXPIRED };
           }
 
+          let confirmationTarget: {
+            phone_number?: string;
+            profile_name?: string;
+          } = {};
           try {
-            await this.passwordService.resetPasswordCore(flowToken, newPassword);
+            confirmationTarget = await this.passwordService.resetPasswordCore(
+              flowToken,
+              newPassword,
+            );
           } catch (err) {
             this.logger.error('FM password reset failed', err as Error);
             return {
@@ -223,6 +230,24 @@ export class WhatsappBotService implements OnModuleInit {
                 error_visible: true,
               },
             };
+          }
+
+          // Fire-and-forget confirmation text. Within Meta's 24h customer
+          // service window because the FM just submitted the flow (counts as
+          // an inbound interaction), so a free-form text reply is allowed.
+          if (confirmationTarget.phone_number) {
+            const firstName =
+              confirmationTarget.profile_name?.split(' ')[0] ?? 'there';
+            const body =
+              `Hi ${firstName} 👋\n\n` +
+              `Your password has been set. You can now sign in to Lizt using your email and the password you just chose.\n\n` +
+              `Welcome aboard!`;
+            this.sendText(confirmationTarget.phone_number, body).catch((err) =>
+              this.logger.error(
+                'FM password-set confirmation send failed',
+                err as Error,
+              ),
+            );
           }
 
           return { ...SCREEN_RESPONSES.FM_PASSWORD_SUCCESS };

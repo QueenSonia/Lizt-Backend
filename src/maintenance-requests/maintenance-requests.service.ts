@@ -1763,7 +1763,7 @@ export class MaintenanceRequestsService {
 
     const tm = await this.teamMemberRepository.findOne({
       where: { id: teamMemberId },
-      relations: ['team'],
+      relations: ['team', 'account', 'account.user'],
     });
     if (!tm) {
       throw new HttpException(
@@ -1784,6 +1784,13 @@ export class MaintenanceRequestsService {
       );
     }
 
+    const fmUser = tm.account?.user;
+    const fmName = fmUser
+      ? `${fmUser.first_name ?? ''} ${fmUser.last_name ?? ''}`.trim() ||
+        tm.email ||
+        'Facility Manager'
+      : tm.email || 'Facility Manager';
+
     const previousStatus = sr.status;
     const previousAssignee = sr.assigned_to ?? null;
     const landlordUserId = await this.resolveActorUserId(landlordAccountId);
@@ -1799,7 +1806,7 @@ export class MaintenanceRequestsService {
         MaintenanceRequestStatusEnum.APPROVED,
         landlordUserId,
         'landlord',
-        'Landlord approved & assigned via WhatsApp',
+        `Landlord approved & assigned to ${fmName} via WhatsApp`,
         undefined,
         manager,
       );

@@ -8,7 +8,11 @@ import WhatsApp from 'whatsapp';
 import { Users } from 'src/users/entities/user.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { CacheService } from 'src/lib/cache';
-import { PasswordService } from 'src/users/password';
+import {
+  PasswordService,
+  PASSWORD_RULE_REGEX,
+  PASSWORD_RULE_MESSAGE,
+} from 'src/users/password';
 
 import { SCREEN_RESPONSES } from './flows';
 import { RolesEnum } from 'src/base.entity';
@@ -201,6 +205,20 @@ export class WhatsappBotService implements OnModuleInit {
               ...SCREEN_RESPONSES.FM_SET_PASSWORD,
               data: {
                 error_message: 'Passwords do not match. Please try again.',
+                error_visible: true,
+              },
+            };
+          }
+
+          // Enforce the same complexity rule as the HTTP /reset-password and
+          // signup paths. Without this, the Flow would let the FM set a weak
+          // password that they then can't use to log in (the login endpoint
+          // validates the rule via class-validator and rejects).
+          if (!PASSWORD_RULE_REGEX.test(newPassword)) {
+            return {
+              ...SCREEN_RESPONSES.FM_SET_PASSWORD,
+              data: {
+                error_message: PASSWORD_RULE_MESSAGE,
                 error_visible: true,
               },
             };

@@ -50,6 +50,18 @@ export interface ResendOtpResult {
  * forgot password, reset password, OTP validation, and token generation.
  * Extracted from UsersService to follow Single Responsibility Principle.
  */
+/**
+ * Password complexity rule. Must match the validation in
+ * [reset-password.dto.ts] and [create-user.dto.ts] so a password that
+ * passes here is guaranteed to also work at login. Centralised here so
+ * the WhatsApp Flow webhook (which bypasses class-validator) can enforce
+ * the same constraint.
+ */
+export const PASSWORD_RULE_REGEX =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
+export const PASSWORD_RULE_MESSAGE =
+  'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character (@, $, !, %, *, ?, or &).';
+
 @Injectable()
 export class PasswordService {
   constructor(

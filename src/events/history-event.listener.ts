@@ -68,6 +68,8 @@ export class HistoryEventListener {
           status: payload.status,
           description: payload.description,
           previous_status: payload.previous_status,
+          is_urgent: payload.is_urgent,
+          previous_is_urgent: payload.previous_is_urgent,
         }),
         related_entity_id: payload.request_id,
         related_entity_type: 'maintenance_request',

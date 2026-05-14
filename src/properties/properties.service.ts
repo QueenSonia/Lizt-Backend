@@ -1746,30 +1746,75 @@ export class PropertiesService {
                 : null,
             };
           case 'maintenance_request_updated': {
-            const parts = hist.event_description?.split('|||') || [];
-            const status = parts[0] || 'updated';
-            const issueDescription = parts[1] || 'Maintenance request updated';
-            const resolver = parts.length > 2 ? parts[2] : null;
+            let status = 'updated';
+            let previousStatus = '';
+            let issueDescription = 'Maintenance request updated';
+            let isUrgent: boolean | undefined;
+            let previousIsUrgent: boolean | undefined;
+            let resolver: string | null = null;
+
+            if (hist.event_description) {
+              try {
+                const parsed = JSON.parse(hist.event_description);
+                status = parsed.status || 'updated';
+                previousStatus = parsed.previous_status || '';
+                issueDescription =
+                  parsed.description || 'Maintenance request updated';
+                isUrgent = parsed.is_urgent;
+                previousIsUrgent = parsed.previous_is_urgent;
+              } catch {
+                const parts = hist.event_description.split('|||');
+                status = parts[0] || 'updated';
+                issueDescription =
+                  parts[1] || 'Maintenance request updated';
+                resolver = parts.length > 2 ? parts[2] : null;
+              }
+            }
+
+            const statusChanged =
+              !!previousStatus && previousStatus !== status;
+            const urgencyChanged =
+              isUrgent !== undefined &&
+              previousIsUrgent !== undefined &&
+              isUrgent !== previousIsUrgent;
 
             let title = 'Maintenance Request Updated';
             let eventType = 'maintenance_request_updated';
-            let description = issueDescription;
-            const details = resolver ? `Resolver: ${resolver}` : null;
+            let description = `Issue: "${issueDescription}"`;
 
-            if (status.toLowerCase() === 'resolved') {
-              title = 'Maintenance Request Resolved';
-              eventType = 'maintenance_request_resolved';
-              description = 'Issue fixed and marked as resolved.';
-            } else if (status.toLowerCase() === 'closed') {
-              title = 'Maintenance Request Closed';
-              eventType = 'maintenance_request_closed';
-              description = 'Tenant confirmed issue is fully resolved.';
-            } else if (status.toLowerCase() === 'reopened') {
-              title = 'Maintenance Request Reopened';
-              eventType = 'maintenance_request_reopened';
-              description =
-                'Tenant reopened the request: issue not fully resolved.';
+            if (statusChanged) {
+              if (status.toLowerCase() === 'resolved') {
+                title = 'Maintenance Request Resolved';
+                eventType = 'maintenance_request_resolved';
+                description = 'Issue fixed and marked as resolved.';
+              } else if (status.toLowerCase() === 'closed') {
+                title = 'Maintenance Request Closed';
+                eventType = 'maintenance_request_closed';
+                description = 'Tenant confirmed issue is fully resolved.';
+              } else if (status.toLowerCase() === 'reopened') {
+                title = 'Maintenance Request Reopened';
+                eventType = 'maintenance_request_reopened';
+                description =
+                  'Tenant reopened the request: issue not fully resolved.';
+              } else if (status.toLowerCase() === 'approved') {
+                title = 'Maintenance Request Approved';
+                description = `Issue: "${issueDescription}" — Status: ${previousStatus} → ${status}`;
+              } else if (status.toLowerCase() === 'not_approved') {
+                title = 'Maintenance Request Opened';
+                description = `Issue: "${issueDescription}" — Status: ${previousStatus} → ${status}`;
+              } else {
+                description = `Issue: "${issueDescription}" — Status: ${previousStatus} → ${status}`;
+              }
+            } else if (urgencyChanged) {
+              title = isUrgent
+                ? 'Maintenance Request Marked Urgent'
+                : 'Maintenance Request Marked Not Urgent';
+              description = `Issue: "${issueDescription}" — ${isUrgent ? 'Marked urgent' : 'Urgency cleared'}`;
+            } else {
+              description = `Issue: "${issueDescription}" — Request details updated`;
             }
+
+            const details = resolver ? `Resolver: ${resolver}` : null;
 
             return {
               id: hist.id,

@@ -724,6 +724,7 @@ export class MaintenanceRequestsService {
     }
 
     const previousStatus = maintenanceRequest.status;
+    const previousIsUrgent = maintenanceRequest.is_urgent;
     const targetStatus = data.status;
 
     // Validate status transition (if any) before mutating anything else. The
@@ -879,6 +880,7 @@ export class MaintenanceRequestsService {
         status: updatedMaintenanceRequest.status,
         previous_status: previousStatus,
         is_urgent: updatedMaintenanceRequest.is_urgent,
+        previous_is_urgent: previousIsUrgent,
         tenant_name: updatedMaintenanceRequest.tenant_name,
         property_name: updatedMaintenanceRequest.property_name,
         property_id: updatedMaintenanceRequest.property_id,

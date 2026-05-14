@@ -358,6 +358,8 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         let status = 'updated';
         let previousStatus = '';
         let issueDescription = 'Maintenance Request';
+        let isUrgent: boolean | undefined;
+        let previousIsUrgent: boolean | undefined;
 
         if (ph.event_description) {
           try {
@@ -365,6 +367,8 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
             status = parsed.status || 'updated';
             previousStatus = parsed.previous_status || '';
             issueDescription = parsed.description || 'Maintenance Request';
+            isUrgent = parsed.is_urgent;
+            previousIsUrgent = parsed.previous_is_urgent;
           } catch {
             const parts = ph.event_description.split('|||');
             status = parts[0] || 'updated';
@@ -373,31 +377,49 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         }
 
         const prop = ph.property;
-        const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
-        let title = `Maintenance Request ${statusLabel}`;
+        const statusChanged =
+          !!previousStatus && previousStatus !== status;
+        const urgencyChanged =
+          isUrgent !== undefined &&
+          previousIsUrgent !== undefined &&
+          isUrgent !== previousIsUrgent;
 
-        if (status.toLowerCase() === 'resolved') {
-          title = 'Maintenance Request Resolved';
-        } else if (status.toLowerCase() === 'closed') {
-          title = 'Maintenance Request Closed';
-        } else if (status.toLowerCase() === 'reopened') {
-          title = 'Maintenance Request Reopened';
-        } else if (status.toLowerCase() === 'approved') {
-          title = 'Maintenance Request Approved';
-        } else if (status.toLowerCase() === 'not_approved') {
-          title = 'Maintenance Request Opened';
+        let title: string;
+        let descriptionTail: string;
+
+        if (statusChanged) {
+          if (status.toLowerCase() === 'resolved') {
+            title = 'Maintenance Request Resolved';
+          } else if (status.toLowerCase() === 'closed') {
+            title = 'Maintenance Request Closed';
+          } else if (status.toLowerCase() === 'reopened') {
+            title = 'Maintenance Request Reopened';
+          } else if (status.toLowerCase() === 'approved') {
+            title = 'Maintenance Request Approved';
+          } else if (status.toLowerCase() === 'not_approved') {
+            title = 'Maintenance Request Opened';
+          } else {
+            const statusLabel =
+              status.charAt(0).toUpperCase() + status.slice(1);
+            title = `Maintenance Request ${statusLabel}`;
+          }
+          descriptionTail = `Status: ${previousStatus} → ${status}`;
+        } else if (urgencyChanged) {
+          title = isUrgent
+            ? 'Maintenance Request Marked Urgent'
+            : 'Maintenance Request Marked Not Urgent';
+          descriptionTail = isUrgent ? 'Marked urgent' : 'Urgency cleared';
+        } else {
+          title = 'Maintenance Request Updated';
+          descriptionTail = 'Request details updated';
         }
-
-        const statusTransition = previousStatus
-          ? `${previousStatus} → ${status}`
-          : status;
 
         const eventDate = new Date(ph.created_at || new Date());
         tenancyEvents.push({
           id: `service-update-${ph.id}`,
           type: 'maintenance',
           title,
-          description: `Issue: "${issueDescription}" — Status: ${statusTransition}`,
+          description: `Issue: "${issueDescription}" — ${descriptionTail}`,
           details: prop?.name || undefined,
           date: eventDate.toISOString(),
           time: formatTime(eventDate),

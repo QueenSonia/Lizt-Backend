@@ -352,8 +352,8 @@ export class WhatsappBotController {
         tenant_phone_number,
         date_created,
       } = req.body;
-      const response = await this.whatsappBotService.sendFacilityMaintenanceRequest(
-        {
+      const response =
+        await this.whatsappBotService.sendFacilityMaintenanceRequest({
           phone_number,
           manager_name,
           property_name,
@@ -362,8 +362,7 @@ export class WhatsappBotController {
           tenant_name,
           tenant_phone_number,
           date_created,
-        },
-      );
+        });
       return response;
     } catch (error) {
       console.error('Error sending user message:', error);

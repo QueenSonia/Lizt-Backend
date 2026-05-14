@@ -1,4 +1,4 @@
-﻿import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+﻿import { forwardRef, Inject, Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { ILike, Not, In, Repository } from 'typeorm';
@@ -8,6 +8,7 @@ import WhatsApp from 'whatsapp';
 import { Users } from 'src/users/entities/user.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { CacheService } from 'src/lib/cache';
+import { PasswordService } from 'src/users/password';
 
 import { SCREEN_RESPONSES } from './flows';
 import { RolesEnum } from 'src/base.entity';
@@ -36,6 +37,7 @@ import {
   TemplateSenderService,
   SendTemplateParams,
   FMTemplateParams,
+  FMSetPasswordFlowParams,
   PropertyCreatedParams,
   UserAddedParams,
   TenantWelcomeParams,
@@ -103,6 +105,11 @@ export class WhatsappBotService implements OnModuleInit {
     private readonly templateSenderService: TemplateSenderService,
     private readonly tenantFlowService: TenantFlowService,
     private readonly landlordFlowService: LandlordFlowService,
+
+    // UsersModule is already a forwardRef in WhatsappBotModule; PasswordService
+    // lives there. Used by the FM password-setup Flow webhook (getNextScreen).
+    @Inject(forwardRef(() => PasswordService))
+    private readonly passwordService: PasswordService,
   ) {}
 
   /**
@@ -139,7 +146,7 @@ export class WhatsappBotService implements OnModuleInit {
   }
 
   async getNextScreen(decryptedBody) {
-    const { screen, data, action } = decryptedBody;
+    const { screen, data, action, flow_token: flowToken } = decryptedBody;
 
     console.log('Received request body:', decryptedBody);
 
@@ -150,6 +157,25 @@ export class WhatsappBotService implements OnModuleInit {
     if (data?.error) {
       console.warn('Received client error:', data);
       return { data: { acknowledged: true } };
+    }
+
+    // FM password-setup Flow: the flow_token is the PasswordResetToken value
+    // minted in team.service.ts. On INIT, route to FM_LINK_EXPIRED instead of
+    // Meta's generic 427 "message no longer available" copy when the token is
+    // gone (expired or consumed by a successful prior submit).
+    if (action === 'INIT' && flowToken) {
+      const valid = await this.passwordService.isResetTokenStillValid(flowToken);
+      if (valid) {
+        return {
+          ...SCREEN_RESPONSES.FM_SET_PASSWORD,
+          data: { error_message: '', error_visible: false },
+        };
+      }
+      // Token unknown/expired AND a flow_token was supplied: this is almost
+      // certainly an FM invite click after the link expired (or after a
+      // successful set — token was deleted). Show the friendly expired
+      // screen.
+      return { ...SCREEN_RESPONSES.FM_LINK_EXPIRED };
     }
 
     if (action === 'INIT') {
@@ -166,6 +192,42 @@ export class WhatsappBotService implements OnModuleInit {
 
     if (action === 'data_exchange') {
       switch (screen) {
+        case 'FM_SET_PASSWORD': {
+          const newPassword = data?.new_password;
+          const confirmPassword = data?.confirm_password;
+
+          if (!newPassword || newPassword !== confirmPassword) {
+            return {
+              ...SCREEN_RESPONSES.FM_SET_PASSWORD,
+              data: {
+                error_message: 'Passwords do not match. Please try again.',
+                error_visible: true,
+              },
+            };
+          }
+
+          const valid = await this.passwordService.isResetTokenStillValid(flowToken);
+          if (!valid) {
+            return { ...SCREEN_RESPONSES.FM_LINK_EXPIRED };
+          }
+
+          try {
+            await this.passwordService.resetPasswordCore(flowToken, newPassword);
+          } catch (err) {
+            this.logger.error('FM password reset failed', err as Error);
+            return {
+              ...SCREEN_RESPONSES.FM_SET_PASSWORD,
+              data: {
+                error_message:
+                  'Something went wrong saving your password. Please try again.',
+                error_visible: true,
+              },
+            };
+          }
+
+          return { ...SCREEN_RESPONSES.FM_PASSWORD_SUCCESS };
+        }
+
         case 'WELCOME_SCREEN':
           return { ...SCREEN_RESPONSES.MAINTENANCE_REQUEST };
 
@@ -1033,6 +1095,14 @@ export class WhatsappBotService implements OnModuleInit {
     params: FMTemplateParams,
   ): Promise<void> {
     return this.templateSenderService.sendToFacilityManagerWithTemplate(params);
+  }
+
+  async sendToFacilityManagerSetPasswordFlow(
+    params: FMSetPasswordFlowParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendToFacilityManagerSetPasswordFlow(
+      params,
+    );
   }
 
   async sendToPropertiesCreatedTemplate(

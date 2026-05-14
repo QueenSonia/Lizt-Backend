@@ -18,7 +18,7 @@ interface TemplateBodyParameter {
  */
 interface TemplateComponent {
   type: 'header' | 'body' | 'button';
-  sub_type?: 'quick_reply' | 'url';
+  sub_type?: 'quick_reply' | 'url' | 'flow';
   index?: number | string;
   parameters: Array<
     | TemplateBodyParameter
@@ -33,6 +33,17 @@ interface TemplateComponent {
         document:
           | { id: string; filename: string }
           | { link: string; filename: string };
+      }
+    | {
+        // Flow-button per-send parameter. `flow_id`, `flow_action`, and
+        // `flow_cta` are baked into the template definition in Meta, so
+        // here we only ship the per-recipient `flow_token` (and optional
+        // pre-populate payload for the first screen via `flow_action_data`).
+        type: 'action';
+        action: {
+          flow_token: string;
+          flow_action_data?: Record<string, unknown>;
+        };
       }
   >;
 }
@@ -102,6 +113,20 @@ export interface FMTemplateParams {
    * and their existing password still works.
    */
   temporary_password?: string;
+}
+
+/**
+ * Parameters for the FM password-setup Flow template
+ * (`facility_manager_set_password`). The `flow_token` is the
+ * `PasswordResetToken.token` value minted at invite time; the Flow webhook
+ * uses it to identify which account is setting a password.
+ */
+export interface FMSetPasswordFlowParams {
+  phone_number: string;
+  name: string;
+  team: string;
+  role: string;
+  flow_token: string;
 }
 
 /**
@@ -979,6 +1004,57 @@ export class TemplateSenderService {
           {
             type: 'body',
             parameters,
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the FM password-setup Flow template. The template body carries
+   * name/team/role; the Flow button opens an in-WhatsApp form where the FM
+   * picks their own password. The form submits to our Flow webhook which
+   * exchanges `flow_token` for the corresponding password_reset_token row
+   * and writes the new password hash.
+   *
+   * Replaces `facility_manager_with_password` (which Meta rejects because
+   * it ships a credential in a non-Authentication template).
+   */
+  async sendToFacilityManagerSetPasswordFlow({
+    phone_number,
+    name,
+    team,
+    role,
+    flow_token,
+  }: FMSetPasswordFlowParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'facility_manager_set_password',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', parameter_name: 'name', text: name },
+              { type: 'text', parameter_name: 'team', text: team },
+              { type: 'text', parameter_name: 'role', text: role },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'flow',
+            index: 0,
+            parameters: [
+              {
+                type: 'action',
+                action: { flow_token },
+              },
+            ],
           },
         ],
       },
@@ -4507,6 +4583,10 @@ export class TemplateSenderService {
       "Hi, thanks for connecting with Property Kraft!\n\nYou're now plugged in to receive the latest property updates, sweet deals, and housing opportunities directly on WhatsApp. ✨\n\nIn the meantime, you can also visit our website here: https://propertykraft.africa 🌍\n\nStay ahead with Property Kraft! 🚀",
     facility_manager:
       'Hello {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\nWelcome aboard!',
+    facility_manager_with_password:
+      'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nYour temporary password is: {{4}}\n\nPlease sign in and change your password as soon as possible.\n\nThank you,',
+    facility_manager_set_password:
+      'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nTap the button below to set your password and finish signing in. The link expires in 30 days — ask your team admin to re-invite you if it does.\n\nThank you,',
     properties_created:
       'Hello {{1}}\n\nA new property with name {{2}} was created.\n\nThank you.\n-The Lizt Team',
     user_added:

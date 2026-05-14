@@ -93,4 +93,26 @@ export const SCREEN_RESPONSES: any = {
       },
     },
   },
+
+  // FM password-setup Flow: blank input form for the FM to type a new
+  // password. `error_visible` is a boolean (Flow v7.3 requires the `visible`
+  // binding to be boolean-typed); `error_message` carries the user-facing
+  // copy when error_visible=true.
+  FM_SET_PASSWORD: {
+    screen: 'FM_SET_PASSWORD',
+    data: {
+      error_message: '',
+      error_visible: false,
+    },
+  },
+
+  FM_PASSWORD_SUCCESS: {
+    screen: 'FM_PASSWORD_SUCCESS',
+    data: {},
+  },
+
+  FM_LINK_EXPIRED: {
+    screen: 'FM_LINK_EXPIRED',
+    data: {},
+  },
 };

@@ -10,11 +10,13 @@
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { v4 as uuidv4 } from 'uuid';
 import { RolesEnum } from 'src/base.entity';
 import { Account } from '../entities/account.entity';
 import { Team } from '../entities/team.entity';
 import { TeamMember } from '../entities/team-member.entity';
 import { Users } from '../entities/user.entity';
+import { PasswordResetToken } from '../entities/password-reset-token.entity';
 import { TeamMemberDto } from '../dto/team-member.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
@@ -202,7 +204,7 @@ export class TeamService {
           // both placeholder: leave existing email alone
         }
 
-        // Decide whether to (re)generate a password.
+        // Decide whether to issue a password-set Flow.
         //
         // YES if:
         //   - we're creating a brand-new account, OR
@@ -214,6 +216,11 @@ export class TeamService {
         //     leave it alone — they sign in with the same creds for both
         //     roles), OR
         //   - already an FM in another team (existing creds still work).
+        //
+        // Note: we no longer auto-generate a password server-side. Meta rejects
+        // templates that carry credentials in non-Authentication categories, so
+        // the FM picks their own password via a WhatsApp Flow form. The
+        // PasswordResetToken minted here is the flow_token we pass to Meta.
         const hasLandlordRole = !!userAccount?.roles?.includes(
           RolesEnum.LANDLORD,
         );
@@ -221,31 +228,42 @@ export class TeamService {
           RolesEnum.FACILITY_MANAGER,
         );
 
-        let plainPasswordToSend: string | null = null;
+        let flowTokenToSend: string | null = null;
+        const FM_TOKEN_TTL_HOURS = 24 * 30; // 30 days — see plan B.1
+
+        const mintFlowToken = async (accountId: string): Promise<string> => {
+          const token = uuidv4();
+          const expiresAt = new Date();
+          expiresAt.setHours(expiresAt.getHours() + FM_TOKEN_TTL_HOURS);
+          await manager.save(PasswordResetToken, {
+            id: uuidv4(),
+            user_id: accountId,
+            token,
+            expires_at: expiresAt,
+          });
+          return token;
+        };
 
         if (!userAccount) {
-          // Brand new identity → generate password and send it.
-          const { plain, hash } = await this.utilService.generatePassword();
-          plainPasswordToSend = plain;
+          // Brand new identity → create account WITHOUT a password; FM sets
+          // their own via the Flow. The account is unusable until they do.
           userAccount = manager.getRepository(Account).create({
             user,
             email: teamMember.email,
-            password: hash,
             roles: [teamMember.role],
             role: teamMember.role,
             profile_name: `${teamMember.first_name} ${teamMember.last_name}`,
             is_verified: true,
           });
           await manager.getRepository(Account).save(userAccount);
+          flowTokenToSend = await mintFlowToken(userAccount.id);
         } else if (!alreadyHasFmRole) {
           // Existing account being elevated into FM. Always append the role.
-          // Only regenerate the password if the account doesn't already have
-          // a usable sign-in surface (i.e. no LANDLORD role).
-          if (!hasLandlordRole) {
-            const { plain, hash } = await this.utilService.generatePassword();
-            plainPasswordToSend = plain;
-            userAccount.password = hash;
-          }
+          // Issue a Flow only when the account has no other usable sign-in
+          // surface (i.e. no LANDLORD role). For tenant→FM elevations we now
+          // preserve the existing password so the tenant role keeps working
+          // until the FM completes the Flow (which then rewrites the hash for
+          // both roles).
           userAccount.roles = [
             ...(userAccount.roles ?? []),
             teamMember.role,
@@ -254,6 +272,9 @@ export class TeamService {
           userAccount.is_verified = true;
           await manager.getRepository(Account).save(userAccount);
           await this.accountCacheService.invalidate(userAccount.id);
+          if (!hasLandlordRole) {
+            flowTokenToSend = await mintFlowToken(userAccount.id);
+          }
         } else if (emailWasRewritten) {
           // Already FM in another team but we self-healed their placeholder
           // email — persist the rewrite so future logins by email work.
@@ -285,15 +306,27 @@ export class TeamService {
         await manager.getRepository(TeamMember).save(newTeamMember);
 
         // 9. Send WhatsApp notification to the new team member.
-        // Only include the temporary password when we actually (re)issued one;
-        // for an FM joining an additional team, their existing creds still work.
-        await this.whatsappBotService.sendToFacilityManagerWithTemplate({
-          phone_number: normalizedPhoneNumber,
-          name: this.utilService.toSentenceCase(teamMember.first_name),
-          team: team.name,
-          role: 'Facility Manager',
-          temporary_password: plainPasswordToSend ?? undefined,
-        });
+        // When a Flow token was minted (new account or tenant→FM elevation),
+        // send the Flow-based password-setup template. Otherwise (landlord
+        // being elevated, or FM joining an additional team), the no-password
+        // template suffices — their existing creds still work.
+        if (flowTokenToSend) {
+          await this.whatsappBotService.sendToFacilityManagerSetPasswordFlow({
+            phone_number: normalizedPhoneNumber,
+            name: this.utilService.toSentenceCase(teamMember.first_name),
+            team: team.name,
+            role: 'Facility Manager',
+            flow_token: flowTokenToSend,
+          });
+        } else {
+          await this.whatsappBotService.sendToFacilityManagerWithTemplate({
+            phone_number: normalizedPhoneNumber,
+            name: this.utilService.toSentenceCase(teamMember.first_name),
+            team: team.name,
+            role: 'Facility Manager',
+            temporary_password: undefined,
+          });
+        }
 
         return newTeamMember;
       } catch (error) {

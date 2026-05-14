@@ -54,6 +54,7 @@ export interface FMTemplateParams {
   name: string;
   team: string;
   role: string;
+  temporary_password?: string;
 }
 
 export interface TenantWelcomeParams {

@@ -116,15 +116,17 @@ export class PasswordService {
    * Used during user creation to allow setting initial password.
    * @param userId The user's account ID
    * @param queryRunner The query runner for transaction support
+   * @param ttlHours Optional TTL override (defaults to 24h).
    * @returns The generated token string
    */
   async generatePasswordResetToken(
     userId: string,
     queryRunner: QueryRunner,
+    ttlHours = 24,
   ): Promise<string> {
     const token = uuidv4();
     const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24); // Token valid for 24 hours
+    expiresAt.setHours(expiresAt.getHours() + ttlHours);
 
     const passwordReset = queryRunner.manager.create(PasswordResetToken, {
       id: uuidv4(),
@@ -341,8 +343,27 @@ export class PasswordService {
     payload: ResetPasswordDto,
     res: Response,
   ): Promise<Response> {
-    const { token, newPassword } = payload;
+    const { user_id } = await this.resetPasswordCore(
+      payload.token,
+      payload.newPassword,
+    );
 
+    return res.status(HttpStatus.OK).json({
+      message: 'Password reset successful',
+      user_id,
+    });
+  }
+
+  /**
+   * Transport-agnostic password reset. Used by the HTTP `resetPassword`
+   * endpoint AND the WhatsApp Flow webhook (FM password setup). Returns
+   * the affected user_id; throws HttpException on invalid token / missing
+   * user, same as the HTTP path. Token row is deleted on success.
+   */
+  async resetPasswordCore(
+    token: string,
+    newPassword: string,
+  ): Promise<{ user_id: string }> {
     const resetEntry = await this.validateResetToken(token);
 
     const user = await this.accountRepository.findOne({
@@ -354,7 +375,6 @@ export class PasswordService {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);
     }
 
-    // Hash and update the password
     user.password = await this.utilService.hashPassword(newPassword);
 
     if (!user.is_verified) {
@@ -378,12 +398,21 @@ export class PasswordService {
 
     await this.accountRepository.save(user);
 
-    // Delete token after successful password reset
     await this.passwordResetRepository.delete({ id: resetEntry.id });
 
-    return res.status(HttpStatus.OK).json({
-      message: 'Password reset successful',
-      user_id: user.id,
+    return { user_id: user.id };
+  }
+
+  /**
+   * Non-throwing token validity check used by the FM password-setup Flow
+   * webhook. Lets callers branch into a friendly in-flow error screen
+   * instead of bubbling up an HttpException.
+   */
+  async isResetTokenStillValid(token: string): Promise<boolean> {
+    const entry = await this.passwordResetRepository.findOne({
+      where: { token },
     });
+    if (!entry) return false;
+    return entry.expires_at >= new Date();
   }
 }

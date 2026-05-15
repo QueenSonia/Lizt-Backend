@@ -1,16 +1,16 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { ServiceRequest } from '../entities/service-request.entity';
+import { MaintenanceRequest } from '../entities/maintenance-request.entity';
 
-export class ServiceRequestPaginationMetadataDto {
+export class MaintenanceRequestPaginationMetadataDto {
   @ApiProperty({
     example: 100,
-    description: 'The total number of service requests',
+    description: 'The total number of maintenance requests',
   })
   totalRows: number;
 
   @ApiProperty({
     example: 10,
-    description: 'Number of service requests per page',
+    description: 'Number of maintenance requests per page',
   })
   perPage: number;
 
@@ -27,16 +27,16 @@ export class ServiceRequestPaginationMetadataDto {
   hasNextPage: boolean;
 }
 
-export class ServiceRequestPaginationResponseDto {
+export class MaintenanceRequestPaginationResponseDto {
   @ApiProperty({
-    type: [ServiceRequest],
-    description: 'Array of service request objects',
+    type: [MaintenanceRequest],
+    description: 'Array of maintenance request objects',
   })
-  service_requests: ServiceRequest[];
+  maintenance_requests: MaintenanceRequest[];
 
   @ApiProperty({
-    type: ServiceRequestPaginationMetadataDto,
+    type: MaintenanceRequestPaginationMetadataDto,
     description: 'Pagination metadata',
   })
-  pagination: ServiceRequestPaginationMetadataDto;
+  pagination: MaintenanceRequestPaginationMetadataDto;
 }

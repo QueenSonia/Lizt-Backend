@@ -1,4 +1,4 @@
-import {
+﻿import {
   WebSocketGateway,
   WebSocketServer,
   OnGatewayConnection,
@@ -70,53 +70,53 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
-  // Emit service request event to landlords watching a specific property
-  emitServiceRequestCreated(
+  // Emit maintenance request event to landlords watching a specific property
+  emitMaintenanceRequestCreated(
     propertyId: string,
     landlordId: string | undefined,
-    serviceRequestData: any,
+    maintenanceRequestData: any,
   ) {
     this.logger.log(
-      `Emitting service request created for property ${propertyId}`,
+      `Emitting maintenance request created for property ${propertyId}`,
     );
 
     // Emit to property-specific room for anyone viewing that property
-    this.server.to(`property:${propertyId}`).emit('service_request:created', {
+    this.server.to(`property:${propertyId}`).emit('maintenance_request:created', {
       propertyId,
-      serviceRequestData,
+      maintenanceRequestData,
       timestamp: new Date().toISOString(),
     });
 
     // Also emit to landlord-specific room if landlordId is available
     if (landlordId) {
-      this.server.to(`landlord:${landlordId}`).emit('service_request:created', {
+      this.server.to(`landlord:${landlordId}`).emit('maintenance_request:created', {
         propertyId,
-        serviceRequestData,
+        maintenanceRequestData,
         timestamp: new Date().toISOString(),
       });
     }
   }
 
-  // Fix #6: Emit a distinct event for service request updates (vs. created)
-  emitServiceRequestUpdated(
+  // Fix #6: Emit a distinct event for maintenance request updates (vs. created)
+  emitMaintenanceRequestUpdated(
     propertyId: string,
     landlordId: string | undefined,
-    serviceRequestData: any,
+    maintenanceRequestData: any,
   ) {
     this.logger.log(
-      `Emitting service request updated for property ${propertyId}`,
+      `Emitting maintenance request updated for property ${propertyId}`,
     );
 
-    this.server.to(`property:${propertyId}`).emit('service_request:updated', {
+    this.server.to(`property:${propertyId}`).emit('maintenance_request:updated', {
       propertyId,
-      serviceRequestData,
+      maintenanceRequestData,
       timestamp: new Date().toISOString(),
     });
 
     if (landlordId) {
-      this.server.to(`landlord:${landlordId}`).emit('service_request:updated', {
+      this.server.to(`landlord:${landlordId}`).emit('maintenance_request:updated', {
         propertyId,
-        serviceRequestData,
+        maintenanceRequestData,
         timestamp: new Date().toISOString(),
       });
     }

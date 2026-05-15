@@ -1,17 +1,17 @@
-import { Test, TestingModule } from '@nestjs/testing';
+﻿import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { WhatsappBotService } from '../../src/whatsapp-bot/whatsapp-bot.service';
 import { ChatLogService } from '../../src/whatsapp-bot/chat-log.service';
 import { Users } from '../../src/users/entities/user.entity';
-import { ServiceRequest } from '../../src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from '../../src/maintenance-requests/entities/maintenance-request.entity';
 import { PropertyTenant } from '../../src/properties/entities/property-tenants.entity';
 import { TeamMember } from '../../src/users/entities/team-member.entity';
 import { Waitlist } from '../../src/users/entities/waitlist.entity';
 import { Property } from '../../src/properties/entities/property.entity';
 import { Account } from '../../src/users/entities/account.entity';
 import { LandlordFlow } from '../../src/whatsapp-bot/templates/landlord/landlordflow';
-import { ServiceRequestsService } from '../../src/service-requests/service-requests.service';
+import { MaintenanceRequestsService } from '../../src/maintenance-requests/maintenance-requests.service';
 import { CacheService } from '../../src/lib/cache';
 import { UtilService } from '../../src/utils/utility-service';
 
@@ -44,8 +44,8 @@ describe('WhatsappBotService Integration', () => {
     delete: jest.fn(),
   };
 
-  const mockServiceRequestsService = {
-    createServiceRequest: jest.fn(),
+  const mockMaintenanceRequestsService = {
+    createMaintenanceRequest: jest.fn(),
     updateStatus: jest.fn(),
   };
 
@@ -76,8 +76,8 @@ describe('WhatsappBotService Integration', () => {
           useValue: mockCacheService,
         },
         {
-          provide: ServiceRequestsService,
-          useValue: mockServiceRequestsService,
+          provide: MaintenanceRequestsService,
+          useValue: mockMaintenanceRequestsService,
         },
         {
           provide: LandlordFlow,
@@ -92,7 +92,7 @@ describe('WhatsappBotService Integration', () => {
           useValue: mockRepository,
         },
         {
-          provide: getRepositoryToken(ServiceRequest),
+          provide: getRepositoryToken(MaintenanceRequest),
           useValue: mockRepository,
         },
         {

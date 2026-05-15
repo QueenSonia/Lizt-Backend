@@ -7,17 +7,25 @@ import {
   Delete,
   Query,
   ParseUUIDPipe,
+  Patch,
   Put,
   Req,
+  UseGuards,
   UseInterceptors,
   UploadedFiles,
 } from '@nestjs/common';
-import { ServiceRequestsService } from './service-requests.service';
+import { MaintenanceRequestsService } from './maintenance-requests.service';
 import {
-  CreateServiceRequestDto,
-  ServiceRequestFilter,
-} from './dto/create-service-request.dto';
-import { UpdateServiceRequestResponseDto } from './dto/update-service-request.dto';
+  CreateMaintenanceRequestDto,
+  MaintenanceRequestFilter,
+} from './dto/create-maintenance-request.dto';
+import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-request.dto';
+import { AssignMaintenanceRequestDto } from './dto/assign-maintenance-request.dto';
+import { RoleGuard } from 'src/auth/role.guard';
+import { Roles } from 'src/auth/role.decorator';
+import { RolesEnum } from 'src/base.entity';
+import { CurrentUser } from 'src/auth/current-user.decorator';
+import { Account } from 'src/users/entities/account.entity';
 import {
   ApiOperation,
   ApiBody,
@@ -30,40 +38,41 @@ import {
   ApiTags,
   ApiConsumes,
 } from '@nestjs/swagger';
-import { ServiceRequestPaginationResponseDto } from './dto/paginate.dto';
+import { MaintenanceRequestPaginationResponseDto } from './dto/paginate.dto';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { FilesInterceptor } from '@nestjs/platform-express';
 
-@ApiTags('Service-Requests')
-@Controller('service-requests')
-export class ServiceRequestsController {
+@ApiTags('Maintenance-Requests')
+@Controller('maintenance-requests')
+export class MaintenanceRequestsController {
   constructor(
-    private readonly serviceRequestsService: ServiceRequestsService,
+    private readonly maintenanceRequestsService: MaintenanceRequestsService,
     private readonly fileUploadService: FileUploadService,
   ) {}
 
-  @ApiOperation({ summary: 'Create Service Request' })
+  @ApiOperation({ summary: 'Create Maintenance Request' })
   @ApiConsumes('multipart/form-data')
-  @ApiBody({ type: CreateServiceRequestDto })
-  @ApiCreatedResponse({ type: CreateServiceRequestDto })
+  @ApiBody({ type: CreateMaintenanceRequestDto })
+  @ApiCreatedResponse({ type: CreateMaintenanceRequestDto })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  async createServiceRequest(
-    @Body() body: CreateServiceRequestDto,
+  async createMaintenanceRequest(
+    @Body() body: CreateMaintenanceRequestDto,
     @Req() req: any,
   ) {
-    return this.serviceRequestsService.createServiceRequest(body, {
+    return this.maintenanceRequestsService.createMaintenanceRequest(body, {
       id: req?.user?.id,
       role: req?.user?.role,
     });
   }
 
-  @ApiOperation({ summary: 'Get All Service Requests' })
+  @ApiOperation({ summary: 'Get All Maintenance Requests' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
   @ApiQuery({ name: 'tenant_id', required: false, type: String })
   @ApiQuery({ name: 'property_id', required: false, type: String })
+  @ApiQuery({ name: 'common_area_id', required: false, type: String })
   @ApiQuery({ name: 'status', required: false, type: String })
   @ApiQuery({
     name: 'scope',
@@ -79,16 +88,16 @@ export class ServiceRequestsController {
   @ApiQuery({ name: 'start_date', required: false, type: String })
   @ApiQuery({ name: 'end_date', required: false, type: String })
   @ApiOkResponse({
-    type: ServiceRequestPaginationResponseDto,
-    description: 'Paginated list of service requests',
+    type: MaintenanceRequestPaginationResponseDto,
+    description: 'Paginated list of maintenance requests',
   })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
-  getAllServiceRequests(@Query() query: ServiceRequestFilter, @Req() req: any) {
+  getAllMaintenanceRequests(@Query() query: MaintenanceRequestFilter, @Req() req: any) {
     const user_id = req?.user?.id;
     const role = req?.user?.role;
-    return this.serviceRequestsService.getAllServiceRequests(
+    return this.maintenanceRequestsService.getAllMaintenanceRequests(
       user_id,
       query,
       role,
@@ -99,50 +108,34 @@ export class ServiceRequestsController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'size', required: false, type: Number })
   @ApiOkResponse({
-    type: ServiceRequestPaginationResponseDto,
-    description: 'Paginated list of service requests',
+    type: MaintenanceRequestPaginationResponseDto,
+    description: 'Paginated list of maintenance requests',
   })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('pending-urgent')
   getPendingAndUrgentRequests(
-    @Query() query: ServiceRequestFilter,
+    @Query() query: MaintenanceRequestFilter,
     @Req() req: any,
   ) {
-    return this.serviceRequestsService.getPendingAndUrgentRequests(
+    return this.maintenanceRequestsService.getPendingAndUrgentRequests(
       query,
       req?.user.id,
     );
   }
 
-  @ApiOperation({
-    summary: 'Common-area request counts grouped by property',
-    description:
-      "Used by the landlord's Common Areas tab. Returns one row per property the landlord owns that has at least one common-area request, with total and open counts.",
-  })
+  @ApiOperation({ summary: 'Get Maintenance Requests by Tenant' })
   @ApiOkResponse({
-    description: 'Per-property common-area request counts',
+    type: CreateMaintenanceRequestDto,
+    description: 'Maintenance request successfully fetched',
   })
-  @ApiSecurity('access_token')
-  @Get('common-areas-by-property')
-  getCommonAreasByProperty(@Req() req: any) {
-    return this.serviceRequestsService.getCommonAreaCountsByProperty(
-      req?.user?.id,
-    );
-  }
-
-  @ApiOperation({ summary: 'Get Service Requests by Tenant' })
-  @ApiOkResponse({
-    type: CreateServiceRequestDto,
-    description: 'Service request successfully fetched',
-  })
-  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('/tenant')
-  getServiceRequestByTenant(@Req() req: any) {
+  getMaintenanceRequestByTenant(@Req() req: any) {
     const status = req?.query?.status || '';
-    return this.serviceRequestsService.getServiceRequestByTenant(
+    return this.maintenanceRequestsService.getMaintenanceRequestByTenant(
       req?.user.id,
       status,
     );
@@ -151,7 +144,7 @@ export class ServiceRequestsController {
   @ApiOperation({
     summary: 'FM activity feed across all managed properties',
     description:
-      "Cursor-paginated stream of every status_history row (incl. creation events) on service requests filed against properties the requesting facility manager manages. Used to drive the FM dashboard's live activity feed. Pass back the previous response's `pagination.nextCursor` to fetch older events. Optional `landlordId` query param scopes the feed to a single landlord (used by the FM's landlord pill bar).",
+      "Cursor-paginated stream of every status_history row (incl. creation events) on maintenance requests filed against properties the requesting facility manager manages. Used to drive the FM dashboard's live activity feed. Pass back the previous response's `pagination.nextCursor` to fetch older events. Optional `landlordId` query param scopes the feed to a single landlord (used by the FM's landlord pill bar).",
   })
   @ApiQuery({ name: 'size', required: false, type: Number })
   @ApiQuery({ name: 'cursor_changed_at', required: false, type: String })
@@ -167,7 +160,7 @@ export class ServiceRequestsController {
     @Query('landlord_id') landlordId: string | undefined,
     @Req() req: any,
   ) {
-    return this.serviceRequestsService.getActivityFeedForFacilityManager(
+    return this.maintenanceRequestsService.getActivityFeedForFacilityManager(
       req?.user?.id,
       {
         size: size ? Number(size) : undefined,
@@ -181,79 +174,104 @@ export class ServiceRequestsController {
   }
 
   @ApiOperation({
-    summary: 'Status transition history for a service request',
+    summary: 'Status transition history for a maintenance request',
     description:
       'Returns the full audit trail (previous_status → new_status, actor, role, change reason, timestamp). Used to render the Activity timeline in the request detail modal. Includes the reopen message tenants leave when reopening a resolved request.',
   })
   @ApiOkResponse({ description: 'Ordered list of status transitions' })
-  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
   @ApiSecurity('access_token')
   @Get(':id/history')
-  getServiceRequestHistory(
+  getMaintenanceRequestHistory(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
   ) {
-    return this.serviceRequestsService.getStatusHistory(id, req?.user?.id);
+    return this.maintenanceRequestsService.getStatusHistory(id, req?.user?.id);
   }
 
-  @ApiOperation({ summary: 'Get One Service Request' })
+  @ApiOperation({ summary: 'Get One Maintenance Request' })
   @ApiOkResponse({
-    type: CreateServiceRequestDto,
-    description: 'Service request successfully fetched',
+    type: CreateMaintenanceRequestDto,
+    description: 'Maintenance request successfully fetched',
   })
-  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  getServiceRequestById(
+  getMaintenanceRequestById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
   ) {
-    return this.serviceRequestsService.getServiceRequestById(
+    return this.maintenanceRequestsService.getMaintenanceRequestById(
       id,
       req?.user?.id,
     );
   }
 
-  @ApiOperation({ summary: 'Update Service Request' })
+  @ApiOperation({
+    summary: 'Assign or unassign a facility manager to a maintenance request',
+    description:
+      'Landlord-only. Sets the facility manager handling this request. Pass `assigned_to: null` to clear the assignment. The assignee must be a FACILITY_MANAGER team_member on the landlord\'s team.',
+  })
+  @ApiBody({ type: AssignMaintenanceRequestDto })
+  @ApiOkResponse({ description: 'Assignment updated' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Patch(':id/assignee')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async setMaintenanceRequestAssignee(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: AssignMaintenanceRequestDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.setAssignee(
+      id,
+      body?.assigned_to ?? null,
+      requester.id,
+    );
+  }
+
+  @ApiOperation({ summary: 'Update Maintenance Request' })
   @ApiConsumes('multipart/form-data')
-  @ApiBody({ type: UpdateServiceRequestResponseDto })
-  @ApiOkResponse({ description: 'Service request successfully updated' })
+  @ApiBody({ type: UpdateMaintenanceRequestResponseDto })
+  @ApiOkResponse({ description: 'Maintenance request successfully updated' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
   @UseInterceptors(FilesInterceptor('issue_images', 20))
-  async updateServiceRequestById(
+  async updateMaintenanceRequestById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: UpdateServiceRequestResponseDto,
+    @Body() body: UpdateMaintenanceRequestResponseDto,
     @Req() req: any,
     @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     if (files?.length) {
       const uploadedUrls = await Promise.all(
         files.map((file) =>
-          this.fileUploadService.uploadFile(file, 'service-requests'),
+          this.fileUploadService.uploadFile(file, 'maintenance-requests'),
         ),
       );
       body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
     }
-    return this.serviceRequestsService.updateServiceRequestById(
+    return this.maintenanceRequestsService.updateMaintenanceRequestById(
       id,
       body,
       req?.user?.id,
     );
   }
 
-  @ApiOperation({ summary: 'Delete Service Request' })
+  @ApiOperation({ summary: 'Delete Maintenance Request' })
   @ApiOkResponse()
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Delete(':id')
-  deleteServiceRequestById(
+  deleteMaintenanceRequestById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
   ) {
-    return this.serviceRequestsService.deleteServiceRequestById(
+    return this.maintenanceRequestsService.deleteMaintenanceRequestById(
       id,
       req?.user?.id,
     );

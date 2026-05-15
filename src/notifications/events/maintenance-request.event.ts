@@ -1,5 +1,5 @@
-export interface ServiceRequestCreatedEvent {
-  service_request_id: string;
+export interface MaintenanceRequestCreatedEvent {
+  maintenance_request_id: string;
   user_id: string;
   landlord_id: string;
   property_id: string;

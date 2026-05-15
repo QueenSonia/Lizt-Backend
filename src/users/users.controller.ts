@@ -102,6 +102,20 @@ export class UsersController {
     return this.usersService.getTeamMembers(requester);
   }
 
+  @ApiOperation({
+    summary:
+      'Landlords the requesting facility manager is teamed with, with their open-request counts',
+    description:
+      "Returns one entry per landlord the requester is on a team for, each carrying `accountId`, `userId`, `displayName`, and `openRequestCount` (the number of SRs currently assigned to the requester on that landlord's properties or common areas, status NOT IN [RESOLVED, CLOSED]). Returns an empty array for non-FM users.",
+  })
+  @ApiOkResponse({ description: "List of FM's landlords" })
+  @ApiSecurity('access_token')
+  @UseGuards(JwtAuthGuard)
+  @Get('me/landlords')
+  async getMyLandlords(@CurrentUser() requester: Account) {
+    return this.usersService.getMyLandlords(requester.userId);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Put('team-members/:id')
   async updateTeamMember(
@@ -645,7 +659,6 @@ export class UsersController {
       first_name: string;
       last_name: string;
       phone_number: string;
-      property_ids?: string[];
     },
     @Req() req: any,
   ) {

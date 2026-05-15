@@ -1583,6 +1583,15 @@ export class UsersService {
   }
 
   /**
+   * Landlords the requesting facility manager is teamed with, with each
+   * landlord's open-request count for the requester. Empty array for
+   * non-FM callers.
+   */
+  async getMyLandlords(requesterUserId: string) {
+    return this.teamService.getMyLandlords(requesterUserId);
+  }
+
+  /**
    * Updates a team member's details (name and phone).
    * Delegates to TeamService.
    * @param id team member ID

@@ -1,11 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, Not, In } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import { Users } from 'src/users/entities/user.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
@@ -23,13 +23,16 @@ import { PaymentPlanScope } from 'src/payment-plans/entities/payment-plan.entity
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
-import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
+import {
+  MaintenanceRequestCreatorTypeEnum,
+  MaintenanceRequestStatusEnum,
+} from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
-import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
+import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import {
   TemplateSenderService,
   ButtonDefinition,
-  FacilityServiceRequestParams,
+  FacilityMaintenanceRequestParams,
   TenancyDetailsReviewLandlordParams,
   TenancyDetailsDisputeReasonLandlordParams,
 } from '../template-sender';
@@ -61,7 +64,7 @@ export class TenantFlowService {
 
   // Main menu buttons for tenant
   private readonly MAIN_MENU_BUTTONS: ButtonDefinition[] = [
-    { id: 'service_request', title: 'Service request' },
+    { id: 'maintenance_request', title: 'Maintenance request' },
     { id: 'view_tenancy', title: 'View tenancy details' },
     { id: 'payment', title: 'Payment' },
   ];
@@ -70,8 +73,8 @@ export class TenantFlowService {
     @InjectRepository(Users)
     private readonly usersRepo: Repository<Users>,
 
-    @InjectRepository(ServiceRequest)
-    private readonly serviceRequestRepo: Repository<ServiceRequest>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly maintenanceRequestRepo: Repository<MaintenanceRequest>,
 
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
@@ -87,7 +90,7 @@ export class TenantFlowService {
 
     private readonly cache: CacheService,
     private readonly utilService: UtilService,
-    private readonly serviceRequestService: ServiceRequestsService,
+    private readonly maintenanceRequestService: MaintenanceRequestsService,
     private readonly templateSenderService: TemplateSenderService,
     private readonly notificationLogService: WhatsAppNotificationLogService,
     private readonly tenantBalancesService: TenantBalancesService,
@@ -129,7 +132,7 @@ export class TenantFlowService {
     }
 
     if (lowerText === 'done') {
-      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`maintenance_request_state_${from}`);
       await this.templateSenderService.sendText(
         from,
         'Thank you!  Your session has ended.',
@@ -146,7 +149,7 @@ export class TenantFlowService {
    * Requirements: 2.3
    */
   async cachedResponse(from: string, text: string): Promise<void> {
-    const userState = await this.cache.get(`service_request_state_${from}`);
+    const userState = await this.cache.get(`maintenance_request_state_${from}`);
 
     // Handle property selection for tenancy details
     const tenancyDetailsSelection = await this.cache.get(
@@ -183,7 +186,7 @@ export class TenantFlowService {
       userState === 'awaiting_description' ||
       userState?.startsWith('awaiting_description:')
     ) {
-      await this.handleServiceRequestDescription(from, text, userState);
+      await this.handleMaintenanceRequestDescription(from, text, userState);
       return;
     }
 
@@ -192,8 +195,8 @@ export class TenantFlowService {
       return;
     }
 
-    if (userState === 'view_single_service_request') {
-      await this.handleViewSingleServiceRequest(from, text);
+    if (userState === 'view_single_maintenance_request') {
+      await this.handleViewSingleMaintenanceRequest(from, text);
       return;
     }
 
@@ -288,7 +291,7 @@ export class TenantFlowService {
 
     // Store selected property and move to awaiting description
     await this.cache.set(
-      `service_request_state_${from}`,
+      `maintenance_request_state_${from}`,
       `awaiting_description:${selectedPropertyId}`,
       this.SESSION_TIMEOUT_MS,
     );
@@ -300,9 +303,9 @@ export class TenantFlowService {
   }
 
   /**
-   * Handle service request description submission
+   * Handle maintenance request description submission
    */
-  private async handleServiceRequestDescription(
+  private async handleMaintenanceRequestDescription(
     from: string,
     text: string,
     userState: string,
@@ -320,12 +323,12 @@ export class TenantFlowService {
         from,
         'We could not find your tenancy information.',
       );
-      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`maintenance_request_state_${from}`);
       return;
     }
 
     // Fix #20: Prevent duplicate submissions within a short window
-    const dedupeKey = `service_request_dedup_${from}`;
+    const dedupeKey = `maintenance_request_dedup_${from}`;
     const existingSubmission = await this.cache.get(dedupeKey);
     if (existingSubmission) {
       await this.templateSenderService.sendText(
@@ -342,13 +345,13 @@ export class TenantFlowService {
         from,
         'We could not determine which property this request is for. Please try again.',
       );
-      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`maintenance_request_state_${from}`);
       return;
     }
 
     try {
-      const new_service_request =
-        await this.serviceRequestService.createServiceRequest(
+      const new_maintenance_request =
+        await this.maintenanceRequestService.createMaintenanceRequest(
           {
             property_id: selectedPropertyId,
             text,
@@ -356,14 +359,14 @@ export class TenantFlowService {
           { id: user.id, role: RolesEnum.TENANT },
         );
 
-      if (new_service_request) {
+      if (new_maintenance_request) {
         const {
           created_at,
           facility_managers,
           property_name,
           property_location,
           property_id,
-        } = new_service_request;
+        } = new_maintenance_request;
 
         await this.templateSenderService.sendText(
           from,
@@ -375,12 +378,12 @@ export class TenantFlowService {
           from,
           'Want to do something else?',
           [
-            { id: 'new_service_request', title: 'Request a service' },
+            { id: 'new_maintenance_request', title: 'Request a service' },
             { id: 'main_menu', title: 'Go back to main menu' },
           ],
         );
 
-        await this.cache.delete(`service_request_state_${from}`);
+        await this.cache.delete(`maintenance_request_state_${from}`);
 
         // Fix #11: Notifications are queued independently — failures don't affect the tenant
         try {
@@ -391,7 +394,7 @@ export class TenantFlowService {
             property_location,
             text,
             created_at,
-            new_service_request.id,
+            new_maintenance_request.id,
           );
         } catch (err) {
           this.logger.error('Failed to queue FM notifications:', err);
@@ -405,24 +408,24 @@ export class TenantFlowService {
             property_location,
             text,
             created_at,
-            new_service_request.id,
+            new_maintenance_request.id,
           );
         } catch (err) {
           this.logger.error('Failed to queue landlord notification:', err);
         }
       }
-      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`maintenance_request_state_${from}`);
     } catch (error) {
       // Fix #10: Never expose raw error messages to tenants
       this.logger.error(
-        'Service request creation failed:',
+        'Maintenance request creation failed:',
         (error as Error).message,
       );
       await this.templateSenderService.sendText(
         from,
         'Sorry, we could not log your request right now. Please try again shortly.',
       );
-      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`maintenance_request_state_${from}`);
       await this.cache.delete(dedupeKey);
     }
   }
@@ -436,9 +439,9 @@ export class TenantFlowService {
     user: Users,
     propertyName: string,
     propertyLocation: string,
-    serviceRequest: string,
+    maintenanceRequest: string,
     createdAt: Date,
-    serviceRequestId?: string,
+    maintenanceRequestId?: string,
   ): Promise<void> {
     if (!facilityManagers?.length) return;
 
@@ -447,12 +450,12 @@ export class TenantFlowService {
     const formattedDate = this.formatDateLagos(createdAt);
 
     for (const manager of facilityManagers) {
-      const params: FacilityServiceRequestParams = {
+      const params: FacilityMaintenanceRequestParams = {
         phone_number: manager.phone_number,
         manager_name: manager.name,
         property_name: propertyName,
         property_location: propertyLocation,
-        service_request: serviceRequest,
+        maintenance_request: maintenanceRequest,
         tenant_name: tenantName,
         tenant_phone_number: tenantLocalPhone,
         date_created: formattedDate,
@@ -460,9 +463,9 @@ export class TenantFlowService {
       };
 
       await this.notificationLogService.queue(
-        'sendFacilityServiceRequest',
+        'sendFacilityMaintenanceRequest',
         params,
-        serviceRequestId,
+        maintenanceRequestId,
       );
     }
   }
@@ -477,9 +480,9 @@ export class TenantFlowService {
     user: Users,
     propertyName: string,
     propertyLocation: string,
-    serviceRequest: string,
+    maintenanceRequest: string,
     createdAt: Date,
-    serviceRequestId?: string,
+    maintenanceRequestId?: string,
   ): Promise<void> {
     const property = await this.propertyRepo.findOne({
       where: { id: propertyId },
@@ -499,24 +502,37 @@ export class TenantFlowService {
 
     const tenantLocalPhone = this.toLocalPhone(user.phone_number);
 
-    const params: FacilityServiceRequestParams = {
+    if (!maintenanceRequestId) {
+      // Without the request id we can't build the landlord template's
+      // Assign/Reject button payloads. Bail rather than send a broken
+      // template — this should never happen in the WhatsApp create path
+      // (the id is available before notifications fire) but the type
+      // signature still allows it.
+      this.logger.warn(
+        `Cannot notify landlord: missing maintenance_request_id for property ${propertyId}`,
+      );
+      return;
+    }
+
+    const params: FacilityMaintenanceRequestParams = {
       phone_number: adminPhoneNumber,
       manager_name: this.utilService.toSentenceCase(
         property.owner.user.first_name,
       ),
       property_name: propertyName,
       property_location: propertyLocation,
-      service_request: serviceRequest,
+      maintenance_request: maintenanceRequest,
       tenant_name: `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`,
       tenant_phone_number: tenantLocalPhone,
       date_created: this.formatDateLagos(createdAt),
       is_landlord: true,
+      maintenance_request_id: maintenanceRequestId,
     };
 
     await this.notificationLogService.queue(
-      'sendFacilityServiceRequest',
+      'sendFacilityMaintenanceRequest',
       params,
-      serviceRequestId,
+      maintenanceRequestId,
     );
   }
 
@@ -540,9 +556,9 @@ export class TenantFlowService {
   }
 
   /**
-   * Handle viewing a single service request
+   * Handle viewing a single maintenance request
    */
-  private async handleViewSingleServiceRequest(
+  private async handleViewSingleMaintenanceRequest(
     from: string,
     text: string,
   ): Promise<void> {
@@ -550,25 +566,32 @@ export class TenantFlowService {
 
     // Fix #18: Escape LIKE special characters to prevent pattern injection
     const escapedText = text.replace(/[%_]/g, '\\$&');
-    const serviceRequests = await this.serviceRequestRepo.find({
+    const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: {
-        tenant: { user: { phone_number: normalizedPhone } },
+        creator: { phone_number: normalizedPhone },
+        creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
         description: ILike(`%${escapedText}%`),
+        status: Not(
+          In([
+            MaintenanceRequestStatusEnum.CLOSED,
+            MaintenanceRequestStatusEnum.REJECTED,
+          ]),
+        ),
       },
-      relations: ['tenant'],
+      relations: ['tenant', 'creator'],
     });
 
-    if (!serviceRequests.length) {
+    if (!maintenanceRequests.length) {
       await this.templateSenderService.sendText(
         from,
-        'No service requests found matching that description.',
+        'No maintenance requests found matching that description.',
       );
-      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`maintenance_request_state_${from}`);
       return;
     }
 
-    let response = 'Here are the matching service requests:\n';
-    serviceRequests.forEach((req) => {
+    let response = 'Here are the matching maintenance requests:\n';
+    maintenanceRequests.forEach((req) => {
       const createdDate = req.created_at
         ? new Date(req.created_at).toLocaleDateString()
         : 'Unknown date';
@@ -578,11 +601,11 @@ export class TenantFlowService {
     });
 
     await this.templateSenderService.sendText(from, response);
-    await this.cache.delete(`service_request_state_${from}`);
+    await this.cache.delete(`maintenance_request_state_${from}`);
 
     await this.templateSenderService.sendButtons(from, 'back', [
       {
-        id: 'service_request',
+        id: 'maintenance_request',
         title: 'Back to Requests',
       },
     ]);
@@ -704,23 +727,23 @@ export class TenantFlowService {
         await this.handleViewTenancy(from);
         break;
 
-      case 'service_request':
+      case 'maintenance_request':
         await this.templateSenderService.sendButtons(
           from,
           'What would you like to do?',
           [
-            { id: 'new_service_request', title: 'Request a service' },
-            { id: 'view_service_request', title: 'View all requests' },
+            { id: 'new_maintenance_request', title: 'Request a service' },
+            { id: 'view_maintenance_request', title: 'View all requests' },
           ],
         );
         break;
 
-      case 'view_service_request':
-        await this.handleViewServiceRequests(from);
+      case 'view_maintenance_request':
+        await this.handleViewMaintenanceRequests(from);
         break;
 
-      case 'new_service_request':
-        await this.handleNewServiceRequest(from);
+      case 'new_maintenance_request':
+        await this.handleNewMaintenanceRequest(from);
         break;
 
       case 'main_menu':
@@ -806,7 +829,7 @@ export class TenantFlowService {
         from,
         `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
         [
-          { id: 'service_request', title: 'Service Requests' },
+          { id: 'maintenance_request', title: 'Maintenance Requests' },
           { id: 'view_account_info', title: 'Account Info' },
           { id: 'visit_site', title: 'Visit Website' },
         ],
@@ -959,7 +982,7 @@ export class TenantFlowService {
       );
 
       await this.cache.set(
-        `service_request_state_${from}`,
+        `maintenance_request_state_${from}`,
         'other_options',
         this.SESSION_TIMEOUT_MS,
       );
@@ -972,30 +995,36 @@ export class TenantFlowService {
   }
 
   /**
-   * Handle view service requests button
+   * Handle view maintenance requests button
    */
-  private async handleViewServiceRequests(from: string): Promise<void> {
+  private async handleViewMaintenanceRequests(from: string): Promise<void> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
 
-    const serviceRequests = await this.serviceRequestRepo.find({
+    const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: {
-        tenant: { user: { phone_number: normalizedPhone } },
-        status: Not(ServiceRequestStatusEnum.CLOSED),
+        creator: { phone_number: normalizedPhone },
+        creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
+        status: Not(
+          In([
+            MaintenanceRequestStatusEnum.CLOSED,
+            MaintenanceRequestStatusEnum.REJECTED,
+          ]),
+        ),
       },
-      relations: ['tenant'],
+      relations: ['tenant', 'creator'],
       order: { created_at: 'DESC' },
     });
 
-    if (!serviceRequests.length) {
+    if (!maintenanceRequests.length) {
       await this.templateSenderService.sendText(
         from,
-        "You don't have any service requests yet.",
+        "You don't have any maintenance requests yet.",
       );
       return;
     }
 
-    let response = 'Here are your recent service requests:\n\n';
-    serviceRequests.forEach((req) => {
+    let response = 'Here are all your maintenance requests:\n\n';
+    maintenanceRequests.forEach((req) => {
       const date = req.created_at ? new Date(req.created_at) : new Date();
       const formattedDate = date.toLocaleDateString('en-GB', {
         day: '2-digit',
@@ -1017,16 +1046,16 @@ export class TenantFlowService {
       from,
       'Want to do something else?',
       [
-        { id: 'new_service_request', title: 'Request a service' },
+        { id: 'new_maintenance_request', title: 'Request a service' },
         { id: 'main_menu', title: 'Go back to main menu' },
       ],
     );
   }
 
   /**
-   * Handle new service request button
+   * Handle new maintenance request button
    */
-  private async handleNewServiceRequest(from: string): Promise<void> {
+  private async handleNewMaintenanceRequest(from: string): Promise<void> {
     const user = await this.findTenantByPhone(from);
 
     this.logger.log('👤 User lookup result (new request):', {
@@ -1076,14 +1105,14 @@ export class TenantFlowService {
 
       // Store property IDs in cache
       await this.cache.set(
-        `service_request_state_${from}`,
+        `maintenance_request_state_${from}`,
         `select_property:${JSON.stringify(properties.map((p) => p.property_id))}`,
         this.SESSION_TIMEOUT_MS,
       );
     } else {
       // Single property - proceed directly to description
       await this.cache.set(
-        `service_request_state_${from}`,
+        `maintenance_request_state_${from}`,
         `awaiting_description:${properties[0].property_id}`,
         this.SESSION_TIMEOUT_MS,
       );
@@ -1099,7 +1128,7 @@ export class TenantFlowService {
    */
   private async handleMainMenu(from: string): Promise<void> {
     // Clear any cached state and return to main menu
-    await this.cache.delete(`service_request_state_${from}`);
+    await this.cache.delete(`maintenance_request_state_${from}`);
 
     const user = await this.findTenantByPhone(from);
 
@@ -1120,10 +1149,10 @@ export class TenantFlowService {
   private async handleConfirmResolutionYes(from: string): Promise<void> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
 
-    const latestResolvedRequest = await this.serviceRequestRepo.findOne({
+    const latestResolvedRequest = await this.maintenanceRequestRepo.findOne({
       where: {
         tenant: { user: { phone_number: normalizedPhone } },
-        status: ServiceRequestStatusEnum.RESOLVED,
+        status: MaintenanceRequestStatusEnum.RESOLVED,
       },
       relations: ['tenant', 'tenant.user', 'property'],
       order: { resolution_date: 'DESC' },
@@ -1134,9 +1163,9 @@ export class TenantFlowService {
       // tenant + tenant.user are guaranteed populated despite the nullable
       // tenant column on the entity.
       const tenantUser = latestResolvedRequest.tenant?.user;
-      await this.serviceRequestService.updateStatus(
+      await this.maintenanceRequestService.updateStatus(
         latestResolvedRequest.id,
-        ServiceRequestStatusEnum.CLOSED,
+        MaintenanceRequestStatusEnum.CLOSED,
         'Tenant confirmed issue is fully resolved via WhatsApp',
         {
           id: tenantUser?.id ?? 'system',
@@ -1153,10 +1182,12 @@ export class TenantFlowService {
       );
 
       const statusMessage = `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`;
-      await this.notifyPropertyStakeholders(
-        latestResolvedRequest.property_id,
-        statusMessage,
-      );
+      if (latestResolvedRequest.property_id) {
+        await this.notifyPropertyStakeholders(
+          latestResolvedRequest.property_id,
+          statusMessage,
+        );
+      }
     } else {
       await this.templateSenderService.sendText(
         from,
@@ -1171,10 +1202,10 @@ export class TenantFlowService {
   private async handleConfirmResolutionNo(from: string): Promise<void> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
 
-    const latestResolvedRequest = await this.serviceRequestRepo.findOne({
+    const latestResolvedRequest = await this.maintenanceRequestRepo.findOne({
       where: {
         tenant: { user: { phone_number: normalizedPhone } },
-        status: ServiceRequestStatusEnum.RESOLVED,
+        status: MaintenanceRequestStatusEnum.RESOLVED,
       },
       relations: ['tenant', 'tenant.user', 'property'],
       order: { resolution_date: 'DESC' },
@@ -1182,9 +1213,9 @@ export class TenantFlowService {
 
     if (latestResolvedRequest) {
       const tenantUser = latestResolvedRequest.tenant?.user;
-      await this.serviceRequestService.updateStatus(
+      await this.maintenanceRequestService.updateStatus(
         latestResolvedRequest.id,
-        ServiceRequestStatusEnum.REOPENED,
+        MaintenanceRequestStatusEnum.REOPENED,
         'Tenant reported issue is not fully resolved via WhatsApp',
         {
           id: tenantUser?.id ?? 'system',
@@ -1201,10 +1232,12 @@ export class TenantFlowService {
       );
 
       const statusMessage = `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`;
-      await this.notifyPropertyStakeholders(
-        latestResolvedRequest.property_id,
-        statusMessage,
-      );
+      if (latestResolvedRequest.property_id) {
+        await this.notifyPropertyStakeholders(
+          latestResolvedRequest.property_id,
+          statusMessage,
+        );
+      }
     } else {
       await this.templateSenderService.sendText(
         from,
@@ -1240,12 +1273,11 @@ export class TenantFlowService {
         );
       }
 
-      // Notify the FM assigned to this specific property (0..1).
-      // Properties without an assigned FM only ping the landlord above.
-      const fms =
-        await this.serviceRequestService.findFacilityManagerForProperty(
-          property.id,
-        );
+      // Notify every FM on the landlord's team — FMs are no longer pinned
+      // to a property, so the whole team gets pinged for property-level events.
+      const fms = await this.maintenanceRequestService.findTeamFmsForLandlord(
+        property.owner_id,
+      );
       for (const fm of fms) {
         if (fm.account?.user?.phone_number) {
           await this.templateSenderService.sendText(
@@ -1382,7 +1414,7 @@ export class TenantFlowService {
 
       await this.templateSenderService.sendText(from, propertyList);
       await this.cache.set(
-        `service_request_state_${from}`,
+        `maintenance_request_state_${from}`,
         `select_property_ob:${JSON.stringify(filtered.map(({ rent }) => rent.property_id))}`,
         this.SESSION_TIMEOUT_MS,
       );
@@ -1414,7 +1446,7 @@ export class TenantFlowService {
       return;
     }
 
-    await this.cache.delete(`service_request_state_${from}`);
+    await this.cache.delete(`maintenance_request_state_${from}`);
 
     const user = await this.findTenantByPhone(from);
     if (!user?.accounts?.length) return;
@@ -1671,7 +1703,7 @@ export class TenantFlowService {
 
       await this.templateSenderService.sendText(from, propertyList);
       await this.cache.set(
-        `service_request_state_${from}`,
+        `maintenance_request_state_${from}`,
         `select_property_rent:${JSON.stringify(activeRents.map((r) => r.property_id))}`,
         this.SESSION_TIMEOUT_MS,
       );
@@ -1756,7 +1788,7 @@ export class TenantFlowService {
       return;
     }
 
-    await this.cache.delete(`service_request_state_${from}`);
+    await this.cache.delete(`maintenance_request_state_${from}`);
 
     const user = await this.findTenantByPhone(from);
     if (!user?.accounts?.length) return;
@@ -2417,7 +2449,7 @@ export class TenantFlowService {
       }
 
       await this.cache.set(
-        `service_request_state_${from}`,
+        `maintenance_request_state_${from}`,
         `awaiting_tenancy_dispute_reason:${propertyId}`,
         this.SESSION_TIMEOUT_MS,
       );
@@ -2492,7 +2524,7 @@ export class TenantFlowService {
   ): Promise<void> {
     const propertyId = userState.split(':')[1];
     if (!propertyId) {
-      await this.cache.delete(`service_request_state_${from}`);
+      await this.cache.delete(`maintenance_request_state_${from}`);
       await this.showTenantMenu(from);
       return;
     }
@@ -2507,7 +2539,7 @@ export class TenantFlowService {
       return;
     }
 
-    await this.cache.delete(`service_request_state_${from}`);
+    await this.cache.delete(`maintenance_request_state_${from}`);
 
     try {
       await this.queueTenancyDisputeReasonLandlordNotification(
@@ -2598,9 +2630,9 @@ export class TenantFlowService {
 
   /**
    * Find tenant by phone number.
-   * Filters user.accounts to only those that appear as tenant_id in PropertyTenant,
-   * so callers can safely use accounts[0] as the active tenant account regardless
-   * of what role label the account has.
+   * Hard-filters user.accounts to TENANT-role accounts that also appear as
+   * tenant_id in PropertyTenant. Returns null if no account survives, so
+   * callers can trust accounts[0] is a real, role-correct tenant account.
    */
   private async findTenantByPhone(phoneNumber: string): Promise<Users | null> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
@@ -2634,17 +2666,10 @@ export class TenantFlowService {
     const tenantAccountIds = new Set(tenantRecords.map((r) => r.tenant_id));
     if (!tenantAccountIds.size) return null;
 
-    // Keep only accounts that are used as tenant_id in PropertyTenant.
-    // Sort so proper TENANT-role accounts come first — callers using accounts[0]
-    // will get the cleanest account when both old (FM/landlord) and new (tenant)
-    // records exist for the same user.
-    user.accounts = user.accounts
-      .filter((a) => tenantAccountIds.has(a.id))
-      .sort((a, b) => {
-        if (a.role === RolesEnum.TENANT && b.role !== RolesEnum.TENANT) return -1;
-        if (a.role !== RolesEnum.TENANT && b.role === RolesEnum.TENANT) return 1;
-        return 0;
-      });
+    user.accounts = user.accounts.filter(
+      (a) => a.role === RolesEnum.TENANT && tenantAccountIds.has(a.id),
+    );
+    if (!user.accounts.length) return null;
     return user;
   }
 }

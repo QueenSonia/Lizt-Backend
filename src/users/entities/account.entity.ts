@@ -1,4 +1,4 @@
-import { BaseEntity, RolesEnum } from 'src/base.entity';
+﻿import { BaseEntity, RolesEnum } from 'src/base.entity';
 import {
   Column,
   Entity,
@@ -14,7 +14,7 @@ import { Rent } from 'src/rents/entities/rent.entity';
 import { KYC } from './kyc.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { NoticeAgreement } from 'src/notice-agreements/entities/notice-agreement.entity';
 import { Notification } from 'src/notifications/entities/notification.entity';
 import { Team } from './team.entity';
@@ -80,8 +80,8 @@ export class Account extends BaseEntity {
   @OneToMany(() => PropertyHistory, (ph) => ph.tenant)
   property_histories: PropertyHistory[];
 
-  @OneToMany(() => ServiceRequest, (sr) => sr.tenant)
-  service_requests: ServiceRequest[];
+  @OneToMany(() => MaintenanceRequest, (sr) => sr.tenant)
+  maintenance_requests: MaintenanceRequest[];
 
   @OneToMany(() => NoticeAgreement, (na) => na.tenant)
   notice_agreements: NoticeAgreement[];

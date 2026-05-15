@@ -1,14 +1,17 @@
-import { Injectable, Inject, forwardRef, Logger } from '@nestjs/common';
+﻿import { Injectable, Inject, forwardRef, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RolesEnum } from 'src/base.entity';
 import { CacheService } from 'src/lib/cache';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
 import { Repository } from 'typeorm';
 import { LandlordLookup } from './landlordlookup';
+import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
+import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
+import { TeamMember } from 'src/users/entities/team-member.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import {
@@ -57,8 +60,8 @@ export class LandlordFlow {
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
 
-    @InjectRepository(ServiceRequest)
-    private readonly serviceRequestRepo: Repository<ServiceRequest>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly maintenanceRequestRepo: Repository<MaintenanceRequest>,
 
     @InjectRepository(Rent)
     private readonly rentRepo: Repository<Rent>,
@@ -78,6 +81,7 @@ export class LandlordFlow {
     private readonly notificationLogService: WhatsAppNotificationLogService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly maintenanceRequestsService: MaintenanceRequestsService,
   ) {
     const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config, chatLogService);
@@ -87,7 +91,7 @@ export class LandlordFlow {
       usersRepo,
       accountRepo,
       propertyTenantRepo,
-      serviceRequestRepo,
+      maintenanceRequestRepo,
       utilService,
       kycLinksService,
       chatLogService,
@@ -112,25 +116,188 @@ export class LandlordFlow {
     }
 
     if (['done', 'menu'].includes(text?.toLowerCase())) {
+      await this.cache.delete(`maintenance_approve_state_${from}`);
+      await this.cache.delete(`maintenance_reject_state_${from}`);
       await this.lookup.handleExitOrMenu(from, text);
       return;
     }
 
-    const raw = await this.cache.get(`service_request_state_landlord_${from}`);
+    // Pending FM selection for an Approve tap takes priority over the
+    // generic landlord state machine — the digit reply only makes sense
+    // in this context.
+    const approveState = await this.cache.get(
+      `maintenance_approve_state_${from}`,
+    );
+    if (approveState) {
+      await this.handleApproveFmDigitReply(from, text, approveState);
+      return;
+    }
+
+    // Pending reason capture for a Reject confirm.
+    const rejectState = await this.cache.get(
+      `maintenance_reject_state_${from}`,
+    );
+    if (rejectState) {
+      await this.handleRejectReasonReply(from, text, rejectState);
+      return;
+    }
+
+    const raw = await this.cache.get(`maintenance_request_state_landlord_${from}`);
     if (!raw) {
       await this.lookup.handleExitOrMenu(from, text);
       return;
     }
 
-    const { type } = raw;
-
-    console.log({ type });
+    const state = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const { type, ids } = state ?? {};
 
     if (type === 'generate_kyc_link') {
       await this.lookup.handleGenerateKYCLinkText(from, text);
+    } else if (type === 'maintenance') {
+      await this.handleMaintenanceDigitReply(from, text, ids);
+    } else if (type === 'tenancy') {
+      await this.handleTenancyDigitReply(from, text, ids);
     } else {
       await this.lookup.handleExitOrMenu(from, text);
     }
+  }
+
+  /**
+   * Resolve digit reply against the cached maintenance request id list,
+   * show the picked request's detail, and (if still NOT_APPROVED) offer
+   * Approve / Reject buttons that reuse the existing button-handler
+   * payloads. Clears the cache when done so the next text falls back to
+   * the menu instead of looping here.
+   */
+  private async handleMaintenanceDigitReply(
+    from: string,
+    text: string,
+    ids: string[] | undefined,
+  ): Promise<void> {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+      await this.lookup.handleExitOrMenu(from, text);
+      return;
+    }
+
+    const idx = parseInt(text.trim(), 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= ids.length) {
+      await this.whatsappUtil.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number from the list.',
+      );
+      return;
+    }
+
+    const sr = await this.maintenanceRequestRepo.findOne({
+      where: { id: ids[idx] },
+      relations: ['property', 'tenant', 'tenant.user', 'facilityManager', 'facilityManager.account', 'facilityManager.account.user'],
+    });
+
+    if (!sr) {
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+      await this.whatsappUtil.sendText(from, 'That request was not found.');
+      return;
+    }
+
+    const reportedDate = new Date(sr.date_reported).toLocaleDateString(
+      'en-NG',
+      { year: 'numeric', month: 'short', day: 'numeric' },
+    );
+    const reporter = sr.tenant?.user
+      ? `${sr.tenant.user.first_name} ${sr.tenant.user.last_name}`.trim()
+      : sr.tenant_name || 'Facility manager';
+    const assignee = sr.facilityManager?.account?.profile_name
+      || [sr.facilityManager?.account?.user?.first_name, sr.facilityManager?.account?.user?.last_name].filter(Boolean).join(' ')
+      || null;
+
+    const lines = [
+      `*${sr.description}*`,
+      '',
+      `Property: ${sr.property?.name ?? sr.property_name ?? '—'}`,
+      `Category: ${sr.issue_category}`,
+      `Reporter: ${reporter}`,
+      `Reported: ${reportedDate}`,
+      `Status: ${sr.status}`,
+    ];
+    if (assignee) lines.push(`Assigned to: ${assignee}`);
+
+    await this.whatsappUtil.sendText(from, lines.join('\n'));
+
+    if (sr.status === MaintenanceRequestStatusEnum.NOT_APPROVED) {
+      await this.whatsappUtil.sendButtons(
+        from,
+        'What would you like to do with this request?',
+        [
+          { id: `landlord_approve_mr:${sr.id}`, title: 'Approve' },
+          { id: `landlord_reject_mr:${sr.id}`, title: 'Reject' },
+        ],
+      );
+    }
+
+    await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+  }
+
+  /**
+   * Resolve digit reply against the cached property-tenant id list and
+   * show a one-shot summary for the picked tenancy. View-only; the
+   * landlord acts on tenancies from the web app.
+   */
+  private async handleTenancyDigitReply(
+    from: string,
+    text: string,
+    ids: string[] | undefined,
+  ): Promise<void> {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+      await this.lookup.handleExitOrMenu(from, text);
+      return;
+    }
+
+    const idx = parseInt(text.trim(), 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= ids.length) {
+      await this.whatsappUtil.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number from the list.',
+      );
+      return;
+    }
+
+    const pt = await this.propertyTenantRepo.findOne({
+      where: { id: ids[idx] },
+      relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
+    });
+
+    if (!pt) {
+      await this.cache.delete(`maintenance_request_state_landlord_${from}`);
+      await this.whatsappUtil.sendText(from, 'That tenancy was not found.');
+      return;
+    }
+
+    const latestRent = pt.property?.rents?.[pt.property.rents.length - 1] || null;
+    const tenantName = pt.tenant?.user
+      ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`.trim()
+      : 'Vacant';
+    const tenantPhone = pt.tenant?.user?.phone_number || '—';
+    const rentAmount = latestRent?.rental_price
+      ? Number(latestRent.rental_price).toLocaleString('en-NG', { style: 'currency', currency: 'NGN' })
+      : '——';
+    const expiry = latestRent?.expiry_date
+      ? new Date(latestRent.expiry_date).toLocaleDateString('en-NG', { year: 'numeric', month: 'short', day: 'numeric' })
+      : '——';
+
+    const lines = [
+      `*${pt.property?.name ?? 'Tenancy'}*`,
+      '',
+      `Tenant: ${tenantName}`,
+      `Phone: ${tenantPhone}`,
+      `Rent: ${rentAmount}/yr`,
+      `Next rent due: ${expiry}`,
+      `Status: ${pt.status}`,
+    ];
+
+    await this.whatsappUtil.sendText(from, lines.join('\n'));
+    await this.cache.delete(`maintenance_request_state_landlord_${from}`);
   }
 
   /**
@@ -172,6 +339,30 @@ export class LandlordFlow {
         applicationId,
         phone: from,
       });
+      return;
+    }
+
+    // Maintenance request action buttons fired by the landlord notification.
+    if (buttonId.startsWith('landlord_approve_mr:')) {
+      const requestId = buttonId.split('landlord_approve_mr:')[1];
+      await this.handleApproveMaintenanceRequest(from, requestId);
+      return;
+    }
+    if (buttonId.startsWith('landlord_reject_mr:')) {
+      const requestId = buttonId.split('landlord_reject_mr:')[1];
+      await this.handleRejectMaintenanceRequestPrompt(from, requestId);
+      return;
+    }
+    if (buttonId.startsWith('landlord_reject_confirm:')) {
+      // payload shape: landlord_reject_confirm:<requestId>:<yes|no>
+      const parts = buttonId.split(':');
+      const requestId = parts[1];
+      const answer = parts[2];
+      if (answer === 'yes') {
+        await this.handleRejectMaintenanceRequestConfirm(from, requestId);
+      } else {
+        await this.handleRejectMaintenanceRequestCancel(from, requestId);
+      }
       return;
     }
 
@@ -476,5 +667,434 @@ export class LandlordFlow {
     });
 
     this.logger.log(`Rent request declined for invoice ${invoiceId}`);
+  }
+
+  // ------------------------
+  // MAINTENANCE REQUEST ACTION FLOW (Assign / Reject)
+  // ------------------------
+
+  /**
+   * Resolve the landlord's Account (and underlying Users row) from the
+   * inbound phone number. Returns null if no landlord account is wired
+   * up for that phone.
+   */
+  private async resolveLandlordAccount(
+    from: string,
+  ): Promise<{ accountId: string; user: Users; account: Account } | null> {
+    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const user = await this.usersRepo.findOne({
+      where: { phone_number: normalizedPhone },
+      relations: ['accounts'],
+    });
+    if (!user) return null;
+    const landlordAccount = user.accounts?.find(
+      (a) => a.role === RolesEnum.LANDLORD,
+    );
+    if (!landlordAccount) return null;
+    return { accountId: landlordAccount.id, user, account: landlordAccount };
+  }
+
+  /**
+   * Stale-tap reply text. The landlord tapped a button on a notification
+   * for a request that has already moved past NOT_APPROVED.
+   */
+  private staleTapReply(
+    sr: MaintenanceRequest,
+    assigneeName: string | null,
+  ): string {
+    switch (sr.status) {
+      case MaintenanceRequestStatusEnum.APPROVED:
+        return assigneeName
+          ? `This request is already assigned to ${assigneeName}.`
+          : 'This request has already been approved.';
+      case MaintenanceRequestStatusEnum.RESOLVED:
+        return 'This request has already been marked resolved.';
+      case MaintenanceRequestStatusEnum.REOPENED:
+        return 'This request has been reopened — manage it from the web app.';
+      case MaintenanceRequestStatusEnum.CLOSED:
+        return 'This request is already closed.';
+      case MaintenanceRequestStatusEnum.REJECTED:
+        return 'This request is already rejected.';
+      default:
+        return 'This request is no longer pending action.';
+    }
+  }
+
+  private fmDisplayName(fm: TeamMember): string {
+    const user = fm.account?.user;
+    return (
+      fm.account?.profile_name ||
+      [user?.first_name, user?.last_name].filter(Boolean).join(' ') ||
+      'Facility Manager'
+    );
+  }
+
+  private async handleApproveMaintenanceRequest(
+    from: string,
+    requestId: string,
+  ): Promise<void> {
+    const landlord = await this.resolveLandlordAccount(from);
+    if (!landlord) {
+      await this.whatsappUtil.sendText(
+        from,
+        'We could not find your landlord account. Please try again.',
+      );
+      return;
+    }
+
+    const sr = await this.maintenanceRequestRepo.findOne({
+      where: { id: requestId },
+      relations: ['property', 'common_area', 'facilityManager', 'facilityManager.account', 'facilityManager.account.user'],
+    });
+    if (!sr) {
+      await this.whatsappUtil.sendText(from, 'This request was not found.');
+      return;
+    }
+
+    const ownerAccountId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
+    if (ownerAccountId !== landlord.accountId) {
+      await this.whatsappUtil.sendText(
+        from,
+        'You do not have access to this request.',
+      );
+      return;
+    }
+
+    if (sr.status !== MaintenanceRequestStatusEnum.NOT_APPROVED) {
+      const assigneeName = sr.facilityManager
+        ? this.fmDisplayName(sr.facilityManager)
+        : null;
+      await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+      return;
+    }
+
+    const teamFms =
+      await this.maintenanceRequestsService.findTeamFmsForLandlord(
+        landlord.accountId,
+      );
+
+    if (!teamFms.length) {
+      await this.whatsappUtil.sendText(
+        from,
+        "You don't have any facility managers yet. Add one in the web app before approving requests.",
+      );
+      return;
+    }
+
+    let response = 'Who should this request be assigned to?\n\n';
+    teamFms.forEach((fm, i) => {
+      response += `${i + 1}. ${this.fmDisplayName(fm)}\n`;
+    });
+    response += '\nReply with the number of the facility manager.';
+
+    await this.whatsappUtil.sendText(from, response);
+
+    await this.cache.set(
+      `maintenance_approve_state_${from}`,
+      {
+        type: 'approve_fm',
+        requestId,
+        fmIds: teamFms.map((fm) => fm.id),
+      },
+      5 * 60 * 1000,
+    );
+  }
+
+  private async handleApproveFmDigitReply(
+    from: string,
+    text: string,
+    state: { type?: string; requestId?: string; fmIds?: string[] },
+  ): Promise<void> {
+    if (
+      state?.type !== 'approve_fm' ||
+      !state.requestId ||
+      !Array.isArray(state.fmIds) ||
+      state.fmIds.length === 0
+    ) {
+      // Corrupted state — clear and bail back to the main menu.
+      await this.cache.delete(`maintenance_approve_state_${from}`);
+      await this.lookup.handleExitOrMenu(from, text);
+      return;
+    }
+
+    const selectedIndex = parseInt(text.trim(), 10) - 1;
+    if (
+      isNaN(selectedIndex) ||
+      selectedIndex < 0 ||
+      selectedIndex >= state.fmIds.length
+    ) {
+      await this.whatsappUtil.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number.',
+      );
+      return;
+    }
+
+    const teamMemberId = state.fmIds[selectedIndex];
+
+    const landlord = await this.resolveLandlordAccount(from);
+    if (!landlord) {
+      await this.cache.delete(`maintenance_approve_state_${from}`);
+      await this.whatsappUtil.sendText(
+        from,
+        'We could not find your landlord account. Please try again.',
+      );
+      return;
+    }
+
+    try {
+      const updated =
+        await this.maintenanceRequestsService.approveAndAssignMaintenanceRequest(
+          state.requestId,
+          teamMemberId,
+          landlord.accountId,
+        );
+      const assigneeName = updated.facilityManager
+        ? this.fmDisplayName(updated.facilityManager)
+        : 'the facility manager';
+      await this.whatsappUtil.sendText(
+        from,
+        `Approved and assigned to ${assigneeName}.`,
+      );
+      await this.cache.delete(`maintenance_approve_state_${from}`);
+    } catch (err) {
+      const message = (err as { message?: string })?.message ?? '';
+      const status = (err as { status?: number })?.status;
+      if (status === 409 || message.toLowerCase().includes('no longer pending approval')) {
+        const sr = await this.maintenanceRequestRepo.findOne({
+          where: { id: state.requestId },
+          relations: [
+            'facilityManager',
+            'facilityManager.account',
+            'facilityManager.account.user',
+          ],
+        });
+        if (sr) {
+          const assigneeName = sr.facilityManager
+            ? this.fmDisplayName(sr.facilityManager)
+            : null;
+          await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+          await this.cache.delete(`maintenance_approve_state_${from}`);
+          return;
+        }
+      }
+      this.logger.warn(
+        `Approve via WhatsApp failed for request ${state.requestId}: ${message || err}`,
+      );
+      await this.whatsappUtil.sendText(
+        from,
+        'Sorry, we could not approve this request. Please try again or use the web app.',
+      );
+      await this.cache.delete(`maintenance_approve_state_${from}`);
+    }
+  }
+
+  private async handleRejectMaintenanceRequestPrompt(
+    from: string,
+    requestId: string,
+  ): Promise<void> {
+    const landlord = await this.resolveLandlordAccount(from);
+    if (!landlord) {
+      await this.whatsappUtil.sendText(
+        from,
+        'We could not find your landlord account. Please try again.',
+      );
+      return;
+    }
+
+    const sr = await this.maintenanceRequestRepo.findOne({
+      where: { id: requestId },
+      relations: [
+        'property',
+        'common_area',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
+    });
+    if (!sr) {
+      await this.whatsappUtil.sendText(from, 'This request was not found.');
+      return;
+    }
+
+    const ownerAccountId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
+    if (ownerAccountId !== landlord.accountId) {
+      await this.whatsappUtil.sendText(
+        from,
+        'You do not have access to this request.',
+      );
+      return;
+    }
+
+    if (sr.status !== MaintenanceRequestStatusEnum.NOT_APPROVED) {
+      const assigneeName = sr.facilityManager
+        ? this.fmDisplayName(sr.facilityManager)
+        : null;
+      await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+      return;
+    }
+
+    await this.whatsappUtil.sendButtons(
+      from,
+      'Are you sure you want to reject this request?',
+      [
+        {
+          id: `landlord_reject_confirm:${requestId}:yes`,
+          title: 'Yes, reject',
+        },
+        {
+          id: `landlord_reject_confirm:${requestId}:no`,
+          title: 'No, cancel',
+        },
+      ],
+    );
+  }
+
+  private async handleRejectMaintenanceRequestConfirm(
+    from: string,
+    requestId: string,
+  ): Promise<void> {
+    const landlord = await this.resolveLandlordAccount(from);
+    if (!landlord) {
+      await this.whatsappUtil.sendText(
+        from,
+        'We could not find your landlord account. Please try again.',
+      );
+      return;
+    }
+
+    // Re-check ownership + status here so we don't park the user in a
+    // reason-capture state for a request that's already moved on.
+    const sr = await this.maintenanceRequestRepo.findOne({
+      where: { id: requestId },
+      relations: [
+        'property',
+        'common_area',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
+    });
+    if (!sr) {
+      await this.whatsappUtil.sendText(from, 'This request was not found.');
+      return;
+    }
+    const ownerAccountId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
+    if (ownerAccountId !== landlord.accountId) {
+      await this.whatsappUtil.sendText(
+        from,
+        'You do not have access to this request.',
+      );
+      return;
+    }
+    if (sr.status !== MaintenanceRequestStatusEnum.NOT_APPROVED) {
+      const assigneeName = sr.facilityManager
+        ? this.fmDisplayName(sr.facilityManager)
+        : null;
+      await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+      return;
+    }
+
+    await this.cache.set(
+      `maintenance_reject_state_${from}`,
+      { type: 'awaiting_reject_reason', requestId },
+      5 * 60 * 1000,
+    );
+
+    await this.whatsappUtil.sendText(
+      from,
+      'Please tell us why you are rejecting this request, or type "skip" to reject without a reason.',
+    );
+  }
+
+  private async handleRejectReasonReply(
+    from: string,
+    text: string,
+    state: { type?: string; requestId?: string },
+  ): Promise<void> {
+    if (state?.type !== 'awaiting_reject_reason' || !state.requestId) {
+      await this.cache.delete(`maintenance_reject_state_${from}`);
+      await this.lookup.handleExitOrMenu(from, text);
+      return;
+    }
+
+    const landlord = await this.resolveLandlordAccount(from);
+    if (!landlord) {
+      await this.cache.delete(`maintenance_reject_state_${from}`);
+      await this.whatsappUtil.sendText(
+        from,
+        'We could not find your landlord account. Please try again.',
+      );
+      return;
+    }
+
+    const trimmed = text.trim();
+    const isSkip = trimmed.toLowerCase() === 'skip';
+    const reason = isSkip || trimmed.length === 0 ? null : trimmed;
+
+    try {
+      await this.maintenanceRequestsService.rejectMaintenanceRequest(
+        state.requestId,
+        landlord.accountId,
+        reason,
+      );
+      await this.whatsappUtil.sendText(
+        from,
+        reason ? 'Request rejected. Reason recorded.' : 'Request rejected.',
+      );
+      await this.cache.delete(`maintenance_reject_state_${from}`);
+    } catch (err) {
+      const message = (err as { message?: string })?.message ?? '';
+      const status = (err as { status?: number })?.status;
+      if (status === 409 || message.toLowerCase().includes('no longer pending approval')) {
+        const sr = await this.maintenanceRequestRepo.findOne({
+          where: { id: state.requestId },
+          relations: [
+            'facilityManager',
+            'facilityManager.account',
+            'facilityManager.account.user',
+          ],
+        });
+        if (sr) {
+          const assigneeName = sr.facilityManager
+            ? this.fmDisplayName(sr.facilityManager)
+            : null;
+          await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+          await this.cache.delete(`maintenance_reject_state_${from}`);
+          return;
+        }
+      }
+      this.logger.warn(
+        `Reject via WhatsApp failed for request ${state.requestId}: ${message || err}`,
+      );
+      await this.whatsappUtil.sendText(
+        from,
+        'Sorry, we could not reject this request. Please try again or use the web app.',
+      );
+      await this.cache.delete(`maintenance_reject_state_${from}`);
+    }
+  }
+
+  private async handleRejectMaintenanceRequestCancel(
+    from: string,
+    requestId: string,
+  ): Promise<void> {
+    await this.whatsappUtil.sendButtons(
+      from,
+      'OK, cancelled. What would you like to do?',
+      [
+        {
+          id: `landlord_approve_mr:${requestId}`,
+          title: 'Approve',
+        },
+        {
+          id: `landlord_reject_mr:${requestId}`,
+          title: 'Reject',
+        },
+      ],
+    );
   }
 }

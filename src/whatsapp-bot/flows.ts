@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
@@ -12,8 +12,8 @@ export const SCREEN_RESPONSES: any = {
     data: {
       tenant_default_actions: [
         {
-          id: 'service_request',
-          title: '\ud83d\udee0 Service Request',
+          id: 'maintenance_request',
+          title: '\ud83d\udee0 Maintenance Request',
         },
         {
           id: 'view_tenancy',
@@ -33,8 +33,8 @@ export const SCREEN_RESPONSES: any = {
       },
     },
   },
-  SERVICE_REQUEST: {
-    screen: 'SERVICE_REQUEST',
+  MAINTENANCE_REQUEST: {
+    screen: 'MAINTENANCE_REQUEST',
     data: {
       request_actions: [
         {
@@ -92,5 +92,27 @@ export const SCREEN_RESPONSES: any = {
         },
       },
     },
+  },
+
+  // FM password-setup Flow: blank input form for the FM to type a new
+  // password. `error_visible` is a boolean (Flow v7.3 requires the `visible`
+  // binding to be boolean-typed); `error_message` carries the user-facing
+  // copy when error_visible=true.
+  FM_SET_PASSWORD: {
+    screen: 'FM_SET_PASSWORD',
+    data: {
+      error_message: '',
+      error_visible: false,
+    },
+  },
+
+  FM_PASSWORD_SUCCESS: {
+    screen: 'FM_PASSWORD_SUCCESS',
+    data: {},
+  },
+
+  FM_LINK_EXPIRED: {
+    screen: 'FM_LINK_EXPIRED',
+    data: {},
   },
 };

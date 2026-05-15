@@ -1,10 +1,10 @@
-import { PropertyHistory } from './entities/property-history.entity';
+﻿import { PropertyHistory } from './entities/property-history.entity';
 import {
   OfferLetter,
   OfferLetterStatus,
 } from 'src/offer-letters/entities/offer-letter.entity';
 import { Payment } from 'src/payments/entities/payment.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { offerLetterToFees, sumAll } from 'src/common/billing/fees';
 
 export interface TimelineEvent {
@@ -81,7 +81,7 @@ export interface TimelineEvent {
 
 export interface BuildTimelineContext {
   propertyHistories: PropertyHistory[];
-  serviceRequests?: ServiceRequest[];
+  maintenanceRequests?: MaintenanceRequest[];
   offerLetters?: OfferLetter[];
   payments?: Payment[];
   tenantName?: string;
@@ -107,7 +107,7 @@ const formatLongDate = (d: Date): string =>
 export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] {
   const {
     propertyHistories,
-    serviceRequests = [],
+    maintenanceRequests = [],
     offerLetters = [],
     payments = [],
     tenantName = 'Tenant',
@@ -337,72 +337,81 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         });
       }
 
-      if (ph.event_type === 'service_request_created') {
+      if (ph.event_type === 'maintenance_request_created') {
         const prop = ph.property;
-        const issueDescription = ph.event_description || 'Service Request';
+        const issueDescription = ph.event_description || 'Maintenance Request';
         const eventDate = new Date(ph.created_at || new Date());
         tenancyEvents.push({
           id: `service-created-${ph.id}`,
           type: 'maintenance',
-          title: 'Service Request Created',
+          title: 'Maintenance Request Created',
           description: `Issue: "${issueDescription}" — Status: pending`,
           details: prop?.name || undefined,
           date: eventDate.toISOString(),
           time: formatTime(eventDate),
           relatedEntityId: ph.related_entity_id || undefined,
-          relatedEntityType: 'service_request',
+          relatedEntityType: 'maintenance_request',
         });
       }
 
-      if (ph.event_type === 'service_request_updated') {
+      if (ph.event_type === 'maintenance_request_updated') {
         let status = 'updated';
         let previousStatus = '';
-        let issueDescription = 'Service Request';
+        let issueDescription = 'Maintenance Request';
 
         if (ph.event_description) {
           try {
             const parsed = JSON.parse(ph.event_description);
             status = parsed.status || 'updated';
             previousStatus = parsed.previous_status || '';
-            issueDescription = parsed.description || 'Service Request';
+            issueDescription = parsed.description || 'Maintenance Request';
           } catch {
             const parts = ph.event_description.split('|||');
             status = parts[0] || 'updated';
-            issueDescription = parts[1] || 'Service Request';
+            issueDescription = parts[1] || 'Maintenance Request';
           }
         }
 
         const prop = ph.property;
-        const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
-        let title = `Service Request ${statusLabel}`;
+        const statusChanged =
+          !!previousStatus && previousStatus !== status;
 
-        if (status.toLowerCase() === 'resolved') {
-          title = 'Service Request Resolved';
-        } else if (status.toLowerCase() === 'closed') {
-          title = 'Service Request Closed';
-        } else if (status.toLowerCase() === 'reopened') {
-          title = 'Service Request Reopened';
-        } else if (status.toLowerCase() === 'approved') {
-          title = 'Service Request Approved';
-        } else if (status.toLowerCase() === 'not_approved') {
-          title = 'Service Request Opened';
+        let title: string;
+        let descriptionTail: string;
+
+        if (statusChanged) {
+          if (status.toLowerCase() === 'resolved') {
+            title = 'Maintenance Request Resolved';
+          } else if (status.toLowerCase() === 'closed') {
+            title = 'Maintenance Request Closed';
+          } else if (status.toLowerCase() === 'reopened') {
+            title = 'Maintenance Request Reopened';
+          } else if (status.toLowerCase() === 'approved') {
+            title = 'Maintenance Request Approved';
+          } else if (status.toLowerCase() === 'not_approved') {
+            title = 'Maintenance Request Opened';
+          } else {
+            const statusLabel =
+              status.charAt(0).toUpperCase() + status.slice(1);
+            title = `Maintenance Request ${statusLabel}`;
+          }
+          descriptionTail = `Status: ${previousStatus} → ${status}`;
+        } else {
+          title = 'Maintenance Request Updated';
+          descriptionTail = 'Request details updated';
         }
-
-        const statusTransition = previousStatus
-          ? `${previousStatus} → ${status}`
-          : status;
 
         const eventDate = new Date(ph.created_at || new Date());
         tenancyEvents.push({
           id: `service-update-${ph.id}`,
           type: 'maintenance',
           title,
-          description: `Issue: "${issueDescription}" — Status: ${statusTransition}`,
+          description: `Issue: "${issueDescription}" — ${descriptionTail}`,
           details: prop?.name || undefined,
           date: eventDate.toISOString(),
           time: formatTime(eventDate),
           relatedEntityId: ph.related_entity_id || undefined,
-          relatedEntityType: 'service_request',
+          relatedEntityType: 'maintenance_request',
         });
       }
 
@@ -958,33 +967,33 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
     });
   }
 
-  // Add service request events (only for SRs that don't already have a
-  // service_request_created property_history event, to avoid duplicates)
+  // Add maintenance request events (only for SRs that don't already have a
+  // maintenance_request_created property_history event, to avoid duplicates)
   const srIdsWithHistoryEvent = new Set(
     tenancyEvents
       .filter(
         (e) =>
-          e.relatedEntityType === 'service_request' &&
+          e.relatedEntityType === 'maintenance_request' &&
           e.id.startsWith('service-created-'),
       )
       .map((e) => e.relatedEntityId),
   );
-  const serviceRequestEvents: TimelineEvent[] = serviceRequests
+  const maintenanceRequestEvents: TimelineEvent[] = maintenanceRequests
     .filter((sr) => !srIdsWithHistoryEvent.has(sr.id))
     .map((sr) => {
       const eventDate = new Date(sr.date_reported);
       const prop = sr.property;
-      const issueTitle = sr.description || 'Service Request';
+      const issueTitle = sr.description || 'Maintenance Request';
       return {
         id: `service-${sr.id}`,
         type: 'maintenance',
-        title: 'Service Request Created',
+        title: 'Maintenance Request Created',
         description: `Issue: "${issueTitle}" — Status: ${sr.status || 'pending'}`,
         details: prop?.name || undefined,
         date: eventDate.toISOString(),
         time: formatTime(eventDate),
         relatedEntityId: sr.id,
-        relatedEntityType: 'service_request',
+        relatedEntityType: 'maintenance_request',
       };
     });
 
@@ -1080,7 +1089,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
   // Combine all events and sort by date (newest first), dedupe by id.
   const allEvents: TimelineEvent[] = [
     ...tenancyEvents,
-    ...serviceRequestEvents,
+    ...maintenanceRequestEvents,
     ...offerLetterEvents,
     ...paymentEvents,
   ];

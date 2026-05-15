@@ -1,5 +1,5 @@
-export enum NotificationType {
-  SERVICE_REQUEST = 'Service Request',
+﻿export enum NotificationType {
+  MAINTENANCE_REQUEST = 'Maintenance Request',
   NOTICE_AGREEMENT = 'Notice Agreement',
   RENT_CREATED = 'Rent Created',
   USER_ADDED_TO_PROPERTY = 'User Added to Property',

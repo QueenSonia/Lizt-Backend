@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+﻿import { forwardRef, Inject, Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { ILike, Not, In, Repository } from 'typeorm';
@@ -6,17 +6,22 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import WhatsApp from 'whatsapp';
 import { Users } from 'src/users/entities/user.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { CacheService } from 'src/lib/cache';
+import {
+  PasswordService,
+  PASSWORD_RULE_REGEX,
+  PASSWORD_RULE_MESSAGE,
+} from 'src/users/password';
 
 import { SCREEN_RESPONSES } from './flows';
 import { RolesEnum } from 'src/base.entity';
 import { UsersService } from 'src/users/users.service';
-import { ServiceRequestStatusEnum } from 'src/service-requests/dto/create-service-request.dto';
+import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { IncomingMessage } from './utils';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
-import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
+import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { PropertiesService } from 'src/properties/properties.service';
 import { Waitlist } from 'src/users/entities/waitlist.entity';
@@ -36,6 +41,7 @@ import {
   TemplateSenderService,
   SendTemplateParams,
   FMTemplateParams,
+  FMSetPasswordFlowParams,
   PropertyCreatedParams,
   UserAddedParams,
   TenantWelcomeParams,
@@ -44,7 +50,7 @@ import {
   KYCApplicationNotificationParams,
   KYCSubmissionConfirmationParams,
   AgentKYCNotificationParams,
-  FacilityServiceRequestParams,
+  FacilityMaintenanceRequestParams,
   KYCCompletionLinkParams,
   KYCCompletionNotificationParams,
   ButtonDefinition,
@@ -54,7 +60,7 @@ import { LandlordFlowService } from './landlord-flow';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
-  { id: 'service_request', title: 'Service request' },
+  { id: 'maintenance_request', title: 'Maintenance request' },
   { id: 'view_tenancy', title: 'View tenancy details' },
   { id: 'payment', title: 'Payment' },
 ];
@@ -71,8 +77,8 @@ export class WhatsappBotService implements OnModuleInit {
     @InjectRepository(Users)
     private usersRepo: Repository<Users>,
 
-    @InjectRepository(ServiceRequest)
-    private readonly serviceRequestRepo: Repository<ServiceRequest>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly maintenanceRequestRepo: Repository<MaintenanceRequest>,
 
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
@@ -94,7 +100,7 @@ export class WhatsappBotService implements OnModuleInit {
 
     private readonly flow: LandlordFlow,
 
-    private readonly serviceRequestService: ServiceRequestsService,
+    private readonly maintenanceRequestService: MaintenanceRequestsService,
     private readonly cache: CacheService,
     private readonly config: ConfigService,
     private readonly utilService: UtilService,
@@ -103,6 +109,11 @@ export class WhatsappBotService implements OnModuleInit {
     private readonly templateSenderService: TemplateSenderService,
     private readonly tenantFlowService: TenantFlowService,
     private readonly landlordFlowService: LandlordFlowService,
+
+    // UsersModule is already a forwardRef in WhatsappBotModule; PasswordService
+    // lives there. Used by the FM password-setup Flow webhook (getNextScreen).
+    @Inject(forwardRef(() => PasswordService))
+    private readonly passwordService: PasswordService,
   ) {}
 
   /**
@@ -139,7 +150,7 @@ export class WhatsappBotService implements OnModuleInit {
   }
 
   async getNextScreen(decryptedBody) {
-    const { screen, data, action } = decryptedBody;
+    const { screen, data, action, flow_token: flowToken } = decryptedBody;
 
     console.log('Received request body:', decryptedBody);
 
@@ -150,6 +161,25 @@ export class WhatsappBotService implements OnModuleInit {
     if (data?.error) {
       console.warn('Received client error:', data);
       return { data: { acknowledged: true } };
+    }
+
+    // FM password-setup Flow: the flow_token is the PasswordResetToken value
+    // minted in team.service.ts. On INIT, route to FM_LINK_EXPIRED instead of
+    // Meta's generic 427 "message no longer available" copy when the token is
+    // gone (expired or consumed by a successful prior submit).
+    if (action === 'INIT' && flowToken) {
+      const valid = await this.passwordService.isResetTokenStillValid(flowToken);
+      if (valid) {
+        return {
+          ...SCREEN_RESPONSES.FM_SET_PASSWORD,
+          data: { error_message: '', error_visible: false },
+        };
+      }
+      // Token unknown/expired AND a flow_token was supplied: this is almost
+      // certainly an FM invite click after the link expired (or after a
+      // successful set — token was deleted). Show the friendly expired
+      // screen.
+      return { ...SCREEN_RESPONSES.FM_LINK_EXPIRED };
     }
 
     if (action === 'INIT') {
@@ -166,10 +196,90 @@ export class WhatsappBotService implements OnModuleInit {
 
     if (action === 'data_exchange') {
       switch (screen) {
-        case 'WELCOME_SCREEN':
-          return { ...SCREEN_RESPONSES.SERVICE_REQUEST };
+        case 'FM_SET_PASSWORD': {
+          const newPassword = data?.new_password;
+          const confirmPassword = data?.confirm_password;
 
-        case 'SERVICE_REQUEST':
+          if (!newPassword || newPassword !== confirmPassword) {
+            return {
+              ...SCREEN_RESPONSES.FM_SET_PASSWORD,
+              data: {
+                error_message: 'Passwords do not match. Please try again.',
+                error_visible: true,
+              },
+            };
+          }
+
+          // Enforce the same complexity rule as the HTTP /reset-password and
+          // signup paths. Without this, the Flow would let the FM set a weak
+          // password that they then can't use to log in (the login endpoint
+          // validates the rule via class-validator and rejects).
+          if (!PASSWORD_RULE_REGEX.test(newPassword)) {
+            return {
+              ...SCREEN_RESPONSES.FM_SET_PASSWORD,
+              data: {
+                error_message: PASSWORD_RULE_MESSAGE,
+                error_visible: true,
+              },
+            };
+          }
+
+          const valid = await this.passwordService.isResetTokenStillValid(flowToken);
+          if (!valid) {
+            return { ...SCREEN_RESPONSES.FM_LINK_EXPIRED };
+          }
+
+          let confirmationTarget: {
+            phone_number?: string;
+            profile_name?: string;
+          } = {};
+          try {
+            confirmationTarget = await this.passwordService.resetPasswordCore(
+              flowToken,
+              newPassword,
+            );
+          } catch (err) {
+            this.logger.error('FM password reset failed', err as Error);
+            return {
+              ...SCREEN_RESPONSES.FM_SET_PASSWORD,
+              data: {
+                error_message:
+                  'Something went wrong saving your password. Please try again.',
+                error_visible: true,
+              },
+            };
+          }
+
+          // Fire-and-forget confirmation text. Within Meta's 24h customer
+          // service window because the FM just submitted the flow (counts as
+          // an inbound interaction), so a free-form text reply is allowed.
+          if (confirmationTarget.phone_number) {
+            const firstName =
+              confirmationTarget.profile_name?.split(' ')[0] ?? 'there';
+            const frontendUrl =
+              process.env.FRONTEND_URL || 'http://localhost:3000';
+            const dashboardUrl = `${frontendUrl}/facility-manager`;
+            const body =
+              `Hi ${firstName} 👋\n\n` +
+              `Your password has been set: ${newPassword}\n\n` +
+              `You can now sign in to Lizt using your phone number and the password you just chose.\n\n` +
+              `Open your dashboard: ${dashboardUrl}\n\n` +
+              `Welcome aboard!`;
+            this.sendText(confirmationTarget.phone_number, body).catch((err) =>
+              this.logger.error(
+                'FM password-set confirmation send failed',
+                err as Error,
+              ),
+            );
+          }
+
+          return { ...SCREEN_RESPONSES.FM_PASSWORD_SUCCESS };
+        }
+
+        case 'WELCOME_SCREEN':
+          return { ...SCREEN_RESPONSES.MAINTENANCE_REQUEST };
+
+        case 'MAINTENANCE_REQUEST':
           return { ...SCREEN_RESPONSES.REPORT_ISSUE_INPUT };
 
         case 'REPORT_ISSUE_INPUT':
@@ -418,7 +528,7 @@ export class WhatsappBotService implements OnModuleInit {
             userPhone,
             `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
             [
-              { id: 'service_request', title: 'View requests' },
+              { id: 'maintenance_request', title: 'View requests' },
               { id: 'view_account_info', title: 'Account Info' },
               { id: 'visit_site', title: 'Visit website' },
             ],
@@ -435,7 +545,7 @@ export class WhatsappBotService implements OnModuleInit {
               user?.first_name || '',
             )} What would you like to do?`,
             [
-              { id: 'service_request', title: 'Service request' },
+              { id: 'maintenance_request', title: 'Maintenance request' },
               { id: 'view_tenancy', title: 'View tenancy details' },
               { id: 'payment', title: 'Payment' },
             ],
@@ -506,14 +616,21 @@ export class WhatsappBotService implements OnModuleInit {
         });
         role = selectedRole as RolesEnum;
       } else {
-        const hasFM = user.accounts.some(
-          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
+        // Read from accounts.roles[] (authoritative) with accounts.role
+        // (legacy singular, mirrors roles[0]) as a fallback. A multi-role
+        // account like {tenant, facility_manager} has role='tenant' but
+        // roles contains both — without this, the FM role is invisible.
+        const accountHasRole = (acc: Account, r: RolesEnum) =>
+          acc.roles?.includes(r) || acc.role === r;
+
+        const hasFM = user.accounts.some((acc) =>
+          accountHasRole(acc, RolesEnum.FACILITY_MANAGER),
         );
-        const hasLandlord = user.accounts.some(
-          (acc) => acc.role === RolesEnum.LANDLORD,
+        const hasLandlord = user.accounts.some((acc) =>
+          accountHasRole(acc, RolesEnum.LANDLORD),
         );
-        let hasTenant = user.accounts.some(
-          (acc) => acc.role === RolesEnum.TENANT,
+        let hasTenant = user.accounts.some((acc) =>
+          accountHasRole(acc, RolesEnum.TENANT),
         );
 
         // The same phone number may map to a separate tenant user record.
@@ -563,22 +680,22 @@ export class WhatsappBotService implements OnModuleInit {
         }
 
         // Single role - use priority order
-        const facilityAccount = user.accounts.find(
-          (acc) => acc.role === RolesEnum.FACILITY_MANAGER,
+        const facilityAccount = user.accounts.find((acc) =>
+          accountHasRole(acc, RolesEnum.FACILITY_MANAGER),
         );
         if (facilityAccount) {
           console.log('✅ Found FACILITY_MANAGER account:', facilityAccount.id);
           role = RolesEnum.FACILITY_MANAGER;
         } else {
-          const landlordAccount = user.accounts.find(
-            (acc) => acc.role === RolesEnum.LANDLORD,
+          const landlordAccount = user.accounts.find((acc) =>
+            accountHasRole(acc, RolesEnum.LANDLORD),
           );
           if (landlordAccount) {
             console.log('✅ Found LANDLORD account:', landlordAccount.id);
             role = RolesEnum.LANDLORD;
           } else {
-            const tenantAccount = user.accounts.find(
-              (acc) => acc.role === RolesEnum.TENANT,
+            const tenantAccount = user.accounts.find((acc) =>
+              accountHasRole(acc, RolesEnum.TENANT),
             );
             if (tenantAccount) {
               console.log('✅ Found TENANT account:', tenantAccount.id);
@@ -657,7 +774,9 @@ export class WhatsappBotService implements OnModuleInit {
       case RolesEnum.TENANT: {
         console.log('In tenant');
 
-        // Silently ignore tenants with no active property-tenant relationships
+        // Convert email to phone number for WhatsApp messaging
+        const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
+
         const tenantAccount = user?.accounts?.find(
           (acc) => acc.role === RolesEnum.TENANT,
         );
@@ -670,14 +789,15 @@ export class WhatsappBotService implements OnModuleInit {
           });
           if (activeCount === 0) {
             console.log(
-              `🔇 Tenant ${tenantAccount.id} has no active properties — silently ignoring message`,
+              `🔇 Tenant ${tenantAccount.id} has no active tenancies — replying and stopping`,
+            );
+            await this.sendText(
+              tenantPhone,
+              'No active tenancy found on your account. If you believe this is a mistake, please contact your landlord.',
             );
             return;
           }
         }
-
-        // Convert email to phone number for WhatsApp messaging
-        const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
 
         // Delegate to TenantFlowService
         // Requirements: 2.5
@@ -786,8 +906,8 @@ export class WhatsappBotService implements OnModuleInit {
     if (text.toLowerCase() === 'done') {
       // Batch delete both keys in one call
       await this.cache.deleteMultiple([
-        `service_request_state_${from}`,
-        `service_request_state_default_${from}`,
+        `maintenance_request_state_${from}`,
+        `maintenance_request_state_default_${from}`,
       ]);
       await this.sendText(from, 'Thank you!  Your session has ended.');
       return;
@@ -797,7 +917,7 @@ export class WhatsappBotService implements OnModuleInit {
 
   async handleDefaultCachedResponse(from, text) {
     const default_state = await this.cache.get(
-      `service_request_state_default_${from}`,
+      `maintenance_request_state_default_${from}`,
     );
 
     if (default_state && default_state.includes('property_owner_options')) {
@@ -827,7 +947,7 @@ export class WhatsappBotService implements OnModuleInit {
       );
 
       await this.cache.set(
-        `service_request_state_default_${from}`,
+        `maintenance_request_state_default_${from}`,
         `share_referral`,
         this.SESSION_TIMEOUT_MS, // now in ms,
       );
@@ -875,7 +995,7 @@ export class WhatsappBotService implements OnModuleInit {
         'Thank you for sharing a referral with us, your session has ended',
       );
 
-      await this.cache.delete(`service_request_state_default_${from}`);
+      await this.cache.delete(`maintenance_request_state_default_${from}`);
       return;
     } else {
       await this.sendButtons(
@@ -901,7 +1021,7 @@ export class WhatsappBotService implements OnModuleInit {
           `Great! As a Property Owner, you can use Lizt to:\n 
      1. Rent Reminders & Lease Tracking – stay on top of rent due dates and lease expiries.\n 
      2. Rent Collection – receive rent payments directly into your bank account through us, while we track payment history and balances for you.\n 
-     3. Maintenance Management – tenants can log service requests with you for quick action. \n Please choose one of the options below:`,
+     3. Maintenance Management – tenants can log maintenance requests with you for quick action. \n Please choose one of the options below:`,
           [
             { id: 'rent_reminder', title: 'Rent Reminders' },
             { id: 'reminder_collection', title: 'Reminders/Collection' },
@@ -917,7 +1037,7 @@ export class WhatsappBotService implements OnModuleInit {
           `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`,
         );
         await this.cache.set(
-          `service_request_state_default_${from}`,
+          `maintenance_request_state_default_${from}`,
           `property_owner_options_${buttonReply.id}`,
           this.SESSION_TIMEOUT_MS, // now in ms,
         );
@@ -1025,6 +1145,14 @@ export class WhatsappBotService implements OnModuleInit {
     return this.templateSenderService.sendToFacilityManagerWithTemplate(params);
   }
 
+  async sendToFacilityManagerSetPasswordFlow(
+    params: FMSetPasswordFlowParams,
+  ): Promise<void> {
+    return this.templateSenderService.sendToFacilityManagerSetPasswordFlow(
+      params,
+    );
+  }
+
   async sendToPropertiesCreatedTemplate(
     params: PropertyCreatedParams,
   ): Promise<void> {
@@ -1085,10 +1213,10 @@ export class WhatsappBotService implements OnModuleInit {
     return this.templateSenderService.sendAgentKYCNotification(params);
   }
 
-  async sendFacilityServiceRequest(
-    params: FacilityServiceRequestParams,
+  async sendFacilityMaintenanceRequest(
+    params: FacilityMaintenanceRequestParams,
   ): Promise<void> {
-    return this.templateSenderService.sendFacilityServiceRequest(params);
+    return this.templateSenderService.sendFacilityMaintenanceRequest(params);
   }
 
   /**

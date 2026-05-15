@@ -1,12 +1,11 @@
 import { ApiProperty, PartialType } from '@nestjs/swagger';
 import {
-  CreateServiceRequestDto,
-  ServiceRequestStatusEnum,
-} from './create-service-request.dto';
+  CreateMaintenanceRequestDto,
+  MaintenanceRequestStatusEnum,
+} from './create-maintenance-request.dto';
 import { JobCategoryEnum } from './job-category.enum';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -16,11 +15,11 @@ import {
   Min,
 } from 'class-validator';
 
-export class UpdateServiceRequestDto extends PartialType(
-  CreateServiceRequestDto,
+export class UpdateMaintenanceRequestDto extends PartialType(
+  CreateMaintenanceRequestDto,
 ) {}
 
-export class UpdateServiceRequestResponseDto {
+export class UpdateMaintenanceRequestResponseDto {
   @ApiProperty({
     example: 'John Doe',
     description: 'Name of the tenant',
@@ -43,15 +42,15 @@ export class UpdateServiceRequestResponseDto {
 
   @ApiProperty({
     example: 'urgent',
-    enum: ServiceRequestStatusEnum,
-    description: 'Status of the service request',
+    enum: MaintenanceRequestStatusEnum,
+    description: 'Status of the maintenance request',
     required: false,
     nullable: true,
   })
   @IsOptional()
-  @IsEnum(ServiceRequestStatusEnum)
+  @IsEnum(MaintenanceRequestStatusEnum)
   @Transform(({ value }) => value?.trim() || undefined)
-  status?: ServiceRequestStatusEnum;
+  status?: MaintenanceRequestStatusEnum;
 
   @ApiProperty({
     example: 'Carpentry',
@@ -128,19 +127,6 @@ export class UpdateServiceRequestResponseDto {
   @IsOptional()
   @Transform(({ value }) => value?.trim() || undefined)
   property_id?: string;
-
-  @ApiProperty({
-    description: 'Mark the request as urgent (independent of status)',
-    required: false,
-    nullable: true,
-  })
-  @IsOptional()
-  @Transform(({ value }) => {
-    if (value === undefined || value === '' || value === null) return undefined;
-    return value === true || value === 'true';
-  })
-  @IsBoolean()
-  is_urgent?: boolean;
 
   @ApiProperty({
     description:

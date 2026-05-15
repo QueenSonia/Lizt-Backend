@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+﻿import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Notification } from './entities/notification.entity';
@@ -37,8 +37,8 @@ export class NotificationService {
     switch (type) {
       case NotificationType.KYC_SUBMITTED:
         return 'New KYC Application';
-      case NotificationType.SERVICE_REQUEST:
-        return 'Service Request';
+      case NotificationType.MAINTENANCE_REQUEST:
+        return 'Maintenance Request';
       case NotificationType.OFFER_LETTER_SENT:
         return 'Offer Letter Sent';
       case NotificationType.OFFER_LETTER_ACCEPTED:
@@ -106,7 +106,7 @@ export class NotificationService {
   }
 
   // Looks up all notifications connected to properties owned by a specific user.
-  // Loads related data (property, tenants, serviceRequest) in one query.
+  // Loads related data (property, tenants, maintenanceRequest) in one query.
   // Sorts them by date (newest first).
   // Returns the full list as a Promise.
   async findByUserId(
@@ -125,7 +125,7 @@ export class NotificationService {
       .leftJoinAndSelect('notification.property', 'property')
       .leftJoinAndSelect('property.property_tenants', 'property_tenants')
       .leftJoinAndSelect('property_tenants.tenant', 'tenant')
-      .leftJoinAndSelect('notification.serviceRequest', 'serviceRequest')
+      .leftJoinAndSelect('notification.maintenanceRequest', 'maintenanceRequest')
       .where('notification.user_id = :user_id', { user_id })
       .orderBy('notification.date', 'DESC')
       .skip(skip)
@@ -136,11 +136,11 @@ export class NotificationService {
     return { notifications, total };
   }
 
-  async findByServiceRequestId(
-    service_request_id: string,
+  async findByMaintenanceRequestId(
+    maintenance_request_id: string,
   ): Promise<Notification | null> {
     return await this.notificationRepository.findOne({
-      where: { service_request_id },
+      where: { maintenance_request_id },
     });
   }
 

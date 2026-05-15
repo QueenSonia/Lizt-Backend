@@ -1,4 +1,4 @@
-import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
+﻿import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { config } from 'dotenv-flow';
@@ -14,7 +14,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { PropertiesModule } from './properties/properties.module';
 import { RentsModule } from './rents/rents.module';
-import { ServiceRequestsModule } from './service-requests/service-requests.module';
+import { MaintenanceRequestsModule } from './maintenance-requests/maintenance-requests.module';
 import { PropertyHistoryModule } from './property-history/property-history.module';
 import { NoticeAgreementModule } from './notice-agreements/notice-agreement.module';
 import { NotificationModule } from './notifications/notification.module';
@@ -40,6 +40,7 @@ import { QueryLogModule } from './common/logger/query-log.module';
 import { TenantBalancesModule } from './tenant-balances/tenant-balances.module';
 import { PaymentPlansModule } from './payment-plans/payment-plans.module';
 import { AdHocInvoicesModule } from './ad-hoc-invoices/ad-hoc-invoices.module';
+import { CommonAreasModule } from './common-areas/common-areas.module';
 import { SecurityMiddleware } from './middleware/security.middleware';
 import { IpRateLimitGuard } from './guards/ip-rate-limit.guard';
 import { AutoBanService } from './services/auto-ban.service';
@@ -71,7 +72,7 @@ config({ default_node_env: 'production' });
     UsersModule,
     PropertiesModule,
     RentsModule,
-    ServiceRequestsModule,
+    MaintenanceRequestsModule,
     PropertyHistoryModule,
     NoticeAgreementModule,
     NotificationModule,
@@ -94,6 +95,7 @@ config({ default_node_env: 'production' });
     TenantBalancesModule,
     PaymentPlansModule,
     AdHocInvoicesModule,
+    CommonAreasModule,
   ],
   controllers: [AppController],
   providers: [

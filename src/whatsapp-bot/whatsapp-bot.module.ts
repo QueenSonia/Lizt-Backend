@@ -1,16 +1,16 @@
-import { forwardRef, Module } from '@nestjs/common';
+﻿import { forwardRef, Module } from '@nestjs/common';
 import { EventsModule } from 'src/events/events.module';
 
 import { WhatsappBotService } from './whatsapp-bot.service';
 import { WhatsappBotController } from './whatsapp-bot.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { UsersModule } from 'src/users/users.module';
 import { UsersService } from 'src/users/users.service';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
-import { ServiceRequestsService } from 'src/service-requests/service-requests.service';
-import { ServiceRequestsModule } from 'src/service-requests/service-requests.module';
+import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
+import { MaintenanceRequestsModule } from 'src/maintenance-requests/maintenance-requests.module';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { Team } from 'src/users/entities/team.entity';
 import { Waitlist } from 'src/users/entities/waitlist.entity';
@@ -42,7 +42,7 @@ import { PdfModule } from 'src/pdf/pdf.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
-      ServiceRequest,
+      MaintenanceRequest,
       Users,
       PropertyTenant,
       TeamMember,
@@ -58,7 +58,7 @@ import { PdfModule } from 'src/pdf/pdf.module';
       PaymentPlan,
       PropertyHistory,
     ]),
-    ServiceRequestsModule,
+    MaintenanceRequestsModule,
     forwardRef(() => UsersModule),
     UtilsModule,
     forwardRef(() => KYCLinksModule),

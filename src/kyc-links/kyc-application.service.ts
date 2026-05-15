@@ -1,4 +1,4 @@
-import {
+﻿import {
   Injectable,
   NotFoundException,
   BadRequestException,
@@ -2180,7 +2180,7 @@ export class KYCApplicationService {
     // Applicant-scoped related_entity_types: rows of these types only belong
     // in this applicant's timeline if they explicitly point at this application
     // or one of its offer letters. All other types (tenancy_record, rent,
-    // service_request, property_history, renewal_invoice, ...) are treated as
+    // maintenance_request, property_history, renewal_invoice, ...) are treated as
     // property-wide and pass through.
     // 'tenant' scopes user-added history entries (Add History button) so they
     // stay on the owning tenant's timeline and don't leak to other applicants

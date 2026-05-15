@@ -50,6 +50,18 @@ export interface ResendOtpResult {
  * forgot password, reset password, OTP validation, and token generation.
  * Extracted from UsersService to follow Single Responsibility Principle.
  */
+/**
+ * Password complexity rule. Must match the validation in
+ * [reset-password.dto.ts] and [create-user.dto.ts] so a password that
+ * passes here is guaranteed to also work at login. Centralised here so
+ * the WhatsApp Flow webhook (which bypasses class-validator) can enforce
+ * the same constraint.
+ */
+export const PASSWORD_RULE_REGEX =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
+export const PASSWORD_RULE_MESSAGE =
+  'Password must be at least 6 characters long, include at least one uppercase letter, one lowercase letter, one number, and one special character (@, $, !, %, *, ?, or &).';
+
 @Injectable()
 export class PasswordService {
   constructor(
@@ -116,15 +128,17 @@ export class PasswordService {
    * Used during user creation to allow setting initial password.
    * @param userId The user's account ID
    * @param queryRunner The query runner for transaction support
+   * @param ttlHours Optional TTL override (defaults to 24h).
    * @returns The generated token string
    */
   async generatePasswordResetToken(
     userId: string,
     queryRunner: QueryRunner,
+    ttlHours = 24,
   ): Promise<string> {
     const token = uuidv4();
     const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24); // Token valid for 24 hours
+    expiresAt.setHours(expiresAt.getHours() + ttlHours);
 
     const passwordReset = queryRunner.manager.create(PasswordResetToken, {
       id: uuidv4(),
@@ -341,20 +355,39 @@ export class PasswordService {
     payload: ResetPasswordDto,
     res: Response,
   ): Promise<Response> {
-    const { token, newPassword } = payload;
+    const { user_id } = await this.resetPasswordCore(
+      payload.token,
+      payload.newPassword,
+    );
 
+    return res.status(HttpStatus.OK).json({
+      message: 'Password reset successful',
+      user_id,
+    });
+  }
+
+  /**
+   * Transport-agnostic password reset. Used by the HTTP `resetPassword`
+   * endpoint AND the WhatsApp Flow webhook (FM password setup). Returns
+   * the affected user_id (and phone, for post-set confirmation messaging);
+   * throws HttpException on invalid token / missing user, same as the HTTP
+   * path. Token row is deleted on success.
+   */
+  async resetPasswordCore(
+    token: string,
+    newPassword: string,
+  ): Promise<{ user_id: string; phone_number?: string; profile_name?: string }> {
     const resetEntry = await this.validateResetToken(token);
 
     const user = await this.accountRepository.findOne({
       where: { id: resetEntry.user_id },
-      relations: ['property_tenants'],
+      relations: ['property_tenants', 'user'],
     });
 
     if (!user) {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);
     }
 
-    // Hash and update the password
     user.password = await this.utilService.hashPassword(newPassword);
 
     if (!user.is_verified) {
@@ -378,12 +411,25 @@ export class PasswordService {
 
     await this.accountRepository.save(user);
 
-    // Delete token after successful password reset
     await this.passwordResetRepository.delete({ id: resetEntry.id });
 
-    return res.status(HttpStatus.OK).json({
-      message: 'Password reset successful',
+    return {
       user_id: user.id,
+      phone_number: user.user?.phone_number,
+      profile_name: user.profile_name,
+    };
+  }
+
+  /**
+   * Non-throwing token validity check used by the FM password-setup Flow
+   * webhook. Lets callers branch into a friendly in-flow error screen
+   * instead of bubbling up an HttpException.
+   */
+  async isResetTokenStillValid(token: string): Promise<boolean> {
+    const entry = await this.passwordResetRepository.findOne({
+      where: { token },
     });
+    if (!entry) return false;
+    return entry.expires_at >= new Date();
   }
 }

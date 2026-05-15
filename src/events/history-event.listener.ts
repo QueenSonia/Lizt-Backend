@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+﻿import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -11,7 +11,7 @@ export interface ServiceCreatedEvent {
   landlord_id?: string; // Landlord/Owner ID
   tenant_name: string; // Tenant display name
   property_name: string; // Property name
-  service_request_id?: string; // Service request ID
+  maintenance_request_id?: string; // Maintenance request ID
   description?: string; // Issue description
   created_at?: Date; // Timestamp
 }
@@ -41,8 +41,8 @@ export class HistoryEventListener {
     private readonly eventsGateway: EventsGateway,
   ) {}
 
-  @OnEvent('service.created')
-  async handleServiceRequestCreated(
+  @OnEvent('maintenance.created')
+  async handleMaintenanceRequestCreated(
     payload: ServiceCreatedEvent,
   ): Promise<void> {
     this.logger.log(
@@ -52,8 +52,8 @@ export class HistoryEventListener {
     await this.createHistoryEntryWithRetry(payload);
   }
 
-  @OnEvent('service.updated')
-  async handleServiceRequestUpdated(payload: any): Promise<void> {
+  @OnEvent('maintenance.updated')
+  async handleMaintenanceRequestUpdated(payload: any): Promise<void> {
     this.logger.log(
       `Received service.updated event for request ${payload.request_id}`,
     );
@@ -63,14 +63,14 @@ export class HistoryEventListener {
       const historyEntry = this.propertyHistoryRepository.create({
         property_id: payload.property_id,
         tenant_id: payload.tenant_id,
-        event_type: 'service_request_updated',
+        event_type: 'maintenance_request_updated',
         event_description: JSON.stringify({
           status: payload.status,
           description: payload.description,
           previous_status: payload.previous_status,
         }),
         related_entity_id: payload.request_id,
-        related_entity_type: 'service_request',
+        related_entity_type: 'maintenance_request',
         created_at: payload.updated_at || new Date(),
       });
 
@@ -78,11 +78,11 @@ export class HistoryEventListener {
 
       // Fix #6: Emit the correct WebSocket event for updates
       if (this.eventsGateway) {
-        this.eventsGateway.emitServiceRequestUpdated(
+        this.eventsGateway.emitMaintenanceRequestUpdated(
           payload.property_id,
           payload.landlord_id,
           {
-            serviceRequestId: payload.request_id,
+            maintenanceRequestId: payload.request_id,
             description: payload.description,
             tenantName: payload.tenant_name,
             propertyName: payload.property_name,
@@ -142,35 +142,35 @@ export class HistoryEventListener {
       const {
         user_id,
         property_id,
-        service_request_id,
+        maintenance_request_id,
         description,
         created_at,
       } = payload;
 
-      // Create property history entry with event_type 'service_request_created'
+      // Create property history entry with event_type 'maintenance_request_created'
       const historyEntry = this.propertyHistoryRepository.create({
         property_id,
         tenant_id: user_id,
-        event_type: 'service_request_created',
-        event_description: description || 'Service request created',
-        related_entity_id: service_request_id,
-        related_entity_type: 'service_request',
+        event_type: 'maintenance_request_created',
+        event_description: description || 'Maintenance request created',
+        related_entity_id: maintenance_request_id,
+        related_entity_type: 'maintenance_request',
         created_at: created_at || new Date(),
       });
 
       await this.propertyHistoryRepository.save(historyEntry);
 
       this.logger.log(
-        `Successfully created property history entry for service request ${service_request_id}`,
+        `Successfully created property history entry for maintenance request ${maintenance_request_id}`,
       );
 
       // Emit WebSocket event to notify property viewers and landlord
       if (this.eventsGateway) {
-        this.eventsGateway.emitServiceRequestCreated(
+        this.eventsGateway.emitMaintenanceRequestCreated(
           property_id,
           payload.landlord_id,
           {
-            serviceRequestId: service_request_id,
+            maintenanceRequestId: maintenance_request_id,
             description,
             tenantName: payload.tenant_name,
             propertyName: payload.property_name,
@@ -194,7 +194,7 @@ export class HistoryEventListener {
         this.logger.error(
           `Failed to create property history entry after ${this.MAX_RETRIES} attempts. Event payload: ${JSON.stringify(payload)}`,
         );
-        // Don't throw - we want the service request to succeed even if history fails
+        // Don't throw - we want the maintenance request to succeed even if history fails
       }
     }
   }

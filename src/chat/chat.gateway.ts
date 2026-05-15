@@ -1,4 +1,4 @@
-import {
+﻿import {
   WebSocketGateway,
   WebSocketServer,
   SubscribeMessage,
@@ -45,7 +45,7 @@ export class ChatGateway {
     client.join(room);
     // {
     //   id: '1',
-    //   content: 'Welcome to your service request chat! How can we assist you today?',
+    //   content: 'Welcome to your maintenance request chat! How can we assist you today?',
     //   sender: 'admin',
     //   requestId,
     // }

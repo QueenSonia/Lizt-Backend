@@ -11,39 +11,55 @@ import {
   IsUUID,
 } from 'class-validator';
 
-export enum ServiceRequestStatusEnum {
+export enum MaintenanceRequestStatusEnum {
   NOT_APPROVED = 'not_approved',
   APPROVED = 'approved',
   RESOLVED = 'resolved',
   REOPENED = 'reopened',
   CLOSED = 'closed',
+  REJECTED = 'rejected',
 }
 
-export enum ServiceRequestScopeEnum {
+export enum MaintenanceRequestScopeEnum {
   UNIT = 'unit',
   COMMON_AREA = 'common_area',
 }
 
-export enum ServiceRequestCreatorTypeEnum {
+export enum MaintenanceRequestCreatorTypeEnum {
   TENANT = 'tenant',
   FACILITY_MANAGER = 'facility_manager',
 }
 
-export class CreateServiceRequestDto {
+export class CreateMaintenanceRequestDto {
   @IsNotEmpty()
   text: string;
 
-  @IsUUID()
-  property_id: string;
-
   @ApiProperty({
-    enum: ServiceRequestScopeEnum,
     required: false,
-    default: ServiceRequestScopeEnum.UNIT,
+    description:
+      "Required when scope is 'unit'; ignored when scope is 'common_area'.",
   })
   @IsOptional()
-  @IsEnum(ServiceRequestScopeEnum)
-  scope?: ServiceRequestScopeEnum;
+  @IsUUID()
+  property_id?: string;
+
+  @ApiProperty({
+    required: false,
+    description:
+      "Required when scope is 'common_area'; must be omitted when scope is 'unit'.",
+  })
+  @IsOptional()
+  @IsUUID()
+  common_area_id?: string;
+
+  @ApiProperty({
+    enum: MaintenanceRequestScopeEnum,
+    required: false,
+    default: MaintenanceRequestScopeEnum.UNIT,
+  })
+  @IsOptional()
+  @IsEnum(MaintenanceRequestScopeEnum)
+  scope?: MaintenanceRequestScopeEnum;
 
   @ApiProperty({ required: false, default: false })
   @IsOptional()
@@ -52,7 +68,7 @@ export class CreateServiceRequestDto {
   is_urgent?: boolean;
 }
 
-export class ServiceRequestFilter {
+export class MaintenanceRequestFilter {
   @IsOptional()
   @Transform(({ value }) => (value === '' ? undefined : value))
   @IsUUID()
@@ -64,16 +80,30 @@ export class ServiceRequestFilter {
   property_id?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsUUID()
+  common_area_id?: string;
+
+  @IsOptional()
   @IsString()
   status?: string;
 
   @IsOptional()
-  @IsEnum(ServiceRequestScopeEnum)
-  scope?: ServiceRequestScopeEnum;
+  @IsEnum(MaintenanceRequestScopeEnum)
+  scope?: MaintenanceRequestScopeEnum;
 
   @IsOptional()
-  @IsEnum(ServiceRequestCreatorTypeEnum)
-  creator_type?: ServiceRequestCreatorTypeEnum;
+  @IsEnum(MaintenanceRequestCreatorTypeEnum)
+  creator_type?: MaintenanceRequestCreatorTypeEnum;
+
+  @ApiProperty({
+    required: false,
+    description:
+      "Pass the literal 'me' to narrow to requests assigned to the requesting facility manager. Pass a TeamMember UUID to filter by a specific assignee (only TeamMember.ids visible to the requester match).",
+  })
+  @IsOptional()
+  @IsString()
+  assigned_to?: string;
 
   @IsOptional()
   @Transform(({ value }) => {

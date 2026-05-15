@@ -1,4 +1,4 @@
-import {
+﻿import {
   Controller,
   Get,
   Post,
@@ -287,6 +287,40 @@ export class WhatsappBotController {
     );
   }
 
+  /**
+   * Simulator-only Flow submission. Bypasses Meta's signature check and
+   * AES encryption so the in-house WhatsApp simulator can exercise the
+   * Flow webhook (`getNextScreen`) end-to-end without round-tripping
+   * through Meta. Body shape mirrors what `decryptRequest` would produce
+   * for a real Flow request: `{flow_token, action, screen?, data?}`.
+   *
+   * Guarded by `WHATSAPP_SIMULATOR=true` — refuses to run in production.
+   */
+  @SkipAuth()
+  @Post('/simulator-flow')
+  async simulatorFlow(@Req() req: ExpressRequest) {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    if (simulatorMode !== 'true' && simulatorMode !== true) {
+      throw new ForbiddenException(
+        'simulator-flow is only available when WHATSAPP_SIMULATOR=true',
+      );
+    }
+
+    const body = req.body as {
+      flow_token?: string;
+      action: 'INIT' | 'data_exchange' | 'ping';
+      screen?: string;
+      data?: Record<string, unknown>;
+    };
+
+    if (!body?.action) {
+      throw new BadRequestException('action is required');
+    }
+
+    const screenResponse = await this.whatsappBotService.getNextScreen(body);
+    return screenResponse;
+  }
+
   @Post('/send-custom-message')
   async sendCustomMessage(@Req() req: ExpressRequest) {
     try {
@@ -339,31 +373,30 @@ export class WhatsappBotController {
     }
   }
 
-  @Post('/facility-service-request')
-  async sendToFacilityServiceRequest(@Req() req: ExpressRequest) {
+  @Post('/facility-maintenance-request')
+  async sendToFacilityMaintenanceRequest(@Req() req: ExpressRequest) {
     try {
       const {
         phone_number,
         manager_name,
         property_name,
         property_location,
-        service_request,
+        maintenance_request,
         tenant_name,
         tenant_phone_number,
         date_created,
       } = req.body;
-      const response = await this.whatsappBotService.sendFacilityServiceRequest(
-        {
+      const response =
+        await this.whatsappBotService.sendFacilityMaintenanceRequest({
           phone_number,
           manager_name,
           property_name,
           property_location,
-          service_request,
+          maintenance_request,
           tenant_name,
           tenant_phone_number,
           date_created,
-        },
-      );
+        });
       return response;
     } catch (error) {
       console.error('Error sending user message:', error);

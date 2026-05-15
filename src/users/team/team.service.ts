@@ -1,4 +1,4 @@
-import {
+﻿import {
   ConflictException,
   ForbiddenException,
   forwardRef,
@@ -9,19 +9,19 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
+import { v4 as uuidv4 } from 'uuid';
 import { RolesEnum } from 'src/base.entity';
 import { Account } from '../entities/account.entity';
 import { Team } from '../entities/team.entity';
 import { TeamMember } from '../entities/team-member.entity';
 import { Users } from '../entities/user.entity';
+import { PasswordResetToken } from '../entities/password-reset-token.entity';
 import { TeamMemberDto } from '../dto/team-member.dto';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { AccountCacheService } from 'src/auth/account-cache.service';
 import { isPlaceholderEmail } from 'src/utils/placeholder-email';
-import { Property } from 'src/properties/entities/property.entity';
-import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 
 /**
  * Input type for creating a new team member
@@ -33,13 +33,6 @@ export interface TeamMemberInput {
   first_name: string;
   last_name: string;
   phone_number: string;
-  /**
-   * Optional list of property IDs to assign to this FM at creation time.
-   * Each property must belong to the calling landlord and must not already
-   * be assigned to another FM (the FE disables those rows; including them
-   * here is treated as a stale-state error and rejected with 409).
-   */
-  property_ids?: string[];
 }
 
 /**
@@ -211,7 +204,7 @@ export class TeamService {
           // both placeholder: leave existing email alone
         }
 
-        // Decide whether to (re)generate a password.
+        // Decide whether to issue a password-set Flow.
         //
         // YES if:
         //   - we're creating a brand-new account, OR
@@ -223,6 +216,11 @@ export class TeamService {
         //     leave it alone — they sign in with the same creds for both
         //     roles), OR
         //   - already an FM in another team (existing creds still work).
+        //
+        // Note: we no longer auto-generate a password server-side. Meta rejects
+        // templates that carry credentials in non-Authentication categories, so
+        // the FM picks their own password via a WhatsApp Flow form. The
+        // PasswordResetToken minted here is the flow_token we pass to Meta.
         const hasLandlordRole = !!userAccount?.roles?.includes(
           RolesEnum.LANDLORD,
         );
@@ -230,31 +228,42 @@ export class TeamService {
           RolesEnum.FACILITY_MANAGER,
         );
 
-        let plainPasswordToSend: string | null = null;
+        let flowTokenToSend: string | null = null;
+        const FM_TOKEN_TTL_HOURS = 24 * 30; // 30 days — see plan B.1
+
+        const mintFlowToken = async (accountId: string): Promise<string> => {
+          const token = uuidv4();
+          const expiresAt = new Date();
+          expiresAt.setHours(expiresAt.getHours() + FM_TOKEN_TTL_HOURS);
+          await manager.save(PasswordResetToken, {
+            id: uuidv4(),
+            user_id: accountId,
+            token,
+            expires_at: expiresAt,
+          });
+          return token;
+        };
 
         if (!userAccount) {
-          // Brand new identity → generate password and send it.
-          const { plain, hash } = await this.utilService.generatePassword();
-          plainPasswordToSend = plain;
+          // Brand new identity → create account WITHOUT a password; FM sets
+          // their own via the Flow. The account is unusable until they do.
           userAccount = manager.getRepository(Account).create({
             user,
             email: teamMember.email,
-            password: hash,
             roles: [teamMember.role],
             role: teamMember.role,
             profile_name: `${teamMember.first_name} ${teamMember.last_name}`,
             is_verified: true,
           });
           await manager.getRepository(Account).save(userAccount);
+          flowTokenToSend = await mintFlowToken(userAccount.id);
         } else if (!alreadyHasFmRole) {
           // Existing account being elevated into FM. Always append the role.
-          // Only regenerate the password if the account doesn't already have
-          // a usable sign-in surface (i.e. no LANDLORD role).
-          if (!hasLandlordRole) {
-            const { plain, hash } = await this.utilService.generatePassword();
-            plainPasswordToSend = plain;
-            userAccount.password = hash;
-          }
+          // Issue a Flow only when the account has no other usable sign-in
+          // surface (i.e. no LANDLORD role). For tenant→FM elevations we now
+          // preserve the existing password so the tenant role keeps working
+          // until the FM completes the Flow (which then rewrites the hash for
+          // both roles).
           userAccount.roles = [
             ...(userAccount.roles ?? []),
             teamMember.role,
@@ -263,6 +272,9 @@ export class TeamService {
           userAccount.is_verified = true;
           await manager.getRepository(Account).save(userAccount);
           await this.accountCacheService.invalidate(userAccount.id);
+          if (!hasLandlordRole) {
+            flowTokenToSend = await mintFlowToken(userAccount.id);
+          }
         } else if (emailWasRewritten) {
           // Already FM in another team but we self-healed their placeholder
           // email — persist the rewrite so future logins by email work.
@@ -293,80 +305,28 @@ export class TeamService {
 
         await manager.getRepository(TeamMember).save(newTeamMember);
 
-        // 8b. Assign properties to this new FM, if requested. Validation
-        // mirrors the FE state: each ID must belong to the landlord, and
-        // none can already be assigned to another FM (FE disables those
-        // rows; receiving one here means the FE list is stale).
-        const requestedPropertyIds = (teamMember.property_ids ?? []).filter(
-          Boolean,
-        );
-        if (requestedPropertyIds.length > 0) {
-          const propRepo = manager.getRepository(Property);
-          const properties = await propRepo.find({
-            where: { id: In(requestedPropertyIds) },
-          });
-
-          const foundIds = new Set(properties.map((p) => p.id));
-          const missing = requestedPropertyIds.filter((id) => !foundIds.has(id));
-          const wrongOwner = properties.filter((p) => p.owner_id !== userId);
-          if (missing.length > 0 || wrongOwner.length > 0) {
-            throw new ForbiddenException(
-              'One or more properties were not found or do not belong to you',
-            );
-          }
-
-          const taken = properties.filter(
-            (p) => p.facility_manager_id && p.facility_manager_id !== newTeamMember.id,
-          );
-          if (taken.length > 0) {
-            throw new ConflictException(
-              `Property "${taken[0].name}" is already assigned to another facility manager`,
-            );
-          }
-
-          await propRepo
-            .createQueryBuilder()
-            .update(Property)
-            .set({ facility_manager_id: newTeamMember.id })
-            .where('id IN (:...ids)', { ids: requestedPropertyIds })
-            .andWhere('owner_id = :ownerId', { ownerId: userId })
-            .execute();
-
-          // Write one history row per newly assigned property.
-          const phRepo = manager.getRepository(PropertyHistory);
-          const newFmName =
-            userAccount.profile_name?.trim() ||
-            `${teamMember.first_name} ${teamMember.last_name}`.trim() ||
-            null;
-          for (const p of properties) {
-            await phRepo.save({
-              property_id: p.id,
-              tenant_id: null,
-              event_type: 'facility_manager_assigned',
-              event_description: JSON.stringify({
-                propertyName: p.name,
-                previousFacilityManagerId: null,
-                previousFacilityManagerName: null,
-                newFacilityManagerId: newTeamMember.id,
-                newFacilityManagerName: newFmName,
-                actorId: userId,
-              }),
-              related_entity_type: 'team_member',
-              related_entity_id: newTeamMember.id,
-            });
-          }
-        }
-
         // 9. Send WhatsApp notification to the new team member.
-        // Only include the temporary password when we actually (re)issued one;
-        // for an FM joining an additional team, their existing creds still work.
-        await this.whatsappBotService.sendToFacilityManagerWithTemplate({
-          phone_number: normalizedPhoneNumber,
-          name: this.utilService.toSentenceCase(teamMember.first_name),
-          team: team.name,
-          role: 'Facility Manager',
-          temporary_password: plainPasswordToSend ?? undefined,
-        });
+        // When a Flow token was minted (new account or tenant→FM elevation),
+        // send the Flow-based password-setup template. Otherwise (landlord
+        // being elevated, or FM joining an additional team), the no-password
+        // template suffices — their existing creds still work.
+        if (flowTokenToSend) {
+          await this.whatsappBotService.sendToFacilityManagerSetPasswordFlow({
+            phone_number: normalizedPhoneNumber,
+            name: this.utilService.toSentenceCase(teamMember.first_name),
+            team: team.name,
+            role: 'Facility Manager',
+            flow_token: flowTokenToSend,
+          });
+        } else {
+          await this.whatsappBotService.sendToFacilityManagerWithTemplate({
+            phone_number: normalizedPhoneNumber,
+            name: this.utilService.toSentenceCase(teamMember.first_name),
+            team: team.name,
+            role: 'Facility Manager',
+            temporary_password: undefined,
+          });
+        }
 
         return newTeamMember;
       } catch (error) {
@@ -378,6 +338,93 @@ export class TeamService {
         );
       }
     });
+  }
+
+  /**
+   * Landlords the requesting facility manager is teamed with. One row per
+   * unique landlord, with the count of open maintenance requests currently
+   * assigned to the requester on that landlord's properties / common areas.
+   *
+   * Returns an empty array if the requester is not an FM or sits on no teams.
+   */
+  async getMyLandlords(
+    requesterUserId: string,
+  ): Promise<
+    {
+      accountId: string;
+      userId: string;
+      displayName: string;
+      openRequestCount: number;
+    }[]
+  > {
+    // 1. Every team_member row for this user where role=FACILITY_MANAGER.
+    //    Pull team.creator (Account) and team.creator.user (Users) so we can
+    //    build the landlord summary directly from the row.
+    const memberships = await this.teamMemberRepository
+      .createQueryBuilder('tm')
+      .innerJoinAndSelect('tm.team', 'team')
+      .innerJoinAndSelect('team.creator', 'creator')
+      .innerJoinAndSelect('creator.user', 'creatorUser')
+      .innerJoin('tm.account', 'fmAccount')
+      .innerJoin('fmAccount.user', 'fmUser')
+      .where('fmUser.id = :userId', { userId: requesterUserId })
+      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
+      .getMany();
+
+    if (memberships.length === 0) {
+      return [];
+    }
+
+    const tmIds = memberships.map((m) => m.id);
+
+    // 2. Count open SRs assigned to any of those TeamMember ids, keyed by
+    //    the FK so we can re-attach to the landlord.
+    const rawCounts = await this.dataSource
+      .createQueryBuilder()
+      .select('sr.assigned_to', 'assigned_to')
+      .addSelect('COUNT(*)::int', 'open_count')
+      .from('maintenance_requests', 'sr')
+      .where('sr.assigned_to IN (:...tmIds)', { tmIds })
+      .andWhere('sr.deleted_at IS NULL')
+      .andWhere("sr.status NOT IN ('resolved', 'closed')")
+      .groupBy('sr.assigned_to')
+      .getRawMany<{ assigned_to: string; open_count: number }>();
+
+    const openCountByTm = new Map<string, number>();
+    for (const row of rawCounts) {
+      openCountByTm.set(row.assigned_to, Number(row.open_count) || 0);
+    }
+
+    // 3. Reduce memberships to one row per landlord, summing the open counts
+    //    across all TeamMember rows belonging to that landlord (an FM rarely
+    //    has more than one TM row per team, but be defensive).
+    const byLandlord = new Map<
+      string,
+      { accountId: string; userId: string; displayName: string; openRequestCount: number }
+    >();
+    for (const m of memberships) {
+      const account = m.team?.creator;
+      const user = account?.user;
+      if (!account || !user) continue;
+      const displayName =
+        account.profile_name?.trim() ||
+        `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() ||
+        'Landlord';
+      const prev = byLandlord.get(account.id);
+      const openForThisTm = openCountByTm.get(m.id) ?? 0;
+      if (prev) {
+        prev.openRequestCount += openForThisTm;
+      } else {
+        byLandlord.set(account.id, {
+          accountId: account.id,
+          userId: user.id,
+          displayName,
+          openRequestCount: openForThisTm,
+        });
+      }
+    }
+
+    return Array.from(byLandlord.values());
   }
 
   /**
@@ -513,7 +560,27 @@ export class TeamService {
       throw new ForbiddenException('You cannot delete this team member');
     }
 
-    // 4. Delete the team member
+    // 4. Refuse if there are open SRs assigned to this FM. Closed/resolved
+    //    requests get their assigned_to set to NULL via the FK (SET NULL),
+    //    so history is preserved — but open work would be silently abandoned.
+    const openCount = await this.dataSource
+      .createQueryBuilder()
+      .from('maintenance_requests', 'sr')
+      .where('sr.assigned_to = :tmId', { tmId: id })
+      .andWhere('sr.deleted_at IS NULL')
+      .andWhere("sr.status NOT IN ('resolved', 'closed')")
+      .getCount();
+
+    if (openCount > 0) {
+      throw new HttpException(
+        `This facility manager has ${openCount} open maintenance request${
+          openCount === 1 ? '' : 's'
+        }. Reassign them before removing the team member.`,
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    // 5. Delete the team member
     await this.teamMemberRepository.remove(teamMember);
 
     return { success: true, message: 'Team member deleted successfully' };

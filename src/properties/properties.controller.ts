@@ -1,4 +1,4 @@
-import {
+﻿import {
   Controller,
   Get,
   Post,
@@ -213,17 +213,22 @@ export class PropertiesController {
   }
 
   @ApiOperation({
-    summary: 'Properties managed by the requesting facility manager',
+    summary: 'Properties of a landlord the requester is teamed with',
     description:
-      "Returns every property whose facility_manager_id maps to one of this user's TeamMember rows (across all landlords they work for). Each row includes: landlord display name (for the FM's landlord pill bar), the active tenant's name + phone (for the property header), and the count of open service requests on that property.",
+      "Returns a slim list of properties (id, name, location) owned by the given landlord. Accessible to (a) the landlord themselves OR (b) any facility manager on that landlord's team. Used by the FM ReportModal to enumerate filing targets without re-using the landlord-scoped list endpoint.",
   })
-  @ApiOkResponse({ description: 'List of FM-managed properties' })
+  @ApiOkResponse({ description: 'Slim property list' })
   @ApiSecurity('access_token')
-  @Get('/managed')
-  @UseGuards(RoleGuard)
-  @Roles(RolesEnum.FACILITY_MANAGER)
-  async getManagedProperties(@CurrentUser() requester: Account) {
-    return this.propertiesService.getManagedProperties(requester.id);
+  @UseGuards(JwtAuthGuard)
+  @Get('/for-landlord/:landlordAccountId')
+  getPropertiesForLandlord(
+    @Param('landlordAccountId', new ParseUUIDPipe()) landlordAccountId: string,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.propertiesService.getPropertiesForLandlord(
+      landlordAccountId,
+      requester.id,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -344,7 +349,7 @@ export class PropertiesController {
   @ApiOperation({
     summary: 'Force Delete Property (No Auth - Dev/Testing Only)',
     description:
-      'Permanently deletes a property and ALL associated records including tenants, rents, history, service requests, KYC data, etc. No authentication required. USE WITH CAUTION!',
+      'Permanently deletes a property and ALL associated records including tenants, rents, history, maintenance requests, KYC data, etc. No authentication required. USE WITH CAUTION!',
   })
   @ApiOkResponse({
     description: 'Property and all associated records permanently deleted',
@@ -416,40 +421,21 @@ export class PropertiesController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Service Request Of A Property' })
+  @ApiOperation({ summary: 'Get Maintenance Request Of A Property' })
   @ApiOkResponse({
     type: CreatePropertyDto,
-    description: 'Property and Service request successfully fetched',
+    description: 'Property and Maintenance request successfully fetched',
   })
-  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
-  @Get('service-request/:id')
-  getServiceRequestOfAProperty(@Param('id', new ParseUUIDPipe()) id: string) {
+  @Get('maintenance-request/:id')
+  getMaintenanceRequestOfAProperty(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
-      return this.propertiesService.getServiceRequestOfAProperty(id);
+      return this.propertiesService.getMaintenanceRequestOfAProperty(id);
     } catch (error) {
       throw error;
     }
-  }
-
-  @ApiOperation({ summary: 'Reassign / unassign facility manager on a property' })
-  @ApiOkResponse({ description: 'Facility manager updated' })
-  @ApiBadRequestResponse()
-  @ApiSecurity('access_token')
-  @Patch(':id/facility-manager')
-  @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
-  async setPropertyFacilityManager(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: { facility_manager_id: string | null },
-    @CurrentUser() requester: Account,
-  ) {
-    return this.propertiesService.setPropertyFacilityManager(
-      requester.id,
-      id,
-      body?.facility_manager_id ?? null,
-    );
   }
 
   @ApiOperation({ summary: 'Update Property' })

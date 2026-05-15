@@ -1,5 +1,5 @@
-import { BaseEntity } from 'src/base.entity';
-import { ServiceRequest } from 'src/service-requests/entities/service-request.entity';
+﻿import { BaseEntity } from 'src/base.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -26,7 +26,7 @@ export enum MessageType {
 @Entity('chat_messages')
 export class ChatMessage extends BaseEntity {
   @Column()
-  service_request_id: string;
+  maintenance_request_id: string;
 
   @Column({
     type: 'enum',
@@ -57,15 +57,15 @@ export class ChatMessage extends BaseEntity {
   senderName: string;
 
   @ManyToOne(
-    () => ServiceRequest,
-    (serviceRequest) => serviceRequest.messages,
+    () => MaintenanceRequest,
+    (maintenanceRequest) => maintenanceRequest.messages,
     {
       onDelete: 'CASCADE',
     },
   )
   @JoinColumn({
-    name: 'service_request_id',
+    name: 'maintenance_request_id',
     referencedColumnName: 'request_id',
   })
-  serviceRequest: ServiceRequest;
+  maintenanceRequest: MaintenanceRequest;
 }

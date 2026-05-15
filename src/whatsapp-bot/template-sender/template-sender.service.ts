@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+﻿import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ChatLogService } from '../chat-log.service';
@@ -18,7 +18,7 @@ interface TemplateBodyParameter {
  */
 interface TemplateComponent {
   type: 'header' | 'body' | 'button';
-  sub_type?: 'quick_reply' | 'url';
+  sub_type?: 'quick_reply' | 'url' | 'flow';
   index?: number | string;
   parameters: Array<
     | TemplateBodyParameter
@@ -33,6 +33,17 @@ interface TemplateComponent {
         document:
           | { id: string; filename: string }
           | { link: string; filename: string };
+      }
+    | {
+        // Flow-button per-send parameter. `flow_id`, `flow_action`, and
+        // `flow_cta` are baked into the template definition in Meta, so
+        // here we only ship the per-recipient `flow_token` (and optional
+        // pre-populate payload for the first screen via `flow_action_data`).
+        type: 'action';
+        action: {
+          flow_token: string;
+          flow_action_data?: Record<string, unknown>;
+        };
       }
   >;
 }
@@ -60,7 +71,7 @@ interface WhatsAppPayload {
     body: string;
   };
   interactive?: {
-    type: 'button' | 'flow';
+    type: 'button' | 'flow' | 'cta_url';
     body: { text: string };
     footer?: { text: string };
     action: Record<string, unknown>;
@@ -102,6 +113,20 @@ export interface FMTemplateParams {
    * and their existing password still works.
    */
   temporary_password?: string;
+}
+
+/**
+ * Parameters for the FM password-setup Flow template
+ * (`facility_manager_set_password`). The `flow_token` is the
+ * `PasswordResetToken.token` value minted at invite time; the Flow webhook
+ * uses it to identify which account is setting a password.
+ */
+export interface FMSetPasswordFlowParams {
+  phone_number: string;
+  name: string;
+  team: string;
+  role: string;
+  flow_token: string;
 }
 
 /**
@@ -203,18 +228,35 @@ export interface AgentKYCNotificationParams {
 }
 
 /**
- * Parameters for facility service request
+ * Parameters for facility maintenance request
  */
-export interface FacilityServiceRequestParams {
+export interface FacilityMaintenanceRequestParams {
   phone_number: string;
   manager_name: string;
   property_name: string;
   property_location: string;
-  service_request: string;
+  maintenance_request: string;
   tenant_name: string;
   tenant_phone_number: string;
   date_created: string;
   is_landlord?: boolean;
+  // Required when is_landlord=true — populates the dynamic Assign/Reject
+  // button payloads on the landlord template.
+  maintenance_request_id?: string;
+}
+
+/**
+ * Parameters for FM assignment notification. Sent to every FM on the
+ * landlord's team whenever a maintenance request is assigned (web or
+ * WhatsApp).
+ */
+export interface FmAssignmentNotificationParams {
+  phone_number: string;
+  manager_name: string;
+  tenant_name: string;
+  tenant_phone_number: string;
+  property_name: string;
+  maintenance_request: string;
 }
 
 /**
@@ -971,6 +1013,57 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send the FM password-setup Flow template. The template body carries
+   * name/team/role; the Flow button opens an in-WhatsApp form where the FM
+   * picks their own password. The form submits to our Flow webhook which
+   * exchanges `flow_token` for the corresponding password_reset_token row
+   * and writes the new password hash.
+   *
+   * Replaces `facility_manager_with_password` (which Meta rejects because
+   * it ships a credential in a non-Authentication template).
+   */
+  async sendToFacilityManagerSetPasswordFlow({
+    phone_number,
+    name,
+    team,
+    role,
+    flow_token,
+  }: FMSetPasswordFlowParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'facility_manager_set_password',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', parameter_name: 'name', text: name },
+              { type: 'text', parameter_name: 'team', text: team },
+              { type: 'text', parameter_name: 'role', text: role },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'flow',
+            index: 0,
+            parameters: [
+              {
+                type: 'action',
+                action: { flow_token },
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send property created template
    */
   async sendToPropertiesCreatedTemplate({
@@ -1115,7 +1208,7 @@ export class TemplateSenderService {
   }
 
   /**
-   * Send tenant confirmation template for service requests
+   * Send tenant confirmation template for maintenance requests
    */
   async sendTenantConfirmationTemplate({
     phone_number,
@@ -1128,7 +1221,7 @@ export class TemplateSenderService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'service_request_confirmation',
+        name: 'maintenance_request_confirmation',
         language: {
           code: 'en',
         },
@@ -1411,24 +1504,34 @@ export class TemplateSenderService {
   }
 
   /**
-   * Send facility service request notification
+   * Send facility maintenance request notification
    */
-  async sendFacilityServiceRequest({
+  async sendFacilityMaintenanceRequest({
     phone_number,
     property_name,
-    service_request,
+    maintenance_request,
     tenant_name,
     tenant_phone_number,
     date_created,
     is_landlord = false,
-  }: FacilityServiceRequestParams): Promise<void> {
+    maintenance_request_id,
+  }: FacilityMaintenanceRequestParams): Promise<void> {
     if (is_landlord) {
+      if (!maintenance_request_id) {
+        // Without the request id we can't build the Assign/Reject button
+        // payloads, so the template wouldn't be actionable. Refuse rather
+        // than send a button-less message that contradicts the registered
+        // template definition.
+        throw new Error(
+          'maintenance_request_id is required when is_landlord=true',
+        );
+      }
       const payload: WhatsAppPayload = {
         messaging_product: 'whatsapp',
         to: phone_number,
         type: 'template',
         template: {
-          name: 'landlord_service_request_notification',
+          name: 'landlord_maintenance_request_notification',
           language: {
             code: 'en',
           },
@@ -1446,11 +1549,33 @@ export class TemplateSenderService {
                 },
                 {
                   type: 'text',
-                  text: service_request,
+                  text: maintenance_request,
                 },
                 {
                   type: 'text',
                   text: date_created,
+                },
+              ],
+            },
+            {
+              type: 'button',
+              sub_type: 'quick_reply',
+              index: 0,
+              parameters: [
+                {
+                  type: 'payload',
+                  payload: `landlord_approve_mr:${maintenance_request_id}`,
+                },
+              ],
+            },
+            {
+              type: 'button',
+              sub_type: 'quick_reply',
+              index: 1,
+              parameters: [
+                {
+                  type: 'payload',
+                  payload: `landlord_reject_mr:${maintenance_request_id}`,
                 },
               ],
             },
@@ -1467,7 +1592,7 @@ export class TemplateSenderService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'fm_service_request_notification',
+        name: 'fm_maintenance_request_notification',
         language: {
           code: 'en',
         },
@@ -1477,7 +1602,15 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'text',
+                text: maintenance_request,
+              },
+              {
+                type: 'text',
                 text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: tenant_phone_number,
               },
               {
                 type: 'text',
@@ -1485,15 +1618,7 @@ export class TemplateSenderService {
               },
               {
                 type: 'text',
-                text: service_request,
-              },
-              {
-                type: 'text',
                 text: date_created,
-              },
-              {
-                type: 'text',
-                text: tenant_phone_number,
               },
             ],
           },
@@ -1504,7 +1629,7 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'payload',
-                payload: 'view_all_service_requests',
+                payload: 'view_all_maintenance_requests',
               },
             ],
           },
@@ -1516,25 +1641,25 @@ export class TemplateSenderService {
   }
 
   /**
-   * FM-targeted ping that fires when a landlord approves a service request
+   * FM-targeted ping that fires when a landlord approves a maintenance request
    * (NOT_APPROVED → APPROVED). Reuses the same parameter shape as
-   * `sendFacilityServiceRequest`. The template body is registered separately
+   * `sendFacilityMaintenanceRequest`. The template body is registered separately
    * in Meta Business Manager — this code only references the template name.
    */
-  async sendFacilityServiceRequestApproved({
+  async sendFacilityMaintenanceRequestApproved({
     phone_number,
     property_name,
-    service_request,
+    maintenance_request,
     tenant_name,
     tenant_phone_number,
     date_created,
-  }: Omit<FacilityServiceRequestParams, 'is_landlord'>): Promise<void> {
+  }: Omit<FacilityMaintenanceRequestParams, 'is_landlord'>): Promise<void> {
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
       type: 'template',
       template: {
-        name: 'fm_service_request_approved',
+        name: 'fm_maintenance_request_approved',
         language: { code: 'en' },
         components: [
           {
@@ -1542,7 +1667,7 @@ export class TemplateSenderService {
             parameters: [
               { type: 'text', text: tenant_name },
               { type: 'text', text: property_name },
-              { type: 'text', text: service_request },
+              { type: 'text', text: maintenance_request },
               { type: 'text', text: date_created },
               { type: 'text', text: tenant_phone_number },
             ],
@@ -1552,7 +1677,7 @@ export class TemplateSenderService {
             sub_type: 'quick_reply',
             index: 0,
             parameters: [
-              { type: 'payload', payload: 'view_all_service_requests' },
+              { type: 'payload', payload: 'view_all_maintenance_requests' },
             ],
           },
         ],
@@ -1566,7 +1691,67 @@ export class TemplateSenderService {
       // unregistered), the API call returns an error. Log and swallow so
       // the rest of the approval flow isn't blocked while we wait on Meta.
       console.warn(
-        `[fm_service_request_approved] template send failed (template may be unregistered with Meta): ${
+        `[fm_maintenance_request_approved] template send failed (template may be unregistered with Meta): ${
+          (err as Error)?.message ?? err
+        }`,
+      );
+    }
+  }
+
+  /**
+   * FM-targeted ping fired on every maintenance.assigned event. Sent to
+   * every FM on the landlord's team (including the assignee) so the team
+   * has shared awareness. The assigned FM's display name is rendered in
+   * {{1}}, so each recipient reads "assigned to <name>" — slight redundancy
+   * for the assignee, but avoids needing a second template + Meta approval
+   * for a "to you" variant.
+   */
+  async sendFmAssignmentNotification({
+    phone_number,
+    manager_name,
+    tenant_name,
+    tenant_phone_number,
+    property_name,
+    maintenance_request,
+  }: FmAssignmentNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'fm_assignment_notification',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: manager_name },
+              { type: 'text', text: maintenance_request },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: tenant_phone_number },
+              { type: 'text', text: property_name },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              { type: 'payload', payload: 'view_all_maintenance_requests' },
+            ],
+          },
+        ],
+      },
+    };
+
+    try {
+      await this.sendToWhatsappAPI(payload);
+    } catch (err) {
+      // Same defense as fm_maintenance_request_approved — swallow Meta
+      // approval gaps so a single template hiccup doesn't break the
+      // fan-out loop.
+      console.warn(
+        `[fm_assignment_notification] template send failed (template may be unregistered with Meta): ${
           (err as Error)?.message ?? err
         }`,
       );
@@ -3150,6 +3335,40 @@ export class TemplateSenderService {
   /**
    * Send interactive button message
    */
+  /**
+   * Send an interactive CTA-URL message. The single button opens the given
+   * URL in the FM/tenant's browser. Free-form (non-template) message — only
+   * works within Meta's 24h customer-service window.
+   */
+  async sendCtaUrl(
+    to: string,
+    text: string,
+    displayText: string,
+    url: string,
+    footer?: string,
+  ): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'cta_url',
+        body: { text },
+        ...(footer && { footer: { text: footer } }),
+        action: {
+          name: 'cta_url',
+          parameters: {
+            display_text: displayText,
+            url,
+          },
+        },
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   async sendButtons(
     to: string,
     text: string = 'Hello, welcome to Property Kraft',
@@ -4398,6 +4617,10 @@ export class TemplateSenderService {
       "Hi, thanks for connecting with Property Kraft!\n\nYou're now plugged in to receive the latest property updates, sweet deals, and housing opportunities directly on WhatsApp. ✨\n\nIn the meantime, you can also visit our website here: https://propertykraft.africa 🌍\n\nStay ahead with Property Kraft! 🚀",
     facility_manager:
       'Hello {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\nWelcome aboard!',
+    facility_manager_with_password:
+      'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nYour temporary password is: {{4}}\n\nPlease sign in and change your password as soon as possible.\n\nThank you,',
+    facility_manager_set_password:
+      'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nTap the button below to set your password and finish signing in. The link expires in 30 days — ask your team admin to re-invite you if it does.\n\nThank you,',
     properties_created:
       'Hello {{1}}\n\nA new property with name {{2}} was created.\n\nThank you.\n-The Lizt Team',
     user_added:
@@ -4406,8 +4629,8 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nYour landlord, {{2}}, is using Lizt by Property Kraft — a tenancy management app — to manage {{3}} and make your rental experience smooth and stress-free.\n\nWith Lizt, you can handle everything about your home in one place — from getting important updates, tracking rent, reporting issues easily, and staying connected throughout your tenancy.\n\nReply Hi to get started.\n\n— The Lizt Team',
     welcome_tenant:
       'Hi {{1}},\n\n{{2}} has added you as a tenant for {{3}} on Lizt.\n\nPlease confirm your tenancy details to continue setup.',
-    service_request_confirmation:
-      'Hi {{1}} 👋🏽\n\nYour service request about "{{2}}" has been marked as resolved.\n\nCan you confirm if everything is fixed?',
+    maintenance_request_confirmation:
+      'Hi {{1}} 👋🏽\n\nYour maintenance request about "{{2}}" has been marked as resolved.\n\nCan you confirm if everything is fixed?',
     tenant_application_notification:
       'A KYC application was submitted by {{2}} for the property {{3}}, assigned to {{1}}.\n\nUse the links below to view or download the application.',
     kyc_application_attachment_landlord:
@@ -4416,10 +4639,12 @@ export class TemplateSenderService {
       "Hello {{1}}, Your KYC form has been submitted. The landlord is reviewing your details, and we'll keep you updated.",
     agent_kyc_notification:
       'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
-    landlord_service_request_notification:
-      'Service Request Notification\n\nA new service request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}} on record.',
-    fm_service_request_notification:
-      'A new service request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nPhone: {{5}}\nProperty: {{2}}\nReported: {{4}} on record.',
+    landlord_maintenance_request_notification:
+      'A new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}} on record.',
+    fm_maintenance_request_notification:
+      'A new service request has been created.\n\nIssue: {{1}}\nTenant: {{2}}\nPhone: {{3}}\nProperty: {{4}}\nReported: {{5}} on record.',
+    fm_assignment_notification:
+      'A maintenance request has been assigned to {{1}}.\n\nIssue: {{2}}\nTenant: {{3}}\nPhone: {{4}}\nProperty: {{5}}\n\nPlease attend to this.',
     kyc_completion_link:
       'Hello {{1}},\n\n{{2}} has added you as a tenant for {{3}} using Lizt by Property Kraft — a tenancy management app designed to make your rental experience simple and stress-free.\n\nWith Lizt, you can receive important updates, track rent, and manage everything about your tenancy in one place.\n\nPlease {{4}} your KYC information using the link below to get started:',
     kyc_completion_notification:
@@ -4470,7 +4695,7 @@ export class TemplateSenderService {
     renewal_payment_tenant:
       'Congratulations {{1}}!\n\nYour payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
     payment_receipt_tenant:
-      'Hi {{1}},\n\nYour payment of {{2}} for {{3}} has been successfully confirmed by Property Kraft.\n\nTap the button below to download your receipt.\n\nThank you.',
+      'Hi {{1}},\n\nYour payment of {{2}} for *{{3}}* has been successfully confirmed by Property Kraft.\n\nTap the button below to download your receipt.\n\nThank you.',
     payment_receipt_attachment_tenant:
       'Here is your payment receipt from Property Kraft.\n\nThank you,',
     renewal_payment_landlord:

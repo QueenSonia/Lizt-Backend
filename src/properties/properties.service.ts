@@ -993,7 +993,14 @@ export class PropertiesService {
   async getPropertiesForLandlord(
     landlordAccountId: string,
     requesterAccountId: string,
-  ): Promise<{ id: string; name: string; location: string }[]> {
+  ): Promise<
+    {
+      id: string;
+      name: string;
+      location: string;
+      property_status: string;
+    }[]
+  > {
     if (landlordAccountId !== requesterAccountId) {
       // Validate the requester is a FACILITY_MANAGER on a team this landlord
       // created. One row is enough; no need to materialize the relations.
@@ -1017,7 +1024,12 @@ export class PropertiesService {
 
     const rows = await this.propertyRepository
       .createQueryBuilder('property')
-      .select(['property.id', 'property.name', 'property.location'])
+      .select([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.property_status',
+      ])
       .where('property.owner_id = :ownerId', { ownerId: landlordAccountId })
       .andWhere('property.deleted_at IS NULL')
       .orderBy('property.name', 'ASC')
@@ -1027,6 +1039,7 @@ export class PropertiesService {
       id: p.id,
       name: p.name,
       location: p.location,
+      property_status: p.property_status,
     }));
   }
 

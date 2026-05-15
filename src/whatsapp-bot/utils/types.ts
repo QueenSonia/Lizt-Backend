@@ -15,6 +15,10 @@ export type IncomingMessage = {
     type: string;
     button_reply?: { id: string; title: string };
     list_reply?: { id: string; title: string; description?: string };
+    // Sent when a user completes a Flow (clicks the terminal screen's
+    // `complete` action). `response_json` is a stringified JSON of the
+    // payload from that screen.
+    nfm_reply?: { name: string; body: string; response_json: string };
   };
 
   button?: {

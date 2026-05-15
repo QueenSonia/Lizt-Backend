@@ -5,7 +5,7 @@ import { Property } from 'src/properties/entities/property.entity';
 import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
-import { Account } from 'src/users/entities/account.entity';
+import { Account, accountHasRole } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
@@ -102,8 +102,8 @@ export class LandlordLookup {
     }
 
     // Find the landlord account for this user
-    const landlordAccount = user.accounts?.find(
-      (account) => account.role === RolesEnum.LANDLORD,
+    const landlordAccount = user.accounts?.find((account) =>
+      accountHasRole(account, RolesEnum.LANDLORD),
     );
 
     console.log('🏠 Landlord account lookup:', {
@@ -212,8 +212,8 @@ export class LandlordLookup {
     }
 
     // Find the landlord account for this user
-    const landlordAccount = user.accounts?.find(
-      (account) => account.role === RolesEnum.LANDLORD,
+    const landlordAccount = user.accounts?.find((account) =>
+      accountHasRole(account, RolesEnum.LANDLORD),
     );
 
     if (!landlordAccount) {
@@ -292,8 +292,8 @@ export class LandlordLookup {
     }
 
     // Find the landlord account for this user
-    const landlordAccount = user.accounts?.find(
-      (account) => account.role === RolesEnum.LANDLORD,
+    const landlordAccount = user.accounts?.find((account) =>
+      accountHasRole(account, RolesEnum.LANDLORD),
     );
 
     if (!landlordAccount) {

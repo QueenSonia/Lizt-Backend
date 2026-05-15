@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 
 import { Users } from 'src/users/entities/user.entity';
+import { accountHasRole } from 'src/users/entities/account.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { CacheService } from 'src/lib/cache';
@@ -517,22 +518,20 @@ export class LandlordFlowService {
     if (!user) {
       await this.templateSenderService.sendToAgentWithTemplate(from);
     } else {
-      await this.templateSenderService.sendButtons(
+      await this.templateSenderService.sendFacilityManagerMainMenu(
         from,
-        `Hello Manager ${this.utilService.toSentenceCase(
-          user.first_name,
-        )} Welcome to Property Kraft! What would you like to do today?`,
-        [
-          { id: 'maintenance_request', title: 'Maintenance Requests' },
-          { id: 'view_account_info', title: 'Account Info' },
-          { id: 'visit_site', title: 'Visit Website' },
-        ],
+        this.utilService.toSentenceCase(user.first_name),
       );
     }
   }
 
   /**
-   * Find facility manager by phone number using normalized format
+   * Find facility manager by phone number using normalized format.
+   *
+   * Filters accounts in JS instead of SQL because `accounts.role` is a
+   * single-value mirror of `roles[0]`; a multi-role account whose FM role
+   * isn't first in `roles[]` is invisible to a `WHERE accounts.role = 'fm'`
+   * filter, causing the FM to fall into the agent_welcome fallback.
    */
   private async findFacilityManagerByPhone(
     phoneNumber: string,
@@ -540,14 +539,19 @@ export class LandlordFlowService {
     const normalizedPhone = this.utilService.normalizePhoneNumber(phoneNumber);
 
     const user = await this.usersRepo.findOne({
-      where: {
-        phone_number: normalizedPhone,
-        accounts: { role: RolesEnum.FACILITY_MANAGER },
-      },
+      where: { phone_number: normalizedPhone },
       relations: ['accounts'],
     });
 
-    return user;
+    if (!user) {
+      return null;
+    }
+
+    const hasFm = user.accounts?.some((acc) =>
+      accountHasRole(acc, RolesEnum.FACILITY_MANAGER),
+    );
+
+    return hasFm ? user : null;
   }
 
   /**

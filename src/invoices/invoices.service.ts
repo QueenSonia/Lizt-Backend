@@ -13,6 +13,8 @@ import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { Property } from '../properties/entities/property.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Users } from '../users/entities/user.entity';
+import { accountHasRole } from '../users/entities/account.entity';
+import { RolesEnum } from '../base.entity';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender/template-sender.service';
 import { PropertyHistoryService } from '../property-history/property-history.service';
@@ -651,8 +653,9 @@ export class InvoicesService {
         : 'Tenant';
 
     const landlordAccount =
-      invoice.landlord.accounts?.find((a) => a.role === 'landlord') ||
-      invoice.landlord.accounts?.[0];
+      invoice.landlord.accounts?.find((a) =>
+        accountHasRole(a, RolesEnum.LANDLORD),
+      ) || invoice.landlord.accounts?.[0];
     const landlordName =
       landlordAccount?.profile_name ||
       `${invoice.landlord.first_name} ${invoice.landlord.last_name}`.trim() ||

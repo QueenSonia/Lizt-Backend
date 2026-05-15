@@ -1180,6 +1180,9 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('sr.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'tenantUser')
       .leftJoinAndSelect('sr.creator', 'creator')
+      .leftJoinAndSelect('sr.facilityManager', 'assignedFm')
+      .leftJoinAndSelect('assignedFm.account', 'assignedFmAccount')
+      .leftJoinAndSelect('assignedFmAccount.user', 'assignedFmUser')
       .where(
         '(property.owner_id IN (:...landlordAccountIds) OR commonAreaOwner.id IN (:...landlordUserIds))',
         {
@@ -1260,9 +1263,13 @@ export class MaintenanceRequestsService {
           : (h.new_status as string);
 
       const title = titleByEvent[event_type] ?? `Status: ${h.new_status}`;
+      const eventNote = h.notes || h.change_reason || '';
+      const issueDesc = sr.description?.trim() || '';
       const description = isCreation
         ? sr.description
-        : h.notes || h.change_reason || '';
+        : issueDesc && eventNote
+          ? `${issueDesc} - ${eventNote}`
+          : issueDesc || eventNote;
 
       const actor_name =
         fullName(h.changedBy?.first_name, h.changedBy?.last_name) ||
@@ -1270,6 +1277,15 @@ export class MaintenanceRequestsService {
         fullName(sr.creator?.first_name, sr.creator?.last_name) ||
         sr.tenant_name ||
         '—';
+
+      const assignedFmAccount = sr.facilityManager?.account;
+      const assigned_fm_name =
+        fullName(
+          assignedFmAccount?.user?.first_name,
+          assignedFmAccount?.user?.last_name,
+        ) ||
+        assignedFmAccount?.profile_name ||
+        null;
 
       return {
         id: h.id,
@@ -1286,6 +1302,8 @@ export class MaintenanceRequestsService {
           sr.property?.owner_id ?? sr.common_area?.owner_id ?? null,
         actor_name,
         actor_role: h.changed_by_role,
+        assigned_fm_name,
+        assigned_fm_team_member_id: sr.facilityManager?.id ?? null,
         scope: sr.scope,
         creator_type: sr.creator_type,
         current_status: sr.status,

@@ -1,6 +1,6 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class ChangeMaintenanceRequestAssignedToOnDelete1777000000000
+export class ChangeMaintenanceRequestAssignedToOnDelete1798000000000
   implements MigrationInterface
 {
   public async up(queryRunner: QueryRunner): Promise<void> {

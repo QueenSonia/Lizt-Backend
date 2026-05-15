@@ -71,7 +71,7 @@ export class TeamService {
    * @param requester The account making the request
    */
   private validateLandlordRole(requester: Account): void {
-    if (requester.role !== RolesEnum.LANDLORD) {
+    if (!requester.roles?.includes(RolesEnum.LANDLORD)) {
       throw new ForbiddenException('Only landlords can manage teams');
     }
   }
@@ -89,14 +89,16 @@ export class TeamService {
   ): Promise<TeamMember> {
     return await this.dataSource.transaction(async (manager) => {
       try {
-        // Ensure only LANDLORD can add to team
+        // Ensure only LANDLORD can add to team — check roles[] array, since
+        // multi-role accounts may have a non-landlord value in singular `role`
+        // while still legitimately holding the landlord role in `roles[]`.
         const account = await manager
           .getRepository(Account)
           .findOne({ where: { id: userId } });
 
-        if (!account || account.role !== RolesEnum.LANDLORD) {
+        if (!account || !account.roles?.includes(RolesEnum.LANDLORD)) {
           throw new HttpException(
-            `${account ? account.role : 'Unknown role'} cannot add to team`,
+            'Only landlords can add to team',
             HttpStatus.FORBIDDEN,
           );
         }
@@ -107,22 +109,9 @@ export class TeamService {
         });
 
         if (!team) {
-          const teamAdminAccount = await manager
-            .getRepository(Account)
-            .findOne({
-              where: { id: userId, role: RolesEnum.LANDLORD },
-            });
-
-          if (!teamAdminAccount) {
-            throw new HttpException(
-              'Team admin account not found',
-              HttpStatus.NOT_FOUND,
-            );
-          }
-
           team = manager.getRepository(Team).create({
-            name: `${teamAdminAccount.profile_name} Team`,
-            creatorId: teamAdminAccount.id,
+            name: `${account.profile_name} Team`,
+            creatorId: account.id,
           });
 
           await manager.getRepository(Team).save(team);

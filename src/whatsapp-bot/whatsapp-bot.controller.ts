@@ -113,17 +113,10 @@ export class WhatsappBotController {
 
         this.logger.warn('Received malformed webhook payload', errorContext);
 
-        // Consistent error response format for both modes
-        // Validates: Requirements 8.1, 8.3
-        const errorResponse = {
-          error: 'Invalid webhook payload structure',
-          message:
-            'The webhook payload does not conform to the expected WhatsApp webhook format',
-          context: errorContext,
-          mode: isSimulatorPayload ? 'simulator' : 'production',
-        };
-
-        throw new BadRequestException(errorResponse);
+        // Always return 2xx to Meta — a 4xx triggers retries and persistent
+        // failures can disable the webhook subscription. Anything we can't
+        // process is logged above and acknowledged here.
+        return { received: true, processed: false };
       }
 
       // Process the webhook payload using the WebhookHandler with enhanced error handling

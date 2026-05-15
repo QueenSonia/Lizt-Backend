@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { ChatLogService } from './chat-log.service';
 import {
   MessageStatusTracker,
@@ -10,6 +10,7 @@ import {
   WhatsAppStatusUpdatePayload,
   IncomingMessage,
 } from './utils/types';
+import { WhatsappBotService } from './whatsapp-bot.service';
 
 @Injectable()
 export class WebhookHandler {
@@ -18,6 +19,10 @@ export class WebhookHandler {
   constructor(
     private readonly chatLogService: ChatLogService,
     private readonly messageStatusTracker: MessageStatusTracker,
+    // forwardRef because WhatsappBotService and WebhookHandler live in the
+    // same module and the resolution order isn't guaranteed.
+    @Inject(forwardRef(() => WhatsappBotService))
+    private readonly whatsappBotService: WhatsappBotService,
   ) {}
 
   /**
@@ -364,6 +369,10 @@ export class WebhookHandler {
             content = message.interactive.button_reply.title;
           } else if (message.interactive?.list_reply) {
             content = message.interactive.list_reply.title;
+          } else if (message.interactive?.nfm_reply) {
+            const reply = message.interactive.nfm_reply;
+            content = `flow:${reply.name}`;
+            await this.handleFlowCompletion(phoneNumber, reply);
           }
           break;
         case 'button':
@@ -430,6 +439,44 @@ export class WebhookHandler {
   }
 
   /**
+   * Dispatch a Flow completion (`nfm_reply`) to the right handler. The Flow
+   * JSON's terminal screen `complete` payload should set a `flow` marker so
+   * we know which flow finished — we don't trust `nfm_reply.name` alone
+   * because Meta sets it to a generic value in some send modes.
+   *
+   * Failures are logged and swallowed; we never want a flow completion to
+   * 500 the whole webhook (Meta would retry the entire batch).
+   */
+  private async handleFlowCompletion(
+    phoneNumber: string,
+    reply: { name: string; body: string; response_json: string },
+  ): Promise<void> {
+    let payload: Record<string, any> = {};
+    try {
+      payload = JSON.parse(reply.response_json || '{}');
+    } catch (err) {
+      this.logger.warn('Could not parse nfm_reply.response_json', {
+        name: reply.name,
+        response_json: reply.response_json,
+        error: (err as Error).message,
+      });
+      return;
+    }
+
+    const flow = payload.flow ?? reply.name;
+    if (flow === 'fm_set_password' && payload.status === 'success') {
+      try {
+        await this.whatsappBotService.sendFmWelcomeMessage(phoneNumber);
+      } catch (err) {
+        this.logger.error('FM welcome message send failed', {
+          phoneNumber,
+          error: (err as Error).message,
+        });
+      }
+    }
+  }
+
+  /**
    * Validate webhook payload structure
    * Validates: Requirements 5.5, 1.2, 1.4, 8.1, 8.2
    */
@@ -468,7 +515,7 @@ export class WebhookHandler {
         }
 
         for (const change of entry.changes) {
-          if (change.field !== 'messages' || !change.value) {
+          if (!change.field || !change.value) {
             this.logger.warn(
               'Webhook payload validation failed: invalid change structure',
               {
@@ -477,6 +524,13 @@ export class WebhookHandler {
               },
             );
             return false;
+          }
+
+          // Non-message fields (e.g. `flows` lifecycle events) are valid Meta
+          // webhooks; we just don't process them. processWebhookPayload will
+          // skip them — pass validation here.
+          if (change.field !== 'messages') {
+            continue;
           }
 
           // Validate simulator messages if present with enhanced error handling

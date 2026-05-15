@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { ILike, Repository } from 'typeorm';
 import { ChatLog } from './entities/chat-log.entity';
 import { MessageDirection } from './entities/message-direction.enum';
 import { MessageStatus } from './entities/message-status.enum';
@@ -165,6 +165,30 @@ export class ChatLogService {
       );
       throw error;
     }
+  }
+
+  /**
+   * True if any outbound chat_log to this phone has `content` containing the
+   * given marker. Used as a one-time dedup signal for welcome / first-touch
+   * sends — picks up the row that `sendToWhatsappAPI` writes after a
+   * successful send, so a subsequent retry can early-return.
+   *
+   * Marker should be a phrase distinctive to the message you're guarding
+   * against re-sending (e.g. a unique sentence from the body).
+   */
+  async hasOutboundContaining(
+    phoneNumber: string,
+    marker: string,
+  ): Promise<boolean> {
+    const normalizedPhone = normalizePhoneNumber(phoneNumber);
+    const count = await this.chatLogRepository.count({
+      where: {
+        phone_number: normalizedPhone,
+        direction: MessageDirection.OUTBOUND,
+        content: ILike(`%${marker}%`),
+      },
+    });
+    return count > 0;
   }
 
   /**

@@ -1684,18 +1684,7 @@ export class TemplateSenderService {
       },
     };
 
-    try {
-      await this.sendToWhatsappAPI(payload);
-    } catch (err) {
-      // If Meta hasn't approved the new template yet (or the name is
-      // unregistered), the API call returns an error. Log and swallow so
-      // the rest of the approval flow isn't blocked while we wait on Meta.
-      console.warn(
-        `[fm_maintenance_request_approved] template send failed (template may be unregistered with Meta): ${
-          (err as Error)?.message ?? err
-        }`,
-      );
-    }
+    await this.sendToWhatsappAPI(payload);
   }
 
   /**
@@ -1747,11 +1736,10 @@ export class TemplateSenderService {
     try {
       await this.sendToWhatsappAPI(payload);
     } catch (err) {
-      // Same defense as fm_maintenance_request_approved — swallow Meta
-      // approval gaps so a single template hiccup doesn't break the
-      // fan-out loop.
+      // Swallow per-recipient failures so one FM's send error doesn't
+      // abort the fan-out loop for the rest of the team.
       console.warn(
-        `[fm_assignment_notification] template send failed (template may be unregistered with Meta): ${
+        `[fm_assignment_notification] template send failed: ${
           (err as Error)?.message ?? err
         }`,
       );
@@ -4620,7 +4608,7 @@ export class TemplateSenderService {
     facility_manager_with_password:
       'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nYour temporary password is: {{4}}\n\nPlease sign in and change your password as soon as possible.\n\nThank you,',
     facility_manager_set_password:
-      'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nTap the button below to set your password and finish signing in. The link expires in 30 days — ask your team admin to re-invite you if it does.\n\nThank you,',
+      'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nTap the button below to set your password and finish signing in. The link expires in 7 days — ask your team admin to re-invite you if it does.\n\nThank you,',
     properties_created:
       'Hello {{1}}\n\nA new property with name {{2}} was created.\n\nThank you.\n-The Lizt Team',
     user_added:
@@ -4640,9 +4628,11 @@ export class TemplateSenderService {
     agent_kyc_notification:
       'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
     landlord_maintenance_request_notification:
-      'A new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}} on record.',
+      'A new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}}\n\nPlease attend to this.',
     fm_maintenance_request_notification:
-      'A new service request has been created.\n\nIssue: {{1}}\nTenant: {{2}}\nPhone: {{3}}\nProperty: {{4}}\nReported: {{5}} on record.',
+      'A new service request has been created.\n\nIssue: {{1}}\nTenant: {{2}}\nPhone: {{3}}\nProperty: {{4}}\nReported: {{5}}\n\nPlease attend to this.',
+    fm_maintenance_request_approved:
+      'A maintenance request has been approved by the landlord.\n\nTenant: {{1}}\nProperty: {{2}}\nIssue: {{3}}\nReported: {{4}}\nPhone: {{5}}\n\nPlease attend to this request.',
     fm_assignment_notification:
       'A maintenance request has been assigned to {{1}}.\n\nIssue: {{2}}\nTenant: {{3}}\nPhone: {{4}}\nProperty: {{5}}\n\nPlease attend to this.',
     kyc_completion_link:

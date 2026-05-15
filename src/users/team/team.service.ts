@@ -229,7 +229,7 @@ export class TeamService {
         );
 
         let flowTokenToSend: string | null = null;
-        const FM_TOKEN_TTL_HOURS = 24 * 30; // 30 days — see plan B.1
+        const FM_TOKEN_TTL_HOURS = 24 * 7; // 7 days — matches "expires in 7 days" wording in the facility_manager_set_password template body
 
         const mintFlowToken = async (accountId: string): Promise<string> => {
           const token = uuidv4();
@@ -306,6 +306,21 @@ export class TeamService {
         await manager.getRepository(TeamMember).save(newTeamMember);
 
         // 9. Send WhatsApp notification to the new team member.
+        // The FM templates' `team` variable is the landlord's display name
+        // (accounts.profile_name with a first/last-name fallback), NOT
+        // `team.name` — team.name already carries a " Team" suffix
+        // (see step 1), which would render as "X Team team" in the body.
+        const teamAdminForNotice = await manager
+          .getRepository(Account)
+          .findOne({
+            where: { id: team.creatorId },
+            relations: ['user'],
+          });
+        const landlordDisplayName =
+          teamAdminForNotice?.profile_name?.trim() ||
+          `${teamAdminForNotice?.user?.first_name ?? ''} ${teamAdminForNotice?.user?.last_name ?? ''}`.trim() ||
+          'Your landlord';
+
         // When a Flow token was minted (new account or tenant→FM elevation),
         // send the Flow-based password-setup template. Otherwise (landlord
         // being elevated, or FM joining an additional team), the no-password
@@ -314,7 +329,7 @@ export class TeamService {
           await this.whatsappBotService.sendToFacilityManagerSetPasswordFlow({
             phone_number: normalizedPhoneNumber,
             name: this.utilService.toSentenceCase(teamMember.first_name),
-            team: team.name,
+            team: landlordDisplayName,
             role: 'Facility Manager',
             flow_token: flowTokenToSend,
           });
@@ -322,7 +337,7 @@ export class TeamService {
           await this.whatsappBotService.sendToFacilityManagerWithTemplate({
             phone_number: normalizedPhoneNumber,
             name: this.utilService.toSentenceCase(teamMember.first_name),
-            team: team.name,
+            team: landlordDisplayName,
             role: 'Facility Manager',
             temporary_password: undefined,
           });

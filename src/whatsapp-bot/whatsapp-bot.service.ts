@@ -229,12 +229,8 @@ export class WhatsappBotService implements OnModuleInit {
             return { ...SCREEN_RESPONSES.FM_LINK_EXPIRED };
           }
 
-          let confirmationTarget: {
-            phone_number?: string;
-            profile_name?: string;
-          } = {};
           try {
-            confirmationTarget = await this.passwordService.resetPasswordCore(
+            await this.passwordService.resetPasswordCore(
               flowToken,
               newPassword,
             );
@@ -250,29 +246,10 @@ export class WhatsappBotService implements OnModuleInit {
             };
           }
 
-          // Fire-and-forget confirmation text. Within Meta's 24h customer
-          // service window because the FM just submitted the flow (counts as
-          // an inbound interaction), so a free-form text reply is allowed.
-          if (confirmationTarget.phone_number) {
-            const firstName =
-              confirmationTarget.profile_name?.split(' ')[0] ?? 'there';
-            const frontendUrl =
-              process.env.FRONTEND_URL || 'http://localhost:3000';
-            const dashboardUrl = `${frontendUrl}/facility-manager`;
-            const body =
-              `Hi ${firstName} 👋\n\n` +
-              `Your password has been set: ${newPassword}\n\n` +
-              `You can now sign in to Lizt using your phone number and the password you just chose.\n\n` +
-              `Open your dashboard: ${dashboardUrl}\n\n` +
-              `Welcome aboard!`;
-            this.sendText(confirmationTarget.phone_number, body).catch((err) =>
-              this.logger.error(
-                'FM password-set confirmation send failed',
-                err as Error,
-              ),
-            );
-          }
-
+          // Welcome text is sent later, when the FM clicks "Done" on the
+          // terminal screen and Meta posts an `nfm_reply` webhook. That path
+          // is the only one with a guaranteed-open 24h customer service
+          // window. See WebhookHandler.processIncomingMessage.
           return { ...SCREEN_RESPONSES.FM_PASSWORD_SUCCESS };
         }
 
@@ -295,6 +272,50 @@ export class WhatsappBotService implements OnModuleInit {
 
     console.error('Unhandled request body:', decryptedBody);
     throw new Error('Unhandled endpoint request.');
+  }
+
+  /**
+   * Send the welcome text after an FM completes the password-set Flow and
+   * clicks "Done" on the terminal screen. Called from
+   * WebhookHandler when an `nfm_reply` arrives with the FM_SET_PASSWORD
+   * success marker. Looks up the FM by phone for the personalised greeting
+   * and silently no-ops if no FM account matches.
+   */
+  async sendFmWelcomeMessage(phoneNumber: string): Promise<void> {
+    // Dedup: the welcome body's `Open your dashboard:` line is unique to
+    // this send, so a prior outbound chat_log with that marker means we've
+    // already delivered the welcome to this phone — skip to avoid double-
+    // sends if the FM clicks "Done" twice or Meta re-delivers the nfm_reply.
+    const FM_WELCOME_MARKER = 'Open your dashboard:';
+    if (
+      await this.chatLogService.hasOutboundContaining(
+        phoneNumber,
+        FM_WELCOME_MARKER,
+      )
+    ) {
+      this.logger.log(`Skipping FM welcome — already sent to ${phoneNumber}`);
+      return;
+    }
+
+    const fm = await this.findUserByPhone(
+      phoneNumber,
+      RolesEnum.FACILITY_MANAGER,
+    );
+    const profileName =
+      fm?.accounts?.find((a) => a.role === RolesEnum.FACILITY_MANAGER)
+        ?.profile_name ||
+      [fm?.first_name, fm?.last_name].filter(Boolean).join(' ').trim();
+    const firstName = profileName?.split(' ')[0] || 'there';
+    const frontendUrl =
+      process.env.FRONTEND_URL || 'http://localhost:3000';
+    const dashboardUrl = `${frontendUrl}/facility-manager`;
+    const body =
+      `Hi ${firstName} 👋\n\n` +
+      `Your password has been set.\n\n` +
+      `You can now sign in to Lizt using your phone number and the password you just chose.\n\n` +
+      `${FM_WELCOME_MARKER} ${dashboardUrl}\n\n` +
+      `Welcome aboard!`;
+    await this.sendText(phoneNumber, body);
   }
 
   /**

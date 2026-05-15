@@ -21,7 +21,11 @@ import {
   RenewalLetterStatus,
 } from '../tenancies/entities/renewal-invoice.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
-import { TenantStatusEnum } from '../properties/dto/create-property.dto';
+import { Property } from '../properties/entities/property.entity';
+import {
+  PropertyStatusEnum,
+  TenantStatusEnum,
+} from '../properties/dto/create-property.dto';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 import {
@@ -58,6 +62,8 @@ export class RentReminderService {
     private readonly renewalInvoiceRepository: Repository<RenewalInvoice>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
+    @InjectRepository(Property)
+    private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PaymentPlanInstallment)
     private readonly installmentRepository: Repository<PaymentPlanInstallment>,
     private readonly whatsAppNotificationLogService: WhatsAppNotificationLogService,
@@ -583,6 +589,32 @@ export class RentReminderService {
     await this.propertyTenantRepository.update(propertyTenant.id, {
       status: TenantStatusEnum.INACTIVE,
     });
+
+    // 2a. Vacate the property unless another active rent remains. Skip
+    // marketing/offer states so the sync doesn't clobber a parallel
+    // offer-letter flow on the same property.
+    const remainingActiveRents = await this.rentRepository.count({
+      where: {
+        property_id: rent.property_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+    if (remainingActiveRents === 0) {
+      await this.propertyRepository
+        .createQueryBuilder()
+        .update(Property)
+        .set({ property_status: PropertyStatusEnum.VACANT })
+        .where('id = :id', { id: rent.property_id })
+        .andWhere('property_status NOT IN (:...skip)', {
+          skip: [
+            PropertyStatusEnum.INACTIVE,
+            PropertyStatusEnum.READY_FOR_MARKETING,
+            PropertyStatusEnum.OFFER_PENDING,
+            PropertyStatusEnum.OFFER_ACCEPTED,
+          ],
+        })
+        .execute();
+    }
 
     // 3. Property history — surfaces in the timeline as a normal move-out.
     const declineReason = letter.decline_reason?.trim() || null;

@@ -3559,10 +3559,14 @@ export class PropertiesService {
   }
 
   @PerformanceMonitor.MonitorPerformance(5000) // Alert if takes more than 5 seconds
-  async syncPropertyStatuses() {
+  async syncPropertyStatuses(landlordId?: string) {
     // Method to fix data inconsistencies - sync property status with actual tenancy state
-    // Use query builder for better performance
-    const properties = await this.propertyRepository
+    // Scoped to the requesting landlord when provided so the "Fix Status"
+    // button doesn't sweep the entire properties table on every click.
+    // Skips marketing/offer states so we don't flip a property out of an
+    // in-flight offer-letter flow into vacant just because no active rent
+    // exists yet.
+    const qb = this.propertyRepository
       .createQueryBuilder('property')
       .leftJoinAndSelect(
         'property.rents',
@@ -3570,10 +3574,20 @@ export class PropertiesService {
         'rent.rent_status = :activeStatus',
         { activeStatus: RentStatusEnum.ACTIVE },
       )
-      .where('property.property_status != :inactiveStatus', {
-        inactiveStatus: PropertyStatusEnum.INACTIVE,
-      })
-      .getMany();
+      .where('property.property_status NOT IN (:...skipStatuses)', {
+        skipStatuses: [
+          PropertyStatusEnum.INACTIVE,
+          PropertyStatusEnum.READY_FOR_MARKETING,
+          PropertyStatusEnum.OFFER_PENDING,
+          PropertyStatusEnum.OFFER_ACCEPTED,
+        ],
+      });
+
+    if (landlordId) {
+      qb.andWhere('property.owner_id = :landlordId', { landlordId });
+    }
+
+    const properties = await qb.getMany();
 
     let statusUpdates = 0;
     let historyRecordsCreated = 0;
@@ -4413,6 +4427,33 @@ export class PropertiesService {
           rent_status: RentStatusEnum.INACTIVE,
           updated_at: new Date(),
         });
+
+        // Vacate the property unless another active rent remains.
+        // Without this, the property is left in the
+        // status='occupied' but no-active-rent zombie state.
+        const remainingActive = await queryRunner.manager.count(Rent, {
+          where: {
+            property_id: orphanedRent.rent_property_id,
+            rent_status: RentStatusEnum.ACTIVE,
+          },
+        });
+        if (remainingActive === 0) {
+          await queryRunner.manager
+            .createQueryBuilder()
+            .update(Property)
+            .set({ property_status: PropertyStatusEnum.VACANT })
+            .where('id = :id', { id: orphanedRent.rent_property_id })
+            .andWhere('property_status NOT IN (:...skip)', {
+              skip: [
+                PropertyStatusEnum.INACTIVE,
+                PropertyStatusEnum.READY_FOR_MARKETING,
+                PropertyStatusEnum.OFFER_PENDING,
+                PropertyStatusEnum.OFFER_ACCEPTED,
+              ],
+            })
+            .execute();
+        }
+
         fixedCount++;
       }
 
@@ -4766,6 +4807,33 @@ export class PropertiesService {
           rent_status: RentStatusEnum.INACTIVE,
           updated_at: new Date(),
         });
+
+        // Vacate the property unless another active rent remains, so
+        // deactivating the orphan rent doesn't leave the property in the
+        // status='occupied' but no-active-rent zombie state.
+        const remainingActive = await queryRunner.manager.count(Rent, {
+          where: {
+            property_id: rentRecord.rent_property_id,
+            rent_status: RentStatusEnum.ACTIVE,
+          },
+        });
+        if (remainingActive === 0) {
+          await queryRunner.manager
+            .createQueryBuilder()
+            .update(Property)
+            .set({ property_status: PropertyStatusEnum.VACANT })
+            .where('id = :id', { id: rentRecord.rent_property_id })
+            .andWhere('property_status NOT IN (:...skip)', {
+              skip: [
+                PropertyStatusEnum.INACTIVE,
+                PropertyStatusEnum.READY_FOR_MARKETING,
+                PropertyStatusEnum.OFFER_PENDING,
+                PropertyStatusEnum.OFFER_ACCEPTED,
+              ],
+            })
+            .execute();
+        }
+
         fixed = true;
         details.action = 'Deactivated orphaned rent record';
       }

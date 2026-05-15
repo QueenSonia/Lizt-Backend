@@ -650,8 +650,11 @@ export class PropertiesController {
   @Post('sync-statuses')
   @UseGuards(RoleGuard)
   @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  async syncPropertyStatuses() {
-    return this.propertiesService.syncPropertyStatuses();
+  async syncPropertyStatuses(@CurrentUser() requester: Account) {
+    // Scope to the caller's properties — matches cleanupDuplicateTenants and
+    // fixTenantDataLeakage. Without this, every landlord's Fix Status click
+    // sweeps the entire properties table.
+    return this.propertiesService.syncPropertyStatuses(requester.id);
   }
 
   @ApiOperation({

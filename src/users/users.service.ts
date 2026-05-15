@@ -674,7 +674,12 @@ export class UsersService {
   }
 
   async deleteUserById(id: string) {
-    return this.usersRepository.delete(id);
+    // Soft-delete only. A hard delete cascades through accounts → rents →
+    // property_tenants (ON DELETE CASCADE on every FK), silently emptying
+    // tenancy state on every landlord this user appears on while leaving
+    // property_status='occupied' behind — exactly the orphaned-property
+    // shape the "Fix Status" banner catches after the fact.
+    return this.usersRepository.softDelete(id);
   }
 
   async loginUser(data: LoginDto, res: Response, req?: any) {

@@ -1762,8 +1762,6 @@ export class PropertiesService {
             let status = 'updated';
             let previousStatus = '';
             let issueDescription = 'Maintenance request updated';
-            let isUrgent: boolean | undefined;
-            let previousIsUrgent: boolean | undefined;
             let resolver: string | null = null;
 
             if (hist.event_description) {
@@ -1773,8 +1771,6 @@ export class PropertiesService {
                 previousStatus = parsed.previous_status || '';
                 issueDescription =
                   parsed.description || 'Maintenance request updated';
-                isUrgent = parsed.is_urgent;
-                previousIsUrgent = parsed.previous_is_urgent;
               } catch {
                 const parts = hist.event_description.split('|||');
                 status = parts[0] || 'updated';
@@ -1786,10 +1782,6 @@ export class PropertiesService {
 
             const statusChanged =
               !!previousStatus && previousStatus !== status;
-            const urgencyChanged =
-              isUrgent !== undefined &&
-              previousIsUrgent !== undefined &&
-              isUrgent !== previousIsUrgent;
 
             let title = 'Maintenance Request Updated';
             let eventType = 'maintenance_request_updated';
@@ -1818,11 +1810,6 @@ export class PropertiesService {
               } else {
                 description = `Issue: "${issueDescription}" — Status: ${previousStatus} → ${status}`;
               }
-            } else if (urgencyChanged) {
-              title = isUrgent
-                ? 'Maintenance Request Marked Urgent'
-                : 'Maintenance Request Marked Not Urgent';
-              description = `Issue: "${issueDescription}" — ${isUrgent ? 'Marked urgent' : 'Urgency cleared'}`;
             } else {
               description = `Issue: "${issueDescription}" — Request details updated`;
             }

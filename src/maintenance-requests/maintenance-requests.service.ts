@@ -501,6 +501,8 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('sr.property', 'property')
       .leftJoinAndSelect('sr.common_area', 'common_area')
       .leftJoinAndSelect('common_area.owner', 'commonAreaOwner')
+      .leftJoinAndSelect('sr.facilityManager', 'facilityManager')
+      .leftJoinAndSelect('facilityManager.account', 'facilityManagerAccount')
       .leftJoinAndSelect('sr.statusHistory', 'statusHistory')
       .leftJoinAndSelect('statusHistory.changedBy', 'changedBy')
       .where('sr.deleted_at IS NULL');
@@ -734,7 +736,6 @@ export class MaintenanceRequestsService {
     }
 
     const previousStatus = maintenanceRequest.status;
-    const previousIsUrgent = maintenanceRequest.is_urgent;
     const targetStatus = data.status;
 
     // Validate status transition (if any) before mutating anything else. The
@@ -762,18 +763,6 @@ export class MaintenanceRequestsService {
         maintenanceRequest.creator_type,
         data.reopen_message,
         maintenanceRequest.assigned_to,
-      );
-    }
-
-    // is_urgent toggle is landlord-only.
-    if (
-      data.is_urgent !== undefined &&
-      data.is_urgent !== maintenanceRequest.is_urgent &&
-      actorRole !== 'landlord'
-    ) {
-      throw new HttpException(
-        'Only the landlord can change the urgent flag',
-        HttpStatus.FORBIDDEN,
       );
     }
 
@@ -816,7 +805,6 @@ export class MaintenanceRequestsService {
 
     const safeUpdate: Partial<MaintenanceRequest> = {};
     if (targetStatus !== undefined) safeUpdate.status = targetStatus;
-    if (data.is_urgent !== undefined) safeUpdate.is_urgent = data.is_urgent;
     if (data.description !== undefined)
       safeUpdate.description = data.description;
     if (data.issue_category !== undefined)
@@ -885,14 +873,12 @@ export class MaintenanceRequestsService {
 
     if (
       updatedMaintenanceRequest &&
-      (targetStatus || data.description || data.is_urgent !== undefined)
+      (targetStatus || data.description)
     ) {
       this.eventEmitter.emit('maintenance.updated', {
         request_id: updatedMaintenanceRequest.id,
         status: updatedMaintenanceRequest.status,
         previous_status: previousStatus,
-        is_urgent: updatedMaintenanceRequest.is_urgent,
-        previous_is_urgent: previousIsUrgent,
         tenant_name: updatedMaintenanceRequest.tenant_name,
         property_name: updatedMaintenanceRequest.property_name,
         property_id: updatedMaintenanceRequest.property_id,
@@ -1543,7 +1529,6 @@ export class MaintenanceRequestsService {
       request_id: savedRequest.id,
       status: savedRequest.status,
       previous_status: previousStatus,
-      is_urgent: savedRequest.is_urgent,
       tenant_name: request.tenant_name,
       property_name: request.property_name,
       property_id: request.property_id,
@@ -1751,7 +1736,6 @@ export class MaintenanceRequestsService {
           request_id: updated.id,
           status: updated.status,
           previous_status: previousStatus,
-          is_urgent: updated.is_urgent,
           tenant_name: updated.tenant_name,
           property_name: updated.property_name,
           property_id: updated.property_id,
@@ -1887,7 +1871,6 @@ export class MaintenanceRequestsService {
           request_id: updated.id,
           status: updated.status,
           previous_status: previousStatus,
-          is_urgent: updated.is_urgent,
           tenant_name: updated.tenant_name,
           property_name: updated.property_name,
           property_id: updated.property_id,

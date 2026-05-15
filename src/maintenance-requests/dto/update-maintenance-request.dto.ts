@@ -6,7 +6,6 @@ import {
 import { JobCategoryEnum } from './job-category.enum';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -128,19 +127,6 @@ export class UpdateMaintenanceRequestResponseDto {
   @IsOptional()
   @Transform(({ value }) => value?.trim() || undefined)
   property_id?: string;
-
-  @ApiProperty({
-    description: 'Mark the request as urgent (independent of status)',
-    required: false,
-    nullable: true,
-  })
-  @IsOptional()
-  @Transform(({ value }) => {
-    if (value === undefined || value === '' || value === null) return undefined;
-    return value === true || value === 'true';
-  })
-  @IsBoolean()
-  is_urgent?: boolean;
 
   @ApiProperty({
     description:

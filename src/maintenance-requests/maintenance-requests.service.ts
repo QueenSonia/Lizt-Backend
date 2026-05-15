@@ -283,6 +283,15 @@ export class MaintenanceRequestsService {
       ? `${fmUser.first_name ?? ''} ${fmUser.last_name ?? ''}`.trim() ||
         'Facility Manager'
       : 'Facility Manager';
+    // creator_user_id is FK'd to users.id, not accounts.id. actor.id is the
+    // Account.id from the JWT, so we must use the FM's User.id here.
+    if (!fmUser?.id) {
+      throw new HttpException(
+        'Could not resolve facility manager user',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const fmUserId = fmUser.id;
 
     if (scope === MaintenanceRequestScopeEnum.COMMON_AREA) {
       return this.createCommonAreaRequestAsFacilityManager(
@@ -290,6 +299,7 @@ export class MaintenanceRequestsService {
         actor,
         fmTeamMembers[0],
         fmName,
+        fmUserId,
       );
     }
 
@@ -327,13 +337,12 @@ export class MaintenanceRequestsService {
       scope,
       is_urgent: data.is_urgent ?? false,
       creator_type: MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER,
-      creator_user_id: actor.id,
+      creator_user_id: fmUserId,
       assigned_to: assigningTm.id,
     });
 
     const savedRequest = await this.maintenanceRequestRepository.save(request);
 
-    const fmUserId = await this.resolveActorUserId(actor.id);
     await this.createStatusHistoryEntry(
       savedRequest.id,
       null,
@@ -379,6 +388,7 @@ export class MaintenanceRequestsService {
     actor: RequestActor,
     fmTeamMember: TeamMember,
     fmName: string,
+    fmUserId: string,
   ): Promise<any> {
     const commonArea = await this.commonAreaRepository.findOne({
       where: { id: data.common_area_id },
@@ -390,14 +400,15 @@ export class MaintenanceRequestsService {
       );
     }
 
+    // actor.id is Account.id; common_area.owner_id is Users.id (per the
+    // CommonArea schema), so we resolve the landlord's Users.id via the
+    // team creator's user relation and match the FM by account id.
     const teamedWithOwner = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .innerJoin('team.creator', 'creatorAccount')
       .innerJoin('creatorAccount.user', 'landlordUser')
-      .innerJoin('tm.account', 'fmAccount')
-      .innerJoin('fmAccount.user', 'fmUser')
-      .where('fmUser.id = :fmUserId', { fmUserId: actor.id })
+      .where('tm.accountId = :accountId', { accountId: actor.id })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
       .andWhere('landlordUser.id = :ownerId', { ownerId: commonArea.owner_id })
       .getOne();
@@ -422,13 +433,12 @@ export class MaintenanceRequestsService {
       scope: MaintenanceRequestScopeEnum.COMMON_AREA,
       is_urgent: data.is_urgent ?? false,
       creator_type: MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER,
-      creator_user_id: actor.id,
+      creator_user_id: fmUserId,
       assigned_to: fmTeamMember.id,
     });
 
     const savedRequest = await this.maintenanceRequestRepository.save(request);
 
-    const fmUserId = await this.resolveActorUserId(actor.id);
     await this.createStatusHistoryEntry(
       savedRequest.id,
       null,

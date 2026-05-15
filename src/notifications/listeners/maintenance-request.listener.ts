@@ -23,6 +23,10 @@ export class MaintenanceRequestListener {
   private readonly approvalPingSeen = new Map<string, number>();
   private readonly APPROVAL_PING_DEDUP_MS = 60_000;
 
+  // Same dedup for the tenant "request resolved — confirm fix?" template.
+  private readonly resolvedPingSeen = new Map<string, number>();
+  private readonly RESOLVED_PING_DEDUP_MS = 60_000;
+
   constructor(
     private notificationService: NotificationService,
     @InjectRepository(Property)
@@ -182,6 +186,18 @@ status ${statusChangeText}`,
     ) {
       await this.pingFacilityManagerOnApproval(event);
     }
+
+    // Tenant-targeted WhatsApp ping when the request is marked resolved
+    // (covers approved→resolved and reopened→resolved). The WhatsApp
+    // landlord-flow path already sends this template inline, so it
+    // intentionally does not re-emit through here.
+    if (
+      event?.status === MaintenanceRequestStatusEnum.RESOLVED &&
+      event?.previous_status &&
+      event?.previous_status !== MaintenanceRequestStatusEnum.RESOLVED
+    ) {
+      await this.notifyTenantOnResolved(event);
+    }
   }
 
   private async pingFacilityManagerOnApproval(event: any): Promise<void> {
@@ -254,6 +270,53 @@ status ${statusChangeText}`,
     } catch (err) {
       this.logger.warn(
         `Failed to send FM approval template for request ${event.request_id}: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
+  private async notifyTenantOnResolved(event: any): Promise<void> {
+    const requestKey: string = event.request_id;
+    const now = Date.now();
+    const lastSeen = this.resolvedPingSeen.get(requestKey);
+    if (lastSeen && now - lastSeen < this.RESOLVED_PING_DEDUP_MS) {
+      return;
+    }
+    this.resolvedPingSeen.set(requestKey, now);
+
+    try {
+      // event.request_id is the entity UUID; we need the human-readable
+      // request_id (e.g. "SR7508697Q1") for the quick-reply button payload,
+      // plus the tenant's phone and first name.
+      const sr = await this.maintenanceRequestRepository
+        .createQueryBuilder('sr')
+        .leftJoinAndSelect('sr.tenant', 'tenant')
+        .leftJoinAndSelect('tenant.user', 'tenantUser')
+        .where('sr.id = :id', { id: event.request_id })
+        .getOne();
+
+      const tenantUser = sr?.tenant?.user;
+      if (!sr || !tenantUser?.phone_number) {
+        // No tenant attached (FM-created common-area request) or tenant has
+        // no phone — nothing to ping.
+        return;
+      }
+
+      const phone = this.utilService.normalizePhoneNumber(
+        tenantUser.phone_number,
+      );
+      const tenantFirstName = this.utilService.toSentenceCase(
+        tenantUser.first_name ?? '',
+      );
+
+      await this.templateSenderService.sendTenantConfirmationTemplate({
+        phone_number: phone,
+        tenant_name: tenantFirstName,
+        request_description: sr.description,
+        request_id: sr.request_id,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to send tenant resolved-confirmation template for request ${event.request_id}: ${(err as Error)?.message ?? err}`,
       );
     }
   }

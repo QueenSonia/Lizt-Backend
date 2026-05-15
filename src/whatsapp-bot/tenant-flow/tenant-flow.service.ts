@@ -5,6 +5,7 @@ import { Repository, ILike, Not, In } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import { Users } from 'src/users/entities/user.entity';
+import { accountHasRole } from 'src/users/entities/account.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { Property } from 'src/properties/entities/property.entity';
@@ -825,14 +826,9 @@ export class TenantFlowService {
         relations: ['accounts'],
       });
 
-      await this.templateSenderService.sendButtons(
+      await this.templateSenderService.sendFacilityManagerMainMenu(
         from,
-        `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
-        [
-          { id: 'maintenance_request', title: 'Maintenance Requests' },
-          { id: 'view_account_info', title: 'Account Info' },
-          { id: 'visit_site', title: 'Visit Website' },
-        ],
+        this.utilService.toSentenceCase(user?.first_name || ''),
       );
     } else if (selectedRole === RolesEnum.LANDLORD) {
       const normalizedPhone = this.utilService.normalizePhoneNumber(from);
@@ -889,8 +885,8 @@ export class TenantFlowService {
       return;
     }
 
-    const tenantAccount = user.accounts.find(
-      (a) => a.role === RolesEnum.TENANT,
+    const tenantAccount = user.accounts.find((a) =>
+      accountHasRole(a, RolesEnum.TENANT),
     );
 
     if (!tenantAccount) {
@@ -2667,7 +2663,7 @@ export class TenantFlowService {
     if (!tenantAccountIds.size) return null;
 
     user.accounts = user.accounts.filter(
-      (a) => a.role === RolesEnum.TENANT && tenantAccountIds.has(a.id),
+      (a) => accountHasRole(a, RolesEnum.TENANT) && tenantAccountIds.has(a.id),
     );
     if (!user.accounts.length) return null;
     return user;

@@ -3429,6 +3429,22 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send facility manager main menu. Single source of truth — keep all FM
+   * entry points (post-Switch role pick, multi-role pick, direct lookup)
+   * routed through here so the body/buttons stay consistent.
+   */
+  async sendFacilityManagerMainMenu(
+    to: string,
+    managerName: string,
+  ): Promise<void> {
+    await this.sendButtons(
+      to,
+      `Hello Manager ${managerName} Welcome to Property Kraft! What would you like to do today?`,
+      [{ id: 'maintenance_request', title: 'View requests' }],
+    );
+  }
+
+  /**
    * Send WhatsApp flow
    */
   async sendFlow(recipientNumber: string): Promise<void> {

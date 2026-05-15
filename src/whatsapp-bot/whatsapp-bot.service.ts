@@ -27,7 +27,7 @@ import { PropertiesService } from 'src/properties/properties.service';
 import { Waitlist } from 'src/users/entities/waitlist.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
-import { Account } from 'src/users/entities/account.entity';
+import { Account, accountHasRole } from 'src/users/entities/account.entity';
 import { LandlordFlow } from './templates/landlord/landlordflow';
 import { LandlordLookup } from './templates/landlord/landlordlookup';
 import { LandlordInteractive } from './templates/landlord/landinteractive';
@@ -302,7 +302,7 @@ export class WhatsappBotService implements OnModuleInit {
       RolesEnum.FACILITY_MANAGER,
     );
     const profileName =
-      fm?.accounts?.find((a) => a.role === RolesEnum.FACILITY_MANAGER)
+      fm?.accounts?.find((a) => accountHasRole(a, RolesEnum.FACILITY_MANAGER))
         ?.profile_name ||
       [fm?.first_name, fm?.last_name].filter(Boolean).join(' ').trim();
     const firstName = profileName?.split(' ')[0] || 'there';
@@ -329,7 +329,11 @@ export class WhatsappBotService implements OnModuleInit {
   }
 
   /**
-   * Find user by phone number using normalized format
+   * Find user by phone number using normalized format.
+   *
+   * Role filtering happens in JS, not SQL — `accounts.role` is a stale mirror
+   * of `roles[0]`, so a `WHERE accounts.role = X` filter silently misses
+   * multi-role accounts where X isn't first.
    */
   private async findUserByPhone(
     phoneNumber: string,
@@ -343,13 +347,8 @@ export class WhatsappBotService implements OnModuleInit {
       role: role || 'any',
     });
 
-    const whereCondition: any = { phone_number: normalizedPhone };
-    if (role) {
-      whereCondition.accounts = { role };
-    }
-
     const user = await this.usersRepo.findOne({
-      where: whereCondition,
+      where: { phone_number: normalizedPhone },
       relations: ['accounts'],
     });
 
@@ -361,6 +360,10 @@ export class WhatsappBotService implements OnModuleInit {
       accountRoles: user?.accounts?.map((acc) => acc.role) || [],
     });
 
+    if (!user) return null;
+    if (role && !user.accounts?.some((acc) => accountHasRole(acc, role))) {
+      return null;
+    }
     return user;
   }
 
@@ -545,14 +548,9 @@ export class WhatsappBotService implements OnModuleInit {
         const userPhone = await this.getPhoneNumberFromIdentifier(from);
 
         if (selectedRole === RolesEnum.FACILITY_MANAGER) {
-          await this.sendButtons(
+          await this.sendFacilityManagerMainMenu(
             userPhone,
-            `Hello Manager ${this.utilService.toSentenceCase(user?.first_name || '')} Welcome to Property Kraft! What would you like to do today?`,
-            [
-              { id: 'maintenance_request', title: 'View requests' },
-              { id: 'view_account_info', title: 'Account Info' },
-              { id: 'visit_site', title: 'Visit website' },
-            ],
+            this.utilService.toSentenceCase(user?.first_name || ''),
           );
         } else if (selectedRole === RolesEnum.LANDLORD) {
           const landlordName = this.utilService.toSentenceCase(
@@ -637,13 +635,10 @@ export class WhatsappBotService implements OnModuleInit {
         });
         role = selectedRole as RolesEnum;
       } else {
-        // Read from accounts.roles[] (authoritative) with accounts.role
-        // (legacy singular, mirrors roles[0]) as a fallback. A multi-role
+        // Use the shared `accountHasRole` helper (imported from account.entity)
+        // — `accounts.role` is a stale mirror of `roles[0]`, so a multi-role
         // account like {tenant, facility_manager} has role='tenant' but
-        // roles contains both — without this, the FM role is invisible.
-        const accountHasRole = (acc: Account, r: RolesEnum) =>
-          acc.roles?.includes(r) || acc.role === r;
-
+        // roles contains both; the helper checks `roles[]` with `role` as fallback.
         const hasFM = user.accounts.some((acc) =>
           accountHasRole(acc, RolesEnum.FACILITY_MANAGER),
         );
@@ -656,16 +651,18 @@ export class WhatsappBotService implements OnModuleInit {
 
         // The same phone number may map to a separate tenant user record.
         // Check for it so the Tenant option appears in the role menu.
+        // Filter accounts in JS — `accounts.role` only mirrors `roles[0]`,
+        // so a multi-role tenant whose tenant role isn't first is invisible
+        // to a `WHERE accounts.role = 'tenant'` filter.
         if (!hasTenant && !from.includes('@')) {
           const normalizedPhone = this.utilService.normalizePhoneNumber(from);
           const tenantUser = await this.usersRepo.findOne({
-            where: {
-              phone_number: normalizedPhone,
-              accounts: { role: RolesEnum.TENANT },
-            },
-            select: ['id'],
+            where: { phone_number: normalizedPhone },
+            relations: ['accounts'],
           });
-          hasTenant = !!tenantUser;
+          hasTenant = !!tenantUser?.accounts?.some((acc) =>
+            accountHasRole(acc, RolesEnum.TENANT),
+          );
         }
 
         const roleCount = [hasFM, hasLandlord, hasTenant].filter(Boolean).length;
@@ -798,8 +795,8 @@ export class WhatsappBotService implements OnModuleInit {
         // Convert email to phone number for WhatsApp messaging
         const tenantPhone = await this.getPhoneNumberFromIdentifier(from);
 
-        const tenantAccount = user?.accounts?.find(
-          (acc) => acc.role === RolesEnum.TENANT,
+        const tenantAccount = user?.accounts?.find((acc) =>
+          accountHasRole(acc, RolesEnum.TENANT),
         );
         if (tenantAccount) {
           const activeCount = await this.propertyTenantRepo.count({
@@ -1277,6 +1274,16 @@ export class WhatsappBotService implements OnModuleInit {
    */
   async sendLandlordMainMenu(to: string, landlordName: string): Promise<void> {
     return this.templateSenderService.sendLandlordMainMenu(to, landlordName);
+  }
+
+  async sendFacilityManagerMainMenu(
+    to: string,
+    managerName: string,
+  ): Promise<void> {
+    return this.templateSenderService.sendFacilityManagerMainMenu(
+      to,
+      managerName,
+    );
   }
 
   async sendFlow(recipientNumber: string): Promise<void> {

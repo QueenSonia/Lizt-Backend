@@ -12,7 +12,7 @@ import { LandlordLookup } from './landlordlookup';
 import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { TeamMember } from 'src/users/entities/team-member.entity';
-import { Account } from 'src/users/entities/account.entity';
+import { Account, accountHasRole } from 'src/users/entities/account.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import {
   PropertyStatusEnum,
@@ -687,8 +687,8 @@ export class LandlordFlow {
       relations: ['accounts'],
     });
     if (!user) return null;
-    const landlordAccount = user.accounts?.find(
-      (a) => a.role === RolesEnum.LANDLORD,
+    const landlordAccount = user.accounts?.find((a) =>
+      accountHasRole(a, RolesEnum.LANDLORD),
     );
     if (!landlordAccount) return null;
     return { accountId: landlordAccount.id, user, account: landlordAccount };

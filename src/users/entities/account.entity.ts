@@ -102,3 +102,20 @@ export class Account extends BaseEntity {
   @OneToMany(() => KYCLink, (kycLink) => kycLink.landlord)
   kyc_links: KYCLink[];
 }
+
+/**
+ * Account role check that respects the multi-role `roles[]` column.
+ *
+ * `account.role` is a single-value mirror of `roles[0]` kept for back-compat,
+ * so a multi-role account whose target role isn't first is invisible to
+ * `acc.role === X` and to `WHERE accounts.role = X` SQL filters. Always use
+ * this helper (or its SQL equivalent: load the account, then filter in JS)
+ * instead of comparing `account.role` directly.
+ */
+export function accountHasRole(
+  account: Pick<Account, 'role' | 'roles'> | null | undefined,
+  role: RolesEnum,
+): boolean {
+  if (!account) return false;
+  return account.roles?.includes(role) === true || account.role === role;
+}

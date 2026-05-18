@@ -358,23 +358,31 @@ export class PropertiesService {
             tenantAccount,
           );
         } catch (accountError) {
-          // If account creation fails due to duplicate, try to fetch the existing account
+          // 23505: an Account row with this email already exists. Post the
+          // multi-role migration (1778…), there is ONE account per email, and
+          // it accumulates roles[] over time. This is not a race — the user
+          // already has an account in another role (e.g. facility_manager)
+          // and we need to ADD tenant to it, not create a separate row.
           if (accountError.code === '23505') {
             console.log(
-              `Account for user ${tenantUser.id} was created by another process, fetching...`,
+              `Account for user ${tenantUser.id} already exists with another role; merging tenant role.`,
             );
-            tenantAccount = await this.accountRepository.findOne({
-              where: {
-                userId: tenantUser.id,
-                roles: ArrayContains([RolesEnum.TENANT]),
-              },
+            const existingAccount = await queryRunner.manager.findOne(Account, {
+              where: { userId: tenantUser.id },
             });
-            if (!tenantAccount) {
+            if (!existingAccount) {
               throw new HttpException(
                 'Failed to create or find tenant account',
                 HttpStatus.INTERNAL_SERVER_ERROR,
               );
             }
+            if (!existingAccount.roles?.includes(RolesEnum.TENANT)) {
+              existingAccount.roles = Array.from(
+                new Set([...(existingAccount.roles ?? []), RolesEnum.TENANT]),
+              );
+              await queryRunner.manager.save(Account, existingAccount);
+            }
+            tenantAccount = existingAccount;
           } else {
             throw accountError;
           }

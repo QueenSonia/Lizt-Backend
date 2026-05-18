@@ -30,6 +30,7 @@ import {
 import { Account } from '../users/entities/account.entity';
 import { CompleteKYCDto } from './dto/complete-kyc.dto';
 import { PropertyAdditionKYCDto } from './dto/property-addition-kyc.dto';
+import { ListKycApplicationsDto } from './dto/list-kyc-applications.dto';
 
 @Controller('api')
 export class KYCApplicationController {
@@ -235,22 +236,33 @@ export class KYCApplicationController {
 
   /**
    * Get all KYC applications for the logged-in landlord
-   * GET /api/kyc-applications
+   * GET /api/kyc-applications?page=&size=
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
   @Roles('landlord')
   @Get('kyc-applications')
-  async getAllApplications(@CurrentUser() user: Account): Promise<{
+  async getAllApplications(
+    @CurrentUser() user: Account,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: ListKycApplicationsDto,
+  ): Promise<{
     success: boolean;
     applications: any[];
+    pagination: {
+      totalRows: number;
+      perPage: number;
+      currentPage: number;
+      totalPages: number;
+      hasNextPage: boolean;
+    };
   }> {
-    const applications = await this.kycApplicationService.getAllApplications(
-      user.id,
-    );
+    const { applications, pagination } =
+      await this.kycApplicationService.getAllApplications(user.id, query);
 
     return {
       success: true,
       applications,
+      pagination,
     };
   }
 

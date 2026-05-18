@@ -397,8 +397,7 @@ export class PasswordService {
       // are actually tenants. This used to fire unconditionally, which sent
       // a "now have access to the tenant dashboard" notification to FMs and
       // landlords completing first-time password setup — wrong audience.
-      const isTenant =
-        user.roles?.includes(RolesEnum.TENANT) || user.role === RolesEnum.TENANT;
+      const isTenant = user.roles?.includes(RolesEnum.TENANT) === true;
       if (isTenant) {
         this.eventEmitter.emit('user.signup', {
           user_id: user.id,

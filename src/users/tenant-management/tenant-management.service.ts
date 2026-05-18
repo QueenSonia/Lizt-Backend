@@ -10,7 +10,14 @@
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
+import {
+  ArrayContains,
+  DataSource,
+  In,
+  IsNull,
+  Not,
+  Repository,
+} from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
 import { rentToFees } from 'src/common/billing/fees';
@@ -174,7 +181,7 @@ export class TenantManagementService {
     const admin = (await this.accountRepository.findOne({
       where: {
         id: user_id,
-        role: RolesEnum.LANDLORD,
+        roles: ArrayContains([RolesEnum.LANDLORD]),
       },
       relations: ['user'],
     })) as Account & { user: Users };
@@ -228,7 +235,6 @@ export class TenantManagementService {
           last_name: this.utilService.toSentenceCase(last_name),
           email,
           phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          role: RolesEnum.TENANT,
           is_verified: true,
         });
 
@@ -245,7 +251,6 @@ export class TenantManagementService {
           is_verified: true,
           profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
           roles: [RolesEnum.TENANT],
-          role: RolesEnum.TENANT,
           creator_id: user_id,
         });
 
@@ -389,7 +394,7 @@ export class TenantManagementService {
         }
 
         let tenantAccount = suppliedAccount;
-        if (suppliedAccount.role !== RolesEnum.TENANT) {
+        if (!suppliedAccount.roles?.includes(RolesEnum.TENANT)) {
           if (!suppliedAccount.user) {
             // Defensive: a role-mismatched account without a loaded user
             // can't be promoted. Fail loudly rather than silently writing
@@ -404,18 +409,18 @@ export class TenantManagementService {
             .findOne({
               where: {
                 userId: suppliedAccount.user.id,
-                role: RolesEnum.TENANT,
+                roles: ArrayContains([RolesEnum.TENANT]),
               },
               relations: ['user'],
             });
           if (!tenantRoleAccount) {
             throw new HttpException(
-              `The supplied account is a ${suppliedAccount.role}, not a tenant, and the user has no tenant-role account. Create the tenant first before attaching them to a property.`,
+              `The supplied account roles [${suppliedAccount.roles?.join(',')}] do not include tenant, and the user has no tenant-role account. Create the tenant first before attaching them to a property.`,
               HttpStatus.BAD_REQUEST,
             );
           }
           this.logger.warn(
-            `[attachTenantToProperty] Promoted supplied ${suppliedAccount.role} account ${suppliedAccount.id} → tenant account ${tenantRoleAccount.id} (userId ${suppliedAccount.user.id})`,
+            `[attachTenantToProperty] Promoted supplied account ${suppliedAccount.id} (roles=[${suppliedAccount.roles?.join(',')}]) → tenant account ${tenantRoleAccount.id} (userId ${suppliedAccount.user.id})`,
           );
           tenantAccount = tenantRoleAccount;
         }
@@ -719,7 +724,7 @@ export class TenantManagementService {
     const admin = (await this.accountRepository.findOne({
       where: {
         id: user_id,
-        role: RolesEnum.LANDLORD,
+        roles: ArrayContains([RolesEnum.LANDLORD]),
       },
       relations: ['user'],
     })) as Account & { user: Users };
@@ -786,7 +791,6 @@ export class TenantManagementService {
           nationality,
           employment_status,
           marital_status,
-          role: RolesEnum.TENANT,
           is_verified: true,
           employer_name,
           job_title,
@@ -819,7 +823,6 @@ export class TenantManagementService {
           is_verified: true,
           profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
           roles: [RolesEnum.TENANT],
-          role: RolesEnum.TENANT,
           creator_id: user_id,
         });
 
@@ -1185,7 +1188,6 @@ export class TenantManagementService {
             nationality,
             employment_status: employment_status as Users['employment_status'],
             marital_status: marital_status as Users['marital_status'],
-            role: RolesEnum.TENANT,
             is_verified: true,
             employer_name,
             job_title,
@@ -1287,7 +1289,10 @@ export class TenantManagementService {
 
       // 5. Create account for tenant if it doesn't exist
       let tenantAccount = await manager.getRepository(Account).findOne({
-        where: { userId: tenantUser.id, role: RolesEnum.TENANT },
+        where: {
+          userId: tenantUser.id,
+          roles: ArrayContains([RolesEnum.TENANT]),
+        },
       });
 
       if (!tenantAccount) {
@@ -1302,7 +1307,6 @@ export class TenantManagementService {
         tenantAccount = manager.getRepository(Account).create({
           userId: tenantUser.id,
           roles: [RolesEnum.TENANT],
-          role: RolesEnum.TENANT,
           email: accountEmail,
         });
         tenantAccount = await manager
@@ -1596,14 +1600,16 @@ export class TenantManagementService {
 
     const skip = (page - 1) * size;
 
-    queryParams.role = RolesEnum.TENANT;
-
     const qb = this.usersRepository
       .createQueryBuilder('user')
       .leftJoinAndSelect('user.property_tenants', 'property_tenants')
       .leftJoinAndSelect('property_tenants.property', 'property')
       .leftJoinAndSelect('user.rents', 'rents')
-      .where('user.role = :role', { role: RolesEnum.TENANT.toLowerCase() });
+      // Filter to users who hold a TENANT role on any of their accounts.
+      .where(
+        'EXISTS (SELECT 1 FROM accounts a WHERE a."userId" = user.id AND :tenantRole = ANY(a.roles))',
+        { tenantRole: RolesEnum.TENANT },
+      );
 
     buildUserFilterQB(qb, queryParams);
 
@@ -2026,7 +2032,7 @@ export class TenantManagementService {
     const tenant = await this.accountRepository.findOne({
       where: {
         id: tenant_id,
-        role: RolesEnum.TENANT,
+        roles: ArrayContains([RolesEnum.TENANT]),
       },
       relations: [
         'user',

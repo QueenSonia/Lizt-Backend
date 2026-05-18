@@ -29,7 +29,13 @@ import { AttachTenantFromKycDto } from './dto/attach-tenant-from-kyc.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
-import { DataSource, Not, QueryRunner, Repository } from 'typeorm';
+import {
+  ArrayContains,
+  DataSource,
+  Not,
+  QueryRunner,
+  Repository,
+} from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
 import { RolesEnum } from 'src/base.entity';
@@ -232,7 +238,7 @@ export class UsersService {
 
       // Check for existing account
       const existingAccount = await queryRunner.manager.findOne(Account, {
-        where: { email, role: userRole },
+        where: { email, roles: ArrayContains([userRole]) },
       });
 
       if (existingAccount) {
@@ -272,7 +278,6 @@ export class UsersService {
         creator_id: creatorId,
         email,
         roles: [userRole],
-        role: userRole,
         profile_name: `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`,
         is_verified: false,
       });
@@ -396,7 +401,6 @@ export class UsersService {
 
       const newUser: IUser = {
         ...data,
-        role: userRole,
         creator_id: userRole === RolesEnum.TENANT ? user_id : null,
       };
 
@@ -407,7 +411,7 @@ export class UsersService {
       }
 
       await queryRunner.manager.save(Account, {
-        role: userRole,
+        roles: [userRole],
         user: createdUser,
         profile_name: `${createdUser.first_name || 'User'}'s ${userRole} Account`,
       });
@@ -495,7 +499,7 @@ export class UsersService {
         user_id: property.owner_id,
         property_id: data.property_id,
         property_name: property.name,
-        role: createdUser.role,
+        role: userRole,
       });
       return createdUser;
     } catch (error) {
@@ -746,16 +750,7 @@ export class UsersService {
     await this.cache.delete(rateLimitKey);
 
     // Filter to roles the multi-role sign-in supports today (landlord + FM only).
-    // The roles[] column is the source of truth; fall back to scalar role for
-    // legacy rows that haven't been backfilled yet.
-    const accountRoles =
-      account.roles?.length > 0
-        ? account.roles
-        : account.role
-          ? [account.role]
-          : [];
-
-    const allowedRoles = accountRoles.filter(
+    const allowedRoles = (account.roles ?? []).filter(
       (r) =>
         r === RolesEnum.LANDLORD || r === RolesEnum.FACILITY_MANAGER,
     );
@@ -846,6 +841,7 @@ export class UsersService {
       await this.authService.generateAccessToken(tokenPayload);
     const refresh_token = await this.authService.generateRefreshToken(
       account.id,
+      activeRole,
       req?.headers?.['user-agent'] || 'unknown',
       req?.ip || req?.connection?.remoteAddress || 'unknown',
     );
@@ -878,7 +874,7 @@ export class UsersService {
         phone_number: account.user.phone_number,
         profile_name: account.profile_name,
         role: activeRole,
-        roles: account.roles ?? (account.role ? [account.role] : []),
+        roles: account.roles ?? [],
         is_verified: account.is_verified,
         logo_urls: account.user.logo_urls,
         creator_id: account.creator_id,
@@ -1118,7 +1114,11 @@ export class UsersService {
     files: Express.Multer.File[],
   ): Promise<Users> {
     const user = await this.usersRepository.findOne({
-      where: { id: userId, role: RolesEnum.LANDLORD },
+      where: {
+        id: userId,
+        accounts: { roles: ArrayContains([RolesEnum.LANDLORD]) },
+      },
+      relations: ['accounts'],
     });
 
     if (!user) {
@@ -1342,7 +1342,6 @@ export class UsersService {
       existingAccount.roles = Array.from(
         new Set([...(existingAccount.roles ?? []), RolesEnum.LANDLORD]),
       );
-      existingAccount.role = existingAccount.roles[0];
       existingAccount.password = hashedPassword;
       existingAccount.profile_name =
         existingAccount.profile_name ?? data.agency_name;
@@ -1355,7 +1354,6 @@ export class UsersService {
         email: data.email,
         password: hashedPassword,
         roles: [RolesEnum.LANDLORD],
-        role: RolesEnum.LANDLORD,
         profile_name: data.agency_name,
         is_verified: true,
       });
@@ -1369,7 +1367,7 @@ export class UsersService {
 
   async createAdmin(data: CreateAdminDto): Promise<Omit<Users, 'password'>> {
     const existingAccount = await this.accountRepository.findOne({
-      where: { email: data.email, role: RolesEnum.ADMIN },
+      where: { email: data.email, roles: ArrayContains([RolesEnum.ADMIN]) },
     });
 
     if (existingAccount) {
@@ -1404,7 +1402,6 @@ export class UsersService {
       email: data.email,
       password: await this.utilService.hashPassword(data.password),
       roles: [RolesEnum.ADMIN],
-      role: RolesEnum.ADMIN,
       profile_name: `${user.first_name}'s Admin Account`,
       is_verified: true,
     });
@@ -1432,7 +1429,6 @@ export class UsersService {
 
     const user = this.usersRepository.create({
       ...data,
-      role: RolesEnum.LANDLORD,
       password: hashedPassword,
       is_verified: true,
     });
@@ -1440,7 +1436,7 @@ export class UsersService {
     const savedUser = await this.usersRepository.save(user);
 
     await this.accountRepository.save({
-      role: RolesEnum.LANDLORD,
+      roles: [RolesEnum.LANDLORD],
       user: savedUser,
       profile_name: `${savedUser.first_name}'s Admin Account`,
     });
@@ -1454,7 +1450,7 @@ export class UsersService {
   ): Promise<Omit<Users, 'password'>> {
     const queryRunner = this.dataSource.createQueryRunner();
     const existingAccount = await this.accountRepository.findOne({
-      where: { email: data.email, role: RolesEnum.REP },
+      where: { email: data.email, roles: ArrayContains([RolesEnum.REP]) },
     });
 
     if (existingAccount) {
@@ -1476,7 +1472,6 @@ export class UsersService {
         phone_number: data.phone_number,
         first_name: data.first_name,
         last_name: data.last_name,
-        role: RolesEnum.REP,
         is_verified: true,
         email: data.email,
       });
@@ -1491,7 +1486,6 @@ export class UsersService {
         ? await this.utilService.hashPassword(data.password)
         : '',
       roles: [RolesEnum.REP],
-      role: RolesEnum.REP,
       profile_name: `${data.first_name} ${data.last_name}`,
       is_verified: true,
     });
@@ -1552,7 +1546,7 @@ export class UsersService {
       last_name: target.user.last_name,
       email: target.email,
       phone_number: target.user.phone_number,
-      role: target.role,
+      role: target.roles?.[0],
     } as any;
 
     const access_token = await this.authService.generateToken(tokenPayload);
@@ -1648,8 +1642,9 @@ export class UsersService {
   async getLandlords() {
     return await this.usersRepository.find({
       where: {
-        role: RolesEnum.LANDLORD,
+        accounts: { roles: ArrayContains([RolesEnum.LANDLORD]) },
       },
+      relations: ['accounts'],
     });
   }
 }

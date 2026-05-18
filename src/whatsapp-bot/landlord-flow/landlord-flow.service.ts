@@ -728,9 +728,7 @@ export class LandlordFlowService {
         `- Email: ${teamMemberAccountInfo.account.email}\n` +
         `- Phone: ${teamMemberAccountInfo.account.user.phone_number}\n` +
         `- Role: ${this.utilService.toSentenceCase(
-          teamMemberAccountInfo.account.role ??
-            teamMemberAccountInfo.account.roles?.[0] ??
-            '',
+          teamMemberAccountInfo.account.roles?.[0] ?? '',
         )}`,
     );
 

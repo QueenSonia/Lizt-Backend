@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { ArrayContains, Repository } from 'typeorm';
 
 import { CreateTenantKycDto, UpdateTenantKycDto } from './dto';
 import { TenantKyc } from './entities/tenant-kyc.entity';
@@ -42,7 +42,7 @@ export class TenantKycService {
   async create(dto: CreateTenantKycDto) {
     const landlord = await this.accountRepo.findOneBy({
       id: dto.landlord_id,
-      role: RolesEnum.LANDLORD,
+      roles: ArrayContains([RolesEnum.LANDLORD]),
     });
 
     if (!landlord)
@@ -74,7 +74,7 @@ export class TenantKycService {
   ) {
     const landlord = await this.accountRepo.findOneBy({
       id: dto.landlord_id,
-      role: RolesEnum.LANDLORD,
+      roles: ArrayContains([RolesEnum.LANDLORD]),
     });
 
     if (!landlord)
@@ -86,7 +86,10 @@ export class TenantKycService {
     let tenant: Users | null = null;
     if (dto.tenant_id) {
       const tenantAccount = await this.accountRepo.findOne({
-        where: { id: dto.tenant_id, role: RolesEnum.TENANT },
+        where: {
+          id: dto.tenant_id,
+          roles: ArrayContains([RolesEnum.TENANT]),
+        },
         relations: ['user'],
       });
 

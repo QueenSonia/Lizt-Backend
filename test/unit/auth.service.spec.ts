@@ -115,6 +115,7 @@ describe('AuthService', () => {
   describe('generateRefreshToken', () => {
     it('should create and save a refresh token', async () => {
       const accountId = 'account-123';
+      const activeRole = RolesEnum.LANDLORD;
       const userAgent = 'Mozilla/5.0';
       const ipAddress = '192.168.1.1';
 
@@ -125,12 +126,14 @@ describe('AuthService', () => {
         expires_at: expect.any(Date),
         user_agent: userAgent,
         ip_address: ipAddress,
+        active_role: activeRole,
       };
 
       (refreshTokenRepository.save as jest.Mock).mockResolvedValue(savedToken);
 
       const result = await service.generateRefreshToken(
         accountId,
+        activeRole,
         userAgent,
         ipAddress,
       );
@@ -144,6 +147,7 @@ describe('AuthService', () => {
           expires_at: expect.any(Date),
           user_agent: userAgent,
           ip_address: ipAddress,
+          active_role: activeRole,
         }),
       );
     });

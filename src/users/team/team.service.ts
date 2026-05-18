@@ -240,7 +240,6 @@ export class TeamService {
             user,
             email: teamMember.email,
             roles: [teamMember.role],
-            role: teamMember.role,
             profile_name: `${teamMember.first_name} ${teamMember.last_name}`,
             is_verified: true,
           });
@@ -257,7 +256,6 @@ export class TeamService {
             ...(userAccount.roles ?? []),
             teamMember.role,
           ];
-          userAccount.role = userAccount.roles[0];
           userAccount.is_verified = true;
           await manager.getRepository(Account).save(userAccount);
           await this.accountCacheService.invalidate(userAccount.id);

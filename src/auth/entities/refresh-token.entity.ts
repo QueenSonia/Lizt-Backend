@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   Index,
 } from 'typeorm';
+import { RolesEnum } from 'src/base.entity';
 
 @Entity('refresh_tokens')
 export class RefreshToken {
@@ -32,4 +33,10 @@ export class RefreshToken {
 
   @Column({ type: 'varchar', nullable: true })
   ip_address: string;
+
+  // The role the user picked at sign-in. Read at refresh time so the new
+  // access token keeps the picked role instead of regressing to roles[0].
+  // Nullable to tolerate rows issued before the migration backfilled.
+  @Column({ type: 'enum', enum: RolesEnum, nullable: true })
+  active_role: RolesEnum | null;
 }

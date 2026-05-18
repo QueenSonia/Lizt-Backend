@@ -306,14 +306,15 @@ export class WhatsappBotService implements OnModuleInit {
         ?.profile_name ||
       [fm?.first_name, fm?.last_name].filter(Boolean).join(' ').trim();
     const firstName = profileName?.split(' ')[0] || 'there';
-    const frontendUrl =
-      process.env.FRONTEND_URL || 'http://localhost:3000';
-    const dashboardUrl = `${frontendUrl}/facility-manager`;
+    const frontendUrl = (
+      process.env.FRONTEND_URL || 'http://localhost:3000'
+    ).replace(/\/+$/, '');
+    const signinUrl = `${frontendUrl}/signin`;
     const body =
       `Hi ${firstName} 👋\n\n` +
       `Your password has been set.\n\n` +
       `You can now sign in to Lizt using your phone number and the password you just chose.\n\n` +
-      `${FM_WELCOME_MARKER} ${dashboardUrl}\n\n` +
+      `${FM_WELCOME_MARKER} ${signinUrl}\n\n` +
       `Welcome aboard!`;
     await this.sendText(phoneNumber, body);
   }

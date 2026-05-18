@@ -10,7 +10,7 @@
   Unique,
 } from 'typeorm';
 import { ApiHideProperty } from '@nestjs/swagger';
-import { BaseEntity, RolesEnum } from '../../base.entity';
+import { BaseEntity } from '../../base.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
@@ -45,14 +45,6 @@ export class Users extends BaseEntity {
 
   @Column({ nullable: true, type: 'varchar' })
   password: string;
-
-  @Column({
-    nullable: false,
-    type: 'enum',
-    enum: RolesEnum,
-    default: RolesEnum.TENANT,
-  })
-  role: string;
 
   @Column({ nullable: false, type: 'boolean', default: false })
   is_verified: boolean;

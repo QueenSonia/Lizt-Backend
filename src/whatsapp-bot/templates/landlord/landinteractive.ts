@@ -1,7 +1,10 @@
 ﻿import { Repository } from 'typeorm';
 import { CacheService } from 'src/lib/cache';
 import { RolesEnum } from 'src/base.entity';
-import { Users } from 'src/users/entities/user.entity';
+import {
+  Users,
+} from 'src/users/entities/user.entity';
+import { accountHasRole } from 'src/users/entities/account.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
@@ -46,18 +49,22 @@ export class LandlordInteractive {
 
   private async handleViewTenancies(from: string) {
     const ownerUser = await this.usersRepo.findOne({
-      where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+      where: { phone_number: `${from}` },
       relations: ['accounts'],
     });
 
-    if (!ownerUser) {
+    const landlordAccount = ownerUser?.accounts?.find((acc) =>
+      accountHasRole(acc, RolesEnum.LANDLORD),
+    );
+
+    if (!ownerUser || !landlordAccount) {
       await this.whatsappUtil.sendText(from, 'No tenancy info available.');
       return;
     }
 
     const propertyTenants = await this.propertyTenantRepo.find({
       where: {
-        property: { owner_id: ownerUser.accounts[0].id },
+        property: { owner_id: landlordAccount.id },
         status: TenantStatusEnum.ACTIVE,
       },
       relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
@@ -114,17 +121,21 @@ export class LandlordInteractive {
 
   private async handleViewMaintenance(from: string) {
     const ownerUser = await this.usersRepo.findOne({
-      where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+      where: { phone_number: `${from}` },
       relations: ['accounts'],
     });
 
-    if (!ownerUser) {
+    const landlordAccount = ownerUser?.accounts?.find((acc) =>
+      accountHasRole(acc, RolesEnum.LANDLORD),
+    );
+
+    if (!ownerUser || !landlordAccount) {
       await this.whatsappUtil.sendText(from, 'No maintenance info available.');
       return;
     }
 
     const maintenanceRequests = await this.maintenanceRequestRepo.find({
-      where: { property: { owner_id: ownerUser.accounts[0].id } },
+      where: { property: { owner_id: landlordAccount.id } },
       relations: [
         'property',
         'tenant',

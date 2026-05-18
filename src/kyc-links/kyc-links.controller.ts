@@ -360,7 +360,7 @@ export class KYCLinksController {
       cleanedUpProperties: number;
     };
   }> {
-    console.log(`Data cleanup requested by user: ${user.id} (${user.role})`);
+    console.log(`Data cleanup requested by user: ${user.id} (${user.roles?.join(',')})`);
 
     const result =
       await this.tenantAttachmentService.fixExistingDataInconsistencies();

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { ArrayContains, Repository, DataSource } from 'typeorm';
 import { Users } from './entities/user.entity';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { Account } from './entities/account.entity';
@@ -39,7 +39,7 @@ export class SyncTenantDataService {
     try {
       // Get all tenant accounts with their users
       const tenantAccounts = await queryRunner.manager.find(Account, {
-        where: { role: RolesEnum.TENANT },
+        where: { roles: ArrayContains([RolesEnum.TENANT]) },
         relations: ['user'],
       });
 

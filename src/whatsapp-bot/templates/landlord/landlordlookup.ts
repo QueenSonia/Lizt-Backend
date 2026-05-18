@@ -54,14 +54,16 @@ export class LandlordLookup {
       await this.cache.delete(`maintenance_request_state_landlord_${from}`);
     } else {
       const ownerUser = await this.usersRepo.findOne({
-        where: { phone_number: `${from}`, role: RolesEnum.LANDLORD },
+        where: { phone_number: `${from}` },
         relations: ['accounts'],
       });
 
+      const landlordAccount = ownerUser?.accounts?.find((acc) =>
+        accountHasRole(acc, RolesEnum.LANDLORD),
+      );
+
       const landlordName =
-        ownerUser?.accounts[0]?.profile_name ||
-        ownerUser?.first_name ||
-        'there';
+        landlordAccount?.profile_name || ownerUser?.first_name || 'there';
 
       // Use template with URL buttons for direct redirects
       await this.whatsappUtil.sendLandlordMainMenu(from, landlordName);
@@ -90,7 +92,7 @@ export class LandlordLookup {
       userPhone: user?.phone_number,
       accountsCount: user?.accounts?.length || 0,
       accounts:
-        user?.accounts?.map((acc) => ({ id: acc.id, role: acc.role })) || [],
+        user?.accounts?.map((acc) => ({ id: acc.id, roles: acc.roles })) || [],
     });
 
     if (!user) {
@@ -109,7 +111,7 @@ export class LandlordLookup {
     console.log('🏠 Landlord account lookup:', {
       found: !!landlordAccount,
       accountId: landlordAccount?.id,
-      accountRole: landlordAccount?.role,
+      accountRoles: landlordAccount?.roles,
       searchingFor: RolesEnum.LANDLORD,
     });
 

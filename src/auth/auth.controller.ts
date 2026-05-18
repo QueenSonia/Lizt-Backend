@@ -47,14 +47,16 @@ export class AuthController {
       throw new UnauthorizedException('Account not found');
     }
 
-    // Generate new access token
+    // Generate new access token. Prefer the role the user picked at sign-in
+    // (persisted on the refresh-token row). Fall back to roles[0] for legacy
+    // rows that predate the active_role backfill.
     const tokenPayload: IReqUser = {
       id: account.id,
       first_name: account.user.first_name,
       last_name: account.user.last_name,
       email: account.email,
       phone_number: account.user.phone_number,
-      role: account.role ?? account.roles?.[0] ?? '',
+      role: tokenData.active_role ?? account.roles?.[0] ?? '',
     };
 
     const newAccessToken =

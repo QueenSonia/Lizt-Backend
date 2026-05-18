@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { IReqUser } from 'src/base.entity';
+import { IReqUser, RolesEnum } from 'src/base.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { RefreshToken } from './entities/refresh-token.entity';
@@ -75,6 +75,7 @@ export class AuthService {
 
   async generateRefreshToken(
     accountId: string,
+    activeRole: RolesEnum,
     userAgent?: string,
     ipAddress?: string,
   ): Promise<string> {
@@ -88,6 +89,7 @@ export class AuthService {
       expires_at: expiresAt,
       user_agent: userAgent,
       ip_address: ipAddress,
+      active_role: activeRole,
     });
 
     return token;

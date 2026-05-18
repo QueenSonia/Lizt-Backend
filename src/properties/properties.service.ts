@@ -14,7 +14,14 @@ import {
 import { UpdatePropertyDto } from './dto/update-property.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Property } from './entities/property.entity';
-import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
+import {
+  ArrayContains,
+  DataSource,
+  EntityManager,
+  In,
+  IsNull,
+  Repository,
+} from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
 import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { DateService } from 'src/utils/date.helper';
@@ -237,7 +244,6 @@ export class PropertiesService {
       console.log('📞 User lookup result:', {
         found: !!tenantUser,
         userId: tenantUser?.id,
-        userRole: tenantUser?.role,
       });
 
       if (!tenantUser) {
@@ -259,7 +265,6 @@ export class PropertiesService {
             last_name: lastName,
             phone_number: normalizedPhone,
             email: email,
-            role: RolesEnum.TENANT,
             is_verified: false,
             creator_id: ownerId,
           });
@@ -306,7 +311,6 @@ export class PropertiesService {
             console.log('✅ Found and reusing existing user:', {
               userId: tenantUser.id,
               phone: tenantUser.phone_number,
-              role: tenantUser.role,
             });
           } else {
             throw userError;
@@ -316,7 +320,6 @@ export class PropertiesService {
         console.log('✅ Reusing existing user (identity preserved):', {
           userId: tenantUser.id,
           phone: tenantUser.phone_number,
-          role: tenantUser.role,
         });
         // The landlord's typed name does NOT overwrite the user's global
         // identity — it lands on the per-landlord tenant_kyc row below.
@@ -325,13 +328,19 @@ export class PropertiesService {
       // 6. Create tenant account
       // Check outside transaction first
       let tenantAccount = await this.accountRepository.findOne({
-        where: { userId: tenantUser.id, role: RolesEnum.TENANT },
+        where: {
+          userId: tenantUser.id,
+          roles: ArrayContains([RolesEnum.TENANT]),
+        },
       });
 
       if (!tenantAccount) {
         // Double-check within transaction
         tenantAccount = await queryRunner.manager.findOne(Account, {
-          where: { userId: tenantUser.id, role: RolesEnum.TENANT },
+          where: {
+            userId: tenantUser.id,
+            roles: ArrayContains([RolesEnum.TENANT]),
+          },
         });
       }
 
@@ -341,7 +350,6 @@ export class PropertiesService {
             userId: tenantUser.id,
             email: tenantUser.email,
             roles: [RolesEnum.TENANT],
-            role: RolesEnum.TENANT,
             is_verified: false,
             creator_id: ownerId,
           });
@@ -356,7 +364,10 @@ export class PropertiesService {
               `Account for user ${tenantUser.id} was created by another process, fetching...`,
             );
             tenantAccount = await this.accountRepository.findOne({
-              where: { userId: tenantUser.id, role: RolesEnum.TENANT },
+              where: {
+                userId: tenantUser.id,
+                roles: ArrayContains([RolesEnum.TENANT]),
+              },
             });
             if (!tenantAccount) {
               throw new HttpException(

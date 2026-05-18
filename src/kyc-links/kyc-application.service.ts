@@ -32,6 +32,8 @@ import { WhatsappBotService } from '../whatsapp-bot/whatsapp-bot.service';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../utils/utility-service';
 import { ConfigService } from '@nestjs/config';
+import { config } from '../config';
+import { ListKycApplicationsDto } from './dto/list-kyc-applications.dto';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { Payment, PaymentStatus } from '../payments/entities/payment.entity';
@@ -1078,8 +1080,24 @@ export class KYCApplicationService {
    * Get all KYC applications for a landlord (across all properties)
    * Optimized: Only select columns needed for frontend transformation
    */
-  async getAllApplications(landlordId: string): Promise<any[]> {
-    const applications = await this.kycApplicationRepository
+  async getAllApplications(
+    landlordId: string,
+    query: ListKycApplicationsDto = {},
+  ): Promise<{
+    applications: any[];
+    pagination: {
+      totalRows: number;
+      perPage: number;
+      currentPage: number;
+      totalPages: number;
+      hasNextPage: boolean;
+    };
+  }> {
+    const page = query.page ? Number(query.page) : config.DEFAULT_PAGE_NO;
+    const size = query.size ? Number(query.size) : config.DEFAULT_PER_PAGE;
+    const skip = (page - 1) * size;
+
+    const [applications, count] = await this.kycApplicationRepository
       .createQueryBuilder('application')
       // Only select needed property columns
       .leftJoin('application.property', 'property')
@@ -1111,9 +1129,25 @@ export class KYCApplicationService {
       .where('property.owner_id = :landlordId', { landlordId })
       .andWhere('application.deleted_at IS NULL')
       .orderBy('application.created_at', 'DESC')
-      .getMany();
+      .addOrderBy('application.id', 'ASC')
+      .skip(skip)
+      .take(size)
+      .getManyAndCount();
 
-    return applications.map((app) => this.transformApplicationForFrontend(app));
+    const totalPages = Math.ceil(count / size);
+
+    return {
+      applications: applications.map((app) =>
+        this.transformApplicationForFrontend(app),
+      ),
+      pagination: {
+        totalRows: count,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
   }
 
   /**

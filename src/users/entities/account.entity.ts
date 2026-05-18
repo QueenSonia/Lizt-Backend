@@ -44,15 +44,6 @@ export class Account extends BaseEntity {
   })
   roles: RolesEnum[];
 
-  // Kept temporarily for back-compat — mirrors roles[0] on every write.
-  // Future cleanup: migrate `account.role` reads to `account.roles.includes(X)` and drop this column.
-  @Column({
-    type: 'enum',
-    enum: RolesEnum,
-    nullable: true,
-  })
-  role: RolesEnum | null;
-
   @Column({ nullable: true })
   creator_id: string;
 
@@ -104,18 +95,16 @@ export class Account extends BaseEntity {
 }
 
 /**
- * Account role check that respects the multi-role `roles[]` column.
+ * Account role check against the multi-role `roles[]` column.
  *
- * `account.role` is a single-value mirror of `roles[0]` kept for back-compat,
- * so a multi-role account whose target role isn't first is invisible to
- * `acc.role === X` and to `WHERE accounts.role = X` SQL filters. Always use
- * this helper (or its SQL equivalent: load the account, then filter in JS)
- * instead of comparing `account.role` directly.
+ * The legacy scalar `account.role` was removed; `roles[]` is now the sole
+ * source of truth. For SQL filters use `:r = ANY(accounts.roles)` or
+ * TypeORM's `ArrayContains`.
  */
 export function accountHasRole(
-  account: Pick<Account, 'role' | 'roles'> | null | undefined,
+  account: Pick<Account, 'roles'> | null | undefined,
   role: RolesEnum,
 ): boolean {
   if (!account) return false;
-  return account.roles?.includes(role) === true || account.role === role;
+  return account.roles?.includes(role) === true;
 }

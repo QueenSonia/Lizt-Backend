@@ -2642,7 +2642,7 @@ export class TenantFlowService {
       normalizedPhone,
       userFound: !!user,
       userId: user?.id,
-      accounts: user?.accounts?.map((a) => ({ id: a.id, role: a.role })),
+      accounts: user?.accounts?.map((a) => ({ id: a.id, roles: a.roles })),
     });
 
     if (!user?.accounts?.length) return null;

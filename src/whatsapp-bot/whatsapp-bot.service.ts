@@ -1,7 +1,7 @@
 ﻿import { forwardRef, Inject, Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { ILike, Not, In, Repository } from 'typeorm';
+import { ArrayContains, ILike, Not, In, Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import WhatsApp from 'whatsapp';
@@ -358,7 +358,7 @@ export class WhatsappBotService implements OnModuleInit {
       userId: user?.id,
       accountsCount: user?.accounts?.length || 0,
       matchedPhone: user?.phone_number,
-      accountRoles: user?.accounts?.map((acc) => acc.role) || [],
+      accountRoles: user?.accounts?.map((acc) => acc.roles) || [],
     });
 
     if (!user) return null;
@@ -383,7 +383,7 @@ export class WhatsappBotService implements OnModuleInit {
     // Look up user by account email
     const whereCondition: any = { email };
     if (role) {
-      whereCondition.role = role;
+      whereCondition.roles = ArrayContains([role]);
     }
 
     const account = await this.accountRepo.findOne({
@@ -403,7 +403,7 @@ export class WhatsappBotService implements OnModuleInit {
       userId: user?.id,
       userPhone: user?.phone_number,
       accountId: account?.id,
-      accountRole: account?.role,
+      accountRoles: account?.roles,
       accountsCount: user?.accounts?.length || 0,
     });
 
@@ -611,13 +611,16 @@ export class WhatsappBotService implements OnModuleInit {
       );
     }
 
-    // FIXED: Check account role with role selection for multi-role users
-    let role = user?.role; // Fallback to user.role if no accounts
+    // FIXED: Check account role with role selection for multi-role users.
+    // No fallback to Users.role — the column was removed. If accounts is
+    // empty, role stays undefined and the no-accounts branch above already
+    // logged the data-integrity warning.
+    let role: RolesEnum | undefined;
 
     if (user?.accounts && user.accounts.length > 0) {
       console.log('🔍 Checking accounts for role...', {
         totalAccounts: user.accounts.length,
-        accountRoles: user.accounts.map((acc) => acc.role),
+        accountRoles: user.accounts.map((acc) => acc.roles),
       });
 
       // Check if user has selected a role (from role selection menu)

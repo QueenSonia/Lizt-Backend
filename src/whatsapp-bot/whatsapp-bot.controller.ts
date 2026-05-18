@@ -29,7 +29,7 @@ import { isRequestSignatureValid } from './utils/validate-request';
 import { Public } from 'src/auth/public.decorator';
 import { WebhookHandler } from './webhook-handler.service';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, IsNull } from 'typeorm';
+import { ArrayContains, Repository, In, IsNull } from 'typeorm';
 import { Account } from 'src/users/entities/account.entity';
 import { Team } from 'src/users/entities/team.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
@@ -417,7 +417,7 @@ export class WhatsappBotController {
 
       // The landlordId is actually the Account ID, not the User ID
       const landlordAccount = await this.accountRepository.findOne({
-        where: { id: landlordId, role: RolesEnum.LANDLORD },
+        where: { id: landlordId, roles: ArrayContains([RolesEnum.LANDLORD]) },
         relations: [
           'user',
           'properties',
@@ -443,7 +443,7 @@ export class WhatsappBotController {
           context: {
             ...requestContext,
             accountExists: !!anyAccount,
-            actualRole: anyAccount?.role,
+            actualRoles: anyAccount?.roles,
             searchedRole: RolesEnum.LANDLORD,
           },
           timestamp: new Date().toISOString(),
@@ -501,7 +501,7 @@ export class WhatsappBotController {
                     phone: this.utilService.normalizePhoneNumber(
                       tenantUser.phone_number,
                     ),
-                    userType: tenantAccount.role,
+                    userType: tenantAccount.roles?.[0],
                     properties: [property.name],
                   };
 

@@ -21,7 +21,7 @@ describe('KYCLinksController', () => {
   const mockUser: Account = {
     id: 'landlord-123',
     email: 'landlord@example.com',
-    role: 'landlord',
+    roles: ['landlord' as any],
   } as Account;
 
   beforeEach(async () => {

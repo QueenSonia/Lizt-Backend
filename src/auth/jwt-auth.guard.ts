@@ -67,7 +67,12 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
         }
 
         if (account) {
-          req.user = account;
+          // Overlay the full Account on req.user but preserve the JWT's
+          // `role` claim (the active session role the user picked at sign-in)
+          // and the original JWT id. The Account entity has no scalar `role`
+          // column — roles[] is the multi-role source of truth; the JWT
+          // carries which of those roles is active for THIS session.
+          req.user = { ...account, role: jwtUser.role, id: jwtUser.id };
         }
       } catch (error) {
         // If cache/DB lookup fails, keep the JWT payload on request.user and allow guard to succeed

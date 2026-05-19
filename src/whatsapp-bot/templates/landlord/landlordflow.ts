@@ -849,6 +849,7 @@ export class LandlordFlow {
           state.requestId,
           teamMemberId,
           landlord.accountId,
+          'whatsapp',
         );
       const assigneeName = updated.facilityManager
         ? this.fmDisplayName(updated.facilityManager)

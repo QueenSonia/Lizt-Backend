@@ -91,6 +91,13 @@ export class MaintenanceRequestsService {
    * WhatsApp flows already pass `tenant.user.id` / `account.user.id` directly
    * so they bypass this helper.
    */
+  private formatTeamMemberLabel(tm: TeamMember | null | undefined): string {
+    if (!tm) return 'unassigned';
+    const u = tm.account?.user;
+    const name = u ? `${u.first_name ?? ''} ${u.last_name ?? ''}`.trim() : '';
+    return name || tm.email || 'Facility Manager';
+  }
+
   private async resolveActorUserId(accountId: string): Promise<string> {
     const account = await this.accountRepository.findOne({
       where: { id: accountId },
@@ -657,6 +664,9 @@ export class MaintenanceRequestsService {
         'common_area.owner',
         'statusHistory',
         'statusHistory.changedBy',
+        // Pull accounts so the activity log can render account.profile_name
+        // instead of falling back to user.first_name + last_name.
+        'statusHistory.changedBy.accounts',
       ],
       order: {
         statusHistory: {
@@ -1602,24 +1612,25 @@ export class MaintenanceRequestsService {
       );
     }
 
+    let newAssigneeTm: TeamMember | null = null;
     if (teamMemberId) {
-      const tm = await this.teamMemberRepository.findOne({
+      newAssigneeTm = await this.teamMemberRepository.findOne({
         where: { id: teamMemberId },
-        relations: ['team'],
+        relations: ['team', 'account', 'account.user'],
       });
-      if (!tm) {
+      if (!newAssigneeTm) {
         throw new HttpException(
           'Facility manager not found',
           HttpStatus.UNPROCESSABLE_ENTITY,
         );
       }
-      if (tm.team?.creatorId !== landlordAccountId) {
+      if (newAssigneeTm.team?.creatorId !== landlordAccountId) {
         throw new HttpException(
           'Assignee must be a facility manager on your team',
           HttpStatus.UNPROCESSABLE_ENTITY,
         );
       }
-      if (tm.role !== RolesEnum.FACILITY_MANAGER) {
+      if (newAssigneeTm.role !== RolesEnum.FACILITY_MANAGER) {
         throw new HttpException(
           'Assignee must be a facility manager',
           HttpStatus.UNPROCESSABLE_ENTITY,
@@ -1632,13 +1643,21 @@ export class MaintenanceRequestsService {
       return sr;
     }
 
+    const previousAssigneeTm = previousAssignee
+      ? await this.teamMemberRepository.findOne({
+          where: { id: previousAssignee },
+          relations: ['account', 'account.user'],
+        })
+      : null;
+
     await this.maintenanceRequestRepository.update(requestId, {
       assigned_to: teamMemberId as any,
     });
 
     // Record the change in status-history. This is not a status transition —
     // we keep prev_status === new_status and lean on `change_reason` for the
-    // audit-trail rendering.
+    // audit-trail rendering. Names beat raw UUIDs so the activity log stays
+    // human-readable.
     const landlordUserId = await this.resolveActorUserId(landlordAccountId);
     await this.createStatusHistoryEntry(
       requestId,
@@ -1646,7 +1665,7 @@ export class MaintenanceRequestsService {
       sr.status,
       landlordUserId,
       'landlord',
-      `assignee_changed: ${previousAssignee ?? 'unassigned'} → ${teamMemberId ?? 'unassigned'}`,
+      `assignee_changed: ${this.formatTeamMemberLabel(previousAssigneeTm)} → ${this.formatTeamMemberLabel(newAssigneeTm)}`,
     );
 
     try {
@@ -1654,10 +1673,15 @@ export class MaintenanceRequestsService {
         maintenance_request_id: requestId,
         request_id: sr.request_id,
         previous_assignee: previousAssignee,
+        previous_assignee_name: this.formatTeamMemberLabel(previousAssigneeTm),
         new_assignee: teamMemberId,
+        new_assignee_name: this.formatTeamMemberLabel(newAssigneeTm),
         landlord_id: landlordAccountId,
         property_id: sr.property_id,
         common_area_id: sr.common_area_id,
+        description: sr.description,
+        tenant_id: sr.tenant_id,
+        created_at: new Date(),
       });
     } catch (error) {
       this.logger.error('Failed to emit service.assigned event:', error);
@@ -1778,6 +1802,7 @@ export class MaintenanceRequestsService {
     requestId: string,
     teamMemberId: string,
     landlordAccountId: string,
+    source: 'dashboard' | 'whatsapp' = 'dashboard',
   ): Promise<MaintenanceRequest> {
     const sr = await this.maintenanceRequestRepository.findOne({
       where: { id: requestId },
@@ -1835,6 +1860,12 @@ export class MaintenanceRequestsService {
 
     const previousStatus = sr.status;
     const previousAssignee = sr.assigned_to ?? null;
+    const previousAssigneeTm = previousAssignee
+      ? await this.teamMemberRepository.findOne({
+          where: { id: previousAssignee },
+          relations: ['account', 'account.user'],
+        })
+      : null;
     const landlordUserId = await this.resolveActorUserId(landlordAccountId);
 
     await this.dataSource.transaction(async (manager) => {
@@ -1848,7 +1879,7 @@ export class MaintenanceRequestsService {
         MaintenanceRequestStatusEnum.APPROVED,
         landlordUserId,
         'landlord',
-        `Landlord approved & assigned to ${fmName} via WhatsApp`,
+        `Landlord approved & assigned to ${fmName} via ${source === 'whatsapp' ? 'WhatsApp' : 'dashboard'}`,
         undefined,
         manager,
       );
@@ -1881,6 +1912,7 @@ export class MaintenanceRequestsService {
           creator_type: updated.creator_type,
           creator_user_id: updated.creator_user_id,
           description: updated.description,
+          assigned_to_name: fmName,
           updated_at: new Date(),
           actor: { id: landlordUserId, role: 'landlord' },
           // Suppress the FM "request approved" template — the assignment
@@ -1899,10 +1931,16 @@ export class MaintenanceRequestsService {
           maintenance_request_id: requestId,
           request_id: updated.request_id,
           previous_assignee: previousAssignee,
+          previous_assignee_name:
+            this.formatTeamMemberLabel(previousAssigneeTm),
           new_assignee: teamMemberId,
+          new_assignee_name: fmName,
           landlord_id: landlordAccountId,
           property_id: updated.property_id,
           common_area_id: updated.common_area_id,
+          description: updated.description,
+          tenant_id: updated.tenant_id,
+          created_at: new Date(),
         });
       } catch (error) {
         this.logger.error(

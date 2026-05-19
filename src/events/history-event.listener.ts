@@ -99,6 +99,38 @@ export class HistoryEventListener {
     }
   }
 
+  @OnEvent('maintenance.assigned')
+  async handleMaintenanceRequestAssigned(payload: any): Promise<void> {
+    if (!payload?.property_id) {
+      // Common-area requests don't have a property_id — they live on a
+      // separate timeline and are skipped here.
+      return;
+    }
+
+    try {
+      const historyEntry = this.propertyHistoryRepository.create({
+        property_id: payload.property_id,
+        tenant_id: payload.tenant_id ?? null,
+        event_type: 'maintenance_request_assigned',
+        event_description: JSON.stringify({
+          previous_assignee_name: payload.previous_assignee_name ?? 'unassigned',
+          new_assignee_name: payload.new_assignee_name ?? 'unassigned',
+          description: payload.description ?? null,
+        }),
+        related_entity_id: payload.maintenance_request_id,
+        related_entity_type: 'maintenance_request',
+        created_at: payload.created_at || new Date(),
+      });
+
+      await this.propertyHistoryRepository.save(historyEntry);
+    } catch (error) {
+      this.logger.error(
+        `Failed to create history entry for assignment: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
   @OnEvent('tenancy.renewed')
   async handleTenancyRenewed(payload: TenancyRenewedEvent): Promise<void> {
     this.logger.log(

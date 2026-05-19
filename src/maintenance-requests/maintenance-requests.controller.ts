@@ -21,6 +21,7 @@ import {
 } from './dto/create-maintenance-request.dto';
 import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-request.dto';
 import { AssignMaintenanceRequestDto } from './dto/assign-maintenance-request.dto';
+import { ApproveMaintenanceRequestDto } from './dto/approve-maintenance-request.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { RolesEnum } from 'src/base.entity';
@@ -230,6 +231,32 @@ export class MaintenanceRequestsController {
       id,
       body?.assigned_to ?? null,
       requester.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Approve a maintenance request and assign a facility manager',
+    description:
+      'Landlord-only. Combined transaction: flips status NOT_APPROVED → APPROVED and sets `assigned_to` in one call. Source status must be NOT_APPROVED (409 otherwise). Fans out fm_assignment_notification to the team; suppresses the standalone approval ping to the assignee.',
+  })
+  @ApiBody({ type: ApproveMaintenanceRequestDto })
+  @ApiOkResponse({ description: 'Request approved and assigned' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/approve')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async approveMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: ApproveMaintenanceRequestDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.approveAndAssignMaintenanceRequest(
+      id,
+      body.assigned_to,
+      requester.id,
+      'dashboard',
     );
   }
 

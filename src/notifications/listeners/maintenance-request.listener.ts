@@ -40,6 +40,34 @@ export class MaintenanceRequestListener {
     private readonly utilService: UtilService,
   ) {}
 
+  // Builds the live-feed headline for a maintenance transition. Maps each
+  // (prev → new) pair to a human-readable verb instead of dumping the raw
+  // status arrow into the UI.
+  private buildMaintenanceHeadline(
+    status: string,
+    previousStatus: string | null | undefined,
+    propertyName: string,
+  ): string {
+    const property = propertyName || 'property';
+    if (!previousStatus) {
+      return `Maintenance request opened for ${property}.`;
+    }
+    switch (status) {
+      case MaintenanceRequestStatusEnum.APPROVED:
+        return `Maintenance request approved for ${property}.`;
+      case MaintenanceRequestStatusEnum.RESOLVED:
+        return `Maintenance request resolved for ${property}.`;
+      case MaintenanceRequestStatusEnum.REOPENED:
+        return `Maintenance request reopened for ${property}.`;
+      case MaintenanceRequestStatusEnum.CLOSED:
+        return `Maintenance request closed for ${property}.`;
+      case MaintenanceRequestStatusEnum.NOT_APPROVED:
+        return `Maintenance request reopened for review on ${property}.`;
+      default:
+        return `Maintenance request for ${property}.\nstatus changed from ${previousStatus} to ${status}`;
+    }
+  }
+
   @OnEvent('maintenance.created')
   async handle(event: MaintenanceRequestCreatedEvent) {
     try {
@@ -155,15 +183,19 @@ ${event.description}`,
   @OnEvent('maintenance.updated')
   async handleUpdate(event: any) {
     try {
-      const statusChangeText = event.previous_status
-        ? `changed from ${event.previous_status} to ${event.status}`
-        : `status: ${event.status}`;
+      const headline = this.buildMaintenanceHeadline(
+        event.status,
+        event.previous_status,
+        event.property_name,
+      );
+      const assigneeLine = event.assigned_to_name
+        ? `\nAssigned to ${event.assigned_to_name}.`
+        : '';
 
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.MAINTENANCE_REQUEST,
-        description: `Maintenance request for ${event.property_name}.
-status ${statusChangeText}`,
+        description: `${headline}${assigneeLine}`,
         status: 'Pending',
         property_id: event.property_id,
         user_id: event.landlord_id,

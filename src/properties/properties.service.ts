@@ -1844,6 +1844,42 @@ export class PropertiesService {
               details: details,
             };
           }
+          case 'maintenance_request_assigned': {
+            let prevName = 'unassigned';
+            let newName = 'unassigned';
+            let issueDescription: string | null = null;
+            if (hist.event_description) {
+              try {
+                const parsed = JSON.parse(hist.event_description);
+                prevName = parsed.previous_assignee_name || 'unassigned';
+                newName = parsed.new_assignee_name || 'unassigned';
+                issueDescription = parsed.description || null;
+              } catch {}
+            }
+
+            const title =
+              prevName === 'unassigned'
+                ? 'Facility Manager Assigned'
+                : newName === 'unassigned'
+                  ? 'Facility Manager Unassigned'
+                  : 'Facility Manager Reassigned';
+
+            const description =
+              prevName === 'unassigned'
+                ? `Assigned to ${newName}.`
+                : newName === 'unassigned'
+                  ? `${prevName} unassigned.`
+                  : `${prevName} → ${newName}`;
+
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'maintenance_request_assigned',
+              title,
+              description,
+              details: issueDescription ? `Issue: "${issueDescription}"` : null,
+            };
+          }
           case 'property_deactivated':
             return {
               id: hist.id,

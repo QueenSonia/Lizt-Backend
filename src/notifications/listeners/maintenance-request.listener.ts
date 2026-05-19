@@ -101,7 +101,9 @@ ${event.description}`,
       const propertyName =
         sr.property?.name ?? sr.common_area?.name ?? sr.property_name ?? '';
       const tenantName = sr.tenant_name ?? '—';
-      const description = sr.description ?? '';
+      const description = this.utilService.sanitizeTemplateParam(
+        sr.description ?? '',
+      );
       // Render tenant phone in Nigerian local format (0xxx) to match the
       // existing fm_maintenance_request_notification precedent.
       const tenantPhoneRaw = sr.tenant?.user?.phone_number ?? '';
@@ -254,7 +256,9 @@ status ${statusChangeText}`,
         manager_name: managerName,
         property_name: event.property_name,
         property_location: property?.location ?? '',
-        maintenance_request: event.description,
+        maintenance_request: this.utilService.sanitizeTemplateParam(
+          event.description ?? '',
+        ),
         tenant_name: event.tenant_name,
         tenant_phone_number: tenantPhone,
         date_created:
@@ -311,7 +315,9 @@ status ${statusChangeText}`,
       await this.templateSenderService.sendTenantConfirmationTemplate({
         phone_number: phone,
         tenant_name: tenantFirstName,
-        request_description: sr.description,
+        request_description: this.utilService.sanitizeTemplateParam(
+          sr.description ?? '',
+        ),
         request_id: sr.request_id,
       });
     } catch (err) {

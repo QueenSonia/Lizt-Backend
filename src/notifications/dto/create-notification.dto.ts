@@ -5,7 +5,10 @@ export class CreateNotificationDto {
   type: NotificationType;
   description: string;
   status: 'Pending' | 'Completed';
-  property_id: string;
+  // Nullable: common-area maintenance requests have no property_id, and the
+  // notification service already null-checks before building the property
+  // detail deep-link (`notification.service.ts:27`).
+  property_id: string | null;
   user_id: string;
   maintenance_request_id?: string;
 }

@@ -72,6 +72,14 @@ export class AddTenantConfirmationFlow1799000000000
     await queryRunner.query(
       `ALTER TABLE "maintenance_requests" ALTER COLUMN "tenant_name" DROP NOT NULL;`,
     );
+
+    // Allow common-area maintenance-request notifications (which carry no
+    // direct property reference) to write without a property_id. Before this,
+    // `notificationService.create` calls from the maintenance.created listener
+    // for FM-filed common-area MRs were silently failing the INSERT.
+    await queryRunner.query(
+      `ALTER TABLE "notification" ALTER COLUMN "property_id" DROP NOT NULL;`,
+    );
   }
 
   public async down(): Promise<void> {

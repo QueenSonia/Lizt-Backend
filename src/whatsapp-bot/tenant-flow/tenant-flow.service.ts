@@ -449,6 +449,7 @@ export class TenantFlowService {
     const tenantLocalPhone = this.toLocalPhone(user.phone_number);
     const tenantName = `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`;
     const formattedDate = this.formatDateLagos(createdAt);
+    const safeRequest = this.utilService.sanitizeTemplateParam(maintenanceRequest);
 
     for (const manager of facilityManagers) {
       const params: FacilityMaintenanceRequestParams = {
@@ -456,7 +457,7 @@ export class TenantFlowService {
         manager_name: manager.name,
         property_name: propertyName,
         property_location: propertyLocation,
-        maintenance_request: maintenanceRequest,
+        maintenance_request: safeRequest,
         tenant_name: tenantName,
         tenant_phone_number: tenantLocalPhone,
         date_created: formattedDate,
@@ -522,7 +523,8 @@ export class TenantFlowService {
       ),
       property_name: propertyName,
       property_location: propertyLocation,
-      maintenance_request: maintenanceRequest,
+      maintenance_request:
+        this.utilService.sanitizeTemplateParam(maintenanceRequest),
       tenant_name: `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`,
       tenant_phone_number: tenantLocalPhone,
       date_created: this.formatDateLagos(createdAt),

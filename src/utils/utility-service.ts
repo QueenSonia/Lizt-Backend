@@ -111,4 +111,25 @@ export class UtilService {
     if (!text) return '';
     return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
   }
+
+  // Meta rejects template body params containing newlines, tabs, runs of 4+
+  // spaces, or zero-width / invisible Unicode (error 132018). Each value also
+  // can't exceed 1024 chars and must stay within ~4x the static body length.
+  sanitizeTemplateParam(input: string | null | undefined, maxLen = 500): string {
+    if (!input) return '';
+    const INVISIBLE = new RegExp(
+      '[' +
+        '\\u200B-\\u200F' + // zero-width space, ZWNJ, ZWJ, LRM, RLM
+        '\\u2028\\u2029' +  // line/paragraph separator
+        '\\u2060' +         // word joiner
+        '\\uFEFF' +         // BOM / zero-width no-break space
+        ']',
+      'g',
+    );
+    return input
+      .replace(INVISIBLE, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxLen);
+  }
 }

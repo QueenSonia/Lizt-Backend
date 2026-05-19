@@ -18,6 +18,9 @@ export class MaintenanceRequestStatusHistory extends BaseEntity {
       MaintenanceRequestStatusEnum.RESOLVED,
       MaintenanceRequestStatusEnum.REOPENED,
       MaintenanceRequestStatusEnum.CLOSED,
+      MaintenanceRequestStatusEnum.REJECTED,
+      MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
+      MaintenanceRequestStatusEnum.DENIED_BY_TENANT,
     ],
   })
   previous_status: MaintenanceRequestStatusEnum | null;
@@ -31,6 +34,9 @@ export class MaintenanceRequestStatusHistory extends BaseEntity {
       MaintenanceRequestStatusEnum.RESOLVED,
       MaintenanceRequestStatusEnum.REOPENED,
       MaintenanceRequestStatusEnum.CLOSED,
+      MaintenanceRequestStatusEnum.REJECTED,
+      MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
+      MaintenanceRequestStatusEnum.DENIED_BY_TENANT,
     ],
   })
   new_status: MaintenanceRequestStatusEnum;

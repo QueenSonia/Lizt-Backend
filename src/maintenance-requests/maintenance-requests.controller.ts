@@ -22,6 +22,7 @@ import {
 import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-request.dto';
 import { AssignMaintenanceRequestDto } from './dto/assign-maintenance-request.dto';
 import { ApproveMaintenanceRequestDto } from './dto/approve-maintenance-request.dto';
+import { TenantDenyMaintenanceRequestDto } from './dto/tenant-deny-maintenance-request.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { RolesEnum } from 'src/base.entity';
@@ -230,6 +231,74 @@ export class MaintenanceRequestsController {
     return this.maintenanceRequestsService.setAssignee(
       id,
       body?.assigned_to ?? null,
+      requester.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Tenant confirms an FM-filed maintenance request',
+    description:
+      "Caller must be the tenant on the request (account.id === sr.tenant_id). Status must be PENDING_TENANT_CONFIRMATION; otherwise 409. Transitions to NOT_APPROVED so the landlord can take the existing approve/reject + FM-picker flow.",
+  })
+  @ApiOkResponse({ description: 'Request confirmed; moved to NOT_APPROVED' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/tenant-confirm')
+  async tenantConfirmMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.confirmTenantMaintenanceRequest(
+      id,
+      requester.id,
+      'dashboard',
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Tenant denies an FM-filed maintenance request',
+    description:
+      'Caller must be the tenant on the request. Optional `reason` captured in rejection_reason. Terminal — lands in DENIED_BY_TENANT.',
+  })
+  @ApiBody({ type: TenantDenyMaintenanceRequestDto, required: false })
+  @ApiOkResponse({ description: 'Request denied; moved to DENIED_BY_TENANT' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/tenant-deny')
+  async tenantDenyMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: TenantDenyMaintenanceRequestDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.denyTenantMaintenanceRequest(
+      id,
+      requester.id,
+      body?.reason ?? null,
+      'dashboard',
+    );
+  }
+
+  @ApiOperation({
+    summary:
+      "Landlord force-confirms a maintenance request stuck on tenant confirmation",
+    description:
+      "Landlord-only. Use when the tenant has no phone / isn't responding. Status must be PENDING_TENANT_CONFIRMATION; transitions to NOT_APPROVED and records the landlord-as-actor in status_history. Does not double-ping the landlord on WhatsApp.",
+  })
+  @ApiOkResponse({ description: 'Force-confirmed; moved to NOT_APPROVED' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/landlord-force-confirm')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async landlordForceConfirmMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.landlordForceConfirmMaintenanceRequest(
+      id,
       requester.id,
     );
   }

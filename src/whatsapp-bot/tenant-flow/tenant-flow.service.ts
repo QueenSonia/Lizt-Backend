@@ -134,10 +134,20 @@ export class TenantFlowService {
 
     if (lowerText === 'done') {
       await this.cache.delete(`maintenance_request_state_${from}`);
+      await this.cache.delete(`tenant_deny_state_${from}`);
       await this.templateSenderService.sendText(
         from,
         'Thank you!  Your session has ended.',
       );
+      return;
+    }
+
+    // Pending denial-reason capture takes priority over the generic state
+    // machine — the tenant tapped Deny on an FM-filed MR confirmation prompt
+    // and we're waiting on their reason (or 'skip').
+    const denyState = await this.cache.get(`tenant_deny_state_${from}`);
+    if (denyState) {
+      await this.handleTenantDenyReasonReply(from, text, denyState);
       return;
     }
 
@@ -703,6 +713,14 @@ export class TenantFlowService {
       if (action === 'confirm_tenancy_details') {
         cleanButtonId = action;
         propertyId = payload; // Extract the property ID
+      }
+      if (action === 'tenant_confirm_mr') {
+        await this.handleTenantConfirmMaintenanceRequest(from, payload);
+        return;
+      }
+      if (action === 'tenant_deny_mr') {
+        await this.handleTenantDenyMaintenanceRequestPrompt(from, payload);
+        return;
       }
     }
 
@@ -2624,6 +2642,218 @@ export class TenantFlowService {
       'sendTenancyDetailsDisputeReasonLandlord',
       params,
     );
+  }
+
+  /**
+   * Tenant tapped "Yes, confirm" on a tenant_confirm_fm_request prompt.
+   * Resolves tenant account from phone, calls
+   * `confirmTenantMaintenanceRequest`, and renders a stale-tap reply on 409.
+   */
+  private async handleTenantConfirmMaintenanceRequest(
+    from: string,
+    requestId: string,
+  ): Promise<void> {
+    if (!requestId) return;
+
+    const tenant = await this.findTenantByPhone(from);
+    const tenantAccountId = tenant?.accounts?.[0]?.id;
+    if (!tenantAccountId) {
+      await this.templateSenderService.sendText(
+        from,
+        'We could not match this request to your account. Please contact your landlord.',
+      );
+      return;
+    }
+
+    const tenantFirstName =
+      this.utilService.toSentenceCase(tenant?.first_name ?? '') || 'there';
+
+    try {
+      await this.maintenanceRequestService.confirmTenantMaintenanceRequest(
+        requestId,
+        tenantAccountId,
+        'whatsapp',
+      );
+      await this.templateSenderService.sendText(
+        from,
+        `Thanks ${tenantFirstName} — we've let your landlord know.`,
+      );
+    } catch (err) {
+      const message = (err as { message?: string })?.message ?? '';
+      const status = (err as { status?: number })?.status;
+      if (
+        status === 409 ||
+        message.toLowerCase().includes('no longer awaiting')
+      ) {
+        await this.templateSenderService.sendText(
+          from,
+          "This one's already been sorted — no need to respond.",
+        );
+        return;
+      }
+      if (status === 403) {
+        await this.templateSenderService.sendText(
+          from,
+          'You cannot act on this request.',
+        );
+        return;
+      }
+      this.logger.warn(
+        `Tenant confirm via WhatsApp failed for ${requestId}: ${message || err}`,
+      );
+      await this.templateSenderService.sendText(
+        from,
+        'Sorry, we could not record your response. Please try again shortly.',
+      );
+    }
+  }
+
+  /**
+   * Tenant tapped "No, deny". Commits the denial immediately (no reason)
+   * and notifies the landlord — the tenant shouldn't have to keep typing
+   * for their tap to "stick". Caches an optional reason-capture state for
+   * 5 min so the next reply (if any) becomes a follow-up reason patched
+   * into the existing row. If the tenant never replies, the denial is
+   * already complete — the cache key just expires.
+   */
+  private async handleTenantDenyMaintenanceRequestPrompt(
+    from: string,
+    requestId: string,
+  ): Promise<void> {
+    if (!requestId) return;
+
+    const tenant = await this.findTenantByPhone(from);
+    const tenantAccountId = tenant?.accounts?.[0]?.id;
+    if (!tenantAccountId) {
+      await this.templateSenderService.sendText(
+        from,
+        'We could not match this request to your account. Please contact your landlord.',
+      );
+      return;
+    }
+
+    const tenantFirstName =
+      this.utilService.toSentenceCase(tenant?.first_name ?? '') || 'there';
+
+    try {
+      await this.maintenanceRequestService.denyTenantMaintenanceRequest(
+        requestId,
+        tenantAccountId,
+        null,
+        'whatsapp',
+      );
+    } catch (err) {
+      const message = (err as { message?: string })?.message ?? '';
+      const status = (err as { status?: number })?.status;
+      if (
+        status === 409 ||
+        message.toLowerCase().includes('no longer awaiting')
+      ) {
+        await this.templateSenderService.sendText(
+          from,
+          "This one's already been sorted — no need to respond.",
+        );
+        return;
+      }
+      if (status === 404) {
+        await this.templateSenderService.sendText(
+          from,
+          'This request was not found.',
+        );
+        return;
+      }
+      if (status === 403) {
+        await this.templateSenderService.sendText(
+          from,
+          'You cannot act on this request.',
+        );
+        return;
+      }
+      this.logger.warn(
+        `Tenant deny via WhatsApp failed for ${requestId}: ${message || err}`,
+      );
+      await this.templateSenderService.sendText(
+        from,
+        'Sorry, we could not record your response. Please try again shortly.',
+      );
+      return;
+    }
+
+    // Cache the optional reason-capture state. If the tenant never replies
+    // the key expires after 5 min and the denial stands as-is.
+    await this.cache.set(
+      `tenant_deny_state_${from}`,
+      { type: 'awaiting_tenant_deny_reason', requestId },
+      this.SESSION_TIMEOUT_MS,
+    );
+
+    await this.templateSenderService.sendText(
+      from,
+      `Got it ${tenantFirstName} — your landlord has been notified.\n\nWant to add a quick reason? Reply now, or type 'skip' to wrap up.`,
+    );
+  }
+
+  /**
+   * Optional follow-up after a deny tap. Treats 'skip' / empty as a no-op;
+   * a real reason gets patched into the already-denied MR's rejection_reason
+   * column via `updateTenantDenialReason`. No second landlord WA ping —
+   * the dashboard activity feed renders the reason once it lands.
+   */
+  private async handleTenantDenyReasonReply(
+    from: string,
+    text: string,
+    state: { type?: string; requestId?: string },
+  ): Promise<void> {
+    if (state?.type !== 'awaiting_tenant_deny_reason' || !state.requestId) {
+      await this.cache.delete(`tenant_deny_state_${from}`);
+      return;
+    }
+
+    const trimmed = text.trim();
+    const isSkip = trimmed.toLowerCase() === 'skip';
+
+    if (isSkip || trimmed.length === 0) {
+      await this.templateSenderService.sendText(from, 'All set.');
+      await this.cache.delete(`tenant_deny_state_${from}`);
+      return;
+    }
+
+    const tenant = await this.findTenantByPhone(from);
+    const tenantAccountId = tenant?.accounts?.[0]?.id;
+    if (!tenantAccountId) {
+      await this.cache.delete(`tenant_deny_state_${from}`);
+      await this.templateSenderService.sendText(
+        from,
+        'We could not match this request to your account. Please contact your landlord.',
+      );
+      return;
+    }
+
+    const tenantFirstName =
+      this.utilService.toSentenceCase(tenant?.first_name ?? '') || 'there';
+
+    try {
+      await this.maintenanceRequestService.updateTenantDenialReason(
+        state.requestId,
+        tenantAccountId,
+        trimmed,
+      );
+      await this.templateSenderService.sendText(
+        from,
+        `Thanks ${tenantFirstName} — we've added your reason to the record.`,
+      );
+      await this.cache.delete(`tenant_deny_state_${from}`);
+    } catch (err) {
+      const message = (err as { message?: string })?.message ?? '';
+      this.logger.warn(
+        `Tenant deny reason update failed for ${state.requestId}: ${message || err}`,
+      );
+      await this.templateSenderService.sendText(
+        from,
+        "We couldn't attach your reason just now — but the denial itself went through. You can mention this to your landlord directly.",
+      );
+      await this.cache.delete(`tenant_deny_state_${from}`);
+    }
   }
 
   /**

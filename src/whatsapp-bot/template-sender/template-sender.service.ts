@@ -260,6 +260,50 @@ export interface FmAssignmentNotificationParams {
 }
 
 /**
+ * Tenant-bound template asking them to confirm/deny an FM-filed maintenance
+ * request. Two quick-reply buttons carry the request id back through the
+ * inbound webhook so the tenant's tap maps to a specific MR. The template
+ * body refers to the tenant's home as "your residence" rather than naming
+ * the property — saves a variable and reads naturally.
+ */
+export interface TenantConfirmFmRequestParams {
+  phone_number: string;
+  tenant_name: string;
+  fm_name: string;
+  maintenance_request: string;
+  maintenance_request_id: string;
+}
+
+/**
+ * Landlord-bound informational template fired when an FM files an MR for
+ * a property whose tenant still needs to confirm. No action buttons —
+ * the landlord can't act until the tenant responds (or they force-confirm
+ * from the web app).
+ */
+export interface LandlordFmFiledRequestNotificationParams {
+  phone_number: string;
+  landlord_name: string;
+  fm_name: string;
+  property_name: string;
+  maintenance_request: string;
+}
+
+/**
+ * Landlord-bound informational template fired when the tenant denies the
+ * FM-filed MR. The denial reason (if any) is captured in the dashboard
+ * activity feed, not the WhatsApp template — the reason can only arrive via
+ * an optional follow-up reply that happens AFTER this notification is sent,
+ * so embedding it in the WA body would always show "No reason given".
+ */
+export interface LandlordFmRequestDeniedByTenantParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  fm_name: string;
+  maintenance_request: string;
+}
+
+/**
  * Parameters for KYC completion link
  */
 export interface KYCCompletionLinkParams {
@@ -1744,6 +1788,135 @@ export class TemplateSenderService {
         }`,
       );
     }
+  }
+
+  /**
+   * Tenant Confirm/Deny prompt for an FM-filed maintenance request.
+   * Quick-reply button payloads carry the MR id back through the webhook;
+   * `tenant_confirm_mr:<id>` / `tenant_deny_mr:<id>` are dispatched in
+   * `TenantFlowService.handleInteractive`.
+   */
+  async sendTenantConfirmFmRequest({
+    phone_number,
+    tenant_name,
+    fm_name,
+    maintenance_request,
+    maintenance_request_id,
+  }: TenantConfirmFmRequestParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_confirm_fm_request',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: fm_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_confirm_mr:${maintenance_request_id}`,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_deny_mr:${maintenance_request_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Landlord-bound informational notification: "Your FM filed an issue;
+   * waiting on tenant confirmation." No buttons — action is gated on the
+   * tenant's response.
+   */
+  async sendLandlordFmFiledRequestNotification({
+    phone_number,
+    landlord_name,
+    fm_name,
+    property_name,
+    maintenance_request,
+  }: LandlordFmFiledRequestNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_fm_filed_request_notification',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: fm_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Landlord-bound informational notification fired when the tenant
+   * denies the FM-filed MR. Captures the optional denial reason.
+   */
+  async sendLandlordFmRequestDeniedByTenant({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    fm_name,
+    maintenance_request,
+  }: LandlordFmRequestDeniedByTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_fm_request_denied_by_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: fm_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
   }
 
   /**
@@ -4651,6 +4824,12 @@ export class TemplateSenderService {
       'A maintenance request has been approved by the landlord.\n\nTenant: {{1}}\nProperty: {{2}}\nIssue: {{3}}\nReported: {{4}}\nPhone: {{5}}\n\nPlease attend to this request.',
     fm_assignment_notification:
       'A maintenance request has been assigned to {{1}}.\n\nIssue: {{2}}\nTenant: {{3}}\nPhone: {{4}}\nProperty: {{5}}\n\nPlease attend to this.',
+    tenant_confirm_fm_request:
+      'Hi {{1}},\n\n{{2}} (your facility manager) reported a maintenance issue at your residence:\n\n"{{3}}"\n\nCan you confirm this is happening? Tap a button below.',
+    landlord_fm_filed_request_notification:
+      'Hi {{1}},\n\nYour facility manager {{2}} filed a maintenance issue at {{3}}:\n\n"{{4}}"\n\nWe\'re waiting on the tenant to confirm. You\'ll be notified when they respond.',
+    landlord_fm_request_denied_by_tenant:
+      'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}} filed:\n\n"{{4}}"\n\nThe request is now closed.',
     kyc_completion_link:
       'Hello {{1}},\n\n{{2}} has added you as a tenant for {{3}} using Lizt by Property Kraft — a tenancy management app designed to make your rental experience simple and stress-free.\n\nWith Lizt, you can receive important updates, track rent, and manage everything about your tenancy in one place.\n\nPlease {{4}} your KYC information using the link below to get started:',
     kyc_completion_notification:

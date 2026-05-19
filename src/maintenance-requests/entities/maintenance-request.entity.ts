@@ -26,8 +26,8 @@ export class MaintenanceRequest extends BaseEntity {
   @Column({ nullable: false, type: 'varchar', unique: true })
   request_id: string;
 
-  @Column({ nullable: false, type: 'varchar' })
-  tenant_name: string;
+  @Column({ nullable: true, type: 'varchar' })
+  tenant_name: string | null;
 
   @Column({ nullable: true, type: 'varchar' })
   property_name: string | null;
@@ -78,6 +78,8 @@ export class MaintenanceRequest extends BaseEntity {
       MaintenanceRequestStatusEnum.REOPENED,
       MaintenanceRequestStatusEnum.CLOSED,
       MaintenanceRequestStatusEnum.REJECTED,
+      MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
+      MaintenanceRequestStatusEnum.DENIED_BY_TENANT,
     ],
     default: MaintenanceRequestStatusEnum.NOT_APPROVED,
   })

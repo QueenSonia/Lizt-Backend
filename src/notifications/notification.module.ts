@@ -16,6 +16,7 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { UtilService } from 'src/utils/utility-service';
+import { Account } from 'src/users/entities/account.entity';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { UtilService } from 'src/utils/utility-service';
       Property,
       TeamMember,
       MaintenanceRequest,
+      Account,
     ]),
     forwardRef(() => WhatsappBotModule),
   ],

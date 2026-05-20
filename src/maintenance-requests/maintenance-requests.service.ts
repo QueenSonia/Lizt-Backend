@@ -683,10 +683,9 @@ export class MaintenanceRequestsService {
       });
     }
 
-    qb.orderBy('sr.created_at', 'DESC')
-      .addOrderBy('statusHistory.changed_at', 'ASC')
-      .skip(skip)
-      .take(size);
+    // Ordering by a joined one-to-many column would force LIMIT onto the
+    // join-multiplied row set, truncating pages. Keep order on `sr` only.
+    qb.orderBy('sr.created_at', 'DESC').skip(skip).take(size);
 
     const [maintenanceRequests, count] = await qb.getManyAndCount();
 
@@ -1769,6 +1768,25 @@ export class MaintenanceRequestsService {
       throw new HttpException(
         'You do not own this request',
         HttpStatus.FORBIDDEN,
+      );
+    }
+
+    // Block reassignment on terminal and pre-approval-tenant-confirmation
+    // requests. The endpoint would otherwise mutate `assigned_to` and fire a
+    // WhatsApp notification for work that's already done (or not yet eligible
+    // for assignment) — see the frontend gate in
+    // MaintenanceRequestDetailModal. Pairing both sides closes the devtools /
+    // direct-API bypass.
+    const ASSIGNMENT_LOCKED_STATUSES: MaintenanceRequestStatusEnum[] = [
+      MaintenanceRequestStatusEnum.CLOSED,
+      MaintenanceRequestStatusEnum.REJECTED,
+      MaintenanceRequestStatusEnum.DENIED_BY_TENANT,
+      MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
+    ];
+    if (ASSIGNMENT_LOCKED_STATUSES.includes(sr.status)) {
+      throw new HttpException(
+        `Cannot reassign a request in status "${sr.status}"`,
+        HttpStatus.CONFLICT,
       );
     }
 

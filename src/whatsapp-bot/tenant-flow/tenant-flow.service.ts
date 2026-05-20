@@ -1197,11 +1197,16 @@ export class TenantFlowService {
         "Fantastic! Glad that's sorted 😊",
       );
 
-      const statusMessage = `✅ Tenant confirmed the issue is fixed.\nRequest: ${latestResolvedRequest.description}\nStatus: Closed`;
       if (latestResolvedRequest.property_id) {
+        const safeRequest = this.utilService.sanitizeTemplateParam(
+          latestResolvedRequest.description,
+        );
         await this.notifyPropertyStakeholders(
           latestResolvedRequest.property_id,
-          statusMessage,
+          (phone) =>
+            this.templateSenderService.sendMaintenanceRequestClosedNotification(
+              { phone_number: phone, maintenance_request: safeRequest },
+            ),
         );
       }
     } else {
@@ -1247,11 +1252,16 @@ export class TenantFlowService {
         "Thanks for letting me know. I'll reopen the request and notify maintenance to check again.",
       );
 
-      const statusMessage = `⚠️ Tenant says the issue is not resolved. The request has been reopened.\nRequest: ${latestResolvedRequest.description}\nStatus: Reopened`;
       if (latestResolvedRequest.property_id) {
+        const safeRequest = this.utilService.sanitizeTemplateParam(
+          latestResolvedRequest.description,
+        );
         await this.notifyPropertyStakeholders(
           latestResolvedRequest.property_id,
-          statusMessage,
+          (phone) =>
+            this.templateSenderService.sendMaintenanceRequestReopenedNotification(
+              { phone_number: phone, maintenance_request: safeRequest },
+            ),
         );
       }
     } else {
@@ -1263,13 +1273,15 @@ export class TenantFlowService {
   }
 
   /**
-   * Notify all facility managers and the landlord for a given property with a text message.
-   * Fix #2: All FMs are notified (no single assignment).
-   * Fix #4: Queries Property directly for landlord info.
+   * Fan out a per-recipient send to the property's landlord + every FM on
+   * the landlord's team. The caller passes a closure that knows which
+   * template (and params) to send for each normalized phone — this keeps
+   * the fan-out logic template-agnostic so new MR-status notifications can
+   * reuse it without piling on overloads.
    */
   private async notifyPropertyStakeholders(
     propertyId: string,
-    message: string,
+    send: (phone: string) => Promise<void>,
   ): Promise<void> {
     try {
       const property = await this.propertyRepo.findOne({
@@ -1279,26 +1291,21 @@ export class TenantFlowService {
 
       if (!property) return;
 
-      // Notify landlord
       if (property.owner?.user?.phone_number) {
-        await this.templateSenderService.sendText(
+        await send(
           this.utilService.normalizePhoneNumber(
             property.owner.user.phone_number,
           ),
-          message,
         );
       }
 
-      // Notify every FM on the landlord's team — FMs are no longer pinned
-      // to a property, so the whole team gets pinged for property-level events.
       const fms = await this.maintenanceRequestService.findTeamFmsForLandlord(
         property.owner_id,
       );
       for (const fm of fms) {
         if (fm.account?.user?.phone_number) {
-          await this.templateSenderService.sendText(
+          await send(
             this.utilService.normalizePhoneNumber(fm.account.user.phone_number),
-            message,
           );
         }
       }

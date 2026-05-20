@@ -304,6 +304,28 @@ export interface LandlordFmRequestDeniedByTenantParams {
 }
 
 /**
+ * Informational template sent to the landlord and every FM on the team
+ * when a tenant confirms (via WhatsApp quick reply) that an MR is fixed.
+ * No buttons — the request is already closed in the dashboard.
+ * Free-text {{1}} (description) must be sanitized at the caller.
+ */
+export interface MaintenanceRequestClosedNotificationParams {
+  phone_number: string;
+  maintenance_request: string;
+}
+
+/**
+ * Informational template sent to the landlord and every FM on the team
+ * when the tenant tells the bot the issue is NOT fixed; the MR is reopened.
+ * No buttons — the MR is back open in the dashboard.
+ * Free-text {{1}} (description) must be sanitized at the caller.
+ */
+export interface MaintenanceRequestReopenedNotificationParams {
+  phone_number: string;
+  maintenance_request: string;
+}
+
+/**
  * Parameters for KYC completion link
  */
 export interface KYCCompletionLinkParams {
@@ -1911,6 +1933,64 @@ export class TemplateSenderService {
               { type: 'text', text: fm_name },
               { type: 'text', text: maintenance_request },
             ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Informational notification fired when a tenant confirms (via WA quick
+   * reply) that an MR is fixed. Sent to landlord + every FM on the team.
+   * Recipient-agnostic body — one variable: the request description
+   * (must be sanitized at the caller).
+   */
+  async sendMaintenanceRequestClosedNotification({
+    phone_number,
+    maintenance_request,
+  }: MaintenanceRequestClosedNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'maintenance_request_closed_notification',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [{ type: 'text', text: maintenance_request }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Informational notification fired when the tenant denies (via WA quick
+   * reply) that an MR is fixed; the MR is reopened. Sent to landlord +
+   * every FM on the team. One variable: the request description (sanitize
+   * at the caller).
+   */
+  async sendMaintenanceRequestReopenedNotification({
+    phone_number,
+    maintenance_request,
+  }: MaintenanceRequestReopenedNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'maintenance_request_reopened_notification',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [{ type: 'text', text: maintenance_request }],
           },
         ],
       },
@@ -4830,6 +4910,10 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nYour facility manager {{2}} filed a maintenance issue at {{3}}:\n\n"{{4}}"\n\nWe\'re waiting on the tenant to confirm. You\'ll be notified when they respond.',
     landlord_fm_request_denied_by_tenant:
       'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}} filed:\n\n"{{4}}"\n\nThe request is now closed.',
+    maintenance_request_closed_notification:
+      '✅ Tenant confirmed the issue is fixed.\n\nRequest: "{{1}}"\nStatus: Closed',
+    maintenance_request_reopened_notification:
+      '⚠️ Tenant says the issue is not resolved. The request has been reopened.\n\nRequest: "{{1}}"\nStatus: Reopened',
     kyc_completion_link:
       'Hello {{1}},\n\n{{2}} has added you as a tenant for {{3}} using Lizt by Property Kraft — a tenancy management app designed to make your rental experience simple and stress-free.\n\nWith Lizt, you can receive important updates, track rent, and manage everything about your tenancy in one place.\n\nPlease {{4}} your KYC information using the link below to get started:',
     kyc_completion_notification:

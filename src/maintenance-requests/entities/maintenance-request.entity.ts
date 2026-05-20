@@ -20,6 +20,7 @@ import { Notification } from 'src/notifications/entities/notification.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { MaintenanceRequestStatusHistory } from './maintenance-request-status-history.entity';
 import { CommonArea } from 'src/common-areas/entities/common-area.entity';
+import { Artisan } from 'src/artisans/entities/artisan.entity';
 
 @Entity({ name: 'maintenance_requests' })
 export class MaintenanceRequest extends BaseEntity {
@@ -68,6 +69,23 @@ export class MaintenanceRequest extends BaseEntity {
   @Column({ nullable: true, type: 'text' })
   resolution_summary?: string | null;
 
+  @Column({ nullable: true, type: 'uuid' })
+  artisan_id?: string | null;
+
+  @ManyToOne(() => Artisan, (artisan) => artisan.maintenance_requests, {
+    onDelete: 'SET NULL',
+  })
+  @JoinColumn({ name: 'artisan_id', referencedColumnName: 'id' })
+  artisan?: Artisan | null;
+
+  // Snapshots captured at resolve time. They survive renames/deletes of the
+  // artisan row, so historical resolutions show what the FM actually entered.
+  @Column({ nullable: true, type: 'varchar' })
+  artisan_name_snapshot?: string | null;
+
+  @Column({ nullable: true, type: 'varchar' })
+  artisan_phone_snapshot?: string | null;
+
   @Column({
     nullable: false,
     type: 'enum',
@@ -87,6 +105,12 @@ export class MaintenanceRequest extends BaseEntity {
 
   @Column({ nullable: false, type: 'boolean', default: false })
   is_urgent: boolean;
+
+  @Column({ nullable: false, type: 'boolean', default: false })
+  is_priority: boolean;
+
+  @Column({ nullable: true, type: 'timestamp with time zone' })
+  approved_at: Date | null;
 
   @Column({
     nullable: false,

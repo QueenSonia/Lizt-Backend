@@ -12,6 +12,7 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
 import { UtilsModule } from 'src/utils/utils.module';
 import { CommonArea } from 'src/common-areas/entities/common-area.entity';
 import { Account } from 'src/users/entities/account.entity';
+import { ArtisansModule } from 'src/artisans/artisans.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { Account } from 'src/users/entities/account.entity';
       Account,
     ]),
     UtilsModule,
+    ArtisansModule,
   ],
   controllers: [MaintenanceRequestsController],
   providers: [MaintenanceRequestsService, FileUploadService],

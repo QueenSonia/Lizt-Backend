@@ -41,6 +41,7 @@ import { TenantBalancesModule } from './tenant-balances/tenant-balances.module';
 import { PaymentPlansModule } from './payment-plans/payment-plans.module';
 import { AdHocInvoicesModule } from './ad-hoc-invoices/ad-hoc-invoices.module';
 import { CommonAreasModule } from './common-areas/common-areas.module';
+import { ArtisansModule } from './artisans/artisans.module';
 import { SecurityMiddleware } from './middleware/security.middleware';
 import { IpRateLimitGuard } from './guards/ip-rate-limit.guard';
 import { AutoBanService } from './services/auto-ban.service';
@@ -96,6 +97,7 @@ config({ default_node_env: 'production' });
     PaymentPlansModule,
     AdHocInvoicesModule,
     CommonAreasModule,
+    ArtisansModule,
   ],
   controllers: [AppController],
   providers: [

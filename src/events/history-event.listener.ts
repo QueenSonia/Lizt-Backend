@@ -101,6 +101,23 @@ export class HistoryEventListener {
 
   @OnEvent('maintenance.assigned')
   async handleMaintenanceRequestAssigned(payload: any): Promise<void> {
+    // Push to open clients so the assignee column on every list/card and
+    // the assignee dropdown in the detail modal refresh live. We do this
+    // even for common-area requests (which don't get a property_history
+    // entry) by emitting before the early-return below.
+    if (this.eventsGateway && payload?.maintenance_request_id) {
+      this.eventsGateway.emitMaintenanceRequestUpdated(
+        payload.property_id ?? '',
+        payload.landlord_id,
+        {
+          maintenanceRequestId: payload.maintenance_request_id,
+          description: payload.description,
+          tenantName: payload.tenant_name,
+          propertyName: payload.property_name,
+        },
+      );
+    }
+
     if (!payload?.property_id) {
       // Common-area requests don't have a property_id — they live on a
       // separate timeline and are skipped here.
@@ -129,6 +146,69 @@ export class HistoryEventListener {
         error.stack,
       );
     }
+  }
+
+  /**
+   * Bridges the priority-toggle event to the websocket. Priority is metadata
+   * (not a status transition), so we deliberately do NOT write a history row
+   * or trigger the notifications listener — only the live UI cache refresh.
+   */
+  @OnEvent('maintenance.priority_changed')
+  handleMaintenancePriorityChanged(payload: any): void {
+    if (!this.eventsGateway || !payload?.request_id) return;
+    this.eventsGateway.emitMaintenanceRequestUpdated(
+      payload.property_id ?? '',
+      payload.landlord_id,
+      {
+        maintenanceRequestId: payload.request_id,
+        description: payload.description,
+        tenantName: payload.tenant_name,
+        propertyName: payload.property_name,
+        status: payload.status,
+      },
+    );
+  }
+
+  /**
+   * Tenant confirm/deny on an FM-filed request changes the status and (for
+   * confirm) opens the landlord approval path. Without a websocket push,
+   * landlord dashboards stay stale until refresh. We don't write a history
+   * row here — the maintenance.updated handler covers that path separately
+   * when the service flips the actual `status` column; these two events
+   * are emitted from different code paths so we treat them independently.
+   */
+  @OnEvent('maintenance.tenant_confirmed')
+  handleMaintenanceTenantConfirmed(payload: any): void {
+    if (!this.eventsGateway || !payload?.request_id) return;
+    this.eventsGateway.emitMaintenanceRequestUpdated(
+      payload.property_id ?? '',
+      payload.landlord_id,
+      {
+        maintenanceRequestId: payload.request_id,
+        description: payload.description,
+        tenantName: payload.tenant_name,
+        propertyName: payload.property_name,
+        status: payload.status,
+        previousStatus: payload.previous_status,
+      },
+    );
+  }
+
+  @OnEvent('maintenance.tenant_denied')
+  handleMaintenanceTenantDenied(payload: any): void {
+    if (!this.eventsGateway || !payload?.request_id) return;
+    this.eventsGateway.emitMaintenanceRequestUpdated(
+      payload.property_id ?? '',
+      payload.landlord_id,
+      {
+        maintenanceRequestId: payload.request_id,
+        description: payload.description,
+        tenantName: payload.tenant_name,
+        propertyName: payload.property_name,
+        status: payload.status,
+        previousStatus: payload.previous_status,
+      },
+    );
   }
 
   @OnEvent('tenancy.renewed')

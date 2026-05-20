@@ -24,6 +24,7 @@ import { AssignMaintenanceRequestDto } from './dto/assign-maintenance-request.dt
 import { ApproveMaintenanceRequestDto } from './dto/approve-maintenance-request.dto';
 import { TenantDenyMaintenanceRequestDto } from './dto/tenant-deny-maintenance-request.dto';
 import { RejectMaintenanceRequestDto } from './dto/reject-maintenance-request.dto';
+import { SetPriorityDto } from './dto/set-priority.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { RolesEnum } from 'src/base.entity';
@@ -232,6 +233,31 @@ export class MaintenanceRequestsController {
     return this.maintenanceRequestsService.setAssignee(
       id,
       body?.assigned_to ?? null,
+      requester.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Toggle the priority flag on a maintenance request',
+    description:
+      'Landlord-only. Sets or clears the `is_priority` flag on a request the landlord owns.',
+  })
+  @ApiBody({ type: SetPriorityDto })
+  @ApiOkResponse({ description: 'Priority updated' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Patch(':id/priority')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async setMaintenanceRequestPriority(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: SetPriorityDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.setPriority(
+      id,
+      body.is_priority,
       requester.id,
     );
   }

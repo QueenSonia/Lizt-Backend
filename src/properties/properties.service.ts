@@ -1018,6 +1018,7 @@ export class PropertiesService {
       name: string;
       location: string;
       property_status: string;
+      tenant_name: string | null;
     }[]
   > {
     if (landlordAccountId !== requesterAccountId) {
@@ -1043,23 +1044,36 @@ export class PropertiesService {
 
     const rows = await this.propertyRepository
       .createQueryBuilder('property')
-      .select([
-        'property.id',
-        'property.name',
-        'property.location',
-        'property.property_status',
-      ])
+      .leftJoin(
+        'property.property_tenants',
+        'activePt',
+        "activePt.status = 'active'",
+      )
+      .leftJoin('activePt.tenant', 'tenantAcct')
+      .leftJoin('tenantAcct.user', 'tenantUser')
+      .select('property.id', 'id')
+      .addSelect('property.name', 'name')
+      .addSelect('property.location', 'location')
+      .addSelect('property.property_status', 'property_status')
+      .addSelect('tenantUser.first_name', 'tenant_first_name')
+      .addSelect('tenantUser.last_name', 'tenant_last_name')
       .where('property.owner_id = :ownerId', { ownerId: landlordAccountId })
       .andWhere('property.deleted_at IS NULL')
       .orderBy('property.name', 'ASC')
-      .getMany();
+      .getRawMany();
 
-    return rows.map((p) => ({
-      id: p.id,
-      name: p.name,
-      location: p.location,
-      property_status: p.property_status,
-    }));
+    return rows.map((r) => {
+      const first = r.tenant_first_name ?? '';
+      const last = r.tenant_last_name ?? '';
+      const tenantName = `${first} ${last}`.trim() || null;
+      return {
+        id: r.id,
+        name: r.name,
+        location: r.location,
+        property_status: r.property_status,
+        tenant_name: tenantName,
+      };
+    });
   }
 
   async getMarketingReadyProperties(ownerId: string): Promise<Property[]> {

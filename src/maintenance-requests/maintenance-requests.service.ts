@@ -28,6 +28,7 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
 import { RolesEnum } from 'src/base.entity';
 import { CommonArea } from 'src/common-areas/entities/common-area.entity';
 import { Account } from 'src/users/entities/account.entity';
+import { ArtisansService } from 'src/artisans/artisans.service';
 
 export interface TawkWebhookPayload {
   event: 'chat:start' | 'chat:end';
@@ -79,6 +80,7 @@ export class MaintenanceRequestsService {
     private readonly dataSource: DataSource,
     private readonly eventEmitter: EventEmitter2,
     private readonly utilService: UtilService,
+    private readonly artisansService: ArtisansService,
   ) {}
 
   /**
@@ -844,6 +846,18 @@ export class MaintenanceRequestsService {
           HttpStatus.BAD_REQUEST,
         );
       }
+      if (!data.artisan_name || !data.artisan_name.trim()) {
+        throw new HttpException(
+          'artisan_name is required when marking a request as resolved',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      if (!data.artisan_phone || !data.artisan_phone.trim()) {
+        throw new HttpException(
+          'artisan_phone is required when marking a request as resolved',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
     }
 
     // ── Race-case short-circuit ────────────────────────────────────────────
@@ -883,6 +897,34 @@ export class MaintenanceRequestsService {
       safeUpdate.resolution_category = data.resolution_category;
       safeUpdate.resolution_cost_minor =
         data.resolution_cost_minor ?? null;
+
+      // Artisan upsert. Outside the status+history transaction below because
+      // the (team_id, phone) unique constraint makes findOrCreate idempotent
+      // — safe to re-run on retry. We use the caller's Account to find their
+      // team (FM via team_member; landlord via team.creatorId).
+      const callerAccount = await this.accountRepository.findOne({
+        where: { id: userId },
+      });
+      if (!callerAccount) {
+        throw new HttpException(
+          'Unable to resolve caller account for artisan attribution',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const teamId =
+        await this.artisansService.resolveCallerTeamId(callerAccount);
+      const artisan = await this.artisansService.findOrCreateForResolution({
+        teamId,
+        name: data.artisan_name!,
+        phone: data.artisan_phone!,
+        createdByAccountId: userId,
+        renameIfExists: data.rename_artisan_if_conflict === true,
+      });
+      safeUpdate.artisan_id = artisan.id;
+      safeUpdate.artisan_name_snapshot = data.artisan_name!.trim();
+      // Use the canonical phone (post-normalization) so snapshots and
+      // artisans.phone always agree, regardless of what the FM typed.
+      safeUpdate.artisan_phone_snapshot = artisan.phone;
     }
     if (targetStatus === MaintenanceRequestStatusEnum.REOPENED) {
       safeUpdate.reopened_at = new Date();
@@ -1628,6 +1670,12 @@ export class MaintenanceRequestsService {
       request.resolution_date = new Date();
     if (status === MaintenanceRequestStatusEnum.REOPENED)
       request.reopened_at = new Date();
+    if (
+      status === MaintenanceRequestStatusEnum.APPROVED ||
+      status === MaintenanceRequestStatusEnum.REOPENED
+    ) {
+      request.approved_at = new Date();
+    }
 
     const savedRequest = await this.maintenanceRequestRepository.save(request);
 
@@ -1802,6 +1850,71 @@ export class MaintenanceRequestsService {
     return this.maintenanceRequestRepository.findOne({
       where: { id: requestId },
       relations: ['property', 'common_area', 'facilityManager'],
+    }) as Promise<MaintenanceRequest>;
+  }
+
+  /**
+   * Landlord toggles the priority flag on one of their maintenance requests.
+   * No status_history row — priority is metadata, not a transition.
+   */
+  async setPriority(
+    requestId: string,
+    isPriority: boolean,
+    landlordAccountId: string,
+  ): Promise<MaintenanceRequest> {
+    const sr = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+      relations: ['property', 'common_area'],
+    });
+    if (!sr) {
+      throw new NotFoundException('Maintenance request not found');
+    }
+
+    const ownerAccountId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
+    if (ownerAccountId !== landlordAccountId) {
+      throw new HttpException(
+        'You do not own this request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    if (sr.is_priority === isPriority) {
+      return sr;
+    }
+
+    await this.maintenanceRequestRepository.update(requestId, {
+      is_priority: isPriority,
+    });
+
+    // Push to open clients so the Priority pill appears/disappears live.
+    // We use a dedicated event (not `maintenance.updated`) because priority
+    // is metadata — we don't want the notifications listener to write a
+    // status-change notification row, or the history listener to write a
+    // misleading property_history entry. Only the websocket bridge listens
+    // to this event.
+    this.eventEmitter.emit('maintenance.priority_changed', {
+      request_id: requestId,
+      is_priority: isPriority,
+      property_id: sr.property_id,
+      common_area_id: sr.common_area_id,
+      landlord_id:
+        sr.property?.owner_id ?? sr.common_area?.owner_id ?? null,
+      tenant_name: sr.tenant_name,
+      property_name: sr.property_name,
+      description: sr.description,
+      status: sr.status,
+    });
+
+    return this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+      relations: [
+        'property',
+        'common_area',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
     }) as Promise<MaintenanceRequest>;
   }
 
@@ -2313,6 +2426,7 @@ export class MaintenanceRequestsService {
       await manager.update(MaintenanceRequest, requestId, {
         status: MaintenanceRequestStatusEnum.APPROVED,
         assigned_to: teamMemberId as any,
+        approved_at: new Date(),
       });
       await this.createStatusHistoryEntry(
         requestId,

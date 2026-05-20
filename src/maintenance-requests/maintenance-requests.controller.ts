@@ -23,6 +23,7 @@ import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-re
 import { AssignMaintenanceRequestDto } from './dto/assign-maintenance-request.dto';
 import { ApproveMaintenanceRequestDto } from './dto/approve-maintenance-request.dto';
 import { TenantDenyMaintenanceRequestDto } from './dto/tenant-deny-maintenance-request.dto';
+import { RejectMaintenanceRequestDto } from './dto/reject-maintenance-request.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { RolesEnum } from 'src/base.entity';
@@ -300,6 +301,32 @@ export class MaintenanceRequestsController {
     return this.maintenanceRequestsService.landlordForceConfirmMaintenanceRequest(
       id,
       requester.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Reject a maintenance request from the dashboard',
+    description:
+      'Landlord-only. Mirrors the WhatsApp Reject flow. Status must be NOT_APPROVED (409 otherwise). Optional `reason` captured in rejection_reason. Terminal — lands in REJECTED.',
+  })
+  @ApiBody({ type: RejectMaintenanceRequestDto, required: false })
+  @ApiOkResponse({ description: 'Request rejected; moved to REJECTED' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/reject')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async rejectMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: RejectMaintenanceRequestDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.rejectMaintenanceRequest(
+      id,
+      requester.id,
+      body?.reason ?? null,
+      'dashboard',
     );
   }
 

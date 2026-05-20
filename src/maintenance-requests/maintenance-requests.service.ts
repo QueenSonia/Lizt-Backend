@@ -1474,17 +1474,37 @@ export class MaintenanceRequestsService {
   }
 
   /**
-   * Enforces the lifecycle: not_approved → approved → resolved →
-   * (closed | reopened → resolved → ...). Role policy:
-   *   - landlord ONLY approves (NOT_APPROVED → APPROVED). No other transitions.
+   * Enforces the lifecycle:
+   *
+   *   FM-filed unit (with active tenant):
+   *     pending_tenant_confirmation
+   *       ├── (tenant confirms)        → not_approved → approved → resolved → ...
+   *       └── (tenant denies)          → denied_by_tenant (terminal)
+   *
+   *   Tenant-filed, or FM-filed common-area / vacant unit:
+   *     not_approved → approved → resolved → (closed | reopened → resolved → ...)
+   *
+   *   Landlord rejection (WhatsApp only):
+   *     not_approved → rejected (terminal)
+   *
+   * Role policy:
+   *   - landlord approves (NOT_APPROVED → APPROVED) and rejects via the
+   *     dedicated reject path. Landlord can also force-confirm
+   *     (PENDING_TENANT_CONFIRMATION → NOT_APPROVED) when the tenant is
+   *     unresponsive — same destination as a tenant-confirm but recorded as
+   *     a landlord-actor in status_history.
+   *   - tenant on the request confirms or denies the FM-filed gate
+   *     (PENDING_TENANT_CONFIRMATION → NOT_APPROVED | DENIED_BY_TENANT) and
+   *     can confirm-resolution (RESOLVED → CLOSED) or reject-resolution
+   *     (RESOLVED → REOPENED) on requests they filed.
    *   - FM-on-this-property handles approve→resolve, reopen→resolve, and
    *     resolve→reopen on any request on the property regardless of creator.
-   *   - tenant can confirm-resolution (RESOLVED → CLOSED) and reject-resolution
-   *     (RESOLVED → REOPENED) on requests they filed.
    *   - REOPENED → REOPENED is permitted as a self-loop carrying an additional
    *     reopen_message (race case where FM and tenant both reopen). The caller
    *     in updateMaintenanceRequestById skips the entity mutation and only logs a
    *     history row in that case.
+   *
+   * Terminal states: closed, rejected, denied_by_tenant.
    */
   private assertValidStatusTransition(
     from: MaintenanceRequestStatusEnum,
@@ -2123,6 +2143,7 @@ export class MaintenanceRequestsService {
     requestId: string,
     landlordAccountId: string,
     reason?: string | null,
+    source: 'dashboard' | 'whatsapp' = 'whatsapp',
   ): Promise<MaintenanceRequest> {
     const sr = await this.maintenanceRequestRepository.findOne({
       where: { id: requestId },
@@ -2163,7 +2184,7 @@ export class MaintenanceRequestsService {
         MaintenanceRequestStatusEnum.REJECTED,
         landlordUserId,
         'landlord',
-        'Landlord rejected via WhatsApp',
+        `Landlord rejected via ${source === 'whatsapp' ? 'WhatsApp' : 'Dashboard'}`,
         trimmedReason ?? undefined,
         manager,
       );

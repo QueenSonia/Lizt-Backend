@@ -1041,6 +1041,7 @@ export class LandlordFlow {
         state.requestId,
         landlord.accountId,
         reason,
+        'whatsapp',
       );
       await this.whatsappUtil.sendText(
         from,

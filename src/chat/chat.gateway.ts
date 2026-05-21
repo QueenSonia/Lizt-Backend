@@ -146,15 +146,25 @@ export class ChatGateway
   // and pushes the new message to all clients in the MR room (the modal's
   // ThreadView subscribes via mr:focus). Decouples HTTP write from socket
   // broadcast so the controller doesn't need to know about the gateway.
+  //
+  // The emitted payload carries BOTH ids — the ChatMessage row only stores
+  // the varchar request_id (that's the FK), but the landlord/FM modals
+  // cache their thread by the MR UUID. Sending both lets the frontend
+  // update whichever cache key it used without an extra resolver round trip.
   @OnEvent('mr-chat.message.created')
   handleMrChatMessageCreated(payload: {
     message: ChatMessage;
     maintenance_request_id: string;
+    maintenance_request_uuid: string;
   }) {
     if (!payload?.maintenance_request_id) return;
+    const enriched = {
+      ...payload.message,
+      maintenance_request_uuid: payload.maintenance_request_uuid,
+    };
     this.server
       .to(`mr:${payload.maintenance_request_id}`)
-      .emit('new_message', payload.message);
+      .emit('new_message', enriched);
   }
 
   // Sent by MrChatNotificationService for each online recipient — used to

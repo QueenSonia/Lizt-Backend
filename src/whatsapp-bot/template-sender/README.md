@@ -158,7 +158,9 @@ Please confirm your updated tenancy details.
 **Message**:
 
 ```
-Hi {{1}}, {{2}} sent a message on "{{3}}" ({{4}}):
+Hi {{1}},
+
+{{2}} sent a message on "{{3}}" ({{4}}):
 
 "{{5}}"
 

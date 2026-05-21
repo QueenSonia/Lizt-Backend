@@ -13,7 +13,7 @@ import { ChatPresenceService } from './chat-presence.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { ChatMessage, MessageSender } from './chat-message.entity';
 import { OnEvent } from '@nestjs/event-emitter';
-import * as jwt from 'jsonwebtoken';
+import { AuthService } from 'src/auth/auth.service';
 
 interface AuthedSocket extends Socket {
   user?: { id: string; role?: string };
@@ -31,26 +31,46 @@ interface AuthedSocket extends Socket {
 })
 export class ChatGateway
   implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer() server: Server;
+  @WebSocketServer() server!: Server;
 
   constructor(
     private readonly chatService: ChatService,
     private readonly presence: ChatPresenceService,
+    private readonly authService: AuthService,
   ) {}
 
   afterInit(server: Server) {
     server.use(async (socket: AuthedSocket, next) => {
-      const token =
-        socket.handshake.auth.token || socket.handshake.headers.authorization;
+      // Accept the ticket from either the standard socket.io auth.token slot
+      // or a Bearer Authorization header. The frontend gets one from
+      // /api/auth/ws-ticket → backend GET /auth/ws-ticket, which exchanges
+      // the HTTP-only access_token cookie for a 60s `purpose: 'ws'` JWT.
+      //
+      // Raw access tokens are deliberately *not* accepted here — only WS
+      // tickets — so that a value leaked via the websocket layer can't be
+      // replayed against the REST API.
+      const rawAuth =
+        (socket.handshake.auth.token as string | undefined) ||
+        (socket.handshake.headers.authorization as string | undefined);
+      const ticket = rawAuth?.startsWith('Bearer ')
+        ? rawAuth.slice(7)
+        : rawAuth;
+
+      // Reject *quietly* if no ticket at all — avoids log spam every time
+      // something probes the gateway. The connect still fails so callers
+      // know to retry after fetching a ticket.
+      if (!ticket) {
+        return next(new Error('Unauthorized'));
+      }
+
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
-          id: string;
-          role?: string;
-        };
+        const decoded = await this.authService.verifyWsTicket(ticket);
         socket.user = decoded;
         next();
       } catch (err) {
-        console.error('JWT verification failed:', err);
+        console.warn(
+          `[ChatGateway] WS ticket verification failed: ${(err as Error).message}`,
+        );
         next(new Error('Unauthorized'));
       }
     });

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Post,
   Req,
   Res,
@@ -100,5 +101,26 @@ export class AuthController {
     });
 
     return res.json({ message: 'Token revoked successfully' });
+  }
+
+  /**
+   * Mint a short-lived (60s) ticket the frontend uses to authenticate the
+   * chat websocket handshake. Authenticated by the global JwtAuthGuard via
+   * the access_token cookie, so the caller's identity comes from req.user.
+   * The ticket carries `purpose: 'ws'` — chat.gateway.ts only accepts
+   * tickets, never raw access tokens, so a leaked ticket can't be replayed
+   * against the REST API.
+   */
+  @Get('ws-ticket')
+  async wsTicket(@Req() req: Request) {
+    const user = (req as Request & { user?: IReqUser }).user;
+    if (!user?.id) {
+      throw new UnauthorizedException();
+    }
+    const ticket = await this.authService.generateWsTicket({
+      id: user.id,
+      role: user.role,
+    });
+    return { ticket, expires_in: 60 };
   }
 }

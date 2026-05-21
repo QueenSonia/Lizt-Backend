@@ -11,6 +11,7 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
 import { UtilsModule } from 'src/utils/utils.module';
 import { Account } from 'src/users/entities/account.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
+import { AuthModule } from 'src/auth/auth.module';
 
 @Module({
   imports: [
@@ -22,6 +23,8 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
       TeamMember,
     ]),
     UtilsModule,
+    // Gives the gateway AuthService (for verifyWsTicket on every handshake).
+    AuthModule,
   ],
   providers: [ChatGateway, ChatService, ChatPresenceService],
   controllers: [ChatController, MaintenanceChatController],

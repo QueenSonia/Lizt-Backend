@@ -73,6 +73,44 @@ export class AuthService {
     };
   }
 
+  /**
+   * Sign a short-lived (60s) JWT used to authenticate a websocket handshake.
+   * The chat gateway will not accept the long-lived access_token directly —
+   * only tickets minted here. This keeps the HTTP-only access_token from ever
+   * needing to be readable by JS (the frontend's `/api/auth/ws-ticket` route
+   * exchanges the cookie for a ticket server-side, the browser only sees the
+   * ticket, and the ticket dies in a minute even if it leaks).
+   *
+   * `purpose: 'ws'` is what makes this distinct from an access token — see
+   * `verifyWsTicket` and chat.gateway.ts:afterInit for the enforcement.
+   */
+  async generateWsTicket(payload: {
+    id: string;
+    role?: string;
+  }): Promise<string> {
+    return await this.jwtService.signAsync(
+      { ...payload, purpose: 'ws' },
+      {
+        secret: this.configService.get<string>('JWT_SECRET'),
+        issuer: 'PANDA-HOMES',
+        expiresIn: '60s',
+      },
+    );
+  }
+
+  async verifyWsTicket(
+    token: string,
+  ): Promise<{ id: string; role?: string }> {
+    const payload = await this.jwtService.verifyAsync(token, {
+      secret: this.configService.get<string>('JWT_SECRET'),
+      issuer: 'PANDA-HOMES',
+    });
+    if (payload?.purpose !== 'ws') {
+      throw new Error('Token is not a ws ticket');
+    }
+    return { id: payload.id, role: payload.role };
+  }
+
   async generateRefreshToken(
     accountId: string,
     activeRole: RolesEnum,

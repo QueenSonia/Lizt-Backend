@@ -1,12 +1,12 @@
-﻿import { BaseEntity } from 'src/base.entity';
+import { Account } from 'src/users/entities/account.entity';
+import { BaseEntity } from 'src/base.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import {
   Entity,
-  PrimaryGeneratedColumn,
   Column,
-  CreateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm';
 
 export enum MessageSender {
@@ -14,6 +14,8 @@ export enum MessageSender {
   REP = 'rep',
   SYSTEM = 'system',
   ADMIN = 'admin',
+  LANDLORD = 'landlord',
+  FACILITY_MANAGER = 'facility_manager',
 }
 
 export enum MessageType {
@@ -24,6 +26,7 @@ export enum MessageType {
 }
 
 @Entity('chat_messages')
+@Index(['maintenance_request_id', 'created_at'])
 export class ChatMessage extends BaseEntity {
   @Column()
   maintenance_request_id: string;
@@ -55,6 +58,17 @@ export class ChatMessage extends BaseEntity {
 
   @Column({ nullable: true })
   senderName: string;
+
+  // Account.id of the author. Populated for LANDLORD / FACILITY_MANAGER
+  // messages so the frontend can right-align the viewer's own bubbles and the
+  // notification fan-out can resolve "prior posters". Nullable for legacy
+  // sender types (tenant/rep/system/admin) that pre-date this column.
+  @Column({ type: 'uuid', nullable: true })
+  sender_account_id: string | null;
+
+  @ManyToOne(() => Account, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'sender_account_id', referencedColumnName: 'id' })
+  senderAccount: Account | null;
 
   @ManyToOne(
     () => MaintenanceRequest,

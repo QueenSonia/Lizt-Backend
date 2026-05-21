@@ -134,6 +134,39 @@ Please confirm your updated tenancy details.
 
 **Usage**: Sent from `notifyTenantOfTenancyEdit` in `tenancies.service.ts` at the end of `updateActiveTenancy`, gated on `chargesChanged || periodOrFrequencyChanged || recurringChanges.length > 0` so no-op saves don't fire.
 
+## Maintenance Request Chat Templates
+
+### 1. mr_new_chat_message
+
+**Purpose**: Notify a landlord or facility manager that a new chat message landed on a maintenance-request's Updates & Thread.
+
+**Template Name**: `mr_new_chat_message`
+
+**Parameters**:
+
+- `{{1}}` - Recipient first name
+- `{{2}}` - Sender display name
+- `{{3}}` - Request description excerpt (short — e.g. `Pipe leak in kitchen`). Must be sanitized via `UtilService.sanitizeTemplateParam(value, 60)` at the caller — it's free-text from the MR creator.
+- `{{4}}` - Property or common-area name
+- `{{5}}` - Message preview (free-text, must be sanitized via `UtilService.sanitizeTemplateParam(value, 220)` at the caller)
+
+**Buttons**:
+
+- URL button: `Open chat` → `https://lizt.co/r/mr/{{1}}` where `{{1}}` is the MR UUID. Routes through a small smart-router page (`/r/mr/[id]`) that detects the viewer's role and redirects them to `/landlord/facility?openMr={uuid}` or `/facility-manager/dashboard?openMr={uuid}` — the per-role page reads the query param and auto-opens the modal, then strips the param.
+- Quick-reply: `Quick reply` with payload `mr_chat_quick_reply:{request_id}` (varchar) — captured in `LandlordFlow.handleInteractive`, which sets a 10-min `chat_awaiting_reply_{phone}` cache state. The user's next inbound text is then posted to the thread via `ChatService.sendMaintenanceChatMessage` and the state is cleared.
+
+**Message**:
+
+```
+Hi {{1}}, {{2}} sent a message on "{{3}}" ({{4}}):
+
+"{{5}}"
+
+Tap "Open chat" to view the full thread, or "Quick reply" to respond from here.
+```
+
+**Usage**: Sole caller is `MrChatNotificationService` (lizt-backend/src/chat/mr-chat-notification.service.ts), which subscribes to `mr-chat.message.created`, resolves recipients (landlord + assigned FM + prior posters − author), and suppresses any recipient with an active socket on the chat gateway (`ChatPresenceService.isActive(accountId)`).
+
 ## Configuration
 
 ### Simulator Mode

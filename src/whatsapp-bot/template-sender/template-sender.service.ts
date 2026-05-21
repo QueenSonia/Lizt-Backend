@@ -246,6 +246,36 @@ export interface FacilityMaintenanceRequestParams {
 }
 
 /**
+ * Parameters for the unified Updates & Thread notification. Sent by
+ * MrChatNotificationService to landlord + assigned FM + prior posters whenever
+ * a new chat message lands on an MR thread — minus the author, and skipping
+ * recipients who have an active socket on the chat gateway (suppression
+ * lives in MrChatNotificationService, not here).
+ */
+export interface MrNewChatMessageParams {
+  phone_number: string;
+  recipient_first_name: string;
+  sender_display_name: string;
+  // Body {{3}} — short excerpt of the MR description (e.g. "Pipe leak in
+  // kitchen"). More meaningful for the recipient than the opaque MR-XXXX id.
+  // Caller MUST run through `UtilService.sanitizeTemplateParam(value, 60)`.
+  request_description_excerpt: string;
+  property_or_common_area_name: string;
+  // Free-text excerpt of the message body. Caller MUST run through
+  // `UtilService.sanitizeTemplateParam(value, 220)` per the codebase's
+  // caller-sanitizes convention — chat content lands here straight from a
+  // textarea, so a stray \n or U+2060 will trip Meta error 132018.
+  message_preview: string;
+  // Quick-reply button payload. Should be the varchar request_id (MR-XXXX)
+  // — the inbound handler in LandlordFlow looks up the MR by request_id.
+  maintenance_request_id: string;
+  // URL button placeholder. The smart-router page at /r/mr/[id] takes a
+  // UUID, looks up the viewer's role, and redirects to the role's dashboard
+  // with ?openMr={uuid} so the existing listeners auto-open the modal.
+  maintenance_request_uuid: string;
+}
+
+/**
  * Parameters for FM assignment notification. Sent to every FM on the
  * landlord's team whenever a maintenance request is assigned (web or
  * WhatsApp).
@@ -1744,6 +1774,83 @@ export class TemplateSenderService {
             index: 0,
             parameters: [
               { type: 'payload', payload: 'view_all_maintenance_requests' },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notifies a landlord or facility-manager that a new chat message landed on
+   * an MR's Updates & Thread. Sole caller is MrChatNotificationService, which
+   * handles the recipient fan-out (landlord + assigned FM + prior posters −
+   * author) and the presence suppression (no send if the recipient has an
+   * active socket on the chat gateway). This method just dispatches one send.
+   *
+   * Template has two buttons:
+   *   - URL button "Open chat" → /maintenance-requests/{{1}} (request_id)
+   *   - Quick-reply "Quick reply" → mr_chat_quick_reply:<request_id>, lands
+   *     in LandlordFlow.handleInteractive which sets a chat_awaiting_reply
+   *     state and posts the user's next inbound text to the thread.
+   */
+  async sendMrChatNotification({
+    phone_number,
+    recipient_first_name,
+    sender_display_name,
+    request_description_excerpt,
+    property_or_common_area_name,
+    message_preview,
+    maintenance_request_id,
+    maintenance_request_uuid,
+  }: MrNewChatMessageParams): Promise<void> {
+    if (!maintenance_request_id || !maintenance_request_uuid) {
+      // Both ids are required — the URL button takes UUID (so the smart
+      // router can redirect to the role's dashboard with ?openMr=) and the
+      // quick-reply payload takes request_id varchar (the inbound handler
+      // looks up by request_id). Without either, the buttons would be dead.
+      throw new Error(
+        'Both maintenance_request_id and maintenance_request_uuid are required for mr_new_chat_message',
+      );
+    }
+
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'mr_new_chat_message',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: recipient_first_name },
+              { type: 'text', text: sender_display_name },
+              { type: 'text', text: request_description_excerpt },
+              { type: 'text', text: property_or_common_area_name },
+              { type: 'text', text: message_preview },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            // Smart router takes UUID — see /r/mr/[id] on the frontend.
+            parameters: [{ type: 'text', text: maintenance_request_uuid }],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                // Varchar request_id — LandlordFlow looks up the MR by it.
+                payload: `mr_chat_quick_reply:${maintenance_request_id}`,
+              },
             ],
           },
         ],

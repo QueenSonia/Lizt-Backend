@@ -911,21 +911,24 @@ export class RentReminderService {
     }
 
     // The "due on" date in the body is the CURRENT rent's expiry — that's
-    // when the next period's payment becomes due. Showing the next period's
-    // end (renewalInvoice.end_date) was confusing and made the day-0/day-1
-    // "today/tomorrow" framing nonsensical. The Meta body was edited to drop
-    // the literal "on" before {{4}}, so we inject the right preposition (or
-    // day word) here. Landlord livefeed logs reuse the plain date.
+    // when the next period's payment becomes due. The Meta body now reads
+    // "…your tenancy for {{2}} {{3}}." so {{3}} carries the entire verb
+    // phrase: "is due to expire …" for future/today, "expired …" for past.
+    // Landlord livefeed logs reuse the plain date.
     const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
       'en-GB',
       { day: 'numeric', month: 'long', year: 'numeric' },
     );
     const bodyExpiryDateStr =
       daysUntilExpiry === 0
-        ? `today, ${expiryDateStr}`
+        ? `is due to expire today, ${expiryDateStr}`
         : daysUntilExpiry === 1
-          ? `tomorrow, ${expiryDateStr}`
-          : `on ${expiryDateStr}`;
+          ? `is due to expire tomorrow, ${expiryDateStr}`
+          : daysUntilExpiry === -1
+            ? `expired yesterday, ${expiryDateStr}`
+            : daysUntilExpiry < 0
+              ? `expired on ${expiryDateStr}`
+              : `is due to expire on ${expiryDateStr}`;
     // For PARTIAL invoices, the "Amount due" we surface is the remaining
     // balance (total - prior payments), not the original total — the same
     // template body works for both fresh and partial cases since the {{5}}

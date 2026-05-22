@@ -167,7 +167,7 @@ Hi {{1}},
 Tap "Open chat" to view the full thread, or "Quick reply" to respond from here.
 ```
 
-**Usage**: Sole caller is `MrChatNotificationService` (lizt-backend/src/chat/mr-chat-notification.service.ts), which subscribes to `mr-chat.message.created`, resolves recipients (landlord + assigned FM + prior posters − author), and suppresses any recipient with an active socket on the chat gateway (`ChatPresenceService.isActive(accountId)`).
+**Usage**: Sole caller is `MrChatNotificationService` (lizt-backend/src/whatsapp-bot/mr-chat-notification.service.ts), which subscribes to `mr-chat.message.created` and ALWAYS sends the template to the landlord and assigned FM (minus the author). Presence on the chat gateway is not consulted — the two parties of the assignment always get a durable WhatsApp ping. An in-app `mr-chat.toast` event is emitted in parallel for live dashboard awareness; the frontend dedupes that toast against the currently-focused MR. Write access to the thread is itself private to these two parties — see `ChatService.resolveWriteRole`.
 
 ## Configuration
 

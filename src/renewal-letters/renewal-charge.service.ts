@@ -286,6 +286,24 @@ export class RenewalChargeService {
     letterId: string,
     manager?: EntityManager,
   ): Promise<boolean> {
+    return (await this.getLetterAcceptedChargeAmount(letterId, manager)) > 0;
+  }
+
+  /**
+   * Sum of unreversed letter_accepted_charge magnitudes for this letter
+   * (always non-negative). This is the portion of the tenant's wallet debt
+   * that was billed *via this specific invoice's* breakdown — it should NOT
+   * be treated as prior arrears when computing the invoice's total_amount,
+   * because it's already represented inline in the period charge.
+   *
+   * refreshInvoiceTotals subtracts this from walletBalance per-invoice so
+   * the formula `total = period - walletBalance` doesn't double-count the
+   * same period.
+   */
+  async getLetterAcceptedChargeAmount(
+    letterId: string,
+    manager?: EntityManager,
+  ): Promise<number> {
     const repo = manager
       ? manager.getRepository(TenantBalanceLedger)
       : this.ledgerRepo;
@@ -295,9 +313,13 @@ export class RenewalChargeService {
         related_entity_id: letterId,
       },
     });
-    return entries.some(
-      (e) => e.metadata?.kind === LETTER_CHARGE_KIND && !e.metadata?.reversed,
-    );
+    let total = 0;
+    for (const e of entries) {
+      if (e.metadata?.kind !== LETTER_CHARGE_KIND) continue;
+      if (e.metadata?.reversed) continue;
+      total += Math.abs(Number(e.balance_change));
+    }
+    return total;
   }
 
   private async hasExistingCharge(letterId: string): Promise<boolean> {

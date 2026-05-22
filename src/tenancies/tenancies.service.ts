@@ -1849,8 +1849,21 @@ export class TenanciesService {
         // plan request carrying the full fee set. Total is the full charge
         // set (every fee in the breakdown, recurring or not) minus current
         // wallet. `fee_breakdown` is the authoritative snapshot.
+        //
+        // The wallet may contain a letter_accepted_charge that was posted
+        // for *this same invoice's period* (RenewalChargeService for the
+        // non-monthly accept-after-expiry flow). That portion is already
+        // represented in the breakdown — counting it again as wallet debt
+        // would inflate total_amount to 2× the period. Subtract the
+        // own-letter charge magnitude from the wallet before applying the
+        // formula so the inflation only happens for *prior* arrears.
+        const ownLetterCharge =
+          await this.renewalChargeService.getLetterAcceptedChargeAmount(
+            invoice.id,
+          );
+        const effectiveWallet = walletBalance + ownLetterCharge;
         const periodCharge = sumAll(breakdown);
-        invoice.total_amount = Math.max(0, periodCharge - walletBalance);
+        invoice.total_amount = Math.max(0, periodCharge - effectiveWallet);
         invoice.wallet_balance = walletBalance;
         invoice.outstanding_balance = outstanding;
       }

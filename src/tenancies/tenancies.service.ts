@@ -2771,33 +2771,43 @@ export class TenanciesService {
         // Mirror the charge the auto-renewal cron would have written, so the
         // ledger/breakdown reflects the new period and the payment below
         // consumes it instead of becoming phantom credit.
-        const invoiceFees = renewalInvoiceToFees(invoice);
-        const recurringFees = invoiceFees.filter((f) => f.recurring);
-        const newPeriodStart = new Date(invoice.start_date)
-          .toISOString()
-          .split('T')[0];
-        const newPeriodEnd = new Date(invoice.end_date)
-          .toISOString()
-          .split('T')[0];
-        for (const fee of recurringFees) {
-          await this.tenantBalancesService.applyChange(
-            tenantId,
-            landlordId,
-            -fee.amount,
-            {
-              type: TenantBalanceLedgerType.AUTO_RENEWAL,
-              description: `New period charged: ${newPeriodStart} – ${newPeriodEnd} — ${fee.label}`,
-              propertyId: invoice.property_id,
-              relatedEntityType: 'rent',
-              relatedEntityId: newRent.id,
-              metadata: {
-                fee_kind: fee.kind,
-                ...(fee.externalId ? { externalId: fee.externalId } : {}),
-                period_start: newPeriodStart,
-                period_end: newPeriodEnd,
+        //
+        // Skip when RenewalChargeService has already posted a
+        // letter_accepted_charge for this letter (Trigger A on accept-after-
+        // expiry, or the daily non-monthly sweep). Otherwise the mirror would
+        // stack a second debit on top of the existing one and leave the wallet
+        // owing the period twice after the OB_PAYMENT below.
+        const alreadyChargedByLetterFlow =
+          await this.renewalChargeService.letterHasAcceptedCharge(invoice.id);
+        if (!alreadyChargedByLetterFlow) {
+          const invoiceFees = renewalInvoiceToFees(invoice);
+          const recurringFees = invoiceFees.filter((f) => f.recurring);
+          const newPeriodStart = new Date(invoice.start_date)
+            .toISOString()
+            .split('T')[0];
+          const newPeriodEnd = new Date(invoice.end_date)
+            .toISOString()
+            .split('T')[0];
+          for (const fee of recurringFees) {
+            await this.tenantBalancesService.applyChange(
+              tenantId,
+              landlordId,
+              -fee.amount,
+              {
+                type: TenantBalanceLedgerType.AUTO_RENEWAL,
+                description: `New period charged: ${newPeriodStart} – ${newPeriodEnd} — ${fee.label}`,
+                propertyId: invoice.property_id,
+                relatedEntityType: 'rent',
+                relatedEntityId: newRent.id,
+                metadata: {
+                  fee_kind: fee.kind,
+                  ...(fee.externalId ? { externalId: fee.externalId } : {}),
+                  period_start: newPeriodStart,
+                  period_end: newPeriodEnd,
+                },
               },
-            },
-          );
+            );
+          }
         }
       }
     }

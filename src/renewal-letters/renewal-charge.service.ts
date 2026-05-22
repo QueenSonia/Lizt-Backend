@@ -272,18 +272,36 @@ export class RenewalChargeService {
     return candidates;
   }
 
-  private async hasExistingCharge(letterId: string): Promise<boolean> {
-    const entries = await this.ledgerRepo.find({
+  /**
+   * True when the letter has an unreversed letter_accepted_charge entry.
+   * Used by markInvoiceAsPaid (Branch B) to skip its inline AUTO_RENEWAL
+   * mirror — otherwise that mirror would double-charge the wallet on top of
+   * what Trigger A / B already posted for this letter.
+   *
+   * Optionally accepts a transaction manager so the caller can read its own
+   * uncommitted writes (relevant if the supersede branch ever needs to
+   * re-query mid-transaction).
+   */
+  async letterHasAcceptedCharge(
+    letterId: string,
+    manager?: EntityManager,
+  ): Promise<boolean> {
+    const repo = manager
+      ? manager.getRepository(TenantBalanceLedger)
+      : this.ledgerRepo;
+    const entries = await repo.find({
       where: {
         related_entity_type: 'renewal_invoice',
         related_entity_id: letterId,
       },
     });
     return entries.some(
-      (e) =>
-        (e.metadata as Record<string, unknown> | null)?.kind ===
-        LETTER_CHARGE_KIND,
+      (e) => e.metadata?.kind === LETTER_CHARGE_KIND && !e.metadata?.reversed,
     );
+  }
+
+  private async hasExistingCharge(letterId: string): Promise<boolean> {
+    return this.letterHasAcceptedCharge(letterId);
   }
 }
 

@@ -942,6 +942,19 @@ export class MaintenanceRequestsService {
       safeUpdate.reopened_at = new Date();
     }
 
+    // Priority is only valid while a request is actionable (approved /
+    // reopened). If this update transitions the request out of an actionable
+    // state, clear the flag in the same write so the invariant
+    // "is_priority ⇒ status ∈ {approved, reopened}" holds.
+    if (
+      targetStatus !== undefined &&
+      targetStatus !== MaintenanceRequestStatusEnum.APPROVED &&
+      targetStatus !== MaintenanceRequestStatusEnum.REOPENED &&
+      maintenanceRequest.is_priority
+    ) {
+      safeUpdate.is_priority = false;
+    }
+
     // Resolve user.id once up-front (read-only, fine to do outside the txn).
     // The status-history row's changed_by_user_id FK points at users.id, but
     // `userId` here is the JWT's account.id — see resolveActorUserId.
@@ -1954,6 +1967,21 @@ export class MaintenanceRequestsService {
       throw new HttpException(
         'You do not own this request',
         HttpStatus.FORBIDDEN,
+      );
+    }
+
+    // Priority is meaningful only while the request is actionable. Setting
+    // priority on a not-yet-approved or already-finished request would be
+    // a no-op signal, so reject. Clearing is always allowed so a landlord
+    // can fix a stale flag from any state.
+    if (
+      isPriority &&
+      sr.status !== MaintenanceRequestStatusEnum.APPROVED &&
+      sr.status !== MaintenanceRequestStatusEnum.REOPENED
+    ) {
+      throw new HttpException(
+        'Priority can only be set on approved or reopened requests',
+        HttpStatus.CONFLICT,
       );
     }
 

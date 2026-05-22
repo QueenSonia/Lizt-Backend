@@ -35,6 +35,7 @@ import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import { RenewalChargeService } from 'src/renewal-letters/renewal-charge.service';
 import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
@@ -88,6 +89,7 @@ export class TenanciesService {
     private readonly eventEmitter: EventEmitter2,
     private readonly notificationService: NotificationService,
     private readonly tenantBalancesService: TenantBalancesService,
+    private readonly renewalChargeService: RenewalChargeService,
     private dataSource: DataSource,
   ) {}
 
@@ -662,6 +664,17 @@ export class TenanciesService {
           existingInvoice.superseded_at = new Date();
           await manager.getRepository(RenewalInvoice).save(existingInvoice);
           superseded = existingInvoice.id;
+
+          // If the old letter was already ACCEPTED and we'd posted the
+          // recurring-fee OB charge to the wallet, reverse it now so that
+          // accepting the new (superseding) letter charges the updated
+          // terms without doubling up. The reversal is a no-op if the old
+          // letter hadn't been charged yet (accept-before-expiry, or DRAFT
+          // path that never hits this branch).
+          await this.renewalChargeService.reverseChargesForLetter(
+            existingInvoice.id,
+            manager,
+          );
         } else {
           // No existing row — fresh renewal.
           invoice = manager.getRepository(RenewalInvoice).create({
@@ -1836,8 +1849,21 @@ export class TenanciesService {
         // plan request carrying the full fee set. Total is the full charge
         // set (every fee in the breakdown, recurring or not) minus current
         // wallet. `fee_breakdown` is the authoritative snapshot.
+        //
+        // The wallet may contain a letter_accepted_charge that was posted
+        // for *this same invoice's period* (RenewalChargeService for the
+        // non-monthly accept-after-expiry flow). That portion is already
+        // represented in the breakdown — counting it again as wallet debt
+        // would inflate total_amount to 2× the period. Subtract the
+        // own-letter charge magnitude from the wallet before applying the
+        // formula so the inflation only happens for *prior* arrears.
+        const ownLetterCharge =
+          await this.renewalChargeService.getLetterAcceptedChargeAmount(
+            invoice.id,
+          );
+        const effectiveWallet = walletBalance + ownLetterCharge;
         const periodCharge = sumAll(breakdown);
-        invoice.total_amount = Math.max(0, periodCharge - walletBalance);
+        invoice.total_amount = Math.max(0, periodCharge - effectiveWallet);
         invoice.wallet_balance = walletBalance;
         invoice.outstanding_balance = outstanding;
       }
@@ -2758,33 +2784,43 @@ export class TenanciesService {
         // Mirror the charge the auto-renewal cron would have written, so the
         // ledger/breakdown reflects the new period and the payment below
         // consumes it instead of becoming phantom credit.
-        const invoiceFees = renewalInvoiceToFees(invoice);
-        const recurringFees = invoiceFees.filter((f) => f.recurring);
-        const newPeriodStart = new Date(invoice.start_date)
-          .toISOString()
-          .split('T')[0];
-        const newPeriodEnd = new Date(invoice.end_date)
-          .toISOString()
-          .split('T')[0];
-        for (const fee of recurringFees) {
-          await this.tenantBalancesService.applyChange(
-            tenantId,
-            landlordId,
-            -fee.amount,
-            {
-              type: TenantBalanceLedgerType.AUTO_RENEWAL,
-              description: `New period charged: ${newPeriodStart} – ${newPeriodEnd} — ${fee.label}`,
-              propertyId: invoice.property_id,
-              relatedEntityType: 'rent',
-              relatedEntityId: newRent.id,
-              metadata: {
-                fee_kind: fee.kind,
-                ...(fee.externalId ? { externalId: fee.externalId } : {}),
-                period_start: newPeriodStart,
-                period_end: newPeriodEnd,
+        //
+        // Skip when RenewalChargeService has already posted a
+        // letter_accepted_charge for this letter (Trigger A on accept-after-
+        // expiry, or the daily non-monthly sweep). Otherwise the mirror would
+        // stack a second debit on top of the existing one and leave the wallet
+        // owing the period twice after the OB_PAYMENT below.
+        const alreadyChargedByLetterFlow =
+          await this.renewalChargeService.letterHasAcceptedCharge(invoice.id);
+        if (!alreadyChargedByLetterFlow) {
+          const invoiceFees = renewalInvoiceToFees(invoice);
+          const recurringFees = invoiceFees.filter((f) => f.recurring);
+          const newPeriodStart = new Date(invoice.start_date)
+            .toISOString()
+            .split('T')[0];
+          const newPeriodEnd = new Date(invoice.end_date)
+            .toISOString()
+            .split('T')[0];
+          for (const fee of recurringFees) {
+            await this.tenantBalancesService.applyChange(
+              tenantId,
+              landlordId,
+              -fee.amount,
+              {
+                type: TenantBalanceLedgerType.AUTO_RENEWAL,
+                description: `New period charged: ${newPeriodStart} – ${newPeriodEnd} — ${fee.label}`,
+                propertyId: invoice.property_id,
+                relatedEntityType: 'rent',
+                relatedEntityId: newRent.id,
+                metadata: {
+                  fee_kind: fee.kind,
+                  ...(fee.externalId ? { externalId: fee.externalId } : {}),
+                  period_start: newPeriodStart,
+                  period_end: newPeriodEnd,
+                },
               },
-            },
-          );
+            );
+          }
         }
       }
     }

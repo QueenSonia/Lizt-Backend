@@ -28,6 +28,7 @@ import {
 } from '../properties/dto/create-property.dto';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
+import { RenewalChargeService } from '../renewal-letters/renewal-charge.service';
 import {
   rentToFees,
   renewalInvoiceToFees,
@@ -69,6 +70,7 @@ export class RentReminderService {
     private readonly whatsAppNotificationLogService: WhatsAppNotificationLogService,
     private readonly notificationService: NotificationService,
     private readonly tenantBalancesService: TenantBalancesService,
+    private readonly renewalChargeService: RenewalChargeService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_8AM, { timeZone: 'Africa/Lagos' })
@@ -76,12 +78,84 @@ export class RentReminderService {
     this.logger.log('Starting daily rent reminder check...');
     try {
       await this.processAutoRenewal();
+      await this.processAcceptedNonMonthlyLetterCharges();
       await this.processUpcomingReminders();
       await this.processPostExpiryReminders();
       await this.checkInstallmentReminders();
       this.logger.log('Completed daily rent reminder check.');
     } catch (error) {
       this.logger.error('Failed to process daily rent reminders', error);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Non-monthly accepted-letter OB charge sweep
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Posts the OB charge for every non-monthly ACCEPTED renewal letter whose
+   * linked active rent has reached its expiry_date but doesn't yet have a
+   * letter_accepted_charge ledger entry.
+   *
+   * Why this is its own step:
+   *  - processAutoRenewal skips non-monthly rents (Tunji's 2026-05-11 call),
+   *    so non-monthly tenants never get a wallet debit at expiry through
+   *    the usual path.
+   *  - The verifyOtpAndAccept hook (Trigger A) only fires when the rent has
+   *    already expired AT the moment of acceptance. Tenants who accept ahead
+   *    of expiry need the cron to post their charge when expiry rolls around.
+   *  - This sweep also naturally backfills any pre-existing ACCEPTED letters
+   *    whose expiry is in the past at deploy time (e.g. Emmanuel) — they
+   *    match the candidate query and get charged on the next tick.
+   *
+   * Idempotency: the candidate query has a NOT EXISTS clause against
+   * tenant_balance_ledger for the same letter id + kind, so each letter is
+   * processed exactly once. The helper repeats the same check defensively
+   * in case the two cron instances race.
+   */
+  private async processAcceptedNonMonthlyLetterCharges() {
+    this.logger.log('Processing accepted non-monthly letter charges...');
+
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    let candidates: Awaited<
+      ReturnType<RenewalChargeService['findChargeCandidates']>
+    >;
+    try {
+      candidates = await this.renewalChargeService.findChargeCandidates(
+        this.renewalInvoiceRepository,
+        today,
+      );
+    } catch (error) {
+      this.logger.error(
+        'Failed to load accepted-letter charge candidates',
+        error,
+      );
+      return;
+    }
+
+    this.logger.log(`Found ${candidates.length} accepted letters to charge.`);
+
+    for (const { letter, rent } of candidates) {
+      try {
+        const result =
+          await this.renewalChargeService.chargeAcceptedRenewalAtExpiry(
+            letter,
+            rent,
+            today,
+          );
+        if (result.skipped) {
+          this.logger.log(
+            `Skipped letter ${letter.id}: ${result.skipped} (rent ${rent.id}).`,
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Failed to charge accepted letter ${letter.id} (rent ${rent.id})`,
+          error,
+        );
+      }
     }
   }
 

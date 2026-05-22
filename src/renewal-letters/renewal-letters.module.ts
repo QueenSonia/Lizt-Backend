@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { RenewalLettersController } from './renewal-letters.controller';
 import { RenewalLettersService } from './renewal-letters.service';
 import { RenewalLetterOtpService } from './renewal-letter-otp.service';
+import { RenewalChargeModule } from './renewal-charge.module';
 import { RenewalInvoice } from '../tenancies/entities/renewal-invoice.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
@@ -26,6 +27,7 @@ import { PdfModule } from '../pdf/pdf.module';
     UtilsModule,
     AppCacheModule,
     PdfModule,
+    RenewalChargeModule,
   ],
   controllers: [RenewalLettersController],
   providers: [RenewalLettersService, RenewalLetterOtpService],

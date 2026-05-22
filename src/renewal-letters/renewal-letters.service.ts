@@ -18,9 +18,11 @@ import {
   RenewalLetterStatus,
 } from '../tenancies/entities/renewal-invoice.entity';
 import { RenewalLetterOtpService } from './renewal-letter-otp.service';
+import { RenewalChargeService } from './renewal-charge.service';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender';
 import { UtilService } from '../utils/utility-service';
 import { RenewalLetterPdfService } from '../pdf/renewal-letter-pdf.service';
+import { RentStatusEnum } from '../rents/dto/create-rent.dto';
 import {
   RenewalLetterPublicDto,
   InitiateOtpResponseDto,
@@ -46,6 +48,7 @@ export class RenewalLettersService {
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
     private readonly renewalLetterPdfService: RenewalLetterPdfService,
+    private readonly renewalChargeService: RenewalChargeService,
   ) {}
 
   /**
@@ -346,15 +349,49 @@ export class RenewalLettersService {
       user_id: propertyTenant.property.owner_id,
     });
 
+    // Refetch the row so both the OB-charge helper and the rendered PDF
+    // stamp see the just-written ACCEPTED state.
+    const refreshed = await this.renewalInvoiceRepository.findOne({
+      where: { id: invoice.id },
+    });
+
+    // Trigger A: if the tenant's current rent is non-monthly AND has already
+    // expired, post the recurring-fee total to the wallet as OB_CHARGE now.
+    // Non-monthly tenancies don't auto-renew on cron, so without this hook
+    // an accepted letter leaves the tenant's outstanding balance unchanged.
+    // The helper no-ops for monthly tenants (covered by autoRenewExpiredRent)
+    // and for accept-before-expiry (the daily cron picks those up at expiry).
+    if (refreshed) {
+      try {
+        const activeRent = await this.rentRepository.findOne({
+          where: {
+            property_id: invoice.property_id,
+            tenant_id: invoice.tenant_id,
+            rent_status: RentStatusEnum.ACTIVE,
+          },
+          relations: ['property'],
+          order: { created_at: 'DESC' },
+        });
+        if (activeRent) {
+          await this.renewalChargeService.chargeAcceptedRenewalAtExpiry(
+            refreshed,
+            activeRent,
+          );
+        }
+      } catch (err) {
+        const e = err as { message?: string; stack?: string };
+        this.logger.error(
+          `Failed to post acceptance OB charge for letter ${invoice.id}: ${e.message}`,
+          e.stack,
+        );
+      }
+    }
+
     // Render and dispatch the signed-letter PDF to the tenant FIRST so it
-    // arrives ahead of the payment link. Refetch the row so the rendered
-    // stamp reflects the just-written ACCEPTED state. Failure here must NOT
-    // unwind the accept — the row is already updated and downstream actions
-    // (payment, audit) don't depend on this artefact.
+    // arrives ahead of the payment link. Failure here must NOT unwind the
+    // accept — the row is already updated and downstream actions (payment,
+    // audit) don't depend on this artefact.
     try {
-      const refreshed = await this.renewalInvoiceRepository.findOne({
-        where: { id: invoice.id },
-      });
       if (refreshed) {
         await this.dispatchSignedLetterPdf(
           refreshed,

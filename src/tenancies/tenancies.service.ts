@@ -35,6 +35,7 @@ import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import { RenewalChargeService } from 'src/renewal-letters/renewal-charge.service';
 import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
@@ -88,6 +89,7 @@ export class TenanciesService {
     private readonly eventEmitter: EventEmitter2,
     private readonly notificationService: NotificationService,
     private readonly tenantBalancesService: TenantBalancesService,
+    private readonly renewalChargeService: RenewalChargeService,
     private dataSource: DataSource,
   ) {}
 
@@ -662,6 +664,17 @@ export class TenanciesService {
           existingInvoice.superseded_at = new Date();
           await manager.getRepository(RenewalInvoice).save(existingInvoice);
           superseded = existingInvoice.id;
+
+          // If the old letter was already ACCEPTED and we'd posted the
+          // recurring-fee OB charge to the wallet, reverse it now so that
+          // accepting the new (superseding) letter charges the updated
+          // terms without doubling up. The reversal is a no-op if the old
+          // letter hadn't been charged yet (accept-before-expiry, or DRAFT
+          // path that never hits this branch).
+          await this.renewalChargeService.reverseChargesForLetter(
+            existingInvoice.id,
+            manager,
+          );
         } else {
           // No existing row — fresh renewal.
           invoice = manager.getRepository(RenewalInvoice).create({

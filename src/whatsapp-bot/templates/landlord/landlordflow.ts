@@ -31,6 +31,7 @@ import {
 } from 'src/tenancies/entities/renewal-invoice.entity';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
 import { ChatLogService } from 'src/whatsapp-bot/chat-log.service';
+import { ChatService } from 'src/chat/chat.service';
 import { TemplateSenderService } from 'src/whatsapp-bot/template-sender';
 import { WhatsAppNotificationLogService } from 'src/whatsapp-bot/whatsapp-notification-log.service';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
@@ -82,6 +83,7 @@ export class LandlordFlow {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly eventEmitter: EventEmitter2,
     private readonly maintenanceRequestsService: MaintenanceRequestsService,
+    private readonly chatService: ChatService,
   ) {
     const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config, chatLogService);
@@ -118,7 +120,22 @@ export class LandlordFlow {
     if (['done', 'menu'].includes(text?.toLowerCase())) {
       await this.cache.delete(`maintenance_approve_state_${from}`);
       await this.cache.delete(`maintenance_reject_state_${from}`);
+      await this.cache.delete(`chat_awaiting_reply_${from}`);
       await this.lookup.handleExitOrMenu(from, text);
+      return;
+    }
+
+    // Pending MR chat reply: the user tapped "Quick reply" on
+    // mr_new_chat_message within the last 10 minutes. Treat this text as
+    // their thread reply, post it via ChatService, and confirm. Done first
+    // because it shadows every other state — once the user starts a reply
+    // they almost certainly mean to finish it, and the alternative
+    // (treating their text as a digit reply) is confusing.
+    const chatReplyState = await this.cache.get(
+      `chat_awaiting_reply_${from}`,
+    );
+    if (chatReplyState) {
+      await this.handleMrChatReplyText(from, text, chatReplyState);
       return;
     }
 
@@ -363,6 +380,16 @@ export class LandlordFlow {
       } else {
         await this.handleRejectMaintenanceRequestCancel(from, requestId);
       }
+      return;
+    }
+
+    // Quick-reply tap on mr_new_chat_message — sets a 10-minute capture
+    // window. The user's NEXT text inbound (handled in handleText) becomes
+    // their reply in the MR thread. We use cache instead of a dedicated
+    // state machine because the window is short and the payload is small.
+    if (buttonId.startsWith('mr_chat_quick_reply:')) {
+      const requestId = buttonId.split('mr_chat_quick_reply:')[1];
+      await this.handleMrChatQuickReply(from, requestId);
       return;
     }
 
@@ -849,6 +876,7 @@ export class LandlordFlow {
           state.requestId,
           teamMemberId,
           landlord.accountId,
+          'whatsapp',
         );
       const assigneeName = updated.facilityManager
         ? this.fmDisplayName(updated.facilityManager)
@@ -1040,6 +1068,7 @@ export class LandlordFlow {
         state.requestId,
         landlord.accountId,
         reason,
+        'whatsapp',
       );
       await this.whatsappUtil.sendText(
         from,
@@ -1096,5 +1125,132 @@ export class LandlordFlow {
         },
       ],
     );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // MR chat — Quick reply via WhatsApp
+  // ──────────────────────────────────────────────────────────────────────
+
+  // Resolves any team account for this phone — landlord OR facility_manager.
+  // The chat reply template can land on either role, so we pick whichever
+  // account fits. Preference order: LANDLORD first (more authority), then FM.
+  private async resolveTeamAccount(from: string): Promise<Account | null> {
+    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const user = await this.usersRepo.findOne({
+      where: { phone_number: normalizedPhone },
+      relations: ['accounts'],
+    });
+    if (!user) return null;
+    const landlordAccount = user.accounts?.find((a) =>
+      accountHasRole(a, RolesEnum.LANDLORD),
+    );
+    if (landlordAccount)
+      return { ...landlordAccount, user } as Account;
+    const fmAccount = user.accounts?.find((a) =>
+      accountHasRole(a, RolesEnum.FACILITY_MANAGER),
+    );
+    if (fmAccount) return { ...fmAccount, user } as Account;
+    return null;
+  }
+
+  // User tapped "Quick reply" on the mr_new_chat_message template. Opens a
+  // 10-min capture window keyed by phone — the next inbound text becomes
+  // their reply via handleMrChatReplyText. We store the request_id and the
+  // resolved account so the follow-up text doesn't have to re-resolve and
+  // can't get hijacked if someone else (somehow) shares the phone.
+  private async handleMrChatQuickReply(
+    from: string,
+    requestId: string,
+  ): Promise<void> {
+    const account = await this.resolveTeamAccount(from);
+    if (!account) {
+      await this.whatsappUtil.sendText(
+        from,
+        "We couldn't find your account. Please open the request from your dashboard to reply.",
+      );
+      return;
+    }
+
+    const sr = await this.maintenanceRequestRepo.findOne({
+      where: { request_id: requestId },
+    });
+    if (!sr) {
+      await this.whatsappUtil.sendText(
+        from,
+        `Request ${requestId} was not found. It may have been deleted.`,
+      );
+      return;
+    }
+
+    await this.cache.set(
+      `chat_awaiting_reply_${from}`,
+      { mr_id: requestId, account_id: account.id },
+      10 * 60 * 1000,
+    );
+
+    await this.whatsappUtil.sendText(
+      from,
+      `Send your reply for ${requestId} — we'll post it to the thread. Or send "done" to cancel.`,
+    );
+  }
+
+  // Inbound text while a chat_awaiting_reply state is live. Resolves the
+  // stored account, posts to ChatService, confirms or apologizes. State is
+  // cleared regardless so a failed send doesn't trap the user.
+  private async handleMrChatReplyText(
+    from: string,
+    text: string,
+    rawState: unknown,
+  ): Promise<void> {
+    await this.cache.delete(`chat_awaiting_reply_${from}`);
+
+    const state =
+      typeof rawState === 'string'
+        ? (JSON.parse(rawState) as { mr_id?: string; account_id?: string })
+        : (rawState as { mr_id?: string; account_id?: string } | null);
+
+    if (!state?.mr_id || !state?.account_id) {
+      await this.whatsappUtil.sendText(
+        from,
+        'Your reply window expired. Tap "Quick reply" again on the notification.',
+      );
+      return;
+    }
+
+    const account = await this.accountRepo.findOne({
+      where: { id: state.account_id },
+      relations: ['user'],
+    });
+    if (!account) {
+      await this.whatsappUtil.sendText(
+        from,
+        "We couldn't find your account. Please reply from the web app instead.",
+      );
+      return;
+    }
+
+    try {
+      await this.chatService.sendMaintenanceChatMessage({
+        requestId: state.mr_id,
+        // Cast: ChatService treats the account as the JWT-style overlay
+        // (full Account + scalar id). The shape matches at runtime.
+        authorAccount: account as Account & { id: string },
+        activeRole: account.roles?.[0] ?? RolesEnum.LANDLORD,
+        content: text,
+      });
+      await this.whatsappUtil.sendText(
+        from,
+        `Posted to the thread on ${state.mr_id}.`,
+      );
+    } catch (err) {
+      const message = (err as { message?: string })?.message ?? 'Unknown error';
+      this.logger.warn(
+        `MR chat WhatsApp reply failed for ${state.mr_id}: ${message}`,
+      );
+      await this.whatsappUtil.sendText(
+        from,
+        'Sorry, we could not post your reply. Please try again from the web app.',
+      );
+    }
   }
 }

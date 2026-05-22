@@ -21,6 +21,10 @@ import {
 } from './dto/create-maintenance-request.dto';
 import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-request.dto';
 import { AssignMaintenanceRequestDto } from './dto/assign-maintenance-request.dto';
+import { ApproveMaintenanceRequestDto } from './dto/approve-maintenance-request.dto';
+import { TenantDenyMaintenanceRequestDto } from './dto/tenant-deny-maintenance-request.dto';
+import { RejectMaintenanceRequestDto } from './dto/reject-maintenance-request.dto';
+import { SetPriorityDto } from './dto/set-priority.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { RolesEnum } from 'src/base.entity';
@@ -230,6 +234,151 @@ export class MaintenanceRequestsController {
       id,
       body?.assigned_to ?? null,
       requester.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Toggle the priority flag on a maintenance request',
+    description:
+      'Landlord-only. Sets or clears the `is_priority` flag on a request the landlord owns.',
+  })
+  @ApiBody({ type: SetPriorityDto })
+  @ApiOkResponse({ description: 'Priority updated' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Patch(':id/priority')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async setMaintenanceRequestPriority(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: SetPriorityDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.setPriority(
+      id,
+      body.is_priority,
+      requester.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Tenant confirms an FM-filed maintenance request',
+    description:
+      "Caller must be the tenant on the request (account.id === sr.tenant_id). Status must be PENDING_TENANT_CONFIRMATION; otherwise 409. Transitions to NOT_APPROVED so the landlord can take the existing approve/reject + FM-picker flow.",
+  })
+  @ApiOkResponse({ description: 'Request confirmed; moved to NOT_APPROVED' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/tenant-confirm')
+  async tenantConfirmMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.confirmTenantMaintenanceRequest(
+      id,
+      requester.id,
+      'dashboard',
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Tenant denies an FM-filed maintenance request',
+    description:
+      'Caller must be the tenant on the request. Optional `reason` captured in rejection_reason. Terminal — lands in DENIED_BY_TENANT.',
+  })
+  @ApiBody({ type: TenantDenyMaintenanceRequestDto, required: false })
+  @ApiOkResponse({ description: 'Request denied; moved to DENIED_BY_TENANT' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/tenant-deny')
+  async tenantDenyMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: TenantDenyMaintenanceRequestDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.denyTenantMaintenanceRequest(
+      id,
+      requester.id,
+      body?.reason ?? null,
+      'dashboard',
+    );
+  }
+
+  @ApiOperation({
+    summary:
+      "Landlord force-confirms a maintenance request stuck on tenant confirmation",
+    description:
+      "Landlord-only. Use when the tenant has no phone / isn't responding. Status must be PENDING_TENANT_CONFIRMATION; transitions to NOT_APPROVED and records the landlord-as-actor in status_history. Does not double-ping the landlord on WhatsApp.",
+  })
+  @ApiOkResponse({ description: 'Force-confirmed; moved to NOT_APPROVED' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/landlord-force-confirm')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async landlordForceConfirmMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.landlordForceConfirmMaintenanceRequest(
+      id,
+      requester.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Reject a maintenance request from the dashboard',
+    description:
+      'Landlord-only. Mirrors the WhatsApp Reject flow. Status must be NOT_APPROVED (409 otherwise). Optional `reason` captured in rejection_reason. Terminal — lands in REJECTED.',
+  })
+  @ApiBody({ type: RejectMaintenanceRequestDto, required: false })
+  @ApiOkResponse({ description: 'Request rejected; moved to REJECTED' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/reject')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async rejectMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: RejectMaintenanceRequestDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.rejectMaintenanceRequest(
+      id,
+      requester.id,
+      body?.reason ?? null,
+      'dashboard',
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Approve a maintenance request and assign a facility manager',
+    description:
+      'Landlord-only. Combined transaction: flips status NOT_APPROVED → APPROVED and sets `assigned_to` in one call. Source status must be NOT_APPROVED (409 otherwise). Fans out fm_assignment_notification to the team; suppresses the standalone approval ping to the assignee.',
+  })
+  @ApiBody({ type: ApproveMaintenanceRequestDto })
+  @ApiOkResponse({ description: 'Request approved and assigned' })
+  @ApiBadRequestResponse()
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Post(':id/approve')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.LANDLORD)
+  async approveMaintenanceRequest(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: ApproveMaintenanceRequestDto,
+    @CurrentUser() requester: Account,
+  ) {
+    return this.maintenanceRequestsService.approveAndAssignMaintenanceRequest(
+      id,
+      body.assigned_to,
+      requester.id,
+      'dashboard',
     );
   }
 

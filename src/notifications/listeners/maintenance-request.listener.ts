@@ -12,6 +12,7 @@ import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/creat
 import { TemplateSenderService } from 'src/whatsapp-bot/template-sender';
 import { UtilService } from 'src/utils/utility-service';
 import { TeamMember } from 'src/users/entities/team-member.entity';
+import { Account } from 'src/users/entities/account.entity';
 import { RolesEnum } from 'src/base.entity';
 
 @Injectable()
@@ -27,6 +28,15 @@ export class MaintenanceRequestListener {
   private readonly resolvedPingSeen = new Map<string, number>();
   private readonly RESOLVED_PING_DEDUP_MS = 60_000;
 
+  // Dedup the FM-created landlord WhatsApp ping + tenant-bound confirm prompt
+  // + tenant-confirmed and tenant-denied landlord pings. Different maps so
+  // the same request id can fire each kind once; identical 60s window.
+  private readonly fmFiledLandlordSeen = new Map<string, number>();
+  private readonly fmFiledTenantSeen = new Map<string, number>();
+  private readonly tenantConfirmedLandlordSeen = new Map<string, number>();
+  private readonly tenantDeniedLandlordSeen = new Map<string, number>();
+  private readonly FM_FILED_PING_DEDUP_MS = 60_000;
+
   constructor(
     private notificationService: NotificationService,
     @InjectRepository(Property)
@@ -35,10 +45,102 @@ export class MaintenanceRequestListener {
     private readonly maintenanceRequestRepository: Repository<MaintenanceRequest>,
     @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
     @Inject(forwardRef(() => TemplateSenderService))
     private readonly templateSenderService: TemplateSenderService,
     private readonly utilService: UtilService,
   ) {}
+
+  /**
+   * Resolve the landlord's normalized WhatsApp phone number from their
+   * Account.id. Returns null when the account or phone is missing.
+   */
+  private async resolveLandlordPhone(
+    landlordAccountId: string | null | undefined,
+  ): Promise<string | null> {
+    if (!landlordAccountId) return null;
+    const account = await this.accountRepository.findOne({
+      where: { id: landlordAccountId },
+      relations: ['user'],
+    });
+    const phoneRaw = account?.user?.phone_number;
+    if (!phoneRaw) return null;
+    return this.utilService.normalizePhoneNumber(phoneRaw);
+  }
+
+  /**
+   * Format a tenant phone (Meta-stored +234... or 234...) into Nigerian
+   * local 0xxx form for display inside templates. Returns '—' when missing.
+   */
+  private formatTenantPhoneLocal(phoneRaw: string | null | undefined): string {
+    if (!phoneRaw) return '—';
+    if (phoneRaw.startsWith('234')) return '0' + phoneRaw.slice(3);
+    return phoneRaw.replace(/^\+234/, '0');
+  }
+
+  /**
+   * 60-second in-memory dedup gate. Returns true when the caller should
+   * proceed; returns false if the key was seen within the window.
+   */
+  private dedup(map: Map<string, number>, key: string, ms: number): boolean {
+    const now = Date.now();
+    const last = map.get(key);
+    if (last && now - last < ms) return false;
+    map.set(key, now);
+    return true;
+  }
+
+  // Builds the live-feed headline for a maintenance transition. Maps each
+  // (prev → new) pair to a human-readable verb instead of dumping the raw
+  // status arrow into the UI.
+  private buildMaintenanceHeadline(
+    status: string,
+    previousStatus: string | null | undefined,
+    propertyName: string,
+  ): string {
+    const property = propertyName || 'property';
+    if (!previousStatus) {
+      return `Maintenance request opened for ${property}.`;
+    }
+    switch (status) {
+      case MaintenanceRequestStatusEnum.APPROVED:
+        return `Maintenance request approved for ${property}.`;
+      case MaintenanceRequestStatusEnum.RESOLVED:
+        return `Maintenance request resolved for ${property}.`;
+      case MaintenanceRequestStatusEnum.REOPENED:
+        return `Maintenance request reopened for ${property}.`;
+      case MaintenanceRequestStatusEnum.CLOSED:
+        return `Maintenance request closed for ${property}.`;
+      case MaintenanceRequestStatusEnum.NOT_APPROVED:
+        return `Maintenance request reopened for review on ${property}.`;
+      default:
+        return `Maintenance request for ${property}.\nstatus changed from ${previousStatus} to ${status}`;
+    }
+  }
+
+  /**
+   * Build the landlord's in-app notification description. Branches on
+   * creator type so FM-filed MRs don't render as "— made a maintenance
+   * request…" (the literal tenant_name='—' placeholder bug). Tenant-filed
+   * MRs keep the original "X made a maintenance request" wording.
+   */
+  private buildCreationDescription(
+    event: MaintenanceRequestCreatedEvent,
+  ): string {
+    const location =
+      event.property_name ?? event.common_area_name ?? 'their property';
+    const description = event.description ?? '';
+    const creatorName =
+      event.creator_name ?? event.tenant_name ?? 'Someone';
+    const isFmFiled = event.creator_type === 'facility_manager';
+    const subject = isFmFiled
+      ? `Facility manager ${creatorName}`
+      : (event.tenant_name ?? creatorName);
+    const verb = isFmFiled ? 'filed' : 'made';
+    return `${subject} ${verb} a maintenance request for ${location}.
+${description}`;
+  }
 
   @OnEvent('maintenance.created')
   async handle(event: MaintenanceRequestCreatedEvent) {
@@ -46,8 +148,7 @@ export class MaintenanceRequestListener {
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.MAINTENANCE_REQUEST,
-        description: `${event.tenant_name} made a maintenance request for ${event.property_name}.
-${event.description}`,
+        description: this.buildCreationDescription(event),
         status: 'Pending',
         property_id: event.property_id,
         user_id: event.landlord_id,
@@ -55,6 +156,312 @@ ${event.description}`,
       });
     } catch (error) {
       this.logger.error('Failed to create maintenance request notification', error);
+    }
+
+    // FM-filed MRs that bypass the tenant gate (common-area, or vacant unit)
+    // land in NOT_APPROVED directly — landlord needs the same WhatsApp
+    // approve/reject template that tenant-filed MRs trigger. Previously this
+    // template only fired from the WA tenant-create path, so FMs filing for
+    // their landlord didn't trigger a landlord WA ping at all.
+    if (event.creator_type === 'facility_manager') {
+      try {
+        await this.pingLandlordForFmFiledNotApproved(event);
+      } catch (err) {
+        this.logger.warn(
+          `Failed to ping landlord WA for FM-filed not_approved MR ${event.maintenance_request_id}: ${(err as Error)?.message ?? err}`,
+        );
+      }
+    }
+  }
+
+  private async pingLandlordForFmFiledNotApproved(
+    event: MaintenanceRequestCreatedEvent,
+  ): Promise<void> {
+    const requestId: string = event.maintenance_request_id;
+    if (
+      !this.dedup(
+        this.fmFiledLandlordSeen,
+        requestId,
+        this.FM_FILED_PING_DEDUP_MS,
+      )
+    ) {
+      return;
+    }
+
+    const phone = await this.resolveLandlordPhone(event.landlord_id);
+    if (!phone) return;
+
+    const createdAt =
+      event.created_at instanceof Date
+        ? event.created_at
+        : new Date(event.created_at ?? Date.now());
+
+    await this.templateSenderService.sendFacilityMaintenanceRequest({
+      phone_number: phone,
+      manager_name: event.creator_name ?? 'your facility manager',
+      property_name: event.property_name ?? event.common_area_name ?? '',
+      property_location: event.property_location ?? '',
+      maintenance_request: this.utilService.sanitizeTemplateParam(
+        event.description ?? '',
+      ),
+      tenant_name: event.tenant_name ?? event.creator_name ?? 'Facility manager',
+      tenant_phone_number: this.formatTenantPhoneLocal(
+        event.tenant_phone_number,
+      ),
+      date_created: createdAt.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Africa/Lagos',
+      }),
+      is_landlord: true,
+      maintenance_request_id: event.maintenance_request_id,
+    });
+  }
+
+  /**
+   * FM filed a unit-scoped MR with an active tenant. Fires three things:
+   *   1. Landlord in-app: "FM X filed an issue at <property>. Waiting on
+   *      <tenant>'s confirmation."
+   *   2. Landlord WhatsApp (informational, no buttons) — new template
+   *      landlord_fm_filed_request_notification.
+   *   3. Tenant WhatsApp (Confirm / Deny buttons) — new template
+   *      tenant_confirm_fm_request.
+   */
+  @OnEvent('maintenance.fm_filed_pending_tenant')
+  async handleFmFiledPendingTenant(event: any): Promise<void> {
+    const requestId: string = event.maintenance_request_id;
+
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.MAINTENANCE_REQUEST,
+        description: `Facility manager ${event.creator_name ?? 'unknown'} filed a maintenance request for ${event.property_name ?? event.common_area_name ?? 'their property'}. Waiting on ${event.tenant_name ?? 'tenant'}'s confirmation.
+${event.description ?? ''}`,
+        status: 'Pending',
+        property_id: event.property_id,
+        user_id: event.landlord_id,
+        maintenance_request_id: event.maintenance_request_id,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create FM-filed pending-tenant in-app notification',
+        error,
+      );
+    }
+
+    if (
+      this.dedup(
+        this.fmFiledLandlordSeen,
+        requestId,
+        this.FM_FILED_PING_DEDUP_MS,
+      )
+    ) {
+      try {
+        const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
+        if (landlordPhone) {
+          await this.templateSenderService.sendLandlordFmFiledRequestNotification(
+            {
+              phone_number: landlordPhone,
+              landlord_name:
+                event.landlord_first_name ?? 'there',
+              fm_name: event.creator_name ?? 'your facility manager',
+              property_name:
+                event.property_name ?? event.common_area_name ?? '',
+              maintenance_request: this.utilService.sanitizeTemplateParam(
+                event.description ?? '',
+              ),
+            },
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Failed to send landlord_fm_filed_request_notification for ${requestId}: ${(err as Error)?.message ?? err}`,
+        );
+      }
+    }
+
+    if (
+      this.dedup(this.fmFiledTenantSeen, requestId, this.FM_FILED_PING_DEDUP_MS)
+    ) {
+      try {
+        const tenantPhoneRaw: string | undefined = event.tenant_phone_number;
+        if (tenantPhoneRaw) {
+          const tenantPhone = this.utilService.normalizePhoneNumber(tenantPhoneRaw);
+          await this.templateSenderService.sendTenantConfirmFmRequest({
+            phone_number: tenantPhone,
+            tenant_name: this.utilService.toSentenceCase(
+              (event.tenant_name ?? '').split(' ')[0] ?? 'there',
+            ),
+            fm_name: event.creator_name ?? 'your facility manager',
+            maintenance_request: this.utilService.sanitizeTemplateParam(
+              event.description ?? '',
+            ),
+            maintenance_request_id: event.maintenance_request_id,
+          });
+        } else {
+          this.logger.warn(
+            `Cannot send tenant_confirm_fm_request: no tenant phone for request ${requestId}`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Failed to send tenant_confirm_fm_request for ${requestId}: ${(err as Error)?.message ?? err}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Tenant confirmed (or landlord force-confirmed) the FM-filed request.
+   * Landlord gets the existing approve/reject WhatsApp template — same one
+   * tenant-filed MRs trigger — so the rest of the flow is identical. Skip
+   * the WA ping when `forced_by_landlord` is true; the landlord is already
+   * the actor, no point pinging themselves.
+   */
+  @OnEvent('maintenance.tenant_confirmed')
+  async handleTenantConfirmed(event: any): Promise<void> {
+    const requestId: string = event.maintenance_request_id ?? event.request_id;
+
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.MAINTENANCE_REQUEST,
+        description: event.forced_by_landlord
+          ? `You confirmed on ${event.tenant_name ?? 'the tenant'}'s behalf. Approve or reject to assign a facility manager.
+${event.description ?? ''}`
+          : `${event.tenant_name ?? 'The tenant'} confirmed the issue. Approve or reject to assign a facility manager.
+${event.description ?? ''}`,
+        status: 'Pending',
+        property_id: event.property_id,
+        user_id: event.landlord_id,
+        maintenance_request_id: requestId,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create tenant-confirmed in-app notification',
+        error,
+      );
+    }
+
+    if (event.forced_by_landlord) return;
+
+    if (
+      !this.dedup(
+        this.tenantConfirmedLandlordSeen,
+        requestId,
+        this.FM_FILED_PING_DEDUP_MS,
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const sr = await this.maintenanceRequestRepository.findOne({
+        where: { id: requestId },
+        relations: ['property', 'tenant', 'tenant.user'],
+      });
+      if (!sr) return;
+
+      const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
+      if (!landlordPhone) return;
+
+      const createdAt =
+        sr.created_at instanceof Date ? sr.created_at : new Date();
+
+      await this.templateSenderService.sendFacilityMaintenanceRequest({
+        phone_number: landlordPhone,
+        manager_name: 'there',
+        property_name: sr.property?.name ?? sr.property_name ?? '',
+        property_location: sr.property?.location ?? '',
+        maintenance_request: this.utilService.sanitizeTemplateParam(
+          sr.description ?? '',
+        ),
+        tenant_name: sr.tenant_name ?? 'The tenant',
+        tenant_phone_number: this.formatTenantPhoneLocal(
+          sr.tenant?.user?.phone_number ?? null,
+        ),
+        date_created: createdAt.toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+          timeZone: 'Africa/Lagos',
+        }),
+        is_landlord: true,
+        maintenance_request_id: sr.id,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to send landlord WA after tenant-confirm for ${requestId}: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
+  /**
+   * Tenant denied the FM-filed request. Informational landlord WhatsApp
+   * (no action buttons) + in-app notification. The denial commits on the
+   * tenant's Deny tap (before they could possibly type a reason), so
+   * event.denial_reason is effectively always null/empty at this point —
+   * if a reason arrives later via the optional follow-up, it patches the
+   * MR's rejection_reason column and surfaces in the dashboard activity
+   * feed. We deliberately don't write it into the one-shot notification
+   * description here.
+   */
+  @OnEvent('maintenance.tenant_denied')
+  async handleTenantDenied(event: any): Promise<void> {
+    const requestId: string = event.maintenance_request_id ?? event.request_id;
+
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.MAINTENANCE_REQUEST,
+        description: `${event.tenant_name ?? 'The tenant'} denied the maintenance request.
+${event.description ?? ''}`,
+        status: 'Pending',
+        property_id: event.property_id,
+        user_id: event.landlord_id,
+        maintenance_request_id: requestId,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create tenant-denied in-app notification',
+        error,
+      );
+    }
+
+    if (
+      !this.dedup(
+        this.tenantDeniedLandlordSeen,
+        requestId,
+        this.FM_FILED_PING_DEDUP_MS,
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
+      if (!landlordPhone) return;
+
+      await this.templateSenderService.sendLandlordFmRequestDeniedByTenant({
+        phone_number: landlordPhone,
+        landlord_name: event.landlord_first_name ?? 'there',
+        tenant_name: event.tenant_name ?? 'The tenant',
+        fm_name: event.creator_name ?? 'your facility manager',
+        maintenance_request: this.utilService.sanitizeTemplateParam(
+          event.description ?? '',
+        ),
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to send landlord_fm_request_denied_by_tenant for ${requestId}: ${(err as Error)?.message ?? err}`,
+      );
     }
   }
 
@@ -155,15 +562,19 @@ ${event.description}`,
   @OnEvent('maintenance.updated')
   async handleUpdate(event: any) {
     try {
-      const statusChangeText = event.previous_status
-        ? `changed from ${event.previous_status} to ${event.status}`
-        : `status: ${event.status}`;
+      const headline = this.buildMaintenanceHeadline(
+        event.status,
+        event.previous_status,
+        event.property_name,
+      );
+      const assigneeLine = event.assigned_to_name
+        ? `\nAssigned to ${event.assigned_to_name}.`
+        : '';
 
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.MAINTENANCE_REQUEST,
-        description: `Maintenance request for ${event.property_name}.
-status ${statusChangeText}`,
+        description: `${headline}${assigneeLine}`,
         status: 'Pending',
         property_id: event.property_id,
         user_id: event.landlord_id,

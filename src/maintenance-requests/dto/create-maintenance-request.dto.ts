@@ -18,6 +18,8 @@ export enum MaintenanceRequestStatusEnum {
   REOPENED = 'reopened',
   CLOSED = 'closed',
   REJECTED = 'rejected',
+  PENDING_TENANT_CONFIRMATION = 'pending_tenant_confirmation',
+  DENIED_BY_TENANT = 'denied_by_tenant',
 }
 
 export enum MaintenanceRequestScopeEnum {

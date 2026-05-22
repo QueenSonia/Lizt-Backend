@@ -246,6 +246,36 @@ export interface FacilityMaintenanceRequestParams {
 }
 
 /**
+ * Parameters for the unified Updates & Thread notification. Sent by
+ * MrChatNotificationService to landlord + assigned FM + prior posters whenever
+ * a new chat message lands on an MR thread — minus the author, and skipping
+ * recipients who have an active socket on the chat gateway (suppression
+ * lives in MrChatNotificationService, not here).
+ */
+export interface MrNewChatMessageParams {
+  phone_number: string;
+  recipient_first_name: string;
+  sender_display_name: string;
+  // Body {{3}} — short excerpt of the MR description (e.g. "Pipe leak in
+  // kitchen"). More meaningful for the recipient than the opaque MR-XXXX id.
+  // Caller MUST run through `UtilService.sanitizeTemplateParam(value, 60)`.
+  request_description_excerpt: string;
+  property_or_common_area_name: string;
+  // Free-text excerpt of the message body. Caller MUST run through
+  // `UtilService.sanitizeTemplateParam(value, 220)` per the codebase's
+  // caller-sanitizes convention — chat content lands here straight from a
+  // textarea, so a stray \n or U+2060 will trip Meta error 132018.
+  message_preview: string;
+  // Quick-reply button payload. Should be the varchar request_id (MR-XXXX)
+  // — the inbound handler in LandlordFlow looks up the MR by request_id.
+  maintenance_request_id: string;
+  // URL button placeholder. The smart-router page at /r/mr/[id] takes a
+  // UUID, looks up the viewer's role, and redirects to the role's dashboard
+  // with ?openMr={uuid} so the existing listeners auto-open the modal.
+  maintenance_request_uuid: string;
+}
+
+/**
  * Parameters for FM assignment notification. Sent to every FM on the
  * landlord's team whenever a maintenance request is assigned (web or
  * WhatsApp).
@@ -256,6 +286,72 @@ export interface FmAssignmentNotificationParams {
   tenant_name: string;
   tenant_phone_number: string;
   property_name: string;
+  maintenance_request: string;
+}
+
+/**
+ * Tenant-bound template asking them to confirm/deny an FM-filed maintenance
+ * request. Two quick-reply buttons carry the request id back through the
+ * inbound webhook so the tenant's tap maps to a specific MR. The template
+ * body refers to the tenant's home as "your residence" rather than naming
+ * the property — saves a variable and reads naturally.
+ */
+export interface TenantConfirmFmRequestParams {
+  phone_number: string;
+  tenant_name: string;
+  fm_name: string;
+  maintenance_request: string;
+  maintenance_request_id: string;
+}
+
+/**
+ * Landlord-bound informational template fired when an FM files an MR for
+ * a property whose tenant still needs to confirm. No action buttons —
+ * the landlord can't act until the tenant responds (or they force-confirm
+ * from the web app).
+ */
+export interface LandlordFmFiledRequestNotificationParams {
+  phone_number: string;
+  landlord_name: string;
+  fm_name: string;
+  property_name: string;
+  maintenance_request: string;
+}
+
+/**
+ * Landlord-bound informational template fired when the tenant denies the
+ * FM-filed MR. The denial reason (if any) is captured in the dashboard
+ * activity feed, not the WhatsApp template — the reason can only arrive via
+ * an optional follow-up reply that happens AFTER this notification is sent,
+ * so embedding it in the WA body would always show "No reason given".
+ */
+export interface LandlordFmRequestDeniedByTenantParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  fm_name: string;
+  maintenance_request: string;
+}
+
+/**
+ * Informational template sent to the landlord and every FM on the team
+ * when a tenant confirms (via WhatsApp quick reply) that an MR is fixed.
+ * No buttons — the request is already closed in the dashboard.
+ * Free-text {{1}} (description) must be sanitized at the caller.
+ */
+export interface MaintenanceRequestClosedNotificationParams {
+  phone_number: string;
+  maintenance_request: string;
+}
+
+/**
+ * Informational template sent to the landlord and every FM on the team
+ * when the tenant tells the bot the issue is NOT fixed; the MR is reopened.
+ * No buttons — the MR is back open in the dashboard.
+ * Free-text {{1}} (description) must be sanitized at the caller.
+ */
+export interface MaintenanceRequestReopenedNotificationParams {
+  phone_number: string;
   maintenance_request: string;
 }
 
@@ -1688,6 +1784,83 @@ export class TemplateSenderService {
   }
 
   /**
+   * Notifies a landlord or facility-manager that a new chat message landed on
+   * an MR's Updates & Thread. Sole caller is MrChatNotificationService, which
+   * handles the recipient fan-out (landlord + assigned FM + prior posters −
+   * author) and the presence suppression (no send if the recipient has an
+   * active socket on the chat gateway). This method just dispatches one send.
+   *
+   * Template has two buttons:
+   *   - URL button "Open chat" → /maintenance-requests/{{1}} (request_id)
+   *   - Quick-reply "Quick reply" → mr_chat_quick_reply:<request_id>, lands
+   *     in LandlordFlow.handleInteractive which sets a chat_awaiting_reply
+   *     state and posts the user's next inbound text to the thread.
+   */
+  async sendMrChatNotification({
+    phone_number,
+    recipient_first_name,
+    sender_display_name,
+    request_description_excerpt,
+    property_or_common_area_name,
+    message_preview,
+    maintenance_request_id,
+    maintenance_request_uuid,
+  }: MrNewChatMessageParams): Promise<void> {
+    if (!maintenance_request_id || !maintenance_request_uuid) {
+      // Both ids are required — the URL button takes UUID (so the smart
+      // router can redirect to the role's dashboard with ?openMr=) and the
+      // quick-reply payload takes request_id varchar (the inbound handler
+      // looks up by request_id). Without either, the buttons would be dead.
+      throw new Error(
+        'Both maintenance_request_id and maintenance_request_uuid are required for mr_new_chat_message',
+      );
+    }
+
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'mr_new_chat_message',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: recipient_first_name },
+              { type: 'text', text: sender_display_name },
+              { type: 'text', text: request_description_excerpt },
+              { type: 'text', text: property_or_common_area_name },
+              { type: 'text', text: message_preview },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            // Smart router takes UUID — see /r/mr/[id] on the frontend.
+            parameters: [{ type: 'text', text: maintenance_request_uuid }],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                // Varchar request_id — LandlordFlow looks up the MR by it.
+                payload: `mr_chat_quick_reply:${maintenance_request_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * FM-targeted ping fired on every maintenance.assigned event. Sent to
    * every FM on the landlord's team (including the assignee) so the team
    * has shared awareness. The assigned FM's display name is rendered in
@@ -1744,6 +1917,193 @@ export class TemplateSenderService {
         }`,
       );
     }
+  }
+
+  /**
+   * Tenant Confirm/Deny prompt for an FM-filed maintenance request.
+   * Quick-reply button payloads carry the MR id back through the webhook;
+   * `tenant_confirm_mr:<id>` / `tenant_deny_mr:<id>` are dispatched in
+   * `TenantFlowService.handleInteractive`.
+   */
+  async sendTenantConfirmFmRequest({
+    phone_number,
+    tenant_name,
+    fm_name,
+    maintenance_request,
+    maintenance_request_id,
+  }: TenantConfirmFmRequestParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_confirm_fm_request',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: fm_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_confirm_mr:${maintenance_request_id}`,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_deny_mr:${maintenance_request_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Landlord-bound informational notification: "Your FM filed an issue;
+   * waiting on tenant confirmation." No buttons — action is gated on the
+   * tenant's response.
+   */
+  async sendLandlordFmFiledRequestNotification({
+    phone_number,
+    landlord_name,
+    fm_name,
+    property_name,
+    maintenance_request,
+  }: LandlordFmFiledRequestNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_fm_filed_request_notification',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: fm_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Landlord-bound informational notification fired when the tenant
+   * denies the FM-filed MR. Captures the optional denial reason.
+   */
+  async sendLandlordFmRequestDeniedByTenant({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    fm_name,
+    maintenance_request,
+  }: LandlordFmRequestDeniedByTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_fm_request_denied_by_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: fm_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Informational notification fired when a tenant confirms (via WA quick
+   * reply) that an MR is fixed. Sent to landlord + every FM on the team.
+   * Recipient-agnostic body — one variable: the request description
+   * (must be sanitized at the caller).
+   */
+  async sendMaintenanceRequestClosedNotification({
+    phone_number,
+    maintenance_request,
+  }: MaintenanceRequestClosedNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'maintenance_request_closed_notification',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [{ type: 'text', text: maintenance_request }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Informational notification fired when the tenant denies (via WA quick
+   * reply) that an MR is fixed; the MR is reopened. Sent to landlord +
+   * every FM on the team. One variable: the request description (sanitize
+   * at the caller).
+   */
+  async sendMaintenanceRequestReopenedNotification({
+    phone_number,
+    maintenance_request,
+  }: MaintenanceRequestReopenedNotificationParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'maintenance_request_reopened_notification',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [{ type: 'text', text: maintenance_request }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
   }
 
   /**
@@ -4651,6 +5011,16 @@ export class TemplateSenderService {
       'A maintenance request has been approved by the landlord.\n\nTenant: {{1}}\nProperty: {{2}}\nIssue: {{3}}\nReported: {{4}}\nPhone: {{5}}\n\nPlease attend to this request.',
     fm_assignment_notification:
       'A maintenance request has been assigned to {{1}}.\n\nIssue: {{2}}\nTenant: {{3}}\nPhone: {{4}}\nProperty: {{5}}\n\nPlease attend to this.',
+    tenant_confirm_fm_request:
+      'Hi {{1}},\n\n{{2}} (your facility manager) reported a maintenance issue at your residence:\n\n"{{3}}"\n\nCan you confirm this is happening? Tap a button below.',
+    landlord_fm_filed_request_notification:
+      'Hi {{1}},\n\nYour facility manager {{2}} filed a maintenance issue at {{3}}:\n\n"{{4}}"\n\nWe\'re waiting on the tenant to confirm. You\'ll be notified when they respond.',
+    landlord_fm_request_denied_by_tenant:
+      'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}} filed:\n\n"{{4}}"\n\nThe request is now closed.',
+    maintenance_request_closed_notification:
+      '✅ Tenant confirmed the issue is fixed.\n\nRequest: "{{1}}"\nStatus: Closed',
+    maintenance_request_reopened_notification:
+      '⚠️ Tenant says the issue is not resolved. The request has been reopened.\n\nRequest: "{{1}}"\nStatus: Reopened',
     kyc_completion_link:
       'Hello {{1}},\n\n{{2}} has added you as a tenant for {{3}} using Lizt by Property Kraft — a tenancy management app designed to make your rental experience simple and stress-free.\n\nWith Lizt, you can receive important updates, track rent, and manage everything about your tenancy in one place.\n\nPlease {{4}} your KYC information using the link below to get started:',
     kyc_completion_notification:

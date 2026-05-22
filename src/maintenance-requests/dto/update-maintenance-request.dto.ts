@@ -6,6 +6,7 @@ import {
 import { JobCategoryEnum } from './job-category.enum';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -175,4 +176,50 @@ export class UpdateMaintenanceRequestResponseDto {
   @MaxLength(2000)
   @Transform(({ value }) => value?.trim() || undefined)
   resolution_summary?: string;
+
+  @ApiProperty({
+    example: 'Emeka Plumbing Services',
+    description:
+      "Artisan / tradesperson the FM hired to resolve the issue. Required when transitioning to 'resolved'.",
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  @Transform(({ value }) => value?.trim() || undefined)
+  artisan_name?: string;
+
+  @ApiProperty({
+    example: '08012345678',
+    description:
+      "Artisan phone (any common Nigerian form). Server normalizes to 234XXXXXXXXXX. Required when transitioning to 'resolved'.",
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  @Transform(({ value }) => value?.trim() || undefined)
+  artisan_phone?: string;
+
+  @ApiProperty({
+    description:
+      "Explicit FM choice when the typed phone matches an existing artisan with a different stored name. true → rename the stored artisan to artisan_name. false/undefined → keep the stored name; the typed name is still captured in artisan_name_snapshot.",
+    required: false,
+    default: false,
+  })
+  @IsOptional()
+  @Transform(({ value }) => {
+    // Endpoint accepts multipart/form-data; booleans arrive as strings.
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      const v = value.trim().toLowerCase();
+      if (v === 'true' || v === '1') return true;
+      if (v === 'false' || v === '0' || v === '') return false;
+    }
+    return value;
+  })
+  @IsBoolean()
+  rename_artisan_if_conflict?: boolean;
 }

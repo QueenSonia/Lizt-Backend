@@ -27,8 +27,12 @@ export class Notification extends BaseEntity {
   @Column({ default: 'Pending' })
   status: 'Pending' | 'Completed';
 
-  @Column({ type: 'uuid', nullable: false })
-  property_id: string; // <-- snake_case and UUID
+  // Nullable: common-area maintenance-request notifications carry a
+  // common_area reference via maintenance_request_id instead of a direct
+  // property link. Pre-existing FM-filed common-area MRs were silently
+  // failing this INSERT when the column was NOT NULL.
+  @Column({ type: 'uuid', nullable: true })
+  property_id: string | null;
 
   @Column({ type: 'uuid', nullable: false })
   user_id: string;
@@ -38,9 +42,10 @@ export class Notification extends BaseEntity {
 
   @ManyToOne(() => Property, (property) => property.notification, {
     onDelete: 'CASCADE',
+    nullable: true,
   })
   @JoinColumn({ name: 'property_id', referencedColumnName: 'id' })
-  property: Property;
+  property: Property | null;
 
   @ManyToOne(() => Account, (user) => user.notification)
   @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })

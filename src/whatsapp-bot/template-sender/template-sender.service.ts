@@ -5057,7 +5057,7 @@ export class TemplateSenderService {
     renewal_link:
       'Hi {{1}}, your renewal rent invoice for {{2}} is ready.\n\nThis invoice covers your tenancy from {{3}} to {{4}}.\n\nYou can safely view your invoice and make your payment using the link below.',
     renewal_letter_link:
-      'Hi {{1}},\n\nThis is a friendly reminder that your tenancy for {{2}} is due to expire on {{3}}.\n\nYour landlord has provided an offer for a new tenancy period. Please tap on the link to review.',
+      'Hi {{1}},\n\nThis is a friendly reminder that your tenancy for {{2}} {{3}}.\n\nYour landlord has provided an offer for a new tenancy period. Please tap on the link to review.',
     renewal_request_landlord:
       'Hi {{1}}, {{2}} is requesting to renew their rent for {{3}}. Do you approve this request?',
     renewal_request_approved:

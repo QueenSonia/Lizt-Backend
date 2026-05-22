@@ -36,7 +36,6 @@ import { WhatsAppNotificationLog } from './entities/whatsapp-notification-log.en
 import { WhatsAppNotificationLogService } from './whatsapp-notification-log.service';
 import { WhatsAppNotificationListener } from './whatsapp-notification.listener';
 import { MrChatNotificationService } from './mr-chat-notification.service';
-import { ChatMessage } from 'src/chat/chat-message.entity';
 import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { PdfModule } from 'src/pdf/pdf.module';
@@ -60,7 +59,6 @@ import { ChatModule } from 'src/chat/chat.module';
       RenewalInvoice,
       PaymentPlan,
       PropertyHistory,
-      ChatMessage,
     ]),
     MaintenanceRequestsModule,
     forwardRef(() => UsersModule),

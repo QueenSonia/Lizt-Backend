@@ -717,6 +717,10 @@ export class MaintenanceRequestsService {
         // Pull accounts so the activity log can render account.profile_name
         // instead of falling back to user.first_name + last_name.
         'statusHistory.changedBy.accounts',
+        // Assignee — needed so the FM detail UI can show "Assigned to <name>"
+        // and gate the resolve button to the assignee only.
+        'facilityManager',
+        'facilityManager.account',
       ],
       order: {
         statusHistory: {
@@ -799,6 +803,13 @@ export class MaintenanceRequestsService {
     const previousStatus = maintenanceRequest.status;
     const targetStatus = data.status;
 
+    // For assignee-only transitions (resolve), we need the actor's
+    // TeamMember.id to compare against `assigned_to`. Resolve once up-front.
+    const actorTeamMemberId =
+      actorRole === 'facility_manager'
+        ? await this.resolveActorTeamMemberId(maintenanceRequest, userId)
+        : null;
+
     // Validate status transition (if any) before mutating anything else. The
     // REOPENED→REOPENED self-loop is the race case (both FM and tenant try to
     // reopen) — it's allowed by the state machine but handled below as an
@@ -811,6 +822,7 @@ export class MaintenanceRequestsService {
         maintenanceRequest.creator_type,
         data.reopen_message,
         maintenanceRequest.assigned_to,
+        actorTeamMemberId,
       );
     }
     const isReopenSelfLoop =
@@ -824,6 +836,7 @@ export class MaintenanceRequestsService {
         maintenanceRequest.creator_type,
         data.reopen_message,
         maintenanceRequest.assigned_to,
+        actorTeamMemberId,
       );
     }
 
@@ -1488,6 +1501,44 @@ export class MaintenanceRequestsService {
     return fm ? 'facility_manager' : null;
   }
 
+  /**
+   * Resolves the acting FM's TeamMember.id for the landlord that owns this
+   * request's property or common area. Returns null when the actor is not on
+   * a matching team. Used to gate assignee-only actions (e.g. resolve), where
+   * `maintenance_requests.assigned_to` stores a TeamMember.id.
+   */
+  private async resolveActorTeamMemberId(
+    maintenanceRequest: MaintenanceRequest,
+    accountId: string,
+  ): Promise<string | null> {
+    const propertyOwnerAccountId = maintenanceRequest.property?.owner_id ?? null;
+    const commonAreaOwnerUserId =
+      maintenanceRequest.common_area?.owner_id ?? null;
+    if (!propertyOwnerAccountId && !commonAreaOwnerUserId) return null;
+
+    const fmQuery = this.teamMemberRepository
+      .createQueryBuilder('tm')
+      .innerJoin('tm.team', 'team')
+      .innerJoin('team.creator', 'creatorAccount')
+      .leftJoin('creatorAccount.user', 'landlordUser')
+      .innerJoin('tm.account', 'fmAccount')
+      .where('fmAccount.id = :accountId', { accountId })
+      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER });
+
+    if (propertyOwnerAccountId) {
+      fmQuery.andWhere('creatorAccount.id = :ownerId', {
+        ownerId: propertyOwnerAccountId,
+      });
+    } else {
+      fmQuery.andWhere('landlordUser.id = :ownerId', {
+        ownerId: commonAreaOwnerUserId,
+      });
+    }
+
+    const tm = await fmQuery.getOne();
+    return tm?.id ?? null;
+  }
+
   private async isTenantUser(
     maintenanceRequest: MaintenanceRequest,
     userId: string,
@@ -1538,8 +1589,11 @@ export class MaintenanceRequestsService {
    *     (PENDING_TENANT_CONFIRMATION → NOT_APPROVED | DENIED_BY_TENANT) and
    *     can confirm-resolution (RESOLVED → CLOSED) or reject-resolution
    *     (RESOLVED → REOPENED) on requests they filed.
-   *   - FM-on-this-property handles approve→resolve, reopen→resolve, and
-   *     resolve→reopen on any request on the property regardless of creator.
+   *   - The assigned FM (the one whose TeamMember.id equals
+   *     `assigned_to`) is the only actor allowed to mark approve→resolve
+   *     and reopen→resolve. Any other FM on the landlord's team can still
+   *     reopen (resolve→reopen) — that gate is intentionally wider so a
+   *     teammate can flag bad resolutions.
    *   - REOPENED → REOPENED is permitted as a self-loop carrying an additional
    *     reopen_message (race case where FM and tenant both reopen). The caller
    *     in updateMaintenanceRequestById skips the entity mutation and only logs a
@@ -1554,6 +1608,7 @@ export class MaintenanceRequestsService {
     creatorType: MaintenanceRequestCreatorTypeEnum,
     reopenMessage?: string,
     assignedTo?: string | null,
+    actorTeamMemberId?: string | null,
   ): void {
     const transition = `${from}->${to}`;
     const tenantIsCreator =
@@ -1579,7 +1634,12 @@ export class MaintenanceRequestsService {
 
       case `${MaintenanceRequestStatusEnum.APPROVED}->${MaintenanceRequestStatusEnum.RESOLVED}`:
       case `${MaintenanceRequestStatusEnum.REOPENED}->${MaintenanceRequestStatusEnum.RESOLVED}`:
-        if (actorRole !== 'facility_manager') {
+        if (
+          actorRole !== 'facility_manager' ||
+          !assignedTo ||
+          !actorTeamMemberId ||
+          actorTeamMemberId !== assignedTo
+        ) {
           throw new HttpException(
             'Only the assigned facility manager can mark this request as resolved',
             HttpStatus.FORBIDDEN,

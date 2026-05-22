@@ -4,7 +4,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { ChatMessage } from 'src/chat/chat-message.entity';
-import { ChatPresenceService } from 'src/chat/chat-presence.service';
 import { Account } from 'src/users/entities/account.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
@@ -26,16 +25,19 @@ interface MrChatMessageCreatedEvent {
 
 interface RecipientPlan {
   account: Account;
-  reason: 'landlord' | 'assigned_fm' | 'prior_poster';
+  reason: 'landlord' | 'assigned_fm';
 }
 
-// Skip WA on these statuses — the thread shouldn't be active at all, and the
-// gateway listener will have already broadcast the message to anyone viewing.
+// Skip WA on these statuses — mirrors ChatService.THREAD_LOCKED_STATUSES.
+// Pre-approval has no thread yet; rejected / denied / closed are terminal
+// and the conversation is done. If the status flips between save and event
+// delivery, this guard prevents pinging recipients about a dead thread.
 const NOTIFY_LOCKED_STATUSES = new Set<MaintenanceRequestStatusEnum>([
   MaintenanceRequestStatusEnum.NOT_APPROVED,
   MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
   MaintenanceRequestStatusEnum.REJECTED,
   MaintenanceRequestStatusEnum.DENIED_BY_TENANT,
+  MaintenanceRequestStatusEnum.CLOSED,
 ]);
 
 const PREVIEW_MAX_CHARS = 220;
@@ -55,9 +57,6 @@ export class MrChatNotificationService {
     private readonly accountRepo: Repository<Account>,
     @InjectRepository(TeamMember)
     private readonly teamMemberRepo: Repository<TeamMember>,
-    @InjectRepository(ChatMessage)
-    private readonly chatRepo: Repository<ChatMessage>,
-    private readonly presence: ChatPresenceService,
     private readonly templateSender: TemplateSenderService,
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
@@ -120,26 +119,29 @@ export class MrChatNotificationService {
         : mr.property?.name ?? mr.property_name ?? 'Property';
 
     for (const plan of recipients) {
-      if (this.presence.isActive(plan.account.id)) {
-        // Online: push a toast to whatever dashboard screen they're on. They
-        // see the live thread update too if the modal is open (mr:{id} room);
-        // the frontend dedupes against that. No WhatsApp ping.
-        this.eventEmitter.emit('mr-chat.toast', {
-          account_id: plan.account.id,
-          toast: {
-            maintenance_request_id: mr.request_id,
-            maintenance_request_uuid: mr.id,
-            sender_display_name: senderDisplay,
-            sender_account_id: payload.author_account_id,
-            description_excerpt: descriptionExcerpt,
-            property_or_common_area_name: propertyOrArea,
-            message_preview: preview,
-            created_at: payload.message.created_at,
-          },
-        });
-        continue;
-      }
+      // 1. In-app toast — fires for every recipient. The frontend dedupes
+      //    against the currently-focused MR (ChatRealtimeContext drops the
+      //    toast if you're already on this thread) so online users don't
+      //    get the toast on top of the live bubble. Online users on a
+      //    different screen still get the dashboard toast.
+      this.eventEmitter.emit('mr-chat.toast', {
+        account_id: plan.account.id,
+        toast: {
+          maintenance_request_id: mr.request_id,
+          maintenance_request_uuid: mr.id,
+          sender_display_name: senderDisplay,
+          sender_account_id: payload.author_account_id,
+          description_excerpt: descriptionExcerpt,
+          property_or_common_area_name: propertyOrArea,
+          message_preview: preview,
+          created_at: payload.message.created_at,
+        },
+      });
 
+      // 2. WhatsApp — ALWAYS sent to the two recipients (landlord +
+      //    assigned FM), regardless of presence. The two parties of the
+      //    assignment need the durable ping so they can pick up the thread
+      //    later even if they were online elsewhere when the message came in.
       const phone = plan.account.user?.phone_number;
       if (!phone) continue;
       try {
@@ -162,8 +164,11 @@ export class MrChatNotificationService {
     }
   }
 
-  // Recipient set: landlord + assigned FM + anyone who has previously posted
-  // in this thread, minus the author. Deduplicated by account id.
+  // Recipient set: landlord + assigned FM, minus the author. The thread is
+  // private to those two for write access — no other team FMs can post
+  // (see ChatService.resolveWriteRole), so there are no other recipients to
+  // fan out to. The author is excluded so they don't get a toast or
+  // WhatsApp echo of their own message.
   private async resolveRecipients(
     mr: MaintenanceRequest,
     payload: MrChatMessageCreatedEvent,
@@ -193,25 +198,6 @@ export class MrChatNotificationService {
           reason: 'assigned_fm',
         });
       }
-    }
-
-    // Prior posters — DISTINCT sender_account_id from this thread, excluding
-    // author and anyone already in the set. The CURRENT message is excluded
-    // because its row carries the author's id.
-    const priorPosters = await this.chatRepo
-      .createQueryBuilder('m')
-      .select('DISTINCT m.sender_account_id', 'account_id')
-      .where('m.maintenance_request_id = :id', { id: mr.request_id })
-      .andWhere('m.sender_account_id IS NOT NULL')
-      .andWhere('m.sender_account_id != :author', {
-        author: payload.author_account_id,
-      })
-      .getRawMany<{ account_id: string }>();
-
-    for (const row of priorPosters) {
-      if (!row.account_id || byId.has(row.account_id)) continue;
-      const account = await this.loadAccount(row.account_id);
-      if (account) byId.set(row.account_id, { account, reason: 'prior_poster' });
     }
 
     return Array.from(byId.values());

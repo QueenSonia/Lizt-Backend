@@ -20,17 +20,22 @@ import { Account } from 'src/users/entities/account.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { RolesEnum } from 'src/base.entity';
 
-// Statuses where the unified thread is locked — pre-approval has no thread yet
-// (including pending_tenant_confirmation, which is FM-on-behalf-of-tenant
-// waiting for the tenant's nod before the landlord ever sees it) and the
-// rejected/denied terminal states never had one. Anything past approval
-// (approved/resolved/reopened/closed) keeps the thread open per the
-// always-on-once-started rule.
+// Statuses where the unified thread is locked. Three flavours:
+//   - pre-approval (not_approved / pending_tenant_confirmation) — no thread
+//     yet; the landlord hasn't approved + assigned.
+//   - rejected / denied_by_tenant — terminal, never had a thread.
+//   - closed — terminal, the tenant has confirmed resolution. The thread
+//     stays readable but no further posts are accepted; landlord and FM
+//     have finished the conversation by definition.
+// Active statuses (approved / resolved / reopened) keep the thread open.
+// "Resolved" is intentionally writable — the FM has marked it resolved but
+// the tenant hasn't confirmed yet, so coordination may still be needed.
 const THREAD_LOCKED_STATUSES = new Set<MaintenanceRequestStatusEnum>([
   MaintenanceRequestStatusEnum.NOT_APPROVED,
   MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
   MaintenanceRequestStatusEnum.REJECTED,
   MaintenanceRequestStatusEnum.DENIED_BY_TENANT,
+  MaintenanceRequestStatusEnum.CLOSED,
 ]);
 
 interface SendMaintenanceChatArgs {
@@ -242,15 +247,16 @@ export class ChatService {
     return null;
   }
 
-  // Authorizes a viewer against an MR's team. Returns the role the viewer
-  // would post as: 'landlord' if they own it, 'facility_manager' if they're a
-  // team member, null otherwise.
-  private async resolveViewerRole(
+  // Read access: anyone on the landlord's team can view the thread. Lets
+  // a non-assigned FM see what's happening on an MR they're not driving —
+  // useful for handover / shadowing. Write access is narrower (see
+  // resolveWriteRole) so they can't actually post.
+  private async resolveReadAccess(
     viewerAccountId: string,
     landlordAccountId: string | null,
-  ): Promise<MessageSender.LANDLORD | MessageSender.FACILITY_MANAGER | null> {
-    if (!landlordAccountId) return null;
-    if (viewerAccountId === landlordAccountId) return MessageSender.LANDLORD;
+  ): Promise<boolean> {
+    if (!landlordAccountId) return false;
+    if (viewerAccountId === landlordAccountId) return true;
 
     const teamMember = await this.teamMemberRepo
       .createQueryBuilder('tm')
@@ -259,7 +265,33 @@ export class ChatService {
       .andWhere('tm."accountId" = :viewerId', { viewerId: viewerAccountId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
       .getOne();
-    return teamMember ? MessageSender.FACILITY_MANAGER : null;
+    return !!teamMember;
+  }
+
+  // Write access: only the landlord owner and the FM currently assigned to
+  // this MR (mr.assigned_to → TeamMember.account.id). Returns the
+  // MessageSender role to stamp on the saved row, or null to refuse the
+  // post. Reassignment rotates this — the previous assignee loses write
+  // access, the new assignee gains it. Historical messages by the previous
+  // FM stay readable since this check fires at write time, not retroactively.
+  private async resolveWriteRole(
+    viewerAccountId: string,
+    landlordAccountId: string | null,
+    assignedTeamMemberId: string | null,
+  ): Promise<MessageSender.LANDLORD | MessageSender.FACILITY_MANAGER | null> {
+    if (!landlordAccountId) return null;
+    if (viewerAccountId === landlordAccountId) return MessageSender.LANDLORD;
+
+    if (!assignedTeamMemberId) return null;
+    const assignedTm = await this.teamMemberRepo.findOne({
+      where: { id: assignedTeamMemberId },
+      relations: ['account'],
+    });
+    const assignedAccountId = assignedTm?.account?.id ?? null;
+    if (!assignedAccountId) return null;
+    return assignedAccountId === viewerAccountId
+      ? MessageSender.FACILITY_MANAGER
+      : null;
   }
 
   // Accepts either the UUID id or the human-readable request_id varchar.
@@ -294,15 +326,20 @@ export class ChatService {
     if (!mr) throw new NotFoundException('Maintenance request not found');
 
     const landlordAccountId = await this.resolveLandlordAccountId(mr);
-    const viewerRole = await this.resolveViewerRole(
-      viewer.id,
-      landlordAccountId,
-    );
-    if (!viewerRole) {
+    const canRead = await this.resolveReadAccess(viewer.id, landlordAccountId);
+    if (!canRead) {
       throw new ForbiddenException(
         'You do not have access to this request thread',
       );
     }
+
+    // Write check is separate — non-assigned team FMs can read but not post.
+    const writeRole = await this.resolveWriteRole(
+      viewer.id,
+      landlordAccountId,
+      mr.assigned_to ?? null,
+    );
+    const hasWriteAccess = writeRole !== null;
 
     const messages = await this.chatMessageRepository.find({
       where: { maintenance_request_id: mr.request_id },
@@ -326,7 +363,11 @@ export class ChatService {
       // (mr:focus / mr:blur) so we don't have to assume what they passed in.
       request_id: mr.request_id,
       messages: view,
-      canPost: !THREAD_LOCKED_STATUSES.has(mr.status),
+      // canPost combines BOTH gates: the thread must not be in a locked
+      // status AND the viewer must have write authority (landlord or the
+      // currently-assigned FM). Non-assigned team FMs see canPost=false
+      // even on approved threads.
+      canPost: hasWriteAccess && !THREAD_LOCKED_STATUSES.has(mr.status),
       viewerAccountId: viewer.id,
     };
   }
@@ -349,13 +390,17 @@ export class ChatService {
     }
 
     const landlordAccountId = await this.resolveLandlordAccountId(mr);
-    const senderRole = await this.resolveViewerRole(
+    const senderRole = await this.resolveWriteRole(
       args.authorAccount.id,
       landlordAccountId,
+      mr.assigned_to ?? null,
     );
     if (!senderRole) {
+      // Either not on the team at all, or a non-assigned team FM. Both get
+      // a clear message — the frontend hides the input for the latter, but
+      // a stale write attempt could still race here.
       throw new ForbiddenException(
-        'You do not have access to this request thread',
+        'Only the landlord and the assigned facility manager can post on this thread.',
       );
     }
 

@@ -858,10 +858,14 @@ export class TenanciesService {
             );
             const currentExpiryStr =
               daysUntilExpiry === 0
-                ? `today, ${expiryStr}`
+                ? `is due to expire today, ${expiryStr}`
                 : daysUntilExpiry === 1
-                  ? `tomorrow, ${expiryStr}`
-                  : `on ${expiryStr}`;
+                  ? `is due to expire tomorrow, ${expiryStr}`
+                  : daysUntilExpiry === -1
+                    ? `expired yesterday, ${expiryStr}`
+                    : daysUntilExpiry < 0
+                      ? `expired on ${expiryStr}`
+                      : `is due to expire on ${expiryStr}`;
 
             await this.whatsappNotificationLog.queue('sendRenewalLetterLink', {
               phone_number: tenantPhone,

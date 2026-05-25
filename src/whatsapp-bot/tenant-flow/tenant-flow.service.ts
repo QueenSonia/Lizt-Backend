@@ -206,6 +206,11 @@ export class TenantFlowService {
       return;
     }
 
+    if (userState?.startsWith('awaiting_reopen_followup:')) {
+      await this.handleReopenFollowup(from, text, userState);
+      return;
+    }
+
     if (userState === 'view_single_maintenance_request') {
       await this.handleViewSingleMaintenanceRequest(from, text);
       return;
@@ -1249,8 +1254,16 @@ export class TenantFlowService {
 
       await this.templateSenderService.sendText(
         from,
-        "Thanks for letting me know. I'll reopen the request and notify maintenance to check again.",
+        "Thanks for letting me know. I've reopened the request and notified maintenance to check again.\n\nWhat's still not working? Reply with a short description and I'll add it to the request.",
       );
+
+      if (tenantUser?.id) {
+        await this.cache.set(
+          `maintenance_request_state_${from}`,
+          `awaiting_reopen_followup:${latestResolvedRequest.id}:${tenantUser.id}`,
+          this.SESSION_TIMEOUT_MS,
+        );
+      }
 
       if (latestResolvedRequest.property_id) {
         const safeRequest = this.utilService.sanitizeTemplateParam(
@@ -1270,6 +1283,40 @@ export class TenantFlowService {
         "I couldn't find a pending resolution to confirm.",
       );
     }
+  }
+
+  /**
+   * Tenant's free-text reply after tapping "No, not yet" on a resolved MR.
+   * The reopen + stakeholder notify already happened on the button tap; this
+   * just appends the tenant's reason to the request's status history as an
+   * additional reopen note. The reply is optional — if it never arrives the
+   * cache key expires and nothing is stored.
+   */
+  private async handleReopenFollowup(
+    from: string,
+    text: string,
+    userState: string,
+  ): Promise<void> {
+    await this.cache.delete(`maintenance_request_state_${from}`);
+
+    const [, requestId, tenantUserId] = userState.split(':');
+    const trimmed = text.trim();
+    if (!requestId || !tenantUserId || !trimmed) {
+      await this.showTenantMenu(from);
+      return;
+    }
+
+    await this.maintenanceRequestService.appendReopenNoteWithDedup(
+      requestId,
+      tenantUserId,
+      'tenant',
+      trimmed,
+    );
+
+    await this.templateSenderService.sendText(
+      from,
+      "Got it — I've added that to the request.",
+    );
   }
 
   /**

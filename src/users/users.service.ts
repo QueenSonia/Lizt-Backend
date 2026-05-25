@@ -689,8 +689,22 @@ export class UsersService {
   async loginUser(data: LoginDto, res: Response, req?: any) {
     const { identifier, password } = data;
 
-    // Simple rate limiting check
-    const rateLimitKey = `login_attempts:${identifier}`;
+    // Determine if identifier is email or phone
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
+    const isPhone = /^[+]?[\d\s\-()]{10,}$/.test(identifier.replace(/\s/g, ''));
+
+    if (!isEmail && !isPhone) {
+      throw new BadRequestException('Invalid email or phone number format');
+    }
+
+    // Normalize once so the rate-limit bucket and the DB lookup use the same
+    // value — otherwise "+234…", "234…", "0…" each get their own counter and
+    // a lockout under one format can't be cleared by retrying with another.
+    const normalizedIdentifier = isEmail
+      ? identifier.toLowerCase().trim()
+      : identifier.replace(/[\s\-()+]/g, '');
+
+    const rateLimitKey = `login_attempts:${normalizedIdentifier}`;
     const attempts = await this.cache.get(rateLimitKey);
 
     if (attempts && parseInt(attempts) >= 5) {
@@ -700,21 +714,11 @@ export class UsersService {
       );
     }
 
-    // Determine if identifier is email or phone
-    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
-    const isPhone = /^[+]?[\d\s\-()]{10,}$/.test(identifier.replace(/\s/g, ''));
-
-    if (!isEmail && !isPhone) {
-      throw new BadRequestException('Invalid email or phone number format');
-    }
-
     // Match by email OR by user.phone_number — no role filter, since multi-role
     // login needs to see every role attached to this identity.
     const whereCondition = isEmail
-      ? { email: identifier.toLowerCase().trim() }
-      : {
-          user: { phone_number: identifier.replace(/[\s\-()+]/g, '') },
-        };
+      ? { email: normalizedIdentifier }
+      : { user: { phone_number: normalizedIdentifier } };
 
     const account = await this.accountRepository.findOne({
       where: whereCondition,
@@ -738,10 +742,10 @@ export class UsersService {
     );
 
     if (!isPasswordValid) {
-      // Increment failed login attempts
-      const currentAttempts = await this.cache.get(rateLimitKey);
-      const newAttempts = currentAttempts ? parseInt(currentAttempts) + 1 : 1;
-      await this.cache.set(rateLimitKey, newAttempts.toString(), 15 * 60);
+      // incrementWithTtlNx so TTL is set on the first failure and never
+      // refreshed — otherwise a user mashing wrong-password keeps extending
+      // their own 15-minute lockout window indefinitely.
+      await this.cache.incrementWithTtlNx(rateLimitKey, 15 * 60);
 
       throw new UnauthorizedException('Incorrect password');
     }
@@ -1050,20 +1054,17 @@ export class UsersService {
     currentPassword: string,
     newPassword: string,
   ) {
-    // Get account to find user
     const account = await this.accountRepository.findOne({
       where: { id: userId },
-      relations: ['user'],
     });
 
-    if (!account?.user) {
+    if (!account) {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);
     }
 
-    // Verify current password
     const isPasswordValid = await this.utilService.validatePassword(
       currentPassword,
-      account.user.password,
+      account.password,
     );
 
     if (!isPasswordValid) {
@@ -1073,13 +1074,13 @@ export class UsersService {
       );
     }
 
-    // Hash new password
     const hashedPassword = await this.utilService.hashPassword(newPassword);
 
-    // Update password
-    await this.usersRepository.update(account.userId, {
+    await this.accountRepository.update(account.id, {
       password: hashedPassword,
     });
+
+    await this.accountCacheService.invalidate(account.id);
 
     return { message: 'Password changed successfully' };
   }

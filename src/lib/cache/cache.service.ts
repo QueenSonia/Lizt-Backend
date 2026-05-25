@@ -104,6 +104,13 @@ export class CacheService {
     return (await this.cache.sismember(key, member)) === 1;
   }
 
+  /**
+   * Set a value with an optional TTL.
+   *
+   * WARNING: `ttl` is in MILLISECONDS, not seconds. Values < 1000 floor to 0
+   * after the seconds conversion and the key is written WITHOUT expiry
+   * (persists forever). For seconds, use `setWithTtlSeconds`.
+   */
   async set(key: string, value: any, ttl?: number) {
     const stringifiedValue = this.stringifyIfNeeded(value);
 
@@ -122,6 +129,23 @@ export class CacheService {
   async setWithTtlSeconds(key: string, value: any, ttlSeconds: number) {
     const stringifiedValue = this.stringifyIfNeeded(value);
     return await this.cache.set(key, stringifiedValue, 'EX', ttlSeconds);
+  }
+
+  /**
+   * Atomic INCR + expire-on-creation. Returns the new counter value.
+   *
+   * Use for rate-limit counters where the window should start from the FIRST
+   * hit and NOT be extended by subsequent hits. The plain pattern of
+   * `set(key, count+1, ttl)` resets the TTL on every call, which lets a
+   * persistent attacker (or a user mashing the button) hold the counter
+   * alive past its intended window.
+   */
+  async incrementWithTtlNx(key: string, ttlSeconds: number): Promise<number> {
+    const count = await this.cache.incr(key);
+    if (count === 1) {
+      await this.cache.expire(key, ttlSeconds);
+    }
+    return count;
   }
 
   /**

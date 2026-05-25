@@ -1033,7 +1033,7 @@ export class MaintenanceRequestsService {
    * reopen_message within the last 2 seconds — defends against double-clicks
    * on the FE.
    */
-  private async appendReopenNoteWithDedup(
+  async appendReopenNoteWithDedup(
     maintenanceRequestId: string,
     userId: string,
     actorRole: 'landlord' | 'tenant' | 'facility_manager',

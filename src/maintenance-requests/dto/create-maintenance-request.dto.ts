@@ -84,6 +84,13 @@ export class CreateMaintenanceRequestDto {
   @IsOptional()
   @IsUUID()
   assigned_to?: string;
+
+  // Populated by the controller from the uploaded `issue_images` files
+  // (FilesInterceptor runs before validation, but the file → URL upload
+  // happens in the route handler — so this field arrives empty over the
+  // wire and gets filled in before reaching the service).
+  @IsOptional()
+  issue_images?: string[];
 }
 
 export class MaintenanceRequestFilter {

@@ -61,10 +61,20 @@ export class MaintenanceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
+  @UseInterceptors(FilesInterceptor('issue_images', 20))
   async createMaintenanceRequest(
     @Body() body: CreateMaintenanceRequestDto,
     @Req() req: any,
+    @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
+    if (files?.length) {
+      const uploadedUrls = await Promise.all(
+        files.map((file) =>
+          this.fileUploadService.uploadFile(file, 'maintenance-requests'),
+        ),
+      );
+      body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
+    }
     return this.maintenanceRequestsService.createMaintenanceRequest(body, {
       id: req?.user?.id,
       role: req?.user?.role,

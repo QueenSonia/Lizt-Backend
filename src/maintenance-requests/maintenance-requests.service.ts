@@ -966,10 +966,17 @@ export class MaintenanceRequestsService {
         });
       }
     } else {
-      // Landlord view: own properties OR own common areas.
+      // Landlord view: own properties OR own common areas. The two scopes
+      // store the owner in different shapes:
+      //   property.owner_id     → Account.id
+      //   common_area.owner_id  → Users.id
+      // (see project_req_user_id_is_account_id memory). Compare each against
+      // the right column — without this, the landlord branch silently
+      // excludes every common-area MR.
+      const ownerUserId = await this.resolveActorUserId(user_id);
       qb.andWhere(
-        '(property.owner_id = :ownerId OR commonAreaOwner.id = :ownerId)',
-        { ownerId: user_id },
+        '(property.owner_id = :ownerAccountId OR commonAreaOwner.id = :ownerUserId)',
+        { ownerAccountId: user_id, ownerUserId },
       );
     }
 
@@ -1623,6 +1630,12 @@ export class MaintenanceRequestsService {
 
     const query = await buildMaintenanceRequestFilter(queryParams);
 
+    // property.owner_id is Account.id; common_area.owner_id is Users.id —
+    // same shape mismatch as getAllMaintenanceRequests. Resolve the
+    // landlord's Users.id once and compare each scope against the right
+    // column.
+    const ownerUserId = await this.resolveActorUserId(owner_id);
+
     // "Needs attention": still awaiting landlord approval OR flagged urgent
     // (regardless of where it sits in the lifecycle). Owned via property OR
     // via common_area — common-area requests carry no property at all.
@@ -1637,8 +1650,8 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('sr.statusHistory', 'history')
       .leftJoinAndSelect('history.changedBy', 'changedBy')
       .where(
-        '(property.owner_id = :owner_id OR commonAreaOwner.id = :owner_id)',
-        { owner_id },
+        '(property.owner_id = :ownerAccountId OR commonAreaOwner.id = :ownerUserId)',
+        { ownerAccountId: owner_id, ownerUserId },
       )
       .andWhere('(sr.status = :notApproved OR sr.is_urgent = :urgent)', {
         notApproved: MaintenanceRequestStatusEnum.NOT_APPROVED,

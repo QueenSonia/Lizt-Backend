@@ -483,11 +483,6 @@ ${event.description ?? ''}`,
     }
 
     if (event.forced_by_landlord) return;
-    // Landlord-filed MRs skip the approve/reject WhatsApp ping — there's
-    // nothing to approve. The fm_assignment_notification (fired by the
-    // service's maintenance.assigned emit on tenant-confirm) already covers
-    // the FM-side notification when an FM was pre-set.
-    if (isLandlordFiled) return;
 
     if (
       !this.dedup(
@@ -496,6 +491,33 @@ ${event.description ?? ''}`,
         this.FM_FILED_PING_DEDUP_MS,
       )
     ) {
+      return;
+    }
+
+    // Landlord-filed → informational ping (no approve/reject buttons; the
+    // request is already auto-approved). The FM ping, if any, is handled
+    // by the separate maintenance.assigned emit. We send a simple text
+    // here rather than a registered template — this fires inside the
+    // 24-hour customer service window for landlords actively using the
+    // dashboard. Promote to a real template before prod rollout.
+    if (isLandlordFiled) {
+      try {
+        const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
+        if (!landlordPhone) return;
+        const tenantName: string = event.tenant_name || 'Your tenant';
+        const property: string = event.property_name || 'your property';
+        const issue = event.description
+          ? `\n\n"${event.description}"`
+          : '';
+        await this.templateSenderService.sendText(
+          landlordPhone,
+          `${tenantName} confirmed the maintenance request you filed for ${property}. It's now approved.${issue}`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Failed to send landlord WA after landlord-filed tenant-confirm for ${requestId}: ${(err as Error)?.message ?? err}`,
+        );
+      }
       return;
     }
 
@@ -713,6 +735,11 @@ ${event.description ?? ''}`,
 
   @OnEvent('maintenance.updated')
   async handleUpdate(event: any) {
+    // Skip in-app notification creation when the emitter already wrote a
+    // more specific row (e.g. tenant_confirmed handler wrote "Miss Akpati
+    // confirmed the issue you filed"). The event still propagates for
+    // downstream listeners (WS gateway / cache invalidation).
+    if (event?.skip_in_app_notification) return;
     try {
       const headline = this.buildMaintenanceHeadline(
         event.status,

@@ -2759,6 +2759,39 @@ export class MaintenanceRequestsService {
         );
       }
 
+      // Mirror the maintenance.updated emit on every status-change path so
+      // downstream listeners (WS bridge → live-feed cache invalidation, etc.)
+      // refresh in lockstep with the in-app notification created by the
+      // tenant_confirmed listener above. The `skip_in_app_notification` flag
+      // prevents handleUpdate from writing a duplicate notification row —
+      // the tenant_confirmed listener already wrote the specific one.
+      try {
+        this.eventEmitter.emit('maintenance.updated', {
+          request_id: updated.id,
+          status: updated.status,
+          previous_status: previousStatus,
+          tenant_name: updated.tenant_name,
+          property_name: updated.property_name,
+          property_id: updated.property_id,
+          common_area_id: updated.common_area_id,
+          common_area_name: updated.common_area?.name ?? null,
+          landlord_id:
+            updated.property?.owner_id ?? updated.common_area?.owner_id ?? null,
+          tenant_id: updated.tenant_id,
+          creator_type: updated.creator_type,
+          creator_user_id: updated.creator_user_id,
+          description: updated.description,
+          updated_at: new Date(),
+          actor: { id: tenantUserId, role: 'tenant' },
+          skip_in_app_notification: true,
+        });
+      } catch (error) {
+        this.logger.error(
+          'Failed to emit maintenance.updated after tenant confirm:',
+          error,
+        );
+      }
+
       // Landlord-filed branch: if an FM was pre-assigned at creation, fan
       // out the assignment ping now (the FM was kept silent during the
       // tenant-confirmation gate to avoid pinging them about work that

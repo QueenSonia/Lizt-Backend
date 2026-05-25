@@ -52,6 +52,22 @@ export class HistoryEventListener {
     await this.createHistoryEntryWithRetry(payload);
   }
 
+  // Tenant-gated creations (FM- or landlord-filed pending tenant confirmation)
+  // emit a dedicated event INSTEAD of `maintenance.created` so the
+  // notifications listener can build a different in-app message ("waiting on
+  // confirmation"). The property_history row should still land, so we mirror
+  // the create handler here. Same payload shape — same retry path.
+  @OnEvent('maintenance.fm_filed_pending_tenant')
+  @OnEvent('maintenance.landlord_filed_pending_tenant')
+  async handleMaintenanceRequestCreatedPendingTenant(
+    payload: ServiceCreatedEvent,
+  ): Promise<void> {
+    this.logger.log(
+      `Received tenant-gated maintenance create event for tenant ${payload.user_id} and property ${payload.property_id}`,
+    );
+    await this.createHistoryEntryWithRetry(payload);
+  }
+
   @OnEvent('maintenance.updated')
   async handleMaintenanceRequestUpdated(payload: any): Promise<void> {
     this.logger.log(

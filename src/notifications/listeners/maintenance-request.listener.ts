@@ -95,6 +95,44 @@ export class MaintenanceRequestListener {
     return true;
   }
 
+  // Trims free-text down to a single-line snippet suitable for the
+  // live-feed subtitle. Collapses whitespace and caps length so a long
+  // multi-paragraph note doesn't crowd the row.
+  private formatIssueSnippet(
+    text?: string | null,
+    maxLength: number = 120,
+  ): string {
+    if (!text) return '';
+    const collapsed = text.replace(/\s+/g, ' ').trim();
+    if (!collapsed) return '';
+    if (collapsed.length <= maxLength) return collapsed;
+    return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`;
+  }
+
+  // Picks the right per-event quote for the live-feed subtitle. Returns a
+  // single line ready to drop after the headline:
+  //   RESOLVED  → FM's resolution_summary, quoted ("Replaced the valve.")
+  //   REOPENED  → reopen reason from whoever reopened, quoted
+  //   other     → empty (no free-text note tied to the transition)
+  private buildUpdateSubtitle(event: any): string {
+    const status = event?.status as string | undefined;
+    if (
+      status === MaintenanceRequestStatusEnum.RESOLVED &&
+      event?.resolution_summary
+    ) {
+      const note = this.formatIssueSnippet(event.resolution_summary);
+      return note ? `"${note}"` : '';
+    }
+    if (
+      status === MaintenanceRequestStatusEnum.REOPENED &&
+      event?.reopen_message
+    ) {
+      const note = this.formatIssueSnippet(event.reopen_message);
+      return note ? `"${note}"` : '';
+    }
+    return '';
+  }
+
   // Builds the live-feed headline for a maintenance transition. Maps each
   // (prev → new) pair to a human-readable verb instead of dumping the raw
   // status arrow into the UI.
@@ -681,6 +719,13 @@ ${event.description ?? ''}`,
         event.previous_status,
         event.property_name,
       );
+      // Per-event subtitle: on RESOLVED show the FM's note; on REOPENED
+      // show whatever the actor said (tenant feedback for tenant-initiated
+      // reopens, FM/landlord reopen_message otherwise). Other transitions
+      // (approved / closed / not_approved) don't carry a free-text note —
+      // skip the subtitle so the feed stays clean.
+      const subtitleSnippet = this.buildUpdateSubtitle(event);
+      const subtitleLine = subtitleSnippet ? `\n${subtitleSnippet}` : '';
       const assigneeLine = event.assigned_to_name
         ? `\nAssigned to ${event.assigned_to_name}.`
         : '';
@@ -688,7 +733,7 @@ ${event.description ?? ''}`,
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.MAINTENANCE_REQUEST,
-        description: `${headline}${assigneeLine}`,
+        description: `${headline}${subtitleLine}${assigneeLine}`,
         status: 'Pending',
         property_id: event.property_id,
         user_id: event.landlord_id,

@@ -1401,6 +1401,17 @@ export class MaintenanceRequestsService {
         creator_type: updatedMaintenanceRequest.creator_type,
         creator_user_id: updatedMaintenanceRequest.creator_user_id,
         description: updatedMaintenanceRequest.description,
+        // Per-event subtitle inputs for the live feed: FM's note on resolve,
+        // actor's reason on reopen. Only set on the transition that
+        // produced them so the listener can pick the right one.
+        resolution_summary:
+          targetStatus === MaintenanceRequestStatusEnum.RESOLVED
+            ? data.resolution_summary ?? null
+            : null,
+        reopen_message:
+          targetStatus === MaintenanceRequestStatusEnum.REOPENED
+            ? data.reopen_message ?? null
+            : null,
         updated_at: new Date(),
         actor: { id: userId, role: actorRole },
       });
@@ -2383,6 +2394,16 @@ export class MaintenanceRequestsService {
       creator_type: request.creator_type,
       creator_user_id: request.creator_user_id,
       description: request.description,
+      // For updateStatus the `notes` parameter carries the actor's note
+      // (FM's resolution summary OR tenant/FM reopen reason, depending on
+      // the transition). The WhatsApp tenant "No, not yet" path passes a
+      // canned phrase here; if the tenant later texts a follow-up reason,
+      // it patches the attempt row directly and the live-feed entry stays
+      // as-was (the resolution-history card surfaces the real text).
+      resolution_summary:
+        status === MaintenanceRequestStatusEnum.RESOLVED ? notes ?? null : null,
+      reopen_message:
+        status === MaintenanceRequestStatusEnum.REOPENED ? notes ?? null : null,
       updated_at: new Date(),
       actor,
     });

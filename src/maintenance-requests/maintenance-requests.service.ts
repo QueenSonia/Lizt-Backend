@@ -467,17 +467,23 @@ export class MaintenanceRequestsService {
 
     // actor.id is Account.id; common_area.owner_id is Users.id (per the
     // CommonArea schema), so we resolve the landlord's Users.id via the
-    // team creator's user relation and match the FM by account id.
+    // team creator's user relation and match the FM by account id. Also
+    // surface the landlord's Account.id from the same join — downstream
+    // listeners (notification FK, etc.) need an Account.id, never a User.id.
     const teamedWithOwner = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .innerJoin('team.creator', 'creatorAccount')
       .innerJoin('creatorAccount.user', 'landlordUser')
+      .addSelect('creatorAccount.id', 'landlord_account_id')
       .where('tm.accountId = :accountId', { accountId: actor.id })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
       .andWhere('landlordUser.id = :ownerId', { ownerId: commonArea.owner_id })
-      .getOne();
-    if (!teamedWithOwner) {
+      .getRawAndEntities();
+    const teamMembership = teamedWithOwner.entities[0];
+    const landlordAccountId =
+      teamedWithOwner.raw[0]?.landlord_account_id as string | undefined;
+    if (!teamMembership || !landlordAccountId) {
       throw new HttpException(
         "You are not authorized to file requests for this landlord's common areas",
         HttpStatus.FORBIDDEN,
@@ -517,7 +523,7 @@ export class MaintenanceRequestsService {
       this.eventEmitter.emit('maintenance.created', {
         user_id: actor.id,
         property_id: null,
-        landlord_id: commonArea.owner_id,
+        landlord_id: landlordAccountId,
         common_area_id: commonArea.id,
         common_area_name: commonArea.name,
         tenant_id: null,
@@ -817,11 +823,16 @@ export class MaintenanceRequestsService {
       `Maintenance request created by ${landlordName}`,
     );
 
+    // common_area.owner_id is a Users.id, but every downstream listener
+    // (notification FK, WhatsApp templates, dashboard caches) expects an
+    // Account.id for landlord_id. For landlord-filed common-area MRs the
+    // acting landlord IS the owner, so actor.id (the JWT's Account.id —
+    // per req_user_id_is_account_id memory) is the correct value.
     try {
       this.eventEmitter.emit('maintenance.created', {
         user_id: actor.id,
         property_id: null,
-        landlord_id: commonArea.owner_id,
+        landlord_id: actor.id,
         common_area_id: commonArea.id,
         common_area_name: commonArea.name,
         tenant_id: null,
@@ -844,7 +855,7 @@ export class MaintenanceRequestsService {
           previous_assignee_name: 'unassigned',
           new_assignee: assigneeTm.id,
           new_assignee_name: assigneeFmName,
-          landlord_id: commonArea.owner_id,
+          landlord_id: actor.id,
           property_id: null,
           common_area_id: commonArea.id,
           description: data.text,

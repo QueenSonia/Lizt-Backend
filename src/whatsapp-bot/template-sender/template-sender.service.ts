@@ -341,6 +341,20 @@ export interface LandlordFmFiledRequestNotificationParams {
 }
 
 /**
+ * Landlord-bound informational template fired when the tenant confirms a
+ * maintenance request the landlord filed themselves. Landlord-filed MRs
+ * auto-approve on tenant confirm — there's no separate approve/reject step
+ * to surface, so the body is purely confirmatory. No buttons.
+ */
+export interface LandlordFiledRequestConfirmedByTenantParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  maintenance_request: string;
+}
+
+/**
  * Landlord-bound informational template fired when the tenant denies the
  * FM-filed MR. The denial reason (if any) is captured in the dashboard
  * activity feed, not the WhatsApp template — the reason can only arrive via
@@ -2106,6 +2120,43 @@ export class TemplateSenderService {
             parameters: [
               { type: 'text', text: landlord_name },
               { type: 'text', text: fm_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Landlord-bound informational notification fired when the tenant
+   * confirms an MR the landlord filed themselves. The MR is auto-approved
+   * at this point — no buttons, no approve/reject path. The caller MUST
+   * sanitize `maintenance_request` via UtilService.sanitizeTemplateParam.
+   */
+  async sendLandlordFiledRequestConfirmedByTenant({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    maintenance_request,
+  }: LandlordFiledRequestConfirmedByTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_filed_request_confirmed_by_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
               { type: 'text', text: property_name },
               { type: 'text', text: maintenance_request },
             ],
@@ -5170,6 +5221,8 @@ export class TemplateSenderService {
       'Hi {{1}}!\n\n{{2}} reported a maintenance issue at {{3}}.\n\nThey wrote: "{{4}}".\n\nCan you confirm this is happening?',
     landlord_fm_filed_request_notification:
       'Hi {{1}},\n\nYour facility manager {{2}} filed a maintenance issue at {{3}}:\n\n"{{4}}"\n\nWe\'re waiting on the tenant to confirm. You\'ll be notified when they respond.',
+    landlord_filed_request_confirmed_by_tenant:
+      'Hi {{1}},\n\n{{2}} just confirmed the maintenance request you filed for {{3}}. It\'s now approved.\n\nIssue: "{{4}}"\n\nPlease attend to this.',
     landlord_fm_request_denied_by_tenant:
       'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}} filed:\n\n"{{4}}"\n\nThe request is now closed.',
     landlord_request_denied_by_tenant:

@@ -49,6 +49,12 @@ export class HistoryEventListener {
       `Received service.created event for tenant ${payload.user_id} and property ${payload.property_id}`,
     );
 
+    // Common-area MRs don't have a property_id — property_histories.property_id
+    // is NOT NULL, so writing one would fail. Same skip-pattern as
+    // handleMaintenanceRequestAssigned below; common-area history lives on
+    // a separate timeline.
+    if (!payload.property_id) return;
+
     await this.createHistoryEntryWithRetry(payload);
   }
 
@@ -65,6 +71,7 @@ export class HistoryEventListener {
     this.logger.log(
       `Received tenant-gated maintenance create event for tenant ${payload.user_id} and property ${payload.property_id}`,
     );
+    if (!payload.property_id) return;
     await this.createHistoryEntryWithRetry(payload);
   }
 
@@ -73,6 +80,27 @@ export class HistoryEventListener {
     this.logger.log(
       `Received service.updated event for request ${payload.request_id}`,
     );
+
+    // Common-area MRs skip the history row (property_id is NOT NULL on
+    // property_histories) but still get the websocket emit below so live
+    // clients refresh.
+    if (!payload.property_id) {
+      if (this.eventsGateway) {
+        this.eventsGateway.emitMaintenanceRequestUpdated(
+          '',
+          payload.landlord_id,
+          {
+            maintenanceRequestId: payload.request_id,
+            description: payload.description,
+            tenantName: payload.tenant_name,
+            propertyName: payload.property_name,
+            status: payload.status,
+            previousStatus: payload.previous_status,
+          },
+        );
+      }
+      return;
+    }
 
     try {
       // Fix #19: Store status and description as JSON instead of fragile delimiter

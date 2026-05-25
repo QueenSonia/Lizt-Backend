@@ -74,6 +74,28 @@ export class MaintenanceRequestListener {
   }
 
   /**
+   * Resolve the landlord's display name for use in WhatsApp template bodies.
+   * Follows the project_landlord_display_name memory: prefer
+   * accounts.profile_name, fall back to first+last from the joined user
+   * row, fall back to 'there' if nothing is set.
+   */
+  private async resolveLandlordDisplayName(
+    landlordAccountId: string | null | undefined,
+  ): Promise<string> {
+    if (!landlordAccountId) return 'there';
+    const account = await this.accountRepository.findOne({
+      where: { id: landlordAccountId },
+      relations: ['user'],
+    });
+    const profile = account?.profile_name?.trim();
+    if (profile) return profile;
+    const first = account?.user?.first_name?.trim() ?? '';
+    const last = account?.user?.last_name?.trim() ?? '';
+    const combined = `${first} ${last}`.trim();
+    return combined || 'there';
+  }
+
+  /**
    * Format a tenant phone (Meta-stored +234... or 234...) into Nigerian
    * local 0xxx form for display inside templates. Returns '—' when missing.
    */
@@ -496,22 +518,24 @@ ${event.description ?? ''}`,
 
     // Landlord-filed → informational ping (no approve/reject buttons; the
     // request is already auto-approved). The FM ping, if any, is handled
-    // by the separate maintenance.assigned emit. We send a simple text
-    // here rather than a registered template — this fires inside the
-    // 24-hour customer service window for landlords actively using the
-    // dashboard. Promote to a real template before prod rollout.
+    // by the separate maintenance.assigned emit.
     if (isLandlordFiled) {
       try {
         const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
         if (!landlordPhone) return;
-        const tenantName: string = event.tenant_name || 'Your tenant';
-        const property: string = event.property_name || 'your property';
-        const issue = event.description
-          ? `\n\n"${event.description}"`
-          : '';
-        await this.templateSenderService.sendText(
-          landlordPhone,
-          `${tenantName} confirmed the maintenance request you filed for ${property}. It's now approved.${issue}`,
+        const landlordName = await this.resolveLandlordDisplayName(
+          event.landlord_id,
+        );
+        await this.templateSenderService.sendLandlordFiledRequestConfirmedByTenant(
+          {
+            phone_number: landlordPhone,
+            landlord_name: landlordName,
+            tenant_name: event.tenant_name || 'Your tenant',
+            property_name: event.property_name || 'your property',
+            maintenance_request: this.utilService.sanitizeTemplateParam(
+              event.description ?? '',
+            ),
+          },
         );
       } catch (err) {
         this.logger.warn(

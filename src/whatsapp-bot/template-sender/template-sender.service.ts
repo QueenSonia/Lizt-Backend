@@ -4721,8 +4721,11 @@ export class TemplateSenderService {
 
   /**
    * Send the submission confirmation to the tenant after they POST a request.
-   * Free-form text (we're inside the 24h window — they just navigated here
-   * from the WhatsApp link tap).
+   * Template: payment_plan_request_submitted_tenant
+   *
+   * Must be a template (not free-form) — the tenant reaches the request form
+   * via a URL button on a renewal-invoice template, which does not open a
+   * 24h session. Free-form sends here fail with Meta error 131047.
    */
   async sendPaymentPlanRequestSubmittedTenant({
     phone_number,
@@ -4732,19 +4735,29 @@ export class TemplateSenderService {
     preferred_schedule,
     tenant_note,
   }: PaymentPlanRequestSubmittedTenantParams): Promise<void> {
-    const lines = [
-      `Hi ${tenant_name}, your payment plan request for ${property_name} has been received.`,
-      '',
-      `Total due: ₦${total_amount.toLocaleString()}`,
-      `Preferred schedule: ${preferred_schedule || 'No preference'}`,
-    ];
-    if (tenant_note) lines.push(`Note: ${tenant_note}`);
-    lines.push(
-      '',
-      'Your landlord will review the request and respond on WhatsApp.',
-    );
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_plan_request_submitted_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: this.toDisplayName(tenant_name) },
+              { type: 'text', text: property_name },
+              { type: 'text', text: `₦${total_amount.toLocaleString()}` },
+              { type: 'text', text: preferred_schedule || 'No preference' },
+              { type: 'text', text: tenant_note || 'No note' },
+            ],
+          },
+        ],
+      },
+    };
 
-    await this.sendText(phone_number, lines.join('\n'));
+    await this.sendToWhatsappAPI(payload);
   }
 
   /**
@@ -5104,6 +5117,8 @@ export class TemplateSenderService {
       'Your payment of {{1}} has been received. Thank you.\n\nClick the button to view your receipt.',
     adhoc_invoice_paid_landlord:
       'Hi,\n\n{{1}} has made a payment of {{2}} for the invoice of {{3}}.\n\nPlease check your dashboard for the receipt.',
+    payment_plan_request_submitted_tenant:
+      'Hi {{1}}, your payment plan request for {{2}} has been received.\n\nTotal due: {{3}}\nPreferred schedule: {{4}}\nNote: {{5}}\n\nYour landlord will review the request and respond on WhatsApp.',
     payment_plan_request_landlord_notify:
       'Hi {{1}},\n\n{{2}} has requested a payment plan for {{3}}.\n\nTotal due: {{4}}\nPreferred schedule: {{5}}\nNote: {{6}}\n\nReview and respond from your dashboard.',
     payment_plan_request_declined:

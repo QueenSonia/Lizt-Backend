@@ -268,6 +268,13 @@ export class PaymentPlanRequestsService {
 
     // WhatsApp — confirmation to tenant + heads-up to landlord
     try {
+      const safePreferredSchedule = this.utilService.sanitizeTemplateParam(
+        request.preferred_schedule,
+      );
+      const safeTenantNote = this.utilService.sanitizeTemplateParam(
+        request.tenant_note ?? '',
+      );
+
       if (tenantPhone) {
         await this.whatsappNotificationLog.queue(
           'sendPaymentPlanRequestSubmittedTenant',
@@ -276,8 +283,8 @@ export class PaymentPlanRequestsService {
             tenant_name: tenantName,
             property_name: propertyName,
             total_amount: Number(request.total_amount),
-            preferred_schedule: request.preferred_schedule,
-            tenant_note: request.tenant_note ?? '',
+            preferred_schedule: safePreferredSchedule,
+            tenant_note: safeTenantNote,
             landlord_id: property?.owner_id,
             property_id: request.property_id,
             recipient_name: tenantName,
@@ -294,8 +301,8 @@ export class PaymentPlanRequestsService {
             tenant_name: tenantName,
             property_name: propertyName,
             total_amount: Number(request.total_amount),
-            preferred_schedule: request.preferred_schedule,
-            tenant_note: request.tenant_note ?? '',
+            preferred_schedule: safePreferredSchedule,
+            tenant_note: safeTenantNote,
             landlord_id: property?.owner_id,
             property_id: request.property_id,
             recipient_name: landlordName,

@@ -1257,10 +1257,14 @@ export class TenantFlowService {
         "Thanks for letting me know. I've reopened the request and notified maintenance to check again.\n\nWhat's still not working? Reply with a short description and I'll add it to the request.",
       );
 
-      if (tenantUser?.id) {
+      // Cache the tenant's Account id (not User id) — patchLatestAttempt-
+      // DenialReason compares this against maintenance_requests.tenant_id,
+      // which is an Account id.
+      const tenantAccountId = latestResolvedRequest.tenant?.id;
+      if (tenantAccountId) {
         await this.cache.set(
           `maintenance_request_state_${from}`,
-          `awaiting_reopen_followup:${latestResolvedRequest.id}:${tenantUser.id}`,
+          `awaiting_reopen_followup:${latestResolvedRequest.id}:${tenantAccountId}`,
           this.SESSION_TIMEOUT_MS,
         );
       }
@@ -1287,10 +1291,12 @@ export class TenantFlowService {
 
   /**
    * Tenant's free-text reply after tapping "No, not yet" on a resolved MR.
-   * The reopen + stakeholder notify already happened on the button tap; this
-   * just appends the tenant's reason to the request's status history as an
-   * additional reopen note. The reply is optional — if it never arrives the
-   * cache key expires and nothing is stored.
+   * The reopen + stakeholder notify already happened on the button tap (and
+   * the reopen itself flipped the latest resolution-attempt row's outcome
+   * to REOPENED); this just patches that attempt row's tenant_denial_reason
+   * so the FM's Resolution History card renders the tenant's quote. The
+   * reply is optional — if it never arrives the cache key expires and the
+   * denial_reason stays NULL.
    */
   private async handleReopenFollowup(
     from: string,
@@ -1299,19 +1305,31 @@ export class TenantFlowService {
   ): Promise<void> {
     await this.cache.delete(`maintenance_request_state_${from}`);
 
-    const [, requestId, tenantUserId] = userState.split(':');
+    const [, requestId, tenantAccountId] = userState.split(':');
     const trimmed = text.trim();
-    if (!requestId || !tenantUserId || !trimmed) {
+    if (!requestId || !tenantAccountId || !trimmed) {
       await this.showTenantMenu(from);
       return;
     }
 
-    await this.maintenanceRequestService.appendReopenNoteWithDedup(
-      requestId,
-      tenantUserId,
-      'tenant',
-      trimmed,
-    );
+    try {
+      await this.maintenanceRequestService.patchLatestAttemptDenialReason(
+        requestId,
+        tenantAccountId,
+        trimmed,
+      );
+    } catch (err) {
+      // Forbidden / not-found means the cached state pointed at an MR this
+      // phone no longer owns (tenant moved out, etc). Don't surface the
+      // backend error to the tenant — silently drop the follow-up.
+      this.logger.warn(
+        `Failed to attach reopen follow-up for request ${requestId}: ${
+          (err as Error).message
+        }`,
+      );
+      await this.showTenantMenu(from);
+      return;
+    }
 
     await this.templateSenderService.sendText(
       from,

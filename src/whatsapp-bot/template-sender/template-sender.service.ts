@@ -305,6 +305,28 @@ export interface TenantConfirmFmRequestParams {
 }
 
 /**
+ * Unified successor to `TenantConfirmFmRequestParams`. Works for both
+ * FM-filed and landlord-filed maintenance requests by accepting a fully
+ * composed filer label as `filer_label` (the caller derives this from
+ * `mr.creator_type` + the resolved creator name — for landlords that's
+ * `accounts.profile_name` with first+last fallback per the
+ * project_landlord_display_name memory).
+ *
+ * Same two quick-reply buttons (Approve / Deny) as the FM variant; same
+ * inbound payloads (`tenant_confirm_mr:<id>` / `tenant_deny_mr:<id>`) so
+ * the existing dispatchers in `TenantFlowService.handleInteractive`
+ * handle both templates without changes.
+ */
+export interface TenantConfirmFiledRequestParams {
+  phone_number: string;
+  tenant_name: string;
+  filer_label: string;
+  property_or_area_name: string;
+  maintenance_request: string;
+  maintenance_request_id: string;
+}
+
+/**
  * Landlord-bound informational template fired when an FM files an MR for
  * a property whose tenant still needs to confirm. No action buttons —
  * the landlord can't act until the tenant responds (or they force-confirm
@@ -330,6 +352,23 @@ export interface LandlordFmRequestDeniedByTenantParams {
   landlord_name: string;
   tenant_name: string;
   fm_name: string;
+  maintenance_request: string;
+}
+
+/**
+ * Unified successor to `LandlordFmRequestDeniedByTenantParams`. Works for
+ * both FM-filed and landlord-filed maintenance requests. The body slot {{3}}
+ * receives a composed phrase that fits grammatically after "denied the
+ * maintenance request" — examples:
+ *   - FM-filed:       "filed by your facility manager John Doe"
+ *   - Landlord-filed: "you filed"
+ * The caller composes `filed_by_label` based on `mr.creator_type`.
+ */
+export interface LandlordRequestDeniedByTenantParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  filed_by_label: string;
   maintenance_request: string;
 }
 
@@ -1978,6 +2017,71 @@ export class TemplateSenderService {
   }
 
   /**
+   * Unified tenant-confirm prompt — supersedes `sendTenantConfirmFmRequest`.
+   * Works for both FM-filed and landlord-filed MRs; the caller composes
+   * `filer_label` (e.g. "Your facility manager John Doe" or "Your landlord
+   * Lekki Properties") so the body reads correctly for either role without
+   * needing two separate Meta templates.
+   *
+   * Button payloads match the FM variant exactly so the existing inbound
+   * dispatchers in `TenantFlowService.handleInteractive` (action handlers
+   * `tenant_confirm_mr` and `tenant_deny_mr`) handle taps with no changes.
+   */
+  async sendTenantConfirmFiledRequest({
+    phone_number,
+    tenant_name,
+    filer_label,
+    property_or_area_name,
+    maintenance_request,
+    maintenance_request_id,
+  }: TenantConfirmFiledRequestParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_confirm_filed_request',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: filer_label },
+              { type: 'text', text: property_or_area_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_confirm_mr:${maintenance_request_id}`,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_deny_mr:${maintenance_request_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Landlord-bound informational notification: "Your FM filed an issue;
    * waiting on tenant confirmation." No buttons — action is gated on the
    * tenant's response.
@@ -2038,6 +2142,42 @@ export class TemplateSenderService {
               { type: 'text', text: landlord_name },
               { type: 'text', text: tenant_name },
               { type: 'text', text: fm_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Unified deny notification — supersedes `sendLandlordFmRequestDeniedByTenant`.
+   * Works for both FM-filed and landlord-filed MRs; the caller composes
+   * `filed_by_label` so the body reads correctly for either role.
+   */
+  async sendLandlordRequestDeniedByTenant({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    filed_by_label,
+    maintenance_request,
+  }: LandlordRequestDeniedByTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_request_denied_by_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: filed_by_label },
               { type: 'text', text: maintenance_request },
             ],
           },
@@ -5026,10 +5166,14 @@ export class TemplateSenderService {
       'A maintenance request has been assigned to {{1}}.\n\nIssue: {{2}}\nTenant: {{3}}\nPhone: {{4}}\nProperty: {{5}}\n\nPlease attend to this.',
     tenant_confirm_fm_request:
       'Hi {{1}},\n\n{{2}} (your facility manager) reported a maintenance issue at your residence:\n\n"{{3}}"\n\nCan you confirm this is happening? Tap a button below.',
+    tenant_confirm_filed_request:
+      'Hi {{1}}!\n\n{{2}} reported a maintenance issue at {{3}}.\n\nThey wrote: "{{4}}".\n\nCan you confirm this is happening?',
     landlord_fm_filed_request_notification:
       'Hi {{1}},\n\nYour facility manager {{2}} filed a maintenance issue at {{3}}:\n\n"{{4}}"\n\nWe\'re waiting on the tenant to confirm. You\'ll be notified when they respond.',
     landlord_fm_request_denied_by_tenant:
       'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}} filed:\n\n"{{4}}"\n\nThe request is now closed.',
+    landlord_request_denied_by_tenant:
+      'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}}:\n\n"{{4}}"\n\nThe request is now closed.',
     maintenance_request_closed_notification:
       '✅ Tenant confirmed the issue is fixed.\n\nRequest: "{{1}}"\nStatus: Closed',
     maintenance_request_reopened_notification:

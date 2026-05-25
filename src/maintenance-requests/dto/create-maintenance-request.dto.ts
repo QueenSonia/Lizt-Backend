@@ -30,6 +30,7 @@ export enum MaintenanceRequestScopeEnum {
 export enum MaintenanceRequestCreatorTypeEnum {
   TENANT = 'tenant',
   FACILITY_MANAGER = 'facility_manager',
+  LANDLORD = 'landlord',
 }
 
 export class CreateMaintenanceRequestDto {
@@ -68,6 +69,21 @@ export class CreateMaintenanceRequestDto {
   @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean()
   is_urgent?: boolean;
+
+  @ApiProperty({ required: false, default: false })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  is_priority?: boolean;
+
+  @ApiProperty({
+    required: false,
+    description:
+      "TeamMember.id of the facility manager to assign. Landlord-filed MRs only; ignored for tenant- and FM-filed requests. Optional — landlord-filed MRs without an assignee land in APPROVED + unassigned.",
+  })
+  @IsOptional()
+  @IsUUID()
+  assigned_to?: string;
 }
 
 export class MaintenanceRequestFilter {

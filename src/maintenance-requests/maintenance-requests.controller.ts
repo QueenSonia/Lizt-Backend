@@ -213,6 +213,25 @@ export class MaintenanceRequestsController {
   }
 
   @ApiOperation({
+    summary: 'Get resolution attempt history for a maintenance request',
+    description:
+      'One row per FM resolve, newest first. Includes snapshot fields and outcome (pending | confirmed | denied | reopened). Landlord + FM on the request only.',
+  })
+  @ApiOkResponse({ description: 'Array of resolution attempts (newest first)' })
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Get(':id/resolution-attempts')
+  getResolutionAttempts(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: any,
+  ) {
+    return this.maintenanceRequestsService.getResolutionAttempts(
+      id,
+      req?.user?.id,
+    );
+  }
+
+  @ApiOperation({
     summary: 'Assign or unassign a facility manager to a maintenance request',
     description:
       'Landlord-only. Sets the facility manager handling this request. Pass `assigned_to: null` to clear the assignment. The assignee must be a FACILITY_MANAGER team_member on the landlord\'s team.',

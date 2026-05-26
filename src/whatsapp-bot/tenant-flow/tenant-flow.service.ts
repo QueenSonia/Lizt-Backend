@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger } from '@nestjs/common';
+﻿import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, Not, In } from 'typeorm';
@@ -28,6 +28,10 @@ import {
   MaintenanceRequestCreatorTypeEnum,
   MaintenanceRequestStatusEnum,
 } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
+import { mapMRStatusForTenant } from 'src/maintenance-requests/utils/tenant-view';
+import { IntentRouterService } from '../intent-router/intent-router.service';
+import { PendingConfirmation } from '../intent-router/dto/pending-confirmation.dto';
+import { SubIntent } from '../intent-router/intent-taxonomy';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import {
@@ -97,6 +101,9 @@ export class TenantFlowService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly nextPeriodStateResolver: NextPeriodStateResolver,
     private readonly eventEmitter: EventEmitter2,
+
+    @Inject(forwardRef(() => IntentRouterService))
+    private readonly intentRouter: IntentRouterService,
   ) {}
 
   /**
@@ -206,13 +213,25 @@ export class TenantFlowService {
       return;
     }
 
+    if (userState?.startsWith('awaiting_reopen_followup:')) {
+      await this.handleReopenFollowup(from, text, userState);
+      return;
+    }
+
     if (userState === 'view_single_maintenance_request') {
       await this.handleViewSingleMaintenanceRequest(from, text);
       return;
     }
 
-    // Default: show tenant menu
-    await this.showTenantMenu(from);
+    // Default: try AI intent router, then fall back to menu.
+    // The router self-gates on INTENT_ROUTER_ENABLED and fetches its own
+    // conversational context; it returns true only when it has handled the
+    // message (executed a safe read or sent a confirmation card). false
+    // preserves today's behavior of showing the main menu.
+    const handled = await this.intentRouter.handleFreeText(from, text);
+    if (!handled) {
+      await this.showTenantMenu(from);
+    }
   }
 
   /**
@@ -608,7 +627,7 @@ export class TenantFlowService {
       const createdDate = req.created_at
         ? new Date(req.created_at).toLocaleDateString()
         : 'Unknown date';
-      response += `${req.description} (${createdDate}) \n Status: ${req.status}\n Notes: ${
+      response += `${req.description} (${createdDate}) \n Status: ${mapMRStatusForTenant(req.status)}\n Notes: ${
         req.notes || '——'
       }\n\n`;
     });
@@ -622,6 +641,135 @@ export class TenantFlowService {
         title: 'Back to Requests',
       },
     ]);
+  }
+
+  /**
+   * Dispatcher invoked by the IntentRouter after the tenant has tapped
+   * Confirm on a confirmation card. Translates a classified sub-intent
+   * into the same handler that the equivalent button tap would trigger.
+   *
+   * Only sub-intents that map to existing tenant flows reach here —
+   * MESSAGE_TO_HUMAN / postpone / move-out / etc. are handled inside the
+   * router itself by writing a tenant_notices row.
+   */
+  async executeAiIntent(
+    from: string,
+    pending: PendingConfirmation,
+  ): Promise<void> {
+    switch (pending.subIntent) {
+      case SubIntent.MR_REPORT_NEW: {
+        // The AI already extracted the description. Pre-seed the state and
+        // jump straight to the description handler so the tenant doesn't
+        // have to retype what they already said.
+        const description = pending.extracted.description?.trim();
+        if (!description) {
+          await this.handleNewMaintenanceRequest(from);
+          return;
+        }
+        const user = await this.findTenantByPhone(from);
+        const accountId = user?.accounts?.[0]?.id;
+        const activeTenancies = accountId
+          ? await this.propertyTenantRepo.find({
+              where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
+            })
+          : [];
+        if (activeTenancies.length === 1) {
+          const stateKey = `awaiting_description:${activeTenancies[0].property_id}`;
+          await this.cache.set(
+            `maintenance_request_state_${from}`,
+            stateKey,
+            this.SESSION_TIMEOUT_MS,
+          );
+          await this.handleMaintenanceRequestDescription(
+            from,
+            description,
+            stateKey,
+          );
+          return;
+        }
+        // Multi-property: defer to the existing prompt — the AI's property
+        // hint isn't reliable enough to bypass tenant selection.
+        await this.handleNewMaintenanceRequest(from);
+        return;
+      }
+
+      case SubIntent.MR_CONFIRM_RESOLVED:
+        await this.handleConfirmResolutionYes(from);
+        return;
+
+      case SubIntent.MR_DISPUTE_RESOLVED:
+        await this.handleConfirmResolutionNo(from);
+        return;
+
+      case SubIntent.MR_CONFIRM_FILED_REQUEST: {
+        const mrId = pending.resolved.maintenanceRequestId;
+        if (!mrId) {
+          await this.templateSenderService.sendText(
+            from,
+            "I couldn't find a request waiting for your confirmation.",
+          );
+          return;
+        }
+        await this.handleTenantConfirmMaintenanceRequest(from, mrId);
+        return;
+      }
+
+      case SubIntent.MR_DENY_FILED_REQUEST: {
+        const mrId = pending.resolved.maintenanceRequestId;
+        if (!mrId) {
+          await this.templateSenderService.sendText(
+            from,
+            "I couldn't find a request waiting for your confirmation.",
+          );
+          return;
+        }
+        // Seed the deny-reason state so the existing deny path can pick up
+        // the AI-extracted reason without needing the tenant to retype.
+        const reason = pending.extracted.reason?.trim();
+        if (reason) {
+          await this.cache.set(
+            `tenant_deny_state_${from}`,
+            { request_id: mrId, awaiting_reason: true },
+            this.SESSION_TIMEOUT_MS,
+          );
+          await this.handleTenantDenyReasonReply(from, reason, {
+            request_id: mrId,
+            awaiting_reason: true,
+          } as never);
+          return;
+        }
+        await this.handleTenantDenyMaintenanceRequestPrompt(from, mrId);
+        return;
+      }
+
+      case SubIntent.PAY_RENT:
+      case SubIntent.TENANCY_RENEWAL_INTENT:
+        await this.handlePayRent(from);
+        return;
+
+      case SubIntent.PAY_OUTSTANDING:
+        await this.handlePayOutstandingBalance(from);
+        return;
+
+      case SubIntent.PAY_CANCEL:
+        await this.templateSenderService.sendText(from, 'Payment cancelled.');
+        return;
+
+      case SubIntent.TENANCY_VIEW:
+        await this.handleViewTenancy(from);
+        return;
+
+      case SubIntent.TENANCY_DISPUTE:
+        await this.handleTenancyDetailsIncorrect(from);
+        return;
+
+      default:
+        this.logger.warn(
+          `executeAiIntent: no handler for sub_intent=${pending.subIntent}; showing menu`,
+        );
+        await this.showTenantMenu(from);
+        return;
+    }
   }
 
   /**
@@ -668,6 +816,18 @@ export class TenantFlowService {
 
     if (!buttonReply) return;
     this.logger.log(`Button ID: ${buttonId}`);
+
+    // Intent-router confirmation card buttons. Intercept before the rest of
+    // the switch so a stale or expired confirmation doesn't trip the
+    // "Unknown option selected" fallback.
+    if (
+      buttonId &&
+      (buttonId.startsWith('ai_confirm:') || buttonId.startsWith('ai_cancel:'))
+    ) {
+      if (await this.intentRouter.handleConfirmationButton(from, buttonId)) {
+        return;
+      }
+    }
 
     // Handle role selection buttons
     if (
@@ -749,20 +909,6 @@ export class TenantFlowService {
         break;
 
       case 'maintenance_request':
-        await this.templateSenderService.sendButtons(
-          from,
-          'What would you like to do?',
-          [
-            { id: 'new_maintenance_request', title: 'Request a service' },
-            { id: 'view_maintenance_request', title: 'View all requests' },
-          ],
-        );
-        break;
-
-      case 'view_maintenance_request':
-        await this.handleViewMaintenanceRequests(from);
-        break;
-
       case 'new_maintenance_request':
         await this.handleNewMaintenanceRequest(from);
         break;
@@ -1011,64 +1157,6 @@ export class TenantFlowService {
   }
 
   /**
-   * Handle view maintenance requests button
-   */
-  private async handleViewMaintenanceRequests(from: string): Promise<void> {
-    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-
-    const maintenanceRequests = await this.maintenanceRequestRepo.find({
-      where: {
-        creator: { phone_number: normalizedPhone },
-        creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
-        status: Not(
-          In([
-            MaintenanceRequestStatusEnum.CLOSED,
-            MaintenanceRequestStatusEnum.REJECTED,
-          ]),
-        ),
-      },
-      relations: ['tenant', 'creator'],
-      order: { created_at: 'DESC' },
-    });
-
-    if (!maintenanceRequests.length) {
-      await this.templateSenderService.sendText(
-        from,
-        "You don't have any maintenance requests yet.",
-      );
-      return;
-    }
-
-    let response = 'Here are all your maintenance requests:\n\n';
-    maintenanceRequests.forEach((req) => {
-      const date = req.created_at ? new Date(req.created_at) : new Date();
-      const formattedDate = date.toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-      });
-      const formattedTime = date.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-      });
-      response += `• ${formattedDate}, ${formattedTime} – ${req.description}\n\n`;
-    });
-
-    await this.templateSenderService.sendText(from, response);
-
-    // Send navigation options after viewing requests
-    await this.templateSenderService.sendButtons(
-      from,
-      'Want to do something else?',
-      [
-        { id: 'new_maintenance_request', title: 'Request a service' },
-        { id: 'main_menu', title: 'Go back to main menu' },
-      ],
-    );
-  }
-
-  /**
    * Handle new maintenance request button
    */
   private async handleNewMaintenanceRequest(from: string): Promise<void> {
@@ -1249,8 +1337,20 @@ export class TenantFlowService {
 
       await this.templateSenderService.sendText(
         from,
-        "Thanks for letting me know. I'll reopen the request and notify maintenance to check again.",
+        "Thanks for letting me know. I've reopened the request and notified maintenance to check again.\n\nWhat's still not working? Reply with a short description and I'll add it to the request.",
       );
+
+      // Cache the tenant's Account id (not User id) — patchLatestAttempt-
+      // DenialReason compares this against maintenance_requests.tenant_id,
+      // which is an Account id.
+      const tenantAccountId = latestResolvedRequest.tenant?.id;
+      if (tenantAccountId) {
+        await this.cache.set(
+          `maintenance_request_state_${from}`,
+          `awaiting_reopen_followup:${latestResolvedRequest.id}:${tenantAccountId}`,
+          this.SESSION_TIMEOUT_MS,
+        );
+      }
 
       if (latestResolvedRequest.property_id) {
         const safeRequest = this.utilService.sanitizeTemplateParam(
@@ -1270,6 +1370,54 @@ export class TenantFlowService {
         "I couldn't find a pending resolution to confirm.",
       );
     }
+  }
+
+  /**
+   * Tenant's free-text reply after tapping "No, not yet" on a resolved MR.
+   * The reopen + stakeholder notify already happened on the button tap (and
+   * the reopen itself flipped the latest resolution-attempt row's outcome
+   * to REOPENED); this just patches that attempt row's tenant_denial_reason
+   * so the FM's Resolution History card renders the tenant's quote. The
+   * reply is optional — if it never arrives the cache key expires and the
+   * denial_reason stays NULL.
+   */
+  private async handleReopenFollowup(
+    from: string,
+    text: string,
+    userState: string,
+  ): Promise<void> {
+    await this.cache.delete(`maintenance_request_state_${from}`);
+
+    const [, requestId, tenantAccountId] = userState.split(':');
+    const trimmed = text.trim();
+    if (!requestId || !tenantAccountId || !trimmed) {
+      await this.showTenantMenu(from);
+      return;
+    }
+
+    try {
+      await this.maintenanceRequestService.patchLatestAttemptDenialReason(
+        requestId,
+        tenantAccountId,
+        trimmed,
+      );
+    } catch (err) {
+      // Forbidden / not-found means the cached state pointed at an MR this
+      // phone no longer owns (tenant moved out, etc). Don't surface the
+      // backend error to the tenant — silently drop the follow-up.
+      this.logger.warn(
+        `Failed to attach reopen follow-up for request ${requestId}: ${
+          (err as Error).message
+        }`,
+      );
+      await this.showTenantMenu(from);
+      return;
+    }
+
+    await this.templateSenderService.sendText(
+      from,
+      "Got it — I've added that to the request.",
+    );
   }
 
   /**

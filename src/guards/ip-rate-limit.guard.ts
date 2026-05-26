@@ -40,13 +40,17 @@ export class IpRateLimitGuard implements CanActivate {
         );
       }
 
-      // Get current request count
-      const requestCountStr = await this.cacheService.get<string>(rateLimitKey);
-      const requestCount = requestCountStr ? parseInt(requestCountStr, 10) : 0;
+      // incrementWithTtlNx — atomic INCR with TTL fixed to the first request
+      // of the window. Avoids the previous get-then-set pattern that both
+      // raced (two reqs reading 99 → both writing 100) and refreshed the
+      // window on every request (a steady 1 req/sec stream could push past
+      // 100 over many minutes instead of being bounded to one minute).
+      const requestCount = await this.cacheService.incrementWithTtlNx(
+        rateLimitKey,
+        this.windowSeconds,
+      );
 
-      // Check if limit exceeded
-      if (requestCount >= this.maxRequests) {
-        // Block the IP for the block duration
+      if (requestCount > this.maxRequests) {
         await this.cacheService.setWithTtlSeconds(
           blockKey,
           'blocked',
@@ -62,13 +66,6 @@ export class IpRateLimitGuard implements CanActivate {
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
-
-      // Increment request count
-      await this.cacheService.setWithTtlSeconds(
-        rateLimitKey,
-        (requestCount + 1).toString(),
-        this.windowSeconds,
-      );
 
       return true;
     } catch (error) {

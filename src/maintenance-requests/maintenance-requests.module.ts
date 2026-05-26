@@ -4,6 +4,7 @@ import { MaintenanceRequestsController } from './maintenance-requests.controller
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MaintenanceRequest } from './entities/maintenance-request.entity';
 import { MaintenanceRequestStatusHistory } from './entities/maintenance-request-status-history.entity';
+import { MaintenanceResolutionAttempt } from './entities/maintenance-resolution-attempt.entity';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { Property } from 'src/properties/entities/property.entity';
 import { FileUploadService } from 'src/utils/cloudinary';
@@ -19,6 +20,7 @@ import { ArtisansModule } from 'src/artisans/artisans.module';
     TypeOrmModule.forFeature([
       MaintenanceRequest,
       MaintenanceRequestStatusHistory,
+      MaintenanceResolutionAttempt,
       AutoMaintenanceRequest,
       PropertyTenant,
       Property,

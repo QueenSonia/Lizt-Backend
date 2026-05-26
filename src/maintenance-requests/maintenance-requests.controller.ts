@@ -61,10 +61,20 @@ export class MaintenanceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
+  @UseInterceptors(FilesInterceptor('issue_images', 20))
   async createMaintenanceRequest(
     @Body() body: CreateMaintenanceRequestDto,
     @Req() req: any,
+    @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
+    if (files?.length) {
+      const uploadedUrls = await Promise.all(
+        files.map((file) =>
+          this.fileUploadService.uploadFile(file, 'maintenance-requests'),
+        ),
+      );
+      body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
+    }
     return this.maintenanceRequestsService.createMaintenanceRequest(body, {
       id: req?.user?.id,
       role: req?.user?.role,
@@ -207,6 +217,25 @@ export class MaintenanceRequestsController {
     @Req() req: any,
   ) {
     return this.maintenanceRequestsService.getMaintenanceRequestById(
+      id,
+      req?.user?.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Get resolution attempt history for a maintenance request',
+    description:
+      'One row per FM resolve, newest first. Includes snapshot fields and outcome (pending | confirmed | denied | reopened). Landlord + FM on the request only.',
+  })
+  @ApiOkResponse({ description: 'Array of resolution attempts (newest first)' })
+  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
+  @ApiSecurity('access_token')
+  @Get(':id/resolution-attempts')
+  getResolutionAttempts(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: any,
+  ) {
+    return this.maintenanceRequestsService.getResolutionAttempts(
       id,
       req?.user?.id,
     );

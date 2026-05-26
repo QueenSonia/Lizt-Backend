@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ChatLogService } from '../chat-log.service';
 import { RenewalPDFService } from 'src/pdf/renewal-pdf.service';
+import { CacheService } from 'src/lib/cache';
+import { UtilService } from 'src/utils/utility-service';
 
 /**
  * Template parameter for WhatsApp message templates
@@ -305,6 +307,28 @@ export interface TenantConfirmFmRequestParams {
 }
 
 /**
+ * Unified successor to `TenantConfirmFmRequestParams`. Works for both
+ * FM-filed and landlord-filed maintenance requests by accepting a fully
+ * composed filer label as `filer_label` (the caller derives this from
+ * `mr.creator_type` + the resolved creator name — for landlords that's
+ * `accounts.profile_name` with first+last fallback per the
+ * project_landlord_display_name memory).
+ *
+ * Same two quick-reply buttons (Approve / Deny) as the FM variant; same
+ * inbound payloads (`tenant_confirm_mr:<id>` / `tenant_deny_mr:<id>`) so
+ * the existing dispatchers in `TenantFlowService.handleInteractive`
+ * handle both templates without changes.
+ */
+export interface TenantConfirmFiledRequestParams {
+  phone_number: string;
+  tenant_name: string;
+  filer_label: string;
+  property_or_area_name: string;
+  maintenance_request: string;
+  maintenance_request_id: string;
+}
+
+/**
  * Landlord-bound informational template fired when an FM files an MR for
  * a property whose tenant still needs to confirm. No action buttons —
  * the landlord can't act until the tenant responds (or they force-confirm
@@ -314,6 +338,20 @@ export interface LandlordFmFiledRequestNotificationParams {
   phone_number: string;
   landlord_name: string;
   fm_name: string;
+  property_name: string;
+  maintenance_request: string;
+}
+
+/**
+ * Landlord-bound informational template fired when the tenant confirms a
+ * maintenance request the landlord filed themselves. Landlord-filed MRs
+ * auto-approve on tenant confirm — there's no separate approve/reject step
+ * to surface, so the body is purely confirmatory. No buttons.
+ */
+export interface LandlordFiledRequestConfirmedByTenantParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
   property_name: string;
   maintenance_request: string;
 }
@@ -330,6 +368,23 @@ export interface LandlordFmRequestDeniedByTenantParams {
   landlord_name: string;
   tenant_name: string;
   fm_name: string;
+  maintenance_request: string;
+}
+
+/**
+ * Unified successor to `LandlordFmRequestDeniedByTenantParams`. Works for
+ * both FM-filed and landlord-filed maintenance requests. The body slot {{3}}
+ * receives a composed phrase that fits grammatically after "denied the
+ * maintenance request" — examples:
+ *   - FM-filed:       "filed by your facility manager John Doe"
+ *   - Landlord-filed: "you filed"
+ * The caller composes `filed_by_label` based on `mr.creator_type`.
+ */
+export interface LandlordRequestDeniedByTenantParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  filed_by_label: string;
   maintenance_request: string;
 }
 
@@ -948,7 +1003,33 @@ export class TemplateSenderService {
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
     private readonly renewalPDFService: RenewalPDFService,
+    private readonly cache: CacheService,
+    private readonly utilService: UtilService,
   ) {}
+
+  /**
+   * Caches the most recent outbound message per phone so the intent router
+   * can use it as conversational context when classifying the next inbound
+   * free-text message. 10-minute TTL is enough for back-and-forth chat.
+   *
+   * Fires-and-forgets; cache failures must not break the send.
+   */
+  private async cacheLastOutbound(payload: WhatsAppPayload): Promise<void> {
+    const recipient = payload?.to;
+    if (!recipient) return;
+    try {
+      const phone = this.utilService.normalizePhoneNumber(recipient);
+      const content = this.extractPayloadContent(payload);
+      const type = this.extractPayloadMessageType(payload);
+      await this.cache.set(`last_bot_outbound_${phone}`, content, 10 * 60 * 1000);
+      await this.cache.set(`last_bot_outbound_type_${phone}`, type, 10 * 60 * 1000);
+    } catch (err) {
+      console.warn(
+        '⚠️ Failed to cache last_bot_outbound (continuing):',
+        (err as Error).message,
+      );
+    }
+  }
 
   /**
    * Send a message using a WhatsApp template with custom parameters
@@ -1978,6 +2059,71 @@ export class TemplateSenderService {
   }
 
   /**
+   * Unified tenant-confirm prompt — supersedes `sendTenantConfirmFmRequest`.
+   * Works for both FM-filed and landlord-filed MRs; the caller composes
+   * `filer_label` (e.g. "Your facility manager John Doe" or "Your landlord
+   * Lekki Properties") so the body reads correctly for either role without
+   * needing two separate Meta templates.
+   *
+   * Button payloads match the FM variant exactly so the existing inbound
+   * dispatchers in `TenantFlowService.handleInteractive` (action handlers
+   * `tenant_confirm_mr` and `tenant_deny_mr`) handle taps with no changes.
+   */
+  async sendTenantConfirmFiledRequest({
+    phone_number,
+    tenant_name,
+    filer_label,
+    property_or_area_name,
+    maintenance_request,
+    maintenance_request_id,
+  }: TenantConfirmFiledRequestParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_confirm_filed_request',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: filer_label },
+              { type: 'text', text: property_or_area_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_confirm_mr:${maintenance_request_id}`,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_deny_mr:${maintenance_request_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Landlord-bound informational notification: "Your FM filed an issue;
    * waiting on tenant confirmation." No buttons — action is gated on the
    * tenant's response.
@@ -2015,6 +2161,43 @@ export class TemplateSenderService {
 
   /**
    * Landlord-bound informational notification fired when the tenant
+   * confirms an MR the landlord filed themselves. The MR is auto-approved
+   * at this point — no buttons, no approve/reject path. The caller MUST
+   * sanitize `maintenance_request` via UtilService.sanitizeTemplateParam.
+   */
+  async sendLandlordFiledRequestConfirmedByTenant({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    maintenance_request,
+  }: LandlordFiledRequestConfirmedByTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_filed_request_confirmed_by_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Landlord-bound informational notification fired when the tenant
    * denies the FM-filed MR. Captures the optional denial reason.
    */
   async sendLandlordFmRequestDeniedByTenant({
@@ -2038,6 +2221,42 @@ export class TemplateSenderService {
               { type: 'text', text: landlord_name },
               { type: 'text', text: tenant_name },
               { type: 'text', text: fm_name },
+              { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Unified deny notification — supersedes `sendLandlordFmRequestDeniedByTenant`.
+   * Works for both FM-filed and landlord-filed MRs; the caller composes
+   * `filed_by_label` so the body reads correctly for either role.
+   */
+  async sendLandlordRequestDeniedByTenant({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    filed_by_label,
+    maintenance_request,
+  }: LandlordRequestDeniedByTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_request_denied_by_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: filed_by_label },
               { type: 'text', text: maintenance_request },
             ],
           },
@@ -3842,6 +4061,12 @@ export class TemplateSenderService {
    * Requirements: 1.3
    */
   async sendToWhatsappAPI(payload: WhatsAppPayload): Promise<unknown> {
+    // Stash the outbound for the intent router's classification context.
+    // Runs before the send so the cache reflects the bot's most-recent
+    // utterance even if the API call later fails — for context purposes,
+    // "what the bot just said" is what matters.
+    await this.cacheLastOutbound(payload);
+
     try {
       const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
       const isSimulationMode = this.validateSimulationMode(simulatorMode);
@@ -4721,8 +4946,11 @@ export class TemplateSenderService {
 
   /**
    * Send the submission confirmation to the tenant after they POST a request.
-   * Free-form text (we're inside the 24h window — they just navigated here
-   * from the WhatsApp link tap).
+   * Template: payment_plan_request_submitted_tenant
+   *
+   * Must be a template (not free-form) — the tenant reaches the request form
+   * via a URL button on a renewal-invoice template, which does not open a
+   * 24h session. Free-form sends here fail with Meta error 131047.
    */
   async sendPaymentPlanRequestSubmittedTenant({
     phone_number,
@@ -4732,19 +4960,29 @@ export class TemplateSenderService {
     preferred_schedule,
     tenant_note,
   }: PaymentPlanRequestSubmittedTenantParams): Promise<void> {
-    const lines = [
-      `Hi ${tenant_name}, your payment plan request for ${property_name} has been received.`,
-      '',
-      `Total due: ₦${total_amount.toLocaleString()}`,
-      `Preferred schedule: ${preferred_schedule || 'No preference'}`,
-    ];
-    if (tenant_note) lines.push(`Note: ${tenant_note}`);
-    lines.push(
-      '',
-      'Your landlord will review the request and respond on WhatsApp.',
-    );
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_plan_request_submitted_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: this.toDisplayName(tenant_name) },
+              { type: 'text', text: property_name },
+              { type: 'text', text: `₦${total_amount.toLocaleString()}` },
+              { type: 'text', text: preferred_schedule || 'No preference' },
+              { type: 'text', text: tenant_note || 'No note' },
+            ],
+          },
+        ],
+      },
+    };
 
-    await this.sendText(phone_number, lines.join('\n'));
+    await this.sendToWhatsappAPI(payload);
   }
 
   /**
@@ -5013,10 +5251,16 @@ export class TemplateSenderService {
       'A maintenance request has been assigned to {{1}}.\n\nIssue: {{2}}\nTenant: {{3}}\nPhone: {{4}}\nProperty: {{5}}\n\nPlease attend to this.',
     tenant_confirm_fm_request:
       'Hi {{1}},\n\n{{2}} (your facility manager) reported a maintenance issue at your residence:\n\n"{{3}}"\n\nCan you confirm this is happening? Tap a button below.',
+    tenant_confirm_filed_request:
+      'Hi {{1}}!\n\n{{2}} reported a maintenance issue at {{3}}.\n\nThey wrote: "{{4}}".\n\nCan you confirm this is happening?',
     landlord_fm_filed_request_notification:
       'Hi {{1}},\n\nYour facility manager {{2}} filed a maintenance issue at {{3}}:\n\n"{{4}}"\n\nWe\'re waiting on the tenant to confirm. You\'ll be notified when they respond.',
+    landlord_filed_request_confirmed_by_tenant:
+      'Hi {{1}},\n\n{{2}} just confirmed the maintenance request you filed for {{3}}. It\'s now approved.\n\nIssue: "{{4}}"\n\nPlease attend to this.',
     landlord_fm_request_denied_by_tenant:
       'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}} filed:\n\n"{{4}}"\n\nThe request is now closed.',
+    landlord_request_denied_by_tenant:
+      'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}}:\n\n"{{4}}"\n\nThe request is now closed.',
     maintenance_request_closed_notification:
       '✅ Tenant confirmed the issue is fixed.\n\nRequest: "{{1}}"\nStatus: Closed',
     maintenance_request_reopened_notification:
@@ -5104,6 +5348,8 @@ export class TemplateSenderService {
       'Your payment of {{1}} has been received. Thank you.\n\nClick the button to view your receipt.',
     adhoc_invoice_paid_landlord:
       'Hi,\n\n{{1}} has made a payment of {{2}} for the invoice of {{3}}.\n\nPlease check your dashboard for the receipt.',
+    payment_plan_request_submitted_tenant:
+      'Hi {{1}}, your payment plan request for {{2}} has been received.\n\nTotal due: {{3}}\nPreferred schedule: {{4}}\nNote: {{5}}\n\nYour landlord will review the request and respond on WhatsApp.',
     payment_plan_request_landlord_notify:
       'Hi {{1}},\n\n{{2}} has requested a payment plan for {{3}}.\n\nTotal due: {{4}}\nPreferred schedule: {{5}}\nNote: {{6}}\n\nReview and respond from your dashboard.',
     payment_plan_request_declined:

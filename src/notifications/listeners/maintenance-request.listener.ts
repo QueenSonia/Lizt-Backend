@@ -37,6 +37,10 @@ export class MaintenanceRequestListener {
   private readonly tenantDeniedLandlordSeen = new Map<string, number>();
   private readonly FM_FILED_PING_DEDUP_MS = 60_000;
 
+  // Same dedup window for landlord-filed MR tenant prompts. Distinct map so
+  // it doesn't share counters with the FM-filed path.
+  private readonly landlordFiledTenantSeen = new Map<string, number>();
+
   constructor(
     private notificationService: NotificationService,
     @InjectRepository(Property)
@@ -70,6 +74,28 @@ export class MaintenanceRequestListener {
   }
 
   /**
+   * Resolve the landlord's display name for use in WhatsApp template bodies.
+   * Follows the project_landlord_display_name memory: prefer
+   * accounts.profile_name, fall back to first+last from the joined user
+   * row, fall back to 'there' if nothing is set.
+   */
+  private async resolveLandlordDisplayName(
+    landlordAccountId: string | null | undefined,
+  ): Promise<string> {
+    if (!landlordAccountId) return 'there';
+    const account = await this.accountRepository.findOne({
+      where: { id: landlordAccountId },
+      relations: ['user'],
+    });
+    const profile = account?.profile_name?.trim();
+    if (profile) return profile;
+    const first = account?.user?.first_name?.trim() ?? '';
+    const last = account?.user?.last_name?.trim() ?? '';
+    const combined = `${first} ${last}`.trim();
+    return combined || 'there';
+  }
+
+  /**
    * Format a tenant phone (Meta-stored +234... or 234...) into Nigerian
    * local 0xxx form for display inside templates. Returns '—' when missing.
    */
@@ -89,6 +115,44 @@ export class MaintenanceRequestListener {
     if (last && now - last < ms) return false;
     map.set(key, now);
     return true;
+  }
+
+  // Trims free-text down to a single-line snippet suitable for the
+  // live-feed subtitle. Collapses whitespace and caps length so a long
+  // multi-paragraph note doesn't crowd the row.
+  private formatIssueSnippet(
+    text?: string | null,
+    maxLength: number = 120,
+  ): string {
+    if (!text) return '';
+    const collapsed = text.replace(/\s+/g, ' ').trim();
+    if (!collapsed) return '';
+    if (collapsed.length <= maxLength) return collapsed;
+    return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`;
+  }
+
+  // Picks the right per-event quote for the live-feed subtitle. Returns a
+  // single line ready to drop after the headline:
+  //   RESOLVED  → FM's resolution_summary, quoted ("Replaced the valve.")
+  //   REOPENED  → reopen reason from whoever reopened, quoted
+  //   other     → empty (no free-text note tied to the transition)
+  private buildUpdateSubtitle(event: any): string {
+    const status = event?.status as string | undefined;
+    if (
+      status === MaintenanceRequestStatusEnum.RESOLVED &&
+      event?.resolution_summary
+    ) {
+      const note = this.formatIssueSnippet(event.resolution_summary);
+      return note ? `"${note}"` : '';
+    }
+    if (
+      status === MaintenanceRequestStatusEnum.REOPENED &&
+      event?.reopen_message
+    ) {
+      const note = this.formatIssueSnippet(event.reopen_message);
+      return note ? `"${note}"` : '';
+    }
+    return '';
   }
 
   // Builds the live-feed headline for a maintenance transition. Maps each
@@ -124,6 +188,8 @@ export class MaintenanceRequestListener {
    * creator type so FM-filed MRs don't render as "— made a maintenance
    * request…" (the literal tenant_name='—' placeholder bug). Tenant-filed
    * MRs keep the original "X made a maintenance request" wording.
+   * Landlord-filed MRs are addressed in second person — the landlord IS the
+   * recipient of this notification.
    */
   private buildCreationDescription(
     event: MaintenanceRequestCreatedEvent,
@@ -131,6 +197,10 @@ export class MaintenanceRequestListener {
     const location =
       event.property_name ?? event.common_area_name ?? 'their property';
     const description = event.description ?? '';
+    if (event.creator_type === 'landlord') {
+      return `You filed a maintenance request for ${location}.
+${description}`;
+    }
     const creatorName =
       event.creator_name ?? event.tenant_name ?? 'Someone';
     const isFmFiled = event.creator_type === 'facility_manager';
@@ -226,10 +296,12 @@ ${description}`;
    * FM filed a unit-scoped MR with an active tenant. Fires three things:
    *   1. Landlord in-app: "FM X filed an issue at <property>. Waiting on
    *      <tenant>'s confirmation."
-   *   2. Landlord WhatsApp (informational, no buttons) — new template
+   *   2. Landlord WhatsApp (informational, no buttons) — template
    *      landlord_fm_filed_request_notification.
-   *   3. Tenant WhatsApp (Confirm / Deny buttons) — new template
-   *      tenant_confirm_fm_request.
+   *   3. Tenant WhatsApp (Confirm / Deny buttons) — unified template
+   *      tenant_confirm_filed_request (shared with the landlord-filed path
+   *      below; the filer-role discriminator is composed into the body
+   *      via the `filer_label` param).
    */
   @OnEvent('maintenance.fm_filed_pending_tenant')
   async handleFmFiledPendingTenant(event: any): Promise<void> {
@@ -291,12 +363,14 @@ ${event.description ?? ''}`,
         const tenantPhoneRaw: string | undefined = event.tenant_phone_number;
         if (tenantPhoneRaw) {
           const tenantPhone = this.utilService.normalizePhoneNumber(tenantPhoneRaw);
-          await this.templateSenderService.sendTenantConfirmFmRequest({
+          await this.templateSenderService.sendTenantConfirmFiledRequest({
             phone_number: tenantPhone,
             tenant_name: this.utilService.toSentenceCase(
               (event.tenant_name ?? '').split(' ')[0] ?? 'there',
             ),
-            fm_name: event.creator_name ?? 'your facility manager',
+            filer_label: `Your facility manager ${event.creator_name ?? 'team'}`,
+            property_or_area_name:
+              event.property_name ?? event.common_area_name ?? 'your residence',
             maintenance_request: this.utilService.sanitizeTemplateParam(
               event.description ?? '',
             ),
@@ -304,12 +378,85 @@ ${event.description ?? ''}`,
           });
         } else {
           this.logger.warn(
-            `Cannot send tenant_confirm_fm_request: no tenant phone for request ${requestId}`,
+            `Cannot send tenant_confirm_filed_request: no tenant phone for request ${requestId}`,
           );
         }
       } catch (err) {
         this.logger.warn(
-          `Failed to send tenant_confirm_fm_request for ${requestId}: ${(err as Error)?.message ?? err}`,
+          `Failed to send tenant_confirm_filed_request for ${requestId}: ${(err as Error)?.message ?? err}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Landlord filed a unit-scoped MR with an active tenant. Fires two things
+   * (no landlord WhatsApp ping — the landlord IS the filer):
+   *   1. Landlord in-app: "You filed an issue at <property>. Waiting on
+   *      <tenant>'s confirmation."
+   *   2. Tenant WhatsApp (Confirm / Deny buttons) via the unified
+   *      `tenant_confirm_filed_request` template. The {{1}} body slot
+   *      receives a composed filer label — "Your landlord <name>" here.
+   *      The creator_name on the event is already the canonical landlord
+   *      display name (accounts.profile_name with first+last fallback per
+   *      project_landlord_display_name memory, set in the service's
+   *      createMaintenanceRequestAsLandlord).
+   */
+  @OnEvent('maintenance.landlord_filed_pending_tenant')
+  async handleLandlordFiledPendingTenant(event: any): Promise<void> {
+    const requestId: string = event.maintenance_request_id;
+
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.MAINTENANCE_REQUEST,
+        description: `You filed a maintenance request for ${event.property_name ?? event.common_area_name ?? 'your property'}. Waiting on ${event.tenant_name ?? 'tenant'}'s confirmation.
+${event.description ?? ''}`,
+        status: 'Pending',
+        property_id: event.property_id,
+        user_id: event.landlord_id,
+        maintenance_request_id: event.maintenance_request_id,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to create landlord-filed pending-tenant in-app notification',
+        error,
+      );
+    }
+
+    if (
+      this.dedup(
+        this.landlordFiledTenantSeen,
+        requestId,
+        this.FM_FILED_PING_DEDUP_MS,
+      )
+    ) {
+      try {
+        const tenantPhoneRaw: string | undefined = event.tenant_phone_number;
+        if (tenantPhoneRaw) {
+          const tenantPhone =
+            this.utilService.normalizePhoneNumber(tenantPhoneRaw);
+          await this.templateSenderService.sendTenantConfirmFiledRequest({
+            phone_number: tenantPhone,
+            tenant_name: this.utilService.toSentenceCase(
+              (event.tenant_name ?? '').split(' ')[0] ?? 'there',
+            ),
+            filer_label: `Your landlord ${event.creator_name ?? 'team'}`,
+            property_or_area_name:
+              event.property_name ?? event.common_area_name ?? 'your residence',
+            maintenance_request: this.utilService.sanitizeTemplateParam(
+              event.description ?? '',
+            ),
+            maintenance_request_id: event.maintenance_request_id,
+          });
+        } else {
+          this.logger.warn(
+            `Cannot send tenant_confirm_filed_request: no tenant phone for landlord-filed request ${requestId}`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Failed to send tenant_confirm_filed_request for landlord-filed ${requestId}: ${(err as Error)?.message ?? err}`,
         );
       }
     }
@@ -325,15 +472,25 @@ ${event.description ?? ''}`,
   @OnEvent('maintenance.tenant_confirmed')
   async handleTenantConfirmed(event: any): Promise<void> {
     const requestId: string = event.maintenance_request_id ?? event.request_id;
+    // Landlord-filed MRs auto-approve on tenant confirm — there's no further
+    // approve/reject step. The in-app notification reflects that, and the
+    // landlord-side approve/reject WhatsApp ping below is suppressed.
+    const isLandlordFiled = event.creator_type === 'landlord';
 
     try {
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.MAINTENANCE_REQUEST,
-        description: event.forced_by_landlord
-          ? `You confirmed on ${event.tenant_name ?? 'the tenant'}'s behalf. Approve or reject to assign a facility manager.
+        description: isLandlordFiled
+          ? event.forced_by_landlord
+            ? `You confirmed on ${event.tenant_name ?? 'the tenant'}'s behalf. Your request is now approved.
 ${event.description ?? ''}`
-          : `${event.tenant_name ?? 'The tenant'} confirmed the issue. Approve or reject to assign a facility manager.
+            : `${event.tenant_name ?? 'The tenant'} confirmed the issue you filed. The request is now approved.
+${event.description ?? ''}`
+          : event.forced_by_landlord
+            ? `You confirmed on ${event.tenant_name ?? 'the tenant'}'s behalf. Approve or reject to assign a facility manager.
+${event.description ?? ''}`
+            : `${event.tenant_name ?? 'The tenant'} confirmed the issue. Approve or reject to assign a facility manager.
 ${event.description ?? ''}`,
         status: 'Pending',
         property_id: event.property_id,
@@ -356,6 +513,35 @@ ${event.description ?? ''}`,
         this.FM_FILED_PING_DEDUP_MS,
       )
     ) {
+      return;
+    }
+
+    // Landlord-filed → informational ping (no approve/reject buttons; the
+    // request is already auto-approved). The FM ping, if any, is handled
+    // by the separate maintenance.assigned emit.
+    if (isLandlordFiled) {
+      try {
+        const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
+        if (!landlordPhone) return;
+        const landlordName = await this.resolveLandlordDisplayName(
+          event.landlord_id,
+        );
+        await this.templateSenderService.sendLandlordFiledRequestConfirmedByTenant(
+          {
+            phone_number: landlordPhone,
+            landlord_name: landlordName,
+            tenant_name: event.tenant_name || 'Your tenant',
+            property_name: event.property_name || 'your property',
+            maintenance_request: this.utilService.sanitizeTemplateParam(
+              event.description ?? '',
+            ),
+          },
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Failed to send landlord WA after landlord-filed tenant-confirm for ${requestId}: ${(err as Error)?.message ?? err}`,
+        );
+      }
       return;
     }
 
@@ -416,12 +602,16 @@ ${event.description ?? ''}`,
   @OnEvent('maintenance.tenant_denied')
   async handleTenantDenied(event: any): Promise<void> {
     const requestId: string = event.maintenance_request_id ?? event.request_id;
+    const isLandlordFiled = event.creator_type === 'landlord';
 
     try {
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.MAINTENANCE_REQUEST,
-        description: `${event.tenant_name ?? 'The tenant'} denied the maintenance request.
+        description: isLandlordFiled
+          ? `${event.tenant_name ?? 'The tenant'} denied the maintenance request you filed.
+${event.description ?? ''}`
+          : `${event.tenant_name ?? 'The tenant'} denied the maintenance request.
 ${event.description ?? ''}`,
         status: 'Pending',
         property_id: event.property_id,
@@ -449,18 +639,26 @@ ${event.description ?? ''}`,
       const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
       if (!landlordPhone) return;
 
-      await this.templateSenderService.sendLandlordFmRequestDeniedByTenant({
+      // Compose the {{3}} body slot so the message reads naturally after
+      // "denied the maintenance request":
+      //   - landlord-filed: "you filed"
+      //   - FM-filed:       "filed by your facility manager <name>"
+      const filedByLabel = isLandlordFiled
+        ? 'you filed'
+        : `filed by your facility manager ${event.creator_name ?? 'team'}`;
+
+      await this.templateSenderService.sendLandlordRequestDeniedByTenant({
         phone_number: landlordPhone,
         landlord_name: event.landlord_first_name ?? 'there',
         tenant_name: event.tenant_name ?? 'The tenant',
-        fm_name: event.creator_name ?? 'your facility manager',
+        filed_by_label: filedByLabel,
         maintenance_request: this.utilService.sanitizeTemplateParam(
           event.description ?? '',
         ),
       });
     } catch (err) {
       this.logger.warn(
-        `Failed to send landlord_fm_request_denied_by_tenant for ${requestId}: ${(err as Error)?.message ?? err}`,
+        `Failed to send landlord_request_denied_by_tenant for ${requestId}: ${(err as Error)?.message ?? err}`,
       );
     }
   }
@@ -561,12 +759,24 @@ ${event.description ?? ''}`,
 
   @OnEvent('maintenance.updated')
   async handleUpdate(event: any) {
+    // Skip in-app notification creation when the emitter already wrote a
+    // more specific row (e.g. tenant_confirmed handler wrote "Miss Akpati
+    // confirmed the issue you filed"). The event still propagates for
+    // downstream listeners (WS gateway / cache invalidation).
+    if (event?.skip_in_app_notification) return;
     try {
       const headline = this.buildMaintenanceHeadline(
         event.status,
         event.previous_status,
         event.property_name,
       );
+      // Per-event subtitle: on RESOLVED show the FM's note; on REOPENED
+      // show whatever the actor said (tenant feedback for tenant-initiated
+      // reopens, FM/landlord reopen_message otherwise). Other transitions
+      // (approved / closed / not_approved) don't carry a free-text note —
+      // skip the subtitle so the feed stays clean.
+      const subtitleSnippet = this.buildUpdateSubtitle(event);
+      const subtitleLine = subtitleSnippet ? `\n${subtitleSnippet}` : '';
       const assigneeLine = event.assigned_to_name
         ? `\nAssigned to ${event.assigned_to_name}.`
         : '';
@@ -574,7 +784,7 @@ ${event.description ?? ''}`,
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.MAINTENANCE_REQUEST,
-        description: `${headline}${assigneeLine}`,
+        description: `${headline}${subtitleLine}${assigneeLine}`,
         status: 'Pending',
         property_id: event.property_id,
         user_id: event.landlord_id,

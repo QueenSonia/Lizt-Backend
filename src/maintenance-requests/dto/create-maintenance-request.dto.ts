@@ -30,6 +30,7 @@ export enum MaintenanceRequestScopeEnum {
 export enum MaintenanceRequestCreatorTypeEnum {
   TENANT = 'tenant',
   FACILITY_MANAGER = 'facility_manager',
+  LANDLORD = 'landlord',
 }
 
 export class CreateMaintenanceRequestDto {
@@ -68,6 +69,28 @@ export class CreateMaintenanceRequestDto {
   @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean()
   is_urgent?: boolean;
+
+  @ApiProperty({ required: false, default: false })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  is_priority?: boolean;
+
+  @ApiProperty({
+    required: false,
+    description:
+      "TeamMember.id of the facility manager to assign. Landlord-filed MRs only; ignored for tenant- and FM-filed requests. Optional — landlord-filed MRs without an assignee land in APPROVED + unassigned.",
+  })
+  @IsOptional()
+  @IsUUID()
+  assigned_to?: string;
+
+  // Populated by the controller from the uploaded `issue_images` files
+  // (FilesInterceptor runs before validation, but the file → URL upload
+  // happens in the route handler — so this field arrives empty over the
+  // wire and gets filled in before reaching the service).
+  @IsOptional()
+  issue_images?: string[];
 }
 
 export class MaintenanceRequestFilter {

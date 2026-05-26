@@ -40,6 +40,7 @@ import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { PdfModule } from 'src/pdf/pdf.module';
 import { ChatModule } from 'src/chat/chat.module';
+import { IntentRouterModule } from './intent-router/intent-router.module';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { ChatModule } from 'src/chat/chat.module';
     TenantBalancesModule,
     PdfModule,
     ChatModule,
+    forwardRef(() => IntentRouterModule),
   ],
   controllers: [WhatsappBotController],
   providers: [

@@ -129,6 +129,7 @@ export class MaintenanceRequest extends BaseEntity {
     enum: [
       MaintenanceRequestCreatorTypeEnum.TENANT,
       MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER,
+      MaintenanceRequestCreatorTypeEnum.LANDLORD,
     ],
     default: MaintenanceRequestCreatorTypeEnum.TENANT,
   })

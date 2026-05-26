@@ -16,7 +16,7 @@ export interface MaintenanceRequestCreatedEvent {
   tenant_name: string | null;
   tenant_phone_number?: string | null;
   property_location?: string | null;
-  creator_type?: 'tenant' | 'facility_manager';
+  creator_type?: 'tenant' | 'facility_manager' | 'landlord';
   creator_name?: string;
   scope?: 'unit' | 'common_area';
   is_urgent?: boolean;

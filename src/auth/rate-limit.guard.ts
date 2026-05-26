@@ -22,19 +22,30 @@ export class RateLimitGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
-    const identifier = request.body?.identifier || request.ip;
+    const rawIdentifier = request.body?.identifier || request.ip;
 
-    if (!identifier) {
+    if (!rawIdentifier) {
       return true;
     }
+
+    // Match UsersService.loginUser normalization so "+234…" / "0…" / mixed
+    // case emails all collapse to the same counter. Without this, a user can
+    // accidentally lock themselves out under one format while another format
+    // (same person, same account) still has a fresh counter.
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawIdentifier);
+    const identifier = isEmail
+      ? rawIdentifier.toLowerCase().trim()
+      : String(rawIdentifier).replace(/[\s\-()+]/g, '');
 
     const key = `rate_limit:login:${identifier}`;
 
     try {
+      // Pre-check before increment so a locked-out caller doesn't keep
+      // pushing the counter higher (cosmetic — also keeps the "remaining
+      // minutes" message stable across retries while locked).
       const attemptsStr = await this.cacheService.get<string>(key);
       const attempts = attemptsStr ? parseInt(attemptsStr, 10) : 0;
 
-      // Check if limit exceeded
       if (attempts >= this.maxAttempts) {
         const ttl = await this.cacheService.ttl(key);
         const remainingMinutes = Math.max(1, Math.ceil(ttl / 60));
@@ -44,12 +55,10 @@ export class RateLimitGuard implements CanActivate {
         );
       }
 
-      // Increment attempt count using setWithTtlSeconds to avoid millisecond conversion
-      await this.cacheService.setWithTtlSeconds(
-        key,
-        (attempts + 1).toString(),
-        this.windowSeconds,
-      );
+      // incrementWithTtlNx — TTL fixed to the first attempt so retries don't
+      // extend the window. Caller should invoke clearLimit() on successful
+      // auth to release the counter immediately.
+      await this.cacheService.incrementWithTtlNx(key, this.windowSeconds);
 
       return true;
     } catch (error) {
@@ -62,8 +71,13 @@ export class RateLimitGuard implements CanActivate {
     }
   }
 
-  // Method to clear rate limit for successful login
-  async clearLimit(identifier: string): Promise<void> {
+  // Method to clear rate limit for successful login. Apply same normalization
+  // as canActivate so the right key is targeted.
+  async clearLimit(rawIdentifier: string): Promise<void> {
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawIdentifier);
+    const identifier = isEmail
+      ? rawIdentifier.toLowerCase().trim()
+      : String(rawIdentifier).replace(/[\s\-()+]/g, '');
     const key = `rate_limit:login:${identifier}`;
     try {
       await this.cacheService.delete(key);

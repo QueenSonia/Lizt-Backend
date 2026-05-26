@@ -16,6 +16,10 @@ import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-re
 import { InjectRepository } from '@nestjs/typeorm';
 import { MaintenanceRequest } from './entities/maintenance-request.entity';
 import { MaintenanceRequestStatusHistory } from './entities/maintenance-request-status-history.entity';
+import {
+  MaintenanceResolutionAttempt,
+  ResolutionAttemptOutcomeEnum,
+} from './entities/maintenance-resolution-attempt.entity';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { buildMaintenanceRequestFilter } from 'src/filters/query-filter';
 import { UtilService } from 'src/utils/utility-service';
@@ -67,6 +71,8 @@ export class MaintenanceRequestsService {
     private readonly maintenanceRequestRepository: Repository<MaintenanceRequest>,
     @InjectRepository(MaintenanceRequestStatusHistory)
     private readonly statusHistoryRepository: Repository<MaintenanceRequestStatusHistory>,
+    @InjectRepository(MaintenanceResolutionAttempt)
+    private readonly resolutionAttemptRepository: Repository<MaintenanceResolutionAttempt>,
     @InjectRepository(PropertyTenant)
     private readonly propertyTenantRepository: Repository<PropertyTenant>,
     @InjectRepository(Property)
@@ -121,6 +127,9 @@ export class MaintenanceRequestsService {
     this.assertScopeIdsCoherent(data);
     if (actor?.role === RolesEnum.FACILITY_MANAGER) {
       return this.createMaintenanceRequestAsFacilityManager(data, actor);
+    }
+    if (actor?.role === RolesEnum.LANDLORD) {
+      return this.createMaintenanceRequestAsLandlord(data, actor);
     }
     return this.createMaintenanceRequestAsTenant(data, actor);
   }
@@ -458,17 +467,23 @@ export class MaintenanceRequestsService {
 
     // actor.id is Account.id; common_area.owner_id is Users.id (per the
     // CommonArea schema), so we resolve the landlord's Users.id via the
-    // team creator's user relation and match the FM by account id.
+    // team creator's user relation and match the FM by account id. Also
+    // surface the landlord's Account.id from the same join — downstream
+    // listeners (notification FK, etc.) need an Account.id, never a User.id.
     const teamedWithOwner = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .innerJoin('team.creator', 'creatorAccount')
       .innerJoin('creatorAccount.user', 'landlordUser')
+      .addSelect('creatorAccount.id', 'landlord_account_id')
       .where('tm.accountId = :accountId', { accountId: actor.id })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
       .andWhere('landlordUser.id = :ownerId', { ownerId: commonArea.owner_id })
-      .getOne();
-    if (!teamedWithOwner) {
+      .getRawAndEntities();
+    const teamMembership = teamedWithOwner.entities[0];
+    const landlordAccountId =
+      teamedWithOwner.raw[0]?.landlord_account_id as string | undefined;
+    if (!teamMembership || !landlordAccountId) {
       throw new HttpException(
         "You are not authorized to file requests for this landlord's common areas",
         HttpStatus.FORBIDDEN,
@@ -508,7 +523,7 @@ export class MaintenanceRequestsService {
       this.eventEmitter.emit('maintenance.created', {
         user_id: actor.id,
         property_id: null,
-        landlord_id: commonArea.owner_id,
+        landlord_id: landlordAccountId,
         common_area_id: commonArea.id,
         common_area_name: commonArea.name,
         tenant_id: null,
@@ -525,6 +540,334 @@ export class MaintenanceRequestsService {
       });
     } catch (error) {
       this.logger.error('Failed to emit service.created event:', error);
+    }
+
+    return {
+      ...savedRequest,
+      common_area: {
+        id: commonArea.id,
+        name: commonArea.name,
+        address: commonArea.address,
+        owner_id: commonArea.owner_id,
+      },
+    };
+  }
+
+  /**
+   * Landlord files a maintenance request on their own property or common area.
+   * Differs from the FM-filed path:
+   *   - No approval step. Landlord-filed MRs never enter NOT_APPROVED. If
+   *     there's an active tenant, they pass through PENDING_TENANT_CONFIRMATION
+   *     and auto-flip to APPROVED on tenant confirm (see
+   *     confirmTenantMaintenanceRequest). Vacant / common-area / sub-leasing
+   *     cases go straight to APPROVED.
+   *   - FM assignment is optional at submit time. With an FM picked, the request
+   *     also fires maintenance.assigned right away (or post-confirm). Without
+   *     one, the request lands in APPROVED + assigned_to=null and the landlord
+   *     can pick an FM later via PATCH /:id/assignee.
+   */
+  private async createMaintenanceRequestAsLandlord(
+    data: CreateMaintenanceRequestDto,
+    actor: RequestActor,
+  ): Promise<any> {
+    const scope = data.scope ?? MaintenanceRequestScopeEnum.UNIT;
+    const landlordUserId = await this.resolveActorUserId(actor.id);
+
+    // Resolve the landlord's display name. accounts.profile_name is canonical
+    // (may be a business name); first+last is the fallback. See
+    // project_landlord_display_name memory.
+    const landlordAccount = await this.accountRepository.findOne({
+      where: { id: actor.id },
+      relations: ['user'],
+    });
+    const landlordUser = landlordAccount?.user ?? null;
+    const landlordName =
+      landlordAccount?.profile_name?.trim() ||
+      (landlordUser
+        ? `${landlordUser.first_name ?? ''} ${landlordUser.last_name ?? ''}`.trim() ||
+          'Landlord'
+        : 'Landlord');
+
+    // Validate optional assignee. Mirrors approveAndAssignMaintenanceRequest's
+    // gate — must be on the landlord's own team AND have role FACILITY_MANAGER.
+    let assigneeTm: TeamMember | null = null;
+    if (data.assigned_to) {
+      assigneeTm = await this.teamMemberRepository.findOne({
+        where: { id: data.assigned_to },
+        relations: ['team', 'account', 'account.user'],
+      });
+      if (!assigneeTm) {
+        throw new HttpException(
+          'Facility manager not found',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+      if (assigneeTm.team?.creatorId !== actor.id) {
+        throw new HttpException(
+          'Assignee must be a facility manager on your team',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+      if (assigneeTm.role !== RolesEnum.FACILITY_MANAGER) {
+        throw new HttpException(
+          'Assignee must be a facility manager',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+    }
+    const assigneeFmName = assigneeTm
+      ? this.formatTeamMemberLabel(assigneeTm)
+      : null;
+
+    if (scope === MaintenanceRequestScopeEnum.COMMON_AREA) {
+      return this.createCommonAreaRequestAsLandlord(
+        data,
+        actor,
+        landlordUserId,
+        landlordName,
+        assigneeTm,
+        assigneeFmName,
+      );
+    }
+
+    // scope === UNIT — landlord must own the property
+    const property = await this.propertyRepository.findOne({
+      where: { id: data.property_id },
+    });
+    if (!property) {
+      throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+    }
+    if (property.owner_id !== actor.id) {
+      throw new HttpException(
+        'You do not own this property',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    // Resolve active tenancy. Same three-branch defence as the FM path.
+    const activeTenancies = await this.propertyTenantRepository.find({
+      where: {
+        property_id: property.id,
+        status: TenantStatusEnum.ACTIVE,
+      },
+      relations: ['tenant', 'tenant.user'],
+    });
+    if (activeTenancies.length > 1) {
+      throw new HttpException(
+        'Multiple active tenancies on this property; resolve before filing',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    const tenancy = activeTenancies[0] ?? null;
+    const tenantUser = tenancy?.tenant?.user ?? null;
+    const tenantAccountId = tenancy?.tenant?.id ?? null;
+    const tenantDisplayName = tenantUser
+      ? `${tenantUser.first_name ?? ''} ${tenantUser.last_name ?? ''}`.trim() ||
+        null
+      : null;
+
+    // Sub-leasing edge: landlord is also the active tenant on their own unit.
+    // No third party to confirm with — skip the tenant gate and auto-approve.
+    const tenantIsLandlord = tenantUser?.id === landlordUserId;
+    const gateOnTenant = !!tenancy && !tenantIsLandlord;
+
+    const initialStatus = gateOnTenant
+      ? MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION
+      : MaintenanceRequestStatusEnum.APPROVED;
+
+    const request = this.maintenanceRequestRepository.create({
+      request_id: this.utilService.generateMaintenanceRequestId(),
+      tenant_id: tenantAccountId,
+      property_id: property.id,
+      common_area_id: null,
+      tenant_name: tenantDisplayName,
+      property_name: property.name,
+      issue_category: 'service',
+      date_reported: new Date(),
+      description: data.text,
+      status: initialStatus,
+      scope,
+      is_urgent: data.is_urgent ?? false,
+      is_priority: data.is_priority ?? false,
+      creator_type: MaintenanceRequestCreatorTypeEnum.LANDLORD,
+      creator_user_id: landlordUserId,
+      assigned_to: (assigneeTm?.id as any) ?? null,
+      approved_at:
+        initialStatus === MaintenanceRequestStatusEnum.APPROVED
+          ? new Date()
+          : null,
+    });
+
+    const savedRequest = await this.maintenanceRequestRepository.save(request);
+
+    await this.createStatusHistoryEntry(
+      savedRequest.id,
+      null,
+      initialStatus,
+      landlordUserId,
+      'landlord',
+      `Maintenance request created by ${landlordName}`,
+    );
+
+    const basePayload = {
+      user_id: actor.id,
+      property_id: property.id,
+      landlord_id: property.owner_id,
+      tenant_id: tenantAccountId,
+      tenant_name: tenantDisplayName,
+      tenant_phone_number: tenantUser?.phone_number ?? null,
+      property_name: property.name,
+      property_location: property.location,
+      maintenance_request_id: savedRequest.id,
+      request_id: savedRequest.request_id,
+      description: data.text,
+      created_at: savedRequest.created_at,
+      creator_type: MaintenanceRequestCreatorTypeEnum.LANDLORD,
+      creator_name: landlordName,
+      scope: savedRequest.scope,
+      is_urgent: savedRequest.is_urgent,
+    };
+
+    try {
+      if (gateOnTenant) {
+        this.eventEmitter.emit(
+          'maintenance.landlord_filed_pending_tenant',
+          basePayload,
+        );
+      } else {
+        this.eventEmitter.emit('maintenance.created', basePayload);
+        if (assigneeTm) {
+          this.eventEmitter.emit('maintenance.assigned', {
+            maintenance_request_id: savedRequest.id,
+            request_id: savedRequest.request_id,
+            previous_assignee: null,
+            previous_assignee_name: 'unassigned',
+            new_assignee: assigneeTm.id,
+            new_assignee_name: assigneeFmName,
+            landlord_id: property.owner_id,
+            property_id: property.id,
+            common_area_id: null,
+            description: data.text,
+            tenant_id: tenantAccountId,
+            created_at: new Date(),
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to emit landlord-create event:', error);
+    }
+
+    return {
+      ...savedRequest,
+      property_name: property.name,
+      property_location: property.location,
+    };
+  }
+
+  /**
+   * Landlord files a request scoped to a specific common area they own.
+   * Always lands in APPROVED (no tenant on a common area, no approval step).
+   */
+  private async createCommonAreaRequestAsLandlord(
+    data: CreateMaintenanceRequestDto,
+    actor: RequestActor,
+    landlordUserId: string,
+    landlordName: string,
+    assigneeTm: TeamMember | null,
+    assigneeFmName: string | null,
+  ): Promise<any> {
+    const commonArea = await this.commonAreaRepository.findOne({
+      where: { id: data.common_area_id },
+    });
+    if (!commonArea) {
+      throw new HttpException('Common area not found', HttpStatus.NOT_FOUND);
+    }
+    // common_area.owner_id is Users.id, not Account.id
+    if (commonArea.owner_id !== landlordUserId) {
+      throw new HttpException(
+        'You do not own this common area',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    const initialStatus = MaintenanceRequestStatusEnum.APPROVED;
+
+    const request = this.maintenanceRequestRepository.create({
+      request_id: this.utilService.generateMaintenanceRequestId(),
+      tenant_id: null,
+      property_id: null,
+      property_name: null,
+      common_area_id: commonArea.id,
+      tenant_name: null,
+      issue_category: 'service',
+      date_reported: new Date(),
+      description: data.text,
+      status: initialStatus,
+      scope: MaintenanceRequestScopeEnum.COMMON_AREA,
+      is_urgent: data.is_urgent ?? false,
+      is_priority: data.is_priority ?? false,
+      creator_type: MaintenanceRequestCreatorTypeEnum.LANDLORD,
+      creator_user_id: landlordUserId,
+      assigned_to: (assigneeTm?.id as any) ?? null,
+      approved_at: new Date(),
+    });
+
+    const savedRequest = await this.maintenanceRequestRepository.save(request);
+
+    await this.createStatusHistoryEntry(
+      savedRequest.id,
+      null,
+      initialStatus,
+      landlordUserId,
+      'landlord',
+      `Maintenance request created by ${landlordName}`,
+    );
+
+    // common_area.owner_id is a Users.id, but every downstream listener
+    // (notification FK, WhatsApp templates, dashboard caches) expects an
+    // Account.id for landlord_id. For landlord-filed common-area MRs the
+    // acting landlord IS the owner, so actor.id (the JWT's Account.id —
+    // per req_user_id_is_account_id memory) is the correct value.
+    try {
+      this.eventEmitter.emit('maintenance.created', {
+        user_id: actor.id,
+        property_id: null,
+        landlord_id: actor.id,
+        common_area_id: commonArea.id,
+        common_area_name: commonArea.name,
+        tenant_id: null,
+        tenant_name: null,
+        property_name: null,
+        maintenance_request_id: savedRequest.id,
+        request_id: savedRequest.request_id,
+        description: data.text,
+        created_at: savedRequest.created_at,
+        creator_type: MaintenanceRequestCreatorTypeEnum.LANDLORD,
+        creator_name: landlordName,
+        scope: savedRequest.scope,
+        is_urgent: savedRequest.is_urgent,
+      });
+      if (assigneeTm) {
+        this.eventEmitter.emit('maintenance.assigned', {
+          maintenance_request_id: savedRequest.id,
+          request_id: savedRequest.request_id,
+          previous_assignee: null,
+          previous_assignee_name: 'unassigned',
+          new_assignee: assigneeTm.id,
+          new_assignee_name: assigneeFmName,
+          landlord_id: actor.id,
+          property_id: null,
+          common_area_id: commonArea.id,
+          description: data.text,
+          tenant_id: null,
+          created_at: new Date(),
+        });
+      }
+    } catch (error) {
+      this.logger.error(
+        'Failed to emit landlord common-area create event:',
+        error,
+      );
     }
 
     return {
@@ -623,10 +966,17 @@ export class MaintenanceRequestsService {
         });
       }
     } else {
-      // Landlord view: own properties OR own common areas.
+      // Landlord view: own properties OR own common areas. The two scopes
+      // store the owner in different shapes:
+      //   property.owner_id     → Account.id
+      //   common_area.owner_id  → Users.id
+      // (see project_req_user_id_is_account_id memory). Compare each against
+      // the right column — without this, the landlord branch silently
+      // excludes every common-area MR.
+      const ownerUserId = await this.resolveActorUserId(user_id);
       qb.andWhere(
-        '(property.owner_id = :ownerId OR commonAreaOwner.id = :ownerId)',
-        { ownerId: user_id },
+        '(property.owner_id = :ownerAccountId OR commonAreaOwner.id = :ownerUserId)',
+        { ownerAccountId: user_id, ownerUserId },
       );
     }
 
@@ -955,17 +1305,36 @@ export class MaintenanceRequestsService {
       safeUpdate.is_priority = false;
     }
 
-    // Resolve user.id once up-front (read-only, fine to do outside the txn).
-    // The status-history row's changed_by_user_id FK points at users.id, but
-    // `userId` here is the JWT's account.id — see resolveActorUserId.
+    // Resolve user.id + display name once up-front (read-only, fine to do
+    // outside the txn). The status-history row's changed_by_user_id FK
+    // points at users.id, but `userId` here is the JWT's account.id — see
+    // resolveActorUserId. The resolved name is snapshotted onto the new
+    // resolution-attempt row so the card keeps rendering "Resolved by X"
+    // after any future rename/delete of the account.
     const isStatusChange = !!(targetStatus && targetStatus !== previousStatus);
-    const actorUserId = isStatusChange
-      ? await this.resolveActorUserId(userId)
-      : null;
+    let actorUserId: string | null = null;
+    let actorDisplayName: string | null = null;
+    if (isStatusChange) {
+      const actorAccount = await this.accountRepository.findOne({
+        where: { id: userId },
+        relations: ['user'],
+      });
+      if (!actorAccount?.user?.id) {
+        throw new HttpException(
+          'Could not resolve current user for audit log',
+          HttpStatus.UNAUTHORIZED,
+        );
+      }
+      actorUserId = actorAccount.user.id;
+      const rawName =
+        `${actorAccount.user.first_name ?? ''} ${actorAccount.user.last_name ?? ''}`.trim();
+      actorDisplayName =
+        actorAccount.profile_name?.trim() || rawName || null;
+    }
 
-    // Status update + history insert must be atomic — otherwise a failed
-    // history insert leaves the entity flipped but the audit trail missing,
-    // and the mutation returns an error so the FE never invalidates.
+    // Status update + history insert + (when resolving) attempt-snapshot
+    // insert must all be atomic — a failed history or attempt insert leaves
+    // the entity flipped without its audit trail / history card.
     await this.dataSource.transaction(async (manager) => {
       if (Object.keys(safeUpdate).length > 0) {
         await manager.update(MaintenanceRequest, id, safeUpdate);
@@ -990,6 +1359,37 @@ export class MaintenanceRequestsService {
           data.reopen_message,
           manager,
         );
+
+        if (targetStatus === MaintenanceRequestStatusEnum.RESOLVED) {
+          await this.insertResolutionAttemptSnapshot(manager, {
+            maintenanceRequestId: id,
+            resolutionDate: safeUpdate.resolution_date as Date,
+            resolutionCategory: safeUpdate.resolution_category as string,
+            resolutionSummary: safeUpdate.resolution_summary as string,
+            resolutionCostMinor:
+              safeUpdate.resolution_cost_minor ?? null,
+            artisanId: safeUpdate.artisan_id ?? null,
+            artisanName: safeUpdate.artisan_name_snapshot ?? null,
+            artisanPhone: safeUpdate.artisan_phone_snapshot ?? null,
+            resolvedByUserId: actorUserId,
+            resolvedByName: actorDisplayName,
+          });
+        }
+
+        if (targetStatus === MaintenanceRequestStatusEnum.REOPENED) {
+          // Same rule as the WhatsApp updateStatus path: only the tenant's
+          // reopen message lands on the attempt row. FM/landlord reopen
+          // notes stay in status_history under their original column.
+          const denialReason =
+            actorRole === 'tenant' && data.reopen_message
+              ? data.reopen_message
+              : undefined;
+          await this.patchLatestAttemptOutcome(
+            id,
+            ResolutionAttemptOutcomeEnum.REOPENED,
+            { denialReason, manager },
+          );
+        }
       }
     });
 
@@ -1019,6 +1419,17 @@ export class MaintenanceRequestsService {
         creator_type: updatedMaintenanceRequest.creator_type,
         creator_user_id: updatedMaintenanceRequest.creator_user_id,
         description: updatedMaintenanceRequest.description,
+        // Per-event subtitle inputs for the live feed: FM's note on resolve,
+        // actor's reason on reopen. Only set on the transition that
+        // produced them so the listener can pick the right one.
+        resolution_summary:
+          targetStatus === MaintenanceRequestStatusEnum.RESOLVED
+            ? data.resolution_summary ?? null
+            : null,
+        reopen_message:
+          targetStatus === MaintenanceRequestStatusEnum.REOPENED
+            ? data.reopen_message ?? null
+            : null,
         updated_at: new Date(),
         actor: { id: userId, role: actorRole },
       });
@@ -1028,12 +1439,130 @@ export class MaintenanceRequestsService {
   }
 
   /**
+   * Inserts a maintenance_resolution_attempts row capturing the FM's
+   * resolve snapshot. Caller passes the EntityManager so this runs inside
+   * the same transaction as the MR status flip + status_history insert —
+   * either all three land or none do. attempt_number = MAX+1 for this MR;
+   * the unique constraint on (mr_id, attempt_number) plus the txn-level
+   * lock on the MR row (taken by the preceding manager.update) keep
+   * concurrent resolves from colliding on the same number.
+   */
+  private async insertResolutionAttemptSnapshot(
+    manager: EntityManager,
+    params: {
+      maintenanceRequestId: string;
+      resolutionDate: Date;
+      resolutionCategory: string;
+      resolutionSummary: string;
+      resolutionCostMinor: number | null;
+      artisanId: string | null;
+      artisanName: string | null;
+      artisanPhone: string | null;
+      resolvedByUserId: string | null;
+      resolvedByName: string | null;
+    },
+  ): Promise<void> {
+    const repo = manager.getRepository(MaintenanceResolutionAttempt);
+    const maxRow = await repo
+      .createQueryBuilder('a')
+      .select('COALESCE(MAX(a.attempt_number), 0)', 'max')
+      .where('a.maintenance_request_id = :id', {
+        id: params.maintenanceRequestId,
+      })
+      .getRawOne<{ max: string }>();
+    const nextNumber = Number(maxRow?.max ?? 0) + 1;
+
+    await repo.insert({
+      maintenance_request_id: params.maintenanceRequestId,
+      attempt_number: nextNumber,
+      resolution_date: params.resolutionDate,
+      resolution_category: params.resolutionCategory as never,
+      resolution_summary: params.resolutionSummary,
+      resolution_cost_minor: params.resolutionCostMinor,
+      artisan_id: params.artisanId,
+      artisan_name_snapshot: params.artisanName,
+      artisan_phone_snapshot: params.artisanPhone,
+      resolved_by_user_id: params.resolvedByUserId,
+      resolved_by_name_snapshot: params.resolvedByName,
+      outcome: ResolutionAttemptOutcomeEnum.PENDING,
+    });
+  }
+
+  /**
+   * Patches the latest (highest attempt_number) attempt row for this MR with
+   * the given outcome. No-op when no attempt rows exist — that's the case
+   * for MRs that have never been resolved (or were resolved before the
+   * 1820000000000 migration and skipped backfill, e.g. were rejected and
+   * never had a resolution_date). Idempotent: re-applying the same outcome
+   * just refreshes outcome_decided_at.
+   */
+  private async patchLatestAttemptOutcome(
+    maintenanceRequestId: string,
+    outcome: ResolutionAttemptOutcomeEnum,
+    opts?: {
+      denialReason?: string | null;
+      manager?: EntityManager;
+    },
+  ): Promise<void> {
+    const repo = opts?.manager
+      ? opts.manager.getRepository(MaintenanceResolutionAttempt)
+      : this.resolutionAttemptRepository;
+    const latest = await repo.findOne({
+      where: { maintenance_request_id: maintenanceRequestId },
+      order: { attempt_number: 'DESC' },
+    });
+    if (!latest) return;
+
+    latest.outcome = outcome;
+    latest.outcome_decided_at = new Date();
+    if (opts?.denialReason !== undefined) {
+      latest.tenant_denial_reason = opts.denialReason;
+    }
+    await repo.save(latest);
+  }
+
+  /**
+   * Patches just the tenant_denial_reason on the latest attempt row — used
+   * by the optional WhatsApp follow-up after a tenant deny / reopen. Does
+   * NOT change outcome (the deny / reopen already set it). Verifies the
+   * caller is the tenant on this MR before writing — symmetric with
+   * updateTenantDenialReason; without this check anyone with a request id
+   * could patch any MR's denial reason.
+   */
+  async patchLatestAttemptDenialReason(
+    maintenanceRequestId: string,
+    tenantAccountId: string,
+    denialReason: string,
+  ): Promise<void> {
+    const mr = await this.maintenanceRequestRepository.findOne({
+      where: { id: maintenanceRequestId },
+    });
+    if (!mr) {
+      throw new NotFoundException('Maintenance request not found');
+    }
+    if (mr.tenant_id !== tenantAccountId) {
+      throw new HttpException(
+        'You cannot act on this request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    const latest = await this.resolutionAttemptRepository.findOne({
+      where: { maintenance_request_id: maintenanceRequestId },
+      order: { attempt_number: 'DESC' },
+    });
+    if (!latest) return;
+    latest.tenant_denial_reason = denialReason;
+    await this.resolutionAttemptRepository.save(latest);
+  }
+
+  /**
    * Records a "reopen note" history row for a request that's already in the
    * REOPENED state. Skips the insert if the same user submitted the same
    * reopen_message within the last 2 seconds — defends against double-clicks
    * on the FE.
    */
-  private async appendReopenNoteWithDedup(
+  async appendReopenNoteWithDedup(
     maintenanceRequestId: string,
     userId: string,
     actorRole: 'landlord' | 'tenant' | 'facility_manager',
@@ -1101,6 +1630,12 @@ export class MaintenanceRequestsService {
 
     const query = await buildMaintenanceRequestFilter(queryParams);
 
+    // property.owner_id is Account.id; common_area.owner_id is Users.id —
+    // same shape mismatch as getAllMaintenanceRequests. Resolve the
+    // landlord's Users.id once and compare each scope against the right
+    // column.
+    const ownerUserId = await this.resolveActorUserId(owner_id);
+
     // "Needs attention": still awaiting landlord approval OR flagged urgent
     // (regardless of where it sits in the lifecycle). Owned via property OR
     // via common_area — common-area requests carry no property at all.
@@ -1115,8 +1650,8 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('sr.statusHistory', 'history')
       .leftJoinAndSelect('history.changedBy', 'changedBy')
       .where(
-        '(property.owner_id = :owner_id OR commonAreaOwner.id = :owner_id)',
-        { owner_id },
+        '(property.owner_id = :ownerAccountId OR commonAreaOwner.id = :ownerUserId)',
+        { ownerAccountId: owner_id, ownerUserId },
       )
       .andWhere('(sr.status = :notApproved OR sr.is_urgent = :urgent)', {
         notApproved: MaintenanceRequestStatusEnum.NOT_APPROVED,
@@ -1205,6 +1740,37 @@ export class MaintenanceRequestsService {
     }
 
     return request;
+  }
+
+  /**
+   * Returns the per-resolve history for a request, newest attempt first.
+   * Restricted to landlord + facility_manager actors on the MR — tenants
+   * see the latest resolution via the regular MR fetch, not the historical
+   * list (deliberately: their UI shows confirm/deny prompts, not an audit).
+   */
+  async getResolutionAttempts(id: string, userId: string) {
+    const maintenanceRequest = await this.maintenanceRequestRepository.findOne({
+      where: { id },
+      relations: ['property', 'common_area'],
+    });
+    if (!maintenanceRequest) {
+      throw new HttpException(
+        'Maintenance request not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const role = await this.resolveActorRole(maintenanceRequest, userId);
+    if (role !== 'landlord' && role !== 'facility_manager') {
+      throw new HttpException(
+        'You do not have permission to view resolution history for this request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    return this.resolutionAttemptRepository.find({
+      where: { maintenance_request_id: id },
+      order: { attempt_number: 'DESC' },
+    });
   }
 
   /**
@@ -1360,9 +1926,13 @@ export class MaintenanceRequestsService {
       not_approved: 'Issue reported',
       pending_tenant_confirmation: 'Issue reported — awaiting tenant confirmation',
       tenant_confirmed: 'Tenant confirmed the issue',
+      tenant_confirmed_auto_approved:
+        'Tenant confirmed the issue — auto-approved',
       tenant_denied: 'Tenant denied the report',
       denied_by_tenant: 'Tenant denied the report',
       landlord_force_confirmed: 'Landlord confirmed on tenant’s behalf',
+      landlord_force_confirmed_auto_approved:
+        'Landlord confirmed on tenant’s behalf — auto-approved',
       rejected: 'Rejected by landlord',
     };
     const fullName = (f?: string | null, l?: string | null) =>
@@ -1378,6 +1948,14 @@ export class MaintenanceRequestsService {
         h.previous_status ===
           MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION &&
         h.new_status === MaintenanceRequestStatusEnum.NOT_APPROVED;
+      // Landlord-filed MRs auto-approve straight from the tenant-confirmation
+      // gate (no NOT_APPROVED interstitial). Surface as a distinct event so
+      // the activity feed says "tenant confirmed — auto-approved" rather than
+      // a generic "Approved by landlord".
+      const isTenantConfirmAutoApproved =
+        h.previous_status ===
+          MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION &&
+        h.new_status === MaintenanceRequestStatusEnum.APPROVED;
       const isTenantDeny =
         h.previous_status ===
           MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION &&
@@ -1391,9 +1969,13 @@ export class MaintenanceRequestsService {
             ? h.changed_by_role === 'landlord'
               ? 'landlord_force_confirmed'
               : 'tenant_confirmed'
-            : isTenantDeny
-              ? 'tenant_denied'
-              : (h.new_status as string);
+            : isTenantConfirmAutoApproved
+              ? h.changed_by_role === 'landlord'
+                ? 'landlord_force_confirmed_auto_approved'
+                : 'tenant_confirmed_auto_approved'
+              : isTenantDeny
+                ? 'tenant_denied'
+                : (h.new_status as string);
 
       const title = titleByEvent[event_type] ?? `Status: ${h.new_status}`;
       const eventNote = h.notes || h.change_reason || '';
@@ -1704,6 +2286,32 @@ export class MaintenanceRequestsService {
             HttpStatus.FORBIDDEN,
           );
         }
+        // FM-filed and tenant-filed land in NOT_APPROVED on confirm. Landlord-
+        // filed MRs skip NOT_APPROVED (see the ->APPROVED case below).
+        if (creatorType === MaintenanceRequestCreatorTypeEnum.LANDLORD) {
+          throw new HttpException(
+            'Landlord-filed requests auto-approve on tenant confirmation; transition to APPROVED instead',
+            HttpStatus.CONFLICT,
+          );
+        }
+        return;
+
+      // Landlord-filed MRs auto-approve on tenant confirmation (no separate
+      // landlord-approval step). Only the tenant (confirm) or the landlord
+      // (force-confirm) can drive this.
+      case `${MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION}->${MaintenanceRequestStatusEnum.APPROVED}`:
+        if (creatorType !== MaintenanceRequestCreatorTypeEnum.LANDLORD) {
+          throw new HttpException(
+            'Only landlord-filed requests can transition straight from pending tenant confirmation to approved',
+            HttpStatus.CONFLICT,
+          );
+        }
+        if (actorRole !== 'tenant' && actorRole !== 'landlord') {
+          throw new HttpException(
+            'Only the tenant on this request (or the landlord, force-confirming) can confirm it',
+            HttpStatus.FORBIDDEN,
+          );
+        }
         return;
 
       case `${MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION}->${MaintenanceRequestStatusEnum.DENIED_BY_TENANT}`:
@@ -1761,7 +2369,35 @@ export class MaintenanceRequestsService {
         `Status changed from ${previousStatus} to ${status}`,
         notes,
       );
-    } else {
+    }
+
+    // Mirror the dashboard update() path: keep the latest resolution-attempt
+    // row's outcome in sync. The transitions that actually correspond to
+    // resolution outcomes are RESOLVED → CLOSED (tenant confirmed via
+    // WhatsApp "Yes it's fixed") and RESOLVED → REOPENED (tenant tapped
+    // "No, not yet", or FM/landlord reopened from dashboard). The
+    // creation-gate transitions (PENDING_TENANT_CONFIRMATION → NOT_APPROVED
+    // and PENDING_TENANT_CONFIRMATION → DENIED_BY_TENANT) are NOT resolution
+    // outcomes — they predate any FM resolve.
+    if (status === MaintenanceRequestStatusEnum.REOPENED) {
+      // Only stash the message on the attempt row when the tenant is the
+      // one rejecting. FM / landlord reopen notes belong in status_history
+      // (the tenant_denial_reason column name would be misleading).
+      const denialReason =
+        actor?.role === 'tenant' && notes ? notes : undefined;
+      await this.patchLatestAttemptOutcome(
+        savedRequest.id,
+        ResolutionAttemptOutcomeEnum.REOPENED,
+        { denialReason },
+      );
+    } else if (status === MaintenanceRequestStatusEnum.CLOSED) {
+      await this.patchLatestAttemptOutcome(
+        savedRequest.id,
+        ResolutionAttemptOutcomeEnum.CONFIRMED,
+      );
+    }
+
+    if (!actor?.id) {
       this.logger.warn(
         `Status history entry skipped for request ${savedRequest.id}: no actor.id provided (${previousStatus} → ${status})`,
       );
@@ -1782,6 +2418,16 @@ export class MaintenanceRequestsService {
       creator_type: request.creator_type,
       creator_user_id: request.creator_user_id,
       description: request.description,
+      // For updateStatus the `notes` parameter carries the actor's note
+      // (FM's resolution summary OR tenant/FM reopen reason, depending on
+      // the transition). The WhatsApp tenant "No, not yet" path passes a
+      // canned phrase here; if the tenant later texts a follow-up reason,
+      // it patches the attempt row directly and the live-feed entry stays
+      // as-was (the resolution-history card surfaces the real text).
+      resolution_summary:
+        status === MaintenanceRequestStatusEnum.RESOLVED ? notes ?? null : null,
+      reopen_message:
+        status === MaintenanceRequestStatusEnum.REOPENED ? notes ?? null : null,
       updated_at: new Date(),
       actor,
     });
@@ -2067,25 +2713,47 @@ export class MaintenanceRequestsService {
       );
     }
 
+    // Landlord-filed MRs skip the NOT_APPROVED interstitial because there's
+    // no separate approval step — the landlord is the creator. Tenant-confirm
+    // auto-approves and (if an FM was picked at create time) fires the
+    // assignment notification right now.
+    const isLandlordFiled =
+      sr.creator_type === MaintenanceRequestCreatorTypeEnum.LANDLORD;
+    const newStatus = isLandlordFiled
+      ? MaintenanceRequestStatusEnum.APPROVED
+      : MaintenanceRequestStatusEnum.NOT_APPROVED;
+
     await this.dataSource.transaction(async (manager) => {
       await manager.update(MaintenanceRequest, requestId, {
-        status: MaintenanceRequestStatusEnum.NOT_APPROVED,
+        status: newStatus,
+        ...(isLandlordFiled ? { approved_at: new Date() } : {}),
       });
       await this.createStatusHistoryEntry(
         requestId,
         previousStatus,
-        MaintenanceRequestStatusEnum.NOT_APPROVED,
+        newStatus,
         tenantUserId,
         'tenant',
         `Tenant confirmed via ${source === 'whatsapp' ? 'WhatsApp' : 'Dashboard'}`,
         undefined,
         manager,
       );
+      // Intentionally no attempt-row patch here: this transition confirms
+      // the FM-filed *creation* gate, not a resolution. Resolution-attempt
+      // rows don't exist until the FM actually resolves the request.
     });
 
     const updated = await this.maintenanceRequestRepository.findOne({
       where: { id: requestId },
-      relations: ['property', 'common_area', 'tenant', 'tenant.user'],
+      relations: [
+        'property',
+        'common_area',
+        'tenant',
+        'tenant.user',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
     });
 
     if (updated) {
@@ -2113,6 +2781,72 @@ export class MaintenanceRequestsService {
           'Failed to emit maintenance.tenant_confirmed:',
           error,
         );
+      }
+
+      // Mirror the maintenance.updated emit on every status-change path so
+      // downstream listeners (WS bridge → live-feed cache invalidation, etc.)
+      // refresh in lockstep with the in-app notification created by the
+      // tenant_confirmed listener above. The `skip_in_app_notification` flag
+      // prevents handleUpdate from writing a duplicate notification row —
+      // the tenant_confirmed listener already wrote the specific one.
+      try {
+        this.eventEmitter.emit('maintenance.updated', {
+          request_id: updated.id,
+          status: updated.status,
+          previous_status: previousStatus,
+          tenant_name: updated.tenant_name,
+          property_name: updated.property_name,
+          property_id: updated.property_id,
+          common_area_id: updated.common_area_id,
+          common_area_name: updated.common_area?.name ?? null,
+          landlord_id:
+            updated.property?.owner_id ?? updated.common_area?.owner_id ?? null,
+          tenant_id: updated.tenant_id,
+          creator_type: updated.creator_type,
+          creator_user_id: updated.creator_user_id,
+          description: updated.description,
+          updated_at: new Date(),
+          actor: { id: tenantUserId, role: 'tenant' },
+          skip_in_app_notification: true,
+        });
+      } catch (error) {
+        this.logger.error(
+          'Failed to emit maintenance.updated after tenant confirm:',
+          error,
+        );
+      }
+
+      // Landlord-filed branch: if an FM was pre-assigned at creation, fan
+      // out the assignment ping now (the FM was kept silent during the
+      // tenant-confirmation gate to avoid pinging them about work that
+      // might get denied).
+      if (isLandlordFiled && updated.assigned_to && updated.facilityManager) {
+        const fmTm = updated.facilityManager;
+        const fmName = this.formatTeamMemberLabel(fmTm);
+        try {
+          this.eventEmitter.emit('maintenance.assigned', {
+            maintenance_request_id: updated.id,
+            request_id: updated.request_id,
+            previous_assignee: null,
+            previous_assignee_name: 'unassigned',
+            new_assignee: updated.assigned_to,
+            new_assignee_name: fmName,
+            landlord_id:
+              updated.property?.owner_id ??
+              updated.common_area?.owner_id ??
+              null,
+            property_id: updated.property_id,
+            common_area_id: updated.common_area_id,
+            description: updated.description,
+            tenant_id: updated.tenant_id,
+            created_at: new Date(),
+          });
+        } catch (error) {
+          this.logger.error(
+            'Failed to emit maintenance.assigned after tenant confirmation:',
+            error,
+          );
+        }
       }
     }
 
@@ -2175,6 +2909,8 @@ export class MaintenanceRequestsService {
         trimmedReason ?? undefined,
         manager,
       );
+      // No attempt-row patch: this denies the FM-filed creation gate, not
+      // a resolution. No attempt rows exist yet.
     });
 
     const updated = await this.maintenanceRequestRepository.findOne({
@@ -2257,6 +2993,12 @@ export class MaintenanceRequestsService {
       rejection_reason: trimmed,
     });
 
+    await this.patchLatestAttemptDenialReason(
+      requestId,
+      tenantAccountId,
+      trimmed,
+    );
+
     return (await this.maintenanceRequestRepository.findOne({
       where: { id: requestId },
     })) as MaintenanceRequest;
@@ -2301,25 +3043,43 @@ export class MaintenanceRequestsService {
     const previousStatus = sr.status;
     const landlordUserId = await this.resolveActorUserId(landlordAccountId);
 
+    // Same auto-approve rule as confirmTenantMaintenanceRequest: landlord-filed
+    // MRs skip NOT_APPROVED entirely.
+    const isLandlordFiled =
+      sr.creator_type === MaintenanceRequestCreatorTypeEnum.LANDLORD;
+    const newStatus = isLandlordFiled
+      ? MaintenanceRequestStatusEnum.APPROVED
+      : MaintenanceRequestStatusEnum.NOT_APPROVED;
+
     await this.dataSource.transaction(async (manager) => {
       await manager.update(MaintenanceRequest, requestId, {
-        status: MaintenanceRequestStatusEnum.NOT_APPROVED,
+        status: newStatus,
+        ...(isLandlordFiled ? { approved_at: new Date() } : {}),
       });
       await this.createStatusHistoryEntry(
         requestId,
         previousStatus,
-        MaintenanceRequestStatusEnum.NOT_APPROVED,
+        newStatus,
         landlordUserId,
         'landlord',
         'Landlord force-confirmed (tenant unresponsive)',
         undefined,
         manager,
       );
+      // Creation-gate force-confirm; no resolution attempt exists yet.
     });
 
     const updated = await this.maintenanceRequestRepository.findOne({
       where: { id: requestId },
-      relations: ['property', 'common_area', 'tenant', 'tenant.user'],
+      relations: [
+        'property',
+        'common_area',
+        'tenant',
+        'tenant.user',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
     });
 
     if (updated) {
@@ -2346,6 +3106,32 @@ export class MaintenanceRequestsService {
           'Failed to emit maintenance.tenant_confirmed (force):',
           error,
         );
+      }
+
+      if (isLandlordFiled && updated.assigned_to && updated.facilityManager) {
+        const fmTm = updated.facilityManager;
+        const fmName = this.formatTeamMemberLabel(fmTm);
+        try {
+          this.eventEmitter.emit('maintenance.assigned', {
+            maintenance_request_id: updated.id,
+            request_id: updated.request_id,
+            previous_assignee: null,
+            previous_assignee_name: 'unassigned',
+            new_assignee: updated.assigned_to,
+            new_assignee_name: fmName,
+            landlord_id: landlordAccountId,
+            property_id: updated.property_id,
+            common_area_id: updated.common_area_id,
+            description: updated.description,
+            tenant_id: updated.tenant_id,
+            created_at: new Date(),
+          });
+        } catch (error) {
+          this.logger.error(
+            'Failed to emit maintenance.assigned after force-confirm:',
+            error,
+          );
+        }
       }
     }
 

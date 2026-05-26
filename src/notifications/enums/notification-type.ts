@@ -43,4 +43,5 @@
   AD_HOC_INVOICE_CREATED = 'Ad-Hoc Invoice Created',
   AD_HOC_INVOICE_PAID = 'Ad-Hoc Invoice Paid',
   AD_HOC_INVOICE_CANCELLED = 'Ad-Hoc Invoice Cancelled',
+  TENANT_BOT_MESSAGE = 'Tenant Bot Message',
 }

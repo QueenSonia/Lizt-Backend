@@ -754,20 +754,6 @@ export class TenantFlowService {
         break;
 
       case 'maintenance_request':
-        await this.templateSenderService.sendButtons(
-          from,
-          'What would you like to do?',
-          [
-            { id: 'new_maintenance_request', title: 'Request a service' },
-            { id: 'view_maintenance_request', title: 'View all requests' },
-          ],
-        );
-        break;
-
-      case 'view_maintenance_request':
-        await this.handleViewMaintenanceRequests(from);
-        break;
-
       case 'new_maintenance_request':
         await this.handleNewMaintenanceRequest(from);
         break;
@@ -1012,64 +998,6 @@ export class TenantFlowService {
     await this.templateSenderService.sendText(
       from,
       'Type "menu" to see other options or "done" to finish.',
-    );
-  }
-
-  /**
-   * Handle view maintenance requests button
-   */
-  private async handleViewMaintenanceRequests(from: string): Promise<void> {
-    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-
-    const maintenanceRequests = await this.maintenanceRequestRepo.find({
-      where: {
-        creator: { phone_number: normalizedPhone },
-        creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
-        status: Not(
-          In([
-            MaintenanceRequestStatusEnum.CLOSED,
-            MaintenanceRequestStatusEnum.REJECTED,
-          ]),
-        ),
-      },
-      relations: ['tenant', 'creator'],
-      order: { created_at: 'DESC' },
-    });
-
-    if (!maintenanceRequests.length) {
-      await this.templateSenderService.sendText(
-        from,
-        "You don't have any maintenance requests yet.",
-      );
-      return;
-    }
-
-    let response = 'Here are all your maintenance requests:\n\n';
-    maintenanceRequests.forEach((req) => {
-      const date = req.created_at ? new Date(req.created_at) : new Date();
-      const formattedDate = date.toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-      });
-      const formattedTime = date.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-      });
-      response += `• ${formattedDate}, ${formattedTime} – ${req.description}\n\n`;
-    });
-
-    await this.templateSenderService.sendText(from, response);
-
-    // Send navigation options after viewing requests
-    await this.templateSenderService.sendButtons(
-      from,
-      'Want to do something else?',
-      [
-        { id: 'new_maintenance_request', title: 'Request a service' },
-        { id: 'main_menu', title: 'Go back to main menu' },
-      ],
     );
   }
 

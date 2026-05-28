@@ -153,7 +153,7 @@ Please confirm your updated tenancy details.
 **Buttons**:
 
 - URL button: `Open chat` → `https://lizt.co/r/mr/{{1}}` where `{{1}}` is the MR UUID. Routes through a small smart-router page (`/r/mr/[id]`) that detects the viewer's role and redirects them to `/landlord/facility?openMr={uuid}` or `/facility-manager/dashboard?openMr={uuid}` — the per-role page reads the query param and auto-opens the modal, then strips the param.
-- Quick-reply: `Quick reply` with payload `mr_chat_quick_reply:{request_id}` (varchar) — captured in `LandlordFlow.handleInteractive`, which sets a 10-min `chat_awaiting_reply_{phone}` cache state. The user's next inbound text is then posted to the thread via `ChatService.sendMaintenanceChatMessage` and the state is cleared.
+- Quick-reply: `Quick reply` with payload `mr_chat_quick_reply:{request_id}` (varchar) — captured in `LandlordFlow.handleInteractive`, which sets a 10-min `chat_awaiting_reply_{phone}` cache state. The user's next inbound text is then posted to the thread via `ChatService.sendMaintenanceChatMessage` and the state is cleared. Because this template lands on FMs too, the FM handlers (`LandlordFlowService.handleFacilityInteractive` / `handleFacilityText`) route the button and the follow-up text through `LandlordFlow.startMrChatQuickReply` / `tryConsumeMrChatReply` so an FM recipient isn't met with "Unknown option selected."
 
 **Message**:
 

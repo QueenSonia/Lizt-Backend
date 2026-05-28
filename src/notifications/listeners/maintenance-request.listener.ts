@@ -704,7 +704,12 @@ ${event.description ?? ''}`,
         'a facility manager';
 
       const propertyName =
-        sr.property?.name ?? sr.common_area?.name ?? sr.property_name ?? '';
+        sr.property?.name ??
+        (sr.common_area?.name
+          ? `(Common area) ${sr.common_area.name}`
+          : null) ??
+        sr.property_name ??
+        '';
       const tenantName = sr.tenant_name ?? '—';
       const description = this.utilService.sanitizeTemplateParam(
         sr.description ?? '',

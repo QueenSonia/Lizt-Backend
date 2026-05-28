@@ -1153,6 +1153,31 @@ export class LandlordFlow {
     return null;
   }
 
+  // Public entry point for the FM flow (landlord-flow.service.ts), which has
+  // its own interactive handler separate from this class. Opens the same
+  // quick-reply capture window as the landlord mr_chat_quick_reply: branch.
+  async startMrChatQuickReply(from: string, requestId: string): Promise<void> {
+    await this.handleMrChatQuickReply(from, requestId);
+  }
+
+  // Public entry point for the FM text handler. Mirrors the chat_awaiting_reply
+  // branch in handleText: if a capture window is live, consume this inbound as
+  // the thread reply (or cancel on "done"/"menu") and return true. Returns
+  // false when no window is pending so the caller continues normal handling.
+  async tryConsumeMrChatReply(from: string, text: string): Promise<boolean> {
+    const chatReplyState = await this.cache.get(`chat_awaiting_reply_${from}`);
+    if (!chatReplyState) return false;
+
+    if (['done', 'menu'].includes(text?.toLowerCase())) {
+      await this.cache.delete(`chat_awaiting_reply_${from}`);
+      await this.whatsappUtil.sendText(from, 'Reply cancelled.');
+      return true;
+    }
+
+    await this.handleMrChatReplyText(from, text, chatReplyState);
+    return true;
+  }
+
   // User tapped "Quick reply" on the mr_new_chat_message template. Opens a
   // 10-min capture window keyed by phone — the next inbound text becomes
   // their reply via handleMrChatReplyText. We store the request_id and the

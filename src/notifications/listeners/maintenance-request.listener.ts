@@ -706,7 +706,7 @@ ${event.description ?? ''}`,
       const propertyName =
         sr.property?.name ??
         (sr.common_area?.name
-          ? `Common area - ${sr.common_area.name}`
+          ? `(Common area) ${sr.common_area.name}`
           : null) ??
         sr.property_name ??
         '';

@@ -2054,6 +2054,15 @@ export class MaintenanceRequestsService {
     if (propertyOwnerAccountId && propertyOwnerAccountId === userId) {
       return 'landlord';
     }
+    if (commonAreaOwnerUserId) {
+      const account = await this.accountRepository.findOne({
+        where: { id: userId },
+        select: ['id', 'userId'],
+      });
+      if (account?.userId === commonAreaOwnerUserId) {
+        return 'landlord';
+      }
+    }
     if (
       maintenanceRequest.tenant_id &&
       (await this.isTenantUser(maintenanceRequest, userId))

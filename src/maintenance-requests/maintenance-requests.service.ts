@@ -2472,6 +2472,37 @@ export class MaintenanceRequestsService {
   }
 
   /**
+   * Verifies the caller (by Account.id) owns the request's property or
+   * common area. Handles the Account.id-vs-User.id split:
+   *   property.owner_id    → landlord's Account.id (compare directly)
+   *   common_area.owner_id → landlord's User.id    (resolve via accounts.userId)
+   * Throws 403 otherwise.
+   */
+  private async assertLandlordOwnsRequest(
+    sr: MaintenanceRequest,
+    landlordAccountId: string,
+  ): Promise<void> {
+    const propertyOwnerAccountId = sr.property?.owner_id ?? null;
+    const commonAreaOwnerUserId = sr.common_area?.owner_id ?? null;
+    let isOwner = false;
+    if (propertyOwnerAccountId) {
+      isOwner = propertyOwnerAccountId === landlordAccountId;
+    } else if (commonAreaOwnerUserId) {
+      const callerAccount = await this.accountRepository.findOne({
+        where: { id: landlordAccountId },
+        select: ['id', 'userId'],
+      });
+      isOwner = callerAccount?.userId === commonAreaOwnerUserId;
+    }
+    if (!isOwner) {
+      throw new HttpException(
+        'You do not own this request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+  }
+
+  /**
    * Landlord assigns / reassigns / unassigns the FM handling a request.
    * The assignee (if any) must be a FACILITY_MANAGER team_member on the
    * caller's own team. Writes a status-history row capturing the change.
@@ -2490,14 +2521,7 @@ export class MaintenanceRequestsService {
       throw new NotFoundException('Maintenance request not found');
     }
 
-    const ownerAccountId =
-      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    if (ownerAccountId !== landlordAccountId) {
-      throw new HttpException(
-        'You do not own this request',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    await this.assertLandlordOwnsRequest(sr, landlordAccountId);
 
     // Block reassignment on terminal and pre-approval-tenant-confirmation
     // requests. The endpoint would otherwise mutate `assigned_to` and fire a
@@ -2616,14 +2640,7 @@ export class MaintenanceRequestsService {
       throw new NotFoundException('Maintenance request not found');
     }
 
-    const ownerAccountId =
-      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    if (ownerAccountId !== landlordAccountId) {
-      throw new HttpException(
-        'You do not own this request',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    await this.assertLandlordOwnsRequest(sr, landlordAccountId);
 
     // Priority is meaningful only while the request is actionable. Setting
     // priority on a not-yet-approved or already-finished request would be
@@ -3167,14 +3184,7 @@ export class MaintenanceRequestsService {
       throw new NotFoundException('Maintenance request not found');
     }
 
-    const ownerAccountId =
-      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    if (ownerAccountId !== landlordAccountId) {
-      throw new HttpException(
-        'You do not own this request',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    await this.assertLandlordOwnsRequest(sr, landlordAccountId);
 
     if (sr.status !== MaintenanceRequestStatusEnum.NOT_APPROVED) {
       throw new HttpException(
@@ -3267,14 +3277,7 @@ export class MaintenanceRequestsService {
       throw new NotFoundException('Maintenance request not found');
     }
 
-    const ownerAccountId =
-      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    if (ownerAccountId !== landlordAccountId) {
-      throw new HttpException(
-        'You do not own this request',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    await this.assertLandlordOwnsRequest(sr, landlordAccountId);
 
     if (sr.status !== MaintenanceRequestStatusEnum.NOT_APPROVED) {
       throw new HttpException(

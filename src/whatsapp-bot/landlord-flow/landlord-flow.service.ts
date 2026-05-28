@@ -66,6 +66,13 @@ export class LandlordFlowService {
     const lowerText = text.toLowerCase();
     this.logger.log(`Facility text message: ${text}`);
 
+    // Quick-reply capture window (mr_new_chat_message). Must run before the
+    // command handlers below — while a reply is pending, the FM's text is
+    // their thread message, not a menu command. "done"/"menu" cancels.
+    if (await this.landlordFlow.tryConsumeMrChatReply(from, text)) {
+      return;
+    }
+
     // Handle "switch role" command for multi-role users
     if (lowerText === 'switch role' || lowerText === 'switch') {
       await this.cache.delete(`selected_role_${from}`);
@@ -593,6 +600,16 @@ export class LandlordFlowService {
             from,
             propertyId,
           );
+          break;
+        }
+
+        // Quick-reply tap on mr_new_chat_message. The template lands on
+        // landlords and FMs alike, but the prefix branch only lives on the
+        // landlord path (LandlordFlow.handleInteractive). Route FM taps to the
+        // same capture-window logic so the button isn't a dead "Unknown option".
+        if (buttonId.startsWith('mr_chat_quick_reply:')) {
+          const requestId = buttonId.split('mr_chat_quick_reply:')[1];
+          await this.landlordFlow.startMrChatQuickReply(from, requestId);
           break;
         }
 

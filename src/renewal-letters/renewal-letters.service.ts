@@ -85,7 +85,9 @@ export class RenewalLettersService {
     await this.templateSenderService.sendRenewalLetterSigned({
       phone_number: tenantPhone,
       tenant_first_name: tenantFirstName,
-      property_name: propertyName,
+      // Trim so the body's *{{2}}* renders bold — WhatsApp won't bold a
+      // span whose marker is adjacent to whitespace (e.g. "*Foo *").
+      property_name: propertyName.trim(),
       outcome,
       decision_date: decisionDate,
       pdf_url: pdfUrl,

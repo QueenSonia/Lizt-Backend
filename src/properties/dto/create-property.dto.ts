@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsNotEmpty,
   IsString,
@@ -21,6 +21,7 @@ export class CreatePropertyDto {
   @ApiProperty({ example: 'Abuja Duplex', description: 'Name of the property' })
   @IsNotEmpty()
   @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   name: string;
 
   @ApiProperty({ example: 'lagos', description: 'Location of the property' })

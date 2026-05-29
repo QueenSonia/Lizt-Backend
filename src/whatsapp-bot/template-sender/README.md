@@ -134,6 +134,33 @@ Please confirm your updated tenancy details.
 
 **Usage**: Sent from `notifyTenantOfTenancyEdit` in `tenancies.service.ts` at the end of `updateActiveTenancy`, gated on `chargesChanged || periodOrFrequencyChanged || recurringChanges.length > 0` so no-op saves don't fire.
 
+### 5. renewal_letter_signed
+
+**Purpose**: Deliver the signed renewal-letter PDF to the tenant after they accept or decline. One template serves both outcomes — `outcome` flips the body verb while the rendered PDF carries the matching ACCEPTED/DECLINED stamp.
+
+**Template Name**: `renewal_letter_signed`
+
+**Parameters**:
+
+- `{{1}}` - Tenant first name
+- `{{2}}` - Property name
+- `{{3}}` - Outcome verb (`accepted` or `declined`)
+- `{{4}}` - Decision date (e.g. `May 29, 2026`)
+
+**Header**: Document — the rendered letter PDF (`{ type: 'document', document: { link, filename } }`). Must be set to Document in the Meta registration, with a sample PDF.
+
+**Message**:
+
+```
+Hi {{1}},
+
+Your renewal letter for *{{2}}* has been *{{3}}* on {{4}}.
+
+The signed copy is attached above for your records.
+```
+
+**Usage**: Sent from `dispatchSignedLetterPdf` in `renewal-letters.service.ts`, called from both the accept and decline paths (wrapped in try/catch so a Cloudinary/Meta failure never unwinds the accept/decline write). All four params are server-generated, so no `sanitizeTemplateParam` is required.
+
 ## Maintenance Request Chat Templates
 
 ### 1. mr_new_chat_message

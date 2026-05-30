@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Repository } from 'typeorm';
+import { In, IsNull, MoreThanOrEqual, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { Rent } from '../rents/entities/rent.entity';
 import {
@@ -1268,6 +1268,18 @@ export class RentReminderService {
       const existing = await this.renewalInvoiceRepository.findOne({
         where: {
           property_tenant_id: propertyTenant.id,
+          // Don't resurrect an invoice for a period that has already elapsed.
+          // Without this, a stale/orphaned unpaid invoice from a prior cycle
+          // (e.g. a duplicate same-period row left behind by another creation
+          // path) gets reminded on, pointing the tenant at the wrong period.
+          // We use >= the target start (not strict equality) so a landlord
+          // who deliberately set a gap before the next period — start_date
+          // later than expiry+1 — is still honored rather than triggering a
+          // duplicate auto-create. A DB-level unique index is NOT an option
+          // here: multiple live rows per period are allowed by design
+          // (tenant-token OB rows + landlord rows coexist) — see migration
+          // 1776000000000-DropRenewalInvoicesTenantPeriodUniqueIndex.
+          start_date: MoreThanOrEqual(startDate),
           payment_status: In([
             RenewalPaymentStatus.UNPAID,
             RenewalPaymentStatus.PARTIAL,

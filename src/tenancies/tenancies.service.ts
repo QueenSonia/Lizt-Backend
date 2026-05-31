@@ -2189,6 +2189,27 @@ export class TenanciesService {
 
     const tenantEmail = await this.resolveTenantEmail(invoice);
 
+    // The wallet's negative balance may be wholly/partly THIS invoice's own
+    // period charge (non-monthly accept-after-expiry OB_CHARGE posted at
+    // expiry). That amount is already itemized in the fee breakdown above, so
+    // surfacing it again as a "Previous Outstanding Balance" line double-counts
+    // it on screen (the line items then appear to exceed the total, even though
+    // total_amount is correct). Add the own-period charge back so the displayed
+    // wallet reflects only genuine PRIOR position — mirrors the effectiveWallet
+    // used by refreshInvoiceTotals. Clamp the add-back to the debt
+    // (Math.min(0, …)) so a settled invoice (wallet back to >= 0) never flips
+    // into a phantom "Rent Advance Applied" credit. For OB / tenant-initiated
+    // tokens ownLetterCharge is 0, so both fields are unchanged there.
+    const ownLetterCharge =
+      await this.renewalChargeService.getLetterAcceptedChargeAmount(invoice.id);
+    const rawWallet = parseFloat((invoice.wallet_balance ?? 0).toString());
+    const displayWallet =
+      rawWallet < 0 ? Math.min(0, rawWallet + ownLetterCharge) : rawWallet;
+    const rawOutstanding = parseFloat(
+      (invoice.outstanding_balance || 0).toString(),
+    );
+    const displayOutstanding = Math.max(0, rawOutstanding - ownLetterCharge);
+
     return {
       id: invoice.id,
       token: invoice.token,
@@ -2217,15 +2238,15 @@ export class TenanciesService {
       },
       feeBreakdown: renewalInvoiceToFees(invoice),
       totalAmount: parseFloat((invoice.total_amount ?? 0).toString()),
-      outstandingBalance: parseFloat(
-        (invoice.outstanding_balance || 0).toString(),
-      ),
+      // Genuine PRIOR outstanding only — this invoice's own period charge is
+      // netted out above so it isn't shown twice (see displayWallet/ownLetterCharge).
+      outstandingBalance: displayOutstanding,
       // Cumulative sum of payments against this invoice. Frontend computes
       // "remaining = totalAmount - amountPaid" to render partial-progress UI;
       // outstandingBalance above is a different concept (wallet debt baked in
       // at invoice creation) and must not be repurposed.
       amountPaid: parseFloat((invoice.amount_paid ?? 0).toString()),
-      walletBalance: parseFloat((invoice.wallet_balance ?? 0).toString()),
+      walletBalance: displayWallet,
       tokenType: invoice.token_type || 'landlord',
       paymentStatus: invoice.payment_status,
       pendingApproval:

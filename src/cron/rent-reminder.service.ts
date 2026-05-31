@@ -1312,11 +1312,24 @@ export class RentReminderService {
             ? existing.fee_breakdown
             : [];
           const invoicePeriodCharge = sumAll(breakdown);
+          // The wallet may already carry a letter_accepted_charge posted for
+          // *this same invoice's period* (non-monthly accept-after-expiry flow
+          // in RenewalChargeService, fired by processAcceptedNonMonthlyLetterCharges
+          // once expiry is reached). That debit is already represented in the
+          // breakdown, so counting it again as wallet debt would inflate
+          // total_amount to 2× the period. Add the own-letter charge back
+          // before applying the formula so only *prior* arrears reduce credit.
+          // Mirrors TenanciesService.refreshInvoiceTotals.
+          const ownLetterCharge =
+            await this.renewalChargeService.getLetterAcceptedChargeAmount(
+              existing.id,
+            );
+          const effectiveWallet = walletBalance + ownLetterCharge;
           existing.wallet_balance = walletBalance;
           existing.outstanding_balance = outstandingBalance;
           existing.total_amount = Math.max(
             0,
-            invoicePeriodCharge - walletBalance,
+            invoicePeriodCharge - effectiveWallet,
           );
         }
 

@@ -28,6 +28,7 @@
   RECEIPT_SENT = 'Receipt Sent',
   RECEIPT_VIEWED = 'Receipt Viewed',
   RENT_REMINDER = 'Rent reminder',
+  RENEWAL_REVIEW_DUE = 'Renewal Review Due',
   OUTSTANDING_BALANCE_RECORDED = 'Outstanding Balance Recorded',
   USER_ADDED_HISTORY = 'User Added History',
   PAYMENT_TRANSFER_REJECTED = 'Payment Transfer Rejected',

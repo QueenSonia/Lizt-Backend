@@ -84,10 +84,10 @@ export class AdHocInvoicesService {
       );
     }
 
+    // unecessary comment to test git diff
+
     if (!Array.isArray(dto.lineItems) || dto.lineItems.length < 1) {
-      throw new BadRequestException(
-        'Invoice must have at least one line item',
-      );
+      throw new BadRequestException('Invoice must have at least one line item');
     }
     const totalAmount = dto.lineItems.reduce(
       (sum, item) => sum + Number(item.amount),
@@ -910,9 +910,7 @@ export class AdHocInvoicesService {
     return invoice;
   }
 
-  private formatDate(
-    value: Date | string | null | undefined,
-  ): string | null {
+  private formatDate(value: Date | string | null | undefined): string | null {
     if (!value) return null;
     if (typeof value === 'string') return value.split('T')[0];
     return value.toISOString().split('T')[0];

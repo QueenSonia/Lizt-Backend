@@ -289,3 +289,62 @@ export const nextPeriodFees = (fees: Fee[]): Fee[] =>
  */
 export const feeLabelsCsv = (fees: Fee[]): string =>
   fees.map((f) => f.label).join(', ');
+
+// ── Rent-column carry-forward ────────────────────────────────────────────────
+
+interface RentCarryForwardLike {
+  service_charge?: number | string | null;
+  service_charge_recurring?: boolean | null;
+  security_deposit?: number | string | null;
+  security_deposit_recurring?: boolean | null;
+  legal_fee?: number | string | null;
+  legal_fee_recurring?: boolean | null;
+  agency_fee?: number | string | null;
+  agency_fee_recurring?: boolean | null;
+  other_fees?: OtherFee[] | null;
+}
+
+export interface CarriedRentColumns {
+  security_deposit: number;
+  security_deposit_recurring: boolean;
+  service_charge: number;
+  service_charge_recurring: boolean;
+  legal_fee: number | null;
+  legal_fee_recurring: boolean;
+  agency_fee: number | null;
+  agency_fee_recurring: boolean;
+  other_fees: OtherFee[];
+}
+
+const numOrNull = (v: unknown): number | null => (v == null ? null : num(v));
+
+/**
+ * Roll a Rent's flat fee columns forward into the next period.
+ *
+ * Recurring fees survive (amount + flag). Non-recurring fees (caution, legal,
+ * agency, one-time otherFees) zero out / null out — they were collected at
+ * move-in and must not re-bill every renewal. Returns a typed struct the
+ * caller assigns onto the new Rent row (the Rent entity uses flat columns,
+ * so we can't just spread a Fee[]).
+ *
+ * Shared by RentReminderService.autoRenewExpiredRent / findOrCreateRenewalInvoice
+ * and RenewalChargeService.renewOneFromWalletCredit so the two renew paths
+ * never diverge.
+ */
+export function carryForwardRentColumns(
+  rent: RentCarryForwardLike,
+): CarriedRentColumns {
+  return {
+    service_charge: rent.service_charge_recurring ? num(rent.service_charge) : 0,
+    service_charge_recurring: !!rent.service_charge_recurring,
+    security_deposit: rent.security_deposit_recurring
+      ? num(rent.security_deposit)
+      : 0,
+    security_deposit_recurring: !!rent.security_deposit_recurring,
+    legal_fee: rent.legal_fee_recurring ? numOrNull(rent.legal_fee) : null,
+    legal_fee_recurring: !!rent.legal_fee_recurring,
+    agency_fee: rent.agency_fee_recurring ? numOrNull(rent.agency_fee) : null,
+    agency_fee_recurring: !!rent.agency_fee_recurring,
+    other_fees: (rent.other_fees ?? []).filter((f) => f.recurring),
+  };
+}

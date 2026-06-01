@@ -71,6 +71,36 @@ export class TenanciesController {
     return this.tenanciesService.renewTenancy(id, renewTenancyDto, req.user.id);
   }
 
+  @ApiOperation({
+    summary: 'Renew tenancy now from wallet credit',
+    description:
+      "Settle and roll the tenancy into its next period immediately using the tenant's wallet credit. Only valid when the credit fully covers the next period (and, for non-monthly tenancies, the renewal letter has been accepted).",
+  })
+  @ApiParam({
+    name: 'propertyTenantId',
+    description: 'Property tenant relationship ID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({ description: 'Tenancy renewed from wallet credit' })
+  @ApiBadRequestResponse({
+    description:
+      'Wallet credit does not fully cover the next period, or the renewal letter has not been accepted (non-monthly)',
+  })
+  @ApiNotFoundResponse({ description: 'Tenancy or active rent not found' })
+  @ApiSecurity('access_token')
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Post(':propertyTenantId/renew-from-credit')
+  async renewFromWalletCredit(
+    @Param('propertyTenantId', new ParseUUIDPipe()) propertyTenantId: string,
+    @Req() req: any,
+  ) {
+    return this.tenanciesService.renewFromWalletCreditNow(
+      propertyTenantId,
+      req.user.id,
+    );
+  }
+
   /**
    * PATCH /api/tenancies/:propertyTenantId/active-rent
    * Update the active rent record (current tenancy terms)

@@ -412,33 +412,57 @@ export class RenewalLettersService {
       );
     }
 
+    // Skip the "pay your invoice" link when the tenant's wallet credit already
+    // fully covers the period — the invoice would read ₦0 and the daily cron
+    // will auto-renew it from credit (and send the "tenancy renewed"
+    // confirmation). Sending a payment link in that case is misleading.
+    let coveredByCredit = false;
+    try {
+      coveredByCredit =
+        await this.renewalChargeService.isLetterPeriodCoveredByCredit(
+          refreshed ?? invoice,
+          propertyTenant.property.owner_id,
+        );
+    } catch (err) {
+      const e = err as { message?: string };
+      this.logger.error(
+        `Failed to check credit coverage for letter ${invoice.id}: ${e.message}`,
+      );
+    }
+
     // Send the renewal-invoice link WhatsApp. We deliberately use
     // `renewal_link` (URL → /renewal-invoice/{token}) rather than the
     // offer-letter `payment_invoice_link` template (URL → /offer-letters/
     // invoice/{token}), because the token here is a renewal_invoice token
     // and the offer-letters page would 404 on it. Fire-and-forget: failure
     // here shouldn't block the acceptance write.
-    try {
-      const fmtDate = (d: Date | string) =>
-        new Date(d).toLocaleDateString('en-GB', {
-          day: 'numeric',
-          month: 'long',
-          year: 'numeric',
-        });
-      await this.templateSenderService.sendRenewalLink({
-        phone_number: tenantPhone,
-        tenant_name: tenantName,
-        property_name: property.name,
-        start_date: fmtDate(invoice.start_date),
-        end_date: fmtDate(invoice.end_date),
-        renewal_token: invoice.token,
-        frontend_url: '',
-      });
-    } catch (err) {
-      this.logger.error(
-        `Failed to send renewal-link WhatsApp post-acceptance: ${err.message}`,
-        err.stack,
+    if (coveredByCredit) {
+      this.logger.log(
+        `Skipping renewal-link for letter ${invoice.id}: period fully covered by wallet credit (will auto-renew from credit).`,
       );
+    } else {
+      try {
+        const fmtDate = (d: Date | string) =>
+          new Date(d).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+          });
+        await this.templateSenderService.sendRenewalLink({
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          property_name: property.name,
+          start_date: fmtDate(invoice.start_date),
+          end_date: fmtDate(invoice.end_date),
+          renewal_token: invoice.token,
+          frontend_url: '',
+        });
+      } catch (err) {
+        this.logger.error(
+          `Failed to send renewal-link WhatsApp post-acceptance: ${err.message}`,
+          err.stack,
+        );
+      }
     }
 
     // Notify the landlord via WhatsApp. Mirrors the decline path — fire-

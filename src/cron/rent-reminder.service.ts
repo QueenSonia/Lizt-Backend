@@ -1162,10 +1162,18 @@ export class RentReminderService {
       { style: 'currency', currency: 'NGN' },
     );
 
-    const startDateStr = new Date(rent.rent_start_date).toLocaleDateString(
-      'en-GB',
-    );
-    const endDateStr = new Date(rent.expiry_date).toLocaleDateString('en-GB');
+    // Period must describe the SAME thing as the amount — i.e. the renewal
+    // period the tenant is being asked to pay for — so source both from the
+    // renewal invoice. Using the rent's own dates was wrong for floating
+    // non-monthly tenancies: the cron leaves the expired rent ACTIVE with its
+    // old period (e.g. 2025–26), so the message showed last year's dates next
+    // to this year's renewal amount. For monthly auto-renewed rents the
+    // invoice period equals the rent period, so this is a no-op there.
+    // Fall back to the rent's dates only if the invoice somehow lacks them.
+    const periodStart = renewalInvoice.start_date ?? rent.rent_start_date;
+    const periodEnd = renewalInvoice.end_date ?? rent.expiry_date;
+    const startDateStr = new Date(periodStart).toLocaleDateString('en-GB');
+    const endDateStr = new Date(periodEnd).toLocaleDateString('en-GB');
     const period = `${startDateStr} - ${endDateStr}`;
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';

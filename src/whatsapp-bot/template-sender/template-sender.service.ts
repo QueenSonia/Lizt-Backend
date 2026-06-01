@@ -765,6 +765,46 @@ export interface RentReminderParams {
 }
 
 /**
+ * Parameters for the "your tenancy has been renewed" confirmation, sent to the
+ * tenant when a renewal is auto-settled from their wallet credit (no payment
+ * action by them). All values are server-generated and pre-formatted by the
+ * caller (RenewalChargeService.sendTenancyRenewedMessage): dates as
+ * "May 12, 2026", amounts as bare number strings like "250,000" (the ₦ is
+ * literal in the template body). No sanitization needed.
+ */
+export interface TenancyRenewedFromCreditParams {
+  phone_number: string;
+  tenant_name: string;
+  period_start: string;
+  period_end: string;
+  rent_amount: string;
+  payment_frequency: string;
+  service_charge: string;
+}
+
+/**
+ * Parameters for the landlord "review next period" notice, sent one day before
+ * the tenant's first renewal reminder so the landlord can adjust the next
+ * period's figures first. URL button opens the property's next-period editor
+ * (`/landlord/property-detail/{{1}}` with `review_path` as the dynamic suffix,
+ * e.g. `<propertyId>?editMode=next-period`). All values server-generated.
+ */
+export interface LandlordRenewalReviewParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  period: string;
+  rent_amount: string;
+  service_charge: string;
+  expected_amount: string;
+  /** Coverage/auto-renew status sentence (server-generated). */
+  status_note: string;
+  /** Dynamic URL-button suffix: `<propertyId>?editMode=next-period`. */
+  review_path: string;
+}
+
+/**
  * Parameters for rent reminder with renewal link to tenant
  */
 export interface RentReminderWithRenewalParams {
@@ -4408,6 +4448,102 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send the "your tenancy has been renewed" confirmation to the tenant after a
+   * renewal is auto-settled from their wallet credit (cron auto-renewal or the
+   * landlord "renew now" action). Body-only, no buttons.
+   * Template: tenancy_renewed_from_credit
+   */
+  async sendTenancyRenewedFromCredit({
+    phone_number,
+    tenant_name,
+    period_start,
+    period_end,
+    rent_amount,
+    payment_frequency,
+    service_charge,
+  }: TenancyRenewedFromCreditParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenancy_renewed_from_credit',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: period_start },
+              { type: 'text', text: period_end },
+              { type: 'text', text: rent_amount },
+              { type: 'text', text: payment_frequency },
+              { type: 'text', text: service_charge },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the landlord "review next period" notice — one day before the tenant's
+   * first renewal reminder for the cycle. URL button opens the property's
+   * next-period editor (base `/landlord/property-detail/{{1}}`, dynamic suffix
+   * `review_path`).
+   * Template: landlord_renewal_review
+   */
+  async sendLandlordRenewalReview({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    period,
+    rent_amount,
+    service_charge,
+    expected_amount,
+    status_note,
+    review_path,
+  }: LandlordRenewalReviewParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_renewal_review',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: period },
+              { type: 'text', text: rent_amount },
+              { type: 'text', text: service_charge },
+              { type: 'text', text: expected_amount },
+              { type: 'text', text: status_note },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: review_path }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send rent reminder with renewal link template to tenant via WhatsApp.
    * Used for the last 3 days before rent expiry.
    * Template: rent_reminder_with_renewal
@@ -5360,6 +5496,10 @@ export class TemplateSenderService {
       "Hi {{1}}, \n\nYour tenant {{2}} has shared what's incorrect about the tenancy details for {{3}}.\n\nIssue: {{4}}\n\nPlease follow up with them at {{5}} to resolve this.",
     tenancy_details_updated_tenant:
       'Hi {{1}},\n\nYour landlord has updated the tenancy details for {{2}}.\n\nPlease confirm your updated tenancy details.',
+    tenancy_renewed_from_credit:
+      'Congratulations {{1}}!\n\nYour tenancy has been renewed.\n\nHere are your updated tenancy details:\nTenancy period: {{2}} - {{3}}\nRent amount: ₦{{4}} {{5}}\nService charge: ₦{{6}}\n\nThank you.',
+    landlord_renewal_review:
+      "Hi {{1}},\n\nYour tenant {{2}} at {{3}} is coming up for renewal.\n\nNext period: {{4}}\nRent: {{5}}\nService charge: {{6}}\nExpected from tenant: {{7}}\n\n{{8}}\n\nReview or adjust these details now using the button below.",
   };
 
   /**

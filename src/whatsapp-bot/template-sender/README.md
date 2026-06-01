@@ -161,6 +161,78 @@ The signed copy is attached above for your records.
 
 **Usage**: Sent from `dispatchSignedLetterPdf` in `renewal-letters.service.ts`, called from both the accept and decline paths (wrapped in try/catch so a Cloudinary/Meta failure never unwinds the accept/decline write). All four params are server-generated, so no `sanitizeTemplateParam` is required.
 
+### 6. tenancy_renewed_from_credit
+
+**Purpose**: Confirm to the tenant that their tenancy has been renewed and settled automatically from their wallet credit — no payment action on their part. Sent whenever a period is auto-renewed-and-paid from credit, both by the daily cron and by the landlord-triggered "renew now" action on the property-detail billing summary.
+
+**Template Name**: `tenancy_renewed_from_credit`
+
+**Parameters**:
+
+- `{{1}}` - Tenant first name
+- `{{2}}` - Period start (e.g. `May 12, 2026`)
+- `{{3}}` - Period end (e.g. `Jun 11, 2026`)
+- `{{4}}` - Rent amount, bare number (the `₦` is literal in the body), e.g. `250,000`
+- `{{5}}` - Payment frequency (e.g. `Monthly`)
+- `{{6}}` - Service charge, bare number, e.g. `60,000`
+
+**Button**: None (body-only).
+
+**Message**:
+
+```
+Congratulations {{1}}!
+
+Your tenancy has been renewed.
+
+Here are your updated tenancy details:
+Tenancy period: {{2}} - {{3}}
+Rent amount: ₦{{4}} {{5}}
+Service charge: ₦{{6}}
+
+Thank you.
+```
+
+**Usage**: `RenewalChargeService.renewOneFromWalletCredit` builds the params (via `buildTenancyRenewedParams`) and returns them as `renewedConfirmation` when the new period is covered by wallet credit; the callers — `RentReminderService` (cron) and `TenanciesService.renewFromWalletCreditNow` (the "renew now" endpoint) — queue them as `whatsAppNotificationLogService.queue('sendTenancyRenewedFromCredit', ...)`. The helper itself has no whatsapp dependency, to avoid a `RenewalChargeModule ↔ WhatsappBotModule` cycle. All six params are server-generated and pre-formatted, so no `sanitizeTemplateParam` is required.
+
+### 7. landlord_renewal_review
+
+**Purpose**: Give the landlord a one-day head start before their tenant's first renewal reminder for the cycle, so they can review/adjust the next period's figures before the tenant is notified. Sent for all frequencies.
+
+**Template Name**: `landlord_renewal_review`
+
+**Parameters**:
+
+- `{{1}}` - Landlord display name (`accounts.profile_name`, first+last fallback)
+- `{{2}}` - Tenant full name
+- `{{3}}` - Property name
+- `{{4}}` - Next period (e.g. `Jun 12, 2026 - Jul 11, 2026`)
+- `{{5}}` - Next period rent (e.g. `₦250,000.00`)
+- `{{6}}` - Next period service charge (e.g. `₦60,000.00`)
+- `{{7}}` - Expected from tenant after wallet credit (e.g. `₦0.00` when fully covered)
+- `{{8}}` - Status sentence: when fully covered, notes that NO payment reminder will be sent and when it auto-renews (monthly: on the next-period start date; non-monthly: once the tenant accepts the letter); otherwise "Your tenant's first renewal reminder goes out tomorrow." — i.e. the "goes out tomorrow" claim only appears when a reminder will actually be sent
+
+**Button**: URL — "Review". Base URL `https://<frontend>/landlord/property-detail/{{1}}`; the dynamic suffix (`review_path`) is `<propertyId>?editMode=next-period`, which opens the property's next-period editor on arrival.
+
+**Message**:
+
+```
+Hi {{1}},
+
+Your tenant {{2}} at {{3}} is coming up for renewal.
+
+Next period: {{4}}
+Rent: {{5}}
+Service charge: {{6}}
+Expected from tenant: {{7}}
+
+{{8}}
+
+Review or adjust these details now using the button below.
+```
+
+**Usage**: Queued from `RentReminderService.sendLandlordReviewNotice` (cron step `processLandlordReviewNotices`), `max(schedule)+1` days before expiry per frequency (monthly 15, quarterly 31, bi-annually 91, annually 181). Also writes an in-app `RENEWAL_REVIEW_DUE` NotificationService entry. All params are server-generated, so no `sanitizeTemplateParam` is required.
+
 ## Maintenance Request Chat Templates
 
 ### 1. mr_new_chat_message

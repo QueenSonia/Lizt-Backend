@@ -6,7 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In } from 'typeorm';
+import { Repository, DataSource, In, IsNull } from 'typeorm';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { Rent } from 'src/rents/entities/rent.entity';
 import { Property } from 'src/properties/entities/property.entity';
@@ -46,6 +46,7 @@ import {
   rentToFees,
   renewalInvoiceToFees,
   sumAll,
+  sumRecurring,
   Fee,
 } from 'src/common/billing/fees';
 import {
@@ -147,6 +148,171 @@ export class TenanciesService {
     }
 
     return savedTenant;
+  }
+
+  /**
+   * Landlord-triggered "renew now from wallet credit" — the interactive
+   * counterpart to the nightly auto-renewal. Settles and rolls the tenancy into
+   * its next period immediately using the tenant's wallet credit, via the
+   * shared RenewalChargeService.renewOneFromWalletCredit so the behaviour is
+   * identical to the cron.
+   *
+   * Guards:
+   *  - caller must own the property;
+   *  - the current period must actually be DUE (expiry <= today) — we never
+   *    roll a tenancy forward early, which would terminate the live period and
+   *    cost the tenant their remaining days. Before the due date the cron will
+   *    auto-handle it, so we return a clear "will auto-renew on <date>" error;
+   *  - wallet credit must FULLY cover the next period;
+   *  - non-monthly tenancies additionally require an ACCEPTED renewal letter.
+   */
+  async renewFromWalletCreditNow(propertyTenantId: string, userId: string) {
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: { id: propertyTenantId },
+      relations: ['property'],
+    });
+    if (!propertyTenant) {
+      throw new NotFoundException(
+        `Property tenant relationship with ID ${propertyTenantId} not found`,
+      );
+    }
+    if (propertyTenant.property.owner_id !== userId) {
+      throw new HttpException(
+        'You do not have permission to renew this tenancy',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    const rent = await this.rentRepository.findOne({
+      where: {
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property', 'property.owner', 'tenant', 'tenant.user'],
+    });
+    if (!rent) {
+      throw new NotFoundException(
+        'No active rent record found for this tenancy',
+      );
+    }
+    if (!rent.expiry_date) {
+      throw new BadRequestException('Active rent has no expiry date set.');
+    }
+
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    // NOTE: we intentionally do NOT require the period to be due. This is a
+    // landlord-forced renewal — the whole point of the button is to renew now
+    // without waiting for the nightly cron, including ahead of the expiry date.
+    // The helper still computes the next period's dates from the current
+    // expiry (next start = expiry + 1, or the letter's start), so the rolled-
+    // forward period stays contiguous with the current one regardless of when
+    // the landlord triggers it.
+
+    // The latest non-superseded letter is the renewal the tenant is on.
+    const latestLetter = await this.renewalInvoiceRepository.findOne({
+      where: {
+        property_tenant_id: propertyTenant.id,
+        superseded_by_id: IsNull(),
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    // A declined letter means the tenant is leaving — never force-renew it.
+    if (latestLetter?.letter_status === RenewalLetterStatus.DECLINED) {
+      throw new BadRequestException(
+        'This tenant declined the renewal, so the tenancy cannot be renewed from credit.',
+      );
+    }
+
+    const freq = effectiveFrequency(rent);
+
+    // A letter drives the next period's terms when it's ACCEPTED, or monthly +
+    // SENT (which we auto-accept on the landlord's behalf, exactly as the cron
+    // does for monthly at expiry). We decide this WITHOUT mutating yet, so a
+    // failed coverage check below leaves no side effects. Non-monthly never
+    // auto-accepts — it requires a genuine tenant acceptance.
+    const isAccepted =
+      latestLetter?.letter_status === RenewalLetterStatus.ACCEPTED;
+    const monthlySent =
+      freq === 'monthly' &&
+      latestLetter?.letter_status === RenewalLetterStatus.SENT;
+
+    if (freq !== 'monthly' && !isAccepted) {
+      throw new BadRequestException(
+        'This non-monthly tenancy can only be renewed from credit after the tenant accepts the renewal letter.',
+      );
+    }
+
+    const letterSource =
+      latestLetter &&
+      latestLetter.payment_status === RenewalPaymentStatus.UNPAID &&
+      (isAccepted || monthlySent)
+        ? latestLetter
+        : null;
+
+    // Coverage check — mirrors RentReminderService.isNextPeriodFullyCovered,
+    // including the own-letter-charge add-back so a period already OB-charged
+    // at accept time still reads as covered. Done BEFORE any mutation.
+    const recurringCharge = letterSource
+      ? sumRecurring(renewalInvoiceToFees(letterSource))
+      : sumRecurring(rentToFees(rent));
+    const walletBalance = await this.tenantBalancesService.getBalance(
+      rent.tenant_id,
+      rent.property.owner_id,
+    );
+    const ownLetterCharge = letterSource
+      ? await this.renewalChargeService.getLetterAcceptedChargeAmount(
+          letterSource.id,
+        )
+      : 0;
+    const covered = recurringCharge - (walletBalance + ownLetterCharge) <= 0;
+    if (!covered) {
+      throw new BadRequestException(
+        'Wallet credit does not fully cover the next period.',
+      );
+    }
+
+    // Covered — now safe to auto-accept a monthly SENT letter (flip + stamp),
+    // so the helper renews at its terms and settles it to PAID (no orphan).
+    if (monthlySent && letterSource) {
+      letterSource.letter_status = RenewalLetterStatus.ACCEPTED;
+      letterSource.auto_renewed_at = new Date();
+      await this.renewalInvoiceRepository.save(letterSource);
+    }
+
+    const result = await this.renewalChargeService.renewOneFromWalletCredit(
+      rent,
+      letterSource,
+      today,
+      'manual',
+    );
+
+    // The helper returns the confirmation params (no whatsapp dependency of its
+    // own) — we dispatch via our own notification log service.
+    if (result.renewedConfirmation && result.newRent) {
+      await this.whatsappNotificationLog.queue(
+        'sendTenancyRenewedFromCredit',
+        result.renewedConfirmation,
+        result.newRent.id,
+      );
+    }
+
+    if (result.outcome === 'skipped_already') {
+      return {
+        success: true,
+        message: 'This tenancy has already been renewed.',
+        data: { alreadyRenewed: true, newRentId: null },
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Tenancy renewed from wallet credit.',
+      data: { alreadyRenewed: false, newRentId: result.newRent?.id ?? null },
+    };
   }
 
   async renewTenancy(

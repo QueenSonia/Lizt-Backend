@@ -16,6 +16,7 @@ import {
 } from './entities/ad-hoc-invoice.entity';
 import { AdHocInvoiceLineItem } from './entities/ad-hoc-invoice-line-item.entity';
 import { CreateAdHocInvoiceDto } from './dto/create-ad-hoc-invoice.dto';
+import { UpdateAdHocInvoiceDto } from './dto/update-ad-hoc-invoice.dto';
 
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
@@ -163,6 +164,111 @@ export class AdHocInvoicesService {
     return fresh;
   }
 
+  async updateInvoice(
+    id: string,
+    dto: UpdateAdHocInvoiceDto,
+    userId?: string,
+  ): Promise<AdHocInvoice> {
+    const invoice = await this.getInvoiceInternal(id);
+    if (userId && invoice.landlord_id !== userId) {
+      throw new ForbiddenException('Only the landlord can edit this invoice');
+    }
+
+    // Only unpaid, non-cancelled invoices may be edited. Compare against the
+    // computed status so an overdue-but-pending invoice is still editable.
+    const effectiveStatus = this.computeStatus(invoice);
+    if (effectiveStatus === AdHocInvoiceStatus.PAID) {
+      throw new ConflictException('Cannot edit a paid invoice');
+    }
+    if (effectiveStatus === AdHocInvoiceStatus.CANCELLED) {
+      throw new ConflictException('Cannot edit a cancelled invoice');
+    }
+
+    if (!Array.isArray(dto.lineItems) || dto.lineItems.length < 1) {
+      throw new BadRequestException('Invoice must have at least one line item');
+    }
+    const newTotal = dto.lineItems.reduce(
+      (sum, item) => sum + Number(item.amount),
+      0,
+    );
+    if (newTotal <= 0) {
+      throw new BadRequestException('Total amount must be greater than zero');
+    }
+
+    const dueDate = new Date(dto.dueDate);
+    if (isNaN(dueDate.getTime())) {
+      throw new BadRequestException('Invalid due date');
+    }
+
+    const oldTotal = Number(invoice.total_amount);
+    const delta = newTotal - oldTotal;
+
+    await this.dataSource.transaction(async (manager) => {
+      // Re-snapshot line items: drop the old set, insert the new one.
+      await manager.delete(AdHocInvoiceLineItem, { invoice_id: invoice.id });
+      const lineItems = dto.lineItems.map((item, idx) =>
+        manager.create(AdHocInvoiceLineItem, {
+          invoice_id: invoice.id,
+          description: item.description.trim(),
+          amount: Number(item.amount),
+          sequence: idx + 1,
+        }),
+      );
+      await manager.save(lineItems);
+
+      await manager.update(AdHocInvoice, invoice.id, {
+        total_amount: newTotal,
+        due_date: dueDate,
+        notes: dto.notes ?? invoice.notes ?? null,
+      });
+
+      // Reconcile the tenant wallet by the change in total. The create flow
+      // debited OB_CHARGE = -total; mirror that for the delta.
+      if (delta > 0) {
+        await this.tenantBalancesService.applyChange(
+          invoice.tenant_id,
+          invoice.landlord_id,
+          -delta,
+          {
+            type: TenantBalanceLedgerType.OB_CHARGE,
+            description: `Invoice ${invoice.invoice_number} edited — increased by ₦${delta.toLocaleString()}`,
+            propertyId: invoice.property_id,
+            relatedEntityType: 'ad_hoc_invoice',
+            relatedEntityId: invoice.id,
+          },
+          undefined,
+          manager,
+        );
+      } else if (delta < 0) {
+        await this.tenantBalancesService.applyChange(
+          invoice.tenant_id,
+          invoice.landlord_id,
+          -delta,
+          {
+            type: TenantBalanceLedgerType.OB_PAYMENT,
+            description: `Invoice ${invoice.invoice_number} edited — reduced by ₦${(-delta).toLocaleString()}`,
+            propertyId: invoice.property_id,
+            relatedEntityType: 'ad_hoc_invoice',
+            relatedEntityId: invoice.id,
+          },
+          undefined,
+          manager,
+        );
+      }
+    });
+
+    const fresh = await this.getInvoiceInternal(invoice.id);
+
+    await this.logInvoiceEvent(
+      'ad_hoc_invoice_edited',
+      `Invoice ${invoice.invoice_number} edited — total ₦${oldTotal.toLocaleString()} → ₦${newTotal.toLocaleString()} (${dto.lineItems.length} line item${dto.lineItems.length === 1 ? '' : 's'})`,
+      fresh,
+      NotificationType.AD_HOC_INVOICE_UPDATED,
+    );
+
+    return this.withComputedStatus(fresh);
+  }
+
   async listInvoicesForTenancy(
     propertyTenantId: string,
   ): Promise<AdHocInvoice[]> {
@@ -225,6 +331,8 @@ export class AdHocInvoicesService {
       refreshed,
       NotificationType.AD_HOC_INVOICE_CANCELLED,
     );
+
+    await this.dispatchInvoiceCancelledNotification(refreshed);
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -731,6 +839,43 @@ export class AdHocInvoicesService {
     } catch (err) {
       this.logger.warn(
         `Failed to queue ad-hoc invoice link WhatsApp for ${invoice.id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  private async dispatchInvoiceCancelledNotification(
+    invoice: AdHocInvoice,
+  ): Promise<void> {
+    try {
+      const property = invoice.property;
+      const tenantUser = invoice.tenant?.user;
+      const tenantName =
+        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+        'there';
+      const tenantPhone = tenantUser?.phone_number
+        ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
+        : null;
+
+      if (!tenantPhone) return;
+
+      await this.whatsappNotificationLog.queue(
+        'sendAdhocInvoiceCancelledTenant',
+        {
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          fees: this.utilService.sanitizeTemplateParam(
+            this.buildFeeSummary(invoice),
+          ),
+          amount: Number(invoice.total_amount),
+          landlord_id: property?.owner_id,
+          property_id: property?.id,
+          recipient_name: tenantName,
+        },
+        invoice.id,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to queue ad-hoc invoice cancelled WhatsApp for ${invoice.id}: ${(err as Error).message}`,
       );
     }
   }

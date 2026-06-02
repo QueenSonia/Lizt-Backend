@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -27,6 +28,7 @@ import {
 import { AdHocInvoicesService } from './ad-hoc-invoices.service';
 import { AdHocInvoicePdfService } from './ad-hoc-invoice-pdf.service';
 import { CreateAdHocInvoiceDto } from './dto/create-ad-hoc-invoice.dto';
+import { UpdateAdHocInvoiceDto } from './dto/update-ad-hoc-invoice.dto';
 import { InitializeAdHocInvoicePaymentDto } from './dto/initialize-ad-hoc-invoice-payment.dto';
 import { VerifyAdHocInvoicePaymentDto } from './dto/verify-ad-hoc-invoice-payment.dto';
 import { Public } from '../auth/public.decorator';
@@ -64,6 +66,20 @@ export class AdHocInvoicesController {
   @Get(':id')
   getOne(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: any) {
     return this.adHocInvoicesService.getInvoice(id, req?.user?.id);
+  }
+
+  @ApiOperation({ summary: 'Edit an ad-hoc invoice (landlord)' })
+  @ApiBody({ type: UpdateAdHocInvoiceDto })
+  @ApiOkResponse({ description: 'Invoice updated' })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @Patch(':id')
+  update(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateAdHocInvoiceDto,
+    @Req() req: any,
+  ) {
+    return this.adHocInvoicesService.updateInvoice(id, dto, req?.user?.id);
   }
 
   @ApiOperation({ summary: 'Cancel an ad-hoc invoice' })

@@ -212,7 +212,7 @@ Thank you.
 - `{{7}}` - Expected from tenant after wallet credit (e.g. `₦0.00` when fully covered)
 - `{{8}}` - Status sentence: when fully covered, notes that NO payment reminder will be sent and when it auto-renews (monthly: on the next-period start date; non-monthly: once the tenant accepts the letter); otherwise "Your tenant's first renewal reminder goes out tomorrow." — i.e. the "goes out tomorrow" claim only appears when a reminder will actually be sent
 
-**Button**: URL — "Review". Base URL `https://<frontend>/landlord/property-detail/{{1}}`; the dynamic suffix (`review_path`) is `<propertyId>?editMode=next-period`, which opens the property's next-period editor on arrival.
+**Button**: URL — "Review". Base URL `https://<frontend>/landlord/renew-tenancy/{{1}}`; the dynamic variable (`review_path`) is the bare `<propertyId>` (Meta requires the dynamic part to come last and be clean — no query string). The `renew-tenancy/<id>` route forwards to `/landlord/property-detail/<id>?action=renew`, opening the Renew Tenancy screen.
 
 **Message**:
 

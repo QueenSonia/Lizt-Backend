@@ -84,8 +84,6 @@ export class AdHocInvoicesService {
       );
     }
 
-    // unecessary comment to test git diff
-
     if (!Array.isArray(dto.lineItems) || dto.lineItems.length < 1) {
       throw new BadRequestException('Invoice must have at least one line item');
     }
@@ -720,7 +718,9 @@ export class AdHocInvoicesService {
         {
           phone_number: tenantPhone,
           tenant_name: tenantName,
-          fees: this.buildFeeSummary(invoice),
+          fees: this.utilService.sanitizeTemplateParam(
+            this.buildFeeSummary(invoice),
+          ),
           public_token: invoice.public_token,
           landlord_id: property?.owner_id,
           property_id: property?.id,
@@ -761,7 +761,9 @@ export class AdHocInvoicesService {
         : null;
 
       const amount = Number(invoice.total_amount);
-      const fees = this.buildFeeSummary(invoice);
+      const fees = this.utilService.sanitizeTemplateParam(
+        this.buildFeeSummary(invoice),
+      );
 
       if (tenantPhone) {
         await this.whatsappNotificationLog.queue(

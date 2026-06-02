@@ -947,6 +947,16 @@ export interface AdhocInvoicePaidLandlordParams {
 }
 
 /**
+ * Parameters for ad-hoc invoice cancelled notice to tenant (button-less)
+ */
+export interface AdhocInvoiceCancelledTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  fees: string;
+  amount: number;
+}
+
+/**
  * Parameters for the confirmation a tenant receives after submitting a request
  */
 export interface PaymentPlanRequestSubmittedTenantParams {
@@ -5081,6 +5091,39 @@ export class TemplateSenderService {
   }
 
   /**
+   * Notify tenant that an ad-hoc invoice was cancelled (button-less).
+   * Template: adhoc_invoice_cancelled_tenant
+   */
+  async sendAdhocInvoiceCancelledTenant({
+    phone_number,
+    tenant_name,
+    fees,
+    amount,
+  }: AdhocInvoiceCancelledTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'adhoc_invoice_cancelled_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: fees },
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send the submission confirmation to the tenant after they POST a request.
    * Template: payment_plan_request_submitted_tenant
    *
@@ -5484,6 +5527,8 @@ export class TemplateSenderService {
       'Your payment of {{1}} has been received. Thank you.\n\nClick the button to view your receipt.',
     adhoc_invoice_paid_landlord:
       'Hi,\n\n{{1}} has made a payment of {{2}} for the invoice of {{3}}.\n\nPlease check your dashboard for the receipt.',
+    adhoc_invoice_cancelled_tenant:
+      'Hi {{1}},\n\nThe invoice issued to you for {{2}} (totalling {{3}}) has been cancelled by your landlord. No payment is required, and any payment link previously sent is now void.\n\nIf you have any questions, please reach out to your landlord.',
     payment_plan_request_submitted_tenant:
       'Hi {{1}}, your payment plan request for {{2}} has been received.\n\nTotal due: {{3}}\nPreferred schedule: {{4}}\nNote: {{5}}\n\nYour landlord will review the request and respond on WhatsApp.',
     payment_plan_request_landlord_notify:

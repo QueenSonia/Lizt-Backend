@@ -727,11 +727,33 @@ export class RentReminderService {
       return;
     }
 
-    const walletBalance = await this.tenantBalancesService.getBalance(
-      rent.tenant_id,
-      ownerId,
-    );
-    const summary = this.computeNextPeriodSummary(rent, walletBalance);
+    // Prefer an already-created renewal invoice (a landlord-saved letter/draft,
+    // or one from a tenant request) so the heads-up matches exactly what the
+    // tenant will be billed — including any landlord edits and the invoice's
+    // own period dates. Otherwise project the figures from the rent read-only.
+    const existingInvoice = await this.findExistingNextPeriodInvoice(rent);
+    let summary: {
+      startDate: Date;
+      endDate: Date;
+      rentAmount: number;
+      serviceCharge: number;
+      totalAmount: number;
+    };
+    if (existingInvoice) {
+      summary = {
+        startDate: new Date(existingInvoice.start_date),
+        endDate: new Date(existingInvoice.end_date),
+        rentAmount: Number(existingInvoice.rent_amount ?? 0),
+        serviceCharge: Number(existingInvoice.service_charge ?? 0),
+        totalAmount: Number(existingInvoice.total_amount ?? 0),
+      };
+    } else {
+      const walletBalance = await this.tenantBalancesService.getBalance(
+        rent.tenant_id,
+        ownerId,
+      );
+      summary = this.computeNextPeriodSummary(rent, walletBalance);
+    }
 
     const fmtDate = (d: Date) =>
       new Date(d).toLocaleDateString('en-US', {
@@ -792,8 +814,10 @@ export class RentReminderService {
           service_charge: serviceChargeStr,
           expected_amount: expectedAmountStr,
           status_note: statusNote,
-          // URL-button dynamic suffix → opens the next-period editor.
-          review_path: `${rent.property_id}?editMode=next-period`,
+          // Meta URL-button dynamic var must be clean + last, so it's the bare
+          // propertyId; the base path (.../renew-tenancy/{{1}}) carries the
+          // action and forwards to the Renew Tenancy screen.
+          review_path: rent.property_id,
           days_before_expiry: daysBefore,
         },
         rent.id,
@@ -813,7 +837,7 @@ export class RentReminderService {
           `${tenantName}'s tenancy at ${propertyName} is coming up for renewal. ` +
           `Next period ${period} — rent ${rentAmountStr}, service charge ${serviceChargeStr}, expected from tenant ${expectedAmountStr}. ` +
           `${statusNote} ` +
-          `Review or adjust the next period now: ${frontendUrl}/landlord/property-detail/${rent.property_id}?editMode=next-period`,
+          `Review or adjust the renewal now: ${frontendUrl}/landlord/renew-tenancy/${rent.property_id}`,
         status: 'Completed',
         property_id: rent.property_id,
         user_id: ownerId,
@@ -835,6 +859,41 @@ export class RentReminderService {
    * next period, total netted against wallet credit) WITHOUT persisting an
    * invoice. The real invoice is still created on the first reminder day.
    */
+  /**
+   * The already-created next-period renewal invoice for this rent, if any —
+   * a non-superseded unpaid/partial landlord or draft letter covering the
+   * target period. Mirrors the "existing" lookup in findOrCreateRenewalInvoice
+   * (read-only — does NOT create one). Used by the landlord review notice so it
+   * reports the real invoice figures when one exists.
+   */
+  private async findExistingNextPeriodInvoice(
+    rent: Rent,
+  ): Promise<RenewalInvoice | null> {
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: {
+        property_id: rent.property_id,
+        tenant_id: rent.tenant_id,
+        status: TenantStatusEnum.ACTIVE,
+      },
+    });
+    if (!propertyTenant) return null;
+
+    const { startDate } = this.getTargetPeriodRange(rent);
+    return this.renewalInvoiceRepository.findOne({
+      where: {
+        property_tenant_id: propertyTenant.id,
+        start_date: MoreThanOrEqual(startDate),
+        payment_status: In([
+          RenewalPaymentStatus.UNPAID,
+          RenewalPaymentStatus.PARTIAL,
+        ]),
+        token_type: In(['landlord', 'draft']),
+        superseded_by_id: IsNull(),
+      },
+      order: { created_at: 'DESC' },
+    });
+  }
+
   private computeNextPeriodSummary(
     rent: Rent,
     walletBalance: number,

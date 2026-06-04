@@ -32,6 +32,7 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
 import { RolesEnum } from 'src/base.entity';
 import { CommonArea } from 'src/common-areas/entities/common-area.entity';
 import { Account } from 'src/users/entities/account.entity';
+import { Users } from 'src/users/entities/user.entity';
 import { ArtisansService } from 'src/artisans/artisans.service';
 
 export interface TawkWebhookPayload {
@@ -896,6 +897,33 @@ export class MaintenanceRequestsService {
     };
   }
 
+  /**
+   * Resolves the display name for a request's creator. For landlord/FM-filed
+   * requests the canonical name is the matching account's `profile_name` (often
+   * a business name), NOT the personal first+last on the users row — see the
+   * project_landlord_display_name memory. Falls back to first+last, then null.
+   * `creator` must be loaded with its `accounts` relation.
+   */
+  private resolveCreatorDisplayName(
+    creator: Users | null | undefined,
+    creatorType: MaintenanceRequestCreatorTypeEnum,
+  ): string | null {
+    if (!creator) return null;
+    const roleForType =
+      creatorType === MaintenanceRequestCreatorTypeEnum.LANDLORD
+        ? RolesEnum.LANDLORD
+        : creatorType === MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER
+          ? RolesEnum.FACILITY_MANAGER
+          : null;
+    const matchingAccount = roleForType
+      ? (creator.accounts ?? []).find((a) => a.roles?.includes(roleForType))
+      : null;
+    const profileName = matchingAccount?.profile_name?.trim() || null;
+    const fullName =
+      `${creator.first_name ?? ''} ${creator.last_name ?? ''}`.trim() || null;
+    return profileName || fullName;
+  }
+
   async getAllMaintenanceRequests(
     user_id: string,
     queryParams: MaintenanceRequestFilter,
@@ -914,6 +942,9 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('sr.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'tenantUser')
       .leftJoinAndSelect('sr.creator', 'creator')
+      // Load the creator's accounts so we can surface the landlord/FM
+      // profile_name (business name) instead of their personal first+last.
+      .leftJoinAndSelect('creator.accounts', 'creatorAccounts')
       .leftJoinAndSelect('sr.property', 'property')
       .leftJoinAndSelect('sr.common_area', 'common_area')
       .leftJoinAndSelect('common_area.owner', 'commonAreaOwner')
@@ -1054,9 +1085,16 @@ export class MaintenanceRequestsService {
 
     const [maintenanceRequests, count] = await qb.getManyAndCount();
 
+    // Attach the resolved creator display name (profile_name for landlord/FM)
+    // so the FM/landlord lists don't have to fall back to the personal name.
+    const requestsWithCreatorName = maintenanceRequests.map((sr) => ({
+      ...sr,
+      creator_name: this.resolveCreatorDisplayName(sr.creator, sr.creator_type),
+    }));
+
     const totalPages = Math.ceil(count / size);
     return {
-      maintenance_requests: maintenanceRequests,
+      maintenance_requests: requestsWithCreatorName,
       pagination: {
         totalRows: count,
         perPage: size,
@@ -1074,6 +1112,8 @@ export class MaintenanceRequestsService {
         'tenant',
         'tenant.user',
         'creator',
+        // Creator's accounts → landlord/FM profile_name for the reporter line.
+        'creator.accounts',
         'property',
         'common_area',
         'common_area.owner',
@@ -1101,7 +1141,13 @@ export class MaintenanceRequestsService {
     }
 
     await this.assertCanRead(maintenanceRequest, userId);
-    return maintenanceRequest;
+    return {
+      ...maintenanceRequest,
+      creator_name: this.resolveCreatorDisplayName(
+        maintenanceRequest.creator,
+        maintenanceRequest.creator_type,
+      ),
+    };
   }
 
   async getMaintenanceRequestByTenant(id: string, status?: string) {

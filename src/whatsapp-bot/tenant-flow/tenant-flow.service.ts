@@ -164,6 +164,8 @@ export class TenantFlowService {
       await this.cache.delete(`maintenance_request_state_${from}`);
       await this.cache.delete(`tenant_deny_state_${from}`);
       await this.cache.delete(`awaiting_media_${from}`);
+      await this.cache.delete(`awaiting_media_context_${from}`);
+      await this.cache.delete(`pending_create_${from}`);
       await this.templateSenderService.sendText(
         from,
         'Thank you!  Your session has ended.',
@@ -221,6 +223,15 @@ export class TenantFlowService {
         text,
         tenancyDetailsSelection,
       );
+      return;
+    }
+
+    // Description reply for a captionless stray photo/video ("ask for context").
+    const awaitingMediaContext = await this.cache.get(
+      `awaiting_media_context_${from}`,
+    );
+    if (awaitingMediaContext) {
+      await this.handleMediaContextReply(from, text);
       return;
     }
 
@@ -1439,16 +1450,21 @@ export class TenantFlowService {
   }
 
   /**
-   * Stray photo/video: offer to log a new maintenance request with the media
-   * attached. The media id is stashed and ingested once the tenant confirms.
+   * Stray photo/video. If it came with a caption we already have context, so
+   * we confirm and create. If it was "just dropped" (no caption), we ask the
+   * tenant to describe the issue first — their next message becomes the
+   * description (see handleMediaContextReply). Either way the media is stashed
+   * and ingested once the request is created.
    */
   private async offerCreateFromMedia(
     from: string,
     message: IncomingMessage,
   ): Promise<void> {
     const media = message.image ?? message.video;
-    if (!media?.id) return;
+    if (!media?.id && !media?.link) return;
     const kind: 'image' | 'video' = message.video ? 'video' : 'image';
+    const caption = (media.caption ?? '').trim();
+
     await this.cache.setWithTtlSeconds(
       `pending_create_${from}`,
       {
@@ -1456,18 +1472,78 @@ export class TenantFlowService {
         media_id: media.id,
         media_link: media.link,
         media_type: kind,
-        caption: media.caption ?? '',
+        caption,
       },
       600,
     );
-    await this.templateSenderService.sendButtons(
-      from,
-      `Do you want to create a maintenance request? I can attach that ${kind} to it.`,
-      [
-        { id: 'create_mr_yes', title: 'Yes, create' },
-        { id: 'create_mr_no', title: 'No' },
-      ],
+
+    if (caption) {
+      await this.templateSenderService.sendButtons(
+        from,
+        `Do you want to create a maintenance request for “${this.truncateForBody(
+          caption,
+        )}”? I'll attach your ${kind}.`,
+        [
+          { id: 'create_mr_yes', title: 'Yes, create' },
+          { id: 'create_mr_no', title: 'No' },
+        ],
+      );
+      return;
+    }
+
+    // No caption — ask for context before creating anything.
+    await this.cache.setWithTtlSeconds(
+      `awaiting_media_context_${from}`,
+      '1',
+      600,
     );
+    await this.templateSenderService.sendText(
+      from,
+      `Got your ${kind === 'video' ? 'video' : 'photo'}. What's the issue? Reply with a short description and I'll log it as a maintenance request — or reply *cancel* to skip.`,
+    );
+  }
+
+  /**
+   * The tenant's description reply after dropping a captionless photo/video.
+   * Fills in the stashed media's description and proceeds to create (resolving
+   * property the same way the button "Yes" path does).
+   */
+  private async handleMediaContextReply(
+    from: string,
+    text: string,
+  ): Promise<void> {
+    const trimmed = text.trim();
+
+    if (trimmed.toLowerCase() === 'cancel') {
+      await this.cache.delete(`awaiting_media_context_${from}`);
+      await this.cache.delete(`pending_create_${from}`);
+      await this.templateSenderService.sendText(from, 'No problem — discarded.');
+      return;
+    }
+    if (!trimmed) {
+      await this.templateSenderService.sendText(
+        from,
+        'Please describe the issue, or reply *cancel* to skip.',
+      );
+      return;
+    }
+
+    const pending = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (!pending) {
+      await this.cache.delete(`awaiting_media_context_${from}`);
+      await this.templateSenderService.sendText(
+        from,
+        'That expired — please send the photo or video again.',
+      );
+      return;
+    }
+
+    await this.cache.delete(`awaiting_media_context_${from}`);
+    pending.description = trimmed;
+    await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 600);
+    await this.handleCreateConfirmed(from);
   }
 
   /**
@@ -1581,10 +1657,11 @@ export class TenantFlowService {
     await this.cache.delete(`pending_create_property_${from}`);
 
     const description =
-      pending.kind === 'text'
-        ? (pending.description ?? '').trim()
-        : pending.caption?.trim() ||
-          `Issue reported via ${pending.media_type ?? 'photo'}`;
+      (pending.description ?? '').trim() ||
+      pending.caption?.trim() ||
+      (pending.kind === 'media'
+        ? `Issue reported via ${pending.media_type ?? 'photo'}`
+        : '');
 
     if (!description) {
       await this.templateSenderService.sendText(

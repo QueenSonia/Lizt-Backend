@@ -230,6 +230,9 @@ export class MaintenanceRequestsService {
       tenant_name: tenantName,
       property_name: tenantExistInProperty.property?.name,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: MaintenanceRequestStatusEnum.NOT_APPROVED,
@@ -383,6 +386,9 @@ export class MaintenanceRequestsService {
       tenant_name: tenantDisplayName,
       property_name: property.name,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: initialStatus,
@@ -498,6 +504,9 @@ export class MaintenanceRequestsService {
       common_area_id: commonArea.id,
       tenant_name: null,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: MaintenanceRequestStatusEnum.NOT_APPROVED,
@@ -683,6 +692,9 @@ export class MaintenanceRequestsService {
       tenant_name: tenantDisplayName,
       property_name: property.name,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: initialStatus,
@@ -800,6 +812,9 @@ export class MaintenanceRequestsService {
       common_area_id: commonArea.id,
       tenant_name: null,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: initialStatus,
@@ -1249,8 +1264,23 @@ export class MaintenanceRequestsService {
       safeUpdate.date_reported = data.date_reported;
     if (data.resolution_date !== undefined)
       safeUpdate.resolution_date = data.resolution_date;
-    if (data.issue_images !== undefined)
-      safeUpdate.issue_images = data.issue_images;
+    // New uploads are stamped with the cycle they're added in. If this same
+    // call is also reopening the request, they belong to the incremented
+    // attempt (see the REOPENED branch below).
+    const mediaAttempt =
+      targetStatus === MaintenanceRequestStatusEnum.REOPENED
+        ? (maintenanceRequest.current_attempt ?? 1) + 1
+        : (maintenanceRequest.current_attempt ?? 1);
+    if (data.issue_media !== undefined) {
+      const incoming = (data.issue_media ?? []).map((m) => ({
+        ...m,
+        attempt: mediaAttempt,
+      }));
+      safeUpdate.issue_media = [
+        ...(maintenanceRequest.issue_media ?? []),
+        ...incoming,
+      ];
+    }
 
     if (targetStatus === MaintenanceRequestStatusEnum.RESOLVED) {
       safeUpdate.resolution_date = new Date();
@@ -1290,6 +1320,9 @@ export class MaintenanceRequestsService {
     }
     if (targetStatus === MaintenanceRequestStatusEnum.REOPENED) {
       safeUpdate.reopened_at = new Date();
+      // Advance the media-grouping cycle so evidence added after this reopen
+      // is separable from the original report.
+      safeUpdate.current_attempt = (maintenanceRequest.current_attempt ?? 1) + 1;
     }
 
     // Priority is only valid while a request is actionable (approved /
@@ -2357,8 +2390,14 @@ export class MaintenanceRequestsService {
     if (notes) request.notes = notes;
     if (status === MaintenanceRequestStatusEnum.RESOLVED)
       request.resolution_date = new Date();
-    if (status === MaintenanceRequestStatusEnum.REOPENED)
+    if (status === MaintenanceRequestStatusEnum.REOPENED) {
       request.reopened_at = new Date();
+      // Advance the media-grouping cycle on a genuine reopen transition
+      // (guard against double-bump if REOPENED → REOPENED is re-sent).
+      if (previousStatus !== MaintenanceRequestStatusEnum.REOPENED) {
+        request.current_attempt = (request.current_attempt ?? 1) + 1;
+      }
+    }
     if (
       status === MaintenanceRequestStatusEnum.APPROVED ||
       status === MaintenanceRequestStatusEnum.REOPENED

@@ -132,6 +132,18 @@ export interface FMSetPasswordFlowParams {
 }
 
 /**
+ * Parameters for the tenant maintenance-request Flow template
+ * (`maintenance_request_tenant`). The `flow_token` is the cache-backed opaque
+ * token minted by FlowTokenService; the Flow webhook resolves it to the
+ * tenant + properties (create) or the request being reopened (reopen).
+ */
+export interface TenantMaintenanceRequestFlowParams {
+  phone_number: string;
+  name: string;
+  flow_token: string;
+}
+
+/**
  * Parameters for property created template
  */
 export interface PropertyCreatedParams {
@@ -1271,6 +1283,47 @@ export class TemplateSenderService {
               { type: 'text', parameter_name: 'team', text: team },
               { type: 'text', parameter_name: 'role', text: role },
             ],
+          },
+          {
+            type: 'button',
+            sub_type: 'flow',
+            index: 0,
+            parameters: [
+              {
+                type: 'action',
+                action: { flow_token },
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Launch the tenant maintenance-request Flow via its template. Mirrors
+   * `sendToFacilityManagerSetPasswordFlow`: a body greeting plus a single
+   * `sub_type: flow` button carrying the per-tenant `flow_token`. Used both
+   * for new reports and for the reopen relaunch.
+   */
+  async sendTenantMaintenanceRequestFlow({
+    phone_number,
+    name,
+    flow_token,
+  }: TenantMaintenanceRequestFlowParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'maintenance_request_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [{ type: 'text', parameter_name: 'name', text: name }],
           },
           {
             type: 'button',
@@ -5402,6 +5455,8 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nYour temporary password is: {{4}}\n\nPlease sign in and change your password as soon as possible.\n\nThank you,',
     facility_manager_set_password:
       'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nTap the button below to set your password and finish signing in. The link expires in 7 days — ask your team admin to re-invite you if it does.\n\nThank you,',
+    maintenance_request_tenant:
+      "Hi {{1}} 👋\n\nNeed something fixed in your home?\n\nTap the button below to report a maintenance issue and we'll take it from there.",
     properties_created:
       'Hello {{1}}\n\nA new property with name {{2}} was created.\n\nThank you.\n-The Lizt Team',
     user_added:

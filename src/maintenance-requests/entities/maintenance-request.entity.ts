@@ -12,6 +12,7 @@ import {
   MaintenanceRequestCreatorTypeEnum,
   MaintenanceRequestScopeEnum,
   MaintenanceRequestStatusEnum,
+  MediaItem,
 } from '../dto/create-maintenance-request.dto';
 import { JobCategoryEnum } from '../dto/job-category.enum';
 import { Account } from 'src/users/entities/account.entity';
@@ -45,8 +46,16 @@ export class MaintenanceRequest extends BaseEntity {
   @Column({ nullable: false, type: 'text' })
   description: string;
 
-  @Column({ nullable: true, type: 'varchar', array: true })
-  issue_images?: string[] | null;
+  // Unified attachment list (photos + videos). Replaces the old
+  // `issue_images string[]`; each item carries its media type and the
+  // `attempt` cycle it was added in. See MediaItem.
+  @Column({ nullable: true, type: 'jsonb' })
+  issue_media?: MediaItem[] | null;
+
+  // Report cycle counter: 1 at creation, incremented on each REOPENED
+  // transition. Used to tag media so attachments group per cycle.
+  @Column({ nullable: false, type: 'int', default: 1 })
+  current_attempt: number;
 
   @Column({ nullable: true })
   resolvedAt: Date;

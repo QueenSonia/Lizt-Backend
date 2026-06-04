@@ -12,7 +12,11 @@
   Logger,
   Param,
   Request,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { FileUploadService } from 'src/utils/cloudinary';
 import { ConfigService } from '@nestjs/config';
 import { Request as ExpressRequest, Response } from 'express';
 
@@ -54,6 +58,7 @@ export class WhatsappBotController {
     @InjectRepository(KYCApplication)
     private readonly kycApplicationRepository: Repository<KYCApplication>,
     private readonly utilService: UtilService,
+    private readonly fileUploadService: FileUploadService,
   ) {}
 
   @SkipAuth()
@@ -312,6 +317,48 @@ export class WhatsappBotController {
 
     const screenResponse = await this.whatsappBotService.getNextScreen(body);
     return screenResponse;
+  }
+
+  /**
+   * Simulator-only media upload. Pushes a file to Cloudinary and returns its
+   * public URL so the in-house simulator can stand in for Meta-hosted media:
+   * the returned `url` is sent back as the `link` on a simulated inbound
+   * image/video message (or a Flow PhotoPicker item), and the media services
+   * use it directly instead of round-tripping Meta's encrypted CDN.
+   *
+   * Guarded by `WHATSAPP_SIMULATOR=true` — refuses to run in production.
+   */
+  @SkipAuth()
+  @Post('/simulator-upload')
+  @UseInterceptors(FileInterceptor('file'))
+  async simulatorUpload(@UploadedFile() file?: Express.Multer.File) {
+    const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
+    if (simulatorMode !== 'true' && simulatorMode !== true) {
+      throw new ForbiddenException(
+        'simulator-upload is only available when WHATSAPP_SIMULATOR=true',
+      );
+    }
+    if (!file) {
+      throw new BadRequestException('file is required');
+    }
+
+    // Keep simulator test media in its own Cloudinary folder so it's isolated
+    // from real attachments and easy to bulk-delete from the Media Library.
+    const SIMULATOR_MEDIA_FOLDER = 'simulator-tests';
+    const isVideo = file.mimetype.startsWith('video');
+    const upload = isVideo
+      ? await this.fileUploadService.uploadMediaBuffer(file.buffer, {
+          resourceType: 'video',
+          folder: SIMULATOR_MEDIA_FOLDER,
+        })
+      : await this.fileUploadService.uploadFile(file, SIMULATOR_MEDIA_FOLDER);
+
+    return {
+      id: `sim_media_${upload.public_id ?? upload.asset_id ?? ''}`,
+      url: upload.secure_url,
+      type: isVideo ? 'video' : 'image',
+      mime_type: file.mimetype,
+    };
   }
 
   @Post('/send-custom-message')

@@ -57,6 +57,8 @@ import {
 } from './template-sender';
 import { TenantFlowService } from './tenant-flow';
 import { LandlordFlowService } from './landlord-flow';
+import { FlowTokenService, FlowTokenPayload } from './flow-token.service';
+import { FlowMediaRef } from './whatsapp-media.service';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -114,6 +116,8 @@ export class WhatsappBotService implements OnModuleInit {
     // lives there. Used by the FM password-setup Flow webhook (getNextScreen).
     @Inject(forwardRef(() => PasswordService))
     private readonly passwordService: PasswordService,
+
+    private readonly flowTokenService: FlowTokenService,
   ) {}
 
   /**
@@ -161,6 +165,21 @@ export class WhatsappBotService implements OnModuleInit {
     if (data?.error) {
       console.warn('Received client error:', data);
       return { data: { acknowledged: true } };
+    }
+
+    // Tenant maintenance-request Flow. Its flow_token is a cache-backed opaque
+    // token (FlowTokenService); FM password tokens are DB-backed and won't
+    // resolve here, so they fall through to the FM logic below.
+    if (flowToken) {
+      const tokenPayload = await this.flowTokenService.resolve(flowToken);
+      if (tokenPayload) {
+        return this.handleTenantMaintenanceFlow(
+          action,
+          screen,
+          data,
+          tokenPayload,
+        );
+      }
     }
 
     // FM password-setup Flow: the flow_token is the PasswordResetToken value
@@ -272,6 +291,190 @@ export class WhatsappBotService implements OnModuleInit {
 
     console.error('Unhandled request body:', decryptedBody);
     throw new Error('Unhandled endpoint request.');
+  }
+
+  /**
+   * Tenant maintenance-request Flow handler. On INIT returns the REPORT_ISSUE
+   * form seeded from the token; on the form submit it creates (or reopens) the
+   * request, kicks off async photo ingest, arms the video window if asked, and
+   * returns the MR_SUCCESS terminal screen with the real ticket number.
+   */
+  private async handleTenantMaintenanceFlow(
+    action: string,
+    screen: string,
+    data: Record<string, any> | undefined,
+    payload: FlowTokenPayload,
+  ): Promise<any> {
+    if (action === 'INIT') {
+      const properties =
+        payload.mode === 'create' ? payload.properties : [];
+      return {
+        screen: 'REPORT_ISSUE',
+        data: {
+          mode: payload.mode,
+          heading:
+            payload.mode === 'reopen'
+              ? "Tell us what's still wrong"
+              : 'Report a maintenance issue',
+          description_label:
+            payload.mode === 'reopen'
+              ? 'What still needs fixing?'
+              : 'Describe the issue',
+          has_multiple_properties:
+            payload.mode === 'create' && properties.length > 1,
+          properties,
+          error_message: '',
+          error_visible: false,
+        },
+      };
+    }
+
+    if (action === 'data_exchange' && screen === 'REPORT_ISSUE') {
+      return this.handleReportIssueSubmit(payload, data ?? {});
+    }
+
+    console.error('Unhandled tenant maintenance flow request:', {
+      action,
+      screen,
+    });
+    throw new Error('Unhandled endpoint request.');
+  }
+
+  private async handleReportIssueSubmit(
+    payload: FlowTokenPayload,
+    data: Record<string, any>,
+  ): Promise<any> {
+    const description = String(data.description ?? '').trim();
+    const reShow = (message: string) => ({
+      screen: 'REPORT_ISSUE',
+      data: {
+        mode: payload.mode,
+        heading:
+          payload.mode === 'reopen'
+            ? "Tell us what's still wrong"
+            : 'Report a maintenance issue',
+        description_label:
+          payload.mode === 'reopen'
+            ? 'What still needs fixing?'
+            : 'Describe the issue',
+        has_multiple_properties:
+          payload.mode === 'create' && payload.properties.length > 1,
+        properties: payload.mode === 'create' ? payload.properties : [],
+        error_message: message,
+        error_visible: true,
+      },
+    });
+
+    if (!description) {
+      return reShow('Please describe the issue.');
+    }
+
+    const photos = (data.photos ?? data.media ?? []) as FlowMediaRef[];
+    const wantsVideo = data.wants_video === true || data.wants_video === 'true';
+
+    let requestEntityId: string;
+    let requestId: string;
+    let attempt: number;
+
+    try {
+      if (payload.mode === 'create') {
+        const propertyId =
+          payload.properties.length === 1
+            ? payload.properties[0].id
+            : String(data.property_id ?? '');
+        if (!payload.properties.some((p) => p.id === propertyId)) {
+          return reShow('Please choose which property this is for.');
+        }
+        const created =
+          await this.tenantFlowService.createTenantMaintenanceRequest({
+            tenantUserId: payload.tenant_user_id,
+            propertyId,
+            text: description,
+          });
+        if (!created) {
+          return reShow(
+            'Sorry, we could not log your request. Please try again.',
+          );
+        }
+        requestEntityId = created.id;
+        requestId = created.request_id;
+        attempt = 1;
+      } else {
+        // reopen: the request already flipped to REOPENED (and current_attempt
+        // bumped) when the tenant tapped "No, not fixed". Record their detail
+        // as a reopen note and tag this cycle's media.
+        const request = await this.maintenanceRequestRepo.findOne({
+          where: { id: payload.request_id },
+        });
+        if (!request) {
+          return reShow('Sorry, we could not find your request.');
+        }
+        await this.maintenanceRequestService.appendReopenNoteWithDedup(
+          payload.request_id,
+          payload.tenant_user_id,
+          'tenant',
+          description,
+        );
+        requestEntityId = request.id;
+        requestId = request.request_id;
+        attempt = payload.attempt;
+      }
+    } catch (err) {
+      this.logger.error('Tenant maintenance flow submit failed', err as Error);
+      return reShow('Sorry, something went wrong. Please try again.');
+    }
+
+    // Async photo ingest (download → decrypt → Cloudinary → append). Fired,
+    // not awaited, so the Flow response stays within Meta's endpoint timeout.
+    if (photos.length) {
+      this.eventEmitter.emit('maintenance.media.ingest', {
+        request_id: requestEntityId,
+        attempt,
+        flowMedia: photos,
+      });
+    }
+
+    // Arm the 10-minute video window keyed by the tenant's phone (carried on
+    // the token — the Flow endpoint doesn't echo the sender number).
+    if (wantsVideo) {
+      await this.cache.setWithTtlSeconds(
+        `awaiting_media_${payload.phone}`,
+        { request_id: requestEntityId, attempt, description },
+        600,
+      );
+    }
+
+    // Also confirm in the chat thread. The Flow's SUCCESS screen only lives
+    // inside the flow UI; this leaves a lasting message after the tenant exits
+    // (and works in the simulator, whose "Done" sends no nfm_reply).
+    const confirmation =
+      payload.mode === 'reopen'
+        ? `Thanks — I've reopened your request (${requestId}) and added your note.${
+            wantsVideo ? " Send your video here and I'll attach it." : ''
+          }`
+        : `✅ Your maintenance request has been logged — ticket ${requestId}.${
+            wantsVideo
+              ? " Send your video here and I'll attach it."
+              : ' Someone will take a look and reach out.'
+          }`;
+    try {
+      await this.templateSenderService.sendText(payload.phone, confirmation);
+    } catch (err) {
+      this.logger.error(
+        'Failed to send tenant flow confirmation',
+        err as Error,
+      );
+    }
+
+    return {
+      screen: 'MR_SUCCESS',
+      data: {
+        request_id: requestId,
+        success_message: wantsVideo
+          ? `Your ticket is ${requestId}. Tap Done, then send your video here in the chat and I'll attach it.`
+          : `Your ticket is ${requestId}. Someone will take a look and reach out.`,
+      },
+    };
   }
 
   /**
@@ -544,36 +747,89 @@ export class WhatsappBotService implements OnModuleInit {
           24 * 60 * 60 * 1000,
         );
 
-        // Now show the appropriate menu
-        const user = await this.findUserByPhoneOrEmail(from);
-        const userPhone = await this.getPhoneNumberFromIdentifier(from);
+        // If a button click triggered the role prompt, resume that action
+        // instead of dumping the user back at the main menu (the original
+        // WhatsApp button is single-tap and can't be re-tapped).
+        const pendingRaw = await this.cache.get(`pending_action_${from}`);
+        if (pendingRaw) {
+          let pending: IncomingMessage | null = null;
+          try {
+            pending = JSON.parse(pendingRaw as string) as IncomingMessage;
+          } catch {
+            pending = null;
+          }
 
-        if (selectedRole === RolesEnum.FACILITY_MANAGER) {
-          await this.sendFacilityManagerMainMenu(
-            userPhone,
-            this.utilService.toSentenceCase(user?.first_name || ''),
-          );
-        } else if (selectedRole === RolesEnum.LANDLORD) {
-          const landlordName = this.utilService.toSentenceCase(
-            user?.first_name || 'there',
-          );
-          await this.sendLandlordMainMenu(userPhone, landlordName);
-        } else {
-          await this.sendButtons(
-            userPhone,
-            `Hello ${this.utilService.toSentenceCase(
-              user?.first_name || '',
-            )} What would you like to do?`,
-            [
-              { id: 'maintenance_request', title: 'Maintenance request' },
-              { id: 'view_tenancy', title: 'View tenancy details' },
-              { id: 'payment', title: 'Payment' },
-            ],
-            'Tap on any option to continue.',
-          );
+          const pendingBtn =
+            (
+              pending?.interactive as {
+                button_reply?: { id?: string; payload?: string };
+              }
+            )?.button_reply ||
+            (pending as unknown as { button?: { id?: string; payload?: string } })
+              ?.button;
+          const pendingBtnId = pendingBtn?.id || pendingBtn?.payload;
+          const actionRoles = this.getActionRoles(pendingBtnId);
+
+          // Replay when the action is role-agnostic, or the chosen role can do it.
+          if (pending && (!actionRoles || actionRoles.includes(selectedRole))) {
+            await this.cache.delete(`pending_action_${from}`);
+            await this.cache.delete(`role_redirect_attempts_${from}`);
+            await this.handleMessage([pending]);
+            return;
+          }
+
+          // Mismatch: the picked role can't perform the stored action. Re-ask,
+          // but offer ONLY the role(s) that can (plus Cancel) — so the next pick
+          // is guaranteed valid and the prompt can't loop. A one-attempt counter
+          // backstops it; Cancel lets the user keep the role they just picked.
+          if (pending && actionRoles && !actionRoles.includes(selectedRole)) {
+            const attempts = Number(
+              (await this.cache.get(`role_redirect_attempts_${from}`)) || 0,
+            );
+            if (attempts < 1) {
+              await this.cache.set(
+                `role_redirect_attempts_${from}`,
+                attempts + 1,
+                10 * 60 * 1000,
+              );
+              const validRoleButtons = this.roleButtonsFor(actionRoles);
+              const roleNames = validRoleButtons
+                .map((b) => b.title)
+                .join(' or ');
+              await this.sendButtons(
+                await this.getPhoneNumberFromIdentifier(from),
+                `That action is only available to your ${roleNames} role. Switch to continue, or cancel.`,
+                [
+                  ...validRoleButtons,
+                  { id: 'cancel_role_switch', title: 'Cancel' },
+                ],
+              );
+              return;
+            }
+            // Backstop exhausted — abandon the replay and fall through to the menu.
+            await this.cache.delete(`pending_action_${from}`);
+            await this.cache.delete(`role_redirect_attempts_${from}`);
+          }
         }
+
+        // No pending action (or replay abandoned) — show the role's main menu.
+        const user = await this.findUserByPhoneOrEmail(from);
+        await this.sendMenuForRole(from, selectedRole, user);
         return; // Don't continue with role detection
       }
+    }
+
+    // Cancel from the mismatch re-ask: keep the role the user just picked,
+    // drop the pending action, and show that role's main menu.
+    if (buttonId === 'cancel_role_switch') {
+      await this.cache.delete(`pending_action_${from}`);
+      await this.cache.delete(`role_redirect_attempts_${from}`);
+      const cancelRole = (await this.cache.get(`selected_role_${from}`)) as
+        | RolesEnum
+        | undefined;
+      const cancelUser = await this.findUserByPhoneOrEmail(from);
+      await this.sendMenuForRole(from, cancelRole, cancelUser);
+      return;
     }
 
     // CRITICAL FIX: Use unified lookup that handles both phone numbers and emails
@@ -689,6 +945,19 @@ export class WhatsappBotService implements OnModuleInit {
           }
           if (hasTenant) {
             roleButtons.push({ id: 'select_role_tenant', title: 'Tenant' });
+          }
+
+          // Stash the button click that triggered this prompt so we can
+          // resume it once a role is picked. WhatsApp interactive buttons are
+          // single-tap, so dropping the user at a fresh menu means the original
+          // button can't be tapped again. Only buttons are worth replaying —
+          // plain text falls through to the chosen role's menu as before.
+          if (buttonId) {
+            await this.cache.set(
+              `pending_action_${from}`,
+              JSON.stringify(message),
+              10 * 60 * 1000,
+            );
           }
 
           await this.sendButtons(
@@ -830,6 +1099,10 @@ export class WhatsappBotService implements OnModuleInit {
         if (message.type === 'text') {
           void this.tenantFlowService.handleText(message, tenantPhone);
         }
+
+        if (message.type === 'image' || message.type === 'video') {
+          void this.tenantFlowService.handleInboundMedia(message, tenantPhone);
+        }
         break;
       }
       case RolesEnum.LANDLORD: {
@@ -882,6 +1155,93 @@ export class WhatsappBotService implements OnModuleInit {
         }
       }
     }
+  }
+
+  /**
+   * Roles that can handle a given entry-button id, used to decide whether a
+   * pending action can be replayed after a multi-role user picks a role.
+   * Returns null for shared/role-agnostic buttons (e.g. `maintenance_request`,
+   * `visit_site`, `main_menu`) and unknown ids — those replay under any role,
+   * letting the chosen role's own switch interpret them. Keep in sync with the
+   * role-specific entry cases in handleInteractive (tenant), handleFacilityInteractive
+   * (FM) and the landlord flow's handleInteractive.
+   */
+  private getActionRoles(buttonId?: string | null): RolesEnum[] | null {
+    if (!buttonId) return null;
+    const map: Record<string, RolesEnum[]> = {
+      // Facility Manager
+      view_all_maintenance_requests: [RolesEnum.FACILITY_MANAGER],
+      view_account_info: [RolesEnum.FACILITY_MANAGER],
+      // Tenant
+      view_tenancy: [RolesEnum.TENANT],
+      payment: [RolesEnum.TENANT],
+      pay_rent: [RolesEnum.TENANT],
+      pay_outstanding_balance: [RolesEnum.TENANT],
+      new_maintenance_request: [RolesEnum.TENANT],
+      // Landlord
+      view_properties: [RolesEnum.LANDLORD],
+      view_maintenance: [RolesEnum.LANDLORD],
+      generate_kyc_link: [RolesEnum.LANDLORD],
+    };
+    return map[buttonId] ?? null;
+  }
+
+  /**
+   * Send the main menu for a given role. Shared by the role-selection
+   * fallthrough and the cancel-role-switch path.
+   */
+  private async sendMenuForRole(
+    from: string,
+    role: RolesEnum | undefined,
+    user: { first_name?: string | null } | null,
+  ): Promise<void> {
+    const userPhone = await this.getPhoneNumberFromIdentifier(from);
+
+    if (role === RolesEnum.FACILITY_MANAGER) {
+      await this.sendFacilityManagerMainMenu(
+        userPhone,
+        this.utilService.toSentenceCase(user?.first_name || ''),
+      );
+    } else if (role === RolesEnum.LANDLORD) {
+      await this.sendLandlordMainMenu(
+        userPhone,
+        this.utilService.toSentenceCase(user?.first_name || 'there'),
+      );
+    } else {
+      await this.sendButtons(
+        userPhone,
+        `Hello ${this.utilService.toSentenceCase(
+          user?.first_name || '',
+        )} What would you like to do?`,
+        [
+          { id: 'maintenance_request', title: 'Maintenance request' },
+          { id: 'view_tenancy', title: 'View tenancy details' },
+          { id: 'payment', title: 'Payment' },
+        ],
+        'Tap on any option to continue.',
+      );
+    }
+  }
+
+  /**
+   * Build select_role_* buttons for the given roles, used to re-ask which role
+   * to switch to when the picked role can't perform a pending action.
+   */
+  private roleButtonsFor(
+    roles: RolesEnum[],
+  ): { id: string; title: string }[] {
+    const byRole: Partial<Record<RolesEnum, { id: string; title: string }>> = {
+      [RolesEnum.FACILITY_MANAGER]: {
+        id: 'select_role_fm',
+        title: 'Facility Manager',
+      },
+      [RolesEnum.LANDLORD]: { id: 'select_role_landlord', title: 'Landlord' },
+      [RolesEnum.TENANT]: { id: 'select_role_tenant', title: 'Tenant' },
+    };
+    return roles.map((r) => byRole[r]).filter(Boolean) as {
+      id: string;
+      title: string;
+    }[];
   }
 
   /**

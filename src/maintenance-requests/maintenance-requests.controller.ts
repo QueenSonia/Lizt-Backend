@@ -18,6 +18,7 @@ import { MaintenanceRequestsService } from './maintenance-requests.service';
 import {
   CreateMaintenanceRequestDto,
   MaintenanceRequestFilter,
+  MediaItem,
 } from './dto/create-maintenance-request.dto';
 import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-request.dto';
 import { AssignMaintenanceRequestDto } from './dto/assign-maintenance-request.dto';
@@ -54,6 +55,37 @@ export class MaintenanceRequestsController {
     private readonly fileUploadService: FileUploadService,
   ) {}
 
+  /**
+   * Upload maintenance-request attachments to Cloudinary and shape them into
+   * MediaItems. Images go through `uploadFile` (mime/size validation, image
+   * resource type); videos go through `uploadMediaBuffer` with the video
+   * resource type. `attempt` is a placeholder here — the service stamps the
+   * authoritative report cycle on create (1) and update (current_attempt).
+   */
+  private async uploadMaintenanceMedia(
+    files: Array<Express.Multer.File>,
+  ): Promise<MediaItem[]> {
+    return Promise.all(
+      files.map(async (file) => {
+        const isVideo = file.mimetype.startsWith('video');
+        const upload = isVideo
+          ? await this.fileUploadService.uploadMediaBuffer(file.buffer, {
+              resourceType: 'video',
+              folder: 'maintenance-requests',
+            })
+          : await this.fileUploadService.uploadFile(
+              file,
+              'maintenance-requests',
+            );
+        return {
+          type: isVideo ? 'video' : 'image',
+          url: upload.secure_url,
+          attempt: 1,
+        };
+      }),
+    );
+  }
+
   @ApiOperation({ summary: 'Create Maintenance Request' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreateMaintenanceRequestDto })
@@ -61,19 +93,15 @@ export class MaintenanceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  @UseInterceptors(FilesInterceptor('issue_images', 20))
+  @UseInterceptors(FilesInterceptor('issue_media', 20))
   async createMaintenanceRequest(
     @Body() body: CreateMaintenanceRequestDto,
     @Req() req: any,
     @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     if (files?.length) {
-      const uploadedUrls = await Promise.all(
-        files.map((file) =>
-          this.fileUploadService.uploadFile(file, 'maintenance-requests'),
-        ),
-      );
-      body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
+      // attempt is stamped by the service (1 at creation).
+      body.issue_media = await this.uploadMaintenanceMedia(files);
     }
     return this.maintenanceRequestsService.createMaintenanceRequest(body, {
       id: req?.user?.id,
@@ -418,7 +446,7 @@ export class MaintenanceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
-  @UseInterceptors(FilesInterceptor('issue_images', 20))
+  @UseInterceptors(FilesInterceptor('issue_media', 20))
   async updateMaintenanceRequestById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: UpdateMaintenanceRequestResponseDto,
@@ -426,12 +454,8 @@ export class MaintenanceRequestsController {
     @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     if (files?.length) {
-      const uploadedUrls = await Promise.all(
-        files.map((file) =>
-          this.fileUploadService.uploadFile(file, 'maintenance-requests'),
-        ),
-      );
-      body.issue_images = uploadedUrls.map((upload) => upload.secure_url);
+      // attempt is re-stamped by the service with the request's current cycle.
+      body.issue_media = await this.uploadMaintenanceMedia(files);
     }
     return this.maintenanceRequestsService.updateMaintenanceRequestById(
       id,

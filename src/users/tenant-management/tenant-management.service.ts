@@ -2793,7 +2793,7 @@ export class TenantManagementService {
           ? new Date(sr.resolution_date).toISOString()
           : null,
         priority: sr.is_urgent ? 'High' : 'Medium',
-        images: sr.issue_images || [],
+        images: (sr.issue_media || []).map((m) => m.url),
       })),
       activeTenancies: rents
         .filter((rent) => rent.rent_status === RentStatusEnum.ACTIVE)

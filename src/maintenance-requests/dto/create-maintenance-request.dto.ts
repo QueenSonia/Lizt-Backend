@@ -33,6 +33,17 @@ export enum MaintenanceRequestCreatorTypeEnum {
   LANDLORD = 'landlord',
 }
 
+/**
+ * A single attachment on a maintenance request. `attempt` groups attachments
+ * by report cycle (1 at creation, incremented on each REOPENED transition) so
+ * a reopened request's fresh evidence is visually separable from the original.
+ */
+export interface MediaItem {
+  type: 'image' | 'video';
+  url: string;
+  attempt: number;
+}
+
 export class CreateMaintenanceRequestDto {
   @IsNotEmpty()
   text: string;
@@ -85,12 +96,12 @@ export class CreateMaintenanceRequestDto {
   @IsUUID()
   assigned_to?: string;
 
-  // Populated by the controller from the uploaded `issue_images` files
+  // Populated by the controller from the uploaded `issue_media` files
   // (FilesInterceptor runs before validation, but the file → URL upload
   // happens in the route handler — so this field arrives empty over the
   // wire and gets filled in before reaching the service).
   @IsOptional()
-  issue_images?: string[];
+  issue_media?: MediaItem[];
 }
 
 export class MaintenanceRequestFilter {

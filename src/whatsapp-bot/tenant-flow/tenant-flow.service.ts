@@ -56,22 +56,55 @@ import {
 } from 'src/common/billing/fees';
 import { nextPeriodEndInclusive } from 'src/common/utils/rent-date.util';
 
+/** A media item to attach once a deferred stray-input request is created. */
+interface PendingMediaRef {
+  /** Meta media id (real inbound), resolved via the Graph API. */
+  id?: string;
+  /** Pre-hosted public URL (simulator), used in place of the Meta id. */
+  link?: string;
+  type: 'image' | 'video';
+}
+
 /**
- * A stray input the bot offered to turn into a maintenance request, stashed
- * until the tenant confirms (and picks a property, if they have several).
+ * A stray input the bot offered to turn into a maintenance request. Creation is
+ * deferred through a short guided intake — the bot collects extra details, then
+ * photos/videos — so the request is logged once with the full picture (and the
+ * FM/landlord notification carries the complete description). Stashed in
+ * `pending_create_<phone>` until the intake finishes.
  */
 interface PendingCreate {
   kind: 'text' | 'media';
-  /** For text offers: the typed message used as the description. */
+  /** The accumulated description (seed text/caption + any extra details). */
   description?: string;
-  /** For media offers: the inbound WhatsApp media id to ingest on confirm. */
-  media_id?: string;
-  /** Simulator media: a pre-hosted public URL used in place of the Meta id. */
-  media_link?: string;
-  media_type?: 'image' | 'video';
-  /** Optional caption sent with the media; used as the description if present. */
+  /** Caption sent with seed media; used as the description if no other given. */
   caption?: string;
+  /** Resolved once the tenant picks a property (single-property auto-fills). */
+  property_id?: string;
+  /** Media to attach on create — the seed media plus any added during intake. */
+  media?: PendingMediaRef[];
+  /**
+   * Guided-intake stage, set once the tenant confirms they want to log it:
+   * 'details' (asking "anything else?") → 'media' (asking for photos/videos).
+   * Absent before confirmation (the Yes/No offer stage).
+   */
+  phase?: 'details' | 'media';
 }
+
+// Words that end an intake step ("no, that's all").
+const INTAKE_NEGATIVES = new Set([
+  'no',
+  'nope',
+  'nah',
+  'none',
+  'nothing',
+  'done',
+  'no thanks',
+  'no thank you',
+  "that's all",
+  "that's it",
+  'thats all',
+  'thats it',
+]);
 
 /**
  * TenantFlowService handles all tenant-specific WhatsApp message interactions.
@@ -235,7 +268,9 @@ export class TenantFlowService {
       return;
     }
 
-    // Numbered property pick for a multi-property "create from stray input" offer.
+    // Numbered property pick for a multi-property "create from stray input"
+    // offer. Checked before the intake handler because the pending payload
+    // still carries its intake phase while we wait for the property number.
     const pendingCreateProperty = await this.cache.get<string[]>(
       `pending_create_property_${from}`,
     );
@@ -245,6 +280,16 @@ export class TenantFlowService {
         text,
         pendingCreateProperty,
       );
+      return;
+    }
+
+    // Guided intake after a confirmed stray-input offer ("anything else?" /
+    // "any photos?"). Only active once a phase is set (post-confirmation).
+    const pendingCreate = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (pendingCreate?.phase) {
+      await this.handleIntakeReply(from, text, pendingCreate);
       return;
     }
 
@@ -991,7 +1036,7 @@ export class TenantFlowService {
         break;
 
       case 'create_mr_yes':
-        await this.handleCreateConfirmed(from);
+        await this.beginIntake(from);
         break;
 
       case 'create_mr_no':
@@ -1416,6 +1461,29 @@ export class TenantFlowService {
       return;
     }
 
+    // Media sent during a guided intake (after the tenant confirmed) — stash it
+    // to attach when the request is created, instead of starting a new offer.
+    const pendingCreate = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (pendingCreate?.phase) {
+      pendingCreate.phase = 'media';
+      pendingCreate.media = [
+        ...(pendingCreate.media ?? []),
+        { id: media.id, link: media.link, type: mediaType },
+      ];
+      await this.cache.setWithTtlSeconds(
+        `pending_create_${from}`,
+        pendingCreate,
+        900,
+      );
+      await this.templateSenderService.sendText(
+        from,
+        "✅ Added. Send another, or reply *no* when you're done.",
+      );
+      return;
+    }
+
     // Stray media — no active window. Offer to log a new request with it.
     await this.offerCreateFromMedia(from, message);
   }
@@ -1469,10 +1537,8 @@ export class TenantFlowService {
       `pending_create_${from}`,
       {
         kind: 'media',
-        media_id: media.id,
-        media_link: media.link,
-        media_type: kind,
         caption,
+        media: [{ id: media.id, link: media.link, type: kind }],
       },
       600,
     );
@@ -1542,16 +1608,89 @@ export class TenantFlowService {
 
     await this.cache.delete(`awaiting_media_context_${from}`);
     pending.description = trimmed;
-    await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 600);
-    await this.handleCreateConfirmed(from);
+    await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
+    await this.beginIntake(from);
   }
 
   /**
-   * Tenant tapped "Yes" on a create-from-stray-input prompt. Resolves their
-   * active properties: a single property creates immediately; multiple
-   * properties prompt for a numbered pick (handled in cachedResponse).
+   * Tenant confirmed they want to log a request (tapped "Yes" or described a
+   * dropped photo). Kick off the guided intake: ask for any extra details
+   * before we move on to photos/videos and finally create the request.
    */
-  private async handleCreateConfirmed(from: string): Promise<void> {
+  async beginIntake(from: string): Promise<void> {
+    const pending = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (!pending) {
+      await this.templateSenderService.sendText(
+        from,
+        "That offer expired. Send your message again and I'll offer to log it.",
+      );
+      return;
+    }
+    pending.phase = 'details';
+    await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
+    await this.templateSenderService.sendText(
+      from,
+      "Got it. Anything else you'd like to add? Reply with more details, or say *no* if that's everything.",
+    );
+  }
+
+  /**
+   * Tenant's reply during the guided intake (after they confirmed). In the
+   * 'details' phase each reply is appended to the description until they say
+   * *no*; then we move to the 'media' phase and ask for photos/videos until
+   * they say *no*, at which point the request is finally created.
+   */
+  private async handleIntakeReply(
+    from: string,
+    text: string,
+    pending: PendingCreate,
+  ): Promise<void> {
+    const trimmed = text.trim();
+    const isNegative = INTAKE_NEGATIVES.has(trimmed.toLowerCase());
+
+    if (pending.phase === 'details') {
+      if (isNegative) {
+        pending.phase = 'media';
+        await this.cache.setWithTtlSeconds(
+          `pending_create_${from}`,
+          pending,
+          900,
+        );
+        await this.templateSenderService.sendText(
+          from,
+          'Do you have a photo or video to attach? Send it here, or reply *no*.',
+        );
+        return;
+      }
+      pending.description = [pending.description, trimmed]
+        .filter((s) => (s ?? '').trim())
+        .join('\n');
+      await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
+      await this.templateSenderService.sendText(
+        from,
+        "Added. Anything else? Reply with more details, or say *no* if that's everything.",
+      );
+      return;
+    }
+
+    // phase === 'media'
+    if (isNegative) {
+      await this.resolvePropertyAndCreate(from);
+      return;
+    }
+    await this.templateSenderService.sendText(
+      from,
+      "Send a photo or video, or reply *no* if you're done.",
+    );
+  }
+
+  /**
+   * Final step of the guided intake: resolve the tenant's property (single
+   * auto-fills; multiple prompt a numbered pick) then create the request.
+   */
+  private async resolvePropertyAndCreate(from: string): Promise<void> {
     const pending = await this.cache.get<PendingCreate>(
       `pending_create_${from}`,
     );
@@ -1660,7 +1799,7 @@ export class TenantFlowService {
       (pending.description ?? '').trim() ||
       pending.caption?.trim() ||
       (pending.kind === 'media'
-        ? `Issue reported via ${pending.media_type ?? 'photo'}`
+        ? `Issue reported via ${pending.media?.[0]?.type ?? 'photo'}`
         : '');
 
     if (!description) {
@@ -1689,25 +1828,28 @@ export class TenantFlowService {
       return;
     }
 
-    let mediaAttached = false;
-    if (pending.kind === 'media' && (pending.media_id || pending.media_link)) {
-      const item = await this.maintenanceMediaService.ingestInboundMedia(
+    // Attach everything gathered during the intake (seed media + any added).
+    for (const ref of pending.media ?? []) {
+      if (!ref.id && !ref.link) continue;
+      await this.maintenanceMediaService.ingestInboundMedia(
         created.id,
-        {
-          id: pending.media_id,
-          link: pending.media_link,
-          type: pending.media_type ?? 'image',
-        },
+        { id: ref.id, link: ref.link, type: ref.type },
         1,
       );
-      mediaAttached = !!item;
     }
 
     await this.templateSenderService.sendText(
       from,
-      `✅ Your maintenance request has been logged — ticket ${created.request_id}.${
-        mediaAttached ? ` Your ${pending.media_type} is attached.` : ''
-      } Someone will take a look and reach out.`,
+      "Got it. I've noted your request — someone will take a look and reach out once it's being handled.",
+    );
+
+    await this.templateSenderService.sendButtons(
+      from,
+      'Want to do something else?',
+      [
+        { id: 'new_maintenance_request', title: 'Request a service' },
+        { id: 'main_menu', title: 'Go back to main menu' },
+      ],
     );
   }
 

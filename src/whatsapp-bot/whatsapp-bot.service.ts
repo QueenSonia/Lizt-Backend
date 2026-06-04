@@ -449,14 +449,12 @@ export class WhatsappBotService implements OnModuleInit {
     // (and works in the simulator, whose "Done" sends no nfm_reply).
     const confirmation =
       payload.mode === 'reopen'
-        ? `Thanks — I've reopened your request (${requestId}) and added your note.${
-            wantsVideo ? " Send your video here and I'll attach it." : ''
-          }`
-        : `✅ Your maintenance request has been logged — ticket ${requestId}.${
-            wantsVideo
-              ? " Send your video here and I'll attach it."
-              : ' Someone will take a look and reach out.'
-          }`;
+        ? wantsVideo
+          ? "Thanks — I've reopened your request and added your note. Send your video here and I'll attach it."
+          : "Thanks — I've reopened your request and added your note. Someone will take another look."
+        : wantsVideo
+          ? "Got it. I've noted your request. Send your video here and I'll attach it."
+          : "Got it. I've noted your request — someone will take a look and reach out once it's being handled.";
     try {
       await this.templateSenderService.sendText(payload.phone, confirmation);
     } catch (err) {

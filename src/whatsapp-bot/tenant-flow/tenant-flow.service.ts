@@ -1192,82 +1192,27 @@ export class TenantFlowService {
       return;
     }
 
-    for (const item of properties) {
-      // Filter to this tenant's active rent only
-      const tenantRents = item.property?.rents?.filter(
-        (r) =>
-          r.tenant_id === accountId && r.rent_status === RentStatusEnum.ACTIVE,
-      );
-
-      // Check if rent data exists
-      if (!tenantRents?.length) {
-        this.logger.log(
-          '⚠️ No rent data found for property:',
-          item.property?.name,
-        );
-        await this.templateSenderService.sendText(
-          from,
-          `Property ${item.property?.name || 'Unknown'} found, but no rent details available. Please contact support.`,
-        );
-        continue;
-      }
-
-      const rent = tenantRents[tenantRents.length - 1];
-
-      // Validate rent data
-      if (!rent.rent_start_date || !rent.expiry_date || !rent.rental_price) {
-        this.logger.log(
-          '⚠️ Incomplete rent data for property:',
-          item.property?.name,
-        );
-        await this.templateSenderService.sendText(
-          from,
-          `Property ${item.property?.name || 'Unknown'} found, but rent details are incomplete. Please contact support.`,
-        );
-        continue;
-      }
-
-      const startDate = new Date(rent.rent_start_date).toLocaleDateString(
-        'en-GB',
-        {
-          day: '2-digit',
-          month: 'short',
-          year: 'numeric',
-        },
-      );
-      const endDate = new Date(rent.expiry_date).toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-      });
-
-      const recurringFees = rentToFees(rent).filter((f) => f.recurring);
-      const feeLines = recurringFees
-        .map(
-          (f) =>
-            `• ${f.label}: ${f.amount.toLocaleString('en-NG', {
-              style: 'currency',
-              currency: 'NGN',
-            })}`,
-        )
-        .join('\n');
-
-      await this.templateSenderService.sendText(
-        from,
-        `Here are your tenancy details for ${item.property.name}:\n${feeLines}\n• Tenancy term: ${startDate} to ${endDate}`,
-      );
-
-      await this.cache.set(
-        `maintenance_request_state_${from}`,
-        'other_options',
-        this.SESSION_TIMEOUT_MS,
-      );
+    // Single property → skip the picker and show its details directly.
+    if (properties.length === 1) {
+      await this.showTenancyDetailsForProperty(from, accountId, properties[0]);
+      return;
     }
 
-    await this.templateSenderService.sendText(
-      from,
-      'Type "menu" to see other options or "done" to finish.',
+    // Multiple properties → ask which one. The numbered reply is handled by
+    // handleTenancyDetailsPropertySelection, gated on this cache key.
+    let list = 'Which property would you like to view?\n\n';
+    properties.forEach((item, i) => {
+      list += `${i + 1}. ${item.property?.name ?? 'Property'}\n`;
+    });
+    list += '\nReply with the number of the property.';
+
+    await this.cache.set(
+      `tenancy_details_selection_${from}`,
+      JSON.stringify(properties.map((item) => item.property_id)),
+      this.SESSION_TIMEOUT_MS,
     );
+
+    await this.templateSenderService.sendText(from, list);
   }
 
   /**
@@ -1333,6 +1278,17 @@ export class TenantFlowService {
       phone_number: from,
       name: this.utilService.toSentenceCase(user.first_name ?? 'there'),
       flow_token: flowToken,
+      // Seed the REPORT_ISSUE screen inline (navigate-mode launch) so the
+      // property dropdown is populated without an endpoint INIT round-trip.
+      flow_action_data: {
+        mode: 'create',
+        heading: 'Report a maintenance issue',
+        description_label: 'Describe the issue',
+        has_multiple_properties: properties.length > 1,
+        properties,
+        error_message: '',
+        error_visible: false,
+      },
     });
   }
 
@@ -1879,6 +1835,16 @@ export class TenantFlowService {
             tenantUser.first_name ?? 'there',
           ),
           flow_token: flowToken,
+          // Reopen: property is fixed (hide the dropdown); reword for context.
+          flow_action_data: {
+            mode: 'reopen',
+            heading: "Tell us what's still wrong",
+            description_label: 'What still needs fixing?',
+            has_multiple_properties: false,
+            properties: [],
+            error_message: '',
+            error_visible: false,
+          },
         });
       }
 

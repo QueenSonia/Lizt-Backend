@@ -31,7 +31,8 @@
     "restore:tenants": "ts-node -r tsconfig-paths/register scripts/restore-deactivated-tenants.ts",
     "diagnose-kyc": "ts-node -r tsconfig-paths/register scripts/diagnose-missing-kyc.ts",
     "security-monitor": "ts-node -r tsconfig-paths/register scripts/security-monitor.ts",
-    "script:reissue-fm-passwords": "ts-node -r tsconfig-paths/register scripts/reissue-fm-passwords.ts"
+    "script:reissue-fm-passwords": "ts-node -r tsconfig-paths/register scripts/reissue-fm-passwords.ts",
+    "script:resend-mr-approval": "ts-node -r tsconfig-paths/register scripts/resend-landlord-mr-approval.ts"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.1",

@@ -13,7 +13,6 @@ import {
 } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { TemplateSenderService } from './template-sender';
 import { UtilService } from 'src/utils/utility-service';
-import { RolesEnum } from 'src/base.entity';
 
 interface MrChatMessageCreatedEvent {
   message: ChatMessage;
@@ -210,22 +209,12 @@ export class MrChatNotificationService {
     });
   }
 
-  private async resolveLandlordId(
-    mr: MaintenanceRequest,
-  ): Promise<string | null> {
+  private resolveLandlordId(mr: MaintenanceRequest): string | null {
     if (mr.scope === MaintenanceRequestScopeEnum.UNIT) {
       return mr.property?.owner_id ?? null;
     }
-    // Common area owner_id is Users.id — find the LANDLORD-role account for
-    // that user.
-    const ownerUserId = mr.common_area?.owner_id;
-    if (!ownerUserId) return null;
-    const landlord = await this.accountRepo
-      .createQueryBuilder('a')
-      .where('a."userId" = :uid', { uid: ownerUserId })
-      .andWhere(':role = ANY(a.roles)', { role: RolesEnum.LANDLORD })
-      .getOne();
-    return landlord?.id ?? null;
+    // Both owner columns hold the landlord's Account.id directly.
+    return mr.common_area?.owner_id ?? null;
   }
 
   private firstName(account: Account | null): string {

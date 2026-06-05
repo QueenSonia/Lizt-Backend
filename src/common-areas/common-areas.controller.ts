@@ -25,10 +25,9 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Account } from '../users/entities/account.entity';
 
-// common_areas.owner_id FKs to users.id, not accounts.id. The JWT carries
-// Account.id, so every handler here resolves to `requester.userId` before
-// touching owner_id — anything else surfaces as a 23503 FK violation on
-// insert and silent 403/empty results on read paths.
+// common_areas.owner_id FKs to accounts.id (same shape as property.owner_id).
+// The JWT carries Account.id, so every handler passes `requester.id` straight
+// through as the owner — no User.id resolution needed.
 @ApiTags('Common-Areas')
 @UseGuards(JwtAuthGuard)
 @Controller('common-areas')
@@ -48,7 +47,7 @@ export class CommonAreasController {
     @Body() dto: CreateCommonAreaDto,
     @CurrentUser() requester: Account,
   ) {
-    return this.commonAreasService.create(requester.userId, dto);
+    return this.commonAreasService.create(requester.id, dto);
   }
 
   @ApiOperation({
@@ -58,7 +57,7 @@ export class CommonAreasController {
   @ApiSecurity('access_token')
   @Get()
   findAll(@CurrentUser() requester: Account) {
-    return this.commonAreasService.findAllForLandlord(requester.userId);
+    return this.commonAreasService.findAllForLandlord(requester.id);
   }
 
   @ApiOperation({
@@ -70,7 +69,7 @@ export class CommonAreasController {
   @ApiSecurity('access_token')
   @Get('for-fm')
   findAllForFm(@CurrentUser() requester: Account) {
-    return this.commonAreasService.findAllForFm(requester.userId);
+    return this.commonAreasService.findAllForFm(requester.id);
   }
 
   @ApiOperation({ summary: 'Get a common area by id' })
@@ -82,7 +81,7 @@ export class CommonAreasController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() requester: Account,
   ) {
-    return this.commonAreasService.findOne(id, requester.userId);
+    return this.commonAreasService.findOne(id, requester.id);
   }
 
   @ApiOperation({ summary: 'Update a common area (owner only)' })
@@ -94,7 +93,7 @@ export class CommonAreasController {
     @Body() dto: UpdateCommonAreaDto,
     @CurrentUser() requester: Account,
   ) {
-    return this.commonAreasService.update(id, requester.userId, dto);
+    return this.commonAreasService.update(id, requester.id, dto);
   }
 
   @ApiOperation({ summary: 'Soft-delete a common area (owner only)' })
@@ -105,6 +104,6 @@ export class CommonAreasController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() requester: Account,
   ) {
-    return this.commonAreasService.softDelete(id, requester.userId);
+    return this.commonAreasService.softDelete(id, requester.id);
   }
 }

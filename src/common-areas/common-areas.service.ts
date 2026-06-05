@@ -96,35 +96,36 @@ export class CommonAreasService {
     }));
   }
 
-  async findAllForFm(fmUserId: string): Promise<FmCommonAreaRow[]> {
+  async findAllForFm(fmAccountId: string): Promise<FmCommonAreaRow[]> {
     // Resolve the set of landlord (account) ids the FM is teamed with.
+    // common_areas.owner_id is the landlord's Account.id, so we key everything
+    // off team.creator (the landlord's Account) directly.
     const teamMemberships = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoinAndSelect('tm.team', 'team')
       .innerJoinAndSelect('team.creator', 'creatorAccount')
-      .innerJoinAndSelect('creatorAccount.user', 'landlordUser')
-      .innerJoin('tm.account', 'fmAccount')
-      .innerJoin('fmAccount.user', 'fmUser')
-      .where('fmUser.id = :fmUserId', { fmUserId })
+      .leftJoinAndSelect('creatorAccount.user', 'landlordUser')
+      .where('tm.accountId = :fmAccountId', { fmAccountId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
       .getMany();
 
     if (teamMemberships.length === 0) return [];
 
-    const landlordUserIdToName = new Map<string, string>();
+    const landlordAccountIdToName = new Map<string, string>();
     for (const tm of teamMemberships) {
-      const landlord = tm.team?.creator?.user;
-      if (landlord?.id) {
+      const creatorAccount = tm.team?.creator;
+      if (creatorAccount?.id) {
+        const user = creatorAccount.user;
         const name =
-          [landlord.first_name, landlord.last_name]
-            .filter(Boolean)
-            .join(' ')
-            .trim() || landlord.email;
-        landlordUserIdToName.set(landlord.id, name);
+          creatorAccount.profile_name?.trim() ||
+          [user?.first_name, user?.last_name].filter(Boolean).join(' ').trim() ||
+          user?.email ||
+          'Landlord';
+        landlordAccountIdToName.set(creatorAccount.id, name);
       }
     }
-    const landlordUserIds = Array.from(landlordUserIdToName.keys());
-    if (landlordUserIds.length === 0) return [];
+    const landlordAccountIds = Array.from(landlordAccountIdToName.keys());
+    if (landlordAccountIds.length === 0) return [];
 
     const rows = await this.commonAreaRepository
       .createQueryBuilder('ca')
@@ -143,7 +144,7 @@ export class CommonAreasService {
         `COUNT(sr.id) FILTER (WHERE sr.status = :openStatus)::int`,
         'open_requests',
       )
-      .where('ca.owner_id IN (:...ownerIds)', { ownerIds: landlordUserIds })
+      .where('ca.owner_id IN (:...ownerIds)', { ownerIds: landlordAccountIds })
       .andWhere('ca.deleted_at IS NULL')
       .setParameter('openStatus', MaintenanceRequestStatusEnum.NOT_APPROVED)
       .groupBy('ca.id')
@@ -155,14 +156,14 @@ export class CommonAreasService {
       name: r.name,
       address: r.address,
       owner_id: r.owner_id,
-      owner_name: landlordUserIdToName.get(r.owner_id) ?? 'Landlord',
+      owner_name: landlordAccountIdToName.get(r.owner_id) ?? 'Landlord',
       created_at: r.created_at,
       total_requests: Number(r.total_requests) || 0,
       open_requests: Number(r.open_requests) || 0,
     }));
   }
 
-  async findOne(id: string, requesterUserId: string): Promise<CommonArea> {
+  async findOne(id: string, requesterAccountId: string): Promise<CommonArea> {
     const area = await this.commonAreaRepository.findOne({
       where: { id },
       relations: ['owner'],
@@ -170,7 +171,7 @@ export class CommonAreasService {
     if (!area) {
       throw new NotFoundException(`Common area with id ${id} not found`);
     }
-    await this.assertCanAccess(area, requesterUserId);
+    await this.assertCanAccess(area, requesterAccountId);
     return area;
   }
 
@@ -210,24 +211,22 @@ export class CommonAreasService {
   }
 
   /**
-   * Checks that `userId` is either the owner of `area` or a facility manager
-   * teamed with that owner. Throws 403 otherwise.
+   * Checks that `accountId` is either the owner of `area` (owner_id is the
+   * landlord's Account.id) or a facility manager teamed with that owner.
+   * Throws 403 otherwise.
    */
   private async assertCanAccess(
     area: CommonArea,
-    userId: string,
+    accountId: string,
   ): Promise<void> {
-    if (area.owner_id === userId) return;
+    if (area.owner_id === accountId) return;
     const isTeamedWithOwner = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .innerJoin('team.creator', 'creatorAccount')
-      .innerJoin('creatorAccount.user', 'landlordUser')
-      .innerJoin('tm.account', 'fmAccount')
-      .innerJoin('fmAccount.user', 'fmUser')
-      .where('fmUser.id = :userId', { userId })
+      .where('tm.accountId = :accountId', { accountId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('landlordUser.id = :ownerId', { ownerId: area.owner_id })
+      .andWhere('creatorAccount.id = :ownerId', { ownerId: area.owner_id })
       .getOne();
     if (!isTeamedWithOwner) {
       throw new HttpException(
@@ -238,23 +237,21 @@ export class CommonAreasService {
   }
 
   /**
-   * Returns true when `fmUserId` is a facility manager teamed with `ownerId`.
-   * Used by the maintenance-requests create flow to gate FM-on-common-area writes.
+   * Returns true when `fmAccountId` is a facility manager teamed with the
+   * landlord account `ownerAccountId`. Used by the maintenance-requests create
+   * flow to gate FM-on-common-area writes.
    */
   async isFmTeamedWithOwner(
-    fmUserId: string,
-    ownerId: string,
+    fmAccountId: string,
+    ownerAccountId: string,
   ): Promise<boolean> {
     const match = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .innerJoin('team.creator', 'creatorAccount')
-      .innerJoin('creatorAccount.user', 'landlordUser')
-      .innerJoin('tm.account', 'fmAccount')
-      .innerJoin('fmAccount.user', 'fmUser')
-      .where('fmUser.id = :fmUserId', { fmUserId })
+      .where('tm.accountId = :fmAccountId', { fmAccountId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('landlordUser.id = :ownerId', { ownerId })
+      .andWhere('creatorAccount.id = :ownerId', { ownerId: ownerAccountId })
       .getOne();
     return !!match;
   }

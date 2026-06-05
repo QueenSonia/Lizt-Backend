@@ -84,6 +84,36 @@ export class FileUploadService {
   }
 
   /**
+   * Upload a raw image/video buffer (e.g. media downloaded from WhatsApp) to
+   * Cloudinary. Unlike `uploadBuffer` (PDF/raw-only), this picks the correct
+   * `resource_type` so videos are transcoded/streamable and images get image
+   * delivery. Returns the full UploadApiResponse (`secure_url`, `public_id`…).
+   */
+  async uploadMediaBuffer(
+    buffer: Buffer,
+    options: {
+      resourceType: 'image' | 'video';
+      folder?: string;
+    },
+  ): Promise<UploadApiResponse> {
+    return new Promise<UploadApiResponse>((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: options.folder ?? 'maintenance-requests',
+          resource_type: options.resourceType,
+          type: 'upload',
+        },
+        (error, result) => {
+          if (error) return reject(error);
+          resolve(result as UploadApiResponse);
+        },
+      );
+
+      streamifier.createReadStream(buffer).pipe(uploadStream);
+    });
+  }
+
+  /**
    * Delete a file from Cloudinary by public_id
    * @param publicId - The public_id of the file to delete (e.g., 'notices/offer-letter-abc123-1234567890')
    * @param resourceType - The resource type ('image', 'raw', 'video')

@@ -32,6 +32,7 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
 import { RolesEnum } from 'src/base.entity';
 import { CommonArea } from 'src/common-areas/entities/common-area.entity';
 import { Account } from 'src/users/entities/account.entity';
+import { Users } from 'src/users/entities/user.entity';
 import { ArtisansService } from 'src/artisans/artisans.service';
 
 export interface TawkWebhookPayload {
@@ -230,6 +231,9 @@ export class MaintenanceRequestsService {
       tenant_name: tenantName,
       property_name: tenantExistInProperty.property?.name,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: MaintenanceRequestStatusEnum.NOT_APPROVED,
@@ -383,6 +387,9 @@ export class MaintenanceRequestsService {
       tenant_name: tenantDisplayName,
       property_name: property.name,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: initialStatus,
@@ -465,25 +472,18 @@ export class MaintenanceRequestsService {
       );
     }
 
-    // actor.id is Account.id; common_area.owner_id is Users.id (per the
-    // CommonArea schema), so we resolve the landlord's Users.id via the
-    // team creator's user relation and match the FM by account id. Also
-    // surface the landlord's Account.id from the same join — downstream
-    // listeners (notification FK, etc.) need an Account.id, never a User.id.
-    const teamedWithOwner = await this.teamMemberRepository
+    // common_area.owner_id is the landlord's Account.id (matches
+    // property.owner_id). Verify the acting FM is on that landlord's team,
+    // matching the FM by account id and the landlord by team.creatorId.
+    const landlordAccountId = commonArea.owner_id;
+    const teamMembership = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
-      .innerJoin('team.creator', 'creatorAccount')
-      .innerJoin('creatorAccount.user', 'landlordUser')
-      .addSelect('creatorAccount.id', 'landlord_account_id')
       .where('tm.accountId = :accountId', { accountId: actor.id })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('landlordUser.id = :ownerId', { ownerId: commonArea.owner_id })
-      .getRawAndEntities();
-    const teamMembership = teamedWithOwner.entities[0];
-    const landlordAccountId =
-      teamedWithOwner.raw[0]?.landlord_account_id as string | undefined;
-    if (!teamMembership || !landlordAccountId) {
+      .andWhere('team.creatorId = :ownerId', { ownerId: landlordAccountId })
+      .getOne();
+    if (!teamMembership) {
       throw new HttpException(
         "You are not authorized to file requests for this landlord's common areas",
         HttpStatus.FORBIDDEN,
@@ -498,6 +498,9 @@ export class MaintenanceRequestsService {
       common_area_id: commonArea.id,
       tenant_name: null,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: MaintenanceRequestStatusEnum.NOT_APPROVED,
@@ -683,6 +686,9 @@ export class MaintenanceRequestsService {
       tenant_name: tenantDisplayName,
       property_name: property.name,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: initialStatus,
@@ -782,8 +788,8 @@ export class MaintenanceRequestsService {
     if (!commonArea) {
       throw new HttpException('Common area not found', HttpStatus.NOT_FOUND);
     }
-    // common_area.owner_id is Users.id, not Account.id
-    if (commonArea.owner_id !== landlordUserId) {
+    // common_area.owner_id is the landlord's Account.id (= actor.id).
+    if (commonArea.owner_id !== actor.id) {
       throw new HttpException(
         'You do not own this common area',
         HttpStatus.FORBIDDEN,
@@ -800,6 +806,9 @@ export class MaintenanceRequestsService {
       common_area_id: commonArea.id,
       tenant_name: null,
       issue_category: 'service',
+      issue_media: data.issue_media?.length
+        ? data.issue_media.map((m) => ({ ...m, attempt: 1 }))
+        : null,
       date_reported: new Date(),
       description: data.text,
       status: initialStatus,
@@ -823,11 +832,10 @@ export class MaintenanceRequestsService {
       `Maintenance request created by ${landlordName}`,
     );
 
-    // common_area.owner_id is a Users.id, but every downstream listener
-    // (notification FK, WhatsApp templates, dashboard caches) expects an
-    // Account.id for landlord_id. For landlord-filed common-area MRs the
-    // acting landlord IS the owner, so actor.id (the JWT's Account.id —
-    // per req_user_id_is_account_id memory) is the correct value.
+    // landlord_id must be the landlord's Account.id. For landlord-filed
+    // common-area MRs the acting landlord IS the owner, so actor.id (the JWT's
+    // Account.id — per req_user_id_is_account_id memory) is the correct value,
+    // and equals common_area.owner_id.
     try {
       this.eventEmitter.emit('maintenance.created', {
         user_id: actor.id,
@@ -881,6 +889,33 @@ export class MaintenanceRequestsService {
     };
   }
 
+  /**
+   * Resolves the display name for a request's creator. For landlord/FM-filed
+   * requests the canonical name is the matching account's `profile_name` (often
+   * a business name), NOT the personal first+last on the users row — see the
+   * project_landlord_display_name memory. Falls back to first+last, then null.
+   * `creator` must be loaded with its `accounts` relation.
+   */
+  private resolveCreatorDisplayName(
+    creator: Users | null | undefined,
+    creatorType: MaintenanceRequestCreatorTypeEnum,
+  ): string | null {
+    if (!creator) return null;
+    const roleForType =
+      creatorType === MaintenanceRequestCreatorTypeEnum.LANDLORD
+        ? RolesEnum.LANDLORD
+        : creatorType === MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER
+          ? RolesEnum.FACILITY_MANAGER
+          : null;
+    const matchingAccount = roleForType
+      ? (creator.accounts ?? []).find((a) => a.roles?.includes(roleForType))
+      : null;
+    const profileName = matchingAccount?.profile_name?.trim() || null;
+    const fullName =
+      `${creator.first_name ?? ''} ${creator.last_name ?? ''}`.trim() || null;
+    return profileName || fullName;
+  }
+
   async getAllMaintenanceRequests(
     user_id: string,
     queryParams: MaintenanceRequestFilter,
@@ -899,6 +934,9 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('sr.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'tenantUser')
       .leftJoinAndSelect('sr.creator', 'creator')
+      // Load the creator's accounts so we can surface the landlord/FM
+      // profile_name (business name) instead of their personal first+last.
+      .leftJoinAndSelect('creator.accounts', 'creatorAccounts')
       .leftJoinAndSelect('sr.property', 'property')
       .leftJoinAndSelect('sr.common_area', 'common_area')
       .leftJoinAndSelect('common_area.owner', 'commonAreaOwner')
@@ -935,25 +973,17 @@ export class MaintenanceRequestsService {
             .filter((v): v is string => !!v),
         ),
       );
-      const landlordUserIds = Array.from(
-        new Set(
-          myTeamMemberships
-            .map((m) => m.team?.creator?.user?.id)
-            .filter((v): v is string => !!v),
-        ),
-      );
 
       // Visible to FM: every unit-scoped request on a property owned by a
       // landlord they're teamed with, OR every common-area request whose
-      // common area belongs to such a landlord. FMs are no longer pinned
-      // to specific properties.
+      // common area belongs to such a landlord. Both owner columns are
+      // Account.ids, so one id set covers both scopes. FMs are no longer
+      // pinned to specific properties.
       qb.andWhere(
-        '(property.owner_id IN (:...landlordAccountIds) OR commonAreaOwner.id IN (:...landlordUserIds))',
+        '(property.owner_id IN (:...landlordAccountIds) OR common_area.owner_id IN (:...landlordAccountIds))',
         {
           landlordAccountIds:
             landlordAccountIds.length > 0 ? landlordAccountIds : ['__none__'],
-          landlordUserIds:
-            landlordUserIds.length > 0 ? landlordUserIds : ['__none__'],
         },
       );
 
@@ -966,17 +996,12 @@ export class MaintenanceRequestsService {
         });
       }
     } else {
-      // Landlord view: own properties OR own common areas. The two scopes
-      // store the owner in different shapes:
-      //   property.owner_id     → Account.id
-      //   common_area.owner_id  → Users.id
-      // (see project_req_user_id_is_account_id memory). Compare each against
-      // the right column — without this, the landlord branch silently
-      // excludes every common-area MR.
-      const ownerUserId = await this.resolveActorUserId(user_id);
+      // Landlord view: own properties OR own common areas. Both owner columns
+      // hold the landlord's Account.id (user_id here is the caller's
+      // Account.id — see project_req_user_id_is_account_id memory).
       qb.andWhere(
-        '(property.owner_id = :ownerAccountId OR commonAreaOwner.id = :ownerUserId)',
-        { ownerAccountId: user_id, ownerUserId },
+        '(property.owner_id = :ownerAccountId OR common_area.owner_id = :ownerAccountId)',
+        { ownerAccountId: user_id },
       );
     }
 
@@ -1039,9 +1064,16 @@ export class MaintenanceRequestsService {
 
     const [maintenanceRequests, count] = await qb.getManyAndCount();
 
+    // Attach the resolved creator display name (profile_name for landlord/FM)
+    // so the FM/landlord lists don't have to fall back to the personal name.
+    const requestsWithCreatorName = maintenanceRequests.map((sr) => ({
+      ...sr,
+      creator_name: this.resolveCreatorDisplayName(sr.creator, sr.creator_type),
+    }));
+
     const totalPages = Math.ceil(count / size);
     return {
-      maintenance_requests: maintenanceRequests,
+      maintenance_requests: requestsWithCreatorName,
       pagination: {
         totalRows: count,
         perPage: size,
@@ -1059,6 +1091,8 @@ export class MaintenanceRequestsService {
         'tenant',
         'tenant.user',
         'creator',
+        // Creator's accounts → landlord/FM profile_name for the reporter line.
+        'creator.accounts',
         'property',
         'common_area',
         'common_area.owner',
@@ -1086,7 +1120,13 @@ export class MaintenanceRequestsService {
     }
 
     await this.assertCanRead(maintenanceRequest, userId);
-    return maintenanceRequest;
+    return {
+      ...maintenanceRequest,
+      creator_name: this.resolveCreatorDisplayName(
+        maintenanceRequest.creator,
+        maintenanceRequest.creator_type,
+      ),
+    };
   }
 
   async getMaintenanceRequestByTenant(id: string, status?: string) {
@@ -1249,8 +1289,23 @@ export class MaintenanceRequestsService {
       safeUpdate.date_reported = data.date_reported;
     if (data.resolution_date !== undefined)
       safeUpdate.resolution_date = data.resolution_date;
-    if (data.issue_images !== undefined)
-      safeUpdate.issue_images = data.issue_images;
+    // New uploads are stamped with the cycle they're added in. If this same
+    // call is also reopening the request, they belong to the incremented
+    // attempt (see the REOPENED branch below).
+    const mediaAttempt =
+      targetStatus === MaintenanceRequestStatusEnum.REOPENED
+        ? (maintenanceRequest.current_attempt ?? 1) + 1
+        : (maintenanceRequest.current_attempt ?? 1);
+    if (data.issue_media !== undefined) {
+      const incoming = (data.issue_media ?? []).map((m) => ({
+        ...m,
+        attempt: mediaAttempt,
+      }));
+      safeUpdate.issue_media = [
+        ...(maintenanceRequest.issue_media ?? []),
+        ...incoming,
+      ];
+    }
 
     if (targetStatus === MaintenanceRequestStatusEnum.RESOLVED) {
       safeUpdate.resolution_date = new Date();
@@ -1290,6 +1345,9 @@ export class MaintenanceRequestsService {
     }
     if (targetStatus === MaintenanceRequestStatusEnum.REOPENED) {
       safeUpdate.reopened_at = new Date();
+      // Advance the media-grouping cycle so evidence added after this reopen
+      // is separable from the original report.
+      safeUpdate.current_attempt = (maintenanceRequest.current_attempt ?? 1) + 1;
     }
 
     // Priority is only valid while a request is actionable (approved /
@@ -1630,15 +1688,10 @@ export class MaintenanceRequestsService {
 
     const query = await buildMaintenanceRequestFilter(queryParams);
 
-    // property.owner_id is Account.id; common_area.owner_id is Users.id —
-    // same shape mismatch as getAllMaintenanceRequests. Resolve the
-    // landlord's Users.id once and compare each scope against the right
-    // column.
-    const ownerUserId = await this.resolveActorUserId(owner_id);
-
     // "Needs attention": still awaiting landlord approval OR flagged urgent
     // (regardless of where it sits in the lifecycle). Owned via property OR
-    // via common_area — common-area requests carry no property at all.
+    // via common_area — both owner columns hold the landlord's Account.id
+    // (owner_id here is the caller's Account.id).
     const [maintenanceRequests, count] = await this.maintenanceRequestRepository
       .createQueryBuilder('sr')
       .leftJoinAndSelect('sr.tenant', 'tenant')
@@ -1650,8 +1703,8 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('sr.statusHistory', 'history')
       .leftJoinAndSelect('history.changedBy', 'changedBy')
       .where(
-        '(property.owner_id = :ownerAccountId OR commonAreaOwner.id = :ownerUserId)',
-        { ownerAccountId: owner_id, ownerUserId },
+        '(property.owner_id = :ownerAccountId OR common_area.owner_id = :ownerAccountId)',
+        { ownerAccountId: owner_id },
       )
       .andWhere('(sr.status = :notApproved OR sr.is_urgent = :urgent)', {
         notApproved: MaintenanceRequestStatusEnum.NOT_APPROVED,
@@ -1841,13 +1894,6 @@ export class MaintenanceRequestsService {
           .filter((v): v is string => !!v),
       ),
     );
-    const landlordUserIds = Array.from(
-      new Set(
-        teamMemberships
-          .map((tm) => tm.team?.creator?.user?.id)
-          .filter((v): v is string => !!v),
-      ),
-    );
 
     const qb = this.statusHistoryRepository
       .createQueryBuilder('h')
@@ -1863,31 +1909,20 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('assignedFm.account', 'assignedFmAccount')
       .leftJoinAndSelect('assignedFmAccount.user', 'assignedFmUser')
       .where(
-        '(property.owner_id IN (:...landlordAccountIds) OR commonAreaOwner.id IN (:...landlordUserIds))',
+        '(property.owner_id IN (:...landlordAccountIds) OR common_area.owner_id IN (:...landlordAccountIds))',
         {
           landlordAccountIds:
             landlordAccountIds.length > 0 ? landlordAccountIds : ['__none__'],
-          landlordUserIds:
-            landlordUserIds.length > 0 ? landlordUserIds : ['__none__'],
         },
       )
       .andWhere('sr.deleted_at IS NULL');
 
     if (options?.landlordId) {
-      // `landlordId` is the landlord's Account.id (matches property.owner_id).
-      // For common-area scope we need the landlord's User.id to compare
-      // against commonAreaOwner.id — resolve it from the FM's team data,
-      // which is already loaded.
-      const filterUserId =
-        teamMemberships.find(
-          (tm) => tm.team?.creator?.id === options.landlordId,
-        )?.team?.creator?.user?.id ?? null;
+      // `landlordId` is the landlord's Account.id, which both owner columns
+      // store — compare each scope against the same id.
       qb.andWhere(
-        '(property.owner_id = :landlordAccountId OR commonAreaOwner.id = :landlordUserId)',
-        {
-          landlordAccountId: options.landlordId,
-          landlordUserId: filterUserId ?? '__none__',
-        },
+        '(property.owner_id = :landlordAccountId OR common_area.owner_id = :landlordAccountId)',
+        { landlordAccountId: options.landlordId },
       );
     }
 
@@ -2041,27 +2076,15 @@ export class MaintenanceRequestsService {
     userId: string,
   ): Promise<'landlord' | 'tenant' | 'facility_manager' | null> {
     // `userId` is the requester's Account.id (set by JwtAuthGuard, which
-    // resolves the JWT payload to the full Account entity).
-    //
-    // The two scopes store owner ids in different shapes:
-    //   property.owner_id      → landlord's Account.id
-    //   common_area.owner_id   → landlord's User.id
-    // We must match each against the right column.
-    const propertyOwnerAccountId = maintenanceRequest.property?.owner_id ?? null;
-    const commonAreaOwnerUserId =
-      maintenanceRequest.common_area?.owner_id ?? null;
+    // resolves the JWT payload to the full Account entity). Both owner columns
+    // hold the landlord's Account.id, so the same id compares against either.
+    const ownerAccountId =
+      maintenanceRequest.property?.owner_id ??
+      maintenanceRequest.common_area?.owner_id ??
+      null;
 
-    if (propertyOwnerAccountId && propertyOwnerAccountId === userId) {
+    if (ownerAccountId && ownerAccountId === userId) {
       return 'landlord';
-    }
-    if (commonAreaOwnerUserId) {
-      const account = await this.accountRepository.findOne({
-        where: { id: userId },
-        select: ['id', 'userId'],
-      });
-      if (account?.userId === commonAreaOwnerUserId) {
-        return 'landlord';
-      }
     }
     if (
       maintenanceRequest.tenant_id &&
@@ -2077,31 +2100,18 @@ export class MaintenanceRequestsService {
         ? 'facility_manager'
         : 'tenant';
     }
-    if (!propertyOwnerAccountId && !commonAreaOwnerUserId) return null;
+    if (!ownerAccountId) return null;
 
     // FM teamed with the landlord that owns the property or common area.
-    // Match the requester by Account.id (NOT User.id) and match the landlord
-    // by Account.id for properties / User.id for common areas.
-    const fmQuery = this.teamMemberRepository
+    // Match the requester by Account.id and the landlord (team creator) by
+    // Account.id — the same shape for both scopes.
+    const fm = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
-      .innerJoin('team.creator', 'creatorAccount')
-      .leftJoin('creatorAccount.user', 'landlordUser')
-      .innerJoin('tm.account', 'fmAccount')
-      .where('fmAccount.id = :userId', { userId })
-      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER });
-
-    if (propertyOwnerAccountId) {
-      fmQuery.andWhere('creatorAccount.id = :ownerId', {
-        ownerId: propertyOwnerAccountId,
-      });
-    } else {
-      fmQuery.andWhere('landlordUser.id = :ownerId', {
-        ownerId: commonAreaOwnerUserId,
-      });
-    }
-
-    const fm = await fmQuery.getOne();
+      .where('tm.accountId = :userId', { userId })
+      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
+      .andWhere('team.creatorId = :ownerId', { ownerId: ownerAccountId })
+      .getOne();
     return fm ? 'facility_manager' : null;
   }
 
@@ -2115,31 +2125,19 @@ export class MaintenanceRequestsService {
     maintenanceRequest: MaintenanceRequest,
     accountId: string,
   ): Promise<string | null> {
-    const propertyOwnerAccountId = maintenanceRequest.property?.owner_id ?? null;
-    const commonAreaOwnerUserId =
-      maintenanceRequest.common_area?.owner_id ?? null;
-    if (!propertyOwnerAccountId && !commonAreaOwnerUserId) return null;
+    const ownerAccountId =
+      maintenanceRequest.property?.owner_id ??
+      maintenanceRequest.common_area?.owner_id ??
+      null;
+    if (!ownerAccountId) return null;
 
-    const fmQuery = this.teamMemberRepository
+    const tm = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
-      .innerJoin('team.creator', 'creatorAccount')
-      .leftJoin('creatorAccount.user', 'landlordUser')
-      .innerJoin('tm.account', 'fmAccount')
-      .where('fmAccount.id = :accountId', { accountId })
-      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER });
-
-    if (propertyOwnerAccountId) {
-      fmQuery.andWhere('creatorAccount.id = :ownerId', {
-        ownerId: propertyOwnerAccountId,
-      });
-    } else {
-      fmQuery.andWhere('landlordUser.id = :ownerId', {
-        ownerId: commonAreaOwnerUserId,
-      });
-    }
-
-    const tm = await fmQuery.getOne();
+      .where('tm.accountId = :accountId', { accountId })
+      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
+      .andWhere('team.creatorId = :ownerId', { ownerId: ownerAccountId })
+      .getOne();
     return tm?.id ?? null;
   }
 
@@ -2357,8 +2355,14 @@ export class MaintenanceRequestsService {
     if (notes) request.notes = notes;
     if (status === MaintenanceRequestStatusEnum.RESOLVED)
       request.resolution_date = new Date();
-    if (status === MaintenanceRequestStatusEnum.REOPENED)
+    if (status === MaintenanceRequestStatusEnum.REOPENED) {
       request.reopened_at = new Date();
+      // Advance the media-grouping cycle on a genuine reopen transition
+      // (guard against double-bump if REOPENED → REOPENED is re-sent).
+      if (previousStatus !== MaintenanceRequestStatusEnum.REOPENED) {
+        request.current_attempt = (request.current_attempt ?? 1) + 1;
+      }
+    }
     if (
       status === MaintenanceRequestStatusEnum.APPROVED ||
       status === MaintenanceRequestStatusEnum.REOPENED
@@ -2473,28 +2477,16 @@ export class MaintenanceRequestsService {
 
   /**
    * Verifies the caller (by Account.id) owns the request's property or
-   * common area. Handles the Account.id-vs-User.id split:
-   *   property.owner_id    → landlord's Account.id (compare directly)
-   *   common_area.owner_id → landlord's User.id    (resolve via accounts.userId)
-   * Throws 403 otherwise.
+   * common area. Both owner columns hold the landlord's Account.id, so a
+   * direct compare covers both scopes. Throws 403 otherwise.
    */
-  private async assertLandlordOwnsRequest(
+  private assertLandlordOwnsRequest(
     sr: MaintenanceRequest,
     landlordAccountId: string,
-  ): Promise<void> {
-    const propertyOwnerAccountId = sr.property?.owner_id ?? null;
-    const commonAreaOwnerUserId = sr.common_area?.owner_id ?? null;
-    let isOwner = false;
-    if (propertyOwnerAccountId) {
-      isOwner = propertyOwnerAccountId === landlordAccountId;
-    } else if (commonAreaOwnerUserId) {
-      const callerAccount = await this.accountRepository.findOne({
-        where: { id: landlordAccountId },
-        select: ['id', 'userId'],
-      });
-      isOwner = callerAccount?.userId === commonAreaOwnerUserId;
-    }
-    if (!isOwner) {
+  ): void {
+    const ownerAccountId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
+    if (ownerAccountId !== landlordAccountId) {
       throw new HttpException(
         'You do not own this request',
         HttpStatus.FORBIDDEN,

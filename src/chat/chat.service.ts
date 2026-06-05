@@ -223,26 +223,15 @@ export class ChatService {
   // Unified Updates & Thread (landlord + team FMs)
   // ──────────────────────────────────────────────────────────────────────
 
-  // Resolves the landlord Account.id that owns an MR — property.owner_id is
-  // already Account.id for unit-scope; common_area.owner_id is Users.id so we
-  // join via Account.userId. Returns null if neither resolves (orphan MR).
-  private async resolveLandlordAccountId(
-    mr: MaintenanceRequest,
-  ): Promise<string | null> {
+  // Resolves the landlord Account.id that owns an MR. Both property.owner_id
+  // and common_area.owner_id hold the landlord's Account.id directly. Returns
+  // null if neither resolves (orphan MR).
+  private resolveLandlordAccountId(mr: MaintenanceRequest): string | null {
     if (mr.scope === MaintenanceRequestScopeEnum.UNIT) {
       return mr.property?.owner_id ?? null;
     }
     if (mr.scope === MaintenanceRequestScopeEnum.COMMON_AREA) {
-      const ownerUserId = mr.common_area?.owner_id;
-      if (!ownerUserId) return null;
-      // Prefer the account with LANDLORD in its roles[]. There can be multiple
-      // accounts per user (per-role accounts), and we want the landlord one.
-      const landlord = await this.accountRepo
-        .createQueryBuilder('a')
-        .where('a."userId" = :uid', { uid: ownerUserId })
-        .andWhere(':role = ANY(a.roles)', { role: RolesEnum.LANDLORD })
-        .getOne();
-      return landlord?.id ?? null;
+      return mr.common_area?.owner_id ?? null;
     }
     return null;
   }

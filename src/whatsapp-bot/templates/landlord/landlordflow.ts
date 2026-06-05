@@ -722,6 +722,21 @@ export class LandlordFlow {
   }
 
   /**
+   * Ownership check for a maintenance request, mirroring the service-layer
+   * MaintenanceRequestsService.assertLandlordOwnsRequest. Both owner columns
+   * (property.owner_id and common_area.owner_id) hold the landlord's
+   * Account.id, so a direct compare covers both scopes.
+   */
+  private landlordOwnsRequest(
+    sr: MaintenanceRequest,
+    landlord: { accountId: string },
+  ): boolean {
+    const ownerAccountId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
+    return ownerAccountId === landlord.accountId;
+  }
+
+  /**
    * Stale-tap reply text. The landlord tapped a button on a notification
    * for a request that has already moved past NOT_APPROVED.
    */
@@ -778,9 +793,7 @@ export class LandlordFlow {
       return;
     }
 
-    const ownerAccountId =
-      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    if (ownerAccountId !== landlord.accountId) {
+    if (!this.landlordOwnsRequest(sr, landlord)) {
       await this.whatsappUtil.sendText(
         from,
         'You do not have access to this request.',
@@ -946,9 +959,7 @@ export class LandlordFlow {
       return;
     }
 
-    const ownerAccountId =
-      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    if (ownerAccountId !== landlord.accountId) {
+    if (!this.landlordOwnsRequest(sr, landlord)) {
       await this.whatsappUtil.sendText(
         from,
         'You do not have access to this request.',
@@ -1009,9 +1020,7 @@ export class LandlordFlow {
       await this.whatsappUtil.sendText(from, 'This request was not found.');
       return;
     }
-    const ownerAccountId =
-      sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    if (ownerAccountId !== landlord.accountId) {
+    if (!this.landlordOwnsRequest(sr, landlord)) {
       await this.whatsappUtil.sendText(
         from,
         'You do not have access to this request.',

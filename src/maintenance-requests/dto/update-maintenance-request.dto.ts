@@ -2,6 +2,7 @@ import { ApiProperty, PartialType } from '@nestjs/swagger';
 import {
   CreateMaintenanceRequestDto,
   MaintenanceRequestStatusEnum,
+  MediaItem,
 } from './create-maintenance-request.dto';
 import { JobCategoryEnum } from './job-category.enum';
 import { Transform, Type } from 'class-transformer';
@@ -100,14 +101,14 @@ export class UpdateMaintenanceRequestResponseDto {
     items: { type: 'string', format: 'binary' },
     required: false,
     nullable: true,
-    description: 'Images of the issue',
+    description: 'Photos/videos of the issue',
   })
   @IsOptional()
   @Transform(({ value }) => {
     if (!value || value === '') return undefined;
     return Array.isArray(value) ? value : [value];
   })
-  issue_images?: string[];
+  issue_media?: MediaItem[];
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',

@@ -26,6 +26,24 @@ export type IncomingMessage = {
     payload?: string;
   };
 
+  // Inbound media. `id` is Meta's media id, resolved to a download URL via the
+  // Graph API (see WhatsAppMediaService.downloadInboundMedia). `link` is a
+  // pre-hosted public URL set by the in-house simulator (used directly).
+  image?: {
+    id?: string;
+    mime_type?: string;
+    caption?: string;
+    sha256?: string;
+    link?: string;
+  };
+  video?: {
+    id?: string;
+    mime_type?: string;
+    caption?: string;
+    sha256?: string;
+    link?: string;
+  };
+
   context?: {
     from: string;
     id: string;

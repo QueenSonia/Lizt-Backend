@@ -43,6 +43,8 @@ import {
 } from '../template-sender';
 import { IncomingMessage } from '../utils';
 import { WhatsAppNotificationLogService } from '../whatsapp-notification-log.service';
+import { FlowTokenService, FlowProperty } from '../flow-token.service';
+import { MaintenanceMediaService } from '../maintenance-media.service';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import {
   Fee,
@@ -53,6 +55,55 @@ import {
   sumOneTime,
 } from 'src/common/billing/fees';
 import { nextPeriodEndInclusive } from 'src/common/utils/rent-date.util';
+
+/** A media item to attach once a deferred stray-input request is created. */
+interface PendingMediaRef {
+  /** Meta media id (real inbound), resolved via the Graph API. */
+  id?: string;
+  /** Pre-hosted public URL (simulator), used in place of the Meta id. */
+  link?: string;
+  type: 'image' | 'video';
+}
+
+/**
+ * A stray input the bot offered to turn into a maintenance request. Creation is
+ * deferred through a short guided intake — the bot collects extra details, then
+ * photos/videos — so the request is logged once with the full picture (and the
+ * FM/landlord notification carries the complete description). Stashed in
+ * `pending_create_<phone>` until the intake finishes.
+ */
+interface PendingCreate {
+  kind: 'text' | 'media';
+  /** The accumulated description (seed text/caption + any extra details). */
+  description?: string;
+  /** Caption sent with seed media; used as the description if no other given. */
+  caption?: string;
+  /** Resolved once the tenant picks a property (single-property auto-fills). */
+  property_id?: string;
+  /** Media to attach on create — the seed media plus any added during intake. */
+  media?: PendingMediaRef[];
+  /**
+   * Set once the tenant taps "Yes" — we're collecting the details/photos before
+   * logging. Absent during the initial Yes/No offer stage.
+   */
+  phase?: 'collecting';
+}
+
+// Words that end an intake step ("no, that's all").
+const INTAKE_NEGATIVES = new Set([
+  'no',
+  'nope',
+  'nah',
+  'none',
+  'nothing',
+  'done',
+  'no thanks',
+  'no thank you',
+  "that's all",
+  "that's it",
+  'thats all',
+  'thats it',
+]);
 
 /**
  * TenantFlowService handles all tenant-specific WhatsApp message interactions.
@@ -98,6 +149,8 @@ export class TenantFlowService {
     private readonly maintenanceRequestService: MaintenanceRequestsService,
     private readonly templateSenderService: TemplateSenderService,
     private readonly notificationLogService: WhatsAppNotificationLogService,
+    private readonly flowTokenService: FlowTokenService,
+    private readonly maintenanceMediaService: MaintenanceMediaService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly nextPeriodStateResolver: NextPeriodStateResolver,
     private readonly eventEmitter: EventEmitter2,
@@ -142,10 +195,33 @@ export class TenantFlowService {
     if (lowerText === 'done') {
       await this.cache.delete(`maintenance_request_state_${from}`);
       await this.cache.delete(`tenant_deny_state_${from}`);
+      await this.cache.delete(`awaiting_media_${from}`);
+      await this.cache.delete(`pending_create_${from}`);
+      await this.cache.delete(`pending_create_property_${from}`);
       await this.templateSenderService.sendText(
         from,
         'Thank you!  Your session has ended.',
       );
+      return;
+    }
+
+    // While a video window is open (tenant opted into adding a video on the
+    // Flow), free text isn't a request description — nudge or close. Reserved
+    // keywords above (done/menu/switch) still take precedence.
+    const awaitingMedia = await this.cache.get(`awaiting_media_${from}`);
+    if (awaitingMedia) {
+      if (lowerText === 'skip') {
+        await this.cache.delete(`awaiting_media_${from}`);
+        await this.templateSenderService.sendText(
+          from,
+          'No problem — your request is logged.',
+        );
+      } else {
+        await this.templateSenderService.sendText(
+          from,
+          'Send your video here and I’ll attach it to your request, or reply *skip* if you’re done.',
+        );
+      }
       return;
     }
 
@@ -179,6 +255,31 @@ export class TenantFlowService {
         text,
         tenancyDetailsSelection,
       );
+      return;
+    }
+
+    // Numbered property pick for a multi-property "create from stray input"
+    // offer. Checked before the intake handler because the pending payload
+    // still carries its intake phase while we wait for the property number.
+    const pendingCreateProperty = await this.cache.get<string[]>(
+      `pending_create_property_${from}`,
+    );
+    if (pendingCreateProperty) {
+      await this.handleCreatePropertySelection(
+        from,
+        text,
+        pendingCreateProperty,
+      );
+      return;
+    }
+
+    // Guided intake after a confirmed stray-input offer ("anything else?" /
+    // "any photos?"). Only active once a phase is set (post-confirmation).
+    const pendingCreate = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (pendingCreate?.phase) {
+      await this.handleIntakeReply(from, text, pendingCreate);
       return;
     }
 
@@ -223,14 +324,13 @@ export class TenantFlowService {
       return;
     }
 
-    // Default: try AI intent router, then fall back to menu.
-    // The router self-gates on INTENT_ROUTER_ENABLED and fetches its own
-    // conversational context; it returns true only when it has handled the
-    // message (executed a safe read or sent a confirmation card). false
-    // preserves today's behavior of showing the main menu.
+    // Default: try AI intent router, then offer to log the stray text as a
+    // maintenance request. The router self-gates on INTENT_ROUTER_ENABLED and
+    // fetches its own conversational context; it returns true only when it has
+    // handled the message (executed a safe read or sent a confirmation card).
     const handled = await this.intentRouter.handleFreeText(from, text);
     if (!handled) {
-      await this.showTenantMenu(from);
+      await this.offerCreateFromText(from, text);
     }
   }
 
@@ -925,6 +1025,20 @@ export class TenantFlowService {
         await this.handleConfirmResolutionNo(from);
         break;
 
+      case 'create_mr_yes':
+        await this.beginIntake(from);
+        break;
+
+      case 'create_mr_no':
+        await this.cache.delete(`pending_create_${from}`);
+        await this.cache.delete(`pending_create_property_${from}`);
+        await this.templateSenderService.sendButtons(
+          from,
+          'No problem. Please choose from the menu below so we can assist you with the right service.',
+          this.MAIN_MENU_BUTTONS,
+        );
+        break;
+
       case 'cancel_payment':
         await this.templateSenderService.sendText(from, 'Payment cancelled.');
         break;
@@ -1159,6 +1273,12 @@ export class TenantFlowService {
   /**
    * Handle new maintenance request button
    */
+  /**
+   * Tenant tapped "Maintenance request". Mints a create-mode flow token
+   * (carrying their phone, user id, and active properties for the in-flow
+   * dropdown) and launches the `maintenance_request_tenant` Flow template.
+   * Replaces the old free-text property-pick + description state machine.
+   */
   private async handleNewMaintenanceRequest(from: string): Promise<void> {
     const user = await this.findTenantByPhone(from);
 
@@ -1181,7 +1301,7 @@ export class TenantFlowService {
     }
 
     const accountId = user.accounts[0].id;
-    const properties = await this.propertyTenantRepo.find({
+    const propertyTenants = await this.propertyTenantRepo.find({
       where: {
         tenant_id: accountId,
         status: TenantStatusEnum.ACTIVE,
@@ -1189,7 +1309,7 @@ export class TenantFlowService {
       relations: ['property'],
     });
 
-    if (!properties?.length) {
+    if (!propertyTenants?.length) {
       await this.templateSenderService.sendText(
         from,
         'No active properties found for your account.',
@@ -1197,34 +1317,434 @@ export class TenantFlowService {
       return;
     }
 
-    // If tenant has multiple properties, ask them to select
-    if (properties.length > 1) {
-      let propertyList = 'Which property is this request for?\n\n';
-      properties.forEach((pt, index) => {
-        propertyList += `${index + 1}. ${pt.property.name}\n`;
-      });
-      propertyList += '\nReply with the number of the property.';
+    const properties: FlowProperty[] = propertyTenants.map((pt) => ({
+      id: pt.property_id,
+      title: pt.property?.name ?? 'Your property',
+    }));
 
-      await this.templateSenderService.sendText(from, propertyList);
+    const flowToken = await this.flowTokenService.mint({
+      mode: 'create',
+      phone: from,
+      tenant_user_id: user.id,
+      properties,
+    });
 
-      // Store property IDs in cache
-      await this.cache.set(
-        `maintenance_request_state_${from}`,
-        `select_property:${JSON.stringify(properties.map((p) => p.property_id))}`,
-        this.SESSION_TIMEOUT_MS,
+    await this.templateSenderService.sendTenantMaintenanceRequestFlow({
+      phone_number: from,
+      name: this.utilService.toSentenceCase(user.first_name ?? 'there'),
+      flow_token: flowToken,
+    });
+  }
+
+  /**
+   * Create a tenant maintenance request and queue the FM + landlord
+   * notifications (same pipeline as the legacy text path). Shared by the
+   * WhatsApp Flow submit and the stray-input "Yes, create" path. Returns the
+   * new request's ids, or null if the tenant/create failed. Callers own the
+   * tenant-facing confirmation (the Flow shows its SUCCESS screen; the
+   * stray-input path sends a text), so none is sent here.
+   */
+  async createTenantMaintenanceRequest(params: {
+    tenantUserId: string;
+    propertyId: string;
+    text: string;
+  }): Promise<{ id: string; request_id: string } | null> {
+    const user = await this.usersRepo.findOne({
+      where: { id: params.tenantUserId },
+    });
+    if (!user) {
+      this.logger.warn(
+        `createTenantMaintenanceRequest: user ${params.tenantUserId} not found`,
       );
-    } else {
-      // Single property - proceed directly to description
-      await this.cache.set(
-        `maintenance_request_state_${from}`,
-        `awaiting_description:${properties[0].property_id}`,
-        this.SESSION_TIMEOUT_MS,
+      return null;
+    }
+
+    const created =
+      await this.maintenanceRequestService.createMaintenanceRequest(
+        { property_id: params.propertyId, text: params.text },
+        { id: params.tenantUserId, role: RolesEnum.TENANT },
       );
+    if (!created) return null;
+
+    const {
+      created_at,
+      facility_managers,
+      property_name,
+      property_location,
+      property_id,
+      id,
+      request_id,
+    } = created;
+
+    try {
+      await this.queueFacilityManagerNotifications(
+        facility_managers,
+        user,
+        property_name,
+        property_location,
+        params.text,
+        created_at,
+        id,
+      );
+    } catch (err) {
+      this.logger.error('Failed to queue FM notifications (flow):', err);
+    }
+
+    try {
+      await this.queueLandlordNotification(
+        property_id,
+        user,
+        property_name,
+        property_location,
+        params.text,
+        created_at,
+        id,
+      );
+    } catch (err) {
+      this.logger.error('Failed to queue landlord notification (flow):', err);
+    }
+
+    return { id, request_id };
+  }
+
+  /**
+   * Inbound photo/video from a tenant. If a video window is open (armed when a
+   * tenant opts into "I also have a video" in the Flow), attach the media to
+   * that request. Otherwise treat it as a stray attachment and offer to create
+   * a new maintenance request with it attached.
+   */
+  async handleInboundMedia(
+    message: IncomingMessage,
+    from: string,
+  ): Promise<void> {
+    const media = message.image ?? message.video;
+    if (!media?.id && !media?.link) return;
+    const mediaType: 'image' | 'video' = message.video ? 'video' : 'image';
+
+    // Dedup: Meta can redeliver the same media webhook.
+    const dedupKey = `media_msg_${message.id}`;
+    if (await this.cache.get(dedupKey)) return;
+    await this.cache.setWithTtlSeconds(dedupKey, '1', 3600);
+
+    const windowKey = `awaiting_media_${from}`;
+    const openWindow = await this.cache.get<{
+      request_id: string;
+      attempt: number;
+      description?: string;
+    }>(windowKey);
+
+    if (openWindow) {
+      const item = await this.maintenanceMediaService.ingestInboundMedia(
+        openWindow.request_id,
+        { id: media.id, link: media.link, type: mediaType },
+        openWindow.attempt,
+      );
+      if (item) {
+        // Keep the window open (refresh TTL) so they can send several.
+        await this.cache.setWithTtlSeconds(windowKey, openWindow, 600);
+        await this.templateSenderService.sendText(
+          from,
+          '✅ Added to your request. Send another, or reply *done* when finished.',
+        );
+      } else {
+        await this.templateSenderService.sendText(
+          from,
+          "Sorry, I couldn't save that file. Please try sending it again.",
+        );
+      }
+      return;
+    }
+
+    // Media sent during a guided intake (after the tenant confirmed) — stash it
+    // to attach when the request is created. If we now have a description, log
+    // the request; otherwise ask for one first.
+    const pendingCreate = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (pendingCreate?.phase) {
+      const caption = (media.caption ?? '').trim();
+      pendingCreate.media = [
+        ...(pendingCreate.media ?? []),
+        { id: media.id, link: media.link, type: mediaType },
+      ];
+      if (caption) {
+        pendingCreate.description = [pendingCreate.description, caption]
+          .filter((s) => (s ?? '').trim())
+          .join('\n');
+      }
+      await this.cache.setWithTtlSeconds(
+        `pending_create_${from}`,
+        pendingCreate,
+        900,
+      );
+      if ((pendingCreate.description ?? '').trim()) {
+        await this.resolvePropertyAndCreate(from);
+      } else {
+        await this.templateSenderService.sendText(
+          from,
+          'Got it. Please add a short description of the issue so we can log your request.',
+        );
+      }
+      return;
+    }
+
+    // Stray media — no active window. Offer to log a new request with it.
+    await this.offerCreateFromMedia(from, message);
+  }
+
+  /** "Is this a maintenance request?" Yes/No offer for a stray message. */
+  private async sendMaintenanceOffer(from: string): Promise<void> {
+    await this.templateSenderService.sendButtons(
+      from,
+      'Hello! We received your message.\n\nIs your message related to a maintenance issue or service request?',
+      [
+        { id: 'create_mr_yes', title: 'Yes' },
+        { id: 'create_mr_no', title: 'No' },
+      ],
+    );
+  }
+
+  /**
+   * Stray free text the bot couldn't otherwise place: stash it as the seed
+   * description and ask whether it's a maintenance request.
+   */
+  async offerCreateFromText(from: string, text: string): Promise<void> {
+    await this.cache.setWithTtlSeconds(
+      `pending_create_${from}`,
+      { kind: 'text', description: text },
+      900,
+    );
+    await this.sendMaintenanceOffer(from);
+  }
+
+  /**
+   * Stray photo/video: stash it as the seed media (caption kept as an initial
+   * description) and ask whether it's a maintenance request.
+   */
+  private async offerCreateFromMedia(
+    from: string,
+    message: IncomingMessage,
+  ): Promise<void> {
+    const media = message.image ?? message.video;
+    if (!media?.id && !media?.link) return;
+    const kind: 'image' | 'video' = message.video ? 'video' : 'image';
+    const caption = (media.caption ?? '').trim();
+
+    await this.cache.setWithTtlSeconds(
+      `pending_create_${from}`,
+      {
+        kind: 'media',
+        description: caption,
+        caption,
+        media: [{ id: media.id, link: media.link, type: kind }],
+      },
+      900,
+    );
+    await this.sendMaintenanceOffer(from);
+  }
+
+  /**
+   * Tenant tapped "Yes" on the maintenance-request offer. Ask for the issue
+   * details (and optional photos/videos) before the request is created.
+   */
+  async beginIntake(from: string): Promise<void> {
+    const pending = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (!pending) {
       await this.templateSenderService.sendText(
         from,
-        'Sure! Please tell me what needs to be fixed.',
+        "That offer expired. Send your message again and I'll offer to log it.",
+      );
+      return;
+    }
+    pending.phase = 'collecting';
+    await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
+    await this.templateSenderService.sendText(
+      from,
+      'Thank you. Please provide any additional details about the issue. You may also attach photos or videos if they will help us better understand the problem.',
+    );
+  }
+
+  /**
+   * Tenant's text reply while collecting intake details. The text becomes (part
+   * of) the description and the request is then logged. A bare "no" is treated
+   * as "nothing to add" rather than appended to the description.
+   */
+  private async handleIntakeReply(
+    from: string,
+    text: string,
+    pending: PendingCreate,
+  ): Promise<void> {
+    const trimmed = text.trim();
+    const isNegative = INTAKE_NEGATIVES.has(trimmed.toLowerCase());
+
+    if (trimmed && !(isNegative && (pending.description ?? '').trim())) {
+      pending.description = [pending.description, trimmed]
+        .filter((s) => (s ?? '').trim())
+        .join('\n');
+      await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
+    }
+    await this.resolvePropertyAndCreate(from);
+  }
+
+  /**
+   * Final step of the guided intake: resolve the tenant's property (single
+   * auto-fills; multiple prompt a numbered pick) then create the request.
+   */
+  private async resolvePropertyAndCreate(from: string): Promise<void> {
+    const pending = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (!pending) {
+      await this.templateSenderService.sendText(
+        from,
+        "That offer expired. Send your message again and I'll offer to log it.",
+      );
+      return;
+    }
+
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) {
+      await this.cache.delete(`pending_create_${from}`);
+      await this.templateSenderService.sendText(
+        from,
+        'No tenancy info available.',
+      );
+      return;
+    }
+
+    const accountId = user.accounts[0].id;
+    const propertyTenants = await this.propertyTenantRepo.find({
+      where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
+      relations: ['property'],
+    });
+    if (!propertyTenants?.length) {
+      await this.cache.delete(`pending_create_${from}`);
+      await this.templateSenderService.sendText(
+        from,
+        'No active properties found for your account.',
+      );
+      return;
+    }
+
+    if (propertyTenants.length === 1) {
+      await this.createFromPending(
+        from,
+        user.id,
+        propertyTenants[0].property_id,
+        pending,
+      );
+      return;
+    }
+
+    // Multiple properties → ask which one. Keep the pending payload around.
+    let list = 'Which property is this for?\n\n';
+    propertyTenants.forEach((pt, i) => {
+      list += `${i + 1}. ${pt.property?.name ?? 'Property'}\n`;
+    });
+    list += '\nReply with the number of the property.';
+    await this.cache.setWithTtlSeconds(
+      `pending_create_property_${from}`,
+      propertyTenants.map((pt) => pt.property_id),
+      600,
+    );
+    await this.templateSenderService.sendText(from, list);
+  }
+
+  /**
+   * Numbered property reply for a multi-property create-from-stray-input flow.
+   */
+  async handleCreatePropertySelection(
+    from: string,
+    text: string,
+    propertyIds: string[],
+  ): Promise<void> {
+    const index = parseInt(text.trim(), 10) - 1;
+    if (Number.isNaN(index) || index < 0 || index >= propertyIds.length) {
+      await this.templateSenderService.sendText(
+        from,
+        `Please reply with a number between 1 and ${propertyIds.length}.`,
+      );
+      return;
+    }
+    const pending = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    const user = await this.findTenantByPhone(from);
+    if (!pending || !user) {
+      await this.cache.delete(`pending_create_${from}`);
+      await this.cache.delete(`pending_create_property_${from}`);
+      await this.templateSenderService.sendText(
+        from,
+        'That offer expired. Send your message again.',
+      );
+      return;
+    }
+    await this.createFromPending(from, user.id, propertyIds[index], pending);
+  }
+
+  /**
+   * Create the request captured by a stray-input offer, then attach the stashed
+   * media if there was any. Clears the pending caches first.
+   */
+  private async createFromPending(
+    from: string,
+    tenantUserId: string,
+    propertyId: string,
+    pending: PendingCreate,
+  ): Promise<void> {
+    await this.cache.delete(`pending_create_${from}`);
+    await this.cache.delete(`pending_create_property_${from}`);
+
+    const description =
+      (pending.description ?? '').trim() ||
+      pending.caption?.trim() ||
+      (pending.kind === 'media'
+        ? `Issue reported via ${pending.media?.[0]?.type ?? 'photo'}`
+        : '');
+
+    if (!description) {
+      await this.templateSenderService.sendText(
+        from,
+        "I couldn't read the issue. Please try again.",
+      );
+      return;
+    }
+
+    let created: { id: string; request_id: string } | null = null;
+    try {
+      created = await this.createTenantMaintenanceRequest({
+        tenantUserId,
+        propertyId,
+        text: description,
+      });
+    } catch (err) {
+      this.logger.error('Create-from-stray-input failed', err as Error);
+    }
+    if (!created) {
+      await this.templateSenderService.sendText(
+        from,
+        'Sorry, we could not log your request right now. Please try again shortly.',
+      );
+      return;
+    }
+
+    // Attach everything gathered during the intake (seed media + any added).
+    for (const ref of pending.media ?? []) {
+      if (!ref.id && !ref.link) continue;
+      await this.maintenanceMediaService.ingestInboundMedia(
+        created.id,
+        { id: ref.id, link: ref.link, type: ref.type },
+        1,
       );
     }
+
+    await this.templateSenderService.sendText(
+      from,
+      'Thank you. Your maintenance request has been received and logged successfully.\n\nA member of our maintenance team will review the information provided and begin the resolution process. We will keep you updated on the status of your request.',
+    );
+    await this.showTenantMenu(from);
   }
 
   /**
@@ -1335,21 +1855,31 @@ export class TenantFlowService {
         },
       );
 
-      await this.templateSenderService.sendText(
-        from,
-        "Thanks for letting me know. I've reopened the request and notified maintenance to check again.\n\nWhat's still not working? Reply with a short description and I'll add it to the request.",
-      );
+      // updateStatus bumped current_attempt on the REOPENED transition; re-read
+      // so the reopen Flow tags new evidence with the correct cycle.
+      const reopened = await this.maintenanceRequestRepo.findOne({
+        where: { id: latestResolvedRequest.id },
+      });
+      const attempt = reopened?.current_attempt ?? 2;
 
-      // Cache the tenant's Account id (not User id) — patchLatestAttempt-
-      // DenialReason compares this against maintenance_requests.tenant_id,
-      // which is an Account id.
-      const tenantAccountId = latestResolvedRequest.tenant?.id;
-      if (tenantAccountId) {
-        await this.cache.set(
-          `maintenance_request_state_${from}`,
-          `awaiting_reopen_followup:${latestResolvedRequest.id}:${tenantAccountId}`,
-          this.SESSION_TIMEOUT_MS,
-        );
+      // Relaunch the Flow in reopen mode so the tenant describes what's still
+      // wrong and attaches fresh photos/video under the new attempt — instead
+      // of the old free-text "reply with a description" capture.
+      if (tenantUser?.id) {
+        const flowToken = await this.flowTokenService.mint({
+          mode: 'reopen',
+          phone: from,
+          tenant_user_id: tenantUser.id,
+          request_id: latestResolvedRequest.id,
+          attempt,
+        });
+        await this.templateSenderService.sendTenantMaintenanceRequestFlow({
+          phone_number: from,
+          name: this.utilService.toSentenceCase(
+            tenantUser.first_name ?? 'there',
+          ),
+          flow_token: flowToken,
+        });
       }
 
       if (latestResolvedRequest.property_id) {

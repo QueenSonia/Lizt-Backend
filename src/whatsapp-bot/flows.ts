@@ -115,4 +115,32 @@ export const SCREEN_RESPONSES: any = {
     screen: 'FM_LINK_EXPIRED',
     data: {},
   },
+
+  // Tenant maintenance-request Flow. The single form screen: an optional
+  // property dropdown (shown only for multi-property tenants), a required
+  // description, a PhotoPicker for photos, and a low-key opt-in for video.
+  // `getNextScreen` overrides `data` per-token on INIT (property list, copy,
+  // mode) and per-submit error states.
+  REPORT_ISSUE: {
+    screen: 'REPORT_ISSUE',
+    data: {
+      mode: 'create',
+      heading: 'Report a maintenance issue',
+      description_label: 'Describe the issue',
+      has_multiple_properties: false,
+      properties: [],
+      error_message: '',
+      error_visible: false,
+    },
+  },
+
+  // Terminal screen shown after a successful submit. `request_id` and the
+  // copy are filled in by getNextScreen.
+  MR_SUCCESS: {
+    screen: 'MR_SUCCESS',
+    data: {
+      request_id: '',
+      success_message: '',
+    },
+  },
 };

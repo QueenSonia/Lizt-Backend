@@ -141,6 +141,12 @@ export interface TenantMaintenanceRequestFlowParams {
   phone_number: string;
   name: string;
   flow_token: string;
+  /**
+   * Initial data for the REPORT_ISSUE screen, passed inline so the flow can be
+   * launched in `navigate` mode (no endpoint INIT round-trip on open). Shape
+   * must match the screen's data model (mode, heading, properties, …).
+   */
+  flow_action_data?: Record<string, unknown>;
 }
 
 /**
@@ -1312,7 +1318,16 @@ export class TemplateSenderService {
     phone_number,
     name,
     flow_token,
+    flow_action_data,
   }: TenantMaintenanceRequestFlowParams): Promise<void> {
+    const action: {
+      flow_token: string;
+      flow_action_data?: Record<string, unknown>;
+    } = { flow_token };
+    // navigate-mode flows don't call the endpoint on open, so seed the first
+    // screen's data inline (property dropdown, copy, etc.).
+    if (flow_action_data) action.flow_action_data = flow_action_data;
+
     const payload: WhatsAppPayload = {
       messaging_product: 'whatsapp',
       to: phone_number,
@@ -1332,7 +1347,7 @@ export class TemplateSenderService {
             parameters: [
               {
                 type: 'action',
-                action: { flow_token },
+                action,
               },
             ],
           },

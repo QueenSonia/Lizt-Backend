@@ -208,7 +208,7 @@ export class LandlordFlow {
 
     const sr = await this.maintenanceRequestRepo.findOne({
       where: { id: ids[idx] },
-      relations: ['property', 'tenant', 'tenant.user', 'facilityManager', 'facilityManager.account', 'facilityManager.account.user'],
+      relations: ['property', 'common_area', 'tenant', 'tenant.user', 'facilityManager', 'facilityManager.account', 'facilityManager.account.user'],
     });
 
     if (!sr) {
@@ -231,7 +231,9 @@ export class LandlordFlow {
     const lines = [
       `*${sr.description}*`,
       '',
-      `Property: ${sr.property?.name ?? sr.property_name ?? '—'}`,
+      sr.common_area
+        ? `Common area: ${sr.common_area.name}`
+        : `Property: ${sr.property?.name ?? sr.property_name ?? '—'}`,
       `Category: ${sr.issue_category}`,
       `Reporter: ${reporter}`,
       `Reported: ${reportedDate}`,

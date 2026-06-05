@@ -83,11 +83,10 @@ interface PendingCreate {
   /** Media to attach on create — the seed media plus any added during intake. */
   media?: PendingMediaRef[];
   /**
-   * Guided-intake stage, set once the tenant confirms they want to log it:
-   * 'details' (asking "anything else?") → 'media' (asking for photos/videos).
-   * Absent before confirmation (the Yes/No offer stage).
+   * Set once the tenant taps "Yes" — we're collecting the details/photos before
+   * logging. Absent during the initial Yes/No offer stage.
    */
-  phase?: 'details' | 'media';
+  phase?: 'collecting';
 }
 
 // Words that end an intake step ("no, that's all").
@@ -197,8 +196,8 @@ export class TenantFlowService {
       await this.cache.delete(`maintenance_request_state_${from}`);
       await this.cache.delete(`tenant_deny_state_${from}`);
       await this.cache.delete(`awaiting_media_${from}`);
-      await this.cache.delete(`awaiting_media_context_${from}`);
       await this.cache.delete(`pending_create_${from}`);
+      await this.cache.delete(`pending_create_property_${from}`);
       await this.templateSenderService.sendText(
         from,
         'Thank you!  Your session has ended.',
@@ -256,15 +255,6 @@ export class TenantFlowService {
         text,
         tenancyDetailsSelection,
       );
-      return;
-    }
-
-    // Description reply for a captionless stray photo/video ("ask for context").
-    const awaitingMediaContext = await this.cache.get(
-      `awaiting_media_context_${from}`,
-    );
-    if (awaitingMediaContext) {
-      await this.handleMediaContextReply(from, text);
       return;
     }
 
@@ -1042,7 +1032,11 @@ export class TenantFlowService {
       case 'create_mr_no':
         await this.cache.delete(`pending_create_${from}`);
         await this.cache.delete(`pending_create_property_${from}`);
-        await this.showTenantMenu(from);
+        await this.templateSenderService.sendButtons(
+          from,
+          'No problem. Please choose from the menu below so we can assist you with the right service.',
+          this.MAIN_MENU_BUTTONS,
+        );
         break;
 
       case 'cancel_payment':
@@ -1462,25 +1456,35 @@ export class TenantFlowService {
     }
 
     // Media sent during a guided intake (after the tenant confirmed) — stash it
-    // to attach when the request is created, instead of starting a new offer.
+    // to attach when the request is created. If we now have a description, log
+    // the request; otherwise ask for one first.
     const pendingCreate = await this.cache.get<PendingCreate>(
       `pending_create_${from}`,
     );
     if (pendingCreate?.phase) {
-      pendingCreate.phase = 'media';
+      const caption = (media.caption ?? '').trim();
       pendingCreate.media = [
         ...(pendingCreate.media ?? []),
         { id: media.id, link: media.link, type: mediaType },
       ];
+      if (caption) {
+        pendingCreate.description = [pendingCreate.description, caption]
+          .filter((s) => (s ?? '').trim())
+          .join('\n');
+      }
       await this.cache.setWithTtlSeconds(
         `pending_create_${from}`,
         pendingCreate,
         900,
       );
-      await this.templateSenderService.sendText(
-        from,
-        "✅ Added. Send another, or reply *no* when you're done.",
-      );
+      if ((pendingCreate.description ?? '').trim()) {
+        await this.resolvePropertyAndCreate(from);
+      } else {
+        await this.templateSenderService.sendText(
+          from,
+          'Got it. Please add a short description of the issue so we can log your request.',
+        );
+      }
       return;
     }
 
@@ -1488,41 +1492,34 @@ export class TenantFlowService {
     await this.offerCreateFromMedia(from, message);
   }
 
-  /** One-line, ~40-char snippet of a description for use in message bodies. */
-  private truncateForBody(text: string | null | undefined): string {
-    const oneLine = (text ?? '').replace(/\s+/g, ' ').trim();
-    if (!oneLine) return 'your request';
-    return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine;
-  }
-
-  /**
-   * Stray free text the bot couldn't otherwise place: offer to log it as a new
-   * maintenance request, using the text as the description.
-   */
-  async offerCreateFromText(from: string, text: string): Promise<void> {
-    await this.cache.setWithTtlSeconds(
-      `pending_create_${from}`,
-      { kind: 'text', description: text },
-      600,
-    );
+  /** "Is this a maintenance request?" Yes/No offer for a stray message. */
+  private async sendMaintenanceOffer(from: string): Promise<void> {
     await this.templateSenderService.sendButtons(
       from,
-      `Do you want to create a maintenance request for “${this.truncateForBody(
-        text,
-      )}”?`,
+      'Hello! We received your message.\n\nIs your message related to a maintenance issue or service request?',
       [
-        { id: 'create_mr_yes', title: 'Yes, create' },
+        { id: 'create_mr_yes', title: 'Yes' },
         { id: 'create_mr_no', title: 'No' },
       ],
     );
   }
 
   /**
-   * Stray photo/video. If it came with a caption we already have context, so
-   * we confirm and create. If it was "just dropped" (no caption), we ask the
-   * tenant to describe the issue first — their next message becomes the
-   * description (see handleMediaContextReply). Either way the media is stashed
-   * and ingested once the request is created.
+   * Stray free text the bot couldn't otherwise place: stash it as the seed
+   * description and ask whether it's a maintenance request.
+   */
+  async offerCreateFromText(from: string, text: string): Promise<void> {
+    await this.cache.setWithTtlSeconds(
+      `pending_create_${from}`,
+      { kind: 'text', description: text },
+      900,
+    );
+    await this.sendMaintenanceOffer(from);
+  }
+
+  /**
+   * Stray photo/video: stash it as the seed media (caption kept as an initial
+   * description) and ask whether it's a maintenance request.
    */
   private async offerCreateFromMedia(
     from: string,
@@ -1537,85 +1534,18 @@ export class TenantFlowService {
       `pending_create_${from}`,
       {
         kind: 'media',
+        description: caption,
         caption,
         media: [{ id: media.id, link: media.link, type: kind }],
       },
-      600,
+      900,
     );
-
-    if (caption) {
-      await this.templateSenderService.sendButtons(
-        from,
-        `Do you want to create a maintenance request for “${this.truncateForBody(
-          caption,
-        )}”? I'll attach your ${kind}.`,
-        [
-          { id: 'create_mr_yes', title: 'Yes, create' },
-          { id: 'create_mr_no', title: 'No' },
-        ],
-      );
-      return;
-    }
-
-    // No caption — ask for context before creating anything.
-    await this.cache.setWithTtlSeconds(
-      `awaiting_media_context_${from}`,
-      '1',
-      600,
-    );
-    await this.templateSenderService.sendText(
-      from,
-      `Got your ${kind === 'video' ? 'video' : 'photo'}. What's the issue? Reply with a short description and I'll log it as a maintenance request — or reply *cancel* to skip.`,
-    );
+    await this.sendMaintenanceOffer(from);
   }
 
   /**
-   * The tenant's description reply after dropping a captionless photo/video.
-   * Fills in the stashed media's description and proceeds to create (resolving
-   * property the same way the button "Yes" path does).
-   */
-  private async handleMediaContextReply(
-    from: string,
-    text: string,
-  ): Promise<void> {
-    const trimmed = text.trim();
-
-    if (trimmed.toLowerCase() === 'cancel') {
-      await this.cache.delete(`awaiting_media_context_${from}`);
-      await this.cache.delete(`pending_create_${from}`);
-      await this.templateSenderService.sendText(from, 'No problem — discarded.');
-      return;
-    }
-    if (!trimmed) {
-      await this.templateSenderService.sendText(
-        from,
-        'Please describe the issue, or reply *cancel* to skip.',
-      );
-      return;
-    }
-
-    const pending = await this.cache.get<PendingCreate>(
-      `pending_create_${from}`,
-    );
-    if (!pending) {
-      await this.cache.delete(`awaiting_media_context_${from}`);
-      await this.templateSenderService.sendText(
-        from,
-        'That expired — please send the photo or video again.',
-      );
-      return;
-    }
-
-    await this.cache.delete(`awaiting_media_context_${from}`);
-    pending.description = trimmed;
-    await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
-    await this.beginIntake(from);
-  }
-
-  /**
-   * Tenant confirmed they want to log a request (tapped "Yes" or described a
-   * dropped photo). Kick off the guided intake: ask for any extra details
-   * before we move on to photos/videos and finally create the request.
+   * Tenant tapped "Yes" on the maintenance-request offer. Ask for the issue
+   * details (and optional photos/videos) before the request is created.
    */
   async beginIntake(from: string): Promise<void> {
     const pending = await this.cache.get<PendingCreate>(
@@ -1628,19 +1558,18 @@ export class TenantFlowService {
       );
       return;
     }
-    pending.phase = 'details';
+    pending.phase = 'collecting';
     await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
     await this.templateSenderService.sendText(
       from,
-      "Got it. Anything else you'd like to add? Reply with more details, or say *no* if that's everything.",
+      'Thank you. Please provide any additional details about the issue. You may also attach photos or videos if they will help us better understand the problem.',
     );
   }
 
   /**
-   * Tenant's reply during the guided intake (after they confirmed). In the
-   * 'details' phase each reply is appended to the description until they say
-   * *no*; then we move to the 'media' phase and ask for photos/videos until
-   * they say *no*, at which point the request is finally created.
+   * Tenant's text reply while collecting intake details. The text becomes (part
+   * of) the description and the request is then logged. A bare "no" is treated
+   * as "nothing to add" rather than appended to the description.
    */
   private async handleIntakeReply(
     from: string,
@@ -1650,40 +1579,13 @@ export class TenantFlowService {
     const trimmed = text.trim();
     const isNegative = INTAKE_NEGATIVES.has(trimmed.toLowerCase());
 
-    if (pending.phase === 'details') {
-      if (isNegative) {
-        pending.phase = 'media';
-        await this.cache.setWithTtlSeconds(
-          `pending_create_${from}`,
-          pending,
-          900,
-        );
-        await this.templateSenderService.sendText(
-          from,
-          'Do you have a photo or video to attach? Send it here, or reply *no*.',
-        );
-        return;
-      }
+    if (trimmed && !(isNegative && (pending.description ?? '').trim())) {
       pending.description = [pending.description, trimmed]
         .filter((s) => (s ?? '').trim())
         .join('\n');
       await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
-      await this.templateSenderService.sendText(
-        from,
-        "Added. Anything else? Reply with more details, or say *no* if that's everything.",
-      );
-      return;
     }
-
-    // phase === 'media'
-    if (isNegative) {
-      await this.resolvePropertyAndCreate(from);
-      return;
-    }
-    await this.templateSenderService.sendText(
-      from,
-      "Send a photo or video, or reply *no* if you're done.",
-    );
+    await this.resolvePropertyAndCreate(from);
   }
 
   /**
@@ -1840,17 +1742,9 @@ export class TenantFlowService {
 
     await this.templateSenderService.sendText(
       from,
-      "Got it. I've noted your request — someone will take a look and reach out once it's being handled.",
+      'Thank you. Your maintenance request has been received and logged successfully.\n\nA member of our maintenance team will review the information provided and begin the resolution process. We will keep you updated on the status of your request.',
     );
-
-    await this.templateSenderService.sendButtons(
-      from,
-      'Want to do something else?',
-      [
-        { id: 'new_maintenance_request', title: 'Request a service' },
-        { id: 'main_menu', title: 'Go back to main menu' },
-      ],
-    );
+    await this.showTenantMenu(from);
   }
 
   /**

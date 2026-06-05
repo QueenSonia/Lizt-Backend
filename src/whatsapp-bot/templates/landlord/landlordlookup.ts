@@ -303,9 +303,21 @@ export class LandlordLookup {
       return;
     }
 
+    // Landlord's requests across BOTH scopes: unit (property.owner_id) and
+    // common area (common_area.owner_id). Both owner columns hold the
+    // landlord's Account.id, so the array-of-where ORs them on the same id.
     const maintenanceRequests = await this.maintenanceRequestRepo.find({
-      where: { property: { owner_id: landlordAccount.id } },
-      relations: ['property', 'tenant', 'tenant.user', 'facilityManager'],
+      where: [
+        { property: { owner_id: landlordAccount.id } },
+        { common_area: { owner_id: landlordAccount.id } },
+      ],
+      relations: [
+        'property',
+        'common_area',
+        'tenant',
+        'tenant.user',
+        'facilityManager',
+      ],
       order: { date_reported: 'DESC' },
     });
 
@@ -325,7 +337,12 @@ export class LandlordLookup {
         },
       );
 
-      maintenanceMessage += `${i + 1}. ${req.property_name} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
+      const locationName =
+        req.property?.name ??
+        req.property_name ??
+        req.common_area?.name ??
+        'Common area';
+      maintenanceMessage += `${i + 1}. ${locationName} – ${req.issue_category} – Reported ${reportedDate} – Status: ${req.status}\n`;
     }
 
     await this.whatsappUtil.sendText(from, maintenanceMessage);

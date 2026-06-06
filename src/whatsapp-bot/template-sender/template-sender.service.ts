@@ -4180,10 +4180,12 @@ export class TemplateSenderService {
    */
   async sendToWhatsappAPI(payload: WhatsAppPayload): Promise<unknown> {
     // Stash the outbound for the intent router's classification context.
-    // Runs before the send so the cache reflects the bot's most-recent
-    // utterance even if the API call later fails — for context purposes,
-    // "what the bot just said" is what matters.
-    await this.cacheLastOutbound(payload);
+    // Fired (not awaited) before the send so the cache reflects the bot's
+    // most-recent utterance even if the API call later fails — for context
+    // purposes, "what the bot just said" is what matters. Not awaiting keeps
+    // this Redis round-trip off the critical path to the actual send; the
+    // helper swallows its own errors so a floating rejection is impossible.
+    void this.cacheLastOutbound(payload);
 
     try {
       const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
@@ -4292,6 +4294,14 @@ export class TemplateSenderService {
       const { _lizt_meta: _stripMeta, ...metaPayload } = payload;
       void _stripMeta;
 
+      // Generous cap (10s) so a hung socket can't block the webhook request
+      // indefinitely. Deliberately NOT paired with a retry: the Graph
+      // /messages call is not idempotent and carries no idempotency key, so
+      // retrying an ambiguous timeout risks sending the recipient a duplicate
+      // message. We fail closed and let the upstream flow re-trigger instead.
+      const SEND_TIMEOUT_MS = 10_000;
+      const abort = new AbortController();
+      const timeoutHandle = setTimeout(() => abort.abort(), SEND_TIMEOUT_MS);
       try {
         response = await fetch(
           `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
@@ -4302,6 +4312,7 @@ export class TemplateSenderService {
               Authorization: `Bearer ${accessToken}`,
             },
             body: JSON.stringify(metaPayload),
+            signal: abort.signal,
           },
         );
 
@@ -4309,17 +4320,54 @@ export class TemplateSenderService {
         console.log('📨 Response from WhatsApp API:', data);
         console.log('📊 Response status:', response.status);
       } catch (networkError) {
+        const timedOut = (networkError as Error)?.name === 'AbortError';
         const errorContext = {
           mode: 'production',
-          errorType: 'NetworkError',
-          errorMessage: (networkError as Error).message,
+          errorType: timedOut ? 'TimeoutError' : 'NetworkError',
+          errorMessage: timedOut
+            ? `WhatsApp send aborted after ${SEND_TIMEOUT_MS}ms`
+            : (networkError as Error).message,
           recipient: payload?.to,
           messageType: this.extractPayloadMessageType(payload),
           timestamp: new Date().toISOString(),
         };
 
+        if (timedOut) {
+          // The send may or may not have reached Meta — outcome is ambiguous.
+          // Leave a trail so the conversation history reflects the attempt,
+          // then surface a clear error (no retry — see note above).
+          console.error('⏱️ WhatsApp API send timed out:', errorContext);
+          const recipientPhone = payload?.to;
+          if (recipientPhone) {
+            void this.chatLogService
+              .logOutboundMessage(
+                recipientPhone,
+                this.extractPayloadMessageType(payload),
+                this.extractPayloadContent(payload),
+                {
+                  ...payload,
+                  is_simulated: false,
+                  simulation_status: 'production_message',
+                  send_status: 'timeout',
+                },
+                undefined,
+              )
+              .catch((logErr) =>
+                console.error(
+                  '⚠️ Failed to log timed-out outbound message:',
+                  (logErr as Error).message,
+                ),
+              );
+          }
+          throw new Error(
+            `WhatsApp send timed out after ${SEND_TIMEOUT_MS}ms (no retry): ${payload?.to}`,
+          );
+        }
+
         console.error('❌ Network error calling WhatsApp API:', errorContext);
         throw new Error(`Network error: ${(networkError as Error).message}`);
+      } finally {
+        clearTimeout(timeoutHandle);
       }
 
       if (!response.ok) {
@@ -4343,20 +4391,24 @@ export class TemplateSenderService {
         throw new Error(errorMessage);
       }
 
-      try {
-        const responseData = data as { messages?: Array<{ id?: string }> };
-        const wamid = responseData?.messages?.[0]?.id;
-        const recipientPhone = payload?.to;
+      // The message is already accepted by Meta at this point, so the chat-log
+      // write is a pure side-effect — fire it without awaiting to keep the DB
+      // round-trip off the webhook's return path. Errors are swallowed (logged
+      // only); a logging failure must never affect the send outcome.
+      const responseData = data as { messages?: Array<{ id?: string }> };
+      const wamid = responseData?.messages?.[0]?.id;
+      const recipientPhone = payload?.to;
 
-        if (recipientPhone) {
-          console.log('📝 Logging production outbound message:', {
-            recipient: recipientPhone,
-            messageType: this.extractPayloadMessageType(payload),
-            isSimulated: false,
-            wamid,
-          });
+      if (recipientPhone) {
+        console.log('📝 Logging production outbound message:', {
+          recipient: recipientPhone,
+          messageType: this.extractPayloadMessageType(payload),
+          isSimulated: false,
+          wamid,
+        });
 
-          await this.chatLogService.logOutboundMessage(
+        void this.chatLogService
+          .logOutboundMessage(
             recipientPhone,
             this.extractPayloadMessageType(payload),
             this.extractPayloadContent(payload),
@@ -4367,23 +4419,23 @@ export class TemplateSenderService {
               whatsapp_response: data,
             },
             wamid,
+          )
+          .then(() =>
+            console.log('✅ Successfully logged production outbound message'),
+          )
+          .catch((loggingError) =>
+            console.error(
+              '⚠️ Failed to log outbound message (send already succeeded):',
+              {
+                mode: 'production',
+                errorType: (loggingError as Error).constructor.name,
+                errorMessage: (loggingError as Error).message,
+                recipient: recipientPhone,
+                messageType: this.extractPayloadMessageType(payload),
+                timestamp: new Date().toISOString(),
+              },
+            ),
           );
-          console.log('✅ Successfully logged production outbound message');
-        }
-      } catch (loggingError) {
-        const loggingErrorContext = {
-          mode: 'production',
-          errorType: (loggingError as Error).constructor.name,
-          errorMessage: (loggingError as Error).message,
-          recipient: payload?.to,
-          messageType: this.extractPayloadMessageType(payload),
-          timestamp: new Date().toISOString(),
-        };
-
-        console.error(
-          '⚠️ Failed to log outbound message, continuing with response:',
-          loggingErrorContext,
-        );
       }
 
       return data;

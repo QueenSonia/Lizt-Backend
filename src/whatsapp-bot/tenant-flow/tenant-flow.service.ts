@@ -1300,22 +1300,36 @@ export class TenantFlowService {
       ...(seed ? { seed_description: seed } : {}),
     });
 
-    await this.templateSenderService.sendTenantMaintenanceRequestFlow({
-      phone_number: from,
-      name: this.utilService.toSentenceCase(user.first_name ?? 'there'),
-      flow_token: flowToken,
-      // Seed the REPORT_ISSUE screen inline (navigate-mode launch) so the
-      // property dropdown is populated without an endpoint INIT round-trip.
-      flow_action_data: {
-        mode: 'create',
-        heading: seed ? 'Add details to your request' : 'Report a maintenance issue',
-        description_label: seed ? 'Add more details' : 'Describe the issue',
-        has_multiple_properties: properties.length > 1,
-        properties,
-        error_message: '',
-        error_visible: false,
-      },
-    });
+    try {
+      await this.templateSenderService.sendTenantMaintenanceRequestFlow({
+        phone_number: from,
+        name: this.utilService.toSentenceCase(user.first_name ?? 'there'),
+        flow_token: flowToken,
+        // Seed the REPORT_ISSUE screen inline (navigate-mode launch) so the
+        // property dropdown is populated without an endpoint INIT round-trip.
+        flow_action_data: {
+          mode: 'create',
+          heading: seed ? 'Add details to your request' : 'Report a maintenance issue',
+          description_label: seed ? 'Add more details' : 'Describe the issue',
+          has_multiple_properties: properties.length > 1,
+          properties,
+          error_message: '',
+          error_visible: false,
+        },
+      });
+    } catch (err) {
+      // The Flow template can fail to send (e.g. while it is still under review
+      // at Meta, code 132001). Don't leave the tenant with no response — send a
+      // plain-text fallback so they know to retry.
+      this.logger.error(
+        '❌ Failed to send maintenance-request Flow; sending fallback text:',
+        err instanceof Error ? err.message : err,
+      );
+      await this.templateSenderService.sendText(
+        from,
+        "Sorry, we couldn't open the maintenance request form just now. Please try again in a little while.",
+      );
+    }
   }
 
   /**

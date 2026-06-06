@@ -345,6 +345,12 @@ export class WhatsappBotService implements OnModuleInit {
     data: Record<string, any>,
   ): Promise<any> {
     const description = String(data.description ?? '').trim();
+    // When the flow was launched from the stray-input "Add details" choice, the
+    // tenant's original message rides on the token. Prepend it so the logged
+    // request keeps the first message followed by whatever they added.
+    const seed =
+      payload.mode === 'create' ? (payload.seed_description ?? '').trim() : '';
+    const fullText = [seed, description].filter(Boolean).join('\n');
     const reShow = (message: string) => ({
       screen: 'REPORT_ISSUE',
       data: {
@@ -352,11 +358,15 @@ export class WhatsappBotService implements OnModuleInit {
         heading:
           payload.mode === 'reopen'
             ? "Tell us what's still wrong"
-            : 'Report a maintenance issue',
+            : seed
+              ? 'Add details to your request'
+              : 'Report a maintenance issue',
         description_label:
           payload.mode === 'reopen'
             ? 'What still needs fixing?'
-            : 'Describe the issue',
+            : seed
+              ? 'Add more details'
+              : 'Describe the issue',
         has_multiple_properties:
           payload.mode === 'create' && payload.properties.length > 1,
         properties: payload.mode === 'create' ? payload.properties : [],
@@ -365,7 +375,7 @@ export class WhatsappBotService implements OnModuleInit {
       },
     });
 
-    if (!description) {
+    if (!fullText) {
       return reShow('Please describe the issue.');
     }
 
@@ -389,7 +399,7 @@ export class WhatsappBotService implements OnModuleInit {
           await this.tenantFlowService.createTenantMaintenanceRequest({
             tenantUserId: payload.tenant_user_id,
             propertyId,
-            text: description,
+            text: fullText,
           });
         if (!created) {
           return reShow(

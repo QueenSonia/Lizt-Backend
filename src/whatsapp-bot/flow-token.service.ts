@@ -25,6 +25,12 @@ export type FlowTokenPayload =
       /** Users.id (createMaintenanceRequest keys the tenant off this). */
       tenant_user_id: string;
       properties: FlowProperty[];
+      /**
+       * The tenant's original stray message, when the flow was launched from the
+       * "Add details" choice. Prepended to whatever they type in the flow so the
+       * logged request keeps the first message. Absent for menu-launched flows.
+       */
+      seed_description?: string;
     }
   | {
       mode: 'reopen';

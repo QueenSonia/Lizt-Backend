@@ -1026,7 +1026,15 @@ export class TenantFlowService {
         break;
 
       case 'create_mr_yes':
-        await this.beginIntake(from);
+        await this.offerCreateChoice(from);
+        break;
+
+      case 'create_mr_flow':
+        await this.handleAddDetails(from);
+        break;
+
+      case 'create_mr_asis':
+        await this.resolvePropertyAndCreate(from);
         break;
 
       case 'create_mr_no':
@@ -1225,6 +1233,21 @@ export class TenantFlowService {
    * Replaces the old free-text property-pick + description state machine.
    */
   private async handleNewMaintenanceRequest(from: string): Promise<void> {
+    await this.launchMaintenanceCreateFlow(from);
+  }
+
+  /**
+   * Send the tenant maintenance-request Flow in "create" mode. Shared by the
+   * main-menu entry (no seed) and the stray-input "Add details" choice, which
+   * passes the tenant's original message as `seedDescription` — that text is
+   * carried on the flow token and prepended to whatever they type in the flow,
+   * so the logged request keeps the first message. When seeded, the first
+   * screen's copy switches from "describe the issue" to "add details".
+   */
+  private async launchMaintenanceCreateFlow(
+    from: string,
+    seedDescription?: string,
+  ): Promise<void> {
     const user = await this.findTenantByPhone(from);
 
     this.logger.log('👤 User lookup result (new request):', {
@@ -1267,11 +1290,14 @@ export class TenantFlowService {
       title: pt.property?.name ?? 'Your property',
     }));
 
+    const seed = (seedDescription ?? '').trim();
+
     const flowToken = await this.flowTokenService.mint({
       mode: 'create',
       phone: from,
       tenant_user_id: user.id,
       properties,
+      ...(seed ? { seed_description: seed } : {}),
     });
 
     await this.templateSenderService.sendTenantMaintenanceRequestFlow({
@@ -1282,8 +1308,8 @@ export class TenantFlowService {
       // property dropdown is populated without an endpoint INIT round-trip.
       flow_action_data: {
         mode: 'create',
-        heading: 'Report a maintenance issue',
-        description_label: 'Describe the issue',
+        heading: seed ? 'Add details to your request' : 'Report a maintenance issue',
+        description_label: seed ? 'Add more details' : 'Describe the issue',
         has_multiple_properties: properties.length > 1,
         properties,
         error_message: '',
@@ -1500,8 +1526,77 @@ export class TenantFlowService {
   }
 
   /**
-   * Tenant tapped "Yes" on the maintenance-request offer. Ask for the issue
-   * details (and optional photos/videos) before the request is created.
+   * Tenant tapped "Yes" on the maintenance-request offer. Give them the choice
+   * to add details (opens the maintenance Flow, seeded with their original
+   * message) or log their message as is (one tap, no flow). For stray media we
+   * keep the guided text intake instead of the Flow so the already-captured
+   * photo/video isn't lost.
+   */
+  private async offerCreateChoice(from: string): Promise<void> {
+    const pending = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (!pending) {
+      await this.templateSenderService.sendText(
+        from,
+        "That offer expired. Send your message again and I'll offer to log it.",
+      );
+      return;
+    }
+
+    const seed = (pending.description ?? '').trim();
+    // Quote the tenant's own words back when we have them (text path); media has
+    // no first message to quote. Collapse whitespace and cap the length so the
+    // preview stays readable and within the interactive body limit.
+    const preview =
+      seed.replace(/\s+/g, ' ').length > 240
+        ? `${seed.replace(/\s+/g, ' ').slice(0, 240).trimEnd()}…`
+        : seed.replace(/\s+/g, ' ');
+    const prompt =
+      pending.kind === 'text' && seed
+        ? `Got it. Want to add details to "${preview}", or report your message as is?`
+        : 'Got it. Want to add details, or report your message as is?';
+
+    await this.templateSenderService.sendButtons(from, prompt, [
+      { id: 'create_mr_flow', title: 'Add details' },
+      { id: 'create_mr_asis', title: 'Report as is' },
+    ]);
+  }
+
+  /**
+   * Tenant tapped "Add details". For a text seed we open the maintenance Flow
+   * (same one the main menu uses), carrying the original message so the flow's
+   * input is appended to it on submit. For media we fall back to the guided
+   * text intake, which preserves the stashed photo/video.
+   */
+  private async handleAddDetails(from: string): Promise<void> {
+    const pending = await this.cache.get<PendingCreate>(
+      `pending_create_${from}`,
+    );
+    if (!pending) {
+      await this.templateSenderService.sendText(
+        from,
+        "That offer expired. Send your message again and I'll offer to log it.",
+      );
+      return;
+    }
+
+    if (pending.kind === 'media') {
+      await this.beginIntake(from);
+      return;
+    }
+
+    // Text seed → hand off to the Flow. The seed now lives on the flow token,
+    // so drop the pending payload to avoid a stale intake intercepting replies.
+    await this.cache.delete(`pending_create_${from}`);
+    await this.cache.delete(`pending_create_property_${from}`);
+    await this.launchMaintenanceCreateFlow(from, pending.description);
+  }
+
+  /**
+   * Start the guided text intake (used for the stray-media "Add details" path).
+   * Asks for the issue details and optional photos/videos before the request is
+   * created.
    */
   async beginIntake(from: string): Promise<void> {
     const pending = await this.cache.get<PendingCreate>(

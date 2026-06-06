@@ -384,51 +384,48 @@ export class WebhookHandler {
 
       // Log the incoming message with enhanced simulation status and debugging
       // Requirements: 7.1, 7.2, 7.4 - Enhanced logging with simulation status
-      try {
-        console.log('📝 Logging incoming message:', {
-          phoneNumber,
-          messageType,
-          isSimulated,
-          messageId: message.id,
+      //
+      // Fired (not awaited): this DB write runs in processWebhookPayload, which
+      // the controller awaits in full BEFORE the legacy handleMessage pass that
+      // actually replies (e.g. sends the maintenance Flow template). Awaiting it
+      // here put a Neon round-trip directly in front of every bot reply. The
+      // write is pure logging and its failure must never block processing
+      // (Requirement 7.3), so we let it settle in the background.
+      console.log('📝 Logging incoming message:', {
+        phoneNumber,
+        messageType,
+        isSimulated,
+        messageId: message.id,
+        timestamp: message.timestamp,
+      });
+
+      void this.chatLogService
+        .logInboundMessage(phoneNumber, messageType, content, {
+          whatsapp_message_id: message.id,
           timestamp: message.timestamp,
-        });
-
-        await this.chatLogService.logInboundMessage(
-          phoneNumber,
-          messageType,
-          content,
-          {
-            whatsapp_message_id: message.id,
-            timestamp: message.timestamp,
-            context: message.context,
-            raw_message: message,
-            is_simulated: isSimulated,
-            simulation_status: isSimulated
-              ? 'simulator_message'
-              : 'production_message',
-            message_source: isSimulated
-              ? 'whatsapp_simulator'
-              : 'whatsapp_cloud_api',
-          },
-        );
-
-        if (isSimulated) {
+          context: message.context,
+          raw_message: message,
+          is_simulated: isSimulated,
+          simulation_status: isSimulated
+            ? 'simulator_message'
+            : 'production_message',
+          message_source: isSimulated
+            ? 'whatsapp_simulator'
+            : 'whatsapp_cloud_api',
+        })
+        .then(() =>
           console.log(
-            `✅ Successfully logged incoming SIMULATED ${messageType} message from ${phoneNumber}`,
-          );
-        } else {
-          console.log(
-            `✅ Successfully logged incoming production ${messageType} message from ${phoneNumber}`,
-          );
-        }
-      } catch (loggingError) {
-        console.error(
-          '⚠️ Failed to log incoming message, but continuing processing:',
-          loggingError,
+            `✅ Successfully logged incoming ${
+              isSimulated ? 'SIMULATED ' : 'production '
+            }${messageType} message from ${phoneNumber}`,
+          ),
+        )
+        .catch((loggingError) =>
+          console.error(
+            '⚠️ Failed to log incoming message, but continuing processing:',
+            loggingError,
+          ),
         );
-        // Requirements: 7.3 - Ensure logging errors don't break message flow
-        // Don't throw error - let message processing continue
-      }
     } catch (error) {
       this.logger.error(
         `Failed to process incoming message ${message.id}:`,

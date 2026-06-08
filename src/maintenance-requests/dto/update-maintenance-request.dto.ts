@@ -2,7 +2,7 @@ import { ApiProperty, PartialType } from '@nestjs/swagger';
 import {
   CreateMaintenanceRequestDto,
   MaintenanceRequestStatusEnum,
-  MediaItem,
+  MediaItemInput,
 } from './create-maintenance-request.dto';
 import { JobCategoryEnum } from './job-category.enum';
 import { Transform, Type } from 'class-transformer';
@@ -15,6 +15,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 export class UpdateMaintenanceRequestDto extends PartialType(
@@ -97,18 +98,19 @@ export class UpdateMaintenanceRequestResponseDto {
   description?: string;
 
   @ApiProperty({
-    type: 'array',
-    items: { type: 'string', format: 'binary' },
     required: false,
     nullable: true,
-    description: 'Photos/videos of the issue',
+    description:
+      'Photos/videos of the issue. Legacy multipart sends files; the direct-upload path sends Cloudinary {type,url} items as JSON.',
   })
   @IsOptional()
   @Transform(({ value }) => {
     if (!value || value === '') return undefined;
     return Array.isArray(value) ? value : [value];
   })
-  issue_media?: MediaItem[];
+  @ValidateNested({ each: true })
+  @Type(() => MediaItemInput)
+  issue_media?: MediaItemInput[];
 
   @ApiProperty({
     example: '90b7f325-be27-45a7-9688-fa49630cac8f',

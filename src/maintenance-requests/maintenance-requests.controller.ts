@@ -13,12 +13,14 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFiles,
+  BadRequestException,
 } from '@nestjs/common';
 import { MaintenanceRequestsService } from './maintenance-requests.service';
 import {
   CreateMaintenanceRequestDto,
   MaintenanceRequestFilter,
   MediaItem,
+  MediaItemInput,
 } from './dto/create-maintenance-request.dto';
 import { UpdateMaintenanceRequestResponseDto } from './dto/update-maintenance-request.dto';
 import { AssignMaintenanceRequestDto } from './dto/assign-maintenance-request.dto';
@@ -86,6 +88,32 @@ export class MaintenanceRequestsController {
     );
   }
 
+  /**
+   * Reject any client-supplied media whose URL doesn't belong to our own
+   * Cloudinary account, or whose type isn't an image/video. Used on the
+   * direct-upload path where the browser uploads to Cloudinary itself and only
+   * sends us back the resulting URLs — we must not trust those blindly.
+   */
+  private assertOwnedMedia(media: MediaItemInput[] | undefined): void {
+    for (const item of media ?? []) {
+      const okType = item?.type === 'image' || item?.type === 'video';
+      if (!okType || !this.fileUploadService.isOwnedCloudinaryUrl(item?.url)) {
+        throw new BadRequestException('Invalid media attachment');
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Get a signed payload for direct Cloudinary upload' })
+  @ApiOkResponse({
+    description:
+      'Short-lived signature the browser uses to upload maintenance media straight to Cloudinary.',
+  })
+  @ApiSecurity('access_token')
+  @Get('media/upload-signature')
+  getUploadSignature() {
+    return this.fileUploadService.generateUploadSignature();
+  }
+
   @ApiOperation({ summary: 'Create Maintenance Request' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreateMaintenanceRequestDto })
@@ -100,8 +128,13 @@ export class MaintenanceRequestsController {
     @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     if (files?.length) {
+      // Legacy multipart path: the server uploads the bytes to Cloudinary.
       // attempt is stamped by the service (1 at creation).
       body.issue_media = await this.uploadMaintenanceMedia(files);
+    } else {
+      // Direct-upload path: the browser already uploaded to Cloudinary and sent
+      // us the URLs. Verify they're ours before trusting them.
+      this.assertOwnedMedia(body.issue_media);
     }
     return this.maintenanceRequestsService.createMaintenanceRequest(body, {
       id: req?.user?.id,
@@ -454,8 +487,12 @@ export class MaintenanceRequestsController {
     @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     if (files?.length) {
-      // attempt is re-stamped by the service with the request's current cycle.
+      // Legacy multipart path. attempt is re-stamped by the service with the
+      // request's current cycle.
       body.issue_media = await this.uploadMaintenanceMedia(files);
+    } else {
+      // Direct-upload path: validate client-supplied Cloudinary URLs.
+      this.assertOwnedMedia(body.issue_media);
     }
     return this.maintenanceRequestsService.updateMaintenanceRequestById(
       id,

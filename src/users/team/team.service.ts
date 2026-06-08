@@ -582,8 +582,40 @@ export class TeamService {
       );
     }
 
-    // 5. Delete the team member
+    // 5. Delete the team member.
+    //    Capture accountId before remove() — the in-memory entity keeps it, but
+    //    being explicit guards against future relation-cascade changes.
+    const removedAccountId = teamMember.accountId;
     await this.teamMemberRepository.remove(teamMember);
+
+    // 6. Revoke the FACILITY_MANAGER role from the account IF this was their
+    //    last FM membership. The same account can be an FM on several
+    //    landlords' teams (see assignCollaboratorToTeam's "already an FM in
+    //    another team" path), so we must NOT strip the role while another
+    //    membership still grants it. Without this step the role lingers in
+    //    accounts.roles[] forever, and the WhatsApp bot keeps showing the
+    //    "you have multiple roles" picker to someone who was already removed.
+    const remainingFmMemberships = await this.teamMemberRepository.count({
+      where: {
+        accountId: removedAccountId,
+        role: RolesEnum.FACILITY_MANAGER,
+      },
+    });
+
+    if (remainingFmMemberships === 0) {
+      const account = await this.accountRepository.findOne({
+        where: { id: removedAccountId },
+      });
+      if (account?.roles?.includes(RolesEnum.FACILITY_MANAGER)) {
+        account.roles = account.roles.filter(
+          (r) => r !== RolesEnum.FACILITY_MANAGER,
+        );
+        await this.accountRepository.save(account);
+        // The bot's role detection reads a cached account — invalidate so the
+        // picker stops appearing immediately, not after the cache TTL.
+        await this.accountCacheService.invalidate(account.id);
+      }
+    }
 
     return { success: true, message: 'Team member deleted successfully' };
   }

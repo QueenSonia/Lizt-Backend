@@ -15,6 +15,48 @@ export class FileUploadService {
     });
   }
 
+  /**
+   * Mint a short-lived signature so the browser can upload a file straight to
+   * Cloudinary without the bytes passing through our server. The API secret
+   * never leaves the backend. The signed params (`folder` + `timestamp`) MUST
+   * match exactly what the client appends to its upload request, or Cloudinary
+   * rejects the signature.
+   */
+  generateUploadSignature(folder = 'maintenance-requests'): {
+    cloudName: string;
+    apiKey: string;
+    timestamp: number;
+    folder: string;
+    signature: string;
+  } {
+    const timestamp = Math.round(Date.now() / 1000);
+    const signature = cloudinary.utils.api_sign_request(
+      { timestamp, folder },
+      this.configService.get<string>('API_SECRET') ?? '',
+    );
+    return {
+      cloudName: this.configService.get<string>('CLOUDINARY_NAME') ?? '',
+      apiKey: this.configService.get<string>('API_KEY') ?? '',
+      timestamp,
+      folder,
+      signature,
+    };
+  }
+
+  /**
+   * Guard for client-supplied media URLs: once the browser uploads directly to
+   * Cloudinary it sends us back the resulting URL, which we must not trust
+   * blindly. Only accept URLs that live under our own Cloudinary delivery host
+   * so a caller can't inject arbitrary external URLs into a request's media.
+   */
+  isOwnedCloudinaryUrl(url: string): boolean {
+    const cloud = this.configService.get('CLOUDINARY_NAME');
+    return (
+      typeof url === 'string' &&
+      url.startsWith(`https://res.cloudinary.com/${cloud}/`)
+    );
+  }
+
   async uploadFile(
     file: Express.Multer.File,
     folder: string = 'properties',

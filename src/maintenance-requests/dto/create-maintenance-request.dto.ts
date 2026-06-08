@@ -4,11 +4,13 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  ValidateNested,
 } from 'class-validator';
 
 export enum MaintenanceRequestStatusEnum {
@@ -42,6 +44,21 @@ export interface MediaItem {
   type: 'image' | 'video';
   url: string;
   attempt: number;
+}
+
+/**
+ * Shape the client sends on the direct-upload path: the browser uploads the
+ * file to Cloudinary itself and posts back only `{type, url}`. `attempt` is
+ * intentionally absent — the service stamps the authoritative report cycle, and
+ * the controller validates the URL belongs to our Cloudinary account.
+ */
+export class MediaItemInput {
+  @IsIn(['image', 'video'])
+  type: 'image' | 'video';
+
+  @IsString()
+  @IsNotEmpty()
+  url: string;
 }
 
 export class CreateMaintenanceRequestDto {
@@ -96,12 +113,16 @@ export class CreateMaintenanceRequestDto {
   @IsUUID()
   assigned_to?: string;
 
-  // Populated by the controller from the uploaded `issue_media` files
-  // (FilesInterceptor runs before validation, but the file → URL upload
-  // happens in the route handler — so this field arrives empty over the
-  // wire and gets filled in before reaching the service).
+  // Two ways this gets populated:
+  //  - Legacy multipart: arrives empty over the wire; the controller uploads
+  //    the files and fills it in before the service runs.
+  //  - Direct upload: the browser uploads to Cloudinary and sends `{type,url}`
+  //    items here as JSON, validated below and ownership-checked in the
+  //    controller. The service stamps the authoritative `attempt`.
   @IsOptional()
-  issue_media?: MediaItem[];
+  @ValidateNested({ each: true })
+  @Type(() => MediaItemInput)
+  issue_media?: MediaItemInput[];
 }
 
 export class MaintenanceRequestFilter {

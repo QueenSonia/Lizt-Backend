@@ -16,6 +16,20 @@ export class FileUploadService {
   }
 
   /**
+   * Prefix an upload folder with the per-environment segment so each backend
+   * server's uploads are cleanly bucketed (e.g. `main/properties`,
+   * `dev/properties`) and dev assets can be pruned with a single folder sweep.
+   * Driven by `CLOUDINARY_FOLDER_PREFIX` (`main` on prod, `dev` on dev). When
+   * the var is unset this is a no-op, preserving the historical folder layout.
+   */
+  private withEnvPrefix(folder: string): string {
+    const prefix = this.configService
+      .get<string>('CLOUDINARY_FOLDER_PREFIX')
+      ?.trim();
+    return prefix ? `${prefix}/${folder}` : folder;
+  }
+
+  /**
    * Mint a short-lived signature so the browser can upload a file straight to
    * Cloudinary without the bytes passing through our server. The API secret
    * never leaves the backend. The signed params (`folder` + `timestamp`) MUST
@@ -29,16 +43,17 @@ export class FileUploadService {
     folder: string;
     signature: string;
   } {
+    const prefixedFolder = this.withEnvPrefix(folder);
     const timestamp = Math.round(Date.now() / 1000);
     const signature = cloudinary.utils.api_sign_request(
-      { timestamp, folder },
+      { timestamp, folder: prefixedFolder },
       this.configService.get<string>('API_SECRET') ?? '',
     );
     return {
       cloudName: this.configService.get<string>('CLOUDINARY_NAME') ?? '',
       apiKey: this.configService.get<string>('API_KEY') ?? '',
       timestamp,
-      folder,
+      folder: prefixedFolder,
       signature,
     };
   }
@@ -86,7 +101,7 @@ export class FileUploadService {
     return new Promise<UploadApiResponse>((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder,
+          folder: this.withEnvPrefix(folder),
           resource_type: isPdf ? 'raw' : 'image',
           format: isPdf ? 'pdf' : undefined,
         },
@@ -107,7 +122,7 @@ export class FileUploadService {
     return new Promise<UploadApiResponse>((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: 'notices', // ✅ Stores file in 'notices' folder
+          folder: this.withEnvPrefix('notices'), // ✅ Stores file in 'notices' folder
           resource_type: 'raw', // ✅ Needed for non-image files like PDF
           format: 'pdf', // ✅ Ensures file format is treated as PDF
           type: 'upload', // ✅ Makes the file publicly accessible
@@ -141,7 +156,7 @@ export class FileUploadService {
     return new Promise<UploadApiResponse>((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: options.folder ?? 'maintenance-requests',
+          folder: this.withEnvPrefix(options.folder ?? 'maintenance-requests'),
           resource_type: options.resourceType,
           type: 'upload',
         },

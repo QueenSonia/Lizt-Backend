@@ -3,6 +3,9 @@
 /node_modules
 /build
 
+# Cloudinary migration working artifacts (manifests/state — never commit)
+/scripts/.cloudinary-migration/
+
 ## Logs
 logs/*
 !logs/.gitkeep

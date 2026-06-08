@@ -5523,7 +5523,7 @@ export class TemplateSenderService {
     facility_manager_set_password:
       'Hi {{1}},\n\nYou have been added to the {{2}} team as a {{3}}.\n\nTap the button below to set your password and finish signing in. The link expires in 7 days — ask your team admin to re-invite you if it does.\n\nThank you,',
     maintenance_request_tenant:
-      "Hi {{1}} 👋\n\nNeed something fixed in your home?\n\nTap the button below to report a maintenance issue and we'll take it from there.",
+      "Hi {{1}}\n\nNeed something fixed in your home?\n\nTap the button below to report a maintenance issue and we'll take it from there.",
     properties_created:
       'Hello {{1}}\n\nA new property with name {{2}} was created.\n\nThank you.\n-The Lizt Team',
     user_added:

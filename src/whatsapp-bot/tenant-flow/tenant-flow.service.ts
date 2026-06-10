@@ -246,7 +246,7 @@ export class TenantFlowService {
     const userState = await this.cache.get(`maintenance_request_state_${from}`);
 
     // Handle property selection for tenancy details
-    const tenancyDetailsSelection = await this.cache.get(
+    const tenancyDetailsSelection = await this.cache.get<string[]>(
       `tenancy_details_selection_${from}`,
     );
     if (tenancyDetailsSelection) {
@@ -343,9 +343,12 @@ export class TenantFlowService {
   private async handleTenancyDetailsPropertySelection(
     from: string,
     text: string,
-    cachedPropertyIds: string,
+    cachedPropertyIds: string[],
   ): Promise<void> {
-    const propertyIds = JSON.parse(cachedPropertyIds);
+    // CacheService.get already deserializes the stored JSON, so this is
+    // already a string[] — re-parsing it would coerce the array to a
+    // comma-joined string and throw a JSON SyntaxError.
+    const propertyIds = cachedPropertyIds;
     const selectedIndex = parseInt(text.trim()) - 1;
 
     if (
@@ -393,8 +396,14 @@ export class TenantFlowService {
       return;
     }
 
-    // Show details for the selected property
-    await this.showTenancyDetailsForProperty(from, accountId, propertyTenant);
+    // Show details for the selected property. Menu-driven view is read-only —
+    // no "Are these details correct?" confirmation prompt.
+    await this.showTenancyDetailsForProperty(
+      from,
+      accountId,
+      propertyTenant,
+      false,
+    );
   }
 
   private async handlePropertySelection(
@@ -1200,9 +1209,15 @@ export class TenantFlowService {
       return;
     }
 
-    // Single property → skip the picker and show its details directly.
+    // Single property → skip the picker and show its details directly. Menu-
+    // driven view is read-only — no confirmation prompt.
     if (properties.length === 1) {
-      await this.showTenancyDetailsForProperty(from, accountId, properties[0]);
+      await this.showTenancyDetailsForProperty(
+        from,
+        accountId,
+        properties[0],
+        false,
+      );
       return;
     }
 
@@ -1216,7 +1231,7 @@ export class TenantFlowService {
 
     await this.cache.set(
       `tenancy_details_selection_${from}`,
-      JSON.stringify(properties.map((item) => item.property_id)),
+      properties.map((item) => item.property_id),
       this.SESSION_TIMEOUT_MS,
     );
 
@@ -3077,6 +3092,7 @@ export class TenantFlowService {
     from: string,
     accountId: string,
     propertyTenant: any,
+    askConfirmation = true,
   ): Promise<void> {
     if (!propertyTenant?.property) {
       await this.templateSenderService.sendText(
@@ -3144,13 +3160,21 @@ export class TenantFlowService {
       `• Location: ${property.location}\n` +
       `${feeLines}\n` +
       `• Tenancy start date: ${formatDate(rent.rent_start_date)}\n` +
-      `• Tenancy end date: ${formatDate(rent.expiry_date)}\n\n` +
-      `Are these details correct?`;
+      `• Tenancy end date: ${formatDate(rent.expiry_date)}`;
 
     console.log(
       '🔍 DEBUG: Sending details message for property:',
       property.name,
     );
+
+    // Read-only view (e.g. the main-menu "View tenancy details") just shows
+    // the details. The confirmation Yes/No prompt is reserved for onboarding,
+    // where the tenant is being asked to verify their details for the first
+    // time.
+    if (!askConfirmation) {
+      await this.templateSenderService.sendText(from, detailsMessage);
+      return;
+    }
 
     // Stash the property the tenant is reviewing so the Yes/No handlers can
     // resolve which landlord to notify. Button reply IDs carry no payload.
@@ -3160,10 +3184,14 @@ export class TenantFlowService {
       this.SESSION_TIMEOUT_MS,
     );
 
-    await this.templateSenderService.sendButtons(from, detailsMessage, [
-      { id: 'tenancy_details_correct', title: 'Yes, correct' },
-      { id: 'tenancy_details_incorrect', title: 'No, not correct' },
-    ]);
+    await this.templateSenderService.sendButtons(
+      from,
+      `${detailsMessage}\n\nAre these details correct?`,
+      [
+        { id: 'tenancy_details_correct', title: 'Yes, correct' },
+        { id: 'tenancy_details_incorrect', title: 'No, not correct' },
+      ],
+    );
   }
 
   /**

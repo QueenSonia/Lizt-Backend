@@ -17,6 +17,17 @@ import { PaymentPlanInstallment } from './payment-plan-installment.entity';
 export enum PaymentPlanScope {
   TENANCY = 'tenancy',
   CHARGE = 'charge',
+  /** Wallet-backed Outstanding-Balance / ad-hoc plan (multi-source, FIFO). */
+  OB = 'ob',
+}
+
+export enum PaymentPlanSourceType {
+  /** Type A — a current-period fee carved out of the renewal invoice. */
+  RENEWAL_INVOICE_FEE = 'renewal_invoice_fee',
+  /** Type B — wallet-backed outstanding balance (one or more sources). */
+  OUTSTANDING_BALANCE = 'outstanding_balance',
+  /** Type B — a single ad-hoc invoice. */
+  AD_HOC_INVOICE = 'ad_hoc_invoice',
 }
 
 export enum PaymentPlanStatus {
@@ -88,6 +99,27 @@ export class PaymentPlan extends BaseEntity {
   /** For kind:'other' fees, disambiguates between multiple "other" entries. */
   @Column({ type: 'varchar', length: 255, nullable: true })
   charge_external_id: string | null;
+
+  /**
+   * Which debt space this plan settles. renewal_invoice_fee (Type A) = a
+   * current-period fee carved from the invoice; outstanding_balance /
+   * ad_hoc_invoice (Type B) = wallet-backed debt. The durable successor to the
+   * derived isInvoiceFeeChargePlan predicate.
+   */
+  @Column({
+    type: 'varchar',
+    length: 30,
+    default: PaymentPlanSourceType.RENEWAL_INVOICE_FEE,
+  })
+  source_type: PaymentPlanSourceType;
+
+  /**
+   * Set when source_type = 'ad_hoc_invoice': the specific ad-hoc invoice this
+   * plan settles. (Plain uuid FK — the DB foreign key lives in the migration;
+   * kept relation-free to avoid a payment_plans ↔ ad_hoc_invoices import cycle.)
+   */
+  @Column({ type: 'uuid', nullable: true })
+  ad_hoc_invoice_id: string | null;
 
   @Column({ type: 'decimal', precision: 12, scale: 2 })
   total_amount: number;

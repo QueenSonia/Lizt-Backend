@@ -49,6 +49,46 @@ export class TenantBalancesService {
     return record ? parseFloat(record.balance as unknown as string) : 0;
   }
 
+  /**
+   * Σ of the un-collected remainder of every ACTIVE wallet-backed payment plan
+   * (source_type 'outstanding_balance' / 'ad_hoc_invoice') the tenant holds
+   * under this landlord — i.e. wallet debt those plans, not a renewal invoice,
+   * will collect. Renewal-invoice fold sites subtract this (via
+   * computeRenewalFold) so the same debt is never billed twice.
+   *
+   * Lives here because every fold site already injects TenantBalancesService
+   * for getBalance, and it owns wallet-derived reads. Raw SQL (no PaymentPlan
+   * entity import) avoids a module circular dep; guarded so a failure falls back
+   * to "no adjustment" rather than breaking the (frequent) fold callers.
+   * Mirrors PaymentPlansService.computePlannableOb's `claimed` term.
+   */
+  async sumActiveWalletBackedPlanClaims(
+    tenantId: string,
+    landlordId: string,
+  ): Promise<number> {
+    try {
+      const rows: { claimed: string }[] = await this.dataSource.query(
+        `SELECT COALESCE(SUM(GREATEST(0, pp.total_amount - COALESCE(paid.sum_paid, 0))), 0) AS claimed
+           FROM payment_plans pp
+           JOIN properties p ON p.id = pp.property_id
+           LEFT JOIN (
+             SELECT plan_id, SUM(COALESCE(amount_paid, amount)) AS sum_paid
+               FROM payment_plan_installments
+              WHERE status = 'paid'
+              GROUP BY plan_id
+           ) paid ON paid.plan_id = pp.id
+          WHERE pp.tenant_id = $1
+            AND p.owner_id = $2
+            AND pp.status = 'active'
+            AND pp.source_type IN ('outstanding_balance', 'ad_hoc_invoice')`,
+        [tenantId, landlordId],
+      );
+      return Number(rows?.[0]?.claimed ?? 0);
+    } catch {
+      return 0;
+    }
+  }
+
   async getLedger(
     tenantId: string,
     landlordId: string,

@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
@@ -183,6 +183,14 @@ export class AdHocInvoicesService {
     if (effectiveStatus === AdHocInvoiceStatus.CANCELLED) {
       throw new ConflictException('Cannot edit a cancelled invoice');
     }
+    // A covered invoice's amount is frozen into an active payment plan's source
+    // snapshot. Editing it would credit/debit the wallet without adjusting the
+    // plan's claim, breaking the plannable-OB invariant. Cancel the plan first.
+    if (invoice.covered_by_plan_id) {
+      throw new ConflictException(
+        'This invoice is being settled by a payment plan and cannot be edited. Cancel the plan first.',
+      );
+    }
 
     if (!Array.isArray(dto.lineItems) || dto.lineItems.length < 1) {
       throw new BadRequestException('Invoice must have at least one line item');
@@ -250,6 +258,9 @@ export class AdHocInvoicesService {
             propertyId: invoice.property_id,
             relatedEntityType: 'ad_hoc_invoice',
             relatedEntityId: invoice.id,
+            // Reversal of part of the original charge (edit-down), not a
+            // payment — tagged so the breakdown nets it against the charge.
+            metadata: { reversal: true },
           },
           undefined,
           manager,
@@ -299,6 +310,15 @@ export class AdHocInvoicesService {
     if (invoice.status === AdHocInvoiceStatus.CANCELLED) {
       throw new ConflictException('Invoice is already cancelled');
     }
+    // A covered invoice is owned by an active payment plan: cancelling it here
+    // would reverse the wallet debit while the plan still expects to settle it,
+    // breaking the plannable-OB invariant. The plan must be cancelled first
+    // (which re-opens this invoice), then it can be cancelled.
+    if (invoice.covered_by_plan_id) {
+      throw new ConflictException(
+        'This invoice is being settled by a payment plan and cannot be cancelled. Cancel the plan first.',
+      );
+    }
 
     const totalAmount = Number(invoice.total_amount);
 
@@ -318,6 +338,10 @@ export class AdHocInvoicesService {
           propertyId: invoice.property_id,
           relatedEntityType: 'ad_hoc_invoice',
           relatedEntityId: invoice.id,
+          // Reversal of the original charge (not a tenant payment): tagged so
+          // the balance breakdown nets it against the charge and hides both,
+          // rather than showing it as money received.
+          metadata: { reversal: true },
         },
         undefined,
         manager,
@@ -386,7 +410,9 @@ export class AdHocInvoicesService {
         invoiceNumber: invoice.invoice_number,
         publicToken: invoice.public_token,
         totalAmount: Number(invoice.total_amount),
+        amountPaid: Number(invoice.amount_paid ?? 0),
         status: computedStatus,
+        coveredByPlan: !!invoice.covered_by_plan_id,
         dueDate: this.formatDate(invoice.due_date),
         notes: invoice.notes,
         paidAt: invoice.paid_at
@@ -434,8 +460,23 @@ export class AdHocInvoicesService {
     if (invoice.status === AdHocInvoiceStatus.CANCELLED) {
       throw new ConflictException('Invoice has been cancelled');
     }
+    if (invoice.covered_by_plan_id) {
+      throw new ConflictException(
+        'This invoice is being settled through a payment plan. Pay your plan installments instead.',
+      );
+    }
 
-    const amount = Number(invoice.total_amount);
+    // Charge only the REMAINING balance. An invoice can be PARTIAL — e.g. a
+    // payment plan that partially settled it was then cancelled, re-opening this
+    // link — so charging the full total would over-collect and over-credit the
+    // wallet. amount_paid carries what was already collected.
+    const amount = Math.max(
+      0,
+      Number(invoice.total_amount) - Number(invoice.amount_paid ?? 0),
+    );
+    if (amount <= 0) {
+      throw new ConflictException('Invoice is already fully paid');
+    }
     const reference = `INV_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
     const paystackResponse = await this.paystackService.initializeTransaction({
@@ -479,6 +520,14 @@ export class AdHocInvoicesService {
     });
     if (!invoice) {
       throw new NotFoundException('Invoice not found');
+    }
+    if (invoice.covered_by_plan_id) {
+      // Covered between initialize and verify (a narrow race — initialize 409s
+      // covered invoices). The authoritative webhook path logs the stranded
+      // payment for ops; here we just refuse to credit it twice.
+      throw new ConflictException(
+        'This invoice is being settled through a payment plan. Pay your plan installments instead.',
+      );
     }
 
     const paystackResponse =
@@ -682,6 +731,32 @@ export class AdHocInvoicesService {
       throw new Error('Missing ad_hoc_invoice_id in metadata');
     }
 
+    // Covered by a payment plan: the public link should have been locked, but a
+    // payment landed anyway (initialize/verify race, or a stale cached link).
+    // Never throw — this runs in setImmediate. Log a distinct, queryable event
+    // so ops can find the tenant and reconcile; do NOT credit or flip status.
+    if (invoice.covered_by_plan_id) {
+      this.logger.warn(
+        `Paystack payment received for plan-covered invoice ${invoice.id} (ref: ${data.reference}) — not credited`,
+      );
+      await this.propertyHistoryRepository.save(
+        this.propertyHistoryRepository.create({
+          property_id: invoice.property_id,
+          tenant_id: invoice.tenant_id,
+          event_type: 'ad_hoc_invoice_payment_on_covered',
+          event_description: `Payment received on the public link for invoice ${invoice.invoice_number}, which is being settled by a payment plan — reference ${data.reference}. Funds NOT applied to the invoice; reconcile/refund manually.`,
+          related_entity_id: invoice.id,
+          related_entity_type: 'ad_hoc_invoice',
+          metadata: {
+            reference: data.reference,
+            amount: data.amount / 100,
+            covered_by_plan_id: invoice.covered_by_plan_id,
+          },
+        }),
+      );
+      return;
+    }
+
     if (invoice.status === AdHocInvoiceStatus.PAID) {
       this.logger.warn(
         `Duplicate Paystack payment for already-paid invoice ${invoice.id} (ref: ${data.reference})`,
@@ -755,15 +830,33 @@ export class AdHocInvoicesService {
     const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
     const receiptNumber = `AHI-R-${Date.now()}`;
 
+    // Race-loser flag: the webhook (setImmediate) and the frontend verify both
+    // reach here for the same invoice. The compare-and-swap below ensures only
+    // one wins; the loser must NOT credit the wallet a second time.
+    let raceLost = false;
     await this.dataSource.transaction(async (manager) => {
-      await manager.update(AdHocInvoice, invoice.id, {
-        status: AdHocInvoiceStatus.PAID,
-        paid_at: paidAt,
-        payment_reference: args.paystackRef,
-        payment_method: args.channel ?? null,
-        receipt_token: receiptToken,
-        receipt_number: receiptNumber,
-      });
+      // Compare-and-swap: only flip an invoice that is still unpaid. A second
+      // concurrent caller gets affected=0 and credits nothing.
+      const claim = await manager.update(
+        AdHocInvoice,
+        {
+          id: invoice.id,
+          status: In([AdHocInvoiceStatus.PENDING, AdHocInvoiceStatus.PARTIAL]),
+        },
+        {
+          status: AdHocInvoiceStatus.PAID,
+          amount_paid: Number(invoice.total_amount),
+          paid_at: paidAt,
+          payment_reference: args.paystackRef,
+          payment_method: args.channel ?? null,
+          receipt_token: receiptToken,
+          receipt_number: receiptNumber,
+        },
+      );
+      if (!claim.affected) {
+        raceLost = true;
+        return;
+      }
 
       // Credit the wallet — the tenant has paid the debt we created at invoice-time.
       await this.tenantBalancesService.applyChange(
@@ -781,6 +874,13 @@ export class AdHocInvoicesService {
         manager,
       );
     });
+
+    if (raceLost) {
+      this.logger.log(
+        `Ad-hoc invoice ${invoice.id} already claimed by a concurrent payment; skipping (idempotent)`,
+      );
+      return;
+    }
 
     const refreshed = await this.getInvoiceInternal(invoice.id);
 
@@ -1040,7 +1140,11 @@ export class AdHocInvoicesService {
   }
 
   private computeStatus(invoice: AdHocInvoice): AdHocInvoiceStatus {
+    // PARTIAL / PAID / CANCELLED pass through unchanged.
     if (invoice.status !== AdHocInvoiceStatus.PENDING) return invoice.status;
+    // Covered by a payment plan — suppress OVERDUE so the locked public link
+    // doesn't nag the tenant while installments are being collected.
+    if (invoice.covered_by_plan_id) return AdHocInvoiceStatus.PENDING;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const dueDate = new Date(invoice.due_date);

@@ -129,6 +129,28 @@ interface TenantKycRecord {
 }
 
 /**
+ * A positive ad-hoc-invoice wallet ledger leg is a REVERSAL (cancellation or
+ * edit-down) — not a tenant payment — when it is tagged `metadata.reversal`,
+ * OR, for historical rows written before that tag existed, when its description
+ * matches the reversal wording. Reversals net against their charge in the
+ * balance breakdown and must NOT appear as money received; genuine ad-hoc
+ * payments (untagged, non-matching description) surface as payment rows.
+ *
+ * Exported for unit testing. Kept deliberately specific so a genuine payment
+ * description ("Payment received", "Manual payment of …") never matches.
+ */
+export function isAdHocReversalLeg(e: {
+  metadata?: unknown;
+  description?: string | null;
+}): boolean {
+  if ((e.metadata as { reversal?: boolean } | null)?.reversal === true) {
+    return true;
+  }
+  const desc = typeof e.description === 'string' ? e.description : '';
+  return /cancelled.*revers/i.test(desc) || /edited.*reduc/i.test(desc);
+}
+
+/**
  * TenantManagementService handles all tenant-specific operations
  * Extracted from UsersService to follow Single Responsibility Principle
  */
@@ -2125,13 +2147,38 @@ export class TenantManagementService {
           e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
           e.related_entity_type !== 'property_history' &&
           e.related_entity_type !== 'rent_edit' &&
-          !(e.metadata as any)?.superseded,
+          !(e.metadata as any)?.superseded &&
+          // Phantom-credit reversal legs (written by the Phase-1 repair script)
+          // cancel a now-removed wallet credit and net to zero with it, so they
+          // must not surface as standalone charges.
+          !(e.metadata as any)?.phantom_credit_reversal,
       )
       .forEach((e) => {
         const key = e.property_id || 'global';
         if (!obEntriesByProperty.has(key)) obEntriesByProperty.set(key, []);
         obEntriesByProperty.get(key)!.push(e);
       });
+
+    // Ad-hoc invoices are charged and later reversed (cancel / edit-down) on the
+    // wallet ledger. Net every leg of an invoice by its id so a cancelled
+    // invoice nets to zero (no row) and an edited one shows its current amount
+    // exactly once — instead of rendering the (mutable) line-item set once per
+    // surviving charge leg (the old double-count bug). Genuine payments
+    // (positive, NOT reversal-tagged) are excluded here and surfaced as payment
+    // rows in paymentTransactions below. `owed` is the negative of the net.
+    const adHocOwedByInvoice = new Map<string, number>();
+    for (const e of ledgerEntries) {
+      if (e.related_entity_type !== 'ad_hoc_invoice' || !e.related_entity_id) {
+        continue;
+      }
+      const bc = Number(e.balance_change);
+      const isGenuinePayment = bc > 0 && !isAdHocReversalLeg(e);
+      if (isGenuinePayment) continue;
+      adHocOwedByInvoice.set(
+        e.related_entity_id,
+        (adHocOwedByInvoice.get(e.related_entity_id) ?? 0) + bc,
+      );
+    }
 
     // For ad-hoc invoice charges, fetch the line items so the breakdown can
     // surface each fee by name instead of one opaque "Invoice AHI-…" row.
@@ -2163,6 +2210,121 @@ export class TenantManagementService {
       obEntriesByProperty.entries(),
     ).map(([propId, entries]) => {
       const propRent = rents.find((r) => r.property_id === propId);
+
+      // Collapse multiple charge legs of one ad-hoc invoice into a single
+      // netted row.
+      const seenAdHoc = new Set<string>();
+
+      const transactions = entries
+        .flatMap((e) => {
+          // Implement date resolution based on related entity type
+          let transactionDate: Date;
+          // Normalize migration entries to the same label as initial_balance charges
+          const baseDescription =
+            e.type === TenantBalanceLedgerType.MIGRATION
+              ? 'Historical tenancy recorded'
+              : e.description || String(e.type);
+          let periodDescription = baseDescription;
+
+          if (e.related_entity_type === 'rent' && e.related_entity_id) {
+            // For rent-related entries, use rent_start_date from the specific rent record
+            const relatedRent = rentMap.get(e.related_entity_id);
+            if (relatedRent && relatedRent.rent_start_date) {
+              transactionDate = new Date(relatedRent.rent_start_date);
+
+              // Generate specific period description for this rent
+              const startDate = new Date(relatedRent.rent_start_date);
+              const endDate = relatedRent.expiry_date
+                ? new Date(relatedRent.expiry_date)
+                : null;
+              if (endDate) {
+                const startStr = startDate.toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                });
+                const endStr = endDate.toLocaleDateString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                });
+                periodDescription = `${baseDescription} (${startStr} - ${endStr})`;
+              }
+            } else {
+              // Fallback to created_at if rent record not found
+              transactionDate = new Date(e.created_at!);
+            }
+          } else if (
+            e.related_entity_type === 'property_history' &&
+            e.related_entity_id
+          ) {
+            // For property history-related entries, use move_in_date from the specific property history record
+            const relatedPH = propertyHistoryMap.get(e.related_entity_id);
+            if (relatedPH && relatedPH.move_in_date) {
+              transactionDate = new Date(relatedPH.move_in_date);
+            } else {
+              // Fallback to created_at if property history record not found
+              transactionDate = new Date(e.created_at!);
+            }
+          } else {
+            // For other entry types, use created_at
+            transactionDate = new Date(e.created_at!);
+          }
+
+          // Ad-hoc invoices: emit ONE netted row per invoice (charges minus
+          // reversals), using line-item names only when they still sum to the
+          // net. A fully cancelled/netted invoice produces no row.
+          if (
+            e.related_entity_type === 'ad_hoc_invoice' &&
+            e.related_entity_id
+          ) {
+            const invoiceId = e.related_entity_id;
+            if (seenAdHoc.has(invoiceId)) return [];
+            seenAdHoc.add(invoiceId);
+
+            const owed = -(adHocOwedByInvoice.get(invoiceId) ?? 0);
+            // Drop only true-zero / sub-naira reversal residue — a real ₦1
+            // invoice (owed === 1) must still render.
+            if (owed < 0.5) return []; // fully cancelled / netted away
+
+            const lineItems = adHocLineItemsByInvoiceId.get(invoiceId);
+            const lineItemSum = (lineItems ?? []).reduce(
+              (s, li) => s + Number(li.amount),
+              0,
+            );
+            if (
+              lineItems &&
+              lineItems.length > 0 &&
+              Math.abs(lineItemSum - owed) <= 1
+            ) {
+              return lineItems.map((li) => ({
+                id: `${e.id}-${li.id}`,
+                type: li.description,
+                amount: Number(li.amount),
+                date: transactionDate,
+              }));
+            }
+            return [
+              {
+                id: e.id,
+                type: periodDescription,
+                amount: owed,
+                date: transactionDate,
+              },
+            ];
+          }
+
+          return [
+            {
+              id: e.id,
+              type: periodDescription,
+              amount: -Number(e.balance_change), // charges are negative balance_change; expose as positive
+              date: transactionDate,
+            },
+          ];
+        })
+        .sort((a, b) => b.date.getTime() - a.date.getTime());
+
       return {
         rentId: propRent?.id || propId,
         propertyName:
@@ -2174,96 +2336,16 @@ export class TenantManagementService {
             : null) ||
           'Unknown Property',
         propertyId: propId === 'global' ? propRent?.property_id || '' : propId,
-        outstandingAmount: entries.reduce(
-          (sum, e) => sum + -Number(e.balance_change),
-          0,
-        ),
+        // Sum the emitted (netted) rows so the per-property subtotal matches
+        // what is displayed, not the raw charge legs.
+        outstandingAmount: transactions.reduce((sum, t) => sum + t.amount, 0),
         tenancyStartDate: propRent?.rent_start_date
           ? new Date(propRent.rent_start_date)
           : null,
         tenancyEndDate: propRent?.expiry_date
           ? new Date(propRent.expiry_date)
           : null,
-        transactions: entries
-          .flatMap((e) => {
-            // Implement date resolution based on related entity type
-            let transactionDate: Date;
-            // Normalize migration entries to the same label as initial_balance charges
-            const baseDescription =
-              e.type === TenantBalanceLedgerType.MIGRATION
-                ? 'Historical tenancy recorded'
-                : e.description || String(e.type);
-            let periodDescription = baseDescription;
-
-            if (e.related_entity_type === 'rent' && e.related_entity_id) {
-              // For rent-related entries, use rent_start_date from the specific rent record
-              const relatedRent = rentMap.get(e.related_entity_id);
-              if (relatedRent && relatedRent.rent_start_date) {
-                transactionDate = new Date(relatedRent.rent_start_date);
-
-                // Generate specific period description for this rent
-                const startDate = new Date(relatedRent.rent_start_date);
-                const endDate = relatedRent.expiry_date
-                  ? new Date(relatedRent.expiry_date)
-                  : null;
-                if (endDate) {
-                  const startStr = startDate.toLocaleDateString('en-GB', {
-                    day: 'numeric',
-                    month: 'short',
-                    year: 'numeric',
-                  });
-                  const endStr = endDate.toLocaleDateString('en-GB', {
-                    day: 'numeric',
-                    month: 'short',
-                    year: 'numeric',
-                  });
-                  periodDescription = `${baseDescription} (${startStr} - ${endStr})`;
-                }
-              } else {
-                // Fallback to created_at if rent record not found
-                transactionDate = new Date(e.created_at!);
-              }
-            } else if (
-              e.related_entity_type === 'property_history' &&
-              e.related_entity_id
-            ) {
-              // For property history-related entries, use move_in_date from the specific property history record
-              const relatedPH = propertyHistoryMap.get(e.related_entity_id);
-              if (relatedPH && relatedPH.move_in_date) {
-                transactionDate = new Date(relatedPH.move_in_date);
-              } else {
-                // Fallback to created_at if property history record not found
-                transactionDate = new Date(e.created_at!);
-              }
-            } else {
-              // For other entry types, use created_at
-              transactionDate = new Date(e.created_at!);
-            }
-
-            // Ad-hoc invoices: split into one row per line item so each fee
-            // shows by name. Fall back to a single row if line items are missing.
-            if (e.related_entity_type === 'ad_hoc_invoice' && e.related_entity_id) {
-              const lineItems = adHocLineItemsByInvoiceId.get(e.related_entity_id);
-              if (lineItems && lineItems.length > 0) {
-                return lineItems.map((li) => ({
-                  id: `${e.id}-${li.id}`,
-                  type: li.description,
-                  amount: Number(li.amount),
-                  date: transactionDate,
-                }));
-              }
-            }
-
-            return [
-              {
-                id: e.id,
-                type: periodDescription,
-                amount: -Number(e.balance_change), // charges are negative balance_change; expose as positive
-                date: transactionDate,
-              },
-            ];
-          })
-          .sort((a, b) => b.date.getTime() - a.date.getTime()),
+        transactions,
       };
     });
 
@@ -2861,17 +2943,22 @@ export class TenantManagementService {
           })
           .filter((t): t is NonNullable<typeof t> => t !== null),
 
-        // Renewal invoice payments — no property history entry is created for
-        // these, so we read them directly from the ledger.
+        // Renewal-invoice payments and GENUINE ad-hoc payments — no property
+        // history entry is created for these, so we read them from the ledger.
+        // Ad-hoc cancellation / edit-down REVERSALS (metadata.reversal) are not
+        // payments: they are netted against their charge in the breakdown above
+        // and must not appear here as money received.
         ...ledgerEntries
           .filter(
             (e) =>
               Number(e.balance_change) > 0 &&
-              e.related_entity_type === 'renewal_invoice',
+              (e.related_entity_type === 'renewal_invoice' ||
+                (e.related_entity_type === 'ad_hoc_invoice' &&
+                  !isAdHocReversalLeg(e))),
           )
           .map((e) => ({
             id: e.id,
-            type: e.description || 'Renewal payment',
+            type: e.description || 'Payment received',
             amount: -Number(e.balance_change), // payments are positive balance_change; show as negative (money out for tenant)
             date: new Date(e.created_at!),
           })),

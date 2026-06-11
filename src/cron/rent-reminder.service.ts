@@ -37,6 +37,7 @@ import {
   carryForwardRentColumns,
   CarriedRentColumns,
 } from '../common/billing/fees';
+import { computeRenewalFold } from '../common/billing/renewal-fold';
 import {
   advanceRentPeriod,
   effectiveFrequency,
@@ -752,7 +753,16 @@ export class RentReminderService {
         rent.tenant_id,
         ownerId,
       );
-      summary = this.computeNextPeriodSummary(rent, walletBalance);
+      const claimedByPlans =
+        await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+          rent.tenant_id,
+          ownerId,
+        );
+      summary = this.computeNextPeriodSummary(
+        rent,
+        walletBalance,
+        claimedByPlans,
+      );
     }
 
     const fmtDate = (d: Date) =>
@@ -897,6 +907,7 @@ export class RentReminderService {
   private computeNextPeriodSummary(
     rent: Rent,
     walletBalance: number,
+    claimedByPlans = 0,
   ): {
     startDate: Date;
     endDate: Date;
@@ -911,7 +922,13 @@ export class RentReminderService {
       : ({ ...rent, ...this.carryForwardFees(rent) } as Rent);
     const fees = rentToFees(sourceRent);
     const periodCharge = sumAll(fees);
-    const totalAmount = Math.max(0, periodCharge - walletBalance);
+    // Exclude plan-owned wallet OB so the reminder preview matches the actual
+    // (plan-adjusted) invoice total the tenant will be billed.
+    const { totalAmount } = computeRenewalFold({
+      periodCharge,
+      walletBalance,
+      claimedByPlans,
+    });
     const rentAmount = Number(
       sourceRent.rental_price ?? sourceRent.amount_paid ?? 0,
     );
@@ -1072,16 +1089,59 @@ export class RentReminderService {
         rentStart.setUTCHours(0, 0, 0, 0);
 
         // Floating case: the rent's own period has already ended (expiry
-        // < today). Use expiry_date as the anchor so day-1 / day-7 line up
-        // with "1 day past expiry" / "7 days past expiry". Otherwise this
-        // is an auto-renewed rent whose new period just started today (or
-        // 7 days ago) — anchor on rent_start_date as before.
+        // < today). Use expiry_date as the due anchor so day-1 / day-7 line
+        // up with "1 day past expiry" / "7 days past expiry".
         const isFloating = expiry < today;
-        const anchor = isFloating ? expiry : rentStart;
-        const daysAfterEvent = Math.floor(
-          (today.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24),
+        let dueDate: Date;
+        if (isFloating) {
+          dueDate = expiry;
+        } else {
+          // OWING rent matched on rent_start_date (today or 7 days ago).
+          // If it's an auto-renewed period, the payment fell due when the
+          // PREVIOUS period expired = the day before this one started.
+          // Anchoring on rent_start_date itself made the creation-day tick
+          // read as 0 days overdue, which `0 < 0` routed into the upcoming
+          // day-0 reminder — the tenant got "is due to expire today,
+          // <NEXT expiry>" instead of the overdue template, and the day-1
+          // overdue was unreachable.
+          const prevExpiry = new Date(rentStart);
+          prevExpiry.setUTCDate(prevExpiry.getUTCDate() - 1);
+          const renewed = await this.rentRepository
+            .createQueryBuilder('prev')
+            .where('prev.property_id = :propertyId', {
+              propertyId: rent.property_id,
+            })
+            .andWhere('prev.tenant_id = :tenantId', {
+              tenantId: rent.tenant_id,
+            })
+            .andWhere('prev.rent_status = :inactive', {
+              inactive: RentStatusEnum.INACTIVE,
+            })
+            .andWhere('DATE(prev.expiry_date) = :prevExpiry', {
+              prevExpiry: prevExpiry.toISOString().split('T')[0],
+            })
+            .getCount();
+          if (renewed > 0) {
+            dueDate = prevExpiry;
+          } else {
+            // First period of a brand-new tenancy. Nothing is "overdue" on
+            // move-in day — the pre-expiry cadence covers it. The day-7
+            // unpaid nudge still fires, anchored on the start date the
+            // payment was due.
+            if (rentStart.getTime() === today.getTime()) {
+              this.logger.log(
+                `Skipping post-expiry reminder for rent ${rent.id}: first period started today.`,
+              );
+              continue;
+            }
+            dueDate = rentStart;
+          }
+        }
+        const daysOverdue = Math.floor(
+          (today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24),
         );
-        await this.sendReminderIfNotSent(rent, -daysAfterEvent);
+        if (daysOverdue <= 0) continue;
+        await this.sendOverdueReminder(rent, -daysOverdue, dueDate);
       } catch (error) {
         this.logger.error(
           `Failed to process post-expiry reminder for rent ${rent.id}`,
@@ -1277,6 +1337,11 @@ export class RentReminderService {
         `Queued renewal letter reminder for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
       );
     } else {
+      // Plain date here — the rent_reminder_with_renewal Meta body already
+      // contains the verb ("…is due on {{4}}"), so passing the verb-phrase
+      // bodyExpiryDateStr (built for renewal_letter_link, whose body is
+      // "…your tenancy for {{2}} {{3}}.") rendered as
+      // "is due on is due to expire today, …".
       await this.whatsAppNotificationLogService.queue(
         'sendRentReminderWithRenewalTemplate',
         {
@@ -1284,7 +1349,7 @@ export class RentReminderService {
           tenant_name: rent.tenant.user.first_name,
           property_name: rent.property.name,
           rent_amount: formattedAmount,
-          expiry_date: bodyExpiryDateStr,
+          expiry_date: expiryDateStr,
           renewal_token: renewalInvoice.token,
           frontend_url: frontendUrl,
           payment_frequency: rent.payment_frequency || 'Monthly',
@@ -1329,8 +1394,37 @@ export class RentReminderService {
     );
   }
 
-  private async sendOverdueReminder(rent: Rent, daysBefore: number) {
+  private async sendOverdueReminder(
+    rent: Rent,
+    daysBefore: number,
+    dueDate?: Date,
+  ) {
     const templateName = 'rent_overdue_with_renewal';
+
+    // When the payment fell due. processPostExpiryReminders passes it
+    // explicitly (previous period's expiry for auto-renewed rents, own
+    // expiry for floating ones, start date for an unpaid first period).
+    // Fallback mirrors that logic for any other caller.
+    let due = dueDate;
+    if (!due) {
+      const expiry = new Date(rent.expiry_date);
+      expiry.setUTCHours(0, 0, 0, 0);
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      if (expiry < today) {
+        due = expiry;
+      } else {
+        due = new Date(rent.rent_start_date);
+        due.setUTCHours(0, 0, 0, 0);
+        due.setUTCDate(due.getUTCDate() - 1);
+      }
+    }
+    const dueDateStr = due.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+    const duePhrase = daysBefore === -1 ? 'yesterday' : `on ${dueDateStr}`;
 
     const alreadySent =
       await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
@@ -1398,6 +1492,7 @@ export class RentReminderService {
         rent_amount: formattedAmount,
         period,
         property_name: rent.property.name,
+        due_phrase: duePhrase,
         renewal_token: renewalInvoice.token,
         frontend_url: frontendUrl,
         days_before_expiry: daysBefore,
@@ -1469,9 +1564,33 @@ export class RentReminderService {
         rent.tenant_id,
         landlordId,
       );
-      // outstanding_balance kept for invoice compat (positive = owed)
-      const outstandingBalance = walletBalance < 0 ? -walletBalance : 0;
-      const totalAmount = Math.max(0, periodCharge - walletBalance);
+      // Exclude wallet OB already owned by an active wallet-backed plan from the
+      // fold — it is collected by that plan's installments, so folding it onto
+      // the renewal invoice too would double-bill. Single source of truth:
+      // computeRenewalFold (same as TenanciesService.refreshInvoiceTotals).
+      const claimedByPlans =
+        await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+          rent.tenant_id,
+          landlordId,
+        );
+      // For an OWING rent the invoice covers the rent's OWN period — and the
+      // wallet already carries that period's debit (AUTO_RENEWAL 'new_period'
+      // entries from the roll-forward, or INITIAL_BALANCE for a first
+      // tenancy). That debt is the same charge as the invoice's breakdown, so
+      // add it back before the fold — otherwise the invoice reads 2× the
+      // period the morning after every monthly auto-renewal. Mutually
+      // exclusive with the letter_accepted_charge add-back below:
+      // renewOneFromWalletCredit skips fresh AUTO_RENEWAL debits when the
+      // letter already holds an OB charge for the period.
+      const ownPeriodRentCharge = isCurrentOwingPeriod
+        ? await this.renewalChargeService.getRentOwnPeriodChargeAmount(rent.id)
+        : 0;
+      const { totalAmount, outstandingBalance } = computeRenewalFold({
+        periodCharge,
+        walletBalance,
+        claimedByPlans,
+        ownLetterCharge: ownPeriodRentCharge,
+      });
       const paymentFrequency = rent.payment_frequency || 'monthly';
 
       const { startDate, endDate } = this.getTargetPeriodRange(rent);
@@ -1544,13 +1663,30 @@ export class RentReminderService {
             await this.renewalChargeService.getLetterAcceptedChargeAmount(
               existing.id,
             );
-          const effectiveWallet = walletBalance + ownLetterCharge;
+          // Same-period rent-linked debits (AUTO_RENEWAL 'new_period' /
+          // INITIAL_BALANCE) are likewise already represented in the
+          // breakdown — add them back too, but only when this invoice
+          // actually covers the OWING rent's own period (the existing
+          // lookup is >= the target start, so it could match a later
+          // letter, in which case the rent debit IS prior arrears).
+          const coversRentOwnPeriod =
+            isCurrentOwingPeriod &&
+            new Date(existing.start_date).toISOString().split('T')[0] ===
+              new Date(rent.rent_start_date).toISOString().split('T')[0];
+          const ownPeriodCharge = coversRentOwnPeriod
+            ? await this.renewalChargeService.getRentOwnPeriodChargeAmount(
+                rent.id,
+              )
+            : 0;
+          const fold = computeRenewalFold({
+            periodCharge: invoicePeriodCharge,
+            walletBalance,
+            claimedByPlans,
+            ownLetterCharge: ownLetterCharge + ownPeriodCharge,
+          });
           existing.wallet_balance = walletBalance;
-          existing.outstanding_balance = outstandingBalance;
-          existing.total_amount = Math.max(
-            0,
-            invoicePeriodCharge - effectiveWallet,
-          );
+          existing.outstanding_balance = fold.outstandingBalance;
+          existing.total_amount = fold.totalAmount;
         }
 
         // Promote a landlord-saved draft to 'sent' on first reminder.

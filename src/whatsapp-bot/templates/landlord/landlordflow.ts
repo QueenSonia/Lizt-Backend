@@ -42,6 +42,7 @@ import {
   nextPeriodFees,
   Fee,
 } from 'src/common/billing/fees';
+import { computeRenewalFold } from 'src/common/billing/renewal-fold';
 
 @Injectable()
 export class LandlordFlow {
@@ -530,9 +531,23 @@ export class LandlordFlow {
     const walletBalance = ownerId
       ? await this.tenantBalancesService.getBalance(invoice.tenant_id, ownerId)
       : 0;
+    // Exclude wallet OB owned by an active wallet-backed plan from the fold —
+    // this letter becomes immediately payable on approve, so folding the
+    // plan-owned slice in too would double-bill (plan + this invoice).
+    const claimedByPlans = ownerId
+      ? await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+          invoice.tenant_id,
+          ownerId,
+        )
+      : 0;
+    const fold = computeRenewalFold({
+      periodCharge,
+      walletBalance,
+      claimedByPlans,
+    });
     invoice.wallet_balance = walletBalance;
-    invoice.outstanding_balance = walletBalance < 0 ? -walletBalance : 0;
-    invoice.total_amount = Math.max(0, periodCharge - walletBalance);
+    invoice.outstanding_balance = fold.outstandingBalance;
+    invoice.total_amount = fold.totalAmount;
 
     invoice.approval_status = 'approved';
 

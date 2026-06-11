@@ -54,6 +54,7 @@ import {
   sumRecurring,
   sumOneTime,
 } from 'src/common/billing/fees';
+import { computeRenewalFold } from 'src/common/billing/renewal-fold';
 import { nextPeriodEndInclusive } from 'src/common/utils/rent-date.util';
 
 /** A media item to attach once a deferred stray-input request is created. */
@@ -2355,6 +2356,24 @@ export class TenantFlowService {
 
     const accountId = user.accounts[0].id;
 
+    // Exclude wallet OB already owned by an active wallet-backed plan — that
+    // slice is collected by the plan's installments, so this link must only
+    // charge the UN-planned OB (matches refreshInvoiceTotals' OB branch). If a
+    // plan already covers it all, there is nothing to pay here.
+    const claimedByPlans =
+      await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+        accountId,
+        rent.property.owner_id,
+      );
+    outstandingBalance = Math.max(0, outstandingBalance - claimedByPlans);
+    if (outstandingBalance <= 0) {
+      await this.templateSenderService.sendText(
+        from,
+        'Your outstanding balance is being settled by a payment plan — no separate payment is needed.',
+      );
+      return;
+    }
+
     // Find propertyTenant record
     const propertyTenant = await this.propertyTenantRepo.findOne({
       where: {
@@ -2959,8 +2978,21 @@ export class TenantFlowService {
           rent.property.owner_id,
         )
       : 0;
-    const outstandingBalance = walletBal < 0 ? -walletBal : 0;
-    const totalAmount = Math.max(0, periodCharge - walletBal);
+    // Exclude wallet OB owned by an active wallet-backed plan from the fold —
+    // route through the single source of truth like every other fold site so
+    // this request row never double-counts plan-owned debt (no ownLetterCharge:
+    // brand-new request, no letter_accepted_charge yet).
+    const claimedByPlans = rent.property?.owner_id
+      ? await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+          accountId,
+          rent.property.owner_id,
+        )
+      : 0;
+    const { totalAmount, outstandingBalance } = computeRenewalFold({
+      periodCharge,
+      walletBalance: walletBal,
+      claimedByPlans,
+    });
 
     const invoice = this.renewalInvoiceRepo.create({
       token: uuidv4(),

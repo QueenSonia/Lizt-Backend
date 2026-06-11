@@ -7,12 +7,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
   PaymentPlan,
   PaymentPlanScope,
+  PaymentPlanSourceType,
   PaymentPlanStatus,
 } from './entities/payment-plan.entity';
 import {
@@ -20,6 +21,15 @@ import {
   InstallmentStatus,
   PaymentPlanInstallment,
 } from './entities/payment-plan-installment.entity';
+import {
+  PaymentPlanSource,
+  PaymentPlanSourceKind,
+} from './entities/payment-plan-source.entity';
+import { PaymentPlanAllocation } from './entities/payment-plan-allocation.entity';
+import {
+  AdHocInvoice,
+  AdHocInvoiceStatus,
+} from '../ad-hoc-invoices/entities/ad-hoc-invoice.entity';
 import { CreatePaymentPlanDto } from './dto/create-payment-plan.dto';
 import { UpdatePaymentPlanDto } from './dto/update-payment-plan.dto';
 import { MarkInstallmentPaidDto } from './dto/mark-installment-paid.dto';
@@ -58,6 +68,12 @@ export class PaymentPlansService {
     private readonly planRepository: Repository<PaymentPlan>,
     @InjectRepository(PaymentPlanInstallment)
     private readonly installmentRepository: Repository<PaymentPlanInstallment>,
+    @InjectRepository(PaymentPlanSource)
+    private readonly sourceRepository: Repository<PaymentPlanSource>,
+    @InjectRepository(PaymentPlanAllocation)
+    private readonly allocationRepository: Repository<PaymentPlanAllocation>,
+    @InjectRepository(AdHocInvoice)
+    private readonly adHocInvoiceRepository: Repository<AdHocInvoice>,
     @InjectRepository(RenewalInvoice)
     private readonly renewalInvoiceRepository: Repository<RenewalInvoice>,
     @InjectRepository(PropertyTenant)
@@ -76,6 +92,42 @@ export class PaymentPlansService {
     private readonly utilService: UtilService,
     private readonly requestsService: PaymentPlanRequestsService,
   ) {}
+
+  /**
+   * Is this a charge-scope plan that targets a *current-period invoice fee*
+   * (rent, service charge, a named "other" fee, …)?
+   *
+   * Such a plan carves its fee out of the renewal invoice's `fee_breakdown` at
+   * creation (`subtractChargeFromInvoice`), which already reduces the invoice
+   * total. Crediting the tenant wallet per installment would then reduce the
+   * invoice a SECOND time via `refreshInvoiceTotals` (total = sumAll(breakdown)
+   * − wallet) — the verified "phantom credit" double-reduction. So these plans
+   * must NOT credit the wallet; their installment rows are the record of
+   * collection, and the carve at creation is the only invoice adjustment.
+   *
+   * The synthetic "Outstanding Balance" charge (charge_external_id ===
+   * 'outstanding_balance') is the opposite: it settles real wallet-backed debt,
+   * so it MUST credit the wallet. Tenancy-scope plans settle the whole invoice
+   * via the ripple path and are unaffected by this predicate.
+   *
+   * Now keyed off the durable `source_type` discriminator, with the legacy
+   * `charge_external_id === 'outstanding_balance'` / `ad_hoc_invoice_id` checks
+   * retained so in-flight plans written before `source_type` existed still
+   * classify correctly.
+   */
+  private isInvoiceFeeChargePlan(plan: PaymentPlan): boolean {
+    if (plan.scope !== PaymentPlanScope.CHARGE) return false;
+    // Type B (wallet-backed) charge plans MUST credit the wallet — never gate.
+    if (
+      plan.source_type === PaymentPlanSourceType.OUTSTANDING_BALANCE ||
+      plan.source_type === PaymentPlanSourceType.AD_HOC_INVOICE
+    ) {
+      return false;
+    }
+    if (plan.ad_hoc_invoice_id) return false;
+    if (plan.charge_external_id === 'outstanding_balance') return false;
+    return true;
+  }
 
   // ───────────────────────────────────────────────────────────────────────
   // Create
@@ -102,6 +154,43 @@ export class PaymentPlansService {
     );
     if (totalAmount <= 0) {
       throw new BadRequestException('Total amount must be greater than zero');
+    }
+
+    // Ad-hoc-invoice plan (wallet-backed, Type B): settles a single ad-hoc
+    // invoice, not a renewal-invoice fee. Bypasses the renewal-invoice
+    // requirement entirely — this is the path for a tenant whose only debt is
+    // an ad-hoc invoice (no unpaid renewal invoice exists).
+    if (dto.adHocInvoiceId) {
+      return this.createAdHocInvoicePlan(
+        dto,
+        propertyTenant,
+        totalAmount,
+        createdByUserId,
+      );
+    }
+
+    // Outstanding-Balance plan (wallet-backed, Type B): settles the tenant's
+    // net wallet debt — its uncovered ad-hoc invoices plus an arrears remainder
+    // — NOT a renewal-invoice column. Like the ad-hoc path it needs no renewal
+    // invoice, and it is net-of-coverage (debt already claimed by other active
+    // wallet-backed plans is excluded), so it can never double-plan.
+    //
+    // Routed on the NAME *and* a positive Type-B signal: the picker's synthetic
+    // OB row is the only producer of `expectedOutstandingBalance`. Requiring it
+    // stops a real renewal-invoice "other" fee a landlord happened to name
+    // "Outstanding Balance" from mis-routing here (it would carry no such field)
+    // — that falls through to the renewal-invoice fee path below.
+    if (
+      dto.scope === PaymentPlanScope.CHARGE &&
+      dto.chargeName?.trim().toLowerCase() === 'outstanding balance' &&
+      dto.expectedOutstandingBalance != null
+    ) {
+      return this.createOutstandingBalancePlan(
+        dto,
+        propertyTenant,
+        totalAmount,
+        createdByUserId,
+      );
     }
 
     // Locate the target renewal invoice — the current unpaid landlord
@@ -169,18 +258,10 @@ export class PaymentPlansService {
         chargeExternalId = fee.externalId ?? null;
         chargeAmount = Number(fee.amount);
         chargeName = fee.label;
-      } else if (
-        dto.chargeName.trim().toLowerCase() === 'outstanding balance' &&
-        Number(invoice.outstanding_balance) > 0
-      ) {
-        // OB on landlord renewal invoices lives in the outstanding_balance
-        // column, not fee_breakdown. Treat it as a synthetic charge so plans
-        // can still split it into installments.
-        chargeFeeKind = 'other';
-        chargeExternalId = 'outstanding_balance';
-        chargeAmount = Number(invoice.outstanding_balance);
-        chargeName = 'Outstanding Balance';
       } else {
+        // Note: an "Outstanding Balance" charge no longer reaches here — it is
+        // routed to createOutstandingBalancePlan above (wallet-backed, needs no
+        // renewal invoice). This branch is now only real renewal-invoice fees.
         throw new BadRequestException(
           `Charge "${dto.chargeName}" not found on the current renewal invoice`,
         );
@@ -252,6 +333,10 @@ export class PaymentPlansService {
         charge_name: chargeName,
         charge_fee_kind: chargeFeeKind,
         charge_external_id: chargeExternalId,
+        // Only real renewal-invoice fees + tenancy plans reach here now
+        // (Outstanding Balance routes to its own wallet-backed path), so these
+        // are always Type A.
+        source_type: PaymentPlanSourceType.RENEWAL_INVOICE_FEE,
         total_amount: totalAmount,
         plan_type: dto.planType,
         status: PaymentPlanStatus.ACTIVE,
@@ -285,6 +370,179 @@ export class PaymentPlansService {
     // request to `approved` and link it. Done after the plan transaction so
     // we never leave an `approved` request without a plan; if this fails the
     // request stays `pending` and the landlord can retry.
+    if (dto.fromRequestId && createdByUserId) {
+      try {
+        await this.requestsService.markApproved(
+          dto.fromRequestId,
+          saved.id,
+          createdByUserId,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Plan ${saved.id} created but failed to mark request ${dto.fromRequestId} approved: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    const fullPlan = await this.getPlan(saved.id);
+    await this.dispatchPlanCreatedNotifications(fullPlan);
+    return fullPlan;
+  }
+
+  /**
+   * Create a wallet-backed plan that settles a single ad-hoc invoice.
+   *
+   * Unlike a renewal-invoice charge plan, this needs no unpaid renewal invoice
+   * and carves nothing out of `fee_breakdown` — the ad-hoc's debt already lives
+   * in the tenant wallet (debited at ad-hoc creation). The plan snapshots the
+   * invoice as its sole FIFO source and stamps `covered_by_plan_id` so the
+   * in-the-wild public pay link is locked while the plan is in force.
+   *
+   * Concurrency: the ad-hoc row is locked FOR UPDATE and `covered_by_plan_id`
+   * re-checked IS NULL inside the transaction, so two simultaneous creates can
+   * never both claim the same invoice.
+   */
+  private async createAdHocInvoicePlan(
+    dto: CreatePaymentPlanDto,
+    propertyTenant: PropertyTenant,
+    totalAmount: number,
+    createdByUserId?: string,
+  ): Promise<PaymentPlan> {
+    const adHocId = dto.adHocInvoiceId!;
+
+    const preview = await this.adHocInvoiceRepository.findOne({
+      where: { id: adHocId },
+    });
+    if (!preview) {
+      throw new NotFoundException('Ad-hoc invoice not found');
+    }
+    if (preview.property_tenant_id !== dto.propertyTenantId) {
+      throw new BadRequestException(
+        'Ad-hoc invoice does not belong to this tenancy',
+      );
+    }
+
+    const saved = await this.dataSource.transaction(async (manager) => {
+      // Lock the row so a concurrent create can't also claim this invoice.
+      const invoice = await manager.findOne(AdHocInvoice, {
+        where: { id: adHocId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!invoice) {
+        throw new NotFoundException('Ad-hoc invoice not found');
+      }
+      if (invoice.status === AdHocInvoiceStatus.PAID) {
+        throw new ConflictException(
+          'This invoice is already paid — no payment plan needed',
+        );
+      }
+      if (invoice.status === AdHocInvoiceStatus.CANCELLED) {
+        throw new ConflictException(
+          'This invoice has been cancelled and cannot have a payment plan',
+        );
+      }
+      if (invoice.covered_by_plan_id) {
+        throw new ConflictException(
+          'This invoice is already covered by an active payment plan',
+        );
+      }
+
+      const outstanding =
+        Number(invoice.total_amount) - Number(invoice.amount_paid ?? 0);
+      if (outstanding <= 0) {
+        throw new ConflictException(
+          'This invoice has no outstanding amount to plan',
+        );
+      }
+      // Drift guard: the picker split the outstanding it read at page load.
+      if (Math.abs(totalAmount - outstanding) > 1) {
+        throw new ConflictException(
+          'The invoice amount changed since you opened this form. Please reopen the payment plan and try again.',
+        );
+      }
+
+      const chargeName = (
+        dto.chargeName?.trim() || `Invoice ${invoice.invoice_number}`
+      ).substring(0, 255);
+
+      const plan = manager.create(PaymentPlan, {
+        property_tenant_id: propertyTenant.id,
+        property_id: propertyTenant.property_id,
+        tenant_id: propertyTenant.tenant_id,
+        renewal_invoice_id: null,
+        scope: PaymentPlanScope.CHARGE,
+        charge_name: chargeName,
+        charge_fee_kind: null,
+        charge_external_id: null,
+        source_type: PaymentPlanSourceType.AD_HOC_INVOICE,
+        ad_hoc_invoice_id: invoice.id,
+        total_amount: totalAmount,
+        plan_type: dto.planType,
+        status: PaymentPlanStatus.ACTIVE,
+        created_by_user_id: createdByUserId ?? null,
+      });
+      const savedPlan = await manager.save(plan);
+
+      const installments = dto.installments.map((inst, idx) =>
+        manager.create(PaymentPlanInstallment, {
+          plan_id: savedPlan.id,
+          sequence: idx + 1,
+          amount: Number(inst.amount),
+          due_date: new Date(inst.dueDate),
+          status: InstallmentStatus.PENDING,
+        }),
+      );
+      await manager.save(installments);
+
+      // Freeze the single FIFO source (residual is derived from allocations).
+      await manager.save(
+        manager.create(PaymentPlanSource, {
+          plan_id: savedPlan.id,
+          source_kind: PaymentPlanSourceKind.AD_HOC_INVOICE,
+          source_ad_hoc_invoice_id: invoice.id,
+          arrears_bucket_key: null,
+          covered_amount: outstanding,
+          due_seq: 0,
+        }),
+      );
+
+      // Stamp coverage with an IS NULL re-check (belt-and-suspenders vs the lock).
+      const stamp = await manager.update(
+        AdHocInvoice,
+        { id: invoice.id, covered_by_plan_id: IsNull() },
+        { covered_by_plan_id: savedPlan.id },
+      );
+      if (!stamp.affected) {
+        throw new ConflictException(
+          'This invoice is already covered by an active payment plan',
+        );
+      }
+
+      savedPlan.installments = installments;
+      return savedPlan;
+    });
+
+    // Re-fold any unpaid renewal invoice now that this plan owns this ad-hoc's
+    // wallet debt, so the renewal stops collecting it (the plan collects it).
+    // Non-blocking — the plan is already committed.
+    try {
+      await this.tenanciesService.refreshInvoiceTotals(
+        propertyTenant.tenant_id,
+        propertyTenant.property.owner_id,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Post-create renewal re-fold failed for plan ${saved.id}: ${(err as Error)?.message}`,
+      );
+    }
+
+    await this.logPlanEvent(
+      'payment_plan_created',
+      `Payment plan created — ${saved.charge_name} — ₦${totalAmount.toLocaleString()} across ${dto.installments.length} installments`,
+      saved,
+      NotificationType.PAYMENT_PLAN_CREATED,
+    );
+
     if (dto.fromRequestId && createdByUserId) {
       try {
         await this.requestsService.markApproved(
@@ -352,6 +610,291 @@ export class PaymentPlansService {
         `Failed to queue plan-created WhatsApp notification for plan ${plan.id}: ${(err as Error).message}`,
       );
     }
+  }
+
+  /**
+   * The slice of wallet-backed debt a NEW Outstanding-Balance plan may cover:
+   * the net wallet OB minus the unpaid remainder of every active wallet-backed
+   * plan (so coverage already claimed by an ad-hoc/OB plan is never re-planned).
+   * Reads the wallet scalar — never a renewal-invoice column.
+   */
+  private async computePlannableOb(
+    tenantId: string,
+    landlordId: string,
+    manager?: EntityManager,
+  ): Promise<number> {
+    const balance = await this.tenantBalancesService.getBalance(
+      tenantId,
+      landlordId,
+    );
+    const walletOb = balance < 0 ? -balance : 0;
+
+    // The wallet is keyed (tenant, landlord), shared across every tenancy that
+    // tenant holds under this landlord. So the claimed term must subtract the
+    // remainder of ALL the tenant's active wallet-backed plans under this
+    // landlord — not just this one tenancy's — or the same wallet debt could be
+    // double-planned across two units. Scope by tenant_id + property.owner_id.
+    const planRepo = manager
+      ? manager.getRepository(PaymentPlan)
+      : this.planRepository;
+    const activePlans = await planRepo.find({
+      where: {
+        tenant_id: tenantId,
+        status: PaymentPlanStatus.ACTIVE,
+        source_type: In([
+          PaymentPlanSourceType.OUTSTANDING_BALANCE,
+          PaymentPlanSourceType.AD_HOC_INVOICE,
+        ]),
+      },
+      relations: ['installments', 'property'],
+    });
+    let claimed = 0;
+    for (const p of activePlans) {
+      if (p.property?.owner_id !== landlordId) continue;
+      const paid = (p.installments ?? [])
+        .filter((i) => i.status === InstallmentStatus.PAID)
+        .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
+      claimed += Math.max(0, Number(p.total_amount) - paid);
+    }
+    return Math.max(0, walletOb - claimed);
+  }
+
+  /**
+   * Build the frozen FIFO source list for an Outstanding-Balance plan: every
+   * uncovered ad-hoc invoice (oldest due first, locked FOR UPDATE) up to the
+   * plannable amount, plus an "arrears" remainder bucket for wallet debt not
+   * attributable to a specific ad-hoc (swept rent, migration, …).
+   */
+  private async enumerateWalletBackedSources(
+    manager: EntityManager,
+    propertyTenant: PropertyTenant,
+    landlordId: string,
+  ): Promise<{
+    sources: Array<{
+      source_kind: PaymentPlanSourceKind;
+      source_ad_hoc_invoice_id: string | null;
+      arrears_bucket_key: string | null;
+      covered_amount: number;
+    }>;
+    adHocIds: string[];
+    plannable: number;
+  }> {
+    const plannable = await this.computePlannableOb(
+      propertyTenant.tenant_id,
+      landlordId,
+      manager,
+    );
+
+    const adHocs = await manager.find(AdHocInvoice, {
+      where: {
+        property_tenant_id: propertyTenant.id,
+        covered_by_plan_id: IsNull(),
+        status: In([AdHocInvoiceStatus.PENDING, AdHocInvoiceStatus.PARTIAL]),
+      },
+      order: { due_date: 'ASC', created_at: 'ASC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+
+    const sources: Array<{
+      source_kind: PaymentPlanSourceKind;
+      source_ad_hoc_invoice_id: string | null;
+      arrears_bucket_key: string | null;
+      covered_amount: number;
+    }> = [];
+    const adHocIds: string[] = [];
+    let allocated = 0;
+    for (const inv of adHocs) {
+      const outstanding =
+        Number(inv.total_amount) - Number(inv.amount_paid ?? 0);
+      if (outstanding <= 0.5) continue;
+      const cover = Math.min(outstanding, plannable - allocated);
+      if (cover <= 0.5) break;
+      sources.push({
+        source_kind: PaymentPlanSourceKind.AD_HOC_INVOICE,
+        source_ad_hoc_invoice_id: inv.id,
+        arrears_bucket_key: null,
+        covered_amount: cover,
+      });
+      adHocIds.push(inv.id);
+      allocated += cover;
+    }
+
+    const arrears = plannable - allocated;
+    if (arrears > 0.5) {
+      sources.push({
+        source_kind: PaymentPlanSourceKind.ARREARS,
+        source_ad_hoc_invoice_id: null,
+        arrears_bucket_key: `arrears:${propertyTenant.property_id}`,
+        covered_amount: arrears,
+      });
+    }
+
+    return { sources, adHocIds, plannable };
+  }
+
+  /**
+   * Create a wallet-backed Outstanding-Balance plan. Needs no renewal invoice
+   * and carves nothing: it snapshots the tenant's net wallet debt (uncovered
+   * ad-hocs + arrears) as FIFO sources, stamps coverage on the ad-hocs, and is
+   * net-of-coverage so it can never double-plan debt an existing plan owns.
+   */
+  private async createOutstandingBalancePlan(
+    dto: CreatePaymentPlanDto,
+    propertyTenant: PropertyTenant,
+    totalAmount: number,
+    createdByUserId?: string,
+  ): Promise<PaymentPlan> {
+    const landlordId = propertyTenant.property.owner_id;
+    const tenantId = propertyTenant.tenant_id;
+
+    // Heal wallet-derived totals first (mirrors the legacy OB path).
+    await this.tenanciesService.refreshInvoiceTotals(tenantId, landlordId);
+
+    const plannableOb = await this.computePlannableOb(tenantId, landlordId);
+    if (plannableOb <= 0) {
+      throw new ConflictException(
+        'There is no outstanding balance left to plan — it may already be covered by an active payment plan.',
+      );
+    }
+    if (
+      dto.expectedOutstandingBalance != null &&
+      Math.abs(dto.expectedOutstandingBalance - plannableOb) > 1
+    ) {
+      throw new ConflictException(
+        'The outstanding balance changed since you opened this form. Please reopen the payment plan and try again.',
+      );
+    }
+    if (Math.abs(totalAmount - plannableOb) > 1) {
+      throw new BadRequestException(
+        `Installments (₦${totalAmount.toLocaleString()}) must equal the outstanding balance (₦${plannableOb.toLocaleString()})`,
+      );
+    }
+
+    const saved = await this.dataSource.transaction(async (manager) => {
+      // Serialize concurrent OB-plan creates for this tenant. The arrears bucket
+      // has no row to lock FOR UPDATE, so without this two creates could both
+      // claim it. The advisory lock is released at transaction end.
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `ppob:${tenantId}`,
+      ]);
+
+      const { sources, adHocIds, plannable } =
+        await this.enumerateWalletBackedSources(
+          manager,
+          propertyTenant,
+          landlordId,
+        );
+
+      // Re-check the plannable amount didn't move under us (a concurrent plan
+      // or a new charge between the pre-flight read and the lock).
+      if (Math.abs(plannable - plannableOb) > 1) {
+        throw new ConflictException(
+          'The outstanding balance changed while creating the plan. Please reopen the payment plan and try again.',
+        );
+      }
+      if (sources.length === 0) {
+        throw new ConflictException(
+          'There is no outstanding balance left to plan.',
+        );
+      }
+
+      const plan = manager.create(PaymentPlan, {
+        property_tenant_id: propertyTenant.id,
+        property_id: propertyTenant.property_id,
+        tenant_id: tenantId,
+        renewal_invoice_id: null,
+        scope: PaymentPlanScope.CHARGE,
+        charge_name: 'Outstanding Balance',
+        charge_fee_kind: null,
+        // Keep the legacy marker so read paths that key on it still work.
+        charge_external_id: 'outstanding_balance',
+        source_type: PaymentPlanSourceType.OUTSTANDING_BALANCE,
+        ad_hoc_invoice_id: null,
+        total_amount: totalAmount,
+        plan_type: dto.planType,
+        status: PaymentPlanStatus.ACTIVE,
+        created_by_user_id: createdByUserId ?? null,
+      });
+      const savedPlan = await manager.save(plan);
+
+      const installments = dto.installments.map((inst, idx) =>
+        manager.create(PaymentPlanInstallment, {
+          plan_id: savedPlan.id,
+          sequence: idx + 1,
+          amount: Number(inst.amount),
+          due_date: new Date(inst.dueDate),
+          status: InstallmentStatus.PENDING,
+        }),
+      );
+      await manager.save(installments);
+
+      await manager.save(
+        sources.map((s, idx) =>
+          manager.create(PaymentPlanSource, {
+            plan_id: savedPlan.id,
+            source_kind: s.source_kind,
+            source_ad_hoc_invoice_id: s.source_ad_hoc_invoice_id,
+            arrears_bucket_key: s.arrears_bucket_key,
+            covered_amount: s.covered_amount,
+            due_seq: idx,
+          }),
+        ),
+      );
+
+      for (const adHocId of adHocIds) {
+        const stamp = await manager.update(
+          AdHocInvoice,
+          { id: adHocId, covered_by_plan_id: IsNull() },
+          { covered_by_plan_id: savedPlan.id },
+        );
+        if (!stamp.affected) {
+          throw new ConflictException(
+            'One of the invoices was just claimed by another plan. Please reopen the payment plan and try again.',
+          );
+        }
+      }
+
+      savedPlan.installments = installments;
+      return savedPlan;
+    });
+
+    // Re-fold any unpaid renewal invoice now that this plan owns part of the
+    // wallet OB, so the renewal stops collecting the planned slice (the plan
+    // collects it). Plan creation doesn't move the wallet, so nothing else
+    // triggers this refresh. Non-blocking: the plan is already committed — a
+    // refresh hiccup must not fail the create (the next balance event re-folds).
+    try {
+      await this.tenanciesService.refreshInvoiceTotals(tenantId, landlordId);
+    } catch (err) {
+      this.logger.warn(
+        `Post-create renewal re-fold failed for plan ${saved.id}: ${(err as Error)?.message}`,
+      );
+    }
+
+    await this.logPlanEvent(
+      'payment_plan_created',
+      `Payment plan created — Outstanding Balance — ₦${totalAmount.toLocaleString()} across ${dto.installments.length} installments`,
+      saved,
+      NotificationType.PAYMENT_PLAN_CREATED,
+    );
+
+    if (dto.fromRequestId && createdByUserId) {
+      try {
+        await this.requestsService.markApproved(
+          dto.fromRequestId,
+          saved.id,
+          createdByUserId,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Plan ${saved.id} created but failed to mark request ${dto.fromRequestId} approved: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    const fullPlan = await this.getPlan(saved.id);
+    await this.dispatchPlanCreatedNotifications(fullPlan);
+    return fullPlan;
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -802,9 +1345,14 @@ export class PaymentPlansService {
     );
 
     await this.dataSource.transaction(async (manager) => {
-      // Charge-scope: restore the full carved-out fee to the parent invoice.
-      // Paid installments already live as credit in the tenant balance ledger,
-      // so restoring only the unpaid portion would double-credit the tenant.
+      // Charge-scope: restore the carved-out fee to the parent invoice.
+      //  • Outstanding-Balance (wallet-backed) plans: paid installments live as
+      //    wallet credit, so restore the FULL carved amount — restoring only the
+      //    unpaid portion would double-credit the tenant.
+      //  • Invoice-fee charge plans: paid installments do NOT credit the wallet
+      //    (see isInvoiceFeeChargePlan); the paid portion was really collected
+      //    via the plan, so restore ONLY the unpaid remainder — restoring the
+      //    full amount would re-bill the tenant for what they already paid.
       // Tenancy-scope: installment payments already decremented the invoice
       // progressively, so the invoice is correctly stated — leave it alone.
       if (
@@ -812,15 +1360,83 @@ export class PaymentPlansService {
         plan.renewal_invoice_id &&
         plan.charge_fee_kind
       ) {
+        const restoreAmount = this.isInvoiceFeeChargePlan(plan)
+          ? Math.max(0, Number(plan.total_amount) - totalPaid)
+          : Number(plan.total_amount);
         await this.restoreChargeToInvoice(
           manager,
           plan.renewal_invoice_id,
           plan.charge_fee_kind,
           plan.charge_external_id,
           plan.charge_name,
-          Number(plan.total_amount),
+          restoreAmount,
         );
       }
+
+      // Wallet-backed plans (single ad-hoc OR Outstanding Balance): re-open the
+      // public pay link of every ad-hoc this plan owns by clearing coverage
+      // (scoped to THIS plan so we never stomp a different owner). Money already
+      // collected via paid installments stays as wallet credit — no clawback.
+      //
+      // Crucially we bake the plan's UN-collected claim into amount_paid before
+      // re-opening, so the link only re-charges the residual CASH the plan would
+      // still have collected — never the full face. A source's residual cash =
+      // covered_amount − Σ(its allocations). The portion total − covered_amount
+      // was funded by a wallet credit (partial coverage only arises with one),
+      // so it is "already settled" and must not be re-billed. amount_paid =
+      // total − residual leaves the link charging exactly `residual`.
+      // Legacy synthetic-OB plans have no sources and fall through to the
+      // restoreChargeToInvoice path above.
+      const planSources = await manager.find(PaymentPlanSource, {
+        where: { plan_id: plan.id },
+      });
+      for (const src of planSources) {
+        if (
+          src.source_kind !== PaymentPlanSourceKind.AD_HOC_INVOICE ||
+          !src.source_ad_hoc_invoice_id
+        ) {
+          continue;
+        }
+        const invoice = await manager.findOne(AdHocInvoice, {
+          where: { id: src.source_ad_hoc_invoice_id },
+        });
+        if (
+          !invoice ||
+          invoice.covered_by_plan_id !== plan.id ||
+          invoice.status === AdHocInvoiceStatus.PAID ||
+          invoice.status === AdHocInvoiceStatus.CANCELLED
+        ) {
+          // Already settled / re-claimed / closed — just clear our stamp if set.
+          if (invoice && invoice.covered_by_plan_id === plan.id) {
+            await manager.update(AdHocInvoice, invoice.id, {
+              covered_by_plan_id: null,
+            });
+          }
+          continue;
+        }
+        const allocRow = await manager
+          .createQueryBuilder(PaymentPlanAllocation, 'a')
+          .select('COALESCE(SUM(a.amount), 0)', 'sum')
+          .where('a.source_id = :sid', { sid: src.id })
+          .getRawOne<{ sum: string }>();
+        const residual = Math.max(
+          0,
+          Number(src.covered_amount) - Number(allocRow?.sum ?? 0),
+        );
+        const total = Number(invoice.total_amount);
+        const newAmountPaid = Math.max(0, Math.min(total, total - residual));
+        const fullyPaid = newAmountPaid >= total - 1;
+        await manager.update(AdHocInvoice, invoice.id, {
+          covered_by_plan_id: null,
+          amount_paid: newAmountPaid,
+          status: fullyPaid
+            ? AdHocInvoiceStatus.PAID
+            : newAmountPaid > 0.5
+              ? AdHocInvoiceStatus.PARTIAL
+              : AdHocInvoiceStatus.PENDING,
+        });
+      }
+
       await manager.update(PaymentPlan, plan.id, {
         status: PaymentPlanStatus.CANCELLED,
       });
@@ -849,6 +1465,32 @@ export class PaymentPlansService {
       plan,
       NotificationType.PAYMENT_PLAN_CANCELLED,
     );
+
+    // A cancelled wallet-backed plan releases its claim on the wallet OB, which
+    // returns to any unpaid renewal invoice — re-fold so the renewal collects
+    // it again (plan creation excluded it; cancel must restore it).
+    if (
+      plan.source_type === PaymentPlanSourceType.OUTSTANDING_BALANCE ||
+      plan.source_type === PaymentPlanSourceType.AD_HOC_INVOICE ||
+      plan.ad_hoc_invoice_id
+    ) {
+      const property = await this.propertyRepository.findOne({
+        where: { id: plan.property_id },
+      });
+      if (property) {
+        // Non-blocking — the cancel is already committed.
+        try {
+          await this.tenanciesService.refreshInvoiceTotals(
+            plan.tenant_id,
+            property.owner_id,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Post-cancel renewal re-fold failed for plan ${plan.id}: ${(err as Error)?.message}`,
+          );
+        }
+      }
+    }
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -1135,22 +1777,39 @@ export class PaymentPlansService {
     });
     const landlordId = property?.owner_id;
 
+    // Race-loser flag: when the compare-and-swap below finds the installment
+    // already claimed by a concurrent webhook/verify, we must skip ALL side
+    // effects (wallet credit, settlement, ripple, notifications) — not just the
+    // status write — so the wallet is never credited twice for one installment.
+    let raceLost = false;
     await this.dataSource.transaction(async (manager) => {
-      // 1. Mark the installment paid.
-      await manager.update(PaymentPlanInstallment, installment.id, {
-        status: InstallmentStatus.PAID,
-        paid_at: paidAt,
-        amount_paid: args.amount,
-        // For Paystack payments, persist the actual channel
-        // (card / bank_transfer / ussd / ...) so receipts can show it.
-        // For manual payments, fall through to the category enum.
-        payment_method: (args.channel ?? args.method) as InstallmentPaymentMethod,
-        paystack_reference: args.paystackRef ?? null,
-        manual_payment_note: args.note ?? null,
-        marked_paid_by_user_id: args.markedByUserId ?? null,
-        receipt_token: receiptToken,
-        receipt_number: receiptNumber,
-      });
+      // 1. Claim the installment with a compare-and-swap on status: the UPDATE
+      //    only matches while status is still PENDING. The webhook (setImmediate)
+      //    and the frontend verify-payment both reach here for the same row; only
+      //    the txn that flips PENDING→PAID gets affected=1. The pre-read above is
+      //    a fast path; THIS is the real idempotency guard.
+      const claim = await manager.update(
+        PaymentPlanInstallment,
+        { id: installment.id, status: InstallmentStatus.PENDING },
+        {
+          status: InstallmentStatus.PAID,
+          paid_at: paidAt,
+          amount_paid: args.amount,
+          // For Paystack payments, persist the actual channel
+          // (card / bank_transfer / ussd / ...) so receipts can show it.
+          // For manual payments, fall through to the category enum.
+          payment_method: (args.channel ?? args.method) as InstallmentPaymentMethod,
+          paystack_reference: args.paystackRef ?? null,
+          manual_payment_note: args.note ?? null,
+          marked_paid_by_user_id: args.markedByUserId ?? null,
+          receipt_token: receiptToken,
+          receipt_number: receiptNumber,
+        },
+      );
+      if (!claim.affected) {
+        raceLost = true;
+        return;
+      }
 
       // 2. Apply a ledger entry so tenant balance reflects the payment.
       //    For manual payments, also write a user_added_payment row so the
@@ -1178,18 +1837,30 @@ export class PaymentPlansService {
           await manager.save(manualEntry);
         }
 
-        await this.tenantBalancesService.applyChange(
-          tenantId,
-          landlordId,
-          args.amount,
-          {
-            type: TenantBalanceLedgerType.OB_PAYMENT,
-            description: `Installment ${installment.sequence} of ${plan.charge_name} — ₦${args.amount.toLocaleString()} (${args.method})`,
-            propertyId,
-            relatedEntityType: 'payment_plan_installment',
-            relatedEntityId: installment.id,
-          },
-        );
+        // Only wallet-backed plans (Outstanding Balance / ad-hoc / arrears)
+        // credit the wallet. An invoice-fee charge plan already carved its fee
+        // out of the invoice at creation; crediting here would double-reduce the
+        // obligation (refreshInvoiceTotals subtracts the wallet from the
+        // already-reduced invoice total). See isInvoiceFeeChargePlan. The credit
+        // shares THIS transaction (externalManager) so it commits atomically
+        // with the status claim — a rollback reverts both, and only the CAS
+        // winner ever reaches here.
+        if (!this.isInvoiceFeeChargePlan(plan)) {
+          await this.tenantBalancesService.applyChange(
+            tenantId,
+            landlordId,
+            args.amount,
+            {
+              type: TenantBalanceLedgerType.OB_PAYMENT,
+              description: `Installment ${installment.sequence} of ${plan.charge_name} — ₦${args.amount.toLocaleString()} (${args.method})`,
+              propertyId,
+              relatedEntityType: 'payment_plan_installment',
+              relatedEntityId: installment.id,
+            },
+            undefined,
+            manager,
+          );
+        }
       }
 
       // 3. Check if all installments are now paid and complete the plan.
@@ -1202,6 +1873,29 @@ export class PaymentPlansService {
         });
       }
     });
+
+    if (raceLost) {
+      this.logger.log(
+        `Installment ${installment.id} already claimed by a concurrent payment; skipping (idempotent)`,
+      );
+      return;
+    }
+
+    // 3b. Wallet-backed (Type B) settlement: waterfall this payment across the
+    //     plan's frozen FIFO sources and settle any whose residual hits zero
+    //     (e.g. mark the covered ad-hoc invoice PAID, credit-free). Runs in its
+    //     own transaction — like the invoice ripple below — so a settlement
+    //     hiccup can never roll back the already-recorded installment payment.
+    //     No-ops for tenancy plans and legacy OB plans (which have no sources).
+    if (landlordId && !this.isInvoiceFeeChargePlan(plan)) {
+      try {
+        await this.settleWalletBackedSources(plan, installment, args.amount);
+      } catch (err) {
+        this.logger.error(
+          `FIFO settlement failed for installment ${installment.id} on plan ${plan.id}: ${(err as Error)?.message}`,
+        );
+      }
+    }
 
     // 4. Ripple up to the parent renewal invoice for tenancy-scope plans.
     //    Charge-scope plans already carved their portion out of the invoice
@@ -1364,6 +2058,151 @@ export class PaymentPlansService {
       args.amount,
       receiptToken,
     );
+  }
+
+  /**
+   * Waterfall an installment payment across a wallet-backed plan's frozen FIFO
+   * sources (oldest `due_seq` first), recording each application as a
+   * `payment_plan_allocation` row. When a source's derived residual
+   * (`covered_amount − Σ allocations`) reaches zero, the underlying ad-hoc
+   * invoice is marked PAID **credit-free** — the wallet was already credited by
+   * the installment's OB_PAYMENT, so a second credit would double-reduce.
+   *
+   * Runs in its own transaction with the sources locked FOR UPDATE; the
+   * `(installment_id, source_id)` unique index plus the "already allocated"
+   * guard make a webhook/verify retry a no-op. No-ops for plans with no
+   * sources (tenancy, legacy OB) — those keep their pre-feature behaviour.
+   */
+  private async settleWalletBackedSources(
+    plan: PaymentPlan,
+    installment: PaymentPlanInstallment,
+    amount: number,
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const sources = await manager.find(PaymentPlanSource, {
+        where: { plan_id: plan.id },
+        order: { due_seq: 'ASC' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (sources.length === 0) return;
+
+      // Idempotency: this installment already settled (webhook/verify retry).
+      const already = await manager.count(PaymentPlanAllocation, {
+        where: { installment_id: installment.id },
+      });
+      if (already > 0) return;
+
+      let remaining = amount;
+      for (const source of sources) {
+        if (remaining < 0.5) break;
+
+        const allocatedRow = await manager
+          .createQueryBuilder(PaymentPlanAllocation, 'a')
+          .select('COALESCE(SUM(a.amount), 0)', 'sum')
+          .where('a.source_id = :sid', { sid: source.id })
+          .getRawOne<{ sum: string }>();
+        const residual =
+          Number(source.covered_amount) - Number(allocatedRow?.sum ?? 0);
+        if (residual <= 0) continue;
+
+        const applied = Math.min(remaining, residual);
+        remaining -= applied;
+
+        await manager.save(
+          manager.create(PaymentPlanAllocation, {
+            plan_id: plan.id,
+            installment_id: installment.id,
+            source_id: source.id,
+            amount: applied,
+          }),
+        );
+
+        await this.applySourceSettlement(
+          manager,
+          source,
+          residual - applied,
+          applied,
+        );
+      }
+
+      // Overflow: the snapshot was smaller than what was paid (a source shrank
+      // or rounding). The surplus is already wallet credit (via OB_PAYMENT) —
+      // leave it there and log for traceability. (User decision: no refund.)
+      if (remaining > 1) {
+        await manager.save(
+          manager.create(PropertyHistory, {
+            property_id: plan.property_id,
+            tenant_id: plan.tenant_id,
+            event_type: 'payment_plan_overflow',
+            event_description: `Installment ${installment.sequence} of "${plan.charge_name}" overpaid the plan's covered sources by ₦${remaining.toLocaleString()}; surplus left as tenant wallet credit.`,
+            related_entity_id: installment.id,
+            related_entity_type: 'payment_plan_installment',
+            metadata: {
+              payment_plan_id: plan.id,
+              overflow_amount: remaining,
+            },
+          }),
+        );
+      }
+    });
+  }
+
+  /**
+   * Reflect a source's new residual onto its underlying ad-hoc invoice.
+   * Credit-free: the wallet was already moved by the installment's OB_PAYMENT.
+   */
+  private async applySourceSettlement(
+    manager: EntityManager,
+    source: PaymentPlanSource,
+    residualRemaining: number,
+    appliedThisInstallment: number,
+  ): Promise<void> {
+    if (source.source_kind !== PaymentPlanSourceKind.AD_HOC_INVOICE) return;
+    if (!source.source_ad_hoc_invoice_id) return;
+
+    const invoice = await manager.findOne(AdHocInvoice, {
+      where: { id: source.source_ad_hoc_invoice_id },
+    });
+    if (
+      !invoice ||
+      invoice.status === AdHocInvoiceStatus.PAID ||
+      invoice.status === AdHocInvoiceStatus.CANCELLED
+    ) {
+      return;
+    }
+
+    // When this source's residual reaches 0 the invoice is SETTLED — even if the
+    // plan only partially "covered" it. Partial coverage (covered_amount < the
+    // invoice's outstanding) arises only when the wallet holds a credit that
+    // offsets ad-hoc debt: enumerate proved plannableOB ≥ Σ uncovered-ad-hoc
+    // outstanding whenever the wallet has no net credit, so a shortfall means a
+    // credit already paid the difference. Mark the invoice PAID and CLEAR its
+    // coverage so the completed plan never strands it (the public link stays
+    // locked by the PAID status, and it drops out of plannable).
+    //
+    // Mid-plan (residual > 0) it is PARTIAL; amount_paid ACCUMULATES the amount
+    // applied this installment onto whatever was already paid (an ad-hoc may
+    // enter a plan already partially paid), so the running figure — and the
+    // remaining the re-opened public link would charge on cancel — stays right.
+    const total = Number(invoice.total_amount);
+    const fullyPaid = residualRemaining <= 1;
+    const accumulated = Math.min(
+      total,
+      Number(invoice.amount_paid ?? 0) + appliedThisInstallment,
+    );
+    await manager.update(AdHocInvoice, invoice.id, {
+      status: fullyPaid
+        ? AdHocInvoiceStatus.PAID
+        : AdHocInvoiceStatus.PARTIAL,
+      amount_paid: fullyPaid ? total : accumulated,
+      ...(fullyPaid
+        ? {
+            paid_at: new Date(),
+            payment_method: 'payment_plan',
+            covered_by_plan_id: null,
+          }
+        : {}),
+    });
   }
 
   private async dispatchInstallmentNotifications(

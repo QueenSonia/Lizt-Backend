@@ -349,6 +349,45 @@ export class RenewalChargeService {
   }
 
   /**
+   * Sum of unreversed wallet debits posted for `rent`'s OWN period — the
+   * AUTO_RENEWAL 'new_period' entries from the roll-forward, or the
+   * INITIAL_BALANCE entry stamped at first-rent creation (always non-negative).
+   *
+   * Same role as getLetterAcceptedChargeAmount but for rent-linked debits:
+   * when a current-period invoice exists for an OWING rent, this portion of
+   * the wallet debt is already represented inline in the invoice's
+   * fee_breakdown, so fold sites must add it back before treating the wallet
+   * as prior arrears — otherwise the invoice totals 2× the period the
+   * morning after every monthly auto-renewal.
+   */
+  async getRentOwnPeriodChargeAmount(
+    rentId: string,
+    manager?: EntityManager,
+  ): Promise<number> {
+    const repo = manager
+      ? manager.getRepository(TenantBalanceLedger)
+      : this.ledgerRepo;
+    const entries = await repo.find({
+      where: {
+        related_entity_type: 'rent',
+        related_entity_id: rentId,
+        type: In([
+          TenantBalanceLedgerType.AUTO_RENEWAL,
+          TenantBalanceLedgerType.INITIAL_BALANCE,
+        ]),
+      },
+    });
+    let total = 0;
+    for (const e of entries) {
+      const change = Number(e.balance_change);
+      if (change >= 0) continue; // only debits
+      if (e.metadata?.reversed) continue;
+      total += Math.abs(change);
+    }
+    return total;
+  }
+
+  /**
    * True when the tenant's wallet credit fully covers this letter's recurring
    * period charge — with the own-letter-charge add-back so a period already
    * OB-charged at accept time still reads as covered. Mirrors

@@ -77,6 +77,12 @@ import {
   AdHocInvoiceStatus,
 } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import {
+  PaymentPlan,
+  PaymentPlanStatus,
+  PaymentPlanSourceType,
+} from 'src/payment-plans/entities/payment-plan.entity';
+import { InstallmentStatus } from 'src/payment-plans/entities/payment-plan-installment.entity';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import {
@@ -117,6 +123,8 @@ export class PropertiesService {
     private readonly adHocInvoiceRepository: Repository<AdHocInvoice>,
     @InjectRepository(AdHocInvoiceLineItem)
     private readonly adHocInvoiceLineItemRepository: Repository<AdHocInvoiceLineItem>,
+    @InjectRepository(PaymentPlan)
+    private readonly paymentPlanRepository: Repository<PaymentPlan>,
     private readonly userService: UsersService,
     private readonly rentService: RentsService,
     private readonly eventEmitter: EventEmitter2,
@@ -1442,6 +1450,19 @@ export class PropertiesService {
       dueDate: string | null;
       status: AdHocInvoiceStatus;
     }> = [];
+    // Per-invoice options for the payment-plan picker — one row per plannable
+    // ad-hoc invoice (PENDING/PARTIAL). Covered ones carry coveredByPlanId so
+    // the picker can grey them out instead of letting a second plan claim them.
+    let adHocInvoiceOptions: Array<{
+      invoiceId: string;
+      invoiceNumber: string;
+      label: string;
+      totalAmount: number;
+      outstandingAmount: number;
+      dueDate: string | null;
+      status: AdHocInvoiceStatus;
+      coveredByPlanId: string | null;
+    }> = [];
     if (activeTenantRelation && activeRent) {
       const tenantUser = activeTenantRelation.tenant.user;
       const tenantKyc = tenantUser.tenant_kycs?.[0];
@@ -1598,13 +1619,48 @@ export class PropertiesService {
       const totalOutstandingBalance = walletBal < 0 ? -walletBal : 0;
       const totalCreditBalance = walletBal > 0 ? walletBal : 0;
 
+      // Plannable OB = the net wallet OB minus the unpaid remainder of every
+      // active wallet-backed plan, so the "Outstanding Balance" payment-plan
+      // option only offers debt no existing plan already covers (prevents
+      // double-planning). Mirrors PaymentPlansService.computePlannableOb.
+      // The wallet is shared across every tenancy this tenant holds under this
+      // landlord, so subtract the remainder of ALL their active wallet-backed
+      // plans under this landlord (scope by tenant_id + property.owner_id) — not
+      // just this one tenancy's — to match PaymentPlansService.computePlannableOb.
+      const activeWalletPlans = await this.paymentPlanRepository.find({
+        where: {
+          tenant_id: activeTenantRelation.tenant.id,
+          status: PaymentPlanStatus.ACTIVE,
+          source_type: In([
+            PaymentPlanSourceType.OUTSTANDING_BALANCE,
+            PaymentPlanSourceType.AD_HOC_INVOICE,
+          ]),
+        },
+        relations: ['installments', 'property'],
+      });
+      const claimedByPlans = activeWalletPlans.reduce((sum, p) => {
+        if (p.property?.owner_id !== property.owner_id) return sum;
+        const paid = (p.installments ?? [])
+          .filter((i) => i.status === InstallmentStatus.PAID)
+          .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
+        return sum + Math.max(0, Number(p.total_amount) - paid);
+      }, 0);
+      const plannableOutstandingBalance = Math.max(
+        0,
+        totalOutstandingBalance - claimedByPlans,
+      );
+
       // Ad-hoc invoice line items for this tenancy — surfaced as additional
       // charges on the current period charges list. Paid invoices are kept so
       // the UI can show them with a "(paid)" prefix; cancelled ones are dropped.
       const pendingAdHocInvoices = await this.adHocInvoiceRepository.find({
         where: {
           property_tenant_id: activeTenantRelation.id,
-          status: In([AdHocInvoiceStatus.PENDING, AdHocInvoiceStatus.PAID]),
+          status: In([
+            AdHocInvoiceStatus.PENDING,
+            AdHocInvoiceStatus.PARTIAL,
+            AdHocInvoiceStatus.PAID,
+          ]),
         },
         relations: ['line_items'],
         order: { created_at: 'ASC' },
@@ -1627,6 +1683,46 @@ export class PropertiesService {
           })),
       );
 
+      // Plan-picker options: every ad-hoc with money still owing (PENDING or
+      // PARTIAL). Covered invoices stay PENDING with outstanding > 0 while their
+      // plan is in force, so they appear here flagged via coveredByPlanId; once
+      // the plan settles them they flip to PAID and drop out.
+      const planEligibleAdHocs = await this.adHocInvoiceRepository.find({
+        where: {
+          property_tenant_id: activeTenantRelation.id,
+          status: In([
+            AdHocInvoiceStatus.PENDING,
+            AdHocInvoiceStatus.PARTIAL,
+          ]),
+        },
+        relations: ['line_items'],
+        order: { created_at: 'ASC' },
+      });
+      adHocInvoiceOptions = planEligibleAdHocs
+        .map((inv) => {
+          const firstDesc = (inv.line_items ?? [])
+            .slice()
+            .sort((a, b) => a.sequence - b.sequence)[0]?.description;
+          return {
+            invoiceId: inv.id,
+            invoiceNumber: inv.invoice_number,
+            label: firstDesc
+              ? `${inv.invoice_number} · ${firstDesc}`
+              : `Invoice ${inv.invoice_number}`,
+            totalAmount: Number(inv.total_amount),
+            outstandingAmount:
+              Number(inv.total_amount) - Number(inv.amount_paid ?? 0),
+            dueDate: inv.due_date
+              ? inv.due_date instanceof Date
+                ? inv.due_date.toISOString().split('T')[0]
+                : String(inv.due_date)
+              : null,
+            status: inv.status,
+            coveredByPlanId: inv.covered_by_plan_id ?? null,
+          };
+        })
+        .filter((o) => o.outstandingAmount > 0.5 || !!o.coveredByPlanId);
+
       currentTenant = {
         id: activeTenantRelation.tenant.id,
         tenancyId: activeTenantRelation.id,
@@ -1648,6 +1744,7 @@ export class PropertiesService {
           : null,
         outstandingBalance: totalOutstandingBalance,
         creditBalance: totalCreditBalance,
+        plannableOutstandingBalance,
       };
     }
 
@@ -2468,6 +2565,7 @@ export class PropertiesService {
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
       pendingRenewalInvoice: pendingRenewalInvoice || null,
       pendingAdHocInvoiceFees,
+      adHocInvoiceOptions,
       rentalPrice: property.rental_price || null,
       isMarketingReady: property.is_marketing_ready || false,
       description: property.description || computedDescription,

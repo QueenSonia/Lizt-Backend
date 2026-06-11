@@ -856,6 +856,8 @@ export interface RentOverdueWithRenewalParams {
   rent_amount: string;
   period: string;
   property_name: string;
+  /** "yesterday" on day 1, "on 10 June 2026" on later days. */
+  due_phrase: string;
   renewal_token: string;
   frontend_url: string;
 }
@@ -4770,6 +4772,7 @@ export class TemplateSenderService {
     rent_amount,
     period,
     property_name,
+    due_phrase,
     renewal_token,
     frontend_url: _frontend_url,
   }: RentOverdueWithRenewalParams): Promise<void> {
@@ -4790,6 +4793,7 @@ export class TemplateSenderService {
               { type: 'text', text: rent_amount },
               { type: 'text', text: period },
               { type: 'text', text: property_name },
+              { type: 'text', text: due_phrase },
             ],
           },
           {
@@ -5630,7 +5634,7 @@ export class TemplateSenderService {
     rent_overdue:
       'Hi {{1}},\n\nYour rent for {{2}} was due on {{3}} and is now overdue.\n\nAmount due: {{4}}\n\nPlease make payment as soon as possible to avoid additional charges.\n\nThank you for your prompt attention to this matter.',
     rent_overdue_with_renewal:
-      "Hello {{1}},\n\nThis is a reminder that we haven't received your payment of {{2}} for the tenancy period of {{3}} for {{4}}.\n\nWe'd like you to maintain a good payment history and relationship with us.\nPlease tap on the link below to view your invoice and make payment.",
+      "Hello {{1}},\n\nThis is a reminder that we haven't received your payment of {{2}} for the tenancy period of {{3}} for {{4}}, which was due {{5}}.\n\nWe'd like you to maintain a good payment history and relationship with us.\nPlease tap on the link below to view your invoice and make payment.",
     installment_reminder:
       'Hi {{1}},\n\nThis is a reminder for installment {{2}} of your {{3}} payment plan at {{4}}.\n\nAmount: {{5}}\nDue date: {{6}}\n\nPlease use the link below to complete your payment.',
     installment_receipt_tenant:

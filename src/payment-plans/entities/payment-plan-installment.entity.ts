@@ -4,6 +4,7 @@ import { PaymentPlan } from './payment-plan.entity';
 
 export enum InstallmentStatus {
   PENDING = 'pending',
+  PARTIAL = 'partial',
   PAID = 'paid',
 }
 

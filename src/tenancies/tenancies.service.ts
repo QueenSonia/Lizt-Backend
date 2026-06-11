@@ -49,6 +49,7 @@ import {
   sumRecurring,
   Fee,
 } from 'src/common/billing/fees';
+import { computeRenewalFold } from 'src/common/billing/renewal-fold';
 import {
   calculateRentExpiryDate,
   normalizeFrequency,
@@ -700,8 +701,16 @@ export class TenanciesService {
       landlordId,
     );
 
-    // total = new charges - wallet (credit reduces total; outstanding increases it)
-    const totalAmount = Math.max(0, periodCharge - walletBalance);
+    // total = new charges - wallet, excluding wallet OB already owned by an
+    // active wallet-backed plan (collected by the plan, not this invoice — see
+    // computeRenewalFold). Folding it here too would bill the same debt twice.
+    const claimedByPlans =
+      await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+        propertyTenant.tenant_id,
+        landlordId,
+      );
+    const { totalAmount, outstandingBalance: planAdjustedOutstanding } =
+      computeRenewalFold({ periodCharge, walletBalance, claimedByPlans });
     // Legacy scalar columns kept in sync with the helper output so existing
     // consumers (PDF, history) see the same numbers as fee_breakdown.
     const otherCharges = 0;
@@ -772,8 +781,7 @@ export class TenanciesService {
           existingInvoice.other_fees = otherFees;
           existingInvoice.fee_breakdown = allFees;
           existingInvoice.total_amount = totalAmount;
-          existingInvoice.outstanding_balance =
-            walletBalance < 0 ? -walletBalance : 0;
+          existingInvoice.outstanding_balance = planAdjustedOutstanding;
           existingInvoice.wallet_balance = walletBalance;
           existingInvoice.payment_frequency = paymentFrequency;
           existingInvoice.token_type = isSilent ? 'draft' : 'landlord';
@@ -809,7 +817,7 @@ export class TenanciesService {
             other_fees: otherFees,
             fee_breakdown: allFees,
             total_amount: totalAmount,
-            outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
+            outstanding_balance: planAdjustedOutstanding,
             wallet_balance: walletBalance,
             payment_status: RenewalPaymentStatus.UNPAID,
             payment_frequency: paymentFrequency,
@@ -859,7 +867,7 @@ export class TenanciesService {
             other_fees: otherFees,
             fee_breakdown: allFees,
             total_amount: totalAmount,
-            outstanding_balance: walletBalance < 0 ? -walletBalance : 0,
+            outstanding_balance: planAdjustedOutstanding,
             wallet_balance: walletBalance,
             payment_status: RenewalPaymentStatus.UNPAID,
             payment_frequency: paymentFrequency,
@@ -1917,7 +1925,20 @@ export class TenanciesService {
       landlordId,
     );
 
-    const totalAmount = Math.max(0, periodCharge - walletBalance);
+    // Exclude wallet OB already owned by an active wallet-backed plan from the
+    // fold (collected by that plan, not this invoice) so an edit can't
+    // re-introduce double-billing. Single source of truth: computeRenewalFold.
+    const claimedByPlans =
+      await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+        invoice.tenant_id,
+        landlordId,
+      );
+    const fold = computeRenewalFold({
+      periodCharge,
+      walletBalance,
+      claimedByPlans,
+    });
+    const totalAmount = fold.totalAmount;
 
     invoice.rent_amount = rentAmount;
     invoice.service_charge = serviceCharge;
@@ -1927,7 +1948,7 @@ export class TenanciesService {
     invoice.other_fees = otherFees;
     invoice.fee_breakdown = allFees;
     invoice.total_amount = totalAmount;
-    invoice.outstanding_balance = walletBalance < 0 ? -walletBalance : 0;
+    invoice.outstanding_balance = fold.outstandingBalance;
     invoice.wallet_balance = walletBalance;
     invoice.payment_frequency = dto.paymentFrequency;
     invoice.end_date = endDate;
@@ -1978,7 +1999,42 @@ export class TenanciesService {
       tenantId,
       landlordId,
     );
-    const outstanding = walletBalance < 0 ? -walletBalance : 0;
+    const rawOutstanding = walletBalance < 0 ? -walletBalance : 0;
+
+    // Wallet debt already owned by an active wallet-backed plan (Outstanding
+    // Balance / ad-hoc) is collected by that plan's installments — it must NOT
+    // also be folded into a renewal invoice, or the same debt is collected
+    // twice (renewal fold + plan). Exclude the planned slice from the fold.
+    // Paying a plan installment reduces the wallet AND this claim by the same
+    // amount, so the folded (un-planned) figure stays stable as the plan runs.
+    const claimedByPlans =
+      await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+        tenantId,
+        landlordId,
+      );
+    const outstanding = Math.max(0, rawOutstanding - claimedByPlans);
+
+    // ACTIVE+OWING rents for this tenant under this landlord: an unpaid
+    // invoice covering such a rent's OWN period must add back the rent's
+    // wallet debit (AUTO_RENEWAL 'new_period' / INITIAL_BALANCE) the same
+    // way the own-letter charge is added back below — that debt is already
+    // represented inline in the invoice's fee_breakdown, and folding it
+    // again reads as 2× the period after every monthly auto-renewal.
+    const owingRents = await this.rentRepository
+      .createQueryBuilder('rent')
+      .innerJoin('rent.property', 'property')
+      .where('rent.tenant_id = :tenantId', { tenantId })
+      .andWhere('property.owner_id = :landlordId', { landlordId })
+      .andWhere('rent.rent_status = :rentStatus', {
+        rentStatus: RentStatusEnum.ACTIVE,
+      })
+      .andWhere('rent.payment_status = :paymentStatus', {
+        paymentStatus: RentPaymentStatusEnum.OWING,
+      })
+      .getMany();
+    const ownPeriodChargeByRent = new Map<string, number>();
+    const isoDay = (d: Date | string) =>
+      new Date(d).toISOString().split('T')[0];
 
     const toSave: RenewalInvoice[] = [];
     for (const invoice of invoices) {
@@ -2027,11 +2083,35 @@ export class TenanciesService {
           await this.renewalChargeService.getLetterAcceptedChargeAmount(
             invoice.id,
           );
-        const effectiveWallet = walletBalance + ownLetterCharge;
-        const periodCharge = sumAll(breakdown);
-        invoice.total_amount = Math.max(0, periodCharge - effectiveWallet);
+        // Same-period add-back for rent-linked debits (see owingRents above).
+        // Only when the invoice covers the OWING rent's own period — for any
+        // other period the rent debit is genuine prior arrears.
+        const ownPeriodRent = owingRents.find(
+          (r) =>
+            r.property_id === invoice.property_id &&
+            isoDay(r.rent_start_date) === isoDay(invoice.start_date),
+        );
+        let ownPeriodCharge = 0;
+        if (ownPeriodRent) {
+          if (!ownPeriodChargeByRent.has(ownPeriodRent.id)) {
+            ownPeriodChargeByRent.set(
+              ownPeriodRent.id,
+              await this.renewalChargeService.getRentOwnPeriodChargeAmount(
+                ownPeriodRent.id,
+              ),
+            );
+          }
+          ownPeriodCharge = ownPeriodChargeByRent.get(ownPeriodRent.id) ?? 0;
+        }
+        const fold = computeRenewalFold({
+          periodCharge: sumAll(breakdown),
+          walletBalance,
+          claimedByPlans,
+          ownLetterCharge: ownLetterCharge + ownPeriodCharge,
+        });
+        invoice.total_amount = fold.totalAmount;
         invoice.wallet_balance = walletBalance;
-        invoice.outstanding_balance = outstanding;
+        invoice.outstanding_balance = fold.outstandingBalance;
       }
       toSave.push(invoice);
     }

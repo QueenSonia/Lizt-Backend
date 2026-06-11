@@ -4,6 +4,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { PaymentPlan } from './entities/payment-plan.entity';
 import { PaymentPlanInstallment } from './entities/payment-plan-installment.entity';
 import { PaymentPlanRequest } from './entities/payment-plan-request.entity';
+import { PaymentPlanSource } from './entities/payment-plan-source.entity';
+import { PaymentPlanAllocation } from './entities/payment-plan-allocation.entity';
+import { AdHocInvoice } from '../ad-hoc-invoices/entities/ad-hoc-invoice.entity';
 import { PaymentPlansService } from './payment-plans.service';
 import { PaymentPlansController } from './payment-plans.controller';
 import { PaymentPlanRequestsService } from './payment-plan-requests.service';
@@ -29,6 +32,9 @@ import { UtilService } from '../utils/utility-service';
       PaymentPlan,
       PaymentPlanInstallment,
       PaymentPlanRequest,
+      PaymentPlanSource,
+      PaymentPlanAllocation,
+      AdHocInvoice,
       RenewalInvoice,
       PropertyTenant,
       Property,

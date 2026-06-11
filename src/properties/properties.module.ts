@@ -30,6 +30,7 @@ import { NotificationModule } from 'src/notifications/notification.module';
 import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { RenewalChargeModule } from 'src/renewal-letters/renewal-charge.module';
+import { PaymentPlan } from 'src/payment-plans/entities/payment-plan.entity';
 import { PaymentPlanInstallment } from 'src/payment-plans/entities/payment-plan-installment.entity';
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
@@ -50,6 +51,7 @@ import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoic
       KYCApplication,
       KYCLink,
       RenewalInvoice,
+      PaymentPlan,
       PaymentPlanInstallment,
       OfferLetter,
       AdHocInvoice,

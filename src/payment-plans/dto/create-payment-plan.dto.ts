@@ -58,4 +58,23 @@ export class CreatePaymentPlanDto {
   @IsOptional()
   @IsUUID()
   fromRequestId?: string;
+
+  /**
+   * For the "Outstanding Balance" charge: the wallet-derived OB amount the
+   * modal displayed at load time. The backend rejects with 409 if the live
+   * wallet OB has drifted from this, so a stale form can't split a wrong total.
+   */
+  @IsOptional()
+  @IsNumber()
+  expectedOutstandingBalance?: number;
+
+  /**
+   * When set, this plan settles a single ad-hoc invoice (wallet-backed, Type B)
+   * rather than a renewal-invoice fee. Its presence is the discriminator: the
+   * plan bypasses the renewal-invoice requirement, snapshots the invoice as its
+   * sole FIFO source, and stamps `covered_by_plan_id` to lock the public link.
+   */
+  @IsOptional()
+  @IsUUID()
+  adHocInvoiceId?: string;
 }

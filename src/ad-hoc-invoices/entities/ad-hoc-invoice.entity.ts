@@ -14,6 +14,7 @@ import { AdHocInvoiceLineItem } from './ad-hoc-invoice-line-item.entity';
 
 export enum AdHocInvoiceStatus {
   PENDING = 'pending',
+  PARTIAL = 'partial',
   PAID = 'paid',
   OVERDUE = 'overdue',
   CANCELLED = 'cancelled',
@@ -69,6 +70,18 @@ export class AdHocInvoice extends BaseEntity {
 
   @Column({ type: 'varchar', length: 20, default: AdHocInvoiceStatus.PENDING })
   status: AdHocInvoiceStatus;
+
+  /** How much of total_amount has been collected (drives PARTIAL status). */
+  @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
+  amount_paid: number;
+
+  /**
+   * Set when a payment plan owns this invoice's debt — its public pay link is
+   * then locked. Plain uuid FK (DB foreign key lives in the migration, ON
+   * DELETE SET NULL) to avoid an ad_hoc_invoices ↔ payment_plans import cycle.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  covered_by_plan_id: string | null;
 
   @Column({ type: 'date' })
   due_date: Date;

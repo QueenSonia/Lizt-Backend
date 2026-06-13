@@ -4,6 +4,26 @@ import { Repository, SelectQueryBuilder } from 'typeorm';
 import { ChatLog } from './entities/chat-log.entity';
 import { MessageDirection } from './entities/message-direction.enum';
 import { MessageStatus } from './entities/message-status.enum';
+import { MaintenanceRequest } from '../maintenance-requests/entities/maintenance-request.entity';
+import { MaintenanceRequestCreatorTypeEnum } from '../maintenance-requests/dto/create-maintenance-request.dto';
+
+/**
+ * Compact maintenance-request summary attached to a Flow-completion chat log
+ * (`content` = `flow:<name>`) so the landlord's chat view can render the
+ * submitted request — description + attachment counts — instead of the opaque
+ * `flow:flow` marker. The description and media live on the maintenance_requests
+ * row, not in the inbound Flow message, so we join them at read time (which also
+ * keeps the video count correct for videos attached after the Flow completes).
+ */
+export interface FlowSummary {
+  kind: 'maintenance_request';
+  request_id: string;
+  description: string;
+  property_name: string | null;
+  image_count: number;
+  video_count: number;
+  status: string;
+}
 
 export interface ChatHistoryOptions {
   limit?: number;
@@ -59,6 +79,8 @@ export class ChatHistoryService {
   constructor(
     @InjectRepository(ChatLog)
     private readonly chatLogRepository: Repository<ChatLog>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly maintenanceRequestRepository: Repository<MaintenanceRequest>,
   ) { }
 
   /**
@@ -88,6 +110,10 @@ export class ChatHistoryService {
 
       const results = await queryBuilder.getMany();
 
+      // Join the maintenance request behind any Flow-completion message so the
+      // chat view can show the submitted request instead of `flow:flow`.
+      await this.attachFlowSummaries(phoneNumber, results);
+
       this.logger.debug(
         `Retrieved ${results.length} messages for phone number ${phoneNumber} (options: ${JSON.stringify(options)})`,
       );
@@ -109,6 +135,117 @@ export class ChatHistoryService {
         error,
       );
       throw error;
+    }
+  }
+
+  /**
+   * For every inbound Flow-completion log (`content` starts with `flow:`),
+   * attach a `flow_summary` to its metadata from the maintenance request the
+   * tenant filed through that Flow. Best-effort — a failure here must never
+   * break the chat-history read, so the whole thing is wrapped and swallowed.
+   *
+   * Correlation: a Flow-completion message is logged when the tenant taps "Done"
+   * on the terminal screen, moments AFTER the request row was created during the
+   * Flow's data-exchange. So each `flow:` log binds to the tenant's most recent
+   * request created at (or just before) the log's timestamp. We prefer an exact
+   * `request_id` echoed in the Flow's `response_json` when present, and consume
+   * matched requests so back-to-back submissions don't both bind to the same row.
+   */
+  private async attachFlowSummaries(
+    phoneNumber: string,
+    logs: ChatLog[],
+  ): Promise<void> {
+    try {
+      const flowLogs = logs.filter(
+        (log) =>
+          log.direction === MessageDirection.INBOUND &&
+          typeof log.content === 'string' &&
+          log.content.startsWith('flow:'),
+      );
+      if (flowLogs.length === 0) return;
+
+      const requests = await this.maintenanceRequestRepository
+        .createQueryBuilder('mr')
+        .leftJoin('mr.creator', 'creator')
+        .where('creator.phone_number = :phone', { phone: phoneNumber })
+        .andWhere('mr.creator_type = :creatorType', {
+          creatorType: MaintenanceRequestCreatorTypeEnum.TENANT,
+        })
+        .orderBy('mr.created_at', 'DESC')
+        .take(50)
+        .getMany();
+      if (requests.length === 0) return;
+
+      const byRequestId = new Map(requests.map((r) => [r.request_id, r]));
+      const consumed = new Set<string>();
+
+      // Earliest-first so sequential completions bind to sequential requests.
+      const ordered = [...flowLogs].sort(
+        (a, b) => a.created_at.getTime() - b.created_at.getTime(),
+      );
+
+      for (const log of ordered) {
+        const explicitId = this.parseFlowRequestId(log);
+        let match: MaintenanceRequest | undefined;
+
+        const explicit = explicitId ? byRequestId.get(explicitId) : undefined;
+        if (explicit && !consumed.has(explicit.id)) {
+          match = explicit;
+        } else {
+          // `requests` is newest-first, so the first row within the window is
+          // the most recent request created at/just-before this completion.
+          // (NaN for a missing timestamp fails both comparisons, excluding it.)
+          const loggedAt = new Date(log.created_at).getTime();
+          match = requests.find((r) => {
+            if (consumed.has(r.id)) return false;
+            const createdAt = r.created_at
+              ? new Date(r.created_at).getTime()
+              : NaN;
+            return (
+              createdAt <= loggedAt + 90_000 &&
+              createdAt >= loggedAt - 60 * 60_000
+            );
+          });
+        }
+
+        if (!match) continue;
+        consumed.add(match.id);
+
+        const media = match.issue_media ?? [];
+        const summary: FlowSummary = {
+          kind: 'maintenance_request',
+          request_id: match.request_id,
+          description: match.description,
+          property_name: match.property_name,
+          image_count: media.filter((m) => m.type === 'image').length,
+          video_count: media.filter((m) => m.type === 'video').length,
+          status: match.status,
+        };
+        log.metadata = { ...(log.metadata || {}), flow_summary: summary };
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to attach flow summaries for ${phoneNumber}: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Pull a `request_id` out of a Flow completion's `response_json` (the payload
+   * the terminal screen sent), if the Flow echoed one. Returns null when absent
+   * or unparseable — the timestamp fallback in attachFlowSummaries takes over.
+   */
+  private parseFlowRequestId(log: ChatLog): string | null {
+    try {
+      const raw = (log.metadata as Record<string, any> | undefined)?.raw_message
+        ?.interactive?.nfm_reply?.response_json;
+      if (typeof raw !== 'string' || !raw.trim()) return null;
+      const parsed = JSON.parse(raw) as { request_id?: unknown };
+      return typeof parsed.request_id === 'string' && parsed.request_id.trim()
+        ? parsed.request_id.trim()
+        : null;
+    } catch {
+      return null;
     }
   }
 

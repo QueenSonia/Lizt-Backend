@@ -342,8 +342,9 @@ export class RentReminderService {
    *
    * Letter-side handling at the entry point:
    *   - declined → move tenant out, skip rent roll-forward (lease ends).
-   *   - sent     → flip to accepted + auto_renewed_at, then roll forward.
-   *   - accepted / none → roll forward as today (no-op on the letter).
+   *   - accepted + wallet fully covers the next period → settle from credit.
+   *   - anything else (sent / draft / not covered) → float; the tenant must
+   *     accept and then pay. We never auto-accept on the tenant's behalf.
    */
   private async autoRenewExpiredRent(rent: Rent, today: Date): Promise<void> {
     const propertyTenant = await this.propertyTenantRepository.findOne({
@@ -1720,9 +1721,9 @@ export class RentReminderService {
       // letter_status='sent' on cron auto-create: every renewal now goes
       // through the letter-then-invoice flow. letter_body_html stays NULL
       // so the tenant page renders the standard fallback (page 1 + page 2
-      // boilerplate driven by the current structured fields). If the
-      // tenant doesn't accept by expiry, processOverdueRents flips this
-      // to 'accepted' + sets auto_renewed_at.
+      // boilerplate driven by the current structured fields). If the tenant
+      // never accepts, the tenancy simply floats (post-expiry reminders keep
+      // nudging) — we no longer auto-accept on their behalf at expiry.
       const token = uuidv4();
       const renewalInvoice = this.renewalInvoiceRepository.create({
         token,

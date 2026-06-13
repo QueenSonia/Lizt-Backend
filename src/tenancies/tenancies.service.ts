@@ -712,7 +712,7 @@ export class TenanciesService {
     // locking. Editing a letter that's already `sent` or `accepted` creates
     // a NEW row that supersedes the previous one (we can't mutate a row
     // whose token is in the wild — WhatsApp links must stay auditable).
-    const { invoice, supersededInvoiceId, isAutoCompletedByWallet } =
+    const { invoice, supersededInvoiceId } =
       await this.dataSource.transaction(async (manager) => {
         // Lock the latest open (non-superseded, non-paid) row for this
         // property_tenant so two concurrent saves can't race on the version
@@ -865,25 +865,14 @@ export class TenanciesService {
           });
         }
 
-        // Wallet-credit auto-completion: if this invoice's total has been
-        // fully absorbed by the tenant's existing wallet credit (e.g. they
-        // paid partials on a previous V1 and the landlord then revised the
-        // letter down enough to zero out V2's total), the tenant doesn't
-        // need to OTP-accept or pay anything — the prior accepted letter on
-        // V1 is enough authorization, and the wallet credit covers the new
-        // bill. Mark V2 as letter-accepted (auto_renewed_at audits the
-        // implicit acceptance) inside the transaction; payment-side
-        // completion (rent advance, receipts) runs post-transaction.
-        const isAutoCompletedByWallet =
-          !isSilent &&
-          Number(totalAmount) === 0 &&
-          walletBalance > 0 &&
-          invoice.token_type === 'landlord' &&
-          invoice.payment_status !== RenewalPaymentStatus.PAID;
-        if (isAutoCompletedByWallet) {
-          invoice.letter_status = RenewalLetterStatus.ACCEPTED;
-          invoice.auto_renewed_at = new Date();
-        }
+        // No wallet-credit auto-completion at send time: renewal of any
+        // frequency requires a genuine tenant acceptance. Even when wallet
+        // credit fully covers the new period (total nets to ₦0), the letter
+        // goes out as SENT and the tenant must accept — after which the
+        // credit-covered period settles via the accepted-letter path (the
+        // acceptance flow skips the payment link, and the daily cron's
+        // accepted + fully-covered branch settles it from credit). We never
+        // flip a letter to ACCEPTED on the tenant's behalf.
 
         // Sending the letter is itself an act of approval. If a tenant-
         // initiated request was sitting on this row (approval_status='pending'),
@@ -964,35 +953,10 @@ export class TenanciesService {
         return {
           invoice,
           supersededInvoiceId: superseded,
-          isAutoCompletedByWallet,
         };
       });
 
     const token = invoice.token;
-
-    // Drive payment-side completion for the wallet-credit case after the
-    // transaction commits. markInvoiceAsPaid handles status flip → PAID,
-    // payment_history append (synthetic reference), rent advance via
-    // branches A/B, and the standard livefeed/history. skipLedger=true
-    // because there's no payment to credit; the wallet credit was already
-    // there and gets consumed by the period-charge debits inside the
-    // rent-advance branches.
-    if (isAutoCompletedByWallet) {
-      try {
-        await this.markInvoiceAsPaid(
-          token,
-          `wallet_auto_${invoice.id}`,
-          0,
-          'full',
-          true,
-        );
-      } catch (err) {
-        console.error(
-          `Wallet-credit auto-completion failed for renewal invoice ${invoice.id}; the letter is accepted but payment side did not complete. Manual remediation may be needed.`,
-          err,
-        );
-      }
-    }
 
     if (!isSilent) {
       this.eventEmitter.emit('renewal.letter.sent', {
@@ -3108,13 +3072,6 @@ export class TenanciesService {
     const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
     const propertyName = invoice.property.name;
 
-    // Wallet-credit auto-completion: synthetic reference set by the
-    // renewal-letter upsert when total_amount is fully absorbed by existing
-    // wallet credit. There's no real Paystack payment, so the standard
-    // "₦X received" copy is wrong — skip WhatsApp + use different livefeed
-    // copy.
-    const isWalletAutoCompletion = paymentReference.startsWith('wallet_auto_');
-
     // Send WhatsApp notifications (non-blocking). Three states:
     //   willCompleteRenewal — full renewal receipt to tenant + landlord
     //   isCompletingPayment (OB-only fully paid) — OB receipt to tenant + landlord
@@ -3135,10 +3092,7 @@ export class TenanciesService {
       const isOBOnlyTenantToken =
         invoice.token_type === 'tenant' &&
         parseFloat(invoice.rent_amount.toString()) === 0;
-      if (isWalletAutoCompletion) {
-        // No WhatsApp — there's no real payment to receipt. Tenant sees the
-        // completed state on the renewal-invoice page; landlord sees livefeed.
-      } else if (willCompleteRenewal) {
+      if (willCompleteRenewal) {
         await this.whatsappNotificationLog.queue('sendRenewalPaymentTenant', {
           phone_number: tenantPhone,
           tenant_name: tenantName,
@@ -3267,20 +3221,8 @@ export class TenanciesService {
       // Non-blocking - continue even if queueing fails
     }
 
-    // Property history entries — three branches matching the WA structure.
-    if (isWalletAutoCompletion) {
-      const autoDescription = `Renewal for ${tenantName} auto-completed via wallet credit (period charge ₦${totalInvoiceAmount.toLocaleString()} covered by prior credit balance)`;
-      const autoHistoryEntry = this.propertyHistoryRepository.create({
-        property_id: invoice.property_id,
-        tenant_id: invoice.tenant_id,
-        event_type: 'renewal_auto_completed_wallet',
-        event_description: autoDescription,
-        owner_comment: autoDescription,
-        related_entity_id: invoice.id,
-        related_entity_type: 'renewal_invoice',
-      });
-      await this.propertyHistoryRepository.save(autoHistoryEntry);
-    } else if (willCompleteRenewal) {
+    // Property history entries — branches matching the WA structure.
+    if (willCompleteRenewal) {
       const historyDescription = `Renewal payment received from ${tenantName}. Amount: ₦${amount.toLocaleString()}, Reference: ${paymentReference}`;
 
       const propertyHistoryEntry = this.propertyHistoryRepository.create({
@@ -3334,13 +3276,11 @@ export class TenanciesService {
 
     // Create notification for livefeed
     try {
-      const description = isWalletAutoCompletion
-        ? `Renewal for ${tenantName} auto-completed — wallet credit covered the period charge in full`
-        : willCompleteRenewal
-          ? `Renewal payment received from ${tenantName} — ₦${amount.toLocaleString()}`
-          : isCompletingPayment
-            ? `Outstanding balance payment of ₦${amount.toLocaleString()} received from ${tenantName}`
-            : `Partial payment of ₦${amount.toLocaleString()} received from ${tenantName} — ₦${remaining.toLocaleString()} of ₦${totalInvoiceAmount.toLocaleString()} still outstanding`;
+      const description = willCompleteRenewal
+        ? `Renewal payment received from ${tenantName} — ₦${amount.toLocaleString()}`
+        : isCompletingPayment
+          ? `Outstanding balance payment of ₦${amount.toLocaleString()} received from ${tenantName}`
+          : `Partial payment of ₦${amount.toLocaleString()} received from ${tenantName} — ₦${remaining.toLocaleString()} of ₦${totalInvoiceAmount.toLocaleString()} still outstanding`;
 
       await this.notificationService.create({
         date: new Date().toISOString(),

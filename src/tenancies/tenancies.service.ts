@@ -165,7 +165,7 @@ export class TenanciesService {
    *    cost the tenant their remaining days. Before the due date the cron will
    *    auto-handle it, so we return a clear "will auto-renew on <date>" error;
    *  - wallet credit must FULLY cover the next period;
-   *  - non-monthly tenancies additionally require an ACCEPTED renewal letter.
+   *  - all frequencies require an ACCEPTED renewal letter (we never auto-accept).
    */
   async renewFromWalletCreditNow(propertyTenantId: string, userId: string) {
     const propertyTenant = await this.propertyTenantRepository.findOne({
@@ -228,29 +228,23 @@ export class TenanciesService {
       );
     }
 
-    const freq = effectiveFrequency(rent);
-
-    // A letter drives the next period's terms when it's ACCEPTED, or monthly +
-    // SENT (which we auto-accept on the landlord's behalf, exactly as the cron
-    // does for monthly at expiry). We decide this WITHOUT mutating yet, so a
-    // failed coverage check below leaves no side effects. Non-monthly never
-    // auto-accepts — it requires a genuine tenant acceptance.
+    // A letter drives the next period's terms only when it's ACCEPTED. We never
+    // auto-accept on the tenant's behalf — renewal of any frequency requires a
+    // genuine tenant acceptance. Decided WITHOUT mutating, so a failed coverage
+    // check below leaves no side effects.
     const isAccepted =
       latestLetter?.letter_status === RenewalLetterStatus.ACCEPTED;
-    const monthlySent =
-      freq === 'monthly' &&
-      latestLetter?.letter_status === RenewalLetterStatus.SENT;
 
-    if (freq !== 'monthly' && !isAccepted) {
+    if (!isAccepted) {
       throw new BadRequestException(
-        'This non-monthly tenancy can only be renewed from credit after the tenant accepts the renewal letter.',
+        'This tenancy can only be renewed from credit after the tenant accepts the renewal letter.',
       );
     }
 
     const letterSource =
       latestLetter &&
       latestLetter.payment_status === RenewalPaymentStatus.UNPAID &&
-      (isAccepted || monthlySent)
+      isAccepted
         ? latestLetter
         : null;
 
@@ -274,14 +268,6 @@ export class TenanciesService {
       throw new BadRequestException(
         'Wallet credit does not fully cover the next period.',
       );
-    }
-
-    // Covered — now safe to auto-accept a monthly SENT letter (flip + stamp),
-    // so the helper renews at its terms and settles it to PAID (no orphan).
-    if (monthlySent && letterSource) {
-      letterSource.letter_status = RenewalLetterStatus.ACCEPTED;
-      letterSource.auto_renewed_at = new Date();
-      await this.renewalInvoiceRepository.save(letterSource);
     }
 
     const result = await this.renewalChargeService.renewOneFromWalletCredit(

@@ -80,7 +80,7 @@ export class RentReminderService {
     this.logger.log('Starting daily rent reminder check...');
     try {
       await this.processAutoRenewal();
-      await this.processAcceptedNonMonthlyLetterCharges();
+      await this.processAcceptedLetterCharges();
       await this.processUpcomingReminders();
       await this.processPostExpiryReminders();
       await this.checkInstallmentReminders();
@@ -94,18 +94,18 @@ export class RentReminderService {
   }
 
   // ---------------------------------------------------------------------------
-  // Non-monthly accepted-letter OB charge sweep
+  // Accepted-letter OB charge sweep
   // ---------------------------------------------------------------------------
 
   /**
-   * Posts the OB charge for every non-monthly ACCEPTED renewal letter whose
-   * linked active rent has reached its expiry_date but doesn't yet have a
+   * Posts the OB charge for every ACCEPTED renewal letter whose linked active
+   * rent has reached its expiry_date but doesn't yet have a
    * letter_accepted_charge ledger entry.
    *
    * Why this is its own step:
-   *  - processAutoRenewal skips non-monthly rents (Tunji's 2026-05-11 call),
-   *    so non-monthly tenants never get a wallet debit at expiry through
-   *    the usual path.
+   *  - processAutoRenewal only advances (and debits) a rent when the tenant has
+   *    accepted AND wallet credit fully covers the period; every other rent
+   *    floats, so it never gets a wallet debit at expiry through that path.
    *  - The verifyOtpAndAccept hook (Trigger A) only fires when the rent has
    *    already expired AT the moment of acceptance. Tenants who accept ahead
    *    of expiry need the cron to post their charge when expiry rolls around.
@@ -118,8 +118,8 @@ export class RentReminderService {
    * processed exactly once. The helper repeats the same check defensively
    * in case the two cron instances race.
    */
-  private async processAcceptedNonMonthlyLetterCharges() {
-    this.logger.log('Processing accepted non-monthly letter charges...');
+  private async processAcceptedLetterCharges() {
+    this.logger.log('Processing accepted letter charges...');
 
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
@@ -395,55 +395,35 @@ export class RentReminderService {
       return;
     }
 
-    // Monthly tenancies always auto-renew (debt was already on the wallet).
-    // Non-monthly (quarterly / bi-annual / annual / equivalent custom) tenants
-    // auto-renew on cron ONLY when the tenant has genuinely ACCEPTED the
-    // renewal letter AND their wallet credit fully covers the next period —
-    // in which case we settle it silently from credit (same as monthly).
-    // Otherwise the tenancy floats: the old rent stays ACTIVE+OWING with an
-    // expired expiry_date; the OB charge sweep (processAcceptedNonMonthlyLetterCharges)
-    // and processPostExpiryReminders pick it up.
-    // We deliberately do NOT auto-flip SENT → ACCEPTED for non-monthly (that
-    // flip happens below for monthly only), so a non-monthly tenant must
-    // actually accept before any wallet is debited.
-    // Context: Tunji called out an annual tenant being auto-renewed to a
-    // ₦13.5M bill after an unsigned letter (2026-05-11) — the accept + full
-    // coverage gate keeps that from recurring.
-    if (effectiveFrequency(rent) !== 'monthly') {
-      const accepted =
-        !!latestLetter &&
-        latestLetter.letter_status === RenewalLetterStatus.ACCEPTED &&
-        !latestLetter.superseded_by_id;
-      const covered = accepted
-        ? await this.isNextPeriodFullyCovered(rent, latestLetter as RenewalInvoice)
-        : false;
-      if (!accepted || !covered) {
-        this.logger.log(
-          `Skipping auto-renewal for non-monthly rent ${rent.id} (${rent.payment_frequency}): accepted=${accepted}, covered=${covered}. OB sweep / post-expiry reminders will handle it.`,
-        );
-        return;
-      }
-      // accepted + fully covered → fall through; the ACCEPTED letter is picked
-      // up as letterSource below and renewed-from-credit like the monthly path.
+    // All frequencies behave identically: the cron only ADVANCES a rent when the
+    // tenant has genuinely ACCEPTED the renewal letter AND wallet credit fully
+    // covers the next period — then we settle it silently from credit. Otherwise
+    // the tenancy floats (old rent stays ACTIVE+expired) and the OB charge sweep
+    // (processAcceptedLetterCharges) + processPostExpiryReminders carry it until
+    // the tenant PAYS, which advances the period via markInvoiceAsPaid. We never
+    // auto-accept a letter on the tenant's behalf — a SENT-but-unaccepted letter
+    // floats just like having no letter at all.
+    // Context: Tunji flagged an annual tenant auto-renewed to a ₦13.5M bill after
+    // an unsigned letter (2026-05-11); requiring acceptance + full coverage for
+    // every frequency keeps that from recurring.
+    const accepted =
+      !!latestLetter &&
+      latestLetter.letter_status === RenewalLetterStatus.ACCEPTED &&
+      !latestLetter.superseded_by_id;
+    const covered = accepted
+      ? await this.isNextPeriodFullyCovered(rent, latestLetter as RenewalInvoice)
+      : false;
+    if (!accepted || !covered) {
+      this.logger.log(
+        `Skipping auto-renewal for rent ${rent.id} (${rent.payment_frequency}): accepted=${accepted}, covered=${covered}. OB sweep / post-expiry reminders will handle it.`,
+      );
+      return;
     }
 
     if (propertyTenant) {
-      if (latestLetter?.letter_status === RenewalLetterStatus.SENT) {
-        // Tenant didn't accept by expiry — auto-stamp the letter so the
-        // payment-page gate lets them pay the new period's invoice and
-        // the tenant page can render the AUTO-RENEWED stamp.
-        latestLetter.letter_status = RenewalLetterStatus.ACCEPTED;
-        latestLetter.auto_renewed_at = new Date();
-        await this.renewalInvoiceRepository.save(latestLetter);
-        this.logger.log(
-          `Auto-renewed letter ${latestLetter.id} (sent → accepted) at expiry of rent ${rent.id}.`,
-        );
-      }
-
-      // The SENT branch above always mutates to ACCEPTED, so by this point
-      // the only statuses that can flow through are DRAFT and ACCEPTED. We
-      // honor only ACCEPTED — DRAFT means the landlord hasn't shared the
-      // figures with the tenant yet, so the cron shouldn't surprise them.
+      // We only reach here when latestLetter is already ACCEPTED (the gate above
+      // floats anything not accepted+covered). Honor it as the source for the
+      // next period's figures while it is still unpaid.
       if (
         latestLetter &&
         latestLetter.letter_status === RenewalLetterStatus.ACCEPTED &&
@@ -466,13 +446,32 @@ export class RentReminderService {
     // current rent's recurring fees forward.
     //
     // Cron-step ordering note: runDailyReminderCheck runs processAutoRenewal
-    // BEFORE processAcceptedNonMonthlyLetterCharges. Once we flip the old rent
-    // INACTIVE here, that OB-charge sweep's candidate query (active rent +
-    // expiry ≤ today) no longer matches this letter — so a non-monthly renewal
-    // settled here is NOT also OB-charged. Keep this ordering; the helper also
-    // re-checks getLetterAcceptedChargeAmount defensively.
+    // BEFORE processAcceptedLetterCharges. Once we flip the old rent INACTIVE
+    // here, that OB-charge sweep's candidate query (active rent + expiry ≤ today)
+    // no longer matches this letter — so a renewal settled here is NOT also
+    // OB-charged. Keep this ordering; the helper also re-checks
+    // getLetterAcceptedChargeAmount defensively.
     while (currentExpiry < today) {
       const useLetter = !!letterSource && !letterConsumed;
+
+      // Float on ONE period: only advance a period wallet credit FULLY covers.
+      // renewOneFromWalletCredit commits a period (creates rent + posts debit)
+      // before deciding PAID vs OWING, so we must gate BEFORE the call — else a
+      // partially-prepaid tenant gets uncovered periods turned into fresh debt.
+      // Stop at the first period credit can't cover, leaving it floating.
+      const periodCovered = useLetter
+        ? await this.isNextPeriodFullyCovered(
+            currentRent,
+            letterSource as RenewalInvoice,
+          )
+        : await this.isCarriedPeriodFullyCovered(currentRent);
+      if (!periodCovered) {
+        this.logger.log(
+          `Stopping catch-up for rent ${currentRent.id}: next period not fully covered by wallet credit — leaving it to float.`,
+        );
+        break;
+      }
+
       const result = await this.renewalChargeService.renewOneFromWalletCredit(
         currentRent,
         useLetter ? letterSource : null,
@@ -527,6 +526,21 @@ export class RentReminderService {
       await this.renewalChargeService.getLetterAcceptedChargeAmount(letter.id);
     const effectiveWallet = walletBalance + ownLetterCharge;
     return recurringCharge - effectiveWallet <= 0;
+  }
+
+  /**
+   * True when the tenant's wallet credit fully covers the recurring charge of
+   * the NEXT carried-forward period for `rent` (no letter — subsequent periods
+   * in the multi-period catch-up loop). Mirrors isNextPeriodFullyCovered but
+   * sources the charge from the rent's own recurring fees.
+   */
+  private async isCarriedPeriodFullyCovered(rent: Rent): Promise<boolean> {
+    const recurringCharge = sumRecurring(rentToFees(rent));
+    const walletBalance = await this.tenantBalancesService.getBalance(
+      rent.tenant_id,
+      rent.property.owner_id,
+    );
+    return recurringCharge - walletBalance <= 0;
   }
 
   /**
@@ -795,17 +809,13 @@ export class RentReminderService {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
     // Status line: when wallet credit fully covers the period, the pay reminder
-    // is suppressed. Tell the landlord that, plus when it auto-renews. Monthly
-    // always auto-renews from credit; non-monthly only once the tenant accepts
-    // the renewal letter, so we word that case conditionally.
+    // is suppressed. Renewal of any frequency auto-settles from credit only once
+    // the tenant accepts the renewal letter, so we always word it that way.
     const renewOnStr = fmtDate(summary.startDate);
     const covered = summary.totalAmount <= 0;
     let statusNote: string;
     if (covered) {
-      statusNote =
-        effectiveFrequency(rent) === 'monthly'
-          ? `This period is fully covered by wallet credit, so no payment reminder will be sent — it auto-renews on ${renewOnStr}.`
-          : `This period is fully covered by wallet credit, so no payment reminder will be sent — it auto-renews on ${renewOnStr} once ${tenantName} accepts the renewal letter.`;
+      statusNote = `This period is fully covered by wallet credit, so no payment reminder will be sent — it auto-renews on ${renewOnStr} once ${tenantName} accepts the renewal letter.`;
     } else {
       statusNote = `Your tenant's first renewal reminder goes out tomorrow.`;
     }
@@ -1652,8 +1662,8 @@ export class RentReminderService {
             : [];
           const invoicePeriodCharge = sumAll(breakdown);
           // The wallet may already carry a letter_accepted_charge posted for
-          // *this same invoice's period* (non-monthly accept-after-expiry flow
-          // in RenewalChargeService, fired by processAcceptedNonMonthlyLetterCharges
+          // *this same invoice's period* (accept-after-expiry flow in
+          // RenewalChargeService, fired by processAcceptedLetterCharges
           // once expiry is reached). That debit is already represented in the
           // breakdown, so counting it again as wallet debt would inflate
           // total_amount to 2× the period. Add the own-letter charge back

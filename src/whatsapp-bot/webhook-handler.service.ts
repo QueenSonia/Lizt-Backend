@@ -688,7 +688,8 @@ export class WebhookHandler {
           if (
             !message.interactive ||
             (!message.interactive.button_reply &&
-              !message.interactive.list_reply)
+              !message.interactive.list_reply &&
+              !message.interactive.nfm_reply)
           ) {
             this.logger.warn(
               'Simulator interactive message validation failed: missing interactive content',
@@ -697,6 +698,7 @@ export class WebhookHandler {
                 hasInteractive: !!message.interactive,
                 hasButtonReply: !!message.interactive?.button_reply,
                 hasListReply: !!message.interactive?.list_reply,
+                hasNfmReply: !!message.interactive?.nfm_reply,
               },
             );
             return false;

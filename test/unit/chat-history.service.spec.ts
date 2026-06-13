@@ -5,22 +5,53 @@ import { ChatHistoryService } from 'src/whatsapp-bot/chat-history.service';
 import { ChatLog } from 'src/whatsapp-bot/entities/chat-log.entity';
 import { MessageDirection } from 'src/whatsapp-bot/entities/message-direction.enum';
 import { MessageStatus } from 'src/whatsapp-bot/entities/message-status.enum';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 
 describe('ChatHistoryService', () => {
   let service: ChatHistoryService;
   let repository: Repository<ChatLog>;
 
-  const mockRepository = {
-    createQueryBuilder: jest.fn(() => ({
-      leftJoinAndSelect: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      orderBy: jest.fn().mockReturnThis(),
-      limit: jest.fn().mockReturnThis(),
-      offset: jest.fn().mockReturnThis(),
-      getMany: jest.fn(),
-    })),
+  // A single, stable query-builder so a test can configure `getMany` on the
+  // same instance the service later calls (a fresh object per call wouldn't
+  // share that wiring).
+  const mockQueryBuilder = {
+    leftJoinAndSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    limit: jest.fn().mockReturnThis(),
+    offset: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue([]),
   };
+
+  const mockRepository = {
+    createQueryBuilder: jest.fn(() => mockQueryBuilder),
+    count: jest.fn().mockResolvedValue(0),
+  };
+
+  // Maintenance-request repo backing flow-summary enrichment. Default: no
+  // requests (enrichment is a no-op); the flow-summary test overrides getMany.
+  const mockMrQueryBuilder = {
+    leftJoin: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue([]),
+  };
+
+  const mockMaintenanceRequestRepository = {
+    createQueryBuilder: jest.fn(() => mockMrQueryBuilder),
+  };
+
+  afterEach(() => {
+    jest.clearAllMocks();
+    // clearAllMocks wipes call history but keeps implementations; reset the
+    // resolved values so a value one test set doesn't leak into the next.
+    mockQueryBuilder.getMany.mockResolvedValue([]);
+    mockMrQueryBuilder.getMany.mockResolvedValue([]);
+    mockRepository.count.mockResolvedValue(0);
+  });
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -29,6 +60,10 @@ describe('ChatHistoryService', () => {
         {
           provide: getRepositoryToken(ChatLog),
           useValue: mockRepository,
+        },
+        {
+          provide: getRepositoryToken(MaintenanceRequest),
+          useValue: mockMaintenanceRequestRepository,
         },
       ],
     }).compile();
@@ -59,7 +94,7 @@ describe('ChatHistoryService', () => {
           created_at: new Date(),
           user: undefined,
           user_id: undefined,
-        } as ChatLog,
+        } as unknown as ChatLog,
       ];
 
       const queryBuilder = mockRepository.createQueryBuilder();
@@ -86,7 +121,7 @@ describe('ChatHistoryService', () => {
         status: MessageStatus.DELIVERED,
         direction: MessageDirection.OUTBOUND,
         limit: 10,
-        offset: 0,
+        offset: 5,
       };
 
       const queryBuilder = mockRepository.createQueryBuilder();
@@ -112,6 +147,60 @@ describe('ChatHistoryService', () => {
       );
       expect(queryBuilder.limit).toHaveBeenCalledWith(options.limit);
       expect(queryBuilder.offset).toHaveBeenCalledWith(options.offset);
+    });
+
+    it('attaches a flow_summary to a Flow-completion message from the tenant request', async () => {
+      const phoneNumber = '2348184350211';
+      const flowLog = {
+        id: 'flow-1',
+        phone_number: phoneNumber,
+        direction: MessageDirection.INBOUND,
+        message_type: 'interactive',
+        content: 'flow:flow',
+        metadata: {
+          raw_message: {
+            interactive: {
+              nfm_reply: { response_json: JSON.stringify({ request_id: '#SR1' }) },
+            },
+          },
+        },
+        whatsapp_message_id: undefined,
+        status: MessageStatus.DELIVERED,
+        error_code: undefined,
+        error_reason: undefined,
+        created_at: new Date('2026-06-13T10:00:30Z'),
+        user: undefined,
+        user_id: undefined,
+      } as unknown as ChatLog;
+
+      mockQueryBuilder.getMany.mockResolvedValueOnce([flowLog]);
+      mockMrQueryBuilder.getMany.mockResolvedValueOnce([
+        {
+          id: 'mr-1',
+          request_id: '#SR1',
+          description: 'Kitchen tap leaking',
+          property_name: 'Hibiscus Court',
+          status: 'not_approved',
+          created_at: new Date('2026-06-13T10:00:00Z'),
+          issue_media: [
+            { type: 'image', url: 'u1', attempt: 1 },
+            { type: 'image', url: 'u2', attempt: 1 },
+            { type: 'video', url: 'u3', attempt: 1 },
+          ],
+        },
+      ]);
+
+      const [result] = await service.getChatHistory(phoneNumber);
+
+      expect(result.metadata.flow_summary).toEqual({
+        kind: 'maintenance_request',
+        request_id: '#SR1',
+        description: 'Kitchen tap leaking',
+        property_name: 'Hibiscus Court',
+        image_count: 2,
+        video_count: 1,
+        status: 'not_approved',
+      });
     });
   });
 
@@ -193,7 +282,7 @@ describe('ChatHistoryService', () => {
           created_at: new Date(),
           user: undefined,
           user_id: undefined,
-        } as ChatLog,
+        } as unknown as ChatLog,
         {
           id: '2',
           phone_number: '+1234567890',
@@ -208,7 +297,7 @@ describe('ChatHistoryService', () => {
           created_at: new Date(),
           user: undefined,
           user_id: undefined,
-        } as ChatLog,
+        } as unknown as ChatLog,
         {
           id: '3',
           phone_number: '+1234567890',
@@ -223,7 +312,7 @@ describe('ChatHistoryService', () => {
           created_at: new Date(),
           user: undefined,
           user_id: undefined,
-        } as ChatLog,
+        } as unknown as ChatLog,
       ];
 
       const queryBuilder = mockRepository.createQueryBuilder();

@@ -25,10 +25,7 @@ import {
   rentToFees,
   sumRecurring,
 } from '../common/billing/fees';
-import {
-  advanceRentPeriod,
-  effectiveFrequency,
-} from '../common/utils/rent-date.util';
+import { advanceRentPeriod } from '../common/utils/rent-date.util';
 
 export type ChargeSkipReason =
   | 'monthly'
@@ -60,17 +57,18 @@ const isoDate = (d: Date | string): string => {
 /**
  * Charges and reversals tied to a renewal letter's acceptance.
  *
- * Scope: non-monthly tenants only. Monthly tenants are handled by the
- * existing autoRenewExpiredRent flow in RentReminderService.
+ * Scope: all frequencies. Posts one OB_CHARGE per recurring fee when an
+ * ACCEPTED letter's linked rent has reached expiry, regardless of the rent's
+ * payment frequency.
  *
  * Triggers:
  *  A) verifyOtpAndAccept calls chargeAcceptedRenewalAtExpiry when the tenant
  *     accepts. If their current rent has already expired, the charge fires
  *     immediately (Emmanuel's case). Otherwise the helper no-ops and waits
  *     for the cron.
- *  B) The daily cron sweep (processAcceptedNonMonthlyLetterCharges) calls
- *     the same helper for every ACCEPTED non-monthly letter whose related
- *     rent has expired but has no charge yet.
+ *  B) The daily cron sweep (processAcceptedLetterCharges) calls
+ *     the same helper for every ACCEPTED letter whose related rent has
+ *     expired but has no charge yet.
  *  C) The supersede branch in TenanciesService calls reverseChargesForLetter
  *     when a landlord revises an already-accepted letter, so the new letter
  *     acceptance can post a fresh charge based on updated terms.
@@ -106,9 +104,6 @@ export class RenewalChargeService {
     if (letter.superseded_by_id) return { posted: 0, skipped: 'superseded' };
     if (letter.letter_status !== RenewalLetterStatus.ACCEPTED) {
       return { posted: 0, skipped: 'not_accepted' };
-    }
-    if (effectiveFrequency(rent) === 'monthly') {
-      return { posted: 0, skipped: 'monthly' };
     }
 
     const expiry = rent.expiry_date ? startOfUtcDay(new Date(rent.expiry_date)) : null;
@@ -259,7 +254,6 @@ export class RenewalChargeService {
       .andWhere('ri.superseded_by_id IS NULL')
       .andWhere('ri.deleted_at IS NULL')
       .andWhere('DATE(r.expiry_date) <= :today', { today: todayStr })
-      .andWhere("COALESCE(r.payment_frequency, '') <> 'monthly'")
       .andWhere(
         `NOT EXISTS (
           SELECT 1 FROM tenant_balance_ledger l
@@ -549,8 +543,8 @@ export class RenewalChargeService {
     // period (Trigger A inline accept-after-expiry, or a prior cron OB sweep),
     // that debit already moved the wallet. Posting AUTO_RENEWAL debits now
     // would double-charge — so skip them and treat the OB charge as the
-    // period debit. (Monthly never has a letter_accepted_charge, so this is a
-    // no-op there and the debits post as before.)
+    // period debit. (The dedup is keyed on whether the letter already holds a
+    // charge, not on frequency, so it stays correct for every frequency.)
     const ownLetterCharge = letter
       ? await this.getLetterAcceptedChargeAmount(letter.id)
       : 0;

@@ -4677,8 +4677,13 @@ export class TemplateSenderService {
 
   /**
    * Send rent reminder with renewal link template to tenant via WhatsApp.
-   * Used for the last 3 days before rent expiry.
+   * Used for the last few days before rent expiry.
    * Template: rent_reminder_with_renewal
+   *
+   * NOTE: `expiry_date` ({{4}}) carries the whole verb phrase, e.g.
+   * "is due today, 14 June 2026" / "is due tomorrow, …" / "was due
+   * yesterday, …". The Meta body reads "…rent for {{3}} {{4}}." — so pass
+   * the relative due-phrase the cron builds, NOT a bare date.
    */
   async sendRentReminderWithRenewalTemplate({
     phone_number,
@@ -5630,7 +5635,7 @@ export class TemplateSenderService {
     rent_reminders:
       'Hi {{1}},\n\nThis is a friendly reminder that your rent for {{2}} is due on {{3}}.\n\nAmount due: {{4}}\n\nThank you.',
     rent_reminder_with_renewal:
-      'Hi {{1}},\n\nThis is a friendly reminder that your next {{2}} rent for {{3}} is due on {{4}}.\n\nAmount due: {{5}}\n\nPlease use the link below to view your invoice and complete your payment.',
+      'Hi {{1}},\n\nThis is a friendly reminder that your next {{2}} rent for {{3}} {{4}}.\n\nAmount due: {{5}}\n\nPlease use the link below to view your invoice and complete your payment.',
     rent_overdue:
       'Hi {{1}},\n\nYour rent for {{2}} was due on {{3}} and is now overdue.\n\nAmount due: {{4}}\n\nPlease make payment as soon as possible to avoid additional charges.\n\nThank you for your prompt attention to this matter.',
     rent_overdue_with_renewal:

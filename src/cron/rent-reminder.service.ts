@@ -1260,6 +1260,22 @@ export class RentReminderService {
             : daysUntilExpiry < 0
               ? `expired on ${expiryDateStr}`
               : `is due to expire on ${expiryDateStr}`;
+    // The accepted-letter invoice template (rent_reminder_with_renewal) talks
+    // about the RENT being due, not the tenancy expiring, so it needs its own
+    // verb phrase. Its Meta body reads "…rent for {{3}} {{4}}.", so {{4}}
+    // carries the entire "is due today, <date>" / "is due tomorrow, <date>" /
+    // "was due yesterday, <date>" phrase (mirrors bodyExpiryDateStr above but
+    // with rent-due wording).
+    const bodyDueDateStr =
+      daysUntilExpiry === 0
+        ? `is due today, ${expiryDateStr}`
+        : daysUntilExpiry === 1
+          ? `is due tomorrow, ${expiryDateStr}`
+          : daysUntilExpiry === -1
+            ? `was due yesterday, ${expiryDateStr}`
+            : daysUntilExpiry < 0
+              ? `was due on ${expiryDateStr}`
+              : `is due on ${expiryDateStr}`;
     // For PARTIAL invoices, the "Amount due" we surface is the remaining
     // balance (total - prior payments), not the original total — the same
     // template body works for both fresh and partial cases since the {{5}}
@@ -1348,11 +1364,11 @@ export class RentReminderService {
         `Queued renewal letter reminder for rent ${rent.id} (${daysUntilExpiry} days before expiry).`,
       );
     } else {
-      // Plain date here — the rent_reminder_with_renewal Meta body already
-      // contains the verb ("…is due on {{4}}"), so passing the verb-phrase
-      // bodyExpiryDateStr (built for renewal_letter_link, whose body is
-      // "…your tenancy for {{2}} {{3}}.") rendered as
-      // "is due on is due to expire today, …".
+      // The rent_reminder_with_renewal Meta body now reads "…rent for {{3}}
+      // {{4}}.", so {{4}} carries the relative due-phrase ("is due today,
+      // …" / "is due tomorrow, …" / "was due yesterday, …"). Pass the
+      // rent-due variant (bodyDueDateStr), NOT bodyExpiryDateStr — the latter
+      // says "is due to expire today" which reads wrong next to "rent".
       await this.whatsAppNotificationLogService.queue(
         'sendRentReminderWithRenewalTemplate',
         {
@@ -1360,7 +1376,7 @@ export class RentReminderService {
           tenant_name: rent.tenant.user.first_name,
           property_name: rent.property.name,
           rent_amount: formattedAmount,
-          expiry_date: expiryDateStr,
+          expiry_date: bodyDueDateStr,
           renewal_token: renewalInvoice.token,
           frontend_url: frontendUrl,
           payment_frequency: rent.payment_frequency || 'Monthly',

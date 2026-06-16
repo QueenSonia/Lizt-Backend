@@ -20,20 +20,21 @@ import { PropertyHistory } from '../property-history/entities/property-history.e
 import type { TenancyRenewedFromCreditParams } from '../whatsapp-bot/template-sender';
 import {
   Fee,
+  FeeKind,
   carryForwardRentColumns,
   renewalInvoiceToFees,
   rentToFees,
+  sumAll,
   sumRecurring,
 } from '../common/billing/fees';
 import { advanceRentPeriod } from '../common/utils/rent-date.util';
 
 export type ChargeSkipReason =
-  | 'monthly'
   | 'expiry_in_future'
   | 'already_charged'
   | 'superseded'
   | 'not_accepted'
-  | 'no_recurring_fees';
+  | 'no_fees';
 
 export interface ChargeResult {
   posted: number;
@@ -57,9 +58,15 @@ const isoDate = (d: Date | string): string => {
 /**
  * Charges and reversals tied to a renewal letter's acceptance.
  *
- * Scope: all frequencies. Posts one OB_CHARGE per recurring fee when an
+ * Scope: all frequencies. Posts one OB_CHARGE per fee on the letter when an
  * ACCEPTED letter's linked rent has reached expiry, regardless of the rent's
- * payment frequency.
+ * payment frequency. Bills every fee in the letter's snapshot — recurring AND
+ * one-time — because the letter IS the landlord's authoritative statement of
+ * what to bill for THIS period (a one-time fee added in "Edit next period"
+ * must be collected). The recurring flag governs only carry-forward into the
+ * NEXT period, not what this period's letter bills. (Cron-authored next-period
+ * letters only ever snapshot recurring fees via carryForwardRentColumns, so
+ * sumAll == sumRecurring for them and this is a no-op there.)
  *
  * Triggers:
  *  A) verifyOtpAndAccept calls chargeAcceptedRenewalAtExpiry when the tenant
@@ -90,8 +97,9 @@ export class RenewalChargeService {
   ) {}
 
   /**
-   * Post one OB_CHARGE per recurring fee on `letter` to the tenant's wallet,
-   * keyed for idempotency on (renewal_invoice id, letter_accepted_charge).
+   * Post one OB_CHARGE per fee on `letter` (recurring and one-time) to the
+   * tenant's wallet, keyed for idempotency on
+   * (renewal_invoice id, letter_accepted_charge).
    *
    * Caller must pass a rent loaded with the `property` relation so we can
    * resolve the landlord id.
@@ -114,9 +122,11 @@ export class RenewalChargeService {
     const alreadyCharged = await this.hasExistingCharge(letter.id);
     if (alreadyCharged) return { posted: 0, skipped: 'already_charged' };
 
-    const recurringFees = renewalInvoiceToFees(letter).filter((f) => f.recurring);
-    if (recurringFees.length === 0) {
-      return { posted: 0, skipped: 'no_recurring_fees' };
+    // Bill every fee on the letter — one-time fees the landlord set in "Edit
+    // next period" are part of this period's charge, not just recurring ones.
+    const letterFees = renewalInvoiceToFees(letter);
+    if (letterFees.length === 0) {
+      return { posted: 0, skipped: 'no_fees' };
     }
 
     const landlordId = rent.property?.owner_id;
@@ -131,7 +141,7 @@ export class RenewalChargeService {
     const endStr = isoDate(letter.end_date);
 
     let posted = 0;
-    for (const fee of recurringFees) {
+    for (const fee of letterFees) {
       await this.tenantBalancesService.applyChange(
         rent.tenant_id,
         landlordId,
@@ -228,7 +238,7 @@ export class RenewalChargeService {
   }
 
   /**
-   * Sweep used by the daily cron. Returns every non-monthly ACCEPTED letter
+   * Sweep used by the daily cron. Returns every ACCEPTED letter
    * whose linked active rent has expired but has no letter_accepted_charge
    * ledger entry yet. Caller iterates and invokes chargeAcceptedRenewalAtExpiry.
    */
@@ -382,23 +392,29 @@ export class RenewalChargeService {
   }
 
   /**
-   * True when the tenant's wallet credit fully covers this letter's recurring
-   * period charge — with the own-letter-charge add-back so a period already
-   * OB-charged at accept time still reads as covered. Mirrors
-   * RentReminderService.isNextPeriodFullyCovered. Used by the acceptance flow
-   * to skip the "pay your invoice" link when nothing is actually owed.
+   * True when the tenant's wallet credit fully covers this letter's FULL
+   * period charge (every fee on the letter — recurring and one-time) — with
+   * the own-letter-charge add-back so a period already OB-charged at accept
+   * time still reads as covered. Mirrors RentReminderService.isNextPeriodFullyCovered.
+   * Used by the acceptance flow to skip the "pay your invoice" link when
+   * nothing is actually owed.
+   *
+   * Uses sumAll (not sumRecurring) so a one-time fee the landlord added in
+   * "Edit next period" still counts toward "is this covered?": a wallet that
+   * only covers the recurring slice must NOT read as covered, or the renewal
+   * would settle while the one-time fee goes uncollected.
    */
   async isLetterPeriodCoveredByCredit(
     letter: RenewalInvoice,
     landlordId: string,
   ): Promise<boolean> {
-    const recurringCharge = sumRecurring(renewalInvoiceToFees(letter));
+    const periodCharge = sumAll(renewalInvoiceToFees(letter));
     const walletBalance = await this.tenantBalancesService.getBalance(
       letter.tenant_id,
       landlordId,
     );
     const ownLetterCharge = await this.getLetterAcceptedChargeAmount(letter.id);
-    return recurringCharge - (walletBalance + ownLetterCharge) <= 0;
+    return periodCharge - (walletBalance + ownLetterCharge) <= 0;
   }
 
   // ---------------------------------------------------------------------------
@@ -419,7 +435,9 @@ export class RenewalChargeService {
    *    instance already handled it ⇒ skip),
    *  - creates the next-period ACTIVE rent (sourced from `letter` when given,
    *    else carrying the current rent's recurring fees forward),
-   *  - debits the wallet one AUTO_RENEWAL entry per recurring fee,
+   *  - debits the wallet one AUTO_RENEWAL entry per billed fee — ALL fees on
+   *    the letter (recurring + one-time) when honoring one, else only the
+   *    carried recurring fees,
    *  - if the wallet still covers the charge, marks the new rent PAID, settles
    *    the linked letter as paid-by-wallet-credit, and returns the params for
    *    the tenant "tenancy renewed" confirmation (the CALLER dispatches it via
@@ -427,7 +445,7 @@ export class RenewalChargeService {
    *    no whatsapp dependency to avoid a module cycle),
    *  - records a renewal_period_started property-history entry.
    *
-   * Dedup vs the non-monthly OB charge (chargeAcceptedRenewalAtExpiry): if the
+   * Dedup vs the OB charge (chargeAcceptedRenewalAtExpiry): if the
    * letter already has a letter_accepted_charge on the wallet for this period,
    * we DO NOT post fresh AUTO_RENEWAL debits — that OB charge already moved the
    * wallet, and re-debiting would double-charge. See `ownLetterCharge` below.
@@ -479,17 +497,30 @@ export class RenewalChargeService {
     }
     rent.rent_status = RentStatusEnum.INACTIVE;
 
-    // Period charge = sum of recurring fees for the new period. From the
-    // letter snapshot when honoring one, else the current rent carried forward.
-    let recurringFees: Fee[];
+    // Fees billed for the new period. When honoring a letter, bill EVERY fee
+    // it snapshots (recurring AND one-time) — the letter is the landlord's
+    // authoritative statement of what to charge for this period, so a one-time
+    // fee added in "Edit next period" is collected. Without a letter (the
+    // carry-forward of a missed period) bill only recurring fees, since
+    // one-time move-in fees must not re-bill every period.
+    //
+    // `letterFeesByKind` lets the new rent below source each fee's recurring
+    // flag from the letter's breakdown — RenewalInvoice has no flat
+    // *_recurring columns, so the breakdown is the only per-fee recurring
+    // truth. Stitching a letter AMOUNT onto the OLD rent's carried flag (the
+    // previous behavior) wrote one-time fees with recurring=true and re-billed
+    // them on the FOLLOWING renewal.
+    let chargeFees: Fee[];
     let periodCharge: number;
+    let letterFeesByKind: Map<FeeKind, Fee> | null = null;
     if (useLetter && letter) {
       const letterFees = renewalInvoiceToFees(letter);
-      recurringFees = letterFees.filter((f) => f.recurring);
-      periodCharge = sumRecurring(letterFees);
+      chargeFees = letterFees;
+      periodCharge = sumAll(letterFees);
+      letterFeesByKind = new Map(letterFees.map((f) => [f.kind, f]));
     } else {
       const currentFees = rentToFees(rent);
-      recurringFees = currentFees.filter((f) => f.recurring);
+      chargeFees = currentFees.filter((f) => f.recurring);
       periodCharge = sumRecurring(currentFees);
     }
 
@@ -512,17 +543,23 @@ export class RenewalChargeService {
         useLetter && letter && letter.service_charge != null
           ? Number(letter.service_charge)
           : carried.service_charge,
-      service_charge_recurring: carried.service_charge_recurring,
+      service_charge_recurring:
+        letterFeesByKind?.get('service')?.recurring ??
+        carried.service_charge_recurring,
       legal_fee:
         useLetter && letter && letter.legal_fee != null
           ? Number(letter.legal_fee)
           : carried.legal_fee,
-      legal_fee_recurring: carried.legal_fee_recurring,
+      legal_fee_recurring:
+        letterFeesByKind?.get('legal')?.recurring ??
+        carried.legal_fee_recurring,
       agency_fee:
         useLetter && letter && letter.agency_fee != null
           ? Number(letter.agency_fee)
           : carried.agency_fee,
-      agency_fee_recurring: carried.agency_fee_recurring,
+      agency_fee_recurring:
+        letterFeesByKind?.get('agency')?.recurring ??
+        carried.agency_fee_recurring,
       other_fees:
         useLetter && letter
           ? (letter.other_fees ?? carried.other_fees)
@@ -550,7 +587,7 @@ export class RenewalChargeService {
       : 0;
 
     if (ownLetterCharge <= 0) {
-      for (const fee of recurringFees) {
+      for (const fee of chargeFees) {
         await this.tenantBalancesService.applyChange(
           rent.tenant_id,
           landlordId,

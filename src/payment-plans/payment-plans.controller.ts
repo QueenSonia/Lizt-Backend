@@ -273,4 +273,53 @@ export class PaymentPlansController {
     const userId = req?.user?.id;
     return this.paymentPlansService.markInstallmentPaidManual(id, dto, userId);
   }
+
+  @ApiOperation({
+    summary: 'Quote the remaining balance to pay a plan off early (public)',
+    description:
+      'Returns plan total, amount paid, and the remaining lump a tenant would pay to clear the plan now.',
+  })
+  @ApiOkResponse({ description: 'Payoff quote' })
+  @Public()
+  @Get(':id/payoff-quote')
+  async getPayoffQuote(@Param('id', new ParseUUIDPipe()) id: string) {
+    const data = await this.paymentPlansService.getPlanPayoffQuote(id);
+    return { success: true, data };
+  }
+
+  @ApiOperation({
+    summary: 'Initialize Paystack to pay a whole plan off early (tenant-facing)',
+    description:
+      'Charges the remaining plan balance in one transaction. On success every open installment is settled and the plan completes — the same settlement path as a normal installment payment, so there is no second payment door to race the installment links.',
+  })
+  @ApiBody({ type: InitializeInstallmentPaymentDto })
+  @ApiOkResponse({ description: 'Paystack initialization result' })
+  @Public()
+  @Post(':id/initialize-payoff')
+  initializePayoff(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: InitializeInstallmentPaymentDto,
+  ) {
+    return this.paymentPlansService.initializePlanPayoffPayment(id, dto.email);
+  }
+
+  @ApiOperation({
+    summary: 'Verify a Paystack plan payoff (tenant-facing)',
+    description:
+      'Verifies the payoff transaction and settles the whole plan if successful. Idempotent with the Paystack webhook.',
+  })
+  @ApiBody({ type: VerifyInstallmentPaymentDto })
+  @ApiOkResponse({ description: 'Verification result' })
+  @Public()
+  @Post(':id/verify-payoff')
+  async verifyPayoff(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: VerifyInstallmentPaymentDto,
+  ) {
+    const result = await this.paymentPlansService.verifyPlanPayoffPayment(
+      id,
+      dto.reference,
+    );
+    return { success: true, data: result };
+  }
 }

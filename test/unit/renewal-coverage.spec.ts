@@ -7,15 +7,25 @@
  * period -> settle from credit". The decision of whether a period is "fully
  * covered" is the same boundary predicate everywhere:
  *
- *     recurringCharge - effectiveWallet <= 0
+ *     periodCharge - effectiveWallet <= 0
+ *
+ * The KEY distinction is which fees feed `periodCharge`:
+ *   - LETTER-sourced periods bill sumAll(letterFees) — EVERY fee on the letter,
+ *     recurring AND one-time. A one-time fee a landlord adds in "Edit next
+ *     period" is part of THIS period's charge, so credit covering only the
+ *     recurring slice must NOT read as covered (else the one-time fee is never
+ *     collected). The `recurring` flag governs only carry-forward into the
+ *     NEXT period, not what this period bills.
+ *   - CARRY-FORWARD periods (no letter — 2nd+ missed periods in the catch-up
+ *     loop) bill sumRecurring(rentToFees) — move-in one-time fees are not
+ *     re-billed period over period.
  *
  * Source sites this mirrors (all share the `<= 0` boundary):
- *   - RentReminderService.isCarriedPeriodFullyCovered  (the NEW helper)
- *       => recurringCharge - walletBalance <= 0
- *     (cron/rent-reminder.service.ts: rentToFees → carried-forward fees)
- *   - RentReminderService.isNextPeriodFullyCovered
- *   - RenewalChargeService.isLetterPeriodCoveredByCredit
- *       => recurringCharge - (walletBalance + ownLetterCharge) <= 0
+ *   - RentReminderService.isCarriedPeriodFullyCovered  (carry-forward)
+ *       => sumRecurring(rentToFees(rent)) - walletBalance <= 0
+ *   - RentReminderService.isNextPeriodFullyCovered  (letter)
+ *   - RenewalChargeService.isLetterPeriodCoveredByCredit  (letter)
+ *       => sumAll(renewalInvoiceToFees(letter)) - (walletBalance + ownLetterCharge) <= 0
  *     (the letter-sourced variants add the own-letter OB charge back so a
  *      period already OB-charged at accept time still reads as covered)
  *   - RenewalChargeService.renewOneFromWalletCredit
@@ -28,8 +38,16 @@
  * than instantiating the full RentReminderService with all its repository
  * mocks, which is brittle and not what's under test. What matters is the
  * boundary semantics — that "fully covered" is `<= 0` (inclusive at equality),
- * NOT `< 0`.
+ * NOT `< 0` — and which aggregator feeds the charge (the final describe block,
+ * which uses the REAL fees.ts aggregators, locks that in).
  */
+import {
+  Fee,
+  renewalInvoiceToFees,
+  rentToFees,
+  sumAll,
+  sumRecurring,
+} from '../../src/common/billing/fees';
 
 // Local replica of isCarriedPeriodFullyCovered's decision (the new helper):
 //   recurringCharge - walletBalance <= 0
@@ -138,4 +156,75 @@ describe('renewOneFromWalletCredit phrasing (walletAfterCharge >= 0) agrees', ()
       );
     },
   );
+});
+
+/**
+ * The regression guard for the one-time-fee fix: which aggregator feeds the
+ * period charge. A landlord-authored letter with a recurring service charge
+ * AND a one-time legal fee must bill BOTH this period (sumAll), so a wallet
+ * that only covers the recurring slice does NOT read as covered. The
+ * carry-forward (no-letter) path bills only the recurring fees (sumRecurring).
+ *
+ * Uses the REAL fees.ts aggregators + adapters so a regression that reverts a
+ * letter-path site to sumRecurring (dropping the one-time fee) fails here.
+ */
+describe('letter charge uses sumAll (incl. one-time); carry-forward uses sumRecurring', () => {
+  const RENT = 200_000;
+  const SERVICE = 50_000; // recurring
+  const ONE_TIME_LEGAL = 30_000; // one-time fee added in "Edit next period"
+
+  // A landlord letter snapshot carrying a recurring service charge and a
+  // one-time legal fee in its fee_breakdown (the authoritative source).
+  const letter = {
+    rent_amount: RENT,
+    fee_breakdown: [
+      { kind: 'rent', label: 'Rent', amount: RENT, recurring: true },
+      { kind: 'service', label: 'Service Charge', amount: SERVICE, recurring: true },
+      { kind: 'legal', label: 'Legal Fee', amount: ONE_TIME_LEGAL, recurring: false },
+    ] as Fee[],
+  };
+
+  it('sumAll bills the one-time fee; sumRecurring drops it', () => {
+    const fees = renewalInvoiceToFees(letter);
+    expect(sumAll(fees)).toBe(RENT + SERVICE + ONE_TIME_LEGAL); // 280k
+    expect(sumRecurring(fees)).toBe(RENT + SERVICE); // 250k
+  });
+
+  it('credit covering only the recurring slice is NOT covered for a letter (sumAll)', () => {
+    const periodCharge = sumAll(renewalInvoiceToFees(letter));
+    const creditCoveringRecurringOnly = RENT + SERVICE; // 250k
+    // sumAll path: 280k − 250k = 30k > 0 → NOT covered (the one-time fee is owed).
+    expect(isPeriodFullyCovered(periodCharge, creditCoveringRecurringOnly)).toBe(
+      false,
+    );
+    // Had we (wrongly) used sumRecurring, this same credit would read covered —
+    // the exact bug being fixed.
+    const recurringOnly = sumRecurring(renewalInvoiceToFees(letter));
+    expect(isPeriodFullyCovered(recurringOnly, creditCoveringRecurringOnly)).toBe(
+      true,
+    );
+  });
+
+  it('credit covering the full period (incl. one-time) IS covered for a letter', () => {
+    const periodCharge = sumAll(renewalInvoiceToFees(letter));
+    expect(
+      isPeriodFullyCovered(periodCharge, RENT + SERVICE + ONE_TIME_LEGAL),
+    ).toBe(true);
+  });
+
+  it('carry-forward (no letter) bills only recurring fees from the rent', () => {
+    // The new period carried from a rent that still has a one-time legal fee
+    // on its columns: rentToFees classifies it one-time (legal_fee_recurring
+    // false), so sumRecurring excludes it — move-in fees are not re-billed.
+    const rent = {
+      rental_price: RENT,
+      service_charge: SERVICE,
+      service_charge_recurring: true,
+      legal_fee: ONE_TIME_LEGAL,
+      legal_fee_recurring: false,
+    };
+    const fees = rentToFees(rent);
+    expect(sumRecurring(fees)).toBe(RENT + SERVICE); // one-time legal dropped
+    expect(sumAll(fees)).toBe(RENT + SERVICE + ONE_TIME_LEGAL);
+  });
 });

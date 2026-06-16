@@ -222,10 +222,11 @@ export class RenewalInvoice extends BaseEntity {
   decline_reason: string | null;
 
   /**
-   * Stamped by processOverdueRents when the rent expires while the letter
-   * is still in 'sent' state — the cron flips letter_status to 'accepted'
-   * and sets this column. The tenant page renders an AUTO-RENEWED stamp
-   * variant (no OTP/phone metadata) when this is non-null.
+   * Orphan column — never written. It was stamped by the old monthly
+   * auto-renewal cron (which flipped a still-'sent' letter to 'accepted' at
+   * expiry) before renewal was unified to float→accept→pay across all
+   * frequencies. No writer remains, so it always reads null. Still mapped
+   * onto the renewal-letter DTO; kept for backward compatibility.
    */
   @Column({ type: 'timestamptz', nullable: true })
   auto_renewed_at: Date | null;

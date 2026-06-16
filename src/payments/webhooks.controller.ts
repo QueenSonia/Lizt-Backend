@@ -116,26 +116,34 @@ export class WebhooksController {
       //    doesn't retry, then do the heavy DB/notification work in the background.
       if (body.event === 'charge.success') {
         const reference = body.data.reference;
+        const isPlanPayoff =
+          reference?.startsWith('PLANPAYOFF_') ||
+          !!body.data.metadata?.payment_plan_payoff_id;
         const isPaymentPlan =
-          reference?.startsWith('PLAN_') ||
-          !!body.data.metadata?.payment_plan_installment_id;
+          !isPlanPayoff &&
+          (reference?.startsWith('PLAN_') ||
+            !!body.data.metadata?.payment_plan_installment_id);
         const isAdHocInvoice =
+          !isPlanPayoff &&
           !isPaymentPlan &&
           (reference?.startsWith('INV_') ||
             !!body.data.metadata?.ad_hoc_invoice_id);
         const isRenewalPayment =
+          !isPlanPayoff &&
           !isPaymentPlan &&
           !isAdHocInvoice &&
           (reference?.startsWith('RENEWAL_') ||
             body.data.metadata?.renewal_invoice_id);
 
-        const paymentType = isPaymentPlan
-          ? 'payment_plan_installment'
-          : isAdHocInvoice
-            ? 'ad_hoc_invoice'
-            : isRenewalPayment
-              ? 'renewal'
-              : 'offer_letter';
+        const paymentType = isPlanPayoff
+          ? 'payment_plan_payoff'
+          : isPaymentPlan
+            ? 'payment_plan_installment'
+            : isAdHocInvoice
+              ? 'ad_hoc_invoice'
+              : isRenewalPayment
+                ? 'renewal'
+                : 'offer_letter';
 
         this.paystackLogger.info('Processing charge.success webhook', {
           reference,
@@ -144,7 +152,14 @@ export class WebhooksController {
         });
 
         setImmediate(() => {
-          const processor = isPaymentPlan
+          const processor = isPlanPayoff
+            ? this.paymentPlansService.markPlanPaidOffFromWebhook({
+                reference: body.data.reference,
+                amount: body.data.amount,
+                channel: body.data.channel,
+                metadata: body.data.metadata,
+              })
+            : isPaymentPlan
             ? this.paymentPlansService.markInstallmentPaidFromWebhook({
                 reference: body.data.reference,
                 amount: body.data.amount,

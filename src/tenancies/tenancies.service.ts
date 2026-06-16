@@ -41,6 +41,7 @@ import {
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import { isAdHocReversalLeg } from 'src/users/tenant-management/tenant-management.service';
 import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import {
   rentToFees,
@@ -251,8 +252,15 @@ export class TenanciesService {
     // Coverage check — mirrors RentReminderService.isNextPeriodFullyCovered,
     // including the own-letter-charge add-back so a period already OB-charged
     // at accept time still reads as covered. Done BEFORE any mutation.
-    const recurringCharge = letterSource
-      ? sumRecurring(renewalInvoiceToFees(letterSource))
+    //
+    // When a letter is being honored, cover its FULL charge (sumAll — every
+    // fee, including any one-time fee the landlord set in "Edit next period"),
+    // matching what renewOneFromWalletCredit now debits and what the frontend
+    // gates this button on (the sumAll-based invoice total). The no-letter
+    // carry-forward fallback stays on sumRecurring — move-in one-time fees are
+    // not re-billed period-over-period.
+    const periodCharge = letterSource
+      ? sumAll(renewalInvoiceToFees(letterSource))
       : sumRecurring(rentToFees(rent));
     const walletBalance = await this.tenantBalancesService.getBalance(
       rent.tenant_id,
@@ -263,7 +271,7 @@ export class TenanciesService {
           letterSource.id,
         )
       : 0;
-    const covered = recurringCharge - (walletBalance + ownLetterCharge) <= 0;
+    const covered = periodCharge - (walletBalance + ownLetterCharge) <= 0;
     if (!covered) {
       throw new BadRequestException(
         'Wallet credit does not fully cover the next period.',
@@ -2204,13 +2212,38 @@ export class TenanciesService {
       });
     }
 
+    // Ad-hoc invoices are charged and later reversed (cancel / edit-down) on the
+    // wallet ledger. Net every leg of an invoice by its id so a cancelled
+    // invoice nets to zero (no row) and an edited one shows its current amount
+    // exactly once — instead of rendering the (mutable) line-item set once per
+    // surviving charge leg (the old double-count bug). Genuine payments
+    // (positive, NOT reversal-tagged) are excluded here. `owed` is the negative
+    // of the net. Mirrors the landlord tenant-detail breakdown.
+    const adHocOwedByInvoice = new Map<string, number>();
+    for (const e of ledgerEntries) {
+      if (e.related_entity_type !== 'ad_hoc_invoice' || !e.related_entity_id) {
+        continue;
+      }
+      const bc = Number(e.balance_change);
+      const isGenuinePayment = bc > 0 && !isAdHocReversalLeg(e);
+      if (isGenuinePayment) continue;
+      adHocOwedByInvoice.set(
+        e.related_entity_id,
+        (adHocOwedByInvoice.get(e.related_entity_id) ?? 0) + bc,
+      );
+    }
+
     // Charges: negative ledger entries. Exclude:
     //   - CREDIT_APPLIED: legacy artifact from old two-step payment flow
     //   - related_entity_type = 'property_history': reversal entries created when a manual
     //     payment is edited/deleted — accounting artifacts, not real charges
     //   - related_entity_type = 'rent_edit': reversal entries from tenancy charge edits
     //   - metadata.superseded = true: original charges replaced by an edit
+    //   - metadata.phantom_credit_reversal = true: legs written by the Phase-1
+    //     repair script that cancel a now-removed wallet credit and net to zero
+    //     with it, so they must not surface as standalone charges
     // MIGRATION entries are included — they represent real rent charges at ledger setup.
+    const seenAdHoc = new Set<string>();
     const chargeRows = ledgerEntries
       .filter(
         (e) =>
@@ -2218,7 +2251,8 @@ export class TenanciesService {
           e.type !== TenantBalanceLedgerType.CREDIT_APPLIED &&
           e.related_entity_type !== 'property_history' &&
           e.related_entity_type !== 'rent_edit' &&
-          !(e.metadata as any)?.superseded,
+          !(e.metadata as any)?.superseded &&
+          !(e.metadata as any)?.phantom_credit_reversal,
       )
       .flatMap((e) => {
         // Apply the same date resolution and description enrichment as tenant-management
@@ -2265,11 +2299,31 @@ export class TenanciesService {
           date = new Date(e.created_at!);
         }
 
-        // Ad-hoc invoices: split into one row per line item so each fee shows
-        // by name. Falls back to a single row if line items are missing.
+        // Ad-hoc invoices: emit ONE netted row per invoice (charges minus
+        // reversals), splitting into per-line-item rows only when those names
+        // still sum to the net. A fully cancelled/netted invoice produces no
+        // row. Mirrors the landlord tenant-detail breakdown so both surfaces
+        // agree.
         if (e.related_entity_type === 'ad_hoc_invoice' && e.related_entity_id) {
-          const lineItems = adHocLineItemsByInvoiceId.get(e.related_entity_id);
-          if (lineItems && lineItems.length > 0) {
+          const invoiceId = e.related_entity_id;
+          if (seenAdHoc.has(invoiceId)) return [];
+          seenAdHoc.add(invoiceId);
+
+          const owed = -(adHocOwedByInvoice.get(invoiceId) ?? 0);
+          // Drop only true-zero / sub-naira reversal residue — a real ₦1
+          // invoice (owed === 1) must still render.
+          if (owed < 0.5) return []; // fully cancelled / netted away
+
+          const lineItems = adHocLineItemsByInvoiceId.get(invoiceId);
+          const lineItemSum = (lineItems ?? []).reduce(
+            (s, li) => s + Number(li.amount),
+            0,
+          );
+          if (
+            lineItems &&
+            lineItems.length > 0 &&
+            Math.abs(lineItemSum - owed) <= 1
+          ) {
             return lineItems.map((li) => ({
               id: `charge-${e.id}-${li.id}`,
               date,
@@ -2277,6 +2331,14 @@ export class TenanciesService {
               balanceChange: -Number(li.amount), // negative = charge
             }));
           }
+          return [
+            {
+              id: `charge-${e.id}`,
+              date,
+              description,
+              balanceChange: -owed, // negative = charge
+            },
+          ];
         }
 
         return [
@@ -2311,12 +2373,17 @@ export class TenanciesService {
       })
       .filter((r): r is NonNullable<typeof r> => r !== null);
 
-    // Renewal invoice payments from ledger (no property_history row exists for these)
+    // Renewal-invoice payments and GENUINE ad-hoc payments from ledger (no
+    // property_history row exists for these). Ad-hoc cancellation / edit-down
+    // REVERSALS are not payments: they are netted against their charge in the
+    // ad-hoc breakdown above and must not appear here as money received.
     const renewalPaymentRows = ledgerEntries
       .filter(
         (e) =>
           Number(e.balance_change) > 0 &&
-          e.related_entity_type === 'renewal_invoice',
+          (e.related_entity_type === 'renewal_invoice' ||
+            (e.related_entity_type === 'ad_hoc_invoice' &&
+              !isAdHocReversalLeg(e))),
       )
       .map((e) => ({
         id: `renewal-${e.id}`,
@@ -2821,12 +2888,17 @@ export class TenanciesService {
         //     mirrors what was posted to the ledger at auto-renewal time).
         //  2. Sync rental_price / service_charge / fees / payment_frequency
         //     AND start_date / expiry_date from the invoice onto the rent.
-        //  3. For each recurring fee whose amount changed (or that was added /
-        //     removed entirely), post a corrective ledger delta so the wallet
-        //     reflects what the landlord actually charged for this period.
-        const prevRecurringFees = rentToFees(activeRent).filter(
-          (f) => f.recurring,
-        );
+        //  3. For each fee whose amount changed (or that was added / removed
+        //     entirely), post a corrective ledger delta so the wallet reflects
+        //     what the landlord actually charged for this period.
+        // Reconcile over ALL fees (recurring + one-time), not just recurring:
+        // a one-time fee the landlord set in "Edit next period" is part of
+        // this period's charge and the tenant's payment covers it, so it must
+        // be debited too — otherwise the full-amount OB_PAYMENT credit below
+        // leaves a phantom wallet surplus.
+        const prevFees = rentToFees(activeRent);
+        const invoiceFees = renewalInvoiceToFees(invoice);
+        const invoiceFeesByKind = new Map(invoiceFees.map((f) => [f.kind, f]));
 
         // Sync money fields onto the rent row. Use explicit null-checks
         // (not `||`) so that a deliberate 0 from the invoice — i.e. the
@@ -2850,6 +2922,21 @@ export class TenanciesService {
             ? parseFloat(invoice.agency_fee.toString())
             : activeRent.agency_fee;
         activeRent.other_fees = invoice.other_fees ?? activeRent.other_fees;
+        // Sync the per-fee recurring flags from the invoice's breakdown — the
+        // amounts above come from the invoice, so the flags must too, or a
+        // one-time fee gets stamped onto the rent with the old (often
+        // recurring=true) flag and re-bills on the NEXT renewal. The
+        // breakdown is the only per-fee recurring truth (RenewalInvoice has no
+        // flat *_recurring columns). Absent fee ⇒ keep the rent's flag.
+        activeRent.service_charge_recurring =
+          invoiceFeesByKind.get('service')?.recurring ??
+          activeRent.service_charge_recurring;
+        activeRent.legal_fee_recurring =
+          invoiceFeesByKind.get('legal')?.recurring ??
+          activeRent.legal_fee_recurring;
+        activeRent.agency_fee_recurring =
+          invoiceFeesByKind.get('agency')?.recurring ??
+          activeRent.agency_fee_recurring;
         activeRent.payment_frequency =
           invoice.payment_frequency || activeRent.payment_frequency;
 
@@ -2863,21 +2950,17 @@ export class TenanciesService {
         activeRent.updated_at = new Date();
         await this.rentRepository.save(activeRent);
 
-        // Reconcile recurring-fee deltas against the ledger. Build a key →
-        // amount map for both sides keyed by (kind, externalId) so otherFees
-        // are matched by stable id rather than label.
+        // Reconcile fee deltas against the ledger. Build a key → amount map
+        // for both sides keyed by (kind, externalId) so otherFees are matched
+        // by stable id rather than label. Covers ALL fees (recurring +
+        // one-time) so a one-time fee added/changed at renewal is reconciled.
         if (!skipLedger) {
-          const newRecurringFees = renewalInvoiceToFees(invoice).filter(
-            (f) => f.recurring,
-          );
           const feeKey = (f: Fee): string =>
             f.kind === 'other'
               ? `other:${f.externalId ?? f.label}`
               : `${f.kind}`;
-          const prevByKey = new Map(
-            prevRecurringFees.map((f) => [feeKey(f), f]),
-          );
-          const newByKey = new Map(newRecurringFees.map((f) => [feeKey(f), f]));
+          const prevByKey = new Map(prevFees.map((f) => [feeKey(f), f]));
+          const newByKey = new Map(invoiceFees.map((f) => [feeKey(f), f]));
           const allKeys = new Set([...prevByKey.keys(), ...newByKey.keys()]);
 
           const periodStart = new Date(activeRent.rent_start_date)
@@ -2945,6 +3028,16 @@ export class TenanciesService {
         activeRent.updated_at = new Date();
         await this.rentRepository.save(activeRent);
 
+        // The invoice's fee_breakdown is the per-fee recurring truth (the
+        // RenewalInvoice has no flat *_recurring columns). The new rent below
+        // takes its fee AMOUNTS from the invoice, so it must take the matching
+        // recurring FLAGS from the same breakdown — stitching an invoice
+        // amount onto the OLD rent's flag (the previous behavior) wrote a
+        // one-time fee with recurring=true and re-billed it on the NEXT
+        // renewal. Absent fee ⇒ fall back to the prior rent's flag.
+        const invoiceFees = renewalInvoiceToFees(invoice);
+        const invoiceFeesByKind = new Map(invoiceFees.map((f) => [f.kind, f]));
+
         const newRent = this.rentRepository.create({
           property_id: invoice.property_id,
           tenant_id: invoice.tenant_id,
@@ -2958,17 +3051,23 @@ export class TenanciesService {
             invoice.service_charge != null
               ? parseFloat(invoice.service_charge.toString())
               : activeRent.service_charge,
-          service_charge_recurring: activeRent.service_charge_recurring,
+          service_charge_recurring:
+            invoiceFeesByKind.get('service')?.recurring ??
+            activeRent.service_charge_recurring,
           legal_fee:
             invoice.legal_fee != null
               ? parseFloat(invoice.legal_fee.toString())
               : activeRent.legal_fee,
-          legal_fee_recurring: activeRent.legal_fee_recurring,
+          legal_fee_recurring:
+            invoiceFeesByKind.get('legal')?.recurring ??
+            activeRent.legal_fee_recurring,
           agency_fee:
             invoice.agency_fee != null
               ? parseFloat(invoice.agency_fee.toString())
               : activeRent.agency_fee,
-          agency_fee_recurring: activeRent.agency_fee_recurring,
+          agency_fee_recurring:
+            invoiceFeesByKind.get('agency')?.recurring ??
+            activeRent.agency_fee_recurring,
           other_fees: invoice.other_fees ?? activeRent.other_fees,
           payment_frequency:
             invoice.payment_frequency || activeRent.payment_frequency,
@@ -3002,6 +3101,13 @@ export class TenanciesService {
         // ledger/breakdown reflects the new period and the payment below
         // consumes it instead of becoming phantom credit.
         //
+        // Debit EVERY fee on the invoice (recurring + one-time), not just
+        // recurring: the tenant's payment (the full-amount OB_PAYMENT credit
+        // below) covers a one-time fee the landlord set in "Edit next period",
+        // so it must be debited here too or it becomes a phantom wallet
+        // surplus. (`invoiceFees` is the invoice's fee_breakdown, hoisted
+        // above for the new rent's recurring flags.)
+        //
         // Skip when RenewalChargeService has already posted a
         // letter_accepted_charge for this letter (Trigger A on accept-after-
         // expiry, or the daily non-monthly sweep). Otherwise the mirror would
@@ -3010,15 +3116,13 @@ export class TenanciesService {
         const alreadyChargedByLetterFlow =
           await this.renewalChargeService.letterHasAcceptedCharge(invoice.id);
         if (!alreadyChargedByLetterFlow) {
-          const invoiceFees = renewalInvoiceToFees(invoice);
-          const recurringFees = invoiceFees.filter((f) => f.recurring);
           const newPeriodStart = new Date(invoice.start_date)
             .toISOString()
             .split('T')[0];
           const newPeriodEnd = new Date(invoice.end_date)
             .toISOString()
             .split('T')[0];
-          for (const fee of recurringFees) {
+          for (const fee of invoiceFees) {
             await this.tenantBalancesService.applyChange(
               tenantId,
               landlordId,

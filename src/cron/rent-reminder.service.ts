@@ -509,16 +509,23 @@ export class RentReminderService {
   }
 
   /**
-   * True when the tenant's wallet credit fully covers the next period's
-   * recurring charge for `letter`. Uses the same own-letter-charge add-back as
-   * findOrCreateRenewalInvoice / TenanciesService.refreshInvoiceTotals so a
-   * period that was already OB-charged at accept time still reads as covered.
+   * True when the tenant's wallet credit fully covers the next period's FULL
+   * charge for `letter` — every fee on the letter, recurring AND one-time.
+   * Uses the same own-letter-charge add-back as findOrCreateRenewalInvoice /
+   * TenanciesService.refreshInvoiceTotals so a period that was already
+   * OB-charged at accept time still reads as covered.
+   *
+   * sumAll (not sumRecurring): a one-time fee a landlord added in "Edit next
+   * period" is part of this period's charge, so credit covering only the
+   * recurring slice must NOT auto-settle the renewal — otherwise the one-time
+   * fee would never be collected. (Cron-authored next-period letters snapshot
+   * only recurring fees, so sumAll == sumRecurring there — no behavior change.)
    */
   private async isNextPeriodFullyCovered(
     rent: Rent,
     letter: RenewalInvoice,
   ): Promise<boolean> {
-    const recurringCharge = sumRecurring(renewalInvoiceToFees(letter));
+    const periodCharge = sumAll(renewalInvoiceToFees(letter));
     const walletBalance = await this.tenantBalancesService.getBalance(
       rent.tenant_id,
       rent.property.owner_id,
@@ -526,7 +533,7 @@ export class RentReminderService {
     const ownLetterCharge =
       await this.renewalChargeService.getLetterAcceptedChargeAmount(letter.id);
     const effectiveWallet = walletBalance + ownLetterCharge;
-    return recurringCharge - effectiveWallet <= 0;
+    return periodCharge - effectiveWallet <= 0;
   }
 
   /**

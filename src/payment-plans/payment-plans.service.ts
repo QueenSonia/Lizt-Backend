@@ -1651,6 +1651,369 @@ export class PaymentPlansService {
   }
 
   // ───────────────────────────────────────────────────────────────────────
+  // Pay a whole plan off early (one lump = total − already paid)
+  // ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * Quote the remaining balance for an early full payoff: plan total minus
+   * everything already paid. Drives the tenant's "Pay it all now" button —
+   * which can sit on the original invoice page; under the hood it routes into
+   * the plan's single settlement path (no second public link to race the
+   * installment links).
+   */
+  async getPlanPayoffQuote(planId: string): Promise<{
+    planId: string;
+    chargeName: string;
+    scope: PaymentPlanScope;
+    status: PaymentPlanStatus;
+    totalAmount: number;
+    paidAmount: number;
+    remaining: number;
+    totalInstallments: number;
+    installmentsRemaining: number;
+    property: { id: string; name: string; address: string };
+    tenant: { name: string; email: string | null };
+    landlordBranding: Record<string, unknown> | null;
+    landlordLogoUrl: string | null;
+  }> {
+    const plan = await this.getPlan(planId);
+    const installments = plan.installments ?? [];
+    const paidAmount = installments
+      .filter((i) => i.status === InstallmentStatus.PAID)
+      .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
+
+    const property = plan.property;
+    const landlordUser = property?.owner?.user;
+    const landlordBranding =
+      (landlordUser?.branding as Record<string, unknown> | undefined) || null;
+    const landlordLogoUrl =
+      landlordUser?.logo_urls?.[0] ||
+      (landlordBranding?.letterhead as string | undefined) ||
+      null;
+    const tenantUser = plan.tenant?.user;
+    const tenantName = tenantUser
+      ? `${tenantUser.first_name ?? ''} ${tenantUser.last_name ?? ''}`.trim()
+      : '';
+    const tenantEmail =
+      ((plan.tenant as { email?: string })?.email ?? tenantUser?.email) || null;
+
+    return {
+      planId: plan.id,
+      chargeName: plan.charge_name,
+      scope: plan.scope,
+      status: plan.status,
+      totalAmount: Number(plan.total_amount),
+      paidAmount,
+      remaining: Math.max(0, Number(plan.total_amount) - paidAmount),
+      totalInstallments: installments.length,
+      installmentsRemaining: installments.filter(
+        (i) => i.status === InstallmentStatus.PENDING,
+      ).length,
+      property: {
+        id: property?.id ?? '',
+        name: property?.name ?? '',
+        address: property?.location ?? '',
+      },
+      tenant: { name: tenantName, email: tenantEmail },
+      landlordBranding,
+      landlordLogoUrl,
+    };
+  }
+
+  /**
+   * Initialize a Paystack charge for the WHOLE remaining plan balance so a
+   * tenant can clear the plan in one payment instead of waiting out the
+   * installments.
+   */
+  async initializePlanPayoffPayment(
+    planId: string,
+    email: string,
+  ): Promise<PlanPaymentInitializationResult> {
+    const plan = await this.getPlan(planId);
+    if (plan.status !== PaymentPlanStatus.ACTIVE) {
+      throw new ConflictException('This plan is no longer active');
+    }
+    const paidAmount = (plan.installments ?? [])
+      .filter((i) => i.status === InstallmentStatus.PAID)
+      .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
+    const remaining = Math.max(0, Number(plan.total_amount) - paidAmount);
+    if (remaining <= 0) {
+      throw new ConflictException('This plan is already fully paid');
+    }
+
+    const reference = `PLANPAYOFF_${Date.now()}_${uuidv4().substring(0, 8)}`;
+    const paystackResponse = await this.paystackService.initializeTransaction({
+      email,
+      amount: Math.round(remaining * 100),
+      reference,
+      callback_url: `${process.env.FRONTEND_URL}/payment-plan/${plan.id}/payoff`,
+      metadata: {
+        payment_plan_payoff_id: plan.id,
+        payment_plan_id: plan.id,
+        property_id: plan.property_id,
+        tenant_id: plan.tenant_id,
+        charge_name: plan.charge_name,
+      },
+      channels: ['card', 'bank_transfer'],
+    });
+
+    this.logger.log(
+      `Paystack initialized for plan payoff ${plan.id}, reference: ${reference}`,
+    );
+
+    return {
+      accessCode: paystackResponse.data.access_code,
+      reference,
+      authorizationUrl: paystackResponse.data.authorization_url,
+    };
+  }
+
+  /**
+   * Tenant-facing verify for a plan payoff — idempotent with the webhook.
+   */
+  async verifyPlanPayoffPayment(
+    planId: string,
+    reference: string,
+  ): Promise<{
+    status: 'success' | 'failed' | 'pending';
+    reference: string;
+    amount: number;
+    planStatus: PaymentPlanStatus;
+  }> {
+    const paystackResponse =
+      await this.paystackService.verifyTransaction(reference);
+    const data = paystackResponse.data;
+
+    if (data.status !== 'success') {
+      const plan = await this.getPlan(planId);
+      return {
+        status: data.status === 'failed' ? 'failed' : 'pending',
+        reference: data.reference,
+        amount: data.amount / 100,
+        planStatus: plan.status,
+      };
+    }
+
+    try {
+      await this.markPlanPaidOffFromWebhook({
+        reference: data.reference,
+        amount: data.amount,
+        channel: data.channel,
+        metadata: { payment_plan_payoff_id: planId },
+      });
+    } catch (err) {
+      this.logger.error(
+        `verifyPlanPayoffPayment failed to settle plan ${planId}`,
+        (err as Error).stack,
+      );
+    }
+
+    const fresh = await this.getPlan(planId);
+    return {
+      status: 'success',
+      reference: data.reference,
+      amount: data.amount / 100,
+      planStatus: fresh.status,
+    };
+  }
+
+  /**
+   * Webhook/verify entry for a plan payoff. Idempotent: a plan that is no
+   * longer ACTIVE (already paid off / completed / cancelled) is a no-op.
+   */
+  async markPlanPaidOffFromWebhook(data: {
+    reference: string;
+    amount: number;
+    channel?: string;
+    metadata?: { payment_plan_payoff_id?: string };
+  }): Promise<void> {
+    const planId = data.metadata?.payment_plan_payoff_id;
+    if (!planId) {
+      this.logger.error('Plan-payoff webhook missing payment_plan_payoff_id', {
+        reference: data.reference,
+      });
+      throw new Error('Missing payment_plan_payoff_id in metadata');
+    }
+
+    const plan = await this.getPlan(planId);
+    if (plan.status !== PaymentPlanStatus.ACTIVE) {
+      this.logger.log(
+        `Plan ${planId} not active (status ${plan.status}); payoff ${data.reference} is a no-op (idempotent)`,
+      );
+      return;
+    }
+
+    await this.payOffPlan(plan, {
+      paystackRef: data.reference,
+      channel: data.channel,
+      method: InstallmentPaymentMethod.PAYSTACK,
+      chargedAmount: data.amount / 100,
+    });
+  }
+
+  /**
+   * Settle a whole plan in one lump by paying every still-PENDING installment
+   * through the proven per-installment path (CAS claim, wallet credit, FIFO
+   * source settlement, renewal ripple, completion) with per-installment
+   * notifications suppressed — then emit ONE consolidated "paid off" event.
+   *
+   * Reusing markInstallmentPaid keeps a single settlement code path and makes a
+   * webhook/verify retry naturally idempotent (each installment's status CAS
+   * skips the ones already paid). If the charged amount and what was actually
+   * applied disagree — a concurrent installment link cleared one of these
+   * mid-payoff — the difference is LOGGED for manual reconciliation rather than
+   * silently credited (keeps this path free of un-deduped wallet writes).
+   */
+  private async payOffPlan(
+    plan: PaymentPlan,
+    args: {
+      paystackRef: string;
+      channel?: string;
+      method: InstallmentPaymentMethod;
+      chargedAmount: number;
+    },
+  ): Promise<void> {
+    const pending = (plan.installments ?? [])
+      .filter((i) => i.status === InstallmentStatus.PENDING)
+      .sort((a, b) => a.sequence - b.sequence);
+
+    for (const row of pending) {
+      const inst = await this.getInstallment(row.id);
+      if (inst.status !== InstallmentStatus.PENDING) continue;
+      await this.markInstallmentPaid(inst, {
+        amount: Number(inst.amount),
+        method: args.method,
+        channel: args.channel,
+        paystackRef: args.paystackRef,
+        suppressNotifications: true,
+      });
+    }
+
+    // What this payoff actually settled (installments now PAID under its ref).
+    const after = await this.installmentRepository.find({
+      where: { plan_id: plan.id },
+    });
+    const appliedByPayoff = after
+      .filter(
+        (i) =>
+          i.status === InstallmentStatus.PAID &&
+          i.paystack_reference === args.paystackRef,
+      )
+      .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
+
+    // Reconciliation guard: charged ≠ applied means an installment link cleared
+    // one of these at the same moment as the payoff. The funds are real; flag
+    // for ops rather than auto-crediting (keeps the payoff idempotent).
+    if (Math.abs(args.chargedAmount - appliedByPayoff) > 1) {
+      this.logger.warn(
+        `Plan payoff ${args.paystackRef} on plan ${plan.id}: charged ₦${args.chargedAmount} but applied ₦${appliedByPayoff}.`,
+      );
+      await this.propertyHistoryRepository.save(
+        this.propertyHistoryRepository.create({
+          property_id: plan.property_id,
+          tenant_id: plan.tenant_id,
+          event_type: 'payment_plan_payoff_discrepancy',
+          event_description: `Early payoff of "${plan.charge_name}" charged ₦${args.chargedAmount.toLocaleString()} but only ₦${appliedByPayoff.toLocaleString()} mapped to open installments (an installment was likely paid at the same moment). Reconcile/refund the ₦${Math.max(0, args.chargedAmount - appliedByPayoff).toLocaleString()} difference.`,
+          related_entity_id: plan.id,
+          related_entity_type: 'payment_plan',
+          metadata: {
+            reference: args.paystackRef,
+            charged: args.chargedAmount,
+            applied: appliedByPayoff,
+          },
+        }),
+      );
+    }
+
+    const fresh = await this.getPlan(plan.id);
+    const completed = fresh.status === PaymentPlanStatus.COMPLETED;
+
+    await this.logPlanEvent(
+      completed ? 'payment_plan_completed' : 'payment_plan_installment_paid',
+      completed
+        ? `Payment plan paid off early — ${plan.charge_name} — ₦${appliedByPayoff.toLocaleString()}`
+        : `Partial plan payoff — ${plan.charge_name} — ₦${appliedByPayoff.toLocaleString()}`,
+      fresh,
+      completed
+        ? NotificationType.PAYMENT_PLAN_COMPLETED
+        : NotificationType.PAYMENT_PLAN_INSTALLMENT_PAID,
+    );
+
+    // Consolidated WhatsApp. Tenancy-scope completion already fires renewal
+    // receipts via the per-installment ripple-up, so only message here for
+    // charge-scope plans (matches dispatchInstallmentNotifications' gate).
+    if (completed && fresh.scope === PaymentPlanScope.CHARGE) {
+      await this.dispatchPlanPaidOffNotifications(fresh);
+    }
+  }
+
+  private async dispatchPlanPaidOffNotifications(
+    plan: PaymentPlan,
+  ): Promise<void> {
+    try {
+      const property = plan.property;
+      const propertyName = property?.name ?? 'your property';
+      const landlordAccount = property?.owner;
+      const landlordUser = landlordAccount?.user;
+      const tenantUser = plan.tenant?.user;
+
+      const tenantName =
+        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+        'there';
+      const landlordName =
+        landlordAccount?.profile_name ||
+        `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`.trim() ||
+        'there';
+
+      const tenantPhone = tenantUser?.phone_number
+        ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
+        : null;
+      const landlordPhone = landlordUser?.phone_number
+        ? this.utilService.normalizePhoneNumber(landlordUser.phone_number)
+        : null;
+
+      const totalAmount = Number(plan.total_amount);
+
+      if (tenantPhone) {
+        await this.whatsappNotificationLog.queue(
+          'sendPaymentPlanCompletedTenant',
+          {
+            phone_number: tenantPhone,
+            tenant_name: tenantName,
+            charge_name: plan.charge_name,
+            property_name: propertyName,
+            total_amount: totalAmount,
+            landlord_id: property?.owner_id,
+            property_id: property?.id,
+            recipient_name: tenantName,
+          },
+          plan.id,
+        );
+      }
+      if (landlordPhone) {
+        await this.whatsappNotificationLog.queue(
+          'sendPaymentPlanCompletedLandlord',
+          {
+            phone_number: landlordPhone,
+            tenant_name: tenantName,
+            charge_name: plan.charge_name,
+            property_name: propertyName,
+            total_amount: totalAmount,
+            landlord_id: property?.owner_id,
+            property_id: property?.id,
+            recipient_name: landlordName,
+          },
+          plan.id,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Failed to queue plan-paid-off WhatsApp for plan ${plan.id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
   // Mark an installment paid — from webhook or manual
   // ───────────────────────────────────────────────────────────────────────
 
@@ -1746,6 +2109,10 @@ export class PaymentPlansService {
       paidAt?: Date;
       note?: string;
       markedByUserId?: string;
+      // Set by the bulk plan-payoff path: settle the installment (claim, wallet
+      // credit, FIFO settlement, ripple) but skip the per-installment activity
+      // log + WhatsApp, so a payoff emits ONE consolidated event instead of N.
+      suppressNotifications?: boolean;
     },
   ): Promise<void> {
     // Idempotency: webhook and frontend-verify both race to here.
@@ -2018,46 +2385,47 @@ export class PaymentPlansService {
       }
     }
 
-    // 5. Activity log + livefeed notification.
-    const methodLabel =
-      args.method === InstallmentPaymentMethod.PAYSTACK
-        ? 'paystack'
-        : args.method;
-    const totalInstallments = plan.installments?.length;
-    const seqLabel = totalInstallments
-      ? `${installment.sequence}/${totalInstallments}`
-      : `${installment.sequence}`;
+    // 5 & 6. Per-installment activity log + WhatsApp receipt/heads-up. Skipped
+    //   for a bulk plan-payoff (suppressNotifications): payOffPlan emits one
+    //   consolidated "paid off" event instead of one per installment.
+    if (!args.suppressNotifications) {
+      const methodLabel =
+        args.method === InstallmentPaymentMethod.PAYSTACK
+          ? 'paystack'
+          : args.method;
+      const totalInstallments = plan.installments?.length;
+      const seqLabel = totalInstallments
+        ? `${installment.sequence}/${totalInstallments}`
+        : `${installment.sequence}`;
 
-    const refreshedPlan = await this.getPlan(plan.id);
+      const refreshedPlan = await this.getPlan(plan.id);
 
-    await this.logPlanEvent(
-      'payment_plan_installment_paid',
-      `Installment ${seqLabel} paid — ₦${args.amount.toLocaleString()} (${methodLabel})`,
-      refreshedPlan,
-      NotificationType.PAYMENT_PLAN_INSTALLMENT_PAID,
-      installment.id,
-      'payment_plan_installment',
-    );
-
-    if (refreshedPlan.status === PaymentPlanStatus.COMPLETED) {
       await this.logPlanEvent(
-        'payment_plan_completed',
-        `Payment plan completed — ${plan.charge_name}`,
+        'payment_plan_installment_paid',
+        `Installment ${seqLabel} paid — ₦${args.amount.toLocaleString()} (${methodLabel})`,
         refreshedPlan,
-        NotificationType.PAYMENT_PLAN_COMPLETED,
+        NotificationType.PAYMENT_PLAN_INSTALLMENT_PAID,
+        installment.id,
+        'payment_plan_installment',
+      );
+
+      if (refreshedPlan.status === PaymentPlanStatus.COMPLETED) {
+        await this.logPlanEvent(
+          'payment_plan_completed',
+          `Payment plan completed — ${plan.charge_name}`,
+          refreshedPlan,
+          NotificationType.PAYMENT_PLAN_COMPLETED,
+        );
+      }
+
+      await this.dispatchInstallmentNotifications(
+        refreshedPlan,
+        installment.id,
+        seqLabel,
+        args.amount,
+        receiptToken,
       );
     }
-
-    // 6. WhatsApp notifications — receipt to tenant, heads-up to landlord,
-    //    plus plan-completion notifications for charge-scope plans (tenancy-
-    //    scope completion already fires sendRenewalPayment* via ripple-up).
-    await this.dispatchInstallmentNotifications(
-      refreshedPlan,
-      installment.id,
-      seqLabel,
-      args.amount,
-      receiptToken,
-    );
   }
 
   /**

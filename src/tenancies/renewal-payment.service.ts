@@ -22,6 +22,7 @@ import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
+import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface PaymentInitializationResult {
@@ -60,6 +61,7 @@ export class RenewalPaymentService {
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
+    private readonly tenantBalancesService: TenantBalancesService,
   ) {}
 
   /**
@@ -114,6 +116,45 @@ export class RenewalPaymentService {
     const remaining = Math.max(0, invoiceTotal - amountPaidSoFar);
     if (amount <= 0) {
       throw new BadRequestException('Payment amount must be greater than 0');
+    }
+
+    // Plan-aware guard. An active wallet-backed plan (Outstanding Balance /
+    // ad-hoc) collects part or all of the wallet OB via its installments, so
+    // this OB invoice must never charge that planned slice too — else the same
+    // debt is collected twice (renewal credit + plan installments). The stored
+    // total can be stale (the post-plan-create re-fold is best-effort and the
+    // pay screen doesn't recompute it), so re-sync the invoice then recompute
+    // the chargeable OB from the wallet at pay time and refuse anything above
+    // it. Mirrors refreshInvoiceTotals' OB branch + the WhatsApp "Pay OB" flow.
+    if (
+      invoice.token_type === 'tenant' &&
+      Number(invoice.rent_amount || 0) === 0 &&
+      invoice.property?.owner_id
+    ) {
+      try {
+        await this.tenanciesService.refreshInvoiceTotals(
+          invoice.tenant_id,
+          invoice.property.owner_id,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `OB pre-payment re-fold failed for ${token}: ${(err as Error)?.message}`,
+        );
+      }
+      const chargeableOb = await this.computeChargeableOutstandingBalance(
+        invoice.tenant_id,
+        invoice.property.owner_id,
+      );
+      if (chargeableOb <= 0) {
+        throw new ConflictException(
+          'Your outstanding balance is being settled by a payment plan — pay your plan installments instead of this invoice.',
+        );
+      }
+      if (amount > chargeableOb + 1) {
+        throw new ConflictException(
+          `Part of your outstanding balance is now on a payment plan. The amount due is ₦${chargeableOb.toLocaleString()}. Please reopen the payment link to pay the updated amount.`,
+        );
+      }
     }
 
     // Custom (partial) payments are only valid on rent renewals, and only
@@ -241,6 +282,30 @@ export class RenewalPaymentService {
   }
 
   /**
+   * The slice of the tenant's wallet outstanding balance this OB invoice may
+   * still charge: raw wallet OB minus what active wallet-backed plans
+   * (Outstanding Balance / ad-hoc) will collect via their installments. Same
+   * formula refreshInvoiceTotals' OB branch and the WhatsApp "Pay OB" flow use,
+   * recomputed at pay time so a stale link can't charge a planned slice.
+   */
+  private async computeChargeableOutstandingBalance(
+    tenantId: string,
+    landlordId: string,
+  ): Promise<number> {
+    const balance = await this.tenantBalancesService.getBalance(
+      tenantId,
+      landlordId,
+    );
+    const rawOutstanding = balance < 0 ? -balance : 0;
+    const claimedByPlans =
+      await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+        tenantId,
+        landlordId,
+      );
+    return Math.max(0, rawOutstanding - claimedByPlans);
+  }
+
+  /**
    * Verify payment with Paystack
    * Requirements: 5.3
    */
@@ -303,6 +368,7 @@ export class RenewalPaymentService {
     // Store receipt token and read payment_option from invoice
     const invoice = await this.renewalInvoiceRepository.findOne({
       where: { token },
+      relations: ['property'],
     });
 
     let paymentOption: string | null = null;
@@ -321,6 +387,45 @@ export class RenewalPaymentService {
           `Renewal invoice ${token} already has payment ${reference}; skipping (idempotent)`,
         );
         return;
+      }
+
+      // Money-safety net (mirrors the ad-hoc `ad_hoc_invoice_payment_on_covered`
+      // quarantine). An OB invoice's payable slice can shrink AFTER its link was
+      // minted — a wallet-backed plan created in between now collects part/all
+      // of the wallet OB. If this landed payment exceeds the plan-adjusted
+      // chargeable OB (stale link, or a plan created between initialize and
+      // verify/webhook), crediting it would double-collect against the plan's
+      // installments. Log for ops to reconcile/refund and do NOT credit.
+      const isOutstandingBalanceInvoice =
+        invoice.token_type === 'tenant' &&
+        Number(invoice.rent_amount || 0) === 0;
+      const landlordId = invoice.property?.owner_id;
+      if (isOutstandingBalanceInvoice && landlordId) {
+        const chargeableOb = await this.computeChargeableOutstandingBalance(
+          invoice.tenant_id,
+          landlordId,
+        );
+        if (amount > chargeableOb + 1) {
+          this.logger.warn(
+            `Renewal OB payment ${reference} (₦${amount}) exceeds plan-adjusted chargeable OB (₦${chargeableOb}) for invoice ${invoice.id} — not credited.`,
+          );
+          await this.propertyHistoryRepository.save(
+            this.propertyHistoryRepository.create({
+              property_id: invoice.property_id,
+              tenant_id: invoice.tenant_id,
+              event_type: 'renewal_ob_payment_on_planned',
+              event_description: `Payment of ₦${amount.toLocaleString()} received on the outstanding-balance link (ref ${reference}), but ₦${Math.max(0, amount - chargeableOb).toLocaleString()} of it is already being settled by an active payment plan. Funds NOT applied to the invoice; reconcile/refund manually.`,
+              related_entity_id: invoice.id,
+              related_entity_type: 'renewal_invoice',
+              metadata: {
+                reference,
+                amount,
+                chargeable_ob: chargeableOb,
+              },
+            }),
+          );
+          return;
+        }
       }
 
       if (receiptToken) {

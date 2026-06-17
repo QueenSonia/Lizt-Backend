@@ -2473,6 +2473,26 @@ export class TenanciesService {
     );
     const displayOutstanding = Math.max(0, rawOutstanding - ownLetterCharge);
 
+    // Portion of the displayed prior debt that an ACTIVE wallet-backed plan
+    // (Outstanding Balance / ad-hoc) is collecting via its installments. The
+    // fold already excludes this slice from total_amount / outstanding_balance,
+    // but `displayWallet` is the RAW wallet — so without this the UI shows a
+    // "Previous Outstanding Balance" line that silently isn't in the total.
+    // Surfacing the claimed slice lets the page render a reconciling
+    // "on a payment plan" line instead. Computed fresh from the ledger (not the
+    // possibly-stale stored cache); sumActiveWalletBackedPlanClaims is itself
+    // guarded (returns 0 on error) so this never breaks the response.
+    const debtForDisplay = displayWallet < 0 ? -displayWallet : 0;
+    let planCoveredBalance = 0;
+    if (debtForDisplay > 0 && invoice.property?.owner_id) {
+      const claimedByPlans =
+        await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
+          invoice.tenant_id,
+          invoice.property.owner_id,
+        );
+      planCoveredBalance = Math.min(debtForDisplay, Math.max(0, claimedByPlans));
+    }
+
     return {
       id: invoice.id,
       token: invoice.token,
@@ -2510,6 +2530,13 @@ export class TenanciesService {
       // at invoice creation) and must not be repurposed.
       amountPaid: parseFloat((invoice.amount_paid ?? 0).toString()),
       walletBalance: displayWallet,
+      /**
+       * Portion of the displayed previous balance being collected by an active
+       * wallet-backed payment plan — therefore NOT part of totalAmount. The UI
+       * renders this as a separate, non-summed line so the breakdown reconciles.
+       * 0 when no such plan is active.
+       */
+      planCoveredBalance,
       tokenType: invoice.token_type || 'landlord',
       paymentStatus: invoice.payment_status,
       pendingApproval:

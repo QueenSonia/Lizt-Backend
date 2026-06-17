@@ -89,6 +89,7 @@ import {
   rentToFees,
   Fee,
 } from 'src/common/billing/fees';
+import { sumOverdueInvoiceFeeInstallments } from 'src/common/billing/plan-classification';
 import { randomUUID } from 'crypto';
 @Injectable()
 export class PropertiesService {
@@ -1650,6 +1651,24 @@ export class PropertiesService {
         totalOutstandingBalance - claimedByPlans,
       );
 
+      // Overdue installments of carved invoice-fee charge plans are NOT on the
+      // wallet ledger (their fee was carved out of the renewal invoice at plan
+      // creation), so they're invisible in the wallet-derived outstanding
+      // figure. Surface them on the landlord view once a due date has passed.
+      // Ad-hoc / OB plan debt is real wallet OB already counted above, so the
+      // shared helper excludes it (no double-count). Display-only; plannable OB
+      // above stays wallet-derived and is intentionally not inflated.
+      const overduePlanInstallments = sumOverdueInvoiceFeeInstallments(
+        await this.paymentPlanRepository.find({
+          where: {
+            tenant_id: activeTenantRelation.tenant.id,
+            status: PaymentPlanStatus.ACTIVE,
+          },
+          relations: ['installments', 'property'],
+        }),
+        property.owner_id,
+      ).total;
+
       // Ad-hoc invoice line items for this tenancy — surfaced as additional
       // charges on the current period charges list. Paid invoices are kept so
       // the UI can show them with a "(paid)" prefix; cancelled ones are dropped.
@@ -1742,7 +1761,7 @@ export class PropertiesService {
         previousAcceptanceAt: previousAcceptanceAt
           ? previousAcceptanceAt.toISOString()
           : null,
-        outstandingBalance: totalOutstandingBalance,
+        outstandingBalance: totalOutstandingBalance + overduePlanInstallments,
         creditBalance: totalCreditBalance,
         plannableOutstandingBalance,
       };

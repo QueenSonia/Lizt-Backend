@@ -85,7 +85,11 @@ import {
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
-import { PaymentPlan } from 'src/payment-plans/entities/payment-plan.entity';
+import {
+  PaymentPlan,
+  PaymentPlanStatus,
+} from 'src/payment-plans/entities/payment-plan.entity';
+import { sumOverdueInvoiceFeeInstallments } from 'src/common/billing/plan-classification';
 import { PaymentPlanRequest } from 'src/payment-plans/entities/payment-plan-request.entity';
 
 /**
@@ -2096,6 +2100,8 @@ export class TenantManagementService {
     // Fetch wallet balance and ledger (requires adminId as landlordId)
     let walletBalance = 0;
     let ledgerEntries: TenantBalanceLedger[] = [];
+    let overduePlanByProperty: Record<string, number> = {};
+    let overduePlanInstallments = 0;
     if (adminId) {
       walletBalance = await this.tenantBalancesService.getBalance(
         account.id,
@@ -2105,9 +2111,25 @@ export class TenantManagementService {
         account.id,
         adminId,
       );
+      // Carved invoice-fee charge plans never debit the wallet, so their overdue
+      // installments are invisible in the wallet-derived balance. Surface them
+      // on the landlord view once past due. Ad-hoc / OB plan debt is already
+      // real wallet OB, so the shared helper excludes it (no double-count).
+      const activePlans = await this.dataSource
+        .getRepository(PaymentPlan)
+        .find({
+          where: { tenant_id: account.id, status: PaymentPlanStatus.ACTIVE },
+          relations: ['installments', 'property'],
+        });
+      const overdue = sumOverdueInvoiceFeeInstallments(activePlans, adminId);
+      overduePlanByProperty = overdue.byProperty;
+      overduePlanInstallments = overdue.total;
     }
-    // Derive display values from unified balance
-    const totalOutstandingBalance = walletBalance < 0 ? -walletBalance : 0;
+    // Derive display values from unified balance. Overdue carved-plan
+    // installments are folded into the outstanding figure (display-only — no
+    // ledger row is written).
+    const totalOutstandingBalance =
+      (walletBalance < 0 ? -walletBalance : 0) + overduePlanInstallments;
     const totalCreditBalance = walletBalance > 0 ? walletBalance : 0;
 
     // Create maps for efficient lookups of related entities for date resolution
@@ -2348,6 +2370,41 @@ export class TenantManagementService {
         transactions,
       };
     });
+
+    // Fold overdue carved-plan installments into the per-property breakdown so
+    // the landlord sees them as outstanding (they have no wallet ledger row, so
+    // they wouldn't otherwise appear). Tenant-facing builders are untouched.
+    for (const [propId, amount] of Object.entries(overduePlanByProperty)) {
+      if (amount <= 0.5) continue;
+      const row = {
+        id: `overdue-plan-${propId}`,
+        type: 'Overdue payment-plan installments',
+        amount,
+        date: new Date(),
+      };
+      const existing = outstandingBalanceBreakdown.find(
+        (b) => b.propertyId === propId,
+      );
+      if (existing) {
+        existing.transactions.unshift(row);
+        existing.outstandingAmount += amount;
+      } else {
+        const propRent = rents.find((r) => r.property_id === propId);
+        outstandingBalanceBreakdown.push({
+          rentId: propRent?.id || propId,
+          propertyName: propRent?.property?.name || 'Unknown Property',
+          propertyId: propId,
+          outstandingAmount: amount,
+          tenancyStartDate: propRent?.rent_start_date
+            ? new Date(propRent.rent_start_date)
+            : null,
+          tenancyEndDate: propRent?.expiry_date
+            ? new Date(propRent.expiry_date)
+            : null,
+          transactions: [row],
+        });
+      }
+    }
 
     const maintenanceRequests = adminId
       ? account.maintenance_requests?.filter(

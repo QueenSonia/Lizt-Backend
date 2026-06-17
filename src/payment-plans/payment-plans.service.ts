@@ -10,6 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
+import { isInvoiceFeeChargePlan as classifyInvoiceFeeChargePlan } from '../common/billing/plan-classification';
 import {
   PaymentPlan,
   PaymentPlanScope,
@@ -116,17 +117,9 @@ export class PaymentPlansService {
    * classify correctly.
    */
   private isInvoiceFeeChargePlan(plan: PaymentPlan): boolean {
-    if (plan.scope !== PaymentPlanScope.CHARGE) return false;
-    // Type B (wallet-backed) charge plans MUST credit the wallet — never gate.
-    if (
-      plan.source_type === PaymentPlanSourceType.OUTSTANDING_BALANCE ||
-      plan.source_type === PaymentPlanSourceType.AD_HOC_INVOICE
-    ) {
-      return false;
-    }
-    if (plan.ad_hoc_invoice_id) return false;
-    if (plan.charge_external_id === 'outstanding_balance') return false;
-    return true;
+    // Single source of truth lives in common/billing so the landlord balance
+    // breakdowns classify carved plans identically (see doc-comment above).
+    return classifyInvoiceFeeChargePlan(plan);
   }
 
   // ───────────────────────────────────────────────────────────────────────

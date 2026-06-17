@@ -1825,7 +1825,6 @@ export class TenantFlowService {
       from,
       'Thank you. Your maintenance request has been received and logged successfully.\n\nA member of our maintenance team will review the information provided and begin the resolution process. We will keep you updated on the status of your request.',
     );
-    await this.showTenantMenu(from);
   }
 
   /**

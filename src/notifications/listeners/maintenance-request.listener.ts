@@ -773,7 +773,7 @@ ${event.description ?? ''}`,
       const headline = this.buildMaintenanceHeadline(
         event.status,
         event.previous_status,
-        event.property_name,
+        event.property_name ?? event.common_area_name,
       );
       // Per-event subtitle: on RESOLVED show the FM's note; on REOPENED
       // show whatever the actor said (tenant feedback for tenant-initiated

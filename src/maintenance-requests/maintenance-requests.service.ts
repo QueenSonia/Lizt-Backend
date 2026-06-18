@@ -1432,6 +1432,16 @@ export class MaintenanceRequestsService {
             resolvedByUserId: actorUserId,
             resolvedByName: actorDisplayName,
           });
+
+          // Common-area requests have no tenant to confirm the fix, so close
+          // them out in the same transaction instead of leaving them parked
+          // in RESOLVED. No-op for unit-scoped requests.
+          await this.autoCloseResolvedCommonArea(
+            id,
+            maintenanceRequest.scope,
+            { userId: actorUserId, role: actorRole },
+            manager,
+          );
         }
 
         if (targetStatus === MaintenanceRequestStatusEnum.REOPENED) {
@@ -1577,6 +1587,59 @@ export class MaintenanceRequestsService {
       latest.tenant_denial_reason = opts.denialReason;
     }
     await repo.save(latest);
+  }
+
+  /**
+   * Common-area maintenance requests have no tenant to confirm a resolution,
+   * so an FM marking one resolved should land it straight in CLOSED rather
+   * than parking it in RESOLVED awaiting a confirmation that can never come.
+   * Call immediately after a request has been transitioned to RESOLVED.
+   *
+   * No-op for unit-scoped requests — those still go through the tenant
+   * confirmation gate (RESOLVED → CLOSED | REOPENED). Writes the
+   * RESOLVED → CLOSED status-history row and marks the latest resolution
+   * attempt CONFIRMED (the attempt patch is itself a no-op when no attempt
+   * row exists, e.g. the lighter WhatsApp resolve path). Returns true when it
+   * closed the request so callers can reflect the final status.
+   */
+  private async autoCloseResolvedCommonArea(
+    requestId: string,
+    scope: MaintenanceRequestScopeEnum,
+    actor: { userId: string | null; role: string },
+    manager?: EntityManager,
+  ): Promise<boolean> {
+    if (scope !== MaintenanceRequestScopeEnum.COMMON_AREA) return false;
+
+    const repo = manager
+      ? manager.getRepository(MaintenanceRequest)
+      : this.maintenanceRequestRepository;
+    await repo.update(requestId, {
+      status: MaintenanceRequestStatusEnum.CLOSED,
+    });
+
+    // changed_by_user_id is a non-null FK to users.id; the WhatsApp paths can
+    // fall back to a 'system' sentinel, so skip the audit row in that case
+    // rather than violate the constraint. The status flip + attempt outcome
+    // still land — the history row is best-effort.
+    if (actor.userId && actor.userId !== 'system') {
+      await this.createStatusHistoryEntry(
+        requestId,
+        MaintenanceRequestStatusEnum.RESOLVED,
+        MaintenanceRequestStatusEnum.CLOSED,
+        actor.userId,
+        actor.role,
+        'Common-area request auto-closed on resolution — no tenant to confirm.',
+        undefined,
+        manager,
+      );
+    }
+
+    await this.patchLatestAttemptOutcome(
+      requestId,
+      ResolutionAttemptOutcomeEnum.CONFIRMED,
+      { manager },
+    );
+    return true;
   }
 
   /**
@@ -2408,6 +2471,20 @@ export class MaintenanceRequestsService {
         savedRequest.id,
         ResolutionAttemptOutcomeEnum.CONFIRMED,
       );
+    }
+
+    // Common-area resolves have no tenant to confirm — auto-close so the
+    // request doesn't sit in RESOLVED forever. Funnels every WhatsApp FM
+    // resolve path through one place; the emit below then reflects CLOSED.
+    if (status === MaintenanceRequestStatusEnum.RESOLVED) {
+      const autoClosed = await this.autoCloseResolvedCommonArea(
+        savedRequest.id,
+        request.scope,
+        { userId: actor?.id ?? null, role: actor?.role ?? 'facility_manager' },
+      );
+      if (autoClosed) {
+        savedRequest.status = MaintenanceRequestStatusEnum.CLOSED;
+      }
     }
 
     if (!actor?.id) {

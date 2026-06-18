@@ -9,7 +9,10 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
-import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
+import {
+  MaintenanceRequestStatusEnum,
+  MaintenanceRequestScopeEnum,
+} from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import { TemplateSenderService, ButtonDefinition } from '../template-sender';
 import { IncomingMessage } from '../utils';
@@ -478,9 +481,13 @@ export class LandlordFlowService {
       MaintenanceRequestStatusEnum.RESOLVED,
     );
 
+    const isCommonArea =
+      maintenanceRequest.scope === MaintenanceRequestScopeEnum.COMMON_AREA;
     await this.templateSenderService.sendText(
       from,
-      `You have resolved maintenance request ID: ${requestId}. Waiting for tenant confirmation.`,
+      isCommonArea
+        ? `You have resolved maintenance request ID: ${requestId}. It's now closed.`
+        : `You have resolved maintenance request ID: ${requestId}. Waiting for tenant confirmation.`,
     );
 
     if (maintenanceRequest.tenant?.user?.phone_number) {
@@ -774,7 +781,9 @@ export class LandlordFlowService {
 
     await this.templateSenderService.sendText(
       from,
-      "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
+      maintenanceRequest.scope === MaintenanceRequestScopeEnum.COMMON_AREA
+        ? "Great! I've marked this request as resolved and closed it — common-area requests don't need tenant confirmation."
+        : "Great! I've marked this request as resolved. The tenant will confirm if everything is working correctly.",
     );
 
     if (maintenanceRequest.tenant?.user?.phone_number) {

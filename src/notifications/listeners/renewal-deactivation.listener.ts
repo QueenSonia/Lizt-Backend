@@ -139,18 +139,30 @@ export class RenewalDeactivationListener {
         'The tenant',
       );
 
-      // In-app notification for the landlord.
+      // In-app notification for the landlord — isolated in its own try/catch
+      // so a write failure (e.g. a missing enum value) can't block the landlord
+      // WhatsApp send below.
       if (event.landlord_id) {
-        await this.notificationService.create({
-          date: new Date().toISOString(),
-          type: NotificationType.RENEWAL_DEACTIVATION_ACCEPTED,
-          description: `${tenantName} accepted the renewal deactivation for ${
-            event.property_name ?? 'your property'
-          }. The tenancy will end on ${event.effective_date ?? 'the due date'}.`,
-          status: 'Pending',
-          property_id: event.property_id,
-          user_id: event.landlord_id,
-        });
+        try {
+          await this.notificationService.create({
+            date: new Date().toISOString(),
+            type: NotificationType.RENEWAL_DEACTIVATION_ACCEPTED,
+            description: `${tenantName} accepted the renewal deactivation for ${
+              event.property_name ?? 'your property'
+            }. The tenancy will end on ${
+              event.effective_date ?? 'the due date'
+            }.`,
+            status: 'Pending',
+            property_id: event.property_id,
+            user_id: event.landlord_id,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `Failed to write in-app renewal-deactivation acceptance notification: ${
+              (err as { message?: string })?.message ?? err
+            }`,
+          );
+        }
       }
 
       const landlordPhone = await this.resolveAccountPhone(event.landlord_id);
@@ -186,17 +198,28 @@ export class RenewalDeactivationListener {
         'The tenant',
       );
 
+      // In-app notification for the landlord — isolated in its own try/catch
+      // so a write failure (e.g. a missing enum value) can't block the landlord
+      // WhatsApp send below.
       if (event.landlord_id) {
-        await this.notificationService.create({
-          date: new Date().toISOString(),
-          type: NotificationType.RENEWAL_DEACTIVATION_DECLINED,
-          description: `${tenantName} declined the renewal deactivation for ${
-            event.property_name ?? 'your property'
-          }. Renewal will continue as normal.`,
-          status: 'Pending',
-          property_id: event.property_id,
-          user_id: event.landlord_id,
-        });
+        try {
+          await this.notificationService.create({
+            date: new Date().toISOString(),
+            type: NotificationType.RENEWAL_DEACTIVATION_DECLINED,
+            description: `${tenantName} declined the renewal deactivation for ${
+              event.property_name ?? 'your property'
+            }. Renewal will continue as normal.`,
+            status: 'Pending',
+            property_id: event.property_id,
+            user_id: event.landlord_id,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `Failed to write in-app renewal-deactivation denial notification: ${
+              (err as { message?: string })?.message ?? err
+            }`,
+          );
+        }
       }
 
       const landlordPhone = await this.resolveAccountPhone(event.landlord_id);

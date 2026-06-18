@@ -3706,23 +3706,30 @@ export class PropertiesService {
   }
 
   async getScheduledMoveOuts(ownerId?: string) {
+    // ScheduledMoveOut has no ORM relations — property_id/tenant_id are plain
+    // uuid columns, so we can't leftJoinAndSelect('smo.property_id'). When an
+    // owner filter is needed, INNER JOIN the properties table by id explicitly
+    // (join-for-filter only; the rows returned are plain ScheduledMoveOut).
     const queryBuilder = this.scheduledMoveOutRepository
       .createQueryBuilder('smo')
-      .leftJoinAndSelect('smo.property_id', 'property')
-      .leftJoinAndSelect('smo.tenant_id', 'tenant')
       .where('smo.processed = :processed', { processed: false });
 
     if (ownerId) {
-      queryBuilder.andWhere('property.owner_id = :ownerId', { ownerId });
+      queryBuilder
+        .innerJoin(Property, 'property', 'property.id = smo.property_id')
+        .andWhere('property.owner_id = :ownerId', { ownerId });
     }
 
-    return queryBuilder.getMany();
+    return queryBuilder.orderBy('smo.effective_date', 'ASC').getMany();
   }
 
   async cancelScheduledMoveOut(scheduleId: string, ownerId?: string) {
+    // NOTE: ScheduledMoveOut has no ORM relations — property_id/tenant_id are
+    // plain uuid columns. Do NOT request relations: ['property'] here; it throws
+    // EntityPropertyNotFoundError. Ownership is checked via a separate property
+    // lookup below.
     const scheduled = await this.scheduledMoveOutRepository.findOne({
       where: { id: scheduleId, processed: false },
-      relations: ['property'],
     });
 
     if (!scheduled) {

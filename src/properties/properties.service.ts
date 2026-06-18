@@ -3739,17 +3739,22 @@ export class PropertiesService {
       );
     }
 
+    const property = await this.propertyRepository.findOneBy({
+      id: scheduled.property_id,
+    });
+
     // If ownerId is provided, validate ownership
-    if (ownerId) {
-      const property = await this.propertyRepository.findOneBy({
-        id: scheduled.property_id,
-      });
-      if (!property || property.owner_id !== ownerId) {
-        throw new ForbiddenException(
-          'You are not authorized to cancel this scheduled move-out',
-        );
-      }
+    if (ownerId && (!property || property.owner_id !== ownerId)) {
+      throw new ForbiddenException(
+        'You are not authorized to cancel this scheduled move-out',
+      );
     }
+
+    // Only a CONFIRMED row reaches the modal's "Reactivate renewal" button —
+    // the tenant had already accepted the lapse, so reactivating pulls them
+    // back and we owe them a heads-up. Withdrawing a still-PENDING request
+    // (tenant never accepted) must NOT notify the tenant.
+    const wasConfirmed = scheduled.status === ScheduledMoveOutStatus.CONFIRMED;
 
     // Keep the row for audit instead of hard-deleting — mark it CANCELLED +
     // processed so it drops out of every active lookup (all filter on
@@ -3759,6 +3764,20 @@ export class PropertiesService {
       processed: true,
       processed_at: new Date(),
     });
+
+    // Tell the tenant their renewal is back on (WhatsApp), via the same event
+    // pattern the deactivation flow uses to keep PropertiesService out of the
+    // WhatsApp module. Fire-and-forget — a notify failure must not fail cancel.
+    if (wasConfirmed) {
+      this.eventEmitter.emit('renewal_reactivated.requested', {
+        scheduled_move_out_id: scheduled.id,
+        property_id: scheduled.property_id,
+        tenant_id: scheduled.tenant_id,
+        landlord_id: ownerId ?? property?.owner_id,
+        property_name: property?.name,
+      });
+    }
+
     return { message: 'Scheduled move-out cancelled successfully' };
   }
 

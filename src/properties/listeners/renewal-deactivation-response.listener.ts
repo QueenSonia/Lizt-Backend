@@ -23,7 +23,9 @@ export class RenewalDeactivationResponseListener {
   constructor(private readonly propertiesService: PropertiesService) {}
 
   @OnEvent('renewal_deactivation.tenant_responded')
-  async handleTenantResponded(event: TenantRespondedEvent): Promise<void> {
+  async handleTenantResponded(
+    event: TenantRespondedEvent,
+  ): Promise<{ applied: boolean; accepted: boolean }> {
     try {
       if (event.accepted) {
         await this.propertiesService.confirmRenewalDeactivation(
@@ -36,14 +38,18 @@ export class RenewalDeactivationResponseListener {
           event.tenant_account_id,
         );
       }
+      return { applied: true, accepted: event.accepted };
     } catch (err) {
       // Already-handled / mismatched-tenant / not-found are expected races
-      // (double-tap, landlord cancelled first). Log and move on.
+      // (double-tap, or the landlord cancelled the request first). Log and
+      // report applied:false so the bot sends an accurate "no longer active"
+      // reply instead of a false "your tenancy will end" confirmation.
       this.logger.warn(
         `Failed to apply renewal-deactivation response for ${event.scheduled_move_out_id}: ${
           (err as { message?: string })?.message ?? err
         }`,
       );
+      return { applied: false, accepted: event.accepted };
     }
   }
 }

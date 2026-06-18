@@ -1091,6 +1091,19 @@ export interface TenancyDetailsUpdatedTenantParams {
 }
 
 /**
+ * Params for `tenant_renewal_reactivated` — sent to the tenant when the
+ * landlord reactivates a renewal the tenant had previously agreed to let lapse.
+ * The Confirm button reuses the `confirm_tenancy_details:{property_id}` payload,
+ * so the tap opens the same tenancy-details re-confirmation card.
+ */
+export interface TenantRenewalReactivatedParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  property_id: string;
+}
+
+/**
  * Button definition for interactive messages
  */
 export interface ButtonDefinition {
@@ -5659,6 +5672,53 @@ export class TemplateSenderService {
     await this.sendToWhatsappAPI(payload);
   }
 
+  /**
+   * Notify the tenant that the landlord has REACTIVATED a renewal the tenant
+   * had previously agreed to let lapse (landlord tapped "Reactivate renewal"
+   * on a CONFIRMED move-out). The Confirm details quick-reply reuses the
+   * existing `confirm_tenancy_details` route, so a single tap opens the same
+   * tenancy-details re-confirmation card.
+   * Template: tenant_renewal_reactivated
+   */
+  async sendTenantRenewalReactivated({
+    phone_number,
+    tenant_name,
+    property_name,
+    property_id,
+  }: TenantRenewalReactivatedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_renewal_reactivated',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: this.toDisplayName(tenant_name) },
+              { type: 'text', text: property_name },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `confirm_tenancy_details:${property_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
   // ----------------------------------------------------------------------
   // Internal API method
   // ----------------------------------------------------------------------
@@ -5847,6 +5907,8 @@ export class TemplateSenderService {
       "Hi {{1}}, \n\nYour tenant {{2}} has shared what's incorrect about the tenancy details for {{3}}.\n\nIssue: {{4}}\n\nPlease follow up with them at {{5}} to resolve this.",
     tenancy_details_updated_tenant:
       'Hi {{1}},\n\nYour landlord has updated the tenancy details for {{2}}.\n\nPlease confirm your updated tenancy details.',
+    tenant_renewal_reactivated:
+      'Hi {{1}},\n\nGood news — your landlord has reactivated the renewal for {{2}}, so your tenancy will continue.\n\nPlease review and confirm your tenancy details.',
     tenancy_renewed_from_credit:
       'Congratulations {{1}}!\n\nYour tenancy has been renewed.\n\nHere are your updated tenancy details:\nTenancy period: {{2}} - {{3}}\nRent amount: ₦{{4}} {{5}}\nService charge: ₦{{6}}\n\nThank you.',
     landlord_renewal_review:

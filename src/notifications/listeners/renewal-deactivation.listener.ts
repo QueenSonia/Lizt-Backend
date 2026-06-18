@@ -27,11 +27,20 @@ interface RespondedEvent {
   effective_date?: string;
 }
 
+interface ReactivatedEvent {
+  scheduled_move_out_id: string;
+  property_id: string;
+  tenant_id: string;
+  landlord_id?: string;
+  property_name?: string;
+}
+
 /**
  * Notifications for the landlord "deactivate renewal" flow:
  *  - renewal_deactivation.requested      → ask the tenant to confirm (WhatsApp)
  *  - renewal_deactivation.tenant_confirmed → tell the landlord it's scheduled
  *  - renewal_deactivation.tenant_denied    → tell the landlord it was declined
+ *  - renewal_reactivated.requested       → tell the tenant their renewal is back
  */
 @Injectable()
 export class RenewalDeactivationListener {
@@ -40,6 +49,7 @@ export class RenewalDeactivationListener {
   private readonly requestedSeen = new Map<string, number>();
   private readonly confirmedSeen = new Map<string, number>();
   private readonly deniedSeen = new Map<string, number>();
+  private readonly reactivatedSeen = new Map<string, number>();
   private readonly DEDUP_MS = 60_000;
 
   constructor(
@@ -204,6 +214,33 @@ export class RenewalDeactivationListener {
     } catch (err) {
       this.logger.warn(
         `Failed to notify landlord of renewal-deactivation denial: ${
+          (err as { message?: string })?.message ?? err
+        }`,
+      );
+    }
+  }
+
+  @OnEvent('renewal_reactivated.requested')
+  async handleReactivated(event: ReactivatedEvent): Promise<void> {
+    if (!this.dedup(this.reactivatedSeen, event.scheduled_move_out_id)) return;
+    try {
+      const tenantPhone = await this.resolveAccountPhone(event.tenant_id);
+      if (!tenantPhone) {
+        this.logger.warn(
+          `No phone for tenant ${event.tenant_id}; cannot send renewal-reactivated notice`,
+        );
+        return;
+      }
+      const tenantName = await this.resolveAccountDisplayName(event.tenant_id);
+      await this.templateSenderService.sendTenantRenewalReactivated({
+        phone_number: tenantPhone,
+        tenant_name: tenantName,
+        property_name: event.property_name ?? 'your property',
+        property_id: event.property_id,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to send tenant renewal-reactivated notice: ${
           (err as { message?: string })?.message ?? err
         }`,
       );

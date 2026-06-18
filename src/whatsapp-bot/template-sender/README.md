@@ -134,6 +134,31 @@ Please confirm your updated tenancy details.
 
 **Usage**: Sent from `notifyTenantOfTenancyEdit` in `tenancies.service.ts` at the end of `updateActiveTenancy`, gated on `chargesChanged || periodOrFrequencyChanged || recurringChanges.length > 0` so no-op saves don't fire.
 
+### 4b. tenant_renewal_reactivated
+
+**Purpose**: Notify the tenant that the landlord has reactivated a renewal the tenant had previously agreed to let lapse (landlord tapped "Reactivate renewal" on a CONFIRMED scheduled move-out), and prompt them to re-confirm their tenancy details.
+
+**Template Name**: `tenant_renewal_reactivated`
+
+**Parameters**:
+
+- `{{1}}` - Tenant first name
+- `{{2}}` - Property name
+
+**Button**: Quick-reply button — `Confirm details` with payload `confirm_tenancy_details:{property_id}` (reuses the same dispatcher route as `tenancy_details_updated_tenant` / `welcome_tenant`, so a single tap takes the tenant to the Yes/No re-confirmation card).
+
+**Message**:
+
+```
+Hi {{1}},
+
+Good news — your landlord has reactivated the renewal for {{2}}, so your tenancy will continue.
+
+Please review and confirm your tenancy details.
+```
+
+**Usage**: Sent from the `renewal_reactivated.requested` handler in `notifications/listeners/renewal-deactivation.listener.ts`. The event is emitted by `PropertiesService.cancelScheduledMoveOut` only when the cancelled `scheduled_move_outs` row was `CONFIRMED` (i.e. the tenant had accepted the lapse) — withdrawing a still-PENDING request does not notify the tenant.
+
 ### 5. renewal_letter_signed
 
 **Purpose**: Deliver the signed renewal-letter PDF to the tenant after they accept or decline. One template serves both outcomes — `outcome` flips the body verb while the rendered PDF carries the matching ACCEPTED/DECLINED stamp.

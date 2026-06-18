@@ -3501,21 +3501,37 @@ export class TenantFlowService {
       return;
     }
 
-    this.eventEmitter.emit('renewal_deactivation.tenant_responded', {
-      scheduled_move_out_id: scheduledMoveOutId,
-      tenant_account_id: tenantAccountId,
-      accepted,
-    });
+    // Apply the response in PropertiesModule (the event keeps PropertiesService
+    // out of the WhatsApp bot, avoiding a circular dep) but AWAIT it so the
+    // tenant's acknowledgment reflects what actually happened. If the landlord
+    // cancelled the request first — or the tenant double-taps — the listener
+    // reports applied:false and we send a "no longer active" reply instead of a
+    // false "your tenancy will end" confirmation.
+    const results = await this.eventEmitter.emitAsync(
+      'renewal_deactivation.tenant_responded',
+      {
+        scheduled_move_out_id: scheduledMoveOutId,
+        tenant_account_id: tenantAccountId,
+        accepted,
+      },
+    );
+    const applied = (results ?? []).some(
+      (r) => r && typeof r === 'object' && (r as { applied?: boolean }).applied,
+    );
 
     const tenantFirstName =
       this.utilService.toSentenceCase(tenant?.first_name ?? '') || 'there';
 
-    await this.templateSenderService.sendText(
-      from,
-      accepted
-        ? `Thanks ${tenantFirstName} — we've recorded your response. Your tenancy will end at the end of the current term and your landlord has been notified.`
-        : `Thanks ${tenantFirstName} — we've let your landlord know. Your renewal will continue as normal.`,
-    );
+    let message: string;
+    if (!applied) {
+      message = `Thanks ${tenantFirstName}, but this request is no longer active — your landlord may have cancelled it. No changes were made and your renewal will continue as normal.`;
+    } else if (accepted) {
+      message = `Thanks ${tenantFirstName} — we've recorded your response. Your tenancy will end at the end of the current term and your landlord has been notified.`;
+    } else {
+      message = `Thanks ${tenantFirstName} — we've let your landlord know. Your renewal will continue as normal.`;
+    }
+
+    await this.templateSenderService.sendText(from, message);
   }
 
   private async handleTenantConfirmMaintenanceRequest(

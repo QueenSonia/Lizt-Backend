@@ -28,10 +28,16 @@ import { DateService } from 'src/utils/date.helper';
 import { calculateRentExpiryDate } from 'src/common/utils/rent-date.util';
 import { PropertyTenant } from './entities/property-tenants.entity';
 import { config } from 'src/config';
-import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
+import {
+  PropertyHistory,
+  MoveOutReasonEnum,
+} from 'src/property-history/entities/property-history.entity';
 import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
 import { PropertyGroup } from './entities/property-group.entity';
-import { ScheduledMoveOut } from './entities/scheduled-move-out.entity';
+import {
+  ScheduledMoveOut,
+  ScheduledMoveOutStatus,
+} from './entities/scheduled-move-out.entity';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -2553,6 +2559,33 @@ export class PropertiesService {
       property.property_status as PropertyStatusEnum,
     );
 
+    // Renewal-deactivation state, for the End Tenancy modal's renewal toggle:
+    //  - active:    no pending request (button offers "Deactivate renewal")
+    //  - pending:   landlord asked, awaiting tenant WhatsApp confirmation
+    //  - confirmed: tenant accepted; tenancy will auto-end on scheduledEndDate
+    let renewalDeactivationStatus: 'active' | 'pending' | 'confirmed' = 'active';
+    let scheduledEndDate: string | null = null;
+    let scheduledMoveOutId: string | null = null;
+    if (activeTenantRelation && activeRent) {
+      const pendingMoveOut = await this.scheduledMoveOutRepository.findOne({
+        where: {
+          property_id: property.id,
+          tenant_id: activeTenantRelation.tenant.id,
+          processed: false,
+        },
+      });
+      if (pendingMoveOut) {
+        renewalDeactivationStatus =
+          pendingMoveOut.status === ScheduledMoveOutStatus.CONFIRMED
+            ? 'confirmed'
+            : 'pending';
+        scheduledEndDate = pendingMoveOut.effective_date
+          ? new Date(pendingMoveOut.effective_date).toISOString().split('T')[0]
+          : null;
+        scheduledMoveOutId = pendingMoveOut.id;
+      }
+    }
+
     return {
       id: property.id,
       name: property.name,
@@ -2582,6 +2615,9 @@ export class PropertiesService {
       agencyFeeRecurring: activeRent?.agency_fee_recurring ?? false,
       rentExpiryDate:
         activeRent?.expiry_date?.toISOString().split('T')[0] || null,
+      renewalDeactivationStatus,
+      scheduledEndDate,
+      scheduledMoveOutId,
       pendingRenewalInvoice: pendingRenewalInvoice || null,
       pendingAdHocInvoiceFees,
       adHocInvoiceOptions,
@@ -3128,26 +3164,38 @@ export class PropertiesService {
       if (!property?.id) {
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
+      // Find an existing relationship at ANY status. The end-tenancy flow now
+      // soft-deactivates (status = INACTIVE) instead of deleting, so reactivate
+      // a leftover INACTIVE row rather than inserting a duplicate (there is no
+      // unique constraint on property_id + tenant_id).
       const existingTenant = await queryRunner.manager.findOne(PropertyTenant, {
         where: {
           property_id,
           tenant_id,
-          status: TenantStatusEnum.ACTIVE,
         },
       });
 
-      if (existingTenant?.id) {
+      if (existingTenant?.status === TenantStatusEnum.ACTIVE) {
         throw new HttpException(
           'Tenant is already assigned to this property',
           HttpStatus.BAD_REQUEST,
         );
       }
 
-      const moveTenantIn = await queryRunner.manager.save(PropertyTenant, {
-        property_id,
-        tenant_id,
-        status: TenantStatusEnum.ACTIVE,
-      });
+      let moveTenantIn: PropertyTenant;
+      if (existingTenant?.id) {
+        existingTenant.status = TenantStatusEnum.ACTIVE;
+        moveTenantIn = await queryRunner.manager.save(
+          PropertyTenant,
+          existingTenant,
+        );
+      } else {
+        moveTenantIn = await queryRunner.manager.save(PropertyTenant, {
+          property_id,
+          tenant_id,
+          status: TenantStatusEnum.ACTIVE,
+        });
+      }
 
       await queryRunner.manager.update(Property, property_id, {
         property_status: PropertyStatusEnum.OCCUPIED,
@@ -3391,18 +3439,43 @@ export class PropertiesService {
         }
       }
 
-      // Remove property-tenant relationship
-      const propertyTenantDeleteResult = await queryRunner.manager.delete(
+      // Soft-deactivate the property-tenant relationship (do NOT hard-delete).
+      // renewal_invoices / payment_plans / payment_plan_requests / ad_hoc_invoices
+      // all FK this row with ON DELETE CASCADE, so a delete would wipe the
+      // tenant's billing history and break public invoice links. Every other
+      // end-of-tenancy path already uses status = INACTIVE.
+      const propertyTenantDeactivateResult = await queryRunner.manager.update(
         PropertyTenant,
         {
           property_id,
           tenant_id,
+          status: TenantStatusEnum.ACTIVE,
+        },
+        {
+          status: TenantStatusEnum.INACTIVE,
+          updated_at: new Date(),
         },
       );
 
-      console.log(`[MOVE_OUT] PropertyTenant deletion result:`, {
-        affectedRows: propertyTenantDeleteResult.affected,
+      console.log(`[MOVE_OUT] PropertyTenant deactivation result:`, {
+        affectedRows: propertyTenantDeactivateResult.affected,
       });
+
+      // Mark any pending/confirmed scheduled move-out for this tenancy as
+      // processed so the daily processor doesn't keep retrying it (and the
+      // renewal cron gate doesn't stay stuck on) after an immediate end.
+      await queryRunner.manager.update(
+        ScheduledMoveOut,
+        {
+          property_id,
+          tenant_id,
+          processed: false,
+        },
+        {
+          processed: true,
+          processed_at: new Date(),
+        },
+      );
 
       // Update property status to vacant
       const propertyUpdateResult = await queryRunner.manager.update(
@@ -3576,10 +3649,13 @@ export class PropertiesService {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Find all scheduled move-outs that are due today or overdue
+    // Find all CONFIRMED scheduled move-outs that are due today or overdue.
+    // PENDING_TENANT_CONFIRMATION rows are excluded — they only become
+    // actionable once the tenant accepts (which flips them to CONFIRMED).
     const scheduledMoveOuts = await this.scheduledMoveOutRepository.find({
       where: {
         processed: false,
+        status: ScheduledMoveOutStatus.CONFIRMED,
       },
     });
 
@@ -3668,8 +3744,261 @@ export class PropertiesService {
       }
     }
 
-    await this.scheduledMoveOutRepository.delete(scheduleId);
+    // Keep the row for audit instead of hard-deleting — mark it CANCELLED +
+    // processed so it drops out of every active lookup (all filter on
+    // processed: false) while the history is preserved.
+    await this.scheduledMoveOutRepository.update(scheduleId, {
+      status: ScheduledMoveOutStatus.CANCELLED,
+      processed: true,
+      processed_at: new Date(),
+    });
     return { message: 'Scheduled move-out cancelled successfully' };
+  }
+
+  /**
+   * Landlord-initiated "deactivate renewal": let the current term lapse instead
+   * of renewing. This does NOT take effect immediately — it parks a
+   * PENDING_TENANT_CONFIRMATION scheduled move-out (dated to the day after the
+   * current term ends) and asks the tenant to confirm over WhatsApp. Only when
+   * the tenant accepts does it become CONFIRMED (which suppresses renewal +
+   * reminders and auto-ends the tenancy at the due date). A tenant denial drops
+   * the request and renewal continues as normal.
+   */
+  async deactivateRenewal(
+    property_id: string,
+    tenant_id: string,
+    requesterId?: string,
+  ) {
+    const property = await this.propertyRepository.findOneBy({
+      id: property_id,
+    });
+    if (!property) {
+      throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
+    }
+    if (requesterId && property.owner_id !== requesterId) {
+      throw new ForbiddenException(
+        'You are not authorized to deactivate renewal for this property',
+      );
+    }
+
+    const propertyTenant = await this.propertyTenantRepository.findOne({
+      where: { property_id, tenant_id, status: TenantStatusEnum.ACTIVE },
+    });
+    if (!propertyTenant?.id) {
+      throw new HttpException(
+        'Tenant is not currently assigned to this property',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const activeRent = await this.rentRepository.findOne({
+      where: { property_id, tenant_id, rent_status: RentStatusEnum.ACTIVE },
+      order: { created_at: 'DESC' },
+    });
+    if (!activeRent?.expiry_date) {
+      throw new HttpException(
+        'This tenancy has no fixed term to lapse. Use End tenancy now instead.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Block when the upcoming renewal has already been PAID — the next period is
+    // already secured, so "don't renew" would contradict it. Mirrors how
+    // getPropertyDetails derives renewalStatus='paid' (latest non-superseded
+    // landlord/draft renewal invoice).
+    const latestRenewal = await this.renewalInvoiceRepository.findOne({
+      where: {
+        property_id,
+        tenant_id,
+        token_type: In(['landlord', 'draft']),
+        superseded_by_id: IsNull(),
+      },
+      order: { created_at: 'DESC' },
+      select: ['id', 'payment_status'],
+    });
+    if (latestRenewal?.payment_status === RenewalPaymentStatus.PAID) {
+      throw new HttpException(
+        'The upcoming renewal has already been paid, so it can no longer be deactivated. Use End tenancy now if you need to end it.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Lapse the day AFTER the current (paid) term ends, so the tenant keeps the
+    // full term they paid for.
+    const effectiveStr = DateService.addDays(activeRent.expiry_date, 1)
+      .toISOString()
+      .split('T')[0];
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const effectiveStart = new Date(effectiveStr);
+    effectiveStart.setHours(0, 0, 0, 0);
+    if (effectiveStart <= today) {
+      throw new HttpException(
+        'This lease term has already ended. Use End tenancy now instead.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Reuse an existing unprocessed row (e.g. a re-click) or create a new one.
+    const existing = await this.scheduledMoveOutRepository.findOne({
+      where: { property_id, tenant_id, processed: false },
+    });
+
+    let scheduledMoveOut: ScheduledMoveOut;
+    if (existing) {
+      existing.effective_date = DateService.getStartOfTheDay(effectiveStr);
+      existing.move_out_reason = MoveOutReasonEnum.LEASE_ENDED;
+      existing.owner_comment =
+        'Renewal deactivated by landlord (awaiting tenant confirmation)';
+      existing.status = ScheduledMoveOutStatus.PENDING_TENANT_CONFIRMATION;
+      scheduledMoveOut = await this.scheduledMoveOutRepository.save(existing);
+    } else {
+      scheduledMoveOut = await this.scheduledMoveOutRepository.save({
+        property_id,
+        tenant_id,
+        effective_date: DateService.getStartOfTheDay(effectiveStr),
+        move_out_reason: MoveOutReasonEnum.LEASE_ENDED,
+        owner_comment:
+          'Renewal deactivated by landlord (awaiting tenant confirmation)',
+        processed: false,
+        status: ScheduledMoveOutStatus.PENDING_TENANT_CONFIRMATION,
+      });
+    }
+
+    const tenantName = await this.resolveTenantDisplayName(tenant_id);
+
+    // Ask the tenant to confirm over WhatsApp (handled by the listener).
+    this.eventEmitter.emit('renewal_deactivation.requested', {
+      scheduled_move_out_id: scheduledMoveOut.id,
+      property_id,
+      tenant_id,
+      landlord_id: property.owner_id,
+      property_name: property.name,
+      tenant_name: tenantName,
+      effective_date: effectiveStr,
+    });
+
+    return {
+      status: 'pending',
+      message:
+        'Renewal deactivation request sent to the tenant for confirmation.',
+      effective_date: effectiveStr,
+      id: scheduledMoveOut.id,
+    };
+  }
+
+  /**
+   * Tenant accepted the landlord's deactivate-renewal request (via WhatsApp).
+   * Promote the pending row to CONFIRMED so the cron gate + auto-end apply, and
+   * notify the landlord.
+   */
+  async confirmRenewalDeactivation(
+    scheduledMoveOutId: string,
+    tenantAccountId: string,
+  ) {
+    const scheduled = await this.scheduledMoveOutRepository.findOne({
+      where: {
+        id: scheduledMoveOutId,
+        processed: false,
+        status: ScheduledMoveOutStatus.PENDING_TENANT_CONFIRMATION,
+      },
+    });
+    if (!scheduled) {
+      throw new HttpException(
+        'Renewal deactivation request not found or already handled',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (scheduled.tenant_id !== tenantAccountId) {
+      throw new ForbiddenException('This request does not belong to you');
+    }
+
+    await this.scheduledMoveOutRepository.update(scheduled.id, {
+      status: ScheduledMoveOutStatus.CONFIRMED,
+    });
+
+    const property = await this.propertyRepository.findOneBy({
+      id: scheduled.property_id,
+    });
+    const effectiveStr = new Date(scheduled.effective_date)
+      .toISOString()
+      .split('T')[0];
+
+    this.eventEmitter.emit('renewal_deactivation.tenant_confirmed', {
+      scheduled_move_out_id: scheduled.id,
+      property_id: scheduled.property_id,
+      tenant_id: scheduled.tenant_id,
+      landlord_id: property?.owner_id,
+      property_name: property?.name,
+      effective_date: effectiveStr,
+    });
+
+    return { status: 'confirmed', effective_date: effectiveStr };
+  }
+
+  /**
+   * Tenant denied the landlord's deactivate-renewal request. Drop the pending
+   * row — renewal/reminders continue as normal — and notify the landlord.
+   */
+  async denyRenewalDeactivation(
+    scheduledMoveOutId: string,
+    tenantAccountId: string,
+  ) {
+    const scheduled = await this.scheduledMoveOutRepository.findOne({
+      where: {
+        id: scheduledMoveOutId,
+        processed: false,
+        status: ScheduledMoveOutStatus.PENDING_TENANT_CONFIRMATION,
+      },
+    });
+    if (!scheduled) {
+      throw new HttpException(
+        'Renewal deactivation request not found or already handled',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (scheduled.tenant_id !== tenantAccountId) {
+      throw new ForbiddenException('This request does not belong to you');
+    }
+
+    const property = await this.propertyRepository.findOneBy({
+      id: scheduled.property_id,
+    });
+
+    // Keep the row for audit (who/when/intended end) — mark it DENIED +
+    // processed so every active lookup (filtered on processed: false) ignores
+    // it. Renewal continues as normal.
+    await this.scheduledMoveOutRepository.update(scheduled.id, {
+      status: ScheduledMoveOutStatus.DENIED,
+      processed: true,
+      processed_at: new Date(),
+    });
+
+    this.eventEmitter.emit('renewal_deactivation.tenant_denied', {
+      scheduled_move_out_id: scheduled.id,
+      property_id: scheduled.property_id,
+      tenant_id: scheduled.tenant_id,
+      landlord_id: property?.owner_id,
+      property_name: property?.name,
+    });
+
+    return { status: 'denied' };
+  }
+
+  /** Resolve a tenant's display name from their Account id (Account → user). */
+  private async resolveTenantDisplayName(
+    tenantAccountId: string,
+  ): Promise<string> {
+    const account = await this.accountRepository.findOne({
+      where: { id: tenantAccountId },
+      relations: ['user'],
+    });
+    const profile = account?.profile_name?.trim();
+    if (profile) return profile;
+    const first = account?.user?.first_name?.trim() ?? '';
+    const last = account?.user?.last_name?.trim() ?? '';
+    return `${first} ${last}`.trim() || 'there';
   }
 
   async createPropertyGroup(data: CreatePropertyGroupDto, owner_id: string) {

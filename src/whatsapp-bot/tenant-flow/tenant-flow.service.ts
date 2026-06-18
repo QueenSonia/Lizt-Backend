@@ -992,6 +992,14 @@ export class TenantFlowService {
         await this.handleTenantDenyMaintenanceRequestPrompt(from, payload);
         return;
       }
+      if (action === 'tenant_confirm_renewal_deactivation') {
+        await this.handleRenewalDeactivationResponse(from, payload, true);
+        return;
+      }
+      if (action === 'tenant_deny_renewal_deactivation') {
+        await this.handleRenewalDeactivationResponse(from, payload, false);
+        return;
+      }
     }
 
     switch (cleanButtonId) {
@@ -3468,6 +3476,48 @@ export class TenantFlowService {
    * Resolves tenant account from phone, calls
    * `confirmTenantMaintenanceRequest`, and renders a stale-tap reply on 409.
    */
+  /**
+   * Tenant tapped Accept/Deny on the renewal-deactivation confirmation (the
+   * landlord's "deactivate renewal" request). Resolve the tenant's account,
+   * then emit an event so PropertiesModule applies the response — this avoids a
+   * circular dependency on PropertiesService (same pattern as the payment
+   * receipt download button). The status flip + landlord notification happen in
+   * the RenewalDeactivationResponseListener.
+   */
+  private async handleRenewalDeactivationResponse(
+    from: string,
+    scheduledMoveOutId: string,
+    accepted: boolean,
+  ): Promise<void> {
+    if (!scheduledMoveOutId) return;
+
+    const tenant = await this.findTenantByPhone(from);
+    const tenantAccountId = tenant?.accounts?.[0]?.id;
+    if (!tenantAccountId) {
+      await this.templateSenderService.sendText(
+        from,
+        'We could not match this request to your account. Please contact your landlord.',
+      );
+      return;
+    }
+
+    this.eventEmitter.emit('renewal_deactivation.tenant_responded', {
+      scheduled_move_out_id: scheduledMoveOutId,
+      tenant_account_id: tenantAccountId,
+      accepted,
+    });
+
+    const tenantFirstName =
+      this.utilService.toSentenceCase(tenant?.first_name ?? '') || 'there';
+
+    await this.templateSenderService.sendText(
+      from,
+      accepted
+        ? `Thanks ${tenantFirstName} — we've recorded your response. Your tenancy will end at the end of the current term and your landlord has been notified.`
+        : `Thanks ${tenantFirstName} — we've let your landlord know. Your renewal will continue as normal.`,
+    );
+  }
+
   private async handleTenantConfirmMaintenanceRequest(
     from: string,
     requestId: string,

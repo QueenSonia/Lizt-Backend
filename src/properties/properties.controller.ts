@@ -39,7 +39,11 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
-import { MoveTenantInDto, MoveTenantOutDto } from './dto/move-tenant.dto';
+import {
+  MoveTenantInDto,
+  MoveTenantOutDto,
+  DeactivateRenewalDto,
+} from './dto/move-tenant.dto';
 import { CreatePropertyGroupDto } from './dto/create-property-group.dto';
 import { RentsService } from 'src/rents/rents.service';
 import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
@@ -544,6 +548,31 @@ export class PropertiesController {
   ) {
     try {
       return this.propertiesService.moveTenantOut(moveOutData, requester.id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  @ApiOperation({ summary: 'Deactivate renewal (let the tenancy lapse)' })
+  @ApiOkResponse({
+    description:
+      'Renewal deactivation request sent to the tenant for confirmation',
+  })
+  @ApiBadRequestResponse()
+  @ApiSecurity('access_token')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Post('deactivate-renewal')
+  deactivateRenewal(
+    @Body() body: DeactivateRenewalDto,
+    @CurrentUser() requester: Account,
+  ) {
+    try {
+      return this.propertiesService.deactivateRenewal(
+        body.property_id,
+        body.tenant_id,
+        requester.id,
+      );
     } catch (error) {
       throw error;
     }

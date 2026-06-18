@@ -375,6 +375,44 @@ export interface LandlordFiledRequestConfirmedByTenantParams {
 }
 
 /**
+ * Tenant-bound confirmation for the landlord's "deactivate renewal" action.
+ * Two quick-reply buttons let the tenant accept (tenancy lapses at term-end)
+ * or decline (renewal continues). `scheduled_move_out_id` is required — it is
+ * embedded in both button payloads so the inbound handler can resolve the
+ * pending request.
+ */
+export interface TenantConfirmRenewalDeactivationParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  end_date: string;
+  scheduled_move_out_id: string;
+}
+
+/**
+ * Landlord-bound informational notice fired when the tenant ACCEPTS the
+ * deactivate-renewal request. No buttons — the lapse is now scheduled.
+ */
+export interface LandlordRenewalDeactivationAcceptedParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+  end_date: string;
+}
+
+/**
+ * Landlord-bound informational notice fired when the tenant DECLINES the
+ * deactivate-renewal request. No buttons — renewal continues as normal.
+ */
+export interface LandlordRenewalDeactivationDeniedParams {
+  phone_number: string;
+  landlord_name: string;
+  tenant_name: string;
+  property_name: string;
+}
+
+/**
  * Landlord-bound informational template fired when the tenant denies the
  * FM-filed MR. The denial reason (if any) is captured in the dashboard
  * activity feed, not the WhatsApp template — the reason can only arrive via
@@ -2307,6 +2345,137 @@ export class TemplateSenderService {
               { type: 'text', text: tenant_name },
               { type: 'text', text: property_name },
               { type: 'text', text: maintenance_request },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Tenant-bound confirmation for the landlord's "deactivate renewal" action.
+   * Accept → PropertiesService.confirmRenewalDeactivation; Deny →
+   * PropertiesService.denyRenewalDeactivation. Both button payloads carry the
+   * scheduled_move_out_id so the inbound handler can resolve the request.
+   */
+  async sendTenantConfirmRenewalDeactivation({
+    phone_number,
+    tenant_name,
+    property_name,
+    end_date,
+    scheduled_move_out_id,
+  }: TenantConfirmRenewalDeactivationParams): Promise<void> {
+    if (!scheduled_move_out_id) {
+      throw new Error(
+        'scheduled_move_out_id is required for tenant_confirm_renewal_deactivation',
+      );
+    }
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_confirm_renewal_deactivation',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: end_date },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_confirm_renewal_deactivation:${scheduled_move_out_id}`,
+              },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              {
+                type: 'payload',
+                payload: `tenant_deny_renewal_deactivation:${scheduled_move_out_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Landlord-bound informational notice: the tenant ACCEPTED the
+   * deactivate-renewal request; the lapse is now scheduled. No buttons.
+   */
+  async sendLandlordRenewalDeactivationAccepted({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+    end_date,
+  }: LandlordRenewalDeactivationAcceptedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_renewal_deactivation_accepted',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: end_date },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Landlord-bound informational notice: the tenant DECLINED the
+   * deactivate-renewal request; renewal continues as normal. No buttons.
+   */
+  async sendLandlordRenewalDeactivationDenied({
+    phone_number,
+    landlord_name,
+    tenant_name,
+    property_name,
+  }: LandlordRenewalDeactivationDeniedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_renewal_deactivation_denied',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: property_name },
             ],
           },
         ],
@@ -5548,7 +5717,7 @@ export class TemplateSenderService {
     kyc_application_attachment_landlord:
       'Attached is the KYC application from {{1}} for {{2}}.\n\nThank you.',
     kyc_submission_confirmation:
-      "Hello {{1}}, Your KYC form has been submitted. The landlord is reviewing your details, and we'll keep you updated.",
+      "Hello {{1}},\n\nYour KYC form has been submitted. The landlord is reviewing your details, and we'll keep you updated.\n\nPlease note that this is an automated message. No action or reply is required at this time.",
     agent_kyc_notification:
       'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
     landlord_maintenance_request_notification:
@@ -5567,6 +5736,12 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nYour facility manager {{2}} filed a maintenance issue at {{3}}:\n\n"{{4}}"\n\nWe\'re waiting on the tenant to confirm. You\'ll be notified when they respond.',
     landlord_filed_request_confirmed_by_tenant:
       'Hi {{1}},\n\n{{2}} just confirmed the maintenance request you filed for {{3}}. It\'s now approved.\n\nIssue: "{{4}}"\n\nPlease attend to this.',
+    tenant_confirm_renewal_deactivation:
+      'Hi {{1}}, your landlord has chosen not to renew your tenancy at {{2}} after the current term. This means your tenancy would end on {{3}} and would not be renewed.\n\nPlease confirm: do you agree to end the tenancy at the end of the current term? Tap a button below to respond.',
+    landlord_renewal_deactivation_accepted:
+      'Hi {{1}}, {{2}} has confirmed they will not be renewing the tenancy at {{3}}. The tenancy is now scheduled to end on {{4}}. We\'ll handle the move-out automatically on that date.',
+    landlord_renewal_deactivation_denied:
+      'Hi {{1}}, {{2}} has declined the request to end the tenancy at {{3}}. The renewal has not been deactivated and reminders will continue as normal. You can review this from your dashboard.',
     landlord_fm_request_denied_by_tenant:
       'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}} filed:\n\n"{{4}}"\n\nThe request is now closed.',
     landlord_request_denied_by_tenant:

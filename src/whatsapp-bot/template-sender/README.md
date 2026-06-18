@@ -268,6 +268,79 @@ Tap "Open chat" to view the full thread, or "Quick reply" to respond from here.
 
 **Usage**: Sole caller is `MrChatNotificationService` (lizt-backend/src/whatsapp-bot/mr-chat-notification.service.ts), which subscribes to `mr-chat.message.created` and ALWAYS sends the template to the landlord and assigned FM (minus the author). Presence on the chat gateway is not consulted — the two parties of the assignment always get a durable WhatsApp ping. An in-app `mr-chat.toast` event is emitted in parallel for live dashboard awareness; the frontend dedupes that toast against the currently-focused MR. Write access to the thread is itself private to these two parties — see `ChatService.resolveWriteRole`.
 
+## Renewal Deactivation Templates
+
+These power the landlord's "deactivate renewal" action (let a tenancy lapse at
+term-end). The action is tenant-gated: the landlord's click parks a
+`pending_tenant_confirmation` row in `scheduled_move_outs` and the bot asks the
+tenant to confirm. Only on Accept does it become `confirmed` (renewal/reminders
+suppressed, auto-end at `expiry + 1`). On Deny the request is dropped.
+
+### 1. tenant_confirm_renewal_deactivation
+
+**Purpose**: Ask the tenant to confirm the landlord's decision not to renew.
+
+**Template Name**: `tenant_confirm_renewal_deactivation`
+
+**Parameters**:
+
+- `{{1}}` - Tenant name (server-generated)
+- `{{2}}` - Property name (server-generated)
+- `{{3}}` - End date, i.e. the day after the current term (server-generated)
+
+**Buttons** (quick-reply):
+
+- Position 1 `Yes, end at term` → payload `tenant_confirm_renewal_deactivation:{scheduled_move_out_id}`
+- Position 2 `No, keep renewing` → payload `tenant_deny_renewal_deactivation:{scheduled_move_out_id}`
+
+Both are dispatched in `TenantFlowService.handleInteractive` →
+`handleRenewalDeactivationResponse`, which emits
+`renewal_deactivation.tenant_responded`. `RenewalDeactivationResponseListener`
+(PropertiesModule) then calls `PropertiesService.confirmRenewalDeactivation` /
+`denyRenewalDeactivation` — avoiding a circular dep on PropertiesService.
+
+**Message**:
+
+```
+Hi {{1}}, your landlord has chosen not to renew your tenancy at {{2}} after the current term. This means your tenancy would end on {{3}} and would not be renewed.
+
+Please confirm: do you agree to end the tenancy at the end of the current term? Tap a button below to respond.
+```
+
+**Usage**: Sent by `RenewalDeactivationListener` on `renewal_deactivation.requested` (emitted by `PropertiesService.deactivateRenewal`).
+
+### 2. landlord_renewal_deactivation_accepted
+
+**Purpose**: Tell the landlord the tenant accepted; the lapse is scheduled.
+
+**Template Name**: `landlord_renewal_deactivation_accepted`
+
+**Parameters**: `{{1}}` landlord name, `{{2}}` tenant name, `{{3}}` property name, `{{4}}` end date (all server-generated). No buttons.
+
+**Message**:
+
+```
+Hi {{1}}, {{2}} has confirmed they will not be renewing the tenancy at {{3}}. The tenancy is now scheduled to end on {{4}}. We'll handle the move-out automatically on that date.
+```
+
+**Usage**: `RenewalDeactivationListener` on `renewal_deactivation.tenant_confirmed`.
+
+### 3. landlord_renewal_deactivation_denied
+
+**Purpose**: Tell the landlord the tenant declined; renewal continues.
+
+**Template Name**: `landlord_renewal_deactivation_denied`
+
+**Parameters**: `{{1}}` landlord name, `{{2}}` tenant name, `{{3}}` property name (all server-generated). No buttons.
+
+**Message**:
+
+```
+Hi {{1}}, {{2}} has declined the request to end the tenancy at {{3}}. The renewal has not been deactivated and reminders will continue as normal. You can review this from your dashboard.
+```
+
+**Usage**: `RenewalDeactivationListener` on `renewal_deactivation.tenant_denied`.
+
 ## Configuration
 
 ### Simulator Mode

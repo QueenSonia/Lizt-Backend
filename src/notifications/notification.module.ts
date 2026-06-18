@@ -11,6 +11,7 @@ import { PropertyListener } from './listeners/property-created.listener';
 import { MaintenanceRequestListener } from './listeners/maintenance-request.listener';
 import { UserSignUpListener } from './listeners/user-signup.listener';
 import { TenantAttachmentListener } from './listeners/tenant-attachment.listener';
+import { RenewalDeactivationListener } from './listeners/renewal-deactivation.listener';
 import { Property } from 'src/properties/entities/property.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
@@ -40,6 +41,7 @@ import { Account } from 'src/users/entities/account.entity';
     PropertyListener,
     MaintenanceRequestListener,
     TenantAttachmentListener,
+    RenewalDeactivationListener,
     UtilService,
   ],
   exports: [NotificationService, PushNotificationService],

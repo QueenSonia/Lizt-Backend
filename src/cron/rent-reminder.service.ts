@@ -23,6 +23,11 @@ import {
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
 import {
+  ScheduledMoveOut,
+  ScheduledMoveOutStatus,
+} from '../properties/entities/scheduled-move-out.entity';
+import { PropertiesService } from '../properties/properties.service';
+import {
   PropertyStatusEnum,
   TenantStatusEnum,
 } from '../properties/dto/create-property.dto';
@@ -69,24 +74,54 @@ export class RentReminderService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PaymentPlanInstallment)
     private readonly installmentRepository: Repository<PaymentPlanInstallment>,
+    @InjectRepository(ScheduledMoveOut)
+    private readonly scheduledMoveOutRepository: Repository<ScheduledMoveOut>,
     private readonly whatsAppNotificationLogService: WhatsAppNotificationLogService,
     private readonly notificationService: NotificationService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly renewalChargeService: RenewalChargeService,
+    private readonly propertiesService: PropertiesService,
   ) {}
+
+  /**
+   * Build the set of `${property_id}:${tenant_id}` keys for tenancies that have
+   * a CONFIRMED scheduled move-out (i.e. renewal was deactivated and the tenant
+   * accepted). These are excluded from all renewal/reminder processing — the
+   * tenancy is winding down. PENDING_TENANT_CONFIRMATION rows are NOT included:
+   * renewal continues until the tenant actually accepts.
+   */
+  private async getConfirmedLapseKeys(): Promise<Set<string>> {
+    const rows = await this.scheduledMoveOutRepository.find({
+      where: {
+        processed: false,
+        status: ScheduledMoveOutStatus.CONFIRMED,
+      },
+    });
+    return new Set(rows.map((r) => `${r.property_id}:${r.tenant_id}`));
+  }
 
   @Cron(CronExpression.EVERY_DAY_AT_8AM, { timeZone: 'Africa/Lagos' })
   async runDailyReminderCheck() {
     this.logger.log('Starting daily rent reminder check...');
     try {
-      await this.processAutoRenewal();
-      await this.processAcceptedLetterCharges();
-      await this.processUpcomingReminders();
-      await this.processPostExpiryReminders();
+      // Tenancies with a CONFIRMED renewal deactivation are skipped by every
+      // renewal/reminder step below — they're winding down to a scheduled end.
+      const lapseKeys = await this.getConfirmedLapseKeys();
+
+      await this.processAutoRenewal(lapseKeys);
+      await this.processAcceptedLetterCharges(lapseKeys);
+      await this.processUpcomingReminders(lapseKeys);
+      await this.processPostExpiryReminders(lapseKeys);
       await this.checkInstallmentReminders();
       // Last: a failure in the (non-critical) landlord heads-up must not skip
       // the core renewal/reminder steps above.
-      await this.processLandlordReviewNotices();
+      await this.processLandlordReviewNotices(lapseKeys);
+
+      // Finally, end any tenancies whose CONFIRMED scheduled move-out is now
+      // due. Folded into this already-daily cron so the cost-disabled
+      // move-out scheduler stays off.
+      await this.propertiesService.processScheduledMoveOuts();
+
       this.logger.log('Completed daily rent reminder check.');
     } catch (error) {
       this.logger.error('Failed to process daily rent reminders', error);
@@ -118,7 +153,9 @@ export class RentReminderService {
    * processed exactly once. The helper repeats the same check defensively
    * in case the two cron instances race.
    */
-  private async processAcceptedLetterCharges() {
+  private async processAcceptedLetterCharges(
+    lapseKeys: Set<string> = new Set(),
+  ) {
     this.logger.log('Processing accepted letter charges...');
 
     const today = new Date();
@@ -144,6 +181,9 @@ export class RentReminderService {
 
     for (const { letter, rent } of candidates) {
       try {
+        if (lapseKeys.has(`${rent.property_id}:${rent.tenant_id}`)) {
+          continue; // renewal deactivated (tenant-confirmed) — skip
+        }
         const result =
           await this.renewalChargeService.chargeAcceptedRenewalAtExpiry(
             letter,
@@ -303,7 +343,7 @@ export class RentReminderService {
    * This replaces the old "roll-forward" approach which mutated expiry_date
    * in-place and accumulated debt on the rent record.
    */
-  private async processAutoRenewal() {
+  private async processAutoRenewal(lapseKeys: Set<string> = new Set()) {
     this.logger.log('Processing auto-renewal for expired rents...');
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
@@ -326,6 +366,9 @@ export class RentReminderService {
 
     for (const rent of expiredRents) {
       try {
+        if (lapseKeys.has(`${rent.property_id}:${rent.tenant_id}`)) {
+          continue; // renewal deactivated (tenant-confirmed) — skip
+        }
         await this.autoRenewExpiredRent(rent, today);
       } catch (error) {
         this.logger.error(`Failed to auto-renew rent ${rent.id}`, error);
@@ -666,7 +709,9 @@ export class RentReminderService {
    * template) and for all frequencies. Deduped via the WhatsApp notification
    * log; the single-day date match is the primary guard.
    */
-  private async processLandlordReviewNotices() {
+  private async processLandlordReviewNotices(
+    lapseKeys: Set<string> = new Set(),
+  ) {
     this.logger.log('Processing landlord renewal-review notices...');
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
@@ -700,6 +745,9 @@ export class RentReminderService {
 
     for (const rent of rents) {
       try {
+        if (lapseKeys.has(`${rent.property_id}:${rent.tenant_id}`)) {
+          continue; // renewal deactivated (tenant-confirmed) — skip
+        }
         if (!rent.expiry_date) continue;
         const expiryDate = new Date(rent.expiry_date);
         expiryDate.setUTCHours(0, 0, 0, 0);
@@ -959,7 +1007,7 @@ export class RentReminderService {
   // Upcoming reminders (before expiry)
   // ---------------------------------------------------------------------------
 
-  private async processUpcomingReminders() {
+  private async processUpcomingReminders(lapseKeys: Set<string> = new Set()) {
     this.logger.log('Processing upcoming rent reminders...');
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
@@ -994,6 +1042,9 @@ export class RentReminderService {
 
     for (const rent of rents) {
       try {
+        if (lapseKeys.has(`${rent.property_id}:${rent.tenant_id}`)) {
+          continue; // renewal deactivated (tenant-confirmed) — skip
+        }
         if (!rent.expiry_date) continue;
 
         const expiryDate = new Date(rent.expiry_date);
@@ -1058,7 +1109,7 @@ export class RentReminderService {
    *     uses the renewal_invoice's payment_status as the source of truth
    *     for whether the next period is still owed.
    */
-  private async processPostExpiryReminders() {
+  private async processPostExpiryReminders(lapseKeys: Set<string> = new Set()) {
     this.logger.log('Processing post-expiry rent reminders...');
 
     const today = new Date();
@@ -1101,6 +1152,9 @@ export class RentReminderService {
 
     for (const rent of rents) {
       try {
+        if (lapseKeys.has(`${rent.property_id}:${rent.tenant_id}`)) {
+          continue; // renewal deactivated (tenant-confirmed) — skip
+        }
         const expiry = new Date(rent.expiry_date);
         expiry.setUTCHours(0, 0, 0, 0);
         const rentStart = new Date(rent.rent_start_date);

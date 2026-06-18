@@ -253,12 +253,26 @@ export class TenantAttachmentService {
     rent.payment_status = RentPaymentStatusEnum.PAID;
     await manager.save(rent);
 
-    // Create property-tenant relationship
-    const propertyTenant = manager.create(PropertyTenant, {
-      property_id: offerLetter.property_id,
-      tenant_id: tenantAccount.id,
-      status: TenantStatusEnum.ACTIVE,
+    // Create or reactivate the property-tenant relationship. The end-tenancy
+    // flow soft-deactivates (status = INACTIVE) instead of deleting, so reuse a
+    // leftover INACTIVE row rather than inserting a duplicate (no unique
+    // constraint on property_id + tenant_id).
+    let propertyTenant = await manager.findOne(PropertyTenant, {
+      where: {
+        property_id: offerLetter.property_id,
+        tenant_id: tenantAccount.id,
+      },
     });
+
+    if (propertyTenant) {
+      propertyTenant.status = TenantStatusEnum.ACTIVE;
+    } else {
+      propertyTenant = manager.create(PropertyTenant, {
+        property_id: offerLetter.property_id,
+        tenant_id: tenantAccount.id,
+        status: TenantStatusEnum.ACTIVE,
+      });
+    }
 
     await manager.save(propertyTenant);
 

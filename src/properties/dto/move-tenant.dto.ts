@@ -88,3 +88,23 @@ export class MoveTenantOutDto {
   @IsString()
   tenant_comment?: string;
 }
+
+export class DeactivateRenewalDto {
+  @ApiProperty({
+    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
+    description: 'UUID of the property',
+    required: true,
+  })
+  @IsNotEmpty()
+  @IsString()
+  property_id: string;
+
+  @ApiProperty({
+    example: '90b7f325-be27-45a7-9688-fa49630cac8f',
+    description: 'UUID of the tenant whose renewal should be deactivated',
+    required: true,
+  })
+  @IsNotEmpty()
+  @IsString()
+  tenant_id: string;
+}

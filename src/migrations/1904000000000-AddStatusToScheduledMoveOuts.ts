@@ -1,10 +1,11 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
- * Adds a lifecycle `status` to `scheduled_move_outs` so the landlord's
- * "deactivate renewal" action can park a row as `pending_tenant_confirmation`
- * until the tenant accepts over WhatsApp. Only `confirmed` rows are acted on by
- * the daily auto-end processor and counted by the renewal/reminder cron gate.
+ * Adds a lifecycle `status` to `scheduled_move_outs`. Rows are `confirmed`
+ * (acted on by the daily auto-end processor and counted by the renewal/reminder
+ * cron gate) or `cancelled` (a reactivated / cancelled scheduled end). The
+ * landlord's "deactivate renewal" and "end on a date" actions both write
+ * `confirmed` rows directly — there is no tenant-confirmation step.
  *
  * Existing rows (and the legacy "schedule a future move-out" path) default to
  * `confirmed`, preserving today's behaviour.

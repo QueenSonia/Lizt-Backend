@@ -57,6 +57,17 @@ import {
   PaymentPlanStatus,
 } from '../payment-plans/entities/payment-plan.entity';
 
+/**
+ * Lead-day ladder for a FORCED scheduled removal ("end on a specific date").
+ * Unlike a lapse — which ends exactly at expiry and so rides the natural
+ * renewal-reminder cadence (RENT_REMINDER_SCHEDULE, keyed to rent frequency) —
+ * a forced end lands on an arbitrary landlord-chosen date that won't align with
+ * that frequency ladder. Counting down to the date on a fixed set of lead days
+ * guarantees the tenant is warned (a date 45/21/3 days out would otherwise hit
+ * no frequency slot and fire zero reminders). 0 = on the day itself.
+ */
+const FORCED_END_REMINDER_DAYS = [30, 14, 7, 3, 1, 0];
+
 @Injectable()
 export class RentReminderService {
   private readonly logger = new Logger(RentReminderService.name);
@@ -85,10 +96,10 @@ export class RentReminderService {
 
   /**
    * Build the set of `${property_id}:${tenant_id}` keys for tenancies that have
-   * a CONFIRMED scheduled move-out (i.e. renewal was deactivated and the tenant
-   * accepted). These are excluded from all renewal/reminder processing — the
-   * tenancy is winding down. PENDING_TENANT_CONFIRMATION rows are NOT included:
-   * renewal continues until the tenant actually accepts.
+   * a CONFIRMED scheduled move-out (renewal deactivated, or a scheduled forced
+   * removal). These are excluded from all normal renewal/reminder processing —
+   * the tenancy is winding down. Instead, processScheduledEndReminders sends
+   * the "landlord not renewing — vacate" reminder for them.
    */
   private async getConfirmedLapseKeys(): Promise<Set<string>> {
     const rows = await this.scheduledMoveOutRepository.find({
@@ -116,6 +127,11 @@ export class RentReminderService {
       // Last: a failure in the (non-critical) landlord heads-up must not skip
       // the core renewal/reminder steps above.
       await this.processLandlordReviewNotices(lapseKeys);
+
+      // For tenancies winding down (renewal deactivated or scheduled forced
+      // removal), send the "landlord not renewing — vacate" reminder on the
+      // reminder-schedule days counting down to the scheduled end date.
+      await this.processScheduledEndReminders();
 
       // Finally, end any tenancies whose CONFIRMED scheduled move-out is now
       // due. Folded into this already-daily cron so the cost-disabled
@@ -1293,12 +1309,12 @@ export class RentReminderService {
 
     const letterStatus = renewalInvoice.letter_status;
 
-    // Tenant declined — don't send any more reminders for this period.
-    // processOverdueRents handles the move-out + history at expiry.
+    // Tenant declined — switch from "pay your renewal" reminders to "vacate
+    // the property" reminders, keeping the same pre-expiry cadence. The
+    // actual move-out + history is still handled by processOverdueRents →
+    // handleDeclinedRenewalAtExpiry once the rent expires.
     if (letterStatus === RenewalLetterStatus.DECLINED) {
-      this.logger.log(
-        `Skipping reminder for rent ${rent.id}: tenant declined renewal letter.`,
-      );
+      await this.sendVacateReminderIfNotSent(rent, daysUntilExpiry);
       return;
     }
 
@@ -1456,6 +1472,185 @@ export class RentReminderService {
       formattedAmount,
       expiryDateStr,
       daysUntilExpiry,
+    );
+  }
+
+  /**
+   * Tenant declined the renewal letter. Rather than going silent until the
+   * tenancy lapses, send a vacate reminder on each pre-expiry reminder day —
+   * the same cadence as the renewal reminders it replaces — prompting the
+   * tenant to move out on or before the expiry date. The tenancy itself is
+   * still wound down by processOverdueRents → handleDeclinedRenewalAtExpiry
+   * once the rent expires.
+   *
+   * Dedup mirrors the renewal-reminder path: one send per (rent, reminder
+   * day) keyed on the queued payload's days_before_expiry. The support
+   * contact number is static in the template body, so no landlord lookup is
+   * needed.
+   */
+  private async sendVacateReminderIfNotSent(
+    rent: Rent,
+    daysUntilExpiry: number,
+  ) {
+    const alreadySent =
+      await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
+        rent.id,
+        'sendTenantVacateReminder',
+        daysUntilExpiry,
+      );
+    if (alreadySent) {
+      this.logger.debug(
+        `Vacate reminder already sent for rent ${rent.id} at ${daysUntilExpiry} days.`,
+      );
+      return;
+    }
+
+    const expiryDateStr = new Date(rent.expiry_date).toLocaleDateString(
+      'en-GB',
+      { day: 'numeric', month: 'long', year: 'numeric' },
+    );
+
+    await this.whatsAppNotificationLogService.queue(
+      'sendTenantVacateReminder',
+      {
+        phone_number: rent.tenant.user.phone_number,
+        tenant_name: rent.tenant.user.first_name,
+        property_name: rent.property.name,
+        property_address: rent.property.location,
+        expiry_date: expiryDateStr,
+        // Carried only for existsForDaysBeforeExpiry dedup (one send per
+        // reminder day); sendTenantVacateReminder ignores it.
+        days_before_expiry: daysUntilExpiry,
+      },
+      rent.id,
+    );
+
+    this.logger.log(
+      `Queued vacate reminder for rent ${rent.id} (declined renewal, ${daysUntilExpiry} days before expiry).`,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduled-end reminders (landlord deactivated renewal, or forced removal)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * For every CONFIRMED scheduled move-out (a renewal deactivation OR a forced
+   * removal scheduled for a specific date), send the tenant the "landlord is
+   * not renewing — vacate" reminder on the reminder-schedule days, counting
+   * down to the row's effective_date. The auto-end itself (and, for forced
+   * removals, the final termination notice) is handled by
+   * processScheduledMoveOuts on the effective date.
+   */
+  private async processScheduledEndReminders() {
+    this.logger.log('Processing scheduled-end (not-renewing) reminders...');
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    const rows = await this.scheduledMoveOutRepository.find({
+      where: { processed: false, status: ScheduledMoveOutStatus.CONFIRMED },
+    });
+
+    for (const row of rows) {
+      try {
+        const rent = await this.rentRepository
+          .createQueryBuilder('rent')
+          .leftJoinAndSelect('rent.tenant', 'tenant')
+          .leftJoinAndSelect('tenant.user', 'user')
+          .leftJoinAndSelect('rent.property', 'property')
+          .where('rent.property_id = :pid', { pid: row.property_id })
+          .andWhere('rent.tenant_id = :tid', { tid: row.tenant_id })
+          .andWhere('rent.rent_status = :status', {
+            status: RentStatusEnum.ACTIVE,
+          })
+          .orderBy('rent.created_at', 'DESC')
+          .getOne();
+        if (!rent) continue;
+
+        const endDate = new Date(row.effective_date);
+        endDate.setUTCHours(0, 0, 0, 0);
+        const daysUntilEnd = Math.floor(
+          (endDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+        );
+        // Past the end date — leave it to processScheduledMoveOuts to end.
+        if (daysUntilEnd < 0) continue;
+
+        // A lapse ends exactly at expiry, so it shares the natural renewal
+        // cadence (frequency ladder). A forced end lands on an arbitrary date,
+        // so it counts down on a fixed ladder instead — otherwise an off-ladder
+        // date would fire no reminders before the tenancy is force-ended.
+        const isLapse =
+          row.move_out_reason === MoveOutReasonEnum.LEASE_ENDED;
+        const schedule = isLapse
+          ? RENT_REMINDER_SCHEDULE[effectiveFrequency(rent)] ||
+            RENT_REMINDER_SCHEDULE.monthly
+          : FORCED_END_REMINDER_DAYS;
+        if (!schedule.includes(daysUntilEnd)) continue;
+
+        await this.sendLandlordNotRenewingReminderIfNotSent(
+          rent,
+          daysUntilEnd,
+          row.effective_date,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Failed scheduled-end reminder for move-out ${row.id}`,
+          error,
+        );
+      }
+    }
+  }
+
+  /**
+   * Queue the `tenant_landlord_not_renewing` reminder. Dedup mirrors the
+   * renewal-reminder path: one send per (rent, reminder day) keyed on
+   * days_before_expiry. The support phone is a static literal baked into the
+   * template body, so it isn't passed as a param.
+   */
+  private async sendLandlordNotRenewingReminderIfNotSent(
+    rent: Rent,
+    daysUntilEnd: number,
+    effectiveDate: Date | string,
+  ) {
+    const alreadySent =
+      await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
+        rent.id,
+        'sendLandlordNotRenewing',
+        daysUntilEnd,
+      );
+    if (alreadySent) return;
+
+    const tenantPhone = rent.tenant?.user?.phone_number;
+    if (!tenantPhone) {
+      this.logger.warn(
+        `No tenant phone for rent ${rent.id}; skipping not-renewing reminder.`,
+      );
+      return;
+    }
+
+    const endDateStr = new Date(effectiveDate).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+
+    await this.whatsAppNotificationLogService.queue(
+      'sendLandlordNotRenewing',
+      {
+        phone_number: tenantPhone,
+        tenant_name: rent.tenant.user.first_name,
+        property_name: rent.property.name,
+        property_address: rent.property.location,
+        end_date: endDateStr,
+        // Carried only for existsForDaysBeforeExpiry dedup (one send per
+        // reminder day); sendLandlordNotRenewing ignores it.
+        days_before_expiry: daysUntilEnd,
+      },
+      rent.id,
+    );
+
+    this.logger.log(
+      `Queued not-renewing reminder for rent ${rent.id} (${daysUntilEnd} days before scheduled end).`,
     );
   }
 

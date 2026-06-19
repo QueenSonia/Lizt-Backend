@@ -69,11 +69,11 @@ export type StandardFrequency =
  * impact preview — can import it without pulling a cron-module dep.
  */
 export const RENT_REMINDER_SCHEDULE: Record<string, number[]> = {
-  monthly: [14, 7, 2, 1, 0],
-  quarterly: [30, 14, 7, 2, 1, 0],
-  'bi-annually': [90, 60, 30, 14, 7, 2, 1, 0],
-  biannually: [90, 60, 30, 14, 7, 2, 1, 0],
-  annually: [180, 90, 60, 30, 14, 7, 2, 1, 0],
+  monthly: [14, 7, 1, 0],
+  quarterly: [30, 14, 7, 1, 0],
+  'bi-annually': [90, 60, 30, 14, 7, 1, 0],
+  biannually: [90, 60, 30, 14, 7, 1, 0],
+  annually: [180, 90, 60, 30, 14, 7, 1, 0],
 };
 
 // First reminder tick at or below this day-count switches from the standard

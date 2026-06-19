@@ -134,31 +134,6 @@ Please confirm your updated tenancy details.
 
 **Usage**: Sent from `notifyTenantOfTenancyEdit` in `tenancies.service.ts` at the end of `updateActiveTenancy`, gated on `chargesChanged || periodOrFrequencyChanged || recurringChanges.length > 0` so no-op saves don't fire.
 
-### 4b. tenant_renewal_reactivated
-
-**Purpose**: Notify the tenant that the landlord has reactivated a renewal the tenant had previously agreed to let lapse (landlord tapped "Reactivate renewal" on a CONFIRMED scheduled move-out), and prompt them to re-confirm their tenancy details.
-
-**Template Name**: `tenant_renewal_reactivated`
-
-**Parameters**:
-
-- `{{1}}` - Tenant first name
-- `{{2}}` - Property name
-
-**Button**: Quick-reply button — `Confirm details` with payload `confirm_tenancy_details:{property_id}` (reuses the same dispatcher route as `tenancy_details_updated_tenant` / `welcome_tenant`, so a single tap takes the tenant to the Yes/No re-confirmation card).
-
-**Message**:
-
-```
-Hi {{1}},
-
-Good news — your landlord has reactivated the renewal for {{2}}, so your tenancy will continue.
-
-Please review and confirm your tenancy details.
-```
-
-**Usage**: Sent from the `renewal_reactivated.requested` handler in `notifications/listeners/renewal-deactivation.listener.ts`. The event is emitted by `PropertiesService.cancelScheduledMoveOut` only when the cancelled `scheduled_move_outs` row was `CONFIRMED` (i.e. the tenant had accepted the lapse) — withdrawing a still-PENDING request does not notify the tenant.
-
 ### 5. renewal_letter_signed
 
 **Purpose**: Deliver the signed renewal-letter PDF to the tenant after they accept or decline. One template serves both outcomes — `outcome` flips the body verb while the rendered PDF carries the matching ACCEPTED/DECLINED stamp.
@@ -185,6 +160,39 @@ The signed copy is attached above for your records.
 ```
 
 **Usage**: Sent from `dispatchSignedLetterPdf` in `renewal-letters.service.ts`, called from both the accept and decline paths (wrapped in try/catch so a Cloudinary/Meta failure never unwinds the accept/decline write). All four params are server-generated, so no `sanitizeTemplateParam` is required.
+
+### 5b. tenant_vacate_reminder
+
+**Purpose**: Remind a tenant who **declined** their renewal letter to move out. Replaces the previous behaviour of going silent after a decline — the rent-reminder cron now sends this on each pre-expiry reminder day (the same cadence as the renewal reminders it supersedes). The actual tenancy wind-down (rent → inactive, property_tenant → inactive, move-out history, landlord notification) still happens at expiry via `handleDeclinedRenewalAtExpiry`.
+
+**Template Name**: `tenant_vacate_reminder`
+
+**Parameters**:
+
+- `{{1}}` - Tenant first name
+- `{{2}}` - Property name
+- `{{3}}` - Property address (`property.location`)
+- `{{4}}` - Expiry date, long format (e.g. `8 June 2026`)
+
+The support contact number in the closing line is **static** in the template body (not a variable).
+
+**Button**: None (body-only).
+
+**Message**:
+
+```
+Hi {{1}},
+
+This is a friendly reminder that your tenancy for {{2}} at {{3}} is due to expire on {{4}}.
+
+Following your decision not to renew the tenancy for a further term, your tenancy will come to an end on that date.
+
+Kindly make arrangements to vacate the property and hand over possession on or before the expiry date.
+
+If you have any questions or require assistance regarding the move-out process, please contact us on 0803 632 2847.
+```
+
+**Usage**: `RentReminderService.sendVacateReminderIfNotSent` (cron) queues it as `whatsAppNotificationLogService.queue('sendTenantVacateReminder', ...)` from the `DECLINED` branch of `sendReminderIfNotSent`. Dedup is one send per (rent, reminder day) keyed on the payload's `days_before_expiry`, matching the renewal-reminder path. The support contact number is static in the body. All four params are server-generated, so no `sanitizeTemplateParam` is required.
 
 ### 6. tenancy_renewed_from_credit
 
@@ -293,78 +301,76 @@ Tap "Open chat" to view the full thread, or "Quick reply" to respond from here.
 
 **Usage**: Sole caller is `MrChatNotificationService` (lizt-backend/src/whatsapp-bot/mr-chat-notification.service.ts), which subscribes to `mr-chat.message.created` and ALWAYS sends the template to the landlord and assigned FM (minus the author). Presence on the chat gateway is not consulted — the two parties of the assignment always get a durable WhatsApp ping. An in-app `mr-chat.toast` event is emitted in parallel for live dashboard awareness; the frontend dedupes that toast against the currently-focused MR. Write access to the thread is itself private to these two parties — see `ChatService.resolveWriteRole`.
 
-## Renewal Deactivation Templates
+## End-Tenancy Templates (landlord-only, no tenant confirmation)
 
-These power the landlord's "deactivate renewal" action (let a tenancy lapse at
-term-end). The action is tenant-gated: the landlord's click parks a
-`pending_tenant_confirmation` row in `scheduled_move_outs` and the bot asks the
-tenant to confirm. Only on Accept does it become `confirmed` (renewal/reminders
-suppressed, auto-end at `expiry + 1`). On Deny the request is dropped.
+These power the simplified End Tenancy modal. "Deactivate renewal" and "End on a
+specific date" both create a `CONFIRMED` `scheduled_move_outs` row (no tenant
+Accept/Deny). The cron sends `tenant_landlord_not_renewing` on the
+reminder-schedule days counting down to the row's `effective_date`, then on that
+date auto-ends the tenancy. A "lapse" (deactivate renewal, `move_out_reason =
+LEASE_ENDED`) ends quietly; a "forced" removal (any other reason — End on a date
+or End immediately) additionally sends `tenant_tenancy_terminated` at the end.
 
-### 1. tenant_confirm_renewal_deactivation
+### 1. tenant_landlord_not_renewing
 
-**Purpose**: Ask the tenant to confirm the landlord's decision not to renew.
+**Purpose**: Recurring vacate reminder for a tenancy that is winding down (renewal deactivated, or a scheduled forced removal). Sent on the reminder-schedule days leading up to the scheduled end date, in place of the normal renewal reminders.
 
-**Template Name**: `tenant_confirm_renewal_deactivation`
+**Template Name**: `tenant_landlord_not_renewing`
 
-**Parameters**:
+**Parameters** (all server-generated, no buttons):
 
-- `{{1}}` - Tenant name (server-generated)
-- `{{2}}` - Property name (server-generated)
-- `{{3}}` - End date, i.e. the day after the current term (server-generated)
+- `{{1}}` - Tenant first name
+- `{{2}}` - Property name
+- `{{3}}` - Property address (`property.location`)
+- `{{4}}` - End date, long format (e.g. `8 June 2026`) — the `scheduled_move_outs.effective_date`
 
-**Buttons** (quick-reply):
-
-- Position 1 `Yes, end at term` → payload `tenant_confirm_renewal_deactivation:{scheduled_move_out_id}`
-- Position 2 `No, keep renewing` → payload `tenant_deny_renewal_deactivation:{scheduled_move_out_id}`
-
-Both are dispatched in `TenantFlowService.handleInteractive` →
-`handleRenewalDeactivationResponse`, which emits
-`renewal_deactivation.tenant_responded`. `RenewalDeactivationResponseListener`
-(PropertiesModule) then calls `PropertiesService.confirmRenewalDeactivation` /
-`denyRenewalDeactivation` — avoiding a circular dep on PropertiesService.
+The support/contact phone is the static literal `0803 632 2847` baked into the body (matching `tenant_vacate_reminder`), not a parameter.
 
 **Message**:
 
 ```
-Hi {{1}}, your landlord has chosen not to renew your tenancy at {{2}} after the current term. This means your tenancy would end on {{3}} and would not be renewed.
+Hi {{1}},
 
-Please confirm: do you agree to end the tenancy at the end of the current term? Tap a button below to respond.
+This is a friendly reminder that your tenancy for {{2}} at {{3}} is due to expire on {{4}}.
+
+Your landlord has decided not to renew the tenancy upon expiry. Accordingly, your tenancy will come to an end on that date.
+
+Kindly make arrangements to vacate the property and hand over possession on or before the expiry date.
+
+If you have any questions or require assistance regarding the move-out process, please contact us on 0803 632 2847.
 ```
 
-**Usage**: Sent by `RenewalDeactivationListener` on `renewal_deactivation.requested` (emitted by `PropertiesService.deactivateRenewal`).
+**Usage**: `RentReminderService.sendLandlordNotRenewingReminderIfNotSent` (cron), queued from `processScheduledEndReminders` for every CONFIRMED scheduled move-out. Dedup is one send per (rent, reminder day) keyed on `days_before_expiry`.
 
-### 2. landlord_renewal_deactivation_accepted
+### 2. tenant_tenancy_terminated
 
-**Purpose**: Tell the landlord the tenant accepted; the lapse is scheduled.
+**Purpose**: One-time notice that the tenancy has been terminated — sent when a **forced** move-out executes (End immediately now, or a scheduled forced removal on its date). NOT sent for a lapse (LEASE_ENDED) auto-end.
 
-**Template Name**: `landlord_renewal_deactivation_accepted`
+**Template Name**: `tenant_tenancy_terminated`
 
-**Parameters**: `{{1}}` landlord name, `{{2}}` tenant name, `{{3}}` property name, `{{4}}` end date (all server-generated). No buttons.
+**Parameters** (all server-generated, no buttons):
+
+- `{{1}}` - Tenant first name
+- `{{2}}` - Property name
+- `{{3}}` - Termination reason (human-readable from `move_out_reason`)
+
+The support/contact phone is the static literal `0803 632 2847` baked into the body (matching `tenant_vacate_reminder`), not a parameter.
 
 **Message**:
 
 ```
-Hi {{1}}, {{2}} has confirmed they will not be renewing the tenancy at {{3}}. The tenancy is now scheduled to end on {{4}}. We'll handle the move-out automatically on that date.
+Hello {{1}},
+
+Your landlord has terminated your tenancy for {{2}} with immediate effect pursuant to the terms of your tenancy agreement.
+
+Reason for termination: {{3}}
+
+If you remain in occupation of the property, you are required to immediately vacate and hand over vacant possession to your landlord.
+
+If you have any questions or require further clarification, please contact us on 0803 632 2847.
 ```
 
-**Usage**: `RenewalDeactivationListener` on `renewal_deactivation.tenant_confirmed`.
-
-### 3. landlord_renewal_deactivation_denied
-
-**Purpose**: Tell the landlord the tenant declined; renewal continues.
-
-**Template Name**: `landlord_renewal_deactivation_denied`
-
-**Parameters**: `{{1}}` landlord name, `{{2}}` tenant name, `{{3}}` property name (all server-generated). No buttons.
-
-**Message**:
-
-```
-Hi {{1}}, {{2}} has declined the request to end the tenancy at {{3}}. The renewal has not been deactivated and reminders will continue as normal. You can review this from your dashboard.
-```
-
-**Usage**: `RenewalDeactivationListener` on `renewal_deactivation.tenant_denied`.
+**Usage**: Sent from the `tenancy.ended` listener (`tenant-attachment.listener.ts`) when the event carries `notify_tenant_termination: true` (set by `processMoveTenantOut` for immediate ends and by `processScheduledMoveOuts` for forced rows).
 
 ## Configuration
 

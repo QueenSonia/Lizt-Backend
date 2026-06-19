@@ -4,21 +4,16 @@ import { MoveOutReasonEnum } from 'src/property-history/entities/property-histor
 
 /**
  * Lifecycle of a scheduled move-out.
- *  - CONFIRMED: ready to be processed by the daily processor on/after
- *    effective_date (this is the default; the legacy "schedule a future
- *    move-out" path produces these directly).
- *  - PENDING_TENANT_CONFIRMATION: created by the landlord's "deactivate
- *    renewal" action, but NOT acted on until the tenant accepts over WhatsApp.
- *    Pending rows are ignored by both the auto-end processor and the
- *    renewal/reminder cron gate.
+ *  - CONFIRMED: active scheduled end — processed by the daily processor on/after
+ *    effective_date. Produced by "deactivate renewal" (a lapse, move_out_reason
+ *    = LEASE_ENDED), "end on a specific date" (a forced removal, any other
+ *    reason), and the legacy future-date scheduler.
+ *  - CANCELLED: landlord cancelled/reactivated. Kept for audit instead of
+ *    deleting; also marked processed = true so every active lookup (which
+ *    filters processed: false) ignores it.
  */
 export enum ScheduledMoveOutStatus {
-  PENDING_TENANT_CONFIRMATION = 'pending_tenant_confirmation',
   CONFIRMED = 'confirmed',
-  // Terminal states kept for audit instead of deleting the row. Both are also
-  // marked processed = true so every active lookup (which filters
-  // processed: false) ignores them.
-  DENIED = 'denied',
   CANCELLED = 'cancelled',
 }
 

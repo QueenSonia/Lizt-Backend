@@ -46,6 +46,4 @@
   AD_HOC_INVOICE_CANCELLED = 'Ad-Hoc Invoice Cancelled',
   AD_HOC_INVOICE_UPDATED = 'Ad-Hoc Invoice Updated',
   TENANT_BOT_MESSAGE = 'Tenant Bot Message',
-  RENEWAL_DEACTIVATION_ACCEPTED = 'Renewal Deactivation Accepted',
-  RENEWAL_DEACTIVATION_DECLINED = 'Renewal Deactivation Declined',
 }

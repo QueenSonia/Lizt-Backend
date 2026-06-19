@@ -556,7 +556,7 @@ export class PropertiesController {
   @ApiOperation({ summary: 'Deactivate renewal (let the tenancy lapse)' })
   @ApiOkResponse({
     description:
-      'Renewal deactivation request sent to the tenant for confirmation',
+      'Renewal deactivated — the tenancy is set to lapse at term-end (no tenant confirmation)',
   })
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')

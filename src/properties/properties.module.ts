@@ -35,7 +35,6 @@ import { PaymentPlanInstallment } from 'src/payment-plans/entities/payment-plan-
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
-import { RenewalDeactivationResponseListener } from './listeners/renewal-deactivation-response.listener';
 
 @Module({
   imports: [
@@ -77,7 +76,6 @@ import { RenewalDeactivationResponseListener } from './listeners/renewal-deactiv
     RentReminderService,
     FixEmptyLastnameService,
     DatabaseErrorHandlerService,
-    RenewalDeactivationResponseListener,
   ],
 })
 export class PropertiesModule { }

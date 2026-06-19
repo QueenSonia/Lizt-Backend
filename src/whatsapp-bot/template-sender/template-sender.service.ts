@@ -375,44 +375,6 @@ export interface LandlordFiledRequestConfirmedByTenantParams {
 }
 
 /**
- * Tenant-bound confirmation for the landlord's "deactivate renewal" action.
- * Two quick-reply buttons let the tenant accept (tenancy lapses at term-end)
- * or decline (renewal continues). `scheduled_move_out_id` is required — it is
- * embedded in both button payloads so the inbound handler can resolve the
- * pending request.
- */
-export interface TenantConfirmRenewalDeactivationParams {
-  phone_number: string;
-  tenant_name: string;
-  property_name: string;
-  end_date: string;
-  scheduled_move_out_id: string;
-}
-
-/**
- * Landlord-bound informational notice fired when the tenant ACCEPTS the
- * deactivate-renewal request. No buttons — the lapse is now scheduled.
- */
-export interface LandlordRenewalDeactivationAcceptedParams {
-  phone_number: string;
-  landlord_name: string;
-  tenant_name: string;
-  property_name: string;
-  end_date: string;
-}
-
-/**
- * Landlord-bound informational notice fired when the tenant DECLINES the
- * deactivate-renewal request. No buttons — renewal continues as normal.
- */
-export interface LandlordRenewalDeactivationDeniedParams {
-  phone_number: string;
-  landlord_name: string;
-  tenant_name: string;
-  property_name: string;
-}
-
-/**
  * Landlord-bound informational template fired when the tenant denies the
  * FM-filed MR. The denial reason (if any) is captured in the dashboard
  * activity feed, not the WhatsApp template — the reason can only arrive via
@@ -635,6 +597,50 @@ export interface RenewalLetterLinkParams {
   property_name: string;
   expiry_date: string;
   renewal_token: string;
+}
+
+/**
+ * Parameters for the vacate reminder sent to a tenant who DECLINED their
+ * renewal letter — reminds them to move out on or before the expiry date.
+ * Sent on each pre-expiry reminder day in place of the (suppressed) renewal
+ * reminders. No buttons.
+ */
+export interface TenantVacateReminderParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  property_address: string;
+  expiry_date: string;
+}
+
+/**
+ * Recurring vacate reminder for a tenancy the landlord is NOT renewing
+ * (deactivate renewal) or has scheduled a forced removal for. Sent on each
+ * reminder-schedule day counting down to the scheduled end date, in place of
+ * the (suppressed) renewal reminders. No buttons.
+ */
+export interface TenantLandlordNotRenewingParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  property_address: string;
+  end_date: string;
+  // Support phone is baked into the template body as a static literal
+  // (0803 632 2847), matching tenant_vacate_reminder — not a param.
+}
+
+/**
+ * One-time notice that the tenancy has been terminated — sent when a forced
+ * move-out executes (End immediately now, or a scheduled forced removal on its
+ * date). No buttons.
+ */
+export interface TenantTenancyTerminatedParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  termination_reason: string;
+  // Support phone is baked into the template body as a static literal
+  // (0803 632 2847), matching tenant_vacate_reminder — not a param.
 }
 
 /**
@@ -1084,19 +1090,6 @@ export interface TenancyDetailsDisputeReasonLandlordParams {
  * button's payload so the click handler knows which tenancy to confirm.
  */
 export interface TenancyDetailsUpdatedTenantParams {
-  phone_number: string;
-  tenant_name: string;
-  property_name: string;
-  property_id: string;
-}
-
-/**
- * Params for `tenant_renewal_reactivated` — sent to the tenant when the
- * landlord reactivates a renewal the tenant had previously agreed to let lapse.
- * The Confirm button reuses the `confirm_tenancy_details:{property_id}` payload,
- * so the tap opens the same tenancy-details re-confirmation card.
- */
-export interface TenantRenewalReactivatedParams {
   phone_number: string;
   tenant_name: string;
   property_name: string;
@@ -2368,137 +2361,6 @@ export class TemplateSenderService {
   }
 
   /**
-   * Tenant-bound confirmation for the landlord's "deactivate renewal" action.
-   * Accept → PropertiesService.confirmRenewalDeactivation; Deny →
-   * PropertiesService.denyRenewalDeactivation. Both button payloads carry the
-   * scheduled_move_out_id so the inbound handler can resolve the request.
-   */
-  async sendTenantConfirmRenewalDeactivation({
-    phone_number,
-    tenant_name,
-    property_name,
-    end_date,
-    scheduled_move_out_id,
-  }: TenantConfirmRenewalDeactivationParams): Promise<void> {
-    if (!scheduled_move_out_id) {
-      throw new Error(
-        'scheduled_move_out_id is required for tenant_confirm_renewal_deactivation',
-      );
-    }
-    const payload: WhatsAppPayload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'tenant_confirm_renewal_deactivation',
-        language: { code: 'en' },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: tenant_name },
-              { type: 'text', text: property_name },
-              { type: 'text', text: end_date },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'quick_reply',
-            index: 0,
-            parameters: [
-              {
-                type: 'payload',
-                payload: `tenant_confirm_renewal_deactivation:${scheduled_move_out_id}`,
-              },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'quick_reply',
-            index: 1,
-            parameters: [
-              {
-                type: 'payload',
-                payload: `tenant_deny_renewal_deactivation:${scheduled_move_out_id}`,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  /**
-   * Landlord-bound informational notice: the tenant ACCEPTED the
-   * deactivate-renewal request; the lapse is now scheduled. No buttons.
-   */
-  async sendLandlordRenewalDeactivationAccepted({
-    phone_number,
-    landlord_name,
-    tenant_name,
-    property_name,
-    end_date,
-  }: LandlordRenewalDeactivationAcceptedParams): Promise<void> {
-    const payload: WhatsAppPayload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'landlord_renewal_deactivation_accepted',
-        language: { code: 'en' },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: landlord_name },
-              { type: 'text', text: tenant_name },
-              { type: 'text', text: property_name },
-              { type: 'text', text: end_date },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  /**
-   * Landlord-bound informational notice: the tenant DECLINED the
-   * deactivate-renewal request; renewal continues as normal. No buttons.
-   */
-  async sendLandlordRenewalDeactivationDenied({
-    phone_number,
-    landlord_name,
-    tenant_name,
-    property_name,
-  }: LandlordRenewalDeactivationDeniedParams): Promise<void> {
-    const payload: WhatsAppPayload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'landlord_renewal_deactivation_denied',
-        language: { code: 'en' },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: landlord_name },
-              { type: 'text', text: tenant_name },
-              { type: 'text', text: property_name },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
-  /**
    * Landlord-bound informational notification fired when the tenant
    * denies the FM-filed MR. Captures the optional denial reason.
    */
@@ -3423,6 +3285,113 @@ export class TemplateSenderService {
             sub_type: 'url',
             index: '0',
             parameters: [{ type: 'text', text: renewal_token }],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the vacate reminder to a tenant who DECLINED their renewal letter.
+   * Fires on each pre-expiry reminder day from the rent-reminder cron in
+   * place of the suppressed renewal reminders, prompting move-out by the
+   * expiry date. Body-only — no buttons.
+   * Template: tenant_vacate_reminder
+   */
+  async sendTenantVacateReminder({
+    phone_number,
+    tenant_name,
+    property_name,
+    property_address,
+    expiry_date,
+  }: TenantVacateReminderParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_vacate_reminder',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name }, // {{1}}
+              { type: 'text', text: property_name }, // {{2}}
+              { type: 'text', text: property_address }, // {{3}}
+              { type: 'text', text: expiry_date }, // {{4}}
+            ],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Recurring "your landlord is not renewing — vacate by the end date" reminder.
+   * Sent on the reminder-schedule days counting down to the scheduled end date
+   * (renewal deactivation or a scheduled forced removal).
+   * Template: tenant_landlord_not_renewing
+   */
+  async sendLandlordNotRenewing({
+    phone_number,
+    tenant_name,
+    property_name,
+    property_address,
+    end_date,
+  }: TenantLandlordNotRenewingParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_landlord_not_renewing',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name }, // {{1}}
+              { type: 'text', text: property_name }, // {{2}}
+              { type: 'text', text: property_address }, // {{3}}
+              { type: 'text', text: end_date }, // {{4}}
+            ],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * One-time "your tenancy has been terminated with immediate effect" notice,
+   * sent when a forced move-out executes (immediate end, or a scheduled forced
+   * removal on its date).
+   * Template: tenant_tenancy_terminated
+   */
+  async sendTenantTenancyTerminated({
+    phone_number,
+    tenant_name,
+    property_name,
+    termination_reason,
+  }: TenantTenancyTerminatedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_tenancy_terminated',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name }, // {{1}}
+              { type: 'text', text: property_name }, // {{2}}
+              { type: 'text', text: termination_reason }, // {{3}}
+            ],
           },
         ],
       },
@@ -5672,53 +5641,6 @@ export class TemplateSenderService {
     await this.sendToWhatsappAPI(payload);
   }
 
-  /**
-   * Notify the tenant that the landlord has REACTIVATED a renewal the tenant
-   * had previously agreed to let lapse (landlord tapped "Reactivate renewal"
-   * on a CONFIRMED move-out). The Confirm details quick-reply reuses the
-   * existing `confirm_tenancy_details` route, so a single tap opens the same
-   * tenancy-details re-confirmation card.
-   * Template: tenant_renewal_reactivated
-   */
-  async sendTenantRenewalReactivated({
-    phone_number,
-    tenant_name,
-    property_name,
-    property_id,
-  }: TenantRenewalReactivatedParams): Promise<void> {
-    const payload: WhatsAppPayload = {
-      messaging_product: 'whatsapp',
-      to: phone_number,
-      type: 'template',
-      template: {
-        name: 'tenant_renewal_reactivated',
-        language: { code: 'en' },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: this.toDisplayName(tenant_name) },
-              { type: 'text', text: property_name },
-            ],
-          },
-          {
-            type: 'button',
-            sub_type: 'quick_reply',
-            index: 0,
-            parameters: [
-              {
-                type: 'payload',
-                payload: `confirm_tenancy_details:${property_id}`,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    await this.sendToWhatsappAPI(payload);
-  }
-
   // ----------------------------------------------------------------------
   // Internal API method
   // ----------------------------------------------------------------------
@@ -5796,12 +5718,6 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nYour facility manager {{2}} filed a maintenance issue at {{3}}:\n\n"{{4}}"\n\nWe\'re waiting on the tenant to confirm. You\'ll be notified when they respond.',
     landlord_filed_request_confirmed_by_tenant:
       'Hi {{1}},\n\n{{2}} just confirmed the maintenance request you filed for {{3}}. It\'s now approved.\n\nIssue: "{{4}}"\n\nPlease attend to this.',
-    tenant_confirm_renewal_deactivation:
-      'Hi {{1}}, your landlord has chosen not to renew your tenancy at {{2}} after the current term. This means your tenancy would end on {{3}} and would not be renewed.\n\nPlease confirm: do you agree to end the tenancy at the end of the current term? Tap a button below to respond.',
-    landlord_renewal_deactivation_accepted:
-      'Hi {{1}}, {{2}} has confirmed they will not be renewing the tenancy at {{3}}. The tenancy is now scheduled to end on {{4}}. We\'ll handle the move-out automatically on that date.',
-    landlord_renewal_deactivation_denied:
-      'Hi {{1}}, {{2}} has declined the request to end the tenancy at {{3}}. The renewal has not been deactivated and reminders will continue as normal. You can review this from your dashboard.',
     landlord_fm_request_denied_by_tenant:
       'Hi {{1}},\n\n{{2}} denied the maintenance request {{3}} filed:\n\n"{{4}}"\n\nThe request is now closed.',
     landlord_request_denied_by_tenant:
@@ -5857,6 +5773,12 @@ export class TemplateSenderService {
       'Hi {{1}},\n\nYour renewal letter for *{{2}}* has been *{{3}}* on {{4}}.\n\nThe signed copy is attached above for your records.',
     renewal_letter_declined_landlord_notice:
       'Hi {{1}}, {{2}} has declined the renewal offer for {{3}}. Open your Lizt dashboard to decide whether to revise the offer or market the unit.',
+    tenant_vacate_reminder:
+      'Hi {{1}},\n\nThis is a friendly reminder that your tenancy for {{2}} at {{3}} is due to expire on {{4}}.\n\nFollowing your decision not to renew the tenancy for a further term, your tenancy will come to an end on that date.\n\nKindly make arrangements to vacate the property and hand over possession on or before the expiry date.\n\nIf you have any questions or require assistance regarding the move-out process, please contact us on 0803 632 2847.',
+    tenant_landlord_not_renewing:
+      'Hi {{1}},\n\nThis is a friendly reminder that your tenancy for {{2}} at {{3}} is due to expire on {{4}}.\n\nYour landlord has decided not to renew the tenancy upon expiry. Accordingly, your tenancy will come to an end on that date.\n\nKindly make arrangements to vacate the property and hand over possession on or before the expiry date.\n\nIf you have any questions or require assistance regarding the move-out process, please contact us on 0803 632 2847.',
+    tenant_tenancy_terminated:
+      'Hello {{1}},\n\nYour landlord has terminated your tenancy for {{2}} with immediate effect pursuant to the terms of your tenancy agreement.\n\nReason for termination: {{3}}\n\nIf you remain in occupation of the property, you are required to immediately vacate and hand over vacant possession to your landlord.\n\nIf you have any questions or require further clarification, please contact us on 0803 632 2847.',
     renewal_payment_tenant:
       'Congratulations {{1}}!\n\nYour payment of {{2}} for {{3}} has been confirmed.\n\nHere are your updated tenancy details:\nTenancy period: {{4}} - {{5}}\nRent amount: {{6}} {{7}}\nService charge: {{8}}\n\nYour receipt is attached above.',
     payment_receipt_tenant:
@@ -5907,8 +5829,6 @@ export class TemplateSenderService {
       "Hi {{1}}, \n\nYour tenant {{2}} has shared what's incorrect about the tenancy details for {{3}}.\n\nIssue: {{4}}\n\nPlease follow up with them at {{5}} to resolve this.",
     tenancy_details_updated_tenant:
       'Hi {{1}},\n\nYour landlord has updated the tenancy details for {{2}}.\n\nPlease confirm your updated tenancy details.',
-    tenant_renewal_reactivated:
-      'Hi {{1}},\n\nGood news — your landlord has reactivated the renewal for {{2}}, so your tenancy will continue.\n\nPlease review and confirm your tenancy details.',
     tenancy_renewed_from_credit:
       'Congratulations {{1}}!\n\nYour tenancy has been renewed.\n\nHere are your updated tenancy details:\nTenancy period: {{2}} - {{3}}\nRent amount: ₦{{4}} {{5}}\nService charge: ₦{{6}}\n\nThank you.',
     landlord_renewal_review:

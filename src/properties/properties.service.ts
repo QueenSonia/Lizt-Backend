@@ -1891,17 +1891,68 @@ export class PropertiesService {
               amount: obAmount,
             };
           }
-          case 'tenancy_ended':
+          case 'tenancy_ended': {
+            const who = hist.metadata?.tenant_name || tenantName;
             return {
               id: hist.id,
               date: hist.created_at || hist.move_out_date,
               eventType: 'tenancy_ended',
               title: 'Tenancy Ended',
-              description: 'Tenant moved out of the property.',
+              description: `${who} moved out of the property.`,
               details: hist.move_out_reason
                 ? `Reason: ${hist.move_out_reason.replace(/_/g, ' ')}`
                 : null,
             };
+          }
+          case 'renewal_deactivated': {
+            const who = hist.metadata?.tenant_name || tenantName;
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'renewal_deactivated',
+              title: 'Renewal deactivated',
+              description:
+                hist.event_description || `Renewal deactivated for ${who}.`,
+              details: hist.metadata?.end_date
+                ? `Tenancy ends ${hist.metadata.end_date}`
+                : null,
+            };
+          }
+          case 'removal_scheduled': {
+            const who = hist.metadata?.tenant_name || tenantName;
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'removal_scheduled',
+              title: 'Removal scheduled',
+              description:
+                hist.event_description ||
+                `${who}'s tenancy is scheduled to end.`,
+              details: hist.move_out_reason
+                ? `Reason: ${hist.move_out_reason.replace(/_/g, ' ')}`
+                : hist.metadata?.end_date
+                  ? `Ends ${hist.metadata.end_date}`
+                  : null,
+            };
+          }
+          case 'scheduled_end_cancelled': {
+            const who = hist.metadata?.tenant_name || tenantName;
+            const isLapse = hist.metadata?.kind === 'lapse';
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'scheduled_end_cancelled',
+              title: isLapse
+                ? 'Renewal reactivated'
+                : 'Scheduled removal cancelled',
+              description:
+                hist.event_description ||
+                (isLapse
+                  ? `Renewal reactivated for ${who}.`
+                  : `Scheduled removal cancelled for ${who}.`),
+              details: null,
+            };
+          }
           case 'maintenance_request_created':
             return {
               id: hist.id,
@@ -3285,6 +3336,81 @@ export class PropertiesService {
     }
   }
 
+  /**
+   * Resolve a tenant's display name from their Account id (tenant_id is an
+   * Account id — property_tenants/rents @ManyToOne -> Account). Goes through the
+   * Account's `user` relation; never look a tenant_id up in the Users table.
+   */
+  private async resolveTenantName(tenantId: string): Promise<string> {
+    const account = await this.accountRepository.findOne({
+      where: { id: tenantId },
+      relations: ['user'],
+    });
+    const name = `${account?.user?.first_name ?? ''} ${
+      account?.user?.last_name ?? ''
+    }`.trim();
+    return name || 'the tenant';
+  }
+
+  /** Long, timezone-safe date for timeline/notification copy (e.g. "April 30, 2027"). */
+  private formatLongDate(value: Date | string): string {
+    let d: Date;
+    if (typeof value === 'string') {
+      const [y, m, day] = value.split('T')[0].split('-').map(Number);
+      d = new Date(y, (m || 1) - 1, day || 1);
+    } else {
+      d = new Date(value);
+    }
+    return d.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  }
+
+  /**
+   * Write a property_histories (timeline) row AND a landlord live-feed
+   * notification for an End-Tenancy lifecycle action. Best-effort: a logging
+   * failure must never break the action that triggered it. `tenant_name` is
+   * stored in metadata so the timeline renderers can label the entry even after
+   * the tenancy is gone (the current-tenant lookup returns nothing by then).
+   */
+  private async logEndTenancyTimelineEvent(opts: {
+    property: { id: string; name: string; owner_id: string };
+    tenantId: string;
+    tenantName: string;
+    eventType: string;
+    description: string;
+    notificationType: NotificationType;
+    moveOutReason?: string | null;
+    metadata?: Record<string, any> | null;
+  }): Promise<void> {
+    try {
+      await this.propertyHistoryRepository.save({
+        property_id: opts.property.id,
+        tenant_id: opts.tenantId,
+        event_type: opts.eventType,
+        event_description: opts.description,
+        move_out_reason: opts.moveOutReason ?? null,
+        metadata: { tenant_name: opts.tenantName, ...(opts.metadata ?? {}) },
+      });
+    } catch (err) {
+      console.error(`Failed to write ${opts.eventType} history row:`, err);
+    }
+    try {
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: opts.notificationType,
+        description: opts.description,
+        status: 'Completed',
+        property_id: opts.property.id,
+        user_id: opts.property.owner_id,
+      });
+    } catch (err) {
+      console.error(`Failed to create ${opts.eventType} notification:`, err);
+    }
+  }
+
   private async scheduleMoveTenantOut(
     moveOutData: MoveTenantOutDto,
     requesterId?: string,
@@ -3316,6 +3442,13 @@ export class PropertiesService {
       },
     });
 
+    let result: {
+      message: string;
+      scheduled: boolean;
+      effective_date: string;
+      id?: string;
+    };
+    const rescheduled = !!existingScheduled;
     if (existingScheduled) {
       // Update the existing scheduled move-out
       await this.scheduledMoveOutRepository.update(existingScheduled.id, {
@@ -3325,7 +3458,7 @@ export class PropertiesService {
         tenant_comment: moveOutData?.tenant_comment || null,
       });
 
-      return {
+      result = {
         message: 'Move-out date updated successfully',
         scheduled: true,
         effective_date: move_out_date,
@@ -3342,13 +3475,34 @@ export class PropertiesService {
         processed: false,
       });
 
-      return {
+      result = {
         message: 'Move-out scheduled successfully',
         scheduled: true,
         effective_date: move_out_date,
         id: scheduledMoveOut.id,
       };
     }
+
+    // Timeline + live-feed entry (best-effort).
+    const property = await this.propertyRepository.findOneBy({ id: property_id });
+    if (property) {
+      const tenantName = await this.resolveTenantName(tenant_id);
+      const endDateLong = this.formatLongDate(move_out_date);
+      await this.logEndTenancyTimelineEvent({
+        property,
+        tenantId: tenant_id,
+        tenantName,
+        eventType: 'removal_scheduled',
+        description: `${tenantName}'s tenancy at ${property.name} is ${
+          rescheduled ? 'now scheduled' : 'scheduled'
+        } to end on ${endDateLong}.`,
+        notificationType: NotificationType.REMOVAL_SCHEDULED,
+        moveOutReason: moveOutData?.move_out_reason || null,
+        metadata: { end_date: endDateLong },
+      });
+    }
+
+    return result;
   }
 
   private async processMoveTenantOut(
@@ -3587,6 +3741,18 @@ export class PropertiesService {
         console.log('Created PropertyHistory record:', propertyHistory.id);
       }
 
+      // Resolve the tenant name (tenant_id is an Account id) so the timeline can
+      // label this entry even after the tenancy is gone (the current-tenant
+      // lookup returns nothing by then).
+      const endedTenantAccount = await queryRunner.manager.findOne(Account, {
+        where: { id: tenant_id },
+        relations: ['user'],
+      });
+      const endedTenantName =
+        `${endedTenantAccount?.user?.first_name ?? ''} ${
+          endedTenantAccount?.user?.last_name ?? ''
+        }`.trim() || 'The tenant';
+
       // Create a new history record for the move-out event
       const tenancyEndedHistory = await queryRunner.manager.save(
         PropertyHistory,
@@ -3595,9 +3761,10 @@ export class PropertiesService {
           tenant_id,
           event_type: 'tenancy_ended',
           move_out_date: DateService.getStartOfTheDay(move_out_date),
-          event_description: `Tenant moved out. Reason: ${
+          event_description: `${endedTenantName} moved out. Reason: ${
             moveOutData?.move_out_reason || 'Not specified'
           }`,
+          metadata: { tenant_name: endedTenantName },
         },
       );
 
@@ -3827,6 +3994,24 @@ export class PropertiesService {
       processed_at: new Date(),
     });
 
+    // Timeline + live-feed entry (best-effort). A lapse being undone reads as a
+    // renewal reactivation; a forced removal reads as a cancellation.
+    if (property) {
+      const isLapse = scheduled.move_out_reason === MoveOutReasonEnum.LEASE_ENDED;
+      const tenantName = await this.resolveTenantName(scheduled.tenant_id);
+      await this.logEndTenancyTimelineEvent({
+        property,
+        tenantId: scheduled.tenant_id,
+        tenantName,
+        eventType: 'scheduled_end_cancelled',
+        description: isLapse
+          ? `Renewal reactivated for ${tenantName} at ${property.name}. The tenancy will continue as normal.`
+          : `Scheduled removal cancelled for ${tenantName} at ${property.name}.`,
+        notificationType: NotificationType.SCHEDULED_END_CANCELLED,
+        metadata: { kind: isLapse ? 'lapse' : 'forced' },
+      });
+    }
+
     return { message: 'Scheduled move-out cancelled successfully' };
   }
 
@@ -3942,6 +4127,19 @@ export class PropertiesService {
         status: ScheduledMoveOutStatus.CONFIRMED,
       });
     }
+
+    // Timeline + live-feed entry (best-effort).
+    const tenantName = await this.resolveTenantName(tenant_id);
+    const endDateLong = this.formatLongDate(effectiveStr);
+    await this.logEndTenancyTimelineEvent({
+      property,
+      tenantId: tenant_id,
+      tenantName,
+      eventType: 'renewal_deactivated',
+      description: `Renewal deactivated for ${tenantName} at ${property.name}. The tenancy is set to end on ${endDateLong}.`,
+      notificationType: NotificationType.RENEWAL_DEACTIVATED,
+      metadata: { end_date: endDateLong },
+    });
 
     return {
       status: 'deactivated',

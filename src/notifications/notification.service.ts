@@ -51,6 +51,12 @@ export class NotificationService {
         return 'Tenant Added';
       case NotificationType.TENANCY_ENDED:
         return 'Tenancy Ended';
+      case NotificationType.RENEWAL_DEACTIVATED:
+        return 'Renewal Deactivated';
+      case NotificationType.REMOVAL_SCHEDULED:
+        return 'Removal Scheduled';
+      case NotificationType.SCHEDULED_END_CANCELLED:
+        return 'Scheduled End Cancelled';
       case NotificationType.TENANCY_RENEWED:
         return 'Tenancy Renewed';
       case NotificationType.NOTICE_AGREEMENT:

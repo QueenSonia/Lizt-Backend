@@ -303,6 +303,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
 
       if (ph.event_type === 'tenancy_ended') {
         const prop = ph.property;
+        const who = ph.metadata?.tenant_name || tenantName;
         const moveOutDate = ph.move_out_date
           ? formatLongDate(new Date(ph.move_out_date))
           : 'an unspecified date';
@@ -314,8 +315,67 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           id: `tenancy-end-${ph.id}`,
           type: 'general',
           title: 'Tenancy Ended',
-          description: `Tenant moved out of ${prop?.name || 'property'} on ${moveOutDate}.`,
-          details: prop?.name || undefined,
+          description: `${who} moved out of ${prop?.name || 'property'} on ${moveOutDate}.`,
+          details: ph.move_out_reason
+            ? `Reason: ${ph.move_out_reason.replace(/_/g, ' ')}`
+            : prop?.name || undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+        });
+      }
+
+      if (ph.event_type === 'renewal_deactivated') {
+        const who = ph.metadata?.tenant_name || tenantName;
+        const eventDate = new Date(ph.created_at || new Date());
+        tenancyEvents.push({
+          id: `renewal-deactivated-${ph.id}`,
+          type: 'general',
+          title: 'Renewal deactivated',
+          description:
+            ph.event_description || `Renewal deactivated for ${who}.`,
+          details: ph.metadata?.end_date
+            ? `Tenancy ends ${ph.metadata.end_date}`
+            : undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+        });
+      }
+
+      if (ph.event_type === 'removal_scheduled') {
+        const who = ph.metadata?.tenant_name || tenantName;
+        const eventDate = new Date(ph.created_at || new Date());
+        tenancyEvents.push({
+          id: `removal-scheduled-${ph.id}`,
+          type: 'general',
+          title: 'Removal scheduled',
+          description:
+            ph.event_description ||
+            `${who}'s tenancy is scheduled to end.`,
+          details: ph.move_out_reason
+            ? `Reason: ${ph.move_out_reason.replace(/_/g, ' ')}`
+            : ph.metadata?.end_date
+              ? `Ends ${ph.metadata.end_date}`
+              : undefined,
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+        });
+      }
+
+      if (ph.event_type === 'scheduled_end_cancelled') {
+        const who = ph.metadata?.tenant_name || tenantName;
+        const isLapse = ph.metadata?.kind === 'lapse';
+        const eventDate = new Date(ph.created_at || new Date());
+        tenancyEvents.push({
+          id: `scheduled-end-cancelled-${ph.id}`,
+          type: 'general',
+          title: isLapse
+            ? 'Renewal reactivated'
+            : 'Scheduled removal cancelled',
+          description:
+            ph.event_description ||
+            (isLapse
+              ? `Renewal reactivated for ${who}.`
+              : `Scheduled removal cancelled for ${who}.`),
           date: eventDate.toISOString(),
           time: formatTime(eventDate),
         });

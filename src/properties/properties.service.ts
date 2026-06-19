@@ -3650,18 +3650,29 @@ export class PropertiesService {
           relations: ['owner'],
         });
 
-        const tenant = await this.usersRepository.findOne({
+        // tenant_id is an Account id (property_tenants.tenant_id @ManyToOne ->
+        // Account), so resolve the name via the Account's user relation — NOT the
+        // Users repo (a User lookup by an Account id returns null). Don't gate the
+        // emit on this lookup: the property is always present here, and the
+        // listener re-fetches the tenant anyway, so a name miss must not suppress
+        // the live-feed entry or the termination notice.
+        const tenant = await this.accountRepository.findOne({
           where: { id: tenant_id },
+          relations: ['user'],
         });
 
-        if (property && tenant) {
+        if (property) {
+          const tenantName =
+            `${tenant?.user?.first_name ?? ''} ${
+              tenant?.user?.last_name ?? ''
+            }`.trim() || 'Tenant';
           // Emit tenancy ended event for live feed (+ tenant termination notice
           // for forced removals — the listener sends the WhatsApp).
           this.eventEmitter.emit('tenancy.ended', {
             property_id: property_id,
             property_name: property.name,
             tenant_id: tenant_id,
-            tenant_name: `${tenant.first_name} ${tenant.last_name}`,
+            tenant_name: tenantName,
             user_id: property.owner_id,
             move_out_date: move_out_date,
             notify_tenant_termination: sendTerminationNotice,

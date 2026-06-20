@@ -34,6 +34,8 @@ import { UtilService } from '../utils/utility-service';
 import { ConfigService } from '@nestjs/config';
 import { config } from '../config';
 import { ListKycApplicationsDto } from './dto/list-kyc-applications.dto';
+import { KYCException } from '../common/errors/kyc-exception';
+import { KYCErrorCode } from '../common/errors/kyc-error-codes.enum';
 import { TenantKyc } from '../tenant-kyc/entities/tenant-kyc.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { Payment, PaymentStatus } from '../payments/entities/payment.entity';
@@ -238,11 +240,18 @@ export class KYCApplicationService {
               kycData,
             );
           }
-          throw new ConflictException({
-            code: 'PENDING_APPLICATION_EXISTS',
-            application_id: existingApplication.id,
-            message: `User with phone number ${kycData.phone_number} has a pending application for this property`,
-          });
+          // Use KYCException so the global exception filter forwards the
+          // machine-readable `errorCode` + `details` to the client. A raw
+          // ConflictException with an object payload gets flattened to just
+          // `message` by the filter, so the frontend's confirm-and-retry
+          // prompt (errorCode === PENDING_APPLICATION_EXISTS) never fires.
+          throw new KYCException(
+            KYCErrorCode.PENDING_APPLICATION_EXISTS,
+            HttpStatus.CONFLICT,
+            `User with phone number ${kycData.phone_number} has a pending application for this property`,
+            undefined,
+            { application_id: existingApplication.id },
+          );
         }
 
         if (

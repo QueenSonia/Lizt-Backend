@@ -17,6 +17,7 @@ export enum KYCErrorCode {
 
   // Application submission errors
   DUPLICATE_APPLICATION = 'DUPLICATE_APPLICATION',
+  PENDING_APPLICATION_EXISTS = 'PENDING_APPLICATION_EXISTS',
   INVALID_APPLICATION_DATA = 'INVALID_APPLICATION_DATA',
   APPLICATION_NOT_FOUND = 'APPLICATION_NOT_FOUND',
   APPLICATION_ALREADY_PROCESSED = 'APPLICATION_ALREADY_PROCESSED',
@@ -68,6 +69,8 @@ export const KYC_ERROR_MESSAGES: Record<KYCErrorCode, string> = {
   // Application submission errors
   [KYCErrorCode.DUPLICATE_APPLICATION]:
     'You have already submitted an application for this property',
+  [KYCErrorCode.PENDING_APPLICATION_EXISTS]:
+    'You already have a pending application for this property',
   [KYCErrorCode.INVALID_APPLICATION_DATA]:
     'Please check your form data and try again',
   [KYCErrorCode.APPLICATION_NOT_FOUND]: 'KYC application not found',

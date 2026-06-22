@@ -1366,15 +1366,40 @@ export class PropertiesService {
       );
     }
 
-    // Step 2: Load active property tenant separately (only if needed)
-    let activeTenantRelation: PropertyTenant | null = null;
     const activeRent = property.rents.find((r) => r.rent_status === 'active');
 
-    if (activeRent) {
-      activeTenantRelation = await this.dataSource
-        .getRepository(PropertyTenant)
-        .createQueryBuilder('pt')
-        .leftJoinAndSelect('pt.tenant', 'tenant')
+    // Steps 2–4 (active property-tenant, property history, recent KYC apps) and
+    // the deletion-eligibility counts all depend only on the property loaded
+    // above — they don't depend on each other. Each is its own Neon round-trip,
+    // and run sequentially they dominate this endpoint's latency, so fire them
+    // concurrently. (Step 2 is skipped when there's no active rent.)
+    const [
+      activeTenantRelation,
+      propertyHistories,
+      kycApplications,
+      deletionEligibility,
+    ] = await Promise.all([
+      activeRent
+        ? this.dataSource
+            .getRepository(PropertyTenant)
+            .createQueryBuilder('pt')
+            .leftJoinAndSelect('pt.tenant', 'tenant')
+            .leftJoinAndSelect('tenant.user', 'user')
+            .leftJoinAndSelect(
+              'user.tenant_kycs',
+              'tenantKyc',
+              'tenantKyc.admin_id = :ownerId AND tenantKyc.deleted_at IS NULL',
+              { ownerId: property.owner_id },
+            )
+            .where('pt.property_id = :propertyId', { propertyId: id })
+            .andWhere('pt.status = :status', { status: 'active' })
+            .andWhere('pt.deleted_at IS NULL')
+            .getOne()
+        : Promise.resolve(null),
+      this.dataSource
+        .getRepository(PropertyHistory)
+        .createQueryBuilder('history')
+        .leftJoinAndSelect('history.tenant', 'tenant')
         .leftJoinAndSelect('tenant.user', 'user')
         .leftJoinAndSelect(
           'user.tenant_kycs',
@@ -1382,50 +1407,35 @@ export class PropertiesService {
           'tenantKyc.admin_id = :ownerId AND tenantKyc.deleted_at IS NULL',
           { ownerId: property.owner_id },
         )
-        .where('pt.property_id = :propertyId', { propertyId: id })
-        .andWhere('pt.status = :status', { status: 'active' })
-        .andWhere('pt.deleted_at IS NULL')
-        .getOne();
-    }
-
-    // Step 3: Load property history (separate query, sorted in DB)
-    const propertyHistories = await this.dataSource
-      .getRepository(PropertyHistory)
-      .createQueryBuilder('history')
-      .leftJoinAndSelect('history.tenant', 'tenant')
-      .leftJoinAndSelect('tenant.user', 'user')
-      .leftJoinAndSelect(
-        'user.tenant_kycs',
-        'tenantKyc',
-        'tenantKyc.admin_id = :ownerId AND tenantKyc.deleted_at IS NULL',
-        { ownerId: property.owner_id },
-      )
-      .where('history.property_id = :propertyId', { propertyId: id })
-      .orderBy('history.created_at', 'DESC')
-      .getMany();
-
-    // Step 4: Load KYC applications (separate query, only recent ones)
-    const kycApplications = await this.dataSource
-      .getRepository(KYCApplication)
-      .createQueryBuilder('kyc')
-      .select([
-        'kyc.id',
-        'kyc.status',
-        'kyc.first_name',
-        'kyc.last_name',
-        'kyc.email',
-        'kyc.phone_number',
-        'kyc.employment_status',
-        'kyc.monthly_net_income',
-        'kyc.tenant_id',
-        'kyc.passport_photo_url',
-        'kyc.created_at',
-      ])
-      .where('kyc.property_id = :propertyId', { propertyId: id })
-      .andWhere('kyc.deleted_at IS NULL')
-      .orderBy('kyc.created_at', 'DESC')
-      .limit(20) // Limit to 20 most recent applications
-      .getMany();
+        .where('history.property_id = :propertyId', { propertyId: id })
+        .orderBy('history.created_at', 'DESC')
+        .getMany(),
+      this.dataSource
+        .getRepository(KYCApplication)
+        .createQueryBuilder('kyc')
+        .select([
+          'kyc.id',
+          'kyc.status',
+          'kyc.first_name',
+          'kyc.last_name',
+          'kyc.email',
+          'kyc.phone_number',
+          'kyc.employment_status',
+          'kyc.monthly_net_income',
+          'kyc.tenant_id',
+          'kyc.passport_photo_url',
+          'kyc.created_at',
+        ])
+        .where('kyc.property_id = :propertyId', { propertyId: id })
+        .andWhere('kyc.deleted_at IS NULL')
+        .orderBy('kyc.created_at', 'DESC')
+        .limit(20) // Limit to 20 most recent applications
+        .getMany(),
+      this.computeDeletionEligibility(
+        property.id,
+        property.property_status as PropertyStatusEnum,
+      ),
+    ]);
 
     // Current tenant information
     let currentTenant: any | null = null;
@@ -1479,19 +1489,14 @@ export class PropertiesService {
       const email = tenantKyc?.email ?? tenantUser.email;
       const phone = tenantKyc?.phone_number ?? tenantUser.phone_number;
 
-      const tenantKycApplication = kycApplications
-        .filter((app) => app.tenant_id === activeTenantRelation.tenant.id)
-        .sort((a, b) => {
-          const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-          const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-          return dateB - dateA;
-        })[0];
-
-      // Check for latest renewal invoice for this property+tenant.
-      // Scope to landlord/draft invoices (tenant-initiated "Pay OB" invoices
-      // must not hide the real renewal) AND exclude superseded rows — those
-      // are historical versions that have been replaced by a new letter.
-      const latestRenewalInvoice = await this.renewalInvoiceRepository.findOne({
+      // Fire every independent read for the active tenancy up front so they run
+      // concurrently rather than as a chain of back-to-back Neon round-trips.
+      // Each promise is awaited below at its existing use-site, so the in-memory
+      // logic between the awaits is unchanged. Two formerly-separate queries are
+      // dropped and derived in memory instead (see use-sites): the plan-eligible
+      // ad-hocs are a subset of pendingAdHocInvoices, and the wallet-backed plans
+      // are a subset of allActivePlans.
+      const latestRenewalInvoicePromise = this.renewalInvoiceRepository.findOne({
         where: {
           property_id: property.id,
           tenant_id: activeTenantRelation.tenant.id,
@@ -1524,6 +1529,43 @@ export class PropertiesService {
           'accepted_at',
         ],
       });
+      const walletBalPromise = this.tenantBalancesService.getBalance(
+        activeTenantRelation.tenant.id,
+        property.owner_id,
+      );
+      const allActivePlansPromise = this.paymentPlanRepository.find({
+        where: {
+          tenant_id: activeTenantRelation.tenant.id,
+          status: PaymentPlanStatus.ACTIVE,
+        },
+        relations: ['installments', 'property'],
+      });
+      const pendingAdHocPromise = this.adHocInvoiceRepository.find({
+        where: {
+          property_tenant_id: activeTenantRelation.id,
+          status: In([
+            AdHocInvoiceStatus.PENDING,
+            AdHocInvoiceStatus.PARTIAL,
+            AdHocInvoiceStatus.PAID,
+          ]),
+        },
+        relations: ['line_items'],
+        order: { created_at: 'ASC' },
+      });
+
+      const tenantKycApplication = kycApplications
+        .filter((app) => app.tenant_id === activeTenantRelation.tenant.id)
+        .sort((a, b) => {
+          const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+          const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+          return dateB - dateA;
+        })[0];
+
+      // Check for latest renewal invoice for this property+tenant.
+      // Scope to landlord/draft invoices (tenant-initiated "Pay OB" invoices
+      // must not hide the real renewal) AND exclude superseded rows — those
+      // are historical versions that have been replaced by a new letter.
+      const latestRenewalInvoice = await latestRenewalInvoicePromise;
 
       let renewalStatus:
         | 'letter_sent'
@@ -1619,10 +1661,7 @@ export class PropertiesService {
           : null;
 
       // Wallet balance: signed. Negative = tenant owes (outstanding); positive = tenant credit.
-      const walletBal = await this.tenantBalancesService.getBalance(
-        activeTenantRelation.tenant.id,
-        property.owner_id,
-      );
+      const walletBal = await walletBalPromise;
       const totalOutstandingBalance = walletBal < 0 ? -walletBal : 0;
       const totalCreditBalance = walletBal > 0 ? walletBal : 0;
 
@@ -1634,17 +1673,12 @@ export class PropertiesService {
       // landlord, so subtract the remainder of ALL their active wallet-backed
       // plans under this landlord (scope by tenant_id + property.owner_id) — not
       // just this one tenancy's — to match PaymentPlansService.computePlannableOb.
-      const activeWalletPlans = await this.paymentPlanRepository.find({
-        where: {
-          tenant_id: activeTenantRelation.tenant.id,
-          status: PaymentPlanStatus.ACTIVE,
-          source_type: In([
-            PaymentPlanSourceType.OUTSTANDING_BALANCE,
-            PaymentPlanSourceType.AD_HOC_INVOICE,
-          ]),
-        },
-        relations: ['installments', 'property'],
-      });
+      const allActivePlans = await allActivePlansPromise;
+      const activeWalletPlans = allActivePlans.filter(
+        (p) =>
+          p.source_type === PaymentPlanSourceType.OUTSTANDING_BALANCE ||
+          p.source_type === PaymentPlanSourceType.AD_HOC_INVOICE,
+      );
       const claimedByPlans = activeWalletPlans.reduce((sum, p) => {
         if (p.property?.owner_id !== property.owner_id) return sum;
         const paid = (p.installments ?? [])
@@ -1665,31 +1699,14 @@ export class PropertiesService {
       // shared helper excludes it (no double-count). Display-only; plannable OB
       // above stays wallet-derived and is intentionally not inflated.
       const overduePlanInstallments = sumOverdueInvoiceFeeInstallments(
-        await this.paymentPlanRepository.find({
-          where: {
-            tenant_id: activeTenantRelation.tenant.id,
-            status: PaymentPlanStatus.ACTIVE,
-          },
-          relations: ['installments', 'property'],
-        }),
+        allActivePlans,
         property.owner_id,
       ).total;
 
       // Ad-hoc invoice line items for this tenancy — surfaced as additional
       // charges on the current period charges list. Paid invoices are kept so
       // the UI can show them with a "(paid)" prefix; cancelled ones are dropped.
-      const pendingAdHocInvoices = await this.adHocInvoiceRepository.find({
-        where: {
-          property_tenant_id: activeTenantRelation.id,
-          status: In([
-            AdHocInvoiceStatus.PENDING,
-            AdHocInvoiceStatus.PARTIAL,
-            AdHocInvoiceStatus.PAID,
-          ]),
-        },
-        relations: ['line_items'],
-        order: { created_at: 'ASC' },
-      });
+      const pendingAdHocInvoices = await pendingAdHocPromise;
       pendingAdHocInvoiceFees = pendingAdHocInvoices.flatMap((inv) =>
         (inv.line_items ?? [])
           .slice()
@@ -1712,17 +1729,13 @@ export class PropertiesService {
       // PARTIAL). Covered invoices stay PENDING with outstanding > 0 while their
       // plan is in force, so they appear here flagged via coveredByPlanId; once
       // the plan settles them they flip to PAID and drop out.
-      const planEligibleAdHocs = await this.adHocInvoiceRepository.find({
-        where: {
-          property_tenant_id: activeTenantRelation.id,
-          status: In([
-            AdHocInvoiceStatus.PENDING,
-            AdHocInvoiceStatus.PARTIAL,
-          ]),
-        },
-        relations: ['line_items'],
-        order: { created_at: 'ASC' },
-      });
+      // PENDING/PARTIAL ad-hocs are a subset of pendingAdHocInvoices (which also
+      // includes PAID) — filter in memory instead of issuing a second query.
+      const planEligibleAdHocs = pendingAdHocInvoices.filter(
+        (inv) =>
+          inv.status === AdHocInvoiceStatus.PENDING ||
+          inv.status === AdHocInvoiceStatus.PARTIAL,
+      );
       adHocInvoiceOptions = planEligibleAdHocs
         .map((inv) => {
           const firstDesc = (inv.line_items ?? [])
@@ -2605,10 +2618,8 @@ export class PropertiesService {
       (app) => app.status === 'pending',
     ).length;
 
-    const { canDelete } = await this.computeDeletionEligibility(
-      property.id,
-      property.property_status as PropertyStatusEnum,
-    );
+    // Computed concurrently with steps 2–4 above.
+    const { canDelete } = deletionEligibility;
 
     // Scheduled-end state for the End Tenancy modal:
     //  - null:   no scheduled end (modal offers the 3 actions)

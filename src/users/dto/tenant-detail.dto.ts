@@ -1,3 +1,4 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { KycApplicationFrontendShape } from '../../kyc-links/kyc-application.transform';
 
 // interface for nested objects
@@ -292,5 +293,17 @@ export class TenantDetailDto {
   // Embedded KYC application (matches GET /api/kyc-applications/:id `application`
   // shape) so the frontend never needs a separate page-walk / by-id fetch.
   kycApplicationId: string | null;
+
+  // `type: 'object'` is required so the @nestjs/swagger CLI plugin does NOT try
+  // to emit a runtime model reference for KycApplicationFrontendShape — that is a
+  // type-only export (ReturnType<...>) with no runtime value, which makes swagger
+  // throw a (misnamed) "circular dependency" error at document build time.
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: true,
+    nullable: true,
+    description:
+      'Embedded KYC application (matches GET /api/kyc-applications/:id `application` shape).',
+  })
   kycApplication: KycApplicationFrontendShape | null;
 }

@@ -34,6 +34,7 @@ import {
   KYCApplication,
   ApplicationStatus,
 } from 'src/kyc-links/entities/kyc-application.entity';
+import { transformApplicationForFrontend } from 'src/kyc-links/kyc-application.transform';
 import {
   TenantKyc,
   Gender,
@@ -1950,7 +1951,8 @@ export class TenantManagementService {
     // while preserving this tenant's own application within this landlord.
     const kycApplication = await this.kycApplicationRepository
       .createQueryBuilder('app')
-      .innerJoin('app.property', 'property')
+      .innerJoinAndSelect('app.property', 'property')
+      .leftJoinAndSelect('app.offer_letters', 'app_offer_letters')
       .where('app.tenant_id = :tenantId', { tenantId })
       .andWhere('property.owner_id = :adminId', { adminId })
       .orderBy('app.created_at', 'DESC')
@@ -2052,6 +2054,85 @@ export class TenantManagementService {
   }
 
   /**
+   * Standalone outstanding-balance lookup for a tenant. Returns only the
+   * balance-related fields of the tenant detail so the frontend can keep these
+   * always-fresh (no cache) while the heavier tenant payload is cached.
+   *
+   * Loads only the account data computeTenantBalance needs (rents + property,
+   * property_histories), reusing the same landlord-scoping (current OR past
+   * tenancy) and 404 behaviour as getSingleTenantOfAnAdmin.
+   */
+  async getTenantBalance(
+    tenantId: string,
+    adminId: string,
+  ): Promise<{
+    totalOutstandingBalance: number;
+    totalCreditBalance: number;
+    outstandingBalanceBreakdown: TenantDetailDto['outstandingBalanceBreakdown'];
+    paymentTransactions: TenantDetailDto['paymentTransactions'];
+  }> {
+    const tenantAccount = await this.accountRepository
+      .createQueryBuilder('account')
+      .leftJoin('account.rents', 'rents')
+      .addSelect([
+        'rents.id',
+        'rents.property_id',
+        'rents.tenant_id',
+        'rents.expiry_date',
+        'rents.rent_start_date',
+        'rents.rent_status',
+      ])
+      .leftJoin('rents.property', 'property')
+      .addSelect(['property.id', 'property.name', 'property.owner_id'])
+      .leftJoin('account.property_histories', 'property_histories')
+      .addSelect([
+        'property_histories.id',
+        'property_histories.event_type',
+        'property_histories.event_description',
+        'property_histories.move_in_date',
+        'property_histories.created_at',
+      ])
+      .leftJoin('property_histories.property', 'past_property')
+      .addSelect(['past_property.id', 'past_property.owner_id'])
+      .where('account.id = :tenantId', { tenantId })
+      .andWhere((qb) => {
+        const currentTenancySubQuery = qb
+          .subQuery()
+          .select('1')
+          .from(PropertyTenant, 'pt')
+          .innerJoin('pt.property', 'p')
+          .where('pt.tenant_id = account.id')
+          .andWhere('p.owner_id = :adminId')
+          .getQuery();
+
+        const pastTenancySubQuery = qb
+          .subQuery()
+          .select('1')
+          .from(PropertyHistory, 'ph')
+          .innerJoin('ph.property', 'p')
+          .where('ph.tenant_id = account.id')
+          .andWhere('p.owner_id = :adminId')
+          .getQuery();
+
+        return `(EXISTS ${currentTenancySubQuery} OR EXISTS ${pastTenancySubQuery})`;
+      })
+      .setParameters({ tenantId, adminId })
+      .getOne();
+
+    if (!tenantAccount?.id) {
+      throw new HttpException(
+        `Tenant with id: ${tenantId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const rents =
+      tenantAccount.rents?.filter((r) => r.property?.owner_id === adminId) || [];
+
+    return this.computeTenantBalance(tenantAccount, adminId, rents);
+  }
+
+  /**
    * Get tenant and property info for a tenant
    */
   async getTenantAndPropertyInfo(tenant_id: string): Promise<Account> {
@@ -2078,25 +2159,24 @@ export class TenantManagementService {
   }
 
   /**
-   * Format tenant data for response
+   * Compute a tenant's outstanding/credit balance, the per-property breakdown,
+   * and the manual/ledger payment-transaction list — the always-fresh portion of
+   * the tenant detail. Extracted out of formatTenantData so the standalone
+   * balance endpoint can reuse it without recomputing the whole tenant payload.
+   *
+   * `rents` must be the adminId-filtered rent list (passed in so it stays
+   * identical to the value formatTenantData uses elsewhere in its response).
    */
-  private async formatTenantData(
+  private async computeTenantBalance(
     account: Account,
-    kycApplication?: KYCApplication | null,
-    adminId?: string,
-    offerLetters?: OfferLetter[],
-    payments?: Payment[],
-  ): Promise<TenantDetailDto> {
-    const user = account.user;
-    const kyc = (user as Users & { kyc?: Record<string, string> }).kyc ?? {};
-    const tenantKyc = (user as Users & { tenant_kycs?: TenantKycRecord[] })
-      .tenant_kycs?.[0];
-
-    // Filter data by adminId if provided
-    const rents = adminId
-      ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
-      : account.rents || [];
-
+    adminId: string | undefined,
+    rents: Rent[],
+  ): Promise<{
+    totalOutstandingBalance: number;
+    totalCreditBalance: number;
+    outstandingBalanceBreakdown: TenantDetailDto['outstandingBalanceBreakdown'];
+    paymentTransactions: TenantDetailDto['paymentTransactions'];
+  }> {
     // Fetch wallet balance and ledger (requires adminId as landlordId)
     let walletBalance = 0;
     let ledgerEntries: TenantBalanceLedger[] = [];
@@ -2405,6 +2485,94 @@ export class TenantManagementService {
         });
       }
     }
+
+    const paymentTransactions = [
+      // Manual payments — property history is the authority for which payments
+      // currently exist and at what amount. Edited payments update in place so
+      // we never see stale pre-edit amounts. Deleted payments remove the record.
+      ...(account.property_histories || [])
+        .filter((h) => {
+          if (h.event_type !== 'user_added_payment') return false;
+          if (adminId && h.property?.owner_id !== adminId) return false;
+          return true;
+        })
+        .map((ph) => {
+          try {
+            const data = JSON.parse(ph.event_description || '{}');
+            const amount = Number(data.paymentAmount || 0);
+            if (amount <= 0) return null;
+            return {
+              id: `payment-history-${ph.id}`,
+              type: data.description || 'Payment received',
+              amount: -amount,
+              date: ph.move_in_date
+                ? new Date(ph.move_in_date)
+                : new Date(ph.created_at!),
+            };
+          } catch {
+            return null;
+          }
+        })
+        .filter((t): t is NonNullable<typeof t> => t !== null),
+
+      // Renewal-invoice payments and GENUINE ad-hoc payments — no property
+      // history entry is created for these, so we read them from the ledger.
+      // Ad-hoc cancellation / edit-down REVERSALS (metadata.reversal) are not
+      // payments: they are netted against their charge in the breakdown above
+      // and must not appear here as money received.
+      ...ledgerEntries
+        .filter(
+          (e) =>
+            Number(e.balance_change) > 0 &&
+            (e.related_entity_type === 'renewal_invoice' ||
+              (e.related_entity_type === 'ad_hoc_invoice' &&
+                !isAdHocReversalLeg(e))),
+        )
+        .map((e) => ({
+          id: e.id,
+          type: e.description || 'Payment received',
+          amount: -Number(e.balance_change), // payments are positive balance_change; show as negative (money out for tenant)
+          date: new Date(e.created_at!),
+        })),
+    ].sort((a, b) => b.date.getTime() - a.date.getTime());
+
+    return {
+      totalOutstandingBalance,
+      totalCreditBalance,
+      outstandingBalanceBreakdown,
+      paymentTransactions,
+    };
+  }
+
+  /**
+   * Format tenant data for response
+   */
+  private async formatTenantData(
+    account: Account,
+    kycApplication?: KYCApplication | null,
+    adminId?: string,
+    offerLetters?: OfferLetter[],
+    payments?: Payment[],
+  ): Promise<TenantDetailDto> {
+    const user = account.user;
+    const kyc = (user as Users & { kyc?: Record<string, string> }).kyc ?? {};
+    const tenantKyc = (user as Users & { tenant_kycs?: TenantKycRecord[] })
+      .tenant_kycs?.[0];
+
+    // Filter data by adminId if provided
+    const rents = adminId
+      ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
+      : account.rents || [];
+
+    // Outstanding balance, credit, the per-property breakdown and the
+    // manual/ledger payment-transaction list are derived together. Same helper
+    // backs the standalone always-fresh GET …/balance endpoint.
+    const {
+      totalOutstandingBalance,
+      totalCreditBalance,
+      outstandingBalanceBreakdown,
+      paymentTransactions,
+    } = await this.computeTenantBalance(account, adminId, rents);
 
     const maintenanceRequests = adminId
       ? account.maintenance_requests?.filter(
@@ -2967,59 +3135,11 @@ export class TenantManagementService {
       // System Info
       whatsAppConnected: false,
 
-      // Outstanding Balance Info
+      // Outstanding Balance Info (computed by computeTenantBalance above)
       totalOutstandingBalance,
       totalCreditBalance,
       outstandingBalanceBreakdown,
-      paymentTransactions: [
-        // Manual payments — property history is the authority for which payments
-        // currently exist and at what amount. Edited payments update in place so
-        // we never see stale pre-edit amounts. Deleted payments remove the record.
-        ...(account.property_histories || [])
-          .filter((h) => {
-            if (h.event_type !== 'user_added_payment') return false;
-            if (adminId && h.property?.owner_id !== adminId) return false;
-            return true;
-          })
-          .map((ph) => {
-            try {
-              const data = JSON.parse(ph.event_description || '{}');
-              const amount = Number(data.paymentAmount || 0);
-              if (amount <= 0) return null;
-              return {
-                id: `payment-history-${ph.id}`,
-                type: data.description || 'Payment received',
-                amount: -amount,
-                date: ph.move_in_date
-                  ? new Date(ph.move_in_date)
-                  : new Date(ph.created_at!),
-              };
-            } catch {
-              return null;
-            }
-          })
-          .filter((t): t is NonNullable<typeof t> => t !== null),
-
-        // Renewal-invoice payments and GENUINE ad-hoc payments — no property
-        // history entry is created for these, so we read them from the ledger.
-        // Ad-hoc cancellation / edit-down REVERSALS (metadata.reversal) are not
-        // payments: they are netted against their charge in the breakdown above
-        // and must not appear here as money received.
-        ...ledgerEntries
-          .filter(
-            (e) =>
-              Number(e.balance_change) > 0 &&
-              (e.related_entity_type === 'renewal_invoice' ||
-                (e.related_entity_type === 'ad_hoc_invoice' &&
-                  !isAdHocReversalLeg(e))),
-          )
-          .map((e) => ({
-            id: e.id,
-            type: e.description || 'Payment received',
-            amount: -Number(e.balance_change), // payments are positive balance_change; show as negative (money out for tenant)
-            date: new Date(e.created_at!),
-          })),
-      ].sort((a, b) => b.date.getTime() - a.date.getTime()),
+      paymentTransactions,
 
       history: history,
       renewalInvoices: renewalInvoiceSummaries,
@@ -3088,6 +3208,13 @@ export class TenantManagementService {
             ]
           : [],
       },
+
+      // Embed the full KYC application (same shape as GET /api/kyc-applications/:id)
+      // so the frontend doesn't have to walk all applications or refetch by id.
+      kycApplicationId: kycApplication?.id ?? null,
+      kycApplication: kycApplication
+        ? transformApplicationForFrontend(kycApplication)
+        : null,
     };
   }
 

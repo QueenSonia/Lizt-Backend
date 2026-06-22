@@ -1,3 +1,5 @@
+import { KycApplicationFrontendShape } from '../../kyc-links/kyc-application.transform';
+
 // interface for nested objects
 interface PaymentHistoryItem {
   id: string;
@@ -286,4 +288,9 @@ export class TenantDetailDto {
   paymentPlans: PaymentPlanSummary[];
   paymentPlanRequests: PaymentPlanRequestSummary[];
   kycInfo: KycInfo;
+
+  // Embedded KYC application (matches GET /api/kyc-applications/:id `application`
+  // shape) so the frontend never needs a separate page-walk / by-id fetch.
+  kycApplicationId: string | null;
+  kycApplication: KycApplicationFrontendShape | null;
 }

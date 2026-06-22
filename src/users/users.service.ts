@@ -1110,6 +1110,10 @@ export class UsersService {
     );
   }
 
+  async getTenantBalance(tenantId: string, adminId: string) {
+    return this.tenantManagementService.getTenantBalance(tenantId, adminId);
+  }
+
   async uploadLogos(
     userId: string,
     files: Express.Multer.File[],

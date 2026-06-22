@@ -283,6 +283,22 @@ export class UsersController {
     }
   }
 
+  // Balance-only endpoint kept separate so the frontend can poll it fresh
+  // (no cache) while the heavier tenant payload above is cached.
+  @Get('tenant-list/:tenant_id/balance')
+  @UseGuards(RoleGuard)
+  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  getTenantBalance(@Req() req: any) {
+    try {
+      const adminId = req?.user?.id;
+      const tenant_id = req?.params.tenant_id;
+
+      return this.usersService.getTenantBalance(tenant_id, adminId);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get Tenant and Property They Occupy' })
   @ApiOkResponse({ type: CreateUserDto })
   @ApiNotFoundResponse({ description: 'Tenant not found' })

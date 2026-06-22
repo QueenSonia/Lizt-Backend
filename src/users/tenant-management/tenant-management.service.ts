@@ -1771,6 +1771,29 @@ export class TenantManagementService {
       timestamp: new Date().toISOString(),
     });
 
+    // The tenant's latest KYC application and the id/property_id list of all
+    // their KYC applications don't depend on the account query — fire them now
+    // so they run concurrently with (and hide under) the heavy account query
+    // below, instead of adding two sequential round-trips after it.
+    //
+    // KYC is scoped by landlord (property.owner_id), not the tenant's currently
+    // active property: a tenant can submit KYC for one property but be attached
+    // to another (or be a past tenant with no active rent at all). Landlord
+    // scope alone keeps cross-landlord submissions out while preserving this
+    // tenant's own application within this landlord.
+    const kycApplicationPromise = this.kycApplicationRepository
+      .createQueryBuilder('app')
+      .innerJoinAndSelect('app.property', 'property')
+      .leftJoinAndSelect('app.offer_letters', 'app_offer_letters')
+      .where('app.tenant_id = :tenantId', { tenantId })
+      .andWhere('property.owner_id = :adminId', { adminId })
+      .orderBy('app.created_at', 'DESC')
+      .getOne();
+    const kycApplicationsPromise = this.kycApplicationRepository.find({
+      where: { tenant_id: tenantId },
+      select: ['id', 'property_id'],
+    });
+
     const tenantAccount = await this.accountRepository
       .createQueryBuilder('account')
       .innerJoin('account.user', 'user')
@@ -1941,28 +1964,9 @@ export class TenantManagementService {
       );
     }
 
-    // Query KYC application separately to get all data and document URLs.
-    //
-    // Scope by landlord (via property.owner_id) rather than by the tenant's
-    // currently-active property. A tenant can submit KYC for one property but
-    // be attached to another (or be a past tenant with no active rent at all);
-    // tying the lookup to the active property dropped their KYC entirely in
-    // those cases. Landlord scope alone keeps cross-landlord submissions out
-    // while preserving this tenant's own application within this landlord.
-    const kycApplication = await this.kycApplicationRepository
-      .createQueryBuilder('app')
-      .innerJoinAndSelect('app.property', 'property')
-      .leftJoinAndSelect('app.offer_letters', 'app_offer_letters')
-      .where('app.tenant_id = :tenantId', { tenantId })
-      .andWhere('property.owner_id = :adminId', { adminId })
-      .orderBy('app.created_at', 'DESC')
-      .getOne();
-
-    // Query offer letters for this tenant (via KYC applications)
-    const kycApplications = await this.kycApplicationRepository.find({
-      where: { tenant_id: tenantId },
-      select: ['id', 'property_id'],
-    });
+    // Resolve the KYC lookups fired before the account query above.
+    const kycApplication = await kycApplicationPromise;
+    const kycApplications = await kycApplicationsPromise;
     const kycApplicationIds = kycApplications.map((k) => k.id);
 
     // Fetch applicant-phase property history records for the KYC application's property.
@@ -1978,26 +1982,42 @@ export class TenantManagementService {
       ),
     ];
 
-    if (kycPropertyIds.length > 0) {
-      const propertyHistoryRepo =
-        this.dataSource.getRepository(PropertyHistory);
-      // Fetch events for the property where tenant_id is NULL (not yet backfilled)
-      // or already belongs to this tenant. This avoids pulling in events from
-      // other tenants on the same property.
-      const applicantPhaseHistories = await propertyHistoryRepo
-        .createQueryBuilder('ph')
-        .leftJoinAndSelect('ph.property', 'property')
-        .where('ph.property_id IN (:...propertyIds)', {
-          propertyIds: kycPropertyIds,
-        })
-        .andWhere('(ph.tenant_id IS NULL OR ph.tenant_id = :tenantId)', {
-          tenantId,
-        })
-        .orderBy('ph.created_at', 'ASC')
-        .getMany();
+    // Applicant-phase histories and offer letters both depend only on the KYC
+    // id lists above and are independent of each other — fetch them concurrently.
+    // Fetch history events for the property where tenant_id is NULL (not yet
+    // backfilled) or already belongs to this tenant, avoiding events from other
+    // tenants on the same property.
+    const [applicantPhaseHistories, offerLetters] = await Promise.all([
+      kycPropertyIds.length > 0
+        ? this.dataSource
+            .getRepository(PropertyHistory)
+            .createQueryBuilder('ph')
+            .leftJoinAndSelect('ph.property', 'property')
+            .where('ph.property_id IN (:...propertyIds)', {
+              propertyIds: kycPropertyIds,
+            })
+            .andWhere('(ph.tenant_id IS NULL OR ph.tenant_id = :tenantId)', {
+              tenantId,
+            })
+            .orderBy('ph.created_at', 'ASC')
+            .getMany()
+        : Promise.resolve([] as PropertyHistory[]),
+      kycApplicationIds.length > 0
+        ? this.offerLetterRepository
+            .createQueryBuilder('offer')
+            .leftJoinAndSelect('offer.property', 'property')
+            .where('offer.kyc_application_id IN (:...kycIds)', {
+              kycIds: kycApplicationIds,
+            })
+            .andWhere('offer.landlord_id = :adminId', { adminId })
+            .orderBy('offer.created_at', 'DESC')
+            .getMany()
+        : Promise.resolve([] as OfferLetter[]),
+    ]);
 
-      // Merge applicant-phase histories into the tenant account's property_histories,
-      // deduplicating by id so events that were already backfilled don't appear twice.
+    // Merge applicant-phase histories into the tenant account's property_histories,
+    // deduplicating by id so events that were already backfilled don't appear twice.
+    if (applicantPhaseHistories.length > 0) {
       const existingIds = new Set(
         (tenantAccount.property_histories || []).map((ph) => ph.id),
       );
@@ -2011,19 +2031,6 @@ export class TenantManagementService {
           ...(tenantAccount.property_histories || []),
         ];
       }
-    }
-
-    let offerLetters: OfferLetter[] = [];
-    if (kycApplicationIds.length > 0) {
-      offerLetters = await this.offerLetterRepository
-        .createQueryBuilder('offer')
-        .leftJoinAndSelect('offer.property', 'property')
-        .where('offer.kyc_application_id IN (:...kycIds)', {
-          kycIds: kycApplicationIds,
-        })
-        .andWhere('offer.landlord_id = :adminId', { adminId })
-        .orderBy('offer.created_at', 'DESC')
-        .getMany();
     }
 
     // Query payments for these offer letters
@@ -2183,24 +2190,23 @@ export class TenantManagementService {
     let overduePlanByProperty: Record<string, number> = {};
     let overduePlanInstallments = 0;
     if (adminId) {
-      walletBalance = await this.tenantBalancesService.getBalance(
-        account.id,
-        adminId,
-      );
-      ledgerEntries = await this.tenantBalancesService.getLedger(
-        account.id,
-        adminId,
-      );
+      // getBalance, getLedger and the active-plans lookup are independent reads —
+      // run them concurrently instead of as three back-to-back Neon round-trips.
       // Carved invoice-fee charge plans never debit the wallet, so their overdue
       // installments are invisible in the wallet-derived balance. Surface them
       // on the landlord view once past due. Ad-hoc / OB plan debt is already
       // real wallet OB, so the shared helper excludes it (no double-count).
-      const activePlans = await this.dataSource
-        .getRepository(PaymentPlan)
-        .find({
-          where: { tenant_id: account.id, status: PaymentPlanStatus.ACTIVE },
-          relations: ['installments', 'property'],
-        });
+      const [walletBalanceResult, ledgerResult, activePlans] =
+        await Promise.all([
+          this.tenantBalancesService.getBalance(account.id, adminId),
+          this.tenantBalancesService.getLedger(account.id, adminId),
+          this.dataSource.getRepository(PaymentPlan).find({
+            where: { tenant_id: account.id, status: PaymentPlanStatus.ACTIVE },
+            relations: ['installments', 'property'],
+          }),
+        ]);
+      walletBalance = walletBalanceResult;
+      ledgerEntries = ledgerResult;
       const overdue = sumOverdueInvoiceFeeInstallments(activePlans, adminId);
       overduePlanByProperty = overdue.byProperty;
       overduePlanInstallments = overdue.total;
@@ -2635,51 +2641,34 @@ export class TenantManagementService {
       { rentAmount: number; serviceCharge: number; totalAmount: number }
     >();
 
-    if (activeRentPropertyIds.length > 0) {
-      const pendingInvoices = await this.dataSource
-        .getRepository(RenewalInvoice)
-        .find({
-          where: {
-            tenant_id: account.id,
-            payment_status: RenewalPaymentStatus.UNPAID,
-            token_type: In(['landlord', 'draft']),
-            property_id: In(activeRentPropertyIds),
-          },
-          order: { created_at: 'DESC' },
-          select: [
-            'id',
-            'property_id',
-            'rent_amount',
-            'service_charge',
-            'total_amount',
-          ],
-        });
-
-      // Keep only the most-recent invoice per property (results already ordered DESC)
-      for (const inv of pendingInvoices) {
-        if (!pendingInvoiceMap.has(inv.property_id)) {
-          pendingInvoiceMap.set(inv.property_id, {
-            rentAmount: parseFloat(inv.rent_amount.toString()),
-            serviceCharge: parseFloat((inv.service_charge || 0).toString()),
-            totalAmount: parseFloat(inv.total_amount.toString()),
-          });
-        }
-      }
-    }
-
-    // Pending invoice for the primary active rent (used by single-tenancy view)
-    const activePendingInvoice = activeRent
-      ? (pendingInvoiceMap.get(activeRent.property_id) ?? null)
-      : null;
-
-    // Fetch renewal invoices for the Documents tab.
-    // Default: landlord/draft rows (the documents the landlord authored).
-    // Also: tenant-token rows that have a receipt_token, i.e., have at
-    // least one real Paystack payment landed (full or partial). Empty
-    // tenant-token rows are still excluded — those are OB pay-link /
-    // payment-plan-request scaffolding the bot creates, not documents.
+    // The pending invoices, Documents-tab renewal invoices, ad-hoc invoices,
+    // payment plans and payment-plan requests below are all independent reads.
+    // Fire them concurrently up front (one round-trip wave instead of five
+    // back-to-back) and await each at its existing use-site, leaving every
+    // in-memory transformation untouched.
     const ownerScope = adminId ? { property: { owner_id: adminId } } : {};
-    const allRenewalInvoices = await this.dataSource
+
+    const pendingInvoicesPromise =
+      activeRentPropertyIds.length > 0
+        ? this.dataSource.getRepository(RenewalInvoice).find({
+            where: {
+              tenant_id: account.id,
+              payment_status: RenewalPaymentStatus.UNPAID,
+              token_type: In(['landlord', 'draft']),
+              property_id: In(activeRentPropertyIds),
+            },
+            order: { created_at: 'DESC' },
+            select: [
+              'id',
+              'property_id',
+              'rent_amount',
+              'service_charge',
+              'total_amount',
+            ],
+          })
+        : Promise.resolve([] as RenewalInvoice[]);
+
+    const allRenewalInvoicesPromise = this.dataSource
       .getRepository(RenewalInvoice)
       .find({
         where: [
@@ -2715,6 +2704,64 @@ export class TenantManagementService {
           'end_date',
         ],
       });
+
+    const adHocInvoiceRowsPromise = this.dataSource
+      .getRepository(AdHocInvoice)
+      .find({
+        where: {
+          tenant_id: account.id,
+          ...(adminId ? { landlord_id: adminId } : {}),
+        },
+        relations: ['property'],
+        order: { created_at: 'DESC' },
+      });
+
+    const paymentPlanRowsPromise = this.dataSource
+      .getRepository(PaymentPlan)
+      .find({
+        where: {
+          tenant_id: account.id,
+          ...(adminId ? { property: { owner_id: adminId } } : {}),
+        },
+        relations: ['property', 'installments'],
+        order: { created_at: 'DESC' },
+      });
+
+    const paymentPlanRequestRowsPromise = this.dataSource
+      .getRepository(PaymentPlanRequest)
+      .find({
+        where: {
+          tenant_id: account.id,
+          ...(adminId ? { property: { owner_id: adminId } } : {}),
+        },
+        relations: ['property'],
+        order: { created_at: 'DESC' },
+      });
+
+    const pendingInvoices = await pendingInvoicesPromise;
+    // Keep only the most-recent invoice per property (results already ordered DESC)
+    for (const inv of pendingInvoices) {
+      if (!pendingInvoiceMap.has(inv.property_id)) {
+        pendingInvoiceMap.set(inv.property_id, {
+          rentAmount: parseFloat(inv.rent_amount.toString()),
+          serviceCharge: parseFloat((inv.service_charge || 0).toString()),
+          totalAmount: parseFloat(inv.total_amount.toString()),
+        });
+      }
+    }
+
+    // Pending invoice for the primary active rent (used by single-tenancy view)
+    const activePendingInvoice = activeRent
+      ? (pendingInvoiceMap.get(activeRent.property_id) ?? null)
+      : null;
+
+    // Fetch renewal invoices for the Documents tab.
+    // Default: landlord/draft rows (the documents the landlord authored).
+    // Also: tenant-token rows that have a receipt_token, i.e., have at
+    // least one real Paystack payment landed (full or partial). Empty
+    // tenant-token rows are still excluded — those are OB pay-link /
+    // payment-plan-request scaffolding the bot creates, not documents.
+    const allRenewalInvoices = await allRenewalInvoicesPromise;
 
     const renewalInvoiceSummaries = allRenewalInvoices.map((inv) => ({
       id: inv.id,
@@ -2756,16 +2803,7 @@ export class TenantManagementService {
     }));
 
     // Fetch ad-hoc invoices for this tenant (filtered by landlord when provided)
-    const adHocInvoiceRows = await this.dataSource
-      .getRepository(AdHocInvoice)
-      .find({
-        where: {
-          tenant_id: account.id,
-          ...(adminId ? { landlord_id: adminId } : {}),
-        },
-        relations: ['property'],
-        order: { created_at: 'DESC' },
-      });
+    const adHocInvoiceRows = await adHocInvoiceRowsPromise;
 
     const adHocInvoices = adHocInvoiceRows.map((inv) => ({
       id: inv.id,
@@ -2791,16 +2829,7 @@ export class TenantManagementService {
     }));
 
     // Fetch payment plans (with installments) for this tenant
-    const paymentPlanRows = await this.dataSource
-      .getRepository(PaymentPlan)
-      .find({
-        where: {
-          tenant_id: account.id,
-          ...(adminId ? { property: { owner_id: adminId } } : {}),
-        },
-        relations: ['property', 'installments'],
-        order: { created_at: 'DESC' },
-      });
+    const paymentPlanRows = await paymentPlanRowsPromise;
 
     const paymentPlans = paymentPlanRows.map((plan) => ({
       id: plan.id,
@@ -2838,16 +2867,7 @@ export class TenantManagementService {
     }));
 
     // Fetch payment plan requests for this tenant
-    const paymentPlanRequestRows = await this.dataSource
-      .getRepository(PaymentPlanRequest)
-      .find({
-        where: {
-          tenant_id: account.id,
-          ...(adminId ? { property: { owner_id: adminId } } : {}),
-        },
-        relations: ['property'],
-        order: { created_at: 'DESC' },
-      });
+    const paymentPlanRequestRows = await paymentPlanRequestRowsPromise;
 
     const paymentPlanRequests = paymentPlanRequestRows.map((req) => ({
       id: req.id,

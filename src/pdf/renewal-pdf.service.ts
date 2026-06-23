@@ -6,7 +6,7 @@ import type { Browser } from 'puppeteer';
 import { launchBrowser } from '../common/puppeteer-launch';
 import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
 import { RenewalInvoice } from '../tenancies/entities/renewal-invoice.entity';
-import { renewalInvoiceToFees, Fee } from '../common/billing/fees';
+import { renewalInvoiceToFees, sumAll, Fee } from '../common/billing/fees';
 
 /**
  * Renewal PDF Service
@@ -221,7 +221,17 @@ export class RenewalPDFService {
       )
       .join('');
     const walletBalance = Number(invoice.wallet_balance);
-    const totalAmount = this.formatCurrency(Number(invoice.total_amount));
+    const totalAmountNum = Number(invoice.total_amount);
+    const totalAmount = this.formatCurrency(totalAmountNum);
+    // A negative wallet bundles this period's own charge with real prior debt.
+    // The backend folds only the prior debt into total_amount, so the true
+    // previous balance is total − this period's own charges. Deriving it this
+    // way stops the current rent from being re-shown as a "Previous Outstanding
+    // Balance" row (mirrors renewal-invoice/[token]/page.tsx).
+    const netPreviousOutstanding = Math.max(
+      0,
+      Math.round((totalAmountNum - sumAll(fees)) * 100) / 100,
+    );
 
     const isPaid = invoice.payment_status === 'paid';
     const paidDateFormatted =
@@ -507,10 +517,10 @@ export class RenewalPDFService {
           }
 
           ${
-            walletBalance < 0
+            walletBalance < 0 && netPreviousOutstanding > 0
               ? `<div class="charge-row">
             <span class="charge-label">Previous Outstanding Balance</span>
-            <span class="charge-amount">+${this.formatCurrency(Math.abs(walletBalance))}</span>
+            <span class="charge-amount">+${this.formatCurrency(netPreviousOutstanding)}</span>
           </div>`
               : ''
           }
@@ -548,14 +558,24 @@ export class RenewalPDFService {
       .filter((f) => Number(f.amount) > 0)
       .map((f) => ({ label: f.label, amount: Number(f.amount) }));
 
+    const totalAmountNum = Number(invoice.total_amount) || 0;
     const walletBalance = Number(invoice.wallet_balance) || 0;
+    // For a negative wallet, show only the prior debt folded into the total
+    // (total − this period's own charges), never the raw wallet which also
+    // includes this period's own charge already listed in the fee rows above.
+    const netPreviousOutstanding = Math.max(
+      0,
+      Math.round((totalAmountNum - sumAll(fees)) * 100) / 100,
+    );
     if (walletBalance > 0) {
       rows.push({ label: 'Wallet credit applied', amount: -walletBalance });
-    } else if (walletBalance < 0) {
-      rows.push({ label: 'Outstanding balance offset', amount: -walletBalance });
+    } else if (walletBalance < 0 && netPreviousOutstanding > 0) {
+      rows.push({
+        label: 'Outstanding balance offset',
+        amount: netPreviousOutstanding,
+      });
     }
 
-    const totalAmountNum = Number(invoice.total_amount) || 0;
     const amountPaidNum = Number(invoice.amount_paid ?? totalAmountNum) || 0;
     const remaining = Math.max(totalAmountNum - amountPaidNum, 0);
 

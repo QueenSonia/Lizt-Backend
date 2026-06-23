@@ -17,6 +17,8 @@ import { KYCLinksModule } from 'src/kyc-links/kyc-links.module';
 import { MoveOutSchedulerService } from './tasks/move-out-scheduler.service';
 import { RentConsistencyService } from '../cron/rent-consistency.service';
 import { RentReminderService } from '../cron/rent-reminder.service';
+import { MaintenanceReminderService } from '../cron/maintenance-reminder.service';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
 import { Users } from 'src/users/entities/user.entity';
@@ -56,6 +58,7 @@ import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoic
       OfferLetter,
       AdHocInvoice,
       AdHocInvoiceLineItem,
+      MaintenanceRequest,
     ]),
     RentsModule,
     UsersModule,
@@ -74,6 +77,7 @@ import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoic
     MoveOutSchedulerService,
     RentConsistencyService,
     RentReminderService,
+    MaintenanceReminderService,
     FixEmptyLastnameService,
     DatabaseErrorHandlerService,
   ],

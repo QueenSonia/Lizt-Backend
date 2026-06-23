@@ -214,6 +214,40 @@ export class WhatsAppNotificationLogService {
   }
 
   /**
+   * Check if a specific reminder type was sent for a given reference within the
+   * last `days` calendar days (today + the previous `days - 1` days). Used for
+   * rolling-cadence reminders that should fire at most once per window — e.g.
+   * the weekly "confirm your resolved request is fixed" nudge. Anchoring to the
+   * last actual send (rather than an exact day-N multiple) means a backlog of
+   * already-overdue references all fire on the first run, then settle into the
+   * cadence.
+   */
+  async existsWithinLastDays(
+    referenceId: string,
+    type: string,
+    days: number,
+  ): Promise<boolean> {
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+    since.setUTCDate(since.getUTCDate() - (days - 1));
+
+    const count = await this.logRepository
+      .createQueryBuilder('log')
+      .where('log.reference_id = :referenceId', { referenceId })
+      .andWhere('log.type = :type', { type })
+      .andWhere('log.status IN (:...statuses)', {
+        statuses: [
+          WhatsAppNotificationStatus.PENDING,
+          WhatsAppNotificationStatus.SENT,
+        ],
+      })
+      .andWhere('log.created_at >= :since', { since })
+      .getCount();
+
+    return count > 0;
+  }
+
+  /**
    * Check if a specific reminder type was already sent for a given reference (rent ID) today (for overdue reminders).
    */
   async existsToday(referenceId: string, type: string): Promise<boolean> {

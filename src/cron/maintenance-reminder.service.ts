@@ -68,10 +68,7 @@ export class MaintenanceReminderService {
     private readonly utilService: UtilService,
   ) {}
 
-  // TEMP (testing): every 5 minutes so the reminder can be watched on the
-  // simulator. REVERT to `@Cron(CronExpression.EVERY_DAY_AT_8AM, { timeZone:
-  // 'Africa/Lagos' })` before deploying.
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  @Cron(CronExpression.EVERY_DAY_AT_8AM, { timeZone: 'Africa/Lagos' })
   async runDailyConfirmationReminderCheck(): Promise<void> {
     this.logger.log(
       'Starting daily maintenance confirmation reminder check...',

@@ -23,6 +23,7 @@ import { EventsModule } from '../events/events.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { TenanciesModule } from '../tenancies/tenancies.module';
 import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module';
+import { RenewalChargeModule } from '../renewal-letters/renewal-charge.module';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { UtilService } from '../utils/utility-service';
 
@@ -45,6 +46,7 @@ import { UtilService } from '../utils/utility-service';
     forwardRef(() => PaymentsModule),
     forwardRef(() => TenanciesModule),
     TenantBalancesModule,
+    RenewalChargeModule,
     WhatsappBotModule,
   ],
   controllers: [PaymentPlansController, PaymentPlanRequestsController],

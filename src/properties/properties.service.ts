@@ -91,6 +91,7 @@ import {
 import { InstallmentStatus } from 'src/payment-plans/entities/payment-plan-installment.entity';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import { RenewalChargeService } from 'src/renewal-letters/renewal-charge.service';
 import {
   rentToFees,
   Fee,
@@ -144,6 +145,7 @@ export class PropertiesService {
     private readonly notificationService: NotificationService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly tenantBalancesService: TenantBalancesService,
+    private readonly renewalChargeService: RenewalChargeService,
   ) {}
 
   async createProperty(
@@ -1686,9 +1688,30 @@ export class PropertiesService {
           .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
         return sum + Math.max(0, Number(p.total_amount) - paid);
       }, 0);
+
+      // Net the CURRENT pending renewal period out of the plannable OB. Once the
+      // letter is accepted-unpaid, the period rent/service sit on the wallet as a
+      // letter_accepted_charge, so the raw OB equals the fee rows the picker
+      // already lists — counting both double-plans the period (and would double
+      // it against the renewal invoice / tenancy plan). Subtract the own-letter
+      // charge so the "Outstanding Balance" row offers only genuine prior
+      // arrears. Mirrors PaymentPlansService.computePlannableOb and the frontend
+      // foldedPriorDebt helper. Only this property's pending invoice is netted
+      // here (the view is per-property); the wallet-wide netting lives in
+      // computePlannableOb at plan-create time.
+      const ownLetterCharge =
+        pendingRenewalInvoice && latestRenewalInvoice
+          ? await this.renewalChargeService.getLetterAcceptedChargeAmount(
+              latestRenewalInvoice.id,
+            )
+          : 0;
+      const priorOutstandingBalance = Math.max(
+        0,
+        totalOutstandingBalance - ownLetterCharge,
+      );
       const plannableOutstandingBalance = Math.max(
         0,
-        totalOutstandingBalance - claimedByPlans,
+        priorOutstandingBalance - claimedByPlans,
       );
 
       // Overdue installments of carved invoice-fee charge plans are NOT on the

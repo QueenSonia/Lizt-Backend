@@ -47,6 +47,7 @@ import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
 import { PaystackService } from '../payments/paystack.service';
 import { TenanciesService } from '../tenancies/tenancies.service';
+import { RenewalChargeService } from '../renewal-letters/renewal-charge.service';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 import { Fee, FeeKind } from '../common/billing/fees';
@@ -88,6 +89,7 @@ export class PaymentPlansService {
     private readonly eventsGateway: EventsGateway,
     private readonly paystackService: PaystackService,
     private readonly tenanciesService: TenanciesService,
+    private readonly renewalChargeService: RenewalChargeService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
@@ -607,9 +609,17 @@ export class PaymentPlansService {
 
   /**
    * The slice of wallet-backed debt a NEW Outstanding-Balance plan may cover:
-   * the net wallet OB minus the unpaid remainder of every active wallet-backed
-   * plan (so coverage already claimed by an ad-hoc/OB plan is never re-planned).
-   * Reads the wallet scalar — never a renewal-invoice column.
+   * the net wallet OB minus
+   *   (a) the unpaid remainder of every active wallet-backed plan (so coverage
+   *       already claimed by an ad-hoc/OB plan is never re-planned), and
+   *   (b) the CURRENT pending renewal period — once a renewal letter is accepted
+   *       its period rent/service are debited to the wallet as a
+   *       `letter_accepted_charge`, so the raw wallet OB would otherwise include
+   *       a period that belongs to the renewal-invoice / tenancy plan path. An OB
+   *       plan must cover only GENUINE prior arrears, or the same period gets
+   *       planned twice (OB plan + renewal invoice). Mirrors computeRenewalFold's
+   *       own-letter add-back and the frontend foldedPriorDebt helper.
+   * Reads the wallet scalar + the ledger — never a renewal-invoice total column.
    */
   private async computePlannableOb(
     tenantId: string,
@@ -621,6 +631,38 @@ export class PaymentPlansService {
       landlordId,
     );
     const walletOb = balance < 0 ? -balance : 0;
+
+    // Own-period charge: Σ of the unreversed letter_accepted_charge magnitudes
+    // across this tenant's pending unpaid landlord renewal invoices under THIS
+    // landlord. Each is the period already itemized on its own invoice, so it is
+    // not prior arrears. Additive across tenancies (the wallet is shared by
+    // (tenant, landlord)); a not-yet-accepted invoice contributes 0.
+    const invoiceRepo = manager
+      ? manager.getRepository(RenewalInvoice)
+      : this.renewalInvoiceRepository;
+    const pendingInvoices = await invoiceRepo
+      .createQueryBuilder('ri')
+      .innerJoin(Property, 'p', 'p.id = ri.property_id')
+      .where('ri.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.owner_id = :landlordId', { landlordId })
+      .andWhere('ri.payment_status = :unpaid', {
+        unpaid: RenewalPaymentStatus.UNPAID,
+      })
+      .andWhere("ri.token_type = 'landlord'")
+      .andWhere('ri.superseded_by_id IS NULL')
+      .andWhere('ri.deleted_at IS NULL')
+      .select('ri.id', 'id')
+      .getRawMany<{ id: string }>();
+    let ownPeriod = 0;
+    for (const inv of pendingInvoices) {
+      ownPeriod += await this.renewalChargeService.getLetterAcceptedChargeAmount(
+        inv.id,
+        manager,
+      );
+    }
+    // Net the own period before the plan-claim subtraction, matching the fold
+    // (foldedDebt = wallet + ownLetterCharge, then minus claimed).
+    const priorWalletOb = Math.max(0, walletOb - ownPeriod);
 
     // The wallet is keyed (tenant, landlord), shared across every tenancy that
     // tenant holds under this landlord. So the claimed term must subtract the
@@ -649,7 +691,7 @@ export class PaymentPlansService {
         .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
       claimed += Math.max(0, Number(p.total_amount) - paid);
     }
-    return Math.max(0, walletOb - claimed);
+    return Math.max(0, priorWalletOb - claimed);
   }
 
   /**

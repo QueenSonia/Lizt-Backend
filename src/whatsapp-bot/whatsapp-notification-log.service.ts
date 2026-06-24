@@ -12,6 +12,12 @@ import { EventsGateway } from 'src/events/events.gateway';
 
 const MAX_ATTEMPTS = 3;
 
+// A PENDING notification is eligible for (re)processing only if it has never
+// been attempted or its last attempt is older than this window. Used both as
+// the atomic-claim gate in processNotification and the retry-cron selection, so
+// the two can never both own the same row.
+const RETRY_AFTER_MS = 5 * 60 * 1000;
+
 @Injectable()
 export class WhatsAppNotificationLogService {
   private readonly logger = new Logger(WhatsAppNotificationLogService.name);
@@ -51,22 +57,53 @@ export class WhatsAppNotificationLogService {
 
   /**
    * Called by the event listener to process a single notification.
+   *
+   * The immediate event listener and the 5-minute retry cron can both target
+   * the same row at the same instant (a row queued just before a cron tick is
+   * still PENDING with last_attempted_at = NULL, so the cron's selection picks
+   * it up while the listener is mid-send). To make the WhatsApp send happen at
+   * most once we ATOMICALLY CLAIM the row before dispatching: a single
+   * conditional UPDATE bumps attempts + stamps last_attempted_at, gated on the
+   * row still being PENDING and outside the retry window. Postgres serialises
+   * the two UPDATEs on the row; the loser matches zero rows and bails out, so
+   * only the winner ever calls Meta.
    */
   async processNotification(logId: string): Promise<void> {
-    const log = await this.logRepository.findOne({ where: { id: logId } });
+    const staleBefore = new Date(Date.now() - RETRY_AFTER_MS);
 
-    if (!log || log.status === WhatsAppNotificationStatus.SENT) {
+    const claim = await this.logRepository
+      .createQueryBuilder()
+      .update(WhatsAppNotificationLog)
+      .set({
+        attempts: () => '"attempts" + 1',
+        last_attempted_at: new Date(),
+      })
+      .where('id = :id', { id: logId })
+      .andWhere('status = :pending', {
+        pending: WhatsAppNotificationStatus.PENDING,
+      })
+      .andWhere(
+        '(last_attempted_at IS NULL OR last_attempted_at < :staleBefore)',
+        { staleBefore },
+      )
+      .returning('*')
+      .execute();
+
+    // Zero rows affected → another runner already claimed it, it's already
+    // SENT/FAILED/CANCELLED, or a prior attempt is still inside the retry
+    // window. Either way there is nothing for this invocation to do.
+    if (!claim.affected) {
       return;
     }
+
+    const log = claim.raw[0] as WhatsAppNotificationLog;
+    const attempts = log.attempts; // already incremented by the claim above
 
     try {
       const dispatchResult = await this.dispatch(log.type, log.payload);
 
-      const attempts = log.attempts + 1;
       await this.logRepository.update(logId, {
         status: WhatsAppNotificationStatus.SENT,
-        attempts,
-        last_attempted_at: new Date(),
         last_error: null,
         whatsapp_message_id: dispatchResult?.wamid ?? null,
       });
@@ -77,20 +114,17 @@ export class WhatsAppNotificationLogService {
           recipientName: log.payload.recipient_name,
           success: true,
           attempts,
-          isRetry: log.attempts > 0,
+          isRetry: attempts > 1,
           propertyId: log.payload.property_id,
         });
       }
     } catch (error) {
-      const attempts = log.attempts + 1;
       const isFinal = attempts >= MAX_ATTEMPTS;
 
       await this.logRepository.update(logId, {
         status: isFinal
           ? WhatsAppNotificationStatus.FAILED
           : WhatsAppNotificationStatus.PENDING,
-        attempts,
-        last_attempted_at: new Date(),
         last_error: error.message?.substring(0, 500) ?? 'Unknown error',
       });
 
@@ -101,7 +135,7 @@ export class WhatsAppNotificationLogService {
           success: false,
           error: error.message?.substring(0, 200) ?? 'Unknown error',
           attempts,
-          isRetry: log.attempts > 0,
+          isRetry: attempts > 1,
           propertyId: log.payload.property_id,
         });
       }
@@ -119,17 +153,26 @@ export class WhatsAppNotificationLogService {
    */
   @Cron('*/5 * * * *')
   async retryFailedNotifications(): Promise<void> {
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const staleBefore = new Date(Date.now() - RETRY_AFTER_MS);
 
     const pending = await this.logRepository.find({
       where: [
+        // Previously attempted but left PENDING (a failed send) — retry once
+        // the window has elapsed.
         {
           status: WhatsAppNotificationStatus.PENDING,
-          last_attempted_at: LessThan(fiveMinutesAgo),
+          last_attempted_at: LessThan(staleBefore),
         },
+        // Never attempted — only sweep these in once they're old enough that
+        // the immediate event listener cannot still be mid-send, so the cron
+        // never races the listener for a freshly queued row (the atomic claim
+        // in processNotification would reject the loser anyway, but this avoids
+        // the redundant work). Covers rows whose queued event was dropped
+        // (e.g. an app restart between insert and emit).
         {
           status: WhatsAppNotificationStatus.PENDING,
           last_attempted_at: IsNull(),
+          created_at: LessThan(staleBefore),
         },
       ],
       order: { created_at: 'ASC' },

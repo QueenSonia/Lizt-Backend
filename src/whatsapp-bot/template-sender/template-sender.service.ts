@@ -937,6 +937,21 @@ export interface InstallmentReminderParams {
 }
 
 /**
+ * Parameters for payment plan installment OVERDUE notice to tenant
+ * (same shape as InstallmentReminderParams — fired the day after due date)
+ */
+export interface InstallmentOverdueParams {
+  phone_number: string;
+  tenant_name: string;
+  property_name: string;
+  charge_name: string;
+  installment_label: string; // e.g. "2 of 4"
+  amount: string;
+  due_date: string;
+  pay_token: string; // installment id used as URL path
+}
+
+/**
  * Parameters for installment receipt to tenant (after payment)
  */
 export interface InstallmentReceiptTenantParams {
@@ -5132,6 +5147,58 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send payment plan installment OVERDUE notice to tenant via WhatsApp.
+   * Fired the day after the installment due date while still unpaid.
+   * Template: installment_overdue
+   */
+  async sendInstallmentOverdueTemplate({
+    phone_number,
+    tenant_name,
+    property_name,
+    charge_name,
+    installment_label,
+    amount,
+    due_date,
+    pay_token,
+  }: InstallmentOverdueParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'installment_overdue',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: installment_label },
+              { type: 'text', text: charge_name },
+              { type: 'text', text: property_name },
+              { type: 'text', text: amount },
+              { type: 'text', text: due_date },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: pay_token,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send installment receipt to tenant after a successful payment.
    * Template: installment_receipt_tenant
    */
@@ -5861,6 +5928,8 @@ export class TemplateSenderService {
       "Hello {{1}},\n\nThis is a reminder that we haven't received your payment of {{2}} for the tenancy period of {{3}} for {{4}}, which was due {{5}}.\n\nWe'd like you to maintain a good payment history and relationship with us.\nPlease tap on the link below to view your invoice and make payment.",
     installment_reminder:
       'Hi {{1}},\n\nThis is a reminder for installment {{2}} of your {{3}} payment plan at {{4}}.\n\nAmount: {{5}}\nDue date: {{6}}\n\nPlease use the link below to complete your payment.',
+    installment_overdue:
+      "Hello {{1}},\n\nThis is a reminder that we haven't received payment of {{5}} for installment {{2}} of your {{3}} payment plan at {{4}}, which was due {{6}}.\n\nWe'd like you to maintain a good payment history and relationship with us.\nPlease tap on the link below to make payment.",
     installment_receipt_tenant:
       'Hi {{1}}, your installment payment of {{2}} for {{3}} at {{4}} has been received.\n\nClick the button below to view your receipt.',
     installment_paid_landlord:

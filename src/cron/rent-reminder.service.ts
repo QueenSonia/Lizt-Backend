@@ -225,20 +225,33 @@ export class RentReminderService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Sends a WhatsApp installment reminder 1 day before the due date and on the
-   * due date itself. Deduplicated per installment per day via
-   * `last_reminder_sent_on` so the cron can run more than once safely.
+   * Sends payment plan installment notices on four windows, deduplicated per
+   * installment per day via `last_reminder_sent_on` so the cron can run more
+   * than once safely:
+   *   - 7 days before the due date  (upcoming reminder)
+   *   - 1 day before the due date   (upcoming reminder)
+   *   - on the due date             (upcoming reminder)
+   *   - 1 day after the due date    (OVERDUE notice, if still unpaid)
+   *
+   * Upcoming windows use the `installment_reminder` template; the overdue
+   * window uses the `installment_overdue` template.
    */
   async checkInstallmentReminders(): Promise<void> {
     this.logger.log('Processing payment plan installment reminders...');
 
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setUTCDate(today.getUTCDate() + 1);
 
-    const todayStr = today.toISOString().split('T')[0];
-    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+    const dateAtOffset = (days: number): string => {
+      const d = new Date(today);
+      d.setUTCDate(today.getUTCDate() + days);
+      return d.toISOString().split('T')[0];
+    };
+
+    const todayStr = dateAtOffset(0);
+    const yesterdayStr = dateAtOffset(-1); // D+1 overdue notice
+    const tomorrowStr = dateAtOffset(1); // D-1 reminder
+    const inSevenDaysStr = dateAtOffset(7); // D-7 reminder
 
     const installments = await this.installmentRepository
       .createQueryBuilder('inst')
@@ -251,7 +264,7 @@ export class RentReminderService {
         planStatus: PaymentPlanStatus.ACTIVE,
       })
       .andWhere('DATE(inst.due_date) IN (:...dates)', {
-        dates: [todayStr, tomorrowStr],
+        dates: [yesterdayStr, todayStr, tomorrowStr, inSevenDaysStr],
       })
       .andWhere(
         '(inst.last_reminder_sent_on IS NULL OR DATE(inst.last_reminder_sent_on) < :today)',
@@ -312,8 +325,18 @@ export class RentReminderService {
     const displayChargeName =
       plan.scope === PaymentPlanScope.TENANCY ? 'Tenancy' : plan.charge_name;
 
+    // An installment whose due date is before today is overdue — use the
+    // overdue-toned template; otherwise it's an upcoming reminder.
+    const dueDate = new Date(installment.due_date);
+    dueDate.setUTCHours(0, 0, 0, 0);
+    const isOverdue = dueDate.getTime() < today.getTime();
+
+    const senderMethod = isOverdue
+      ? 'sendInstallmentOverdueTemplate'
+      : 'sendInstallmentReminderTemplate';
+
     await this.whatsAppNotificationLogService.queue(
-      'sendInstallmentReminderTemplate',
+      senderMethod,
       {
         phone_number: phone,
         tenant_name: tenantName,
@@ -335,15 +358,21 @@ export class RentReminderService {
       this.propertyHistoryRepository.create({
         property_id: plan.property_id,
         tenant_id: plan.tenant_id,
-        event_type: 'payment_plan_installment_reminder_sent',
-        event_description: `Reminder sent for installment ${installmentLabel} of ${plan.charge_name} — ${amount} due ${dueDateStr}`,
+        event_type: isOverdue
+          ? 'payment_plan_installment_overdue_sent'
+          : 'payment_plan_installment_reminder_sent',
+        event_description: `${
+          isOverdue ? 'Overdue notice' : 'Reminder'
+        } sent for installment ${installmentLabel} of ${plan.charge_name} — ${amount} due ${dueDateStr}`,
         related_entity_id: installment.id,
         related_entity_type: 'payment_plan_installment',
       }),
     );
 
     this.logger.log(
-      `Queued installment reminder for installment ${installment.id} (${installmentLabel}, due ${dueDateStr}).`,
+      `Queued installment ${
+        isOverdue ? 'overdue notice' : 'reminder'
+      } for installment ${installment.id} (${installmentLabel}, due ${dueDateStr}).`,
     );
   }
 

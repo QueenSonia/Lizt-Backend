@@ -991,32 +991,16 @@ export class TenanciesService {
               propertyTenant.tenant.user.phone_number,
             );
 
-            const expiryDateOnly = new Date(activeRent.expiry_date);
-            const expiryStr = expiryDateOnly.toLocaleDateString('en-GB', {
-              day: 'numeric',
-              month: 'long',
-              year: 'numeric',
-            });
-            const todayMidnight = new Date().setHours(0, 0, 0, 0);
-            const daysUntilExpiry = Math.ceil(
-              (expiryDateOnly.getTime() - todayMidnight) / 86_400_000,
-            );
-            const currentExpiryStr =
-              daysUntilExpiry === 0
-                ? `is due to expire today, ${expiryStr}`
-                : daysUntilExpiry === 1
-                  ? `is due to expire tomorrow, ${expiryStr}`
-                  : daysUntilExpiry === -1
-                    ? `expired yesterday, ${expiryStr}`
-                    : daysUntilExpiry < 0
-                      ? `expired on ${expiryStr}`
-                      : `is due to expire on ${expiryStr}`;
+            const landlordName =
+              propertyTenant.property.owner.profile_name ||
+              `${propertyTenant.property.owner.user.first_name ?? ''} ${propertyTenant.property.owner.user.last_name ?? ''}`.trim();
 
-            await this.whatsappNotificationLog.queue('sendRenewalLetterLink', {
+            await this.whatsappNotificationLog.queue('sendTenantRenewalOffer', {
               phone_number: tenantPhone,
               tenant_name: tenantName,
+              landlord_name: landlordName,
               property_name: propertyTenant.property.name,
-              expiry_date: currentExpiryStr,
+              property_address: propertyTenant.property.location,
               renewal_token: token,
               landlord_id: userId,
               recipient_name: tenantName,

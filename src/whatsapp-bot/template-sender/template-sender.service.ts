@@ -600,6 +600,22 @@ export interface RenewalLetterLinkParams {
 }
 
 /**
+ * Parameters for the first-contact renewal offer sent to a tenant when the
+ * landlord taps "Send Renewal Letter". Unlike RenewalLetterLinkParams (the
+ * pre-expiry reminder), this leads with the landlord's name and the property
+ * address and omits the expiry framing. URL button → /renewal-letters/{token}.
+ * Template: tenant_renewal_offer
+ */
+export interface TenantRenewalOfferParams {
+  phone_number: string;
+  tenant_name: string;
+  landlord_name: string;
+  property_name: string;
+  property_address: string;
+  renewal_token: string;
+}
+
+/**
  * Parameters for the vacate reminder sent to a tenant who DECLINED their
  * renewal letter — reminds them to move out on or before the expiry date.
  * Sent on each pre-expiry reminder day in place of the (suppressed) renewal
@@ -3293,6 +3309,50 @@ export class TemplateSenderService {
   }
 
   /**
+   * Send the first-contact renewal OFFER to a tenant when the landlord taps
+   * "Send Renewal Letter". Leads with the landlord name + property address and
+   * omits the expiry/reminder framing (that lives in sendRenewalLetterLink, the
+   * pre-expiry reminder). URL button resolves to /renewal-letters/{token}.
+   * Template: tenant_renewal_offer
+   */
+  async sendTenantRenewalOffer({
+    phone_number,
+    tenant_name,
+    landlord_name,
+    property_name,
+    property_address,
+    renewal_token,
+  }: TenantRenewalOfferParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_renewal_offer',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name }, // {{1}}
+              { type: 'text', text: landlord_name }, // {{2}}
+              { type: 'text', text: property_name }, // {{3}}
+              { type: 'text', text: property_address }, // {{4}}
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: renewal_token }],
+          },
+        ],
+      },
+    };
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send the vacate reminder to a tenant who DECLINED their renewal letter.
    * Fires on each pre-expiry reminder day from the rent-reminder cron in
    * place of the suppressed renewal reminders, prompting move-out by the
@@ -5763,6 +5823,8 @@ export class TemplateSenderService {
       'Hi {{1}}, your renewal rent invoice for {{2}} is ready.\n\nThis invoice covers your tenancy from {{3}} to {{4}}.\n\nYou can safely view your invoice and make your payment using the link below.',
     renewal_letter_link:
       'Hi {{1}},\n\nThis is a friendly reminder that your tenancy for {{2}} {{3}}.\n\nYour landlord has provided an offer for a new tenancy period. Please tap on the link to review.',
+    tenant_renewal_offer:
+      'Hi {{1}}, your landlord {{2}} has prepared a renewal offer for {{3}} at {{4}}. Tap below to review and accept it.',
     renewal_request_landlord:
       'Hi {{1}}, {{2}} is requesting to renew their rent for {{3}}. Do you approve this request?',
     renewal_request_approved:

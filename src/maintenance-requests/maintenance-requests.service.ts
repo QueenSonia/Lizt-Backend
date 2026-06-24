@@ -1058,9 +1058,42 @@ export class MaintenanceRequestsService {
       });
     }
 
-    // Ordering by a joined one-to-many column would force LIMIT onto the
-    // join-multiplied row set, truncating pages. Keep order on `sr` only.
-    qb.orderBy('sr.created_at', 'DESC').skip(skip).take(size);
+    // Queue order — mirrors sortMaintenanceRequestsForQueue on the frontend so
+    // the FM/landlord lists render in backend order without re-sorting (and so
+    // progressively-fetched pages append instead of reshuffling):
+    //   1. Priority first (is_priority true above false).
+    //   2. Status rank (pending approval → reopened/denied → approved →
+    //      resolved/awaiting-confirmation → closed/rejected; unknown sinks).
+    //   3. "Actionable since" — approved_at asc, never-approved last (NULLS LAST).
+    //   4. Oldest reported first — created_at asc.
+    //   5. id asc as a stable tiebreak so paging never shifts rows.
+    // Every key is on `sr`; ordering by a joined one-to-many column would force
+    // LIMIT onto the join-multiplied row set and truncate pages.
+    // The status rank is a computed expression, so it goes through addSelect
+    // with a plain alias. Ordering by the alias (no dot) lets TypeORM's
+    // paginate-with-collection-join path resolve it from the select list — a
+    // raw `CASE …` directly in addOrderBy is parsed as `alias.column` and fails.
+    qb.addSelect(
+      `CASE sr.status
+          WHEN 'not_approved' THEN 1
+          WHEN 'reopened' THEN 2
+          WHEN 'denied_by_tenant' THEN 2
+          WHEN 'approved' THEN 3
+          WHEN 'resolved' THEN 4
+          WHEN 'pending_tenant_confirmation' THEN 4
+          WHEN 'closed' THEN 5
+          WHEN 'rejected' THEN 5
+          ELSE 99
+        END`,
+      'sr_status_rank',
+    )
+      .orderBy('sr.is_priority', 'DESC')
+      .addOrderBy('sr_status_rank', 'ASC')
+      .addOrderBy('sr.approved_at', 'ASC', 'NULLS LAST')
+      .addOrderBy('sr.created_at', 'ASC')
+      .addOrderBy('sr.id', 'ASC')
+      .skip(skip)
+      .take(size);
 
     const [maintenanceRequests, count] = await qb.getManyAndCount();
 

@@ -45,7 +45,6 @@
   AD_HOC_INVOICE_PAID = 'Ad-Hoc Invoice Paid',
   AD_HOC_INVOICE_CANCELLED = 'Ad-Hoc Invoice Cancelled',
   AD_HOC_INVOICE_UPDATED = 'Ad-Hoc Invoice Updated',
-  TENANT_BOT_MESSAGE = 'Tenant Bot Message',
   RENEWAL_DEACTIVATED = 'Renewal Deactivated',
   REMOVAL_SCHEDULED = 'Removal Scheduled',
   SCHEDULED_END_CANCELLED = 'Scheduled End Cancelled',

@@ -40,7 +40,6 @@ import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { PdfModule } from 'src/pdf/pdf.module';
 import { ChatModule } from 'src/chat/chat.module';
-import { IntentRouterModule } from './intent-router/intent-router.module';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { WhatsAppMediaService } from './whatsapp-media.service';
 import { FlowTokenService } from './flow-token.service';
@@ -74,7 +73,6 @@ import { MaintenanceMediaService } from './maintenance-media.service';
     TenantBalancesModule,
     PdfModule,
     ChatModule,
-    forwardRef(() => IntentRouterModule),
   ],
   controllers: [WhatsappBotController],
   providers: [

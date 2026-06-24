@@ -3,8 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ChatLogService } from '../chat-log.service';
 import { RenewalPDFService } from 'src/pdf/renewal-pdf.service';
-import { CacheService } from 'src/lib/cache';
-import { UtilService } from 'src/utils/utility-service';
 
 /**
  * Template parameter for WhatsApp message templates
@@ -1148,33 +1146,7 @@ export class TemplateSenderService {
     private readonly chatLogService: ChatLogService,
     private readonly eventEmitter: EventEmitter2,
     private readonly renewalPDFService: RenewalPDFService,
-    private readonly cache: CacheService,
-    private readonly utilService: UtilService,
   ) {}
-
-  /**
-   * Caches the most recent outbound message per phone so the intent router
-   * can use it as conversational context when classifying the next inbound
-   * free-text message. 10-minute TTL is enough for back-and-forth chat.
-   *
-   * Fires-and-forgets; cache failures must not break the send.
-   */
-  private async cacheLastOutbound(payload: WhatsAppPayload): Promise<void> {
-    const recipient = payload?.to;
-    if (!recipient) return;
-    try {
-      const phone = this.utilService.normalizePhoneNumber(recipient);
-      const content = this.extractPayloadContent(payload);
-      const type = this.extractPayloadMessageType(payload);
-      await this.cache.set(`last_bot_outbound_${phone}`, content, 10 * 60 * 1000);
-      await this.cache.set(`last_bot_outbound_type_${phone}`, type, 10 * 60 * 1000);
-    } catch (err) {
-      console.warn(
-        '⚠️ Failed to cache last_bot_outbound (continuing):',
-        (err as Error).message,
-      );
-    }
-  }
 
   /**
    * Send a message using a WhatsApp template with custom parameters
@@ -4407,14 +4379,6 @@ export class TemplateSenderService {
    * Requirements: 1.3
    */
   async sendToWhatsappAPI(payload: WhatsAppPayload): Promise<unknown> {
-    // Stash the outbound for the intent router's classification context.
-    // Fired (not awaited) before the send so the cache reflects the bot's
-    // most-recent utterance even if the API call later fails — for context
-    // purposes, "what the bot just said" is what matters. Not awaiting keeps
-    // this Redis round-trip off the critical path to the actual send; the
-    // helper swallows its own errors so a floating rejection is impossible.
-    void this.cacheLastOutbound(payload);
-
     try {
       const simulatorMode = this.config.get('WHATSAPP_SIMULATOR');
       const isSimulationMode = this.validateSimulationMode(simulatorMode);

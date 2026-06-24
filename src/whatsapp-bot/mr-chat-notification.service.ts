@@ -100,8 +100,13 @@ export class MrChatNotificationService {
     });
     const senderDisplay = this.displayName(sender, payload.message.senderName);
 
+    // Media-only messages carry no text — fall back to an attachment label so
+    // the template body {{...}} isn't a blank line.
+    const rawPreview =
+      (payload.message.content ?? '').trim() ||
+      (payload.message.media?.length ? '📎 Sent an attachment' : '');
     const preview = this.utilService.sanitizeTemplateParam(
-      payload.message.content ?? '',
+      rawPreview,
       PREVIEW_MAX_CHARS,
     );
 

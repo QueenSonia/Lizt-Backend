@@ -26,6 +26,7 @@ export class MaintenanceChatController {
       authorAccount: req.user,
       activeRole: req.user.role,
       content: body.content,
+      media: body.media,
     });
   }
 }

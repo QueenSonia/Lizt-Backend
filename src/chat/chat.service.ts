@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -7,7 +8,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Not, Repository } from 'typeorm';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { SendMessageDto } from './dto/send-message.dto';
-import { ChatMessage, MessageSender, MessageType } from './chat-message.entity';
+import {
+  ChatMediaItem,
+  ChatMessage,
+  MessageSender,
+  MessageType,
+} from './chat-message.entity';
+import { FileUploadService } from 'src/utils/cloudinary';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
@@ -42,7 +49,8 @@ interface SendMaintenanceChatArgs {
   requestId: string;
   authorAccount: Account & { id: string };
   activeRole: RolesEnum | string;
-  content: string;
+  content?: string;
+  media?: ChatMediaItem[];
 }
 
 export interface MaintenanceChatMessageView {
@@ -51,6 +59,7 @@ export interface MaintenanceChatMessageView {
   sender: MessageSender;
   type: MessageType;
   content: string;
+  media: ChatMediaItem[] | null;
   isRead: boolean;
   senderName: string | null;
   sender_account_id: string | null;
@@ -81,6 +90,7 @@ export class ChatService {
     @InjectRepository(TeamMember)
     private readonly teamMemberRepo: Repository<TeamMember>,
     private readonly eventEmitter: EventEmitter2,
+    private readonly fileUploadService: FileUploadService,
   ) {}
 
   async sendMessage(
@@ -341,6 +351,7 @@ export class ChatService {
       sender: m.sender,
       type: m.type,
       content: m.content,
+      media: m.media ?? null,
       isRead: m.isRead,
       senderName: m.senderName ?? null,
       sender_account_id: m.sender_account_id ?? null,
@@ -365,8 +376,20 @@ export class ChatService {
     args: SendMaintenanceChatArgs,
   ): Promise<MaintenanceChatMessageView> {
     const content = (args.content ?? '').trim();
-    if (!content) {
-      throw new ForbiddenException('Message content is required');
+    const media = (args.media ?? []).filter((m) => m && m.url);
+    if (!content && media.length === 0) {
+      throw new BadRequestException('Message content or media is required');
+    }
+
+    // Don't trust client-supplied URLs: the browser uploads straight to
+    // Cloudinary and only sends us back the resulting URLs. Accept only
+    // image/video items hosted on our own Cloudinary account (same guard the
+    // maintenance-request create path uses).
+    for (const item of media) {
+      const okType = item.type === 'image' || item.type === 'video';
+      if (!okType || !this.fileUploadService.isOwnedCloudinaryUrl(item.url)) {
+        throw new BadRequestException('Invalid media attachment');
+      }
     }
 
     const mr = await this.findMrByEither(args.requestId);
@@ -404,8 +427,12 @@ export class ChatService {
       this.chatMessageRepository.create({
         maintenance_request_id: mr.request_id,
         sender: senderRole,
-        type: MessageType.TEXT,
+        // The postgres enum has no "video"/"mixed" value — IMAGE is the coarse
+        // "has attachments" hint. The frontend renders from `media[]`, not from
+        // `type`, so this avoids a second enum-altering migration.
+        type: media.length > 0 ? MessageType.IMAGE : MessageType.TEXT,
         content,
+        media: media.length > 0 ? media : null,
         senderName,
         sender_account_id: args.authorAccount.id,
         isRead: false,
@@ -429,6 +456,7 @@ export class ChatService {
       sender: saved.sender,
       type: saved.type,
       content: saved.content,
+      media: saved.media ?? null,
       isRead: saved.isRead,
       senderName: saved.senderName ?? null,
       sender_account_id: saved.sender_account_id ?? null,

@@ -25,6 +25,14 @@ export enum MessageType {
   SYSTEM = 'system',
 }
 
+// One attachment on a maintenance-thread message. Mirrors the report's
+// `issue_media` shape minus `attempt` (a report-cycle concept). Populated only
+// on the unified maintenance chat; legacy tenant-rep messages leave it null.
+export interface ChatMediaItem {
+  type: 'image' | 'video';
+  url: string;
+}
+
 @Entity('chat_messages')
 @Index(['maintenance_request_id', 'created_at'])
 export class ChatMessage extends BaseEntity {
@@ -52,6 +60,12 @@ export class ChatMessage extends BaseEntity {
 
   @Column({ nullable: true })
   fileUrl: string;
+
+  // Attachments on a unified-thread message (images/videos uploaded direct to
+  // Cloudinary). Distinct from the legacy single fileName/fileUrl pair above,
+  // which the maintenance chat never populates.
+  @Column({ type: 'jsonb', nullable: true })
+  media?: ChatMediaItem[] | null;
 
   @Column({ default: false })
   isRead: boolean;

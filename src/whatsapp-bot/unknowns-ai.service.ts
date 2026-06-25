@@ -232,7 +232,7 @@ export class UnknownsAiService {
       // Wind-down zone: still answer, but steer toward a graceful close.
       const windDown = turns >= SOFT_TURN_CAP;
       const messages = await this.buildHistory(from, userText);
-      const { body, buttons } = await this.runConversation(
+      const { body, buttons } = await this.runConversationWithRetry(
         from,
         messages,
         windDown,
@@ -289,6 +289,28 @@ export class UnknownsAiService {
       messages.push({ role: 'user', content: userText });
     }
     return messages;
+  }
+
+  /**
+   * Run one inbound turn, retrying once on failure before giving up (which lets
+   * the caller fall back to buttons). Covers stochastic tool-call generation
+   * errors (notably Groq/llama) and transient 5xx/timeout blips. Safe to re-run:
+   * the cap counter is incremented upstream, button state resets each call, and
+   * the side-effect tools upsert the same waitlist row (no duplicates).
+   */
+  private async runConversationWithRetry(
+    from: string,
+    history: AiMessage[],
+    windDown: boolean,
+  ): Promise<{ body: string; buttons: ButtonDefinition[] }> {
+    try {
+      return await this.runConversation(from, history, windDown);
+    } catch (err) {
+      this.logger.warn(
+        `AI turn failed for ${from}, retrying once: ${(err as Error).message}`,
+      );
+      return await this.runConversation(from, history, windDown);
+    }
   }
 
   /**

@@ -44,6 +44,8 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { WhatsAppMediaService } from './whatsapp-media.service';
 import { FlowTokenService } from './flow-token.service';
 import { MaintenanceMediaService } from './maintenance-media.service';
+import { AiModule } from 'src/ai/ai.module';
+import { UnknownsAiService } from './unknowns-ai.service';
 
 @Module({
   imports: [
@@ -73,6 +75,7 @@ import { MaintenanceMediaService } from './maintenance-media.service';
     TenantBalancesModule,
     PdfModule,
     ChatModule,
+    AiModule,
   ],
   controllers: [WhatsappBotController],
   providers: [
@@ -93,6 +96,7 @@ import { MaintenanceMediaService } from './maintenance-media.service';
     WhatsAppMediaService,
     FlowTokenService,
     MaintenanceMediaService,
+    UnknownsAiService,
   ],
   exports: [
     TemplateSenderService,

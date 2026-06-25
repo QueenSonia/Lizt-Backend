@@ -59,6 +59,7 @@ import { TenantFlowService } from './tenant-flow';
 import { LandlordFlowService } from './landlord-flow';
 import { FlowTokenService, FlowTokenPayload } from './flow-token.service';
 import { FlowMediaRef } from './whatsapp-media.service';
+import { UnknownsAiService } from './unknowns-ai.service';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -118,6 +119,8 @@ export class WhatsappBotService implements OnModuleInit {
     private readonly passwordService: PasswordService,
 
     private readonly flowTokenService: FlowTokenService,
+
+    private readonly unknownsAiService: UnknownsAiService,
   ) {}
 
   /**
@@ -1293,6 +1296,12 @@ export class WhatsappBotService implements OnModuleInit {
   async handleDefaultText(message: any, from: string) {
     const text = message.text?.body;
 
+    // AI assistant for unknowns (gated by AI_ASSISTANT_ENABLED). Falls back to
+    // the legacy button flow below if disabled/unconfigured or anything throws.
+    if (await this.unknownsAiService.tryHandle(from, text)) {
+      return;
+    }
+
     if (text.toLowerCase() === 'done') {
       // Batch delete both keys in one call
       await this.cache.deleteMultiple([
@@ -1403,6 +1412,12 @@ export class WhatsappBotService implements OnModuleInit {
   async handleDefaultInteractive(message: any, from: string) {
     const buttonReply = message.interactive?.button_reply;
     if (!buttonReply) return;
+
+    // AI assistant for unknowns: a tapped quick-reply is just another user turn.
+    // Pass the button's visible label so the model sees what the person chose.
+    if (await this.unknownsAiService.tryHandle(from, buttonReply.title || buttonReply.id)) {
+      return;
+    }
 
     switch (buttonReply.id) {
       case 'property_owner':

@@ -35,6 +35,7 @@
     "script:resend-mr-approval": "ts-node -r tsconfig-paths/register scripts/resend-landlord-mr-approval.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/bull": "^11.0.4",
     "@nestjs/cli": "^11.0.10",
@@ -78,6 +79,7 @@
     "multer": "^1.4.5-lts.2",
     "nestjs-twilio": "^4.4.0",
     "nodemailer": "^6.10.0",
+    "openai": "^6.45.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
     "pdfkit": "^0.17.0",

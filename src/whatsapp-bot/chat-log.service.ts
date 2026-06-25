@@ -379,6 +379,24 @@ export class ChatLogService {
   }
 
   /**
+   * Get the most recent N messages for a phone number, returned in chronological
+   * (oldest-first) order. Used to rebuild AI conversation context — fetches the
+   * latest rows then reverses, so a long history doesn't all load.
+   */
+  async getRecentMessages(
+    phoneNumber: string,
+    limit = 20,
+  ): Promise<ChatLog[]> {
+    const normalizedPhone = normalizePhoneNumber(phoneNumber);
+    const rows = await this.chatLogRepository.find({
+      where: { phone_number: normalizedPhone },
+      order: { created_at: 'DESC' },
+      take: limit,
+    });
+    return rows.reverse();
+  }
+
+  /**
    * Get delivery statistics for messages
    */
   async getDeliveryStatistics(

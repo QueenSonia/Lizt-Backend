@@ -1,4 +1,10 @@
-﻿import { forwardRef, Inject, Injectable, OnModuleInit, Logger } from '@nestjs/common';
+﻿import {
+  forwardRef,
+  Inject,
+  Injectable,
+  OnModuleInit,
+  Logger,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { ArrayContains, ILike, Not, In, Repository } from 'typeorm';
@@ -190,7 +196,8 @@ export class WhatsappBotService implements OnModuleInit {
     // Meta's generic 427 "message no longer available" copy when the token is
     // gone (expired or consumed by a successful prior submit).
     if (action === 'INIT' && flowToken) {
-      const valid = await this.passwordService.isResetTokenStillValid(flowToken);
+      const valid =
+        await this.passwordService.isResetTokenStillValid(flowToken);
       if (valid) {
         return {
           ...SCREEN_RESPONSES.FM_SET_PASSWORD,
@@ -246,7 +253,8 @@ export class WhatsappBotService implements OnModuleInit {
             };
           }
 
-          const valid = await this.passwordService.isResetTokenStillValid(flowToken);
+          const valid =
+            await this.passwordService.isResetTokenStillValid(flowToken);
           if (!valid) {
             return { ...SCREEN_RESPONSES.FM_LINK_EXPIRED };
           }
@@ -309,8 +317,7 @@ export class WhatsappBotService implements OnModuleInit {
     payload: FlowTokenPayload,
   ): Promise<any> {
     if (action === 'INIT') {
-      const properties =
-        payload.mode === 'create' ? payload.properties : [];
+      const properties = payload.mode === 'create' ? payload.properties : [];
       return {
         screen: 'REPORT_ISSUE',
         data: {
@@ -776,8 +783,11 @@ export class WhatsappBotService implements OnModuleInit {
                 button_reply?: { id?: string; payload?: string };
               }
             )?.button_reply ||
-            (pending as unknown as { button?: { id?: string; payload?: string } })
-              ?.button;
+            (
+              pending as unknown as {
+                button?: { id?: string; payload?: string };
+              }
+            )?.button;
           const pendingBtnId = pendingBtn?.id || pendingBtn?.payload;
           const actionRoles = this.getActionRoles(pendingBtnId);
 
@@ -835,9 +845,7 @@ export class WhatsappBotService implements OnModuleInit {
     if (buttonId === 'cancel_role_switch') {
       await this.cache.delete(`pending_action_${from}`);
       await this.cache.delete(`role_redirect_attempts_${from}`);
-      const cancelRole = (await this.cache.get(`selected_role_${from}`)) as
-        | RolesEnum
-        | undefined;
+      const cancelRole = await this.cache.get(`selected_role_${from}`);
       const cancelUser = await this.findUserByPhoneOrEmail(from);
       await this.sendMenuForRole(from, cancelRole, cancelUser);
       return;
@@ -936,7 +944,9 @@ export class WhatsappBotService implements OnModuleInit {
           );
         }
 
-        const roleCount = [hasFM, hasLandlord, hasTenant].filter(Boolean).length;
+        const roleCount = [hasFM, hasLandlord, hasTenant].filter(
+          Boolean,
+        ).length;
 
         if (roleCount > 1) {
           console.log(
@@ -1019,7 +1029,7 @@ export class WhatsappBotService implements OnModuleInit {
           RolesEnum.TENANT,
           RolesEnum.LANDLORD,
           RolesEnum.FACILITY_MANAGER,
-        ].includes(role as any),
+        ].includes(role),
     });
 
     // Universal button interception — runs BEFORE role-based routing so
@@ -1029,10 +1039,8 @@ export class WhatsappBotService implements OnModuleInit {
     // branch. The button payload was minted by sendPaymentReceiptTenant
     // with format `send_payment_receipt:<receipt_token>`.
     const incomingBtn =
-      (message as any).button ??
-      (message as any).interactive?.button_reply;
-    const incomingBtnPayload =
-      incomingBtn?.payload || incomingBtn?.id || null;
+      (message as any).button ?? (message as any).interactive?.button_reply;
+    const incomingBtnPayload = incomingBtn?.payload || incomingBtn?.id || null;
     if (
       typeof incomingBtnPayload === 'string' &&
       incomingBtnPayload.startsWith('send_payment_receipt:')
@@ -1238,9 +1246,7 @@ export class WhatsappBotService implements OnModuleInit {
    * Build select_role_* buttons for the given roles, used to re-ask which role
    * to switch to when the picked role can't perform a pending action.
    */
-  private roleButtonsFor(
-    roles: RolesEnum[],
-  ): { id: string; title: string }[] {
+  private roleButtonsFor(roles: RolesEnum[]): { id: string; title: string }[] {
     const byRole: Partial<Record<RolesEnum, { id: string; title: string }>> = {
       [RolesEnum.FACILITY_MANAGER]: {
         id: 'select_role_fm',
@@ -1415,7 +1421,12 @@ export class WhatsappBotService implements OnModuleInit {
 
     // AI assistant for unknowns: a tapped quick-reply is just another user turn.
     // Pass the button's visible label so the model sees what the person chose.
-    if (await this.unknownsAiService.tryHandle(from, buttonReply.title || buttonReply.id)) {
+    if (
+      await this.unknownsAiService.tryHandle(
+        from,
+        buttonReply.title || buttonReply.id,
+      )
+    ) {
       return;
     }
 
@@ -1439,7 +1450,7 @@ export class WhatsappBotService implements OnModuleInit {
       default:
         await this.sendText(
           from,
-          `Got it! You’ve selected, ${buttonReply.id} \n Before we connect you with our team, may we have your full name?`,
+          `Got it!\n Before we connect you with our team, may we have your full name?`,
         );
         await this.cache.set(
           `maintenance_request_state_default_${from}`,
@@ -1902,5 +1913,4 @@ export class WhatsappBotService implements OnModuleInit {
 
     return tenantSpecificActions.includes(action);
   }
-
 }

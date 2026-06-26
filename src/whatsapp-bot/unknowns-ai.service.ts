@@ -10,7 +10,7 @@ import { UtilService } from 'src/utils/utility-service';
 import { Waitlist } from 'src/users/entities/waitlist.entity';
 import { ChatLogService } from './chat-log.service';
 import { MessageDirection } from './entities/message-direction.enum';
-import { TemplateSenderService, ButtonDefinition } from './template-sender';
+import { TemplateSenderService } from './template-sender';
 
 /** Coerce an unknown tool-input value to a trimmed string (never "[object Object]"). */
 const asStr = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
@@ -72,20 +72,19 @@ Hard rules:
   or promises. For specifics you don't have, say the team will follow up.
 - Stay on topic (Lizt / Property Kraft / property management). Politely decline and
   redirect anything unrelated — you are not a general assistant.
-- NEVER save a lead, save a referral, or hand off to a human until the person has
-  explicitly confirmed the details you're about to save. Read the details back and
-  ask them to confirm first.
+- NEVER call save_lead, save_referral, or handoff_to_team until the person has
+  explicitly confirmed (in plain words) the details you're about to save. Read the
+  details back and ask them to confirm first. This applies to SAVING only — for
+  ordinary questions or when giving information (e.g. a summary), just answer;
+  don't ask "is that correct?".
 - If asked whether you're a bot, say honestly that you're Lizt's automated
   assistant. Don't pretend to be a specific named person.
 
-Tools (use them, don't just talk about them):
-- offer_buttons: use ONLY when your reply is a small set of fixed choices or a
-  yes/no confirmation — e.g. "Are you a property owner, a property manager, or a
-  house hunter?" or "Save these details? [Yes] [No]". Put the message text in the
-  tool's "body" field and the choices as buttons (max 3, each <= 20 characters).
-  Do NOT use buttons when you need the person to type something in their own words
-  (their name, their reason, a referral's name or phone, or any open question) —
-  in those cases reply with plain text and no buttons.
+You reply in PLAIN TEXT only — this is a WhatsApp chat with no buttons. When you
+need a yes/no, ask for it in words (e.g. "Want me to pass your details to our
+team? (yes/no)").
+
+Tools (call them, don't just talk about them):
 - save_lead: AFTER the person confirms — record their name, why they messaged, and
   what they're interested in.
 - save_referral: AFTER the person confirms — record a referral's name and phone.
@@ -97,29 +96,6 @@ ${UNKNOWNS_KNOWLEDGE}
 `.trim();
 
 const TOOLS: AiTool[] = [
-  {
-    name: 'offer_buttons',
-    description:
-      'Reply with up to 3 tappable quick-reply buttons. Use for clear choices. ' +
-      'You MUST provide the message text (body) shown above the buttons. When you ' +
-      'use this tool, the body here is what gets sent — not your separate text.',
-    parameters: {
-      type: 'object',
-      properties: {
-        body: {
-          type: 'string',
-          description:
-            'The message text shown above the buttons (required, non-empty).',
-        },
-        buttons: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Up to 3 short button labels (<= 20 chars each).',
-        },
-      },
-      required: ['body', 'buttons'],
-    },
-  },
   {
     name: 'save_lead',
     description:
@@ -232,20 +208,17 @@ export class UnknownsAiService {
       // Wind-down zone: still answer, but steer toward a graceful close.
       const windDown = turns >= SOFT_TURN_CAP;
       const messages = await this.buildHistory(from, userText);
-      const { body, buttons } = await this.runConversationWithRetry(
+      const body = await this.runConversationWithRetry(
         from,
         messages,
         windDown,
       );
 
-      const reply =
+      await this.templateSender.sendText(
+        from,
         body ||
-        'Thanks for reaching out! Someone from our team will get back to you shortly.';
-      if (buttons.length) {
-        await this.templateSender.sendButtons(from, reply, buttons);
-      } else {
-        await this.templateSender.sendText(from, reply);
-      }
+          'Thanks for reaching out! Someone from our team will get back to you shortly.',
+      );
       return true;
     } catch (err) {
       this.logger.error(
@@ -293,16 +266,16 @@ export class UnknownsAiService {
 
   /**
    * Run one inbound turn, retrying once on failure before giving up (which lets
-   * the caller fall back to buttons). Covers stochastic tool-call generation
-   * errors (notably Groq/llama) and transient 5xx/timeout blips. Safe to re-run:
-   * the cap counter is incremented upstream, button state resets each call, and
-   * the side-effect tools upsert the same waitlist row (no duplicates).
+   * the caller fall back to the legacy flow). Covers stochastic tool-call
+   * generation errors (notably Groq/llama) and transient 5xx/timeout blips. Safe
+   * to re-run: the cap counter is incremented upstream and the side-effect tools
+   * upsert the same waitlist row (no duplicates).
    */
   private async runConversationWithRetry(
     from: string,
     history: AiMessage[],
     windDown: boolean,
-  ): Promise<{ body: string; buttons: ButtonDefinition[] }> {
+  ): Promise<string> {
     try {
       return await this.runConversation(from, history, windDown);
     } catch (err) {
@@ -314,74 +287,39 @@ export class UnknownsAiService {
   }
 
   /**
-   * Run the tool-call loop for one inbound turn. Executes side-effect tools,
-   * collects the final text and any quick-reply buttons.
+   * Run the tool-call loop for one inbound turn. Executes side-effect tools and
+   * returns the assistant's final plain-text reply.
    */
   private async runConversation(
     from: string,
     history: AiMessage[],
     windDown = false,
-  ): Promise<{ body: string; buttons: ButtonDefinition[] }> {
-    let buttons: ButtonDefinition[] = [];
-    let buttonBody = '';
-
+  ): Promise<string> {
     const system = windDown
       ? `${SYSTEM_PROMPT}\n\n${WIND_DOWN_ADDENDUM}`
       : SYSTEM_PROMPT;
 
-    // The provider runs the tool-call loop; we execute each tool here and capture
-    // side data (buttons / button body) via the closure.
+    // The provider runs the tool-call loop; we execute each tool here.
     const { text } = await this.llm.runConversation({
       system,
       history,
       tools: TOOLS,
       maxIterations: MAX_TOOL_ITERATIONS,
-      onToolUse: async (call) => {
-        const result = await this.executeTool(from, call);
-        if (call.name === 'offer_buttons') {
-          buttons = result.buttons ?? buttons;
-          if (result.body) buttonBody = result.body;
-        }
-        return result.message;
-      },
+      onToolUse: (call) => this.executeTool(from, call),
     });
 
-    const body = text.trim();
-    // When buttons are present, their own body is the message text (atomic with
-    // the buttons); otherwise the assistant's free-text reply is the body.
-    return { body: buttons.length ? buttonBody || body : body, buttons };
+    return text.trim();
   }
 
-  /** Execute one tool call; returns a short result string for the model. */
-  private async executeTool(
-    from: string,
-    call: AiToolUse,
-  ): Promise<{ message: string; buttons?: ButtonDefinition[]; body?: string }> {
+  /** Execute one tool call; returns a short result string fed back to the model. */
+  private async executeTool(from: string, call: AiToolUse): Promise<string> {
     const input = call.input || {};
     try {
       switch (call.name) {
-        case 'offer_buttons': {
-          const raw = Array.isArray(input.buttons) ? input.buttons : [];
-          const buttons: ButtonDefinition[] = raw
-            .slice(0, 3)
-            .map((label, i) => ({
-              id: `ai_opt_${i}`,
-              title: String(label).slice(0, 20),
-            }))
-            .filter((b) => b.title.trim().length > 0);
-          const body = typeof input.body === 'string' ? input.body.trim() : '';
-          return {
-            message: 'Buttons sent with your body text.',
-            buttons,
-            body,
-          };
-        }
         case 'save_lead': {
           const fullName = asStr(input.full_name);
           if (!fullName) {
-            return {
-              message: 'Error: full_name is required. Ask for their name.',
-            };
+            return 'Error: full_name is required. Ask for their name.';
           }
           const wl = await this.getOrCreateWaitlist(from);
           wl.full_name = fullName;
@@ -390,7 +328,7 @@ export class UnknownsAiService {
           if (!wl.option) wl.option = 'general';
           wl.source = 'ai';
           await this.waitlistRepo.save(wl);
-          return { message: 'Lead saved.' };
+          return 'Lead saved.';
         }
         case 'save_referral': {
           const name = asStr(input.name);
@@ -398,33 +336,27 @@ export class UnknownsAiService {
             asStr(input.phone),
           );
           if (!name || !normalized) {
-            return {
-              message:
-                'Error: a valid name and phone number are required. Ask the person to re-share them.',
-            };
+            return 'Error: a valid name and phone number are required. Ask the person to re-share them.';
           }
           const wl = await this.getOrCreateWaitlist(from);
           wl.referral_name = name;
           wl.referral_phone_number = normalized;
           if (!wl.source) wl.source = 'ai';
           await this.waitlistRepo.save(wl);
-          return { message: 'Referral saved.' };
+          return 'Referral saved.';
         }
         case 'handoff_to_team': {
           await this.handoff(from, asStr(input.summary));
-          return {
-            message:
-              'Flagged for a human to follow up. Let them know someone will reach out.',
-          };
+          return 'Flagged for a human to follow up. Let them know someone will reach out.';
         }
         default:
-          return { message: `Unknown tool: ${call.name}` };
+          return `Unknown tool: ${call.name}`;
       }
     } catch (err) {
       this.logger.error(
         `Tool ${call.name} failed for ${from}: ${(err as Error).message}`,
       );
-      return { message: `Error running ${call.name}. Continue gracefully.` };
+      return `Error running ${call.name}. Continue gracefully.`;
     }
   }
 

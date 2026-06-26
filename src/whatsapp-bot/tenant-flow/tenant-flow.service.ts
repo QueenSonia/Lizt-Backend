@@ -60,6 +60,22 @@ import {
 import { computeRenewalFold } from 'src/common/billing/renewal-fold';
 import { nextPeriodEndInclusive } from 'src/common/utils/rent-date.util';
 
+/** Verified lease facts for the AI tenancy-info branch (amounts pre-formatted). */
+export interface TenancyDetails {
+  propertyName: string;
+  location: string;
+  paymentFrequency: string;
+  /** Formatted "dd Mmm yyyy". */
+  startDate: string;
+  endDate: string;
+  /** Every fee on the lease, recurring and one-time, amounts pre-formatted. */
+  fees: Array<{ label: string; amount: string; recurring: boolean }>;
+  /** Sum of recurring fees per payment period, pre-formatted. */
+  totalRecurring: string;
+  /** Plain-English time until the end date, precomputed. */
+  timeToExpiry: string;
+}
+
 /** A media item to attach once a deferred stray-input request is created. */
 interface PendingMediaRef {
   /** Meta media id (real inbound), resolved via the Graph API. */
@@ -1337,6 +1353,86 @@ export class TenantFlowService {
       params.addition,
     );
     return !!updated;
+  }
+
+  /**
+   * Verified, read-only lease facts for the AI receptionist's tenancy-info
+   * branch. Same source as the "View tenancy details" card — the ACTIVE Rent row
+   * for this tenant + property — but returned as a structured object with ALL
+   * fees (recurring AND one-time) and a couple of precomputed values (total
+   * recurring per period, time-to-expiry) so the assistant never does its own
+   * maths. Deliberately omits payment status / balances — that's a separate
+   * branch. Returns null when there's no active tenancy or rent on file.
+   */
+  async getTenancyDetails(
+    tenantUserId: string,
+    propertyId: string,
+  ): Promise<TenancyDetails | null> {
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: {
+        tenant: { user: { id: tenantUserId } },
+        property_id: propertyId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+      relations: ['property', 'tenant', 'tenant.user'],
+    });
+    if (!propertyTenant?.property) return null;
+
+    const rent = await this.rentRepo.findOne({
+      where: {
+        tenant_id: propertyTenant.tenant_id,
+        property_id: propertyId,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+    if (!rent) return null;
+
+    const formatNGN = (amount: number) =>
+      amount != null
+        ? amount.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' })
+        : '—';
+    const formatDate = (date: Date | string | null | undefined) =>
+      date
+        ? new Date(date).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })
+        : '—';
+
+    const allFees = rentToFees(rent);
+    const totalRecurring = allFees
+      .filter((f) => f.recurring)
+      .reduce((sum, f) => sum + (f.amount ?? 0), 0);
+
+    return {
+      propertyName: propertyTenant.property.name,
+      location: propertyTenant.property.location ?? '—',
+      paymentFrequency: rent.payment_frequency ?? '—',
+      startDate: formatDate(rent.rent_start_date),
+      endDate: formatDate(rent.expiry_date),
+      fees: allFees.map((f) => ({
+        label: f.label,
+        amount: formatNGN(f.amount),
+        recurring: f.recurring,
+      })),
+      totalRecurring: formatNGN(totalRecurring),
+      timeToExpiry: this.describeTimeToExpiry(rent.expiry_date),
+    };
+  }
+
+  /** Plain-English time remaining until a tenancy's end date (precomputed so
+   * the AI never does date maths). */
+  private describeTimeToExpiry(expiry?: Date | string | null): string {
+    if (!expiry) return 'no end date on file';
+    const days = Math.round(
+      (new Date(expiry).getTime() - Date.now()) / 86_400_000,
+    );
+    if (days < 0) return `ended ${Math.abs(days)} day(s) ago`;
+    if (days === 0) return 'ends today';
+    if (days < 14) return `about ${days} day(s) away`;
+    if (days < 60) return `about ${Math.round(days / 7)} week(s) away`;
+    return `about ${Math.round(days / 30)} month(s) away`;
   }
 
   /**

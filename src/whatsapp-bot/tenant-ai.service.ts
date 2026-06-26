@@ -113,6 +113,25 @@ const TOOLS: AiTool[] = [
     },
   },
   {
+    name: 'get_tenancy_details',
+    description:
+      "Look up the tenant's verified lease facts (rent, fees, service charge, " +
+      'start/end dates, property, location, totals, time left) to answer a question ' +
+      'about their tenancy. Call ONLY when the tenant ASKS about their tenancy — ' +
+      'never volunteer it. State only what it returns; do not invent or recompute.',
+    parameters: {
+      type: 'object',
+      properties: {
+        property_id: {
+          type: 'string',
+          description:
+            "The id of the tenant's property the question is about (from the PROPERTIES list).",
+        },
+      },
+      required: ['property_id'],
+    },
+  },
+  {
     name: 'handoff_to_landlord',
     description:
       'Flag this conversation for the landlord to follow up — call when the tenant ' +
@@ -160,7 +179,10 @@ only the detail you're missing, and hand it to the right process. You do NOT fix
 things, diagnose or troubleshoot problems, calculate money, or make decisions —
 a facility manager or the landlord handles the actual work.
 
-YOUR RESPONSIBILITY — capture two kinds of things for the property manager:
+YOU DO TWO JOBS for the property manager: (1) capture maintenance, and (2) answer
+factual questions about the tenant's own tenancy WHEN THEY ASK. Nothing else.
+
+JOB 1 — CAPTURE MAINTENANCE — two kinds:
 - Maintenance requests (pass kind="repair") — the tenant wants something looked
   into, sorted out, or acted on: a problem, fault, or complaint they expect
   someone to handle. This is the broad bucket — physical repairs (leaking tap,
@@ -173,9 +195,11 @@ Decide with one test: does the tenant want someone to ACT on this, or are they
 just informing the landlord? Wants action → maintenance request. Just informing →
 notice. Only if it's genuinely unclear, ask ONE short question.
 
-For anything else — rent, balances, what they owe, invoices, payment plans,
-renewals, tenancy details — do NOT answer or guess. Briefly say it's handled from
-the menu and ask them to reply *menu*.
+JOB 2 — ANSWER TENANCY QUESTIONS — see "ANSWERING TENANCY QUESTIONS" below.
+
+For anything else — what they owe, balances, payments made, invoices, payment
+plans, renewals — do NOT answer or guess. Briefly say it's handled from the menu
+and ask them to reply *menu*.
 
 HOW TO HANDLE A MAINTENANCE CONVERSATION, in order:
 1. Understand what the tenant wants.
@@ -183,23 +207,43 @@ HOW TO HANDLE A MAINTENANCE CONVERSATION, in order:
 3. Collect ONLY what's still needed to identify the issue and its property —
    nothing that's merely "nice to have". The facility manager gathers the rest
    later, and the tenant can attach photos/videos.
-4. Read it back in one short line and CLEARLY ask them to confirm — phrase it as
-   an explicit yes/no question and tell them how to confirm (e.g. end with "Shall
-   I send this to your landlord now? Reply *yes* to confirm.").
-5. File it with report_maintenance once they confirm.
+4. A quick confirmation before filing is good — but it is NOT compulsory and must
+   NEVER happen twice. If the tenant has already made their intent clear (they
+   asked you to report/log it, or answered yes to a question you already asked),
+   just file it — do not ask again. Otherwise read the issue back in one short,
+   clear line and check it's right (e.g. "Got it — leaking roof. Shall I send this
+   to your landlord now?").
+5. File it with report_maintenance.
 6. Reassure them warmly that it's been passed on.
 
 If the tenant's opening message already gives you the issue (and, for a
 multi-property tenant, names the property), do NOT ask anything — go straight to a
-one-line read-back and file the moment they confirm. Only ask a question when
+one-line read-back and file as soon as they agree. Only ask a question when
 something genuinely required for filing is missing. Never re-ask something they
-already told you, and never troubleshoot or suggest fixes. Treat any plain
-acknowledgement — "yes", "ok", "correct", "that's right", "👍" — as a yes.
+already told you, never confirm twice, and never troubleshoot or suggest fixes.
+Treat any plain agreement — "yes", "yes please", "ok", "correct", "that's right",
+"please log it", "👍" — as confirmation to file.
 
 Example — tenant: "The kitchen sink in my flat has been leaking since yesterday."
-You already have the issue, so don't ask anything — go straight to the confirm:
-"Got it — leaking kitchen sink. Shall I send this to your landlord now? Reply
-*yes* to confirm." — then file once they say yes.
+You already have the issue, so confirm in one line: "Got it — leaking kitchen
+sink. Shall I send this to your landlord now?" — then file once they agree. (If
+they'd instead said "my sink is leaking, please log it", that's already a clear
+go-ahead — just file, no extra confirm.)
+
+ANSWERING TENANCY QUESTIONS (Job 2)
+- Do this ONLY when the tenant ASKS about their tenancy — their rent amount, a fee
+  or the service charge, their start/end dates, the property/location, how long is
+  left, or what they pay per period. NEVER raise tenancy details on your own or
+  volunteer them; if the conversation is about something else, don't bring them up.
+- Call get_tenancy_details for the property in question, then answer their SPECIFIC
+  question from what it returns. State only those verified facts — never invent or
+  guess an amount or date, and don't do your own maths (it already gives you totals
+  and time-left). Answer just what they asked; don't dump the whole tenancy unless
+  they want it all.
+- If it returns no tenancy/rent on file, say you don't have it to hand and they
+  should check with their landlord.
+- Lease FACTS only. If they ask what they OWE, their balance, whether rent is paid,
+  invoices, payment plans, or renewals — that's the menu; don't answer it here.
 
 ${propertyBlock}
 
@@ -229,6 +273,7 @@ STYLE
 Tools (call them, don't just talk about them):
 - report_maintenance: file a repair or notice after a one-line read-back confirmation.
 - update_maintenance_request: add detail to the request just filed in this chat.
+- get_tenancy_details: look up verified lease facts to answer a tenancy question (only when asked).
 - handoff_to_landlord: when they want a human, are upset, or you can't help.
 
 KNOWLEDGE (only state facts from here):
@@ -427,6 +472,8 @@ export class TenantAiService {
             ctx,
             asStr(input.addition),
           );
+        case 'get_tenancy_details':
+          return await this.handleTenancyInfo(ctx, asStr(input.property_id));
         case 'handoff_to_landlord':
           return await this.handleHandoff(from, ctx, asStr(input.summary));
         default:
@@ -547,6 +594,46 @@ export class TenantAiService {
       return "Could not update that request (it may already be closed). If it's a new issue, file it with report_maintenance.";
     }
     return 'Added it to their existing request. Reassure them it is attached — no need to re-report.';
+  }
+
+  /**
+   * Answer a tenancy-info question with verified facts from the tenant's Rent
+   * row. Returns a labelled facts sheet the model relays from — never invents.
+   */
+  private async handleTenancyInfo(
+    ctx: TenantAiContext,
+    propertyIdInput: string,
+  ): Promise<string> {
+    const propertyId = this.resolvePropertyId(propertyIdInput, ctx.properties);
+    if (!propertyId) {
+      return ctx.properties.length > 1
+        ? 'Ask the tenant which property they mean (list them by name), then look it up.'
+        : 'Could not resolve the property. Suggest they reply *menu*.';
+    }
+    const d = await this.tenantFlow.getTenancyDetails(
+      ctx.tenantUserId,
+      propertyId,
+    );
+    if (!d) {
+      return "No tenancy or rent on file for that property — tell them you don't have it to hand and they should check with their landlord.";
+    }
+    const feeLines = d.fees
+      .map((f) => {
+        const cadence = f.recurring ? 'recurring' : 'one-time';
+        return `- ${f.label}: ${f.amount} (${cadence})`;
+      })
+      .join('\n');
+    return [
+      'VERIFIED TENANCY FACTS — state only these, do not invent or recompute:',
+      `Property: ${d.propertyName}`,
+      `Location: ${d.location}`,
+      `Payment frequency: ${d.paymentFrequency}`,
+      'Fees:',
+      feeLines,
+      `Total recurring per ${d.paymentFrequency} period: ${d.totalRecurring}`,
+      `Tenancy start: ${d.startDate}`,
+      `Tenancy end: ${d.endDate} (${d.timeToExpiry})`,
+    ].join('\n');
   }
 
   /** Move any buffered Cloudinary media onto the freshly-created request. */

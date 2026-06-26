@@ -36,8 +36,6 @@ const MEDIA_BUFFER_TTL_SECONDS = 900;
 const RECENT_MR_TTL_SECONDS = 15 * 60;
 /** Window in which an identical issue summary is treated as an accidental re-file. */
 const DUP_TEXT_TTL_SECONDS = 120;
-/** Trailing window (reuses the post-Flow path) for media sent just after filing. */
-const TRAILING_MEDIA_TTL_SECONDS = 600;
 
 /** Normalize issue text for duplicate detection (case/space-insensitive). */
 const normalizeIssue = (s: string): string =>
@@ -52,6 +50,8 @@ export interface TenantProp {
 /** Per-turn tenant context resolved by the caller (TenantFlowService). */
 export interface TenantAiContext {
   tenantUserId: string;
+  /** Tenant's first name, so the assistant can greet/address them by it. */
+  firstName?: string;
   properties: TenantProp[];
 }
 
@@ -96,19 +96,20 @@ const TOOLS: AiTool[] = [
   {
     name: 'update_maintenance_request',
     description:
-      'Append extra detail to the request the tenant JUST filed in this conversation. ' +
-      'Use when their new message elaborates on that SAME issue (e.g. "it is getting ' +
-      'worse", "forgot to mention it is the upstairs bathroom"). For a DIFFERENT issue, ' +
-      'use report_maintenance to file a new one instead.',
+      'Add to the request the tenant JUST filed in this conversation — extra text, ' +
+      'a photo/video they just sent, or both. Use when their follow-up is about that ' +
+      'SAME issue (e.g. "it is getting worse", "forgot to mention the upstairs one", or ' +
+      'a photo of the same problem). For a DIFFERENT issue, use report_maintenance ' +
+      'instead. Any photo/video they sent attaches automatically — `addition` is optional.',
     parameters: {
       type: 'object',
       properties: {
         addition: {
           type: 'string',
-          description: 'The extra detail to add to the request they just filed.',
+          description:
+            'Optional extra text to add. Omit when the tenant only sent a photo/video.',
         },
       },
-      required: ['addition'],
     },
   },
   {
@@ -134,7 +135,14 @@ const TOOLS: AiTool[] = [
  * fresh each inbound message (the handler is stateless), so the list is always
  * current.
  */
-function buildSystemPrompt(properties: TenantProp[]): string {
+function buildSystemPrompt(opts: {
+  firstName?: string;
+  properties: TenantProp[];
+}): string {
+  const { firstName, properties } = opts;
+  const nameLine = firstName
+    ? `\n- The tenant's name is ${firstName} — address them by their first name when it reads naturally, especially in your first reply (e.g. "Hi ${firstName}, …").`
+    : '';
   const propertyBlock =
     properties.length === 1
       ? `The tenant has ONE active property: "${properties[0].name}" (id: ${properties[0].id}). ` +
@@ -175,8 +183,10 @@ HOW TO HANDLE A MAINTENANCE CONVERSATION, in order:
 3. Collect ONLY what's still needed to identify the issue and its property —
    nothing that's merely "nice to have". The facility manager gathers the rest
    later, and the tenant can attach photos/videos.
-4. Read it back in one short line and get a quick yes.
-5. File it with report_maintenance.
+4. Read it back in one short line and CLEARLY ask them to confirm — phrase it as
+   an explicit yes/no question and tell them how to confirm (e.g. end with "Shall
+   I send this to your landlord now? Reply *yes* to confirm.").
+5. File it with report_maintenance once they confirm.
 6. Reassure them warmly that it's been passed on.
 
 If the tenant's opening message already gives you the issue (and, for a
@@ -187,9 +197,9 @@ already told you, and never troubleshoot or suggest fixes. Treat any plain
 acknowledgement — "yes", "ok", "correct", "that's right", "👍" — as a yes.
 
 Example — tenant: "The kitchen sink in my flat has been leaking since yesterday."
-You already have the issue, so don't ask anything — just confirm: "Got it —
-leaking kitchen sink. I'll send this to your landlord now, ok?" — then file on
-their yes.
+You already have the issue, so don't ask anything — go straight to the confirm:
+"Got it — leaking kitchen sink. Shall I send this to your landlord now? Reply
+*yes* to confirm." — then file once they say yes.
 
 ${propertyBlock}
 
@@ -201,13 +211,15 @@ helpful but optional. Media alone is not a description — if they send only med
 with no words, ask what the issue is.
 
 AFTER FILING
-If the tenant adds more about the SAME issue ("it's getting worse", "forgot to
-say it's the upstairs one"), call update_maintenance_request to attach it — do
-NOT file a duplicate. A genuinely DIFFERENT issue → file a new report_maintenance.
+If the tenant follows up about the SAME issue you just filed — more detail ("it's
+getting worse", "forgot to say it's the upstairs one") OR a photo/video of it —
+call update_maintenance_request to attach it (don't file a duplicate; for a
+photo-only follow-up just call it with no text). A genuinely DIFFERENT issue →
+file a new one with report_maintenance.
 
 STYLE
 - Human, warm, concise. This is WhatsApp — keep replies short (1-3 sentences),
-  one message per turn, plain text only (no buttons or markdown).
+  one message per turn, plain text only (no buttons or markdown).${nameLine}
 - Reply in the tenant's own language/style (e.g. English or Nigerian Pidgin).
 - Never promise when anyone will respond or visit. Never invent fees, features,
   or timelines — state only facts from KNOWLEDGE; if you don't have something,
@@ -308,7 +320,10 @@ export class TenantAiService {
   ): Promise<boolean> {
     if (!this.llm.isEnabled()) return false;
     try {
-      const system = buildSystemPrompt(ctx.properties);
+      const system = buildSystemPrompt({
+        firstName: ctx.firstName,
+        properties: ctx.properties,
+      });
       const messages = await this.buildHistory(from, userTurn);
       const body = await this.runConversationWithRetry(from, ctx, {
         system,
@@ -485,14 +500,6 @@ export class TenantAiService {
     );
     await this.drainMediaBuffer(from, created.id);
 
-    // Catch any photo/video the tenant sends right after confirming, via the
-    // existing post-Flow attachment window (handleInboundMedia checks this).
-    await this.cache.setWithTtlSeconds(
-      `awaiting_media_${from}`,
-      { request_id: created.id, attempt: 1 },
-      TRAILING_MEDIA_TTL_SECONDS,
-    );
-
     return kind === MaintenanceRequestKindEnum.NOTICE
       ? 'Notice logged for the landlord. Confirm warmly that you have passed it on.'
       : 'Maintenance request logged and the landlord/facility manager notified. Reassure them someone will look into it.';
@@ -508,36 +515,38 @@ export class TenantAiService {
     ctx: TenantAiContext,
     addition: string,
   ): Promise<string> {
-    if (!addition) {
-      return 'Nothing to add — ask the tenant what detail they want to add.';
-    }
     const recentId = await this.cache.get<string>(`ai_recent_mr_${from}`);
     if (!recentId) {
       return 'No recent request to update. If this is a maintenance issue, file it with report_maintenance.';
     }
-    const ok = await this.tenantFlow.updateTenantMaintenanceRequest({
-      tenantUserId: ctx.tenantUserId,
-      requestId: recentId,
-      addition,
-    });
-    if (!ok) {
-      return "Could not update that request (it may already be closed). If it's a new issue, file it with report_maintenance.";
+    // An update is either extra text, buffered media, or both. If neither, there
+    // is nothing to attach — ask what they want to add.
+    const hasMedia =
+      ((await this.cache.get<BufferedMedia[]>(this.mediaBufferKey(from))) ?? [])
+        .length > 0;
+    if (!addition && !hasMedia) {
+      return 'Nothing to add yet — ask the tenant what detail or photo they want to add.';
     }
-    // Attach any media buffered during the follow-up and re-arm the trailing
-    // window, so photos sent alongside an update land on the same request.
+    // Attach any media the tenant sent alongside the follow-up, then append the
+    // text detail (if any). Media-only updates are fine — `addition` is optional.
     await this.drainMediaBuffer(from, recentId);
-    await this.cache.setWithTtlSeconds(
-      `awaiting_media_${from}`,
-      { request_id: recentId, attempt: 1 },
-      TRAILING_MEDIA_TTL_SECONDS,
-    );
+    const appended = addition
+      ? await this.tenantFlow.updateTenantMaintenanceRequest({
+          tenantUserId: ctx.tenantUserId,
+          requestId: recentId,
+          addition,
+        })
+      : true;
     // Keep it the active target while the conversation continues.
     await this.cache.setWithTtlSeconds(
       `ai_recent_mr_${from}`,
       recentId,
       RECENT_MR_TTL_SECONDS,
     );
-    return 'Added the extra detail to their existing request. Reassure them it is attached — no need to re-report.';
+    if (!appended) {
+      return "Could not update that request (it may already be closed). If it's a new issue, file it with report_maintenance.";
+    }
+    return 'Added it to their existing request. Reassure them it is attached — no need to re-report.';
   }
 
   /** Move any buffered Cloudinary media onto the freshly-created request. */

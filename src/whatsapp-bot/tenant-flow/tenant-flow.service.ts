@@ -362,7 +362,11 @@ export class TenantFlowService {
       id: pt.property_id,
       name: pt.property?.name ?? 'Your property',
     }));
-    return { tenantUserId: user.id, properties };
+    return {
+      tenantUserId: user.id,
+      firstName: this.utilService.toSentenceCase(user.first_name ?? '') || undefined,
+      properties,
+    };
   }
 
   /**

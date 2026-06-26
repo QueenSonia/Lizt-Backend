@@ -59,6 +59,8 @@ export class NotificationService {
         return 'Scheduled End Cancelled';
       case NotificationType.TENANCY_RENEWED:
         return 'Tenancy Renewed';
+      case NotificationType.APPLICANT_HANDOFF:
+        return 'Applicant Needs Help';
       case NotificationType.NOTICE_AGREEMENT:
         return 'Notice Agreement';
       case NotificationType.PAYMENT_RECEIVED:

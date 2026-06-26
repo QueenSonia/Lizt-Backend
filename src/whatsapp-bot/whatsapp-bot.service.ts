@@ -7,7 +7,7 @@
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { ArrayContains, ILike, Not, In, Repository } from 'typeorm';
+import { ArrayContains, ILike, Not, Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import WhatsApp from 'whatsapp';
@@ -66,6 +66,7 @@ import { LandlordFlowService } from './landlord-flow';
 import { FlowTokenService, FlowTokenPayload } from './flow-token.service';
 import { FlowMediaRef } from './whatsapp-media.service';
 import { UnknownsAiService } from './unknowns-ai.service';
+import { ApplicantAiService } from './applicant-ai.service';
 
 // ✅ Reusable buttons
 const MAIN_MENU_BUTTONS = [
@@ -127,6 +128,8 @@ export class WhatsappBotService implements OnModuleInit {
     private readonly flowTokenService: FlowTokenService,
 
     private readonly unknownsAiService: UnknownsAiService,
+
+    private readonly applicantAiService: ApplicantAiService,
   ) {}
 
   /**
@@ -691,14 +694,24 @@ export class WhatsappBotService implements OnModuleInit {
       normalized: normalizedPhone,
     });
 
-    // Find the most recent pending or rejected application
-    const application = await this.kycApplicationRepo.findOne({
-      where: {
-        phone_number: normalizedPhone,
-        status: In([ApplicationStatus.PENDING, ApplicationStatus.REJECTED]),
-      },
-      order: { created_at: 'DESC' },
-    });
+    // Prefer the most-recent PENDING application; only fall back to the
+    // most-recent REJECTED one if there is no live application. This keeps an
+    // active application from being shadowed by a newer rejection.
+    const application =
+      (await this.kycApplicationRepo.findOne({
+        where: {
+          phone_number: normalizedPhone,
+          status: ApplicationStatus.PENDING,
+        },
+        order: { created_at: 'DESC' },
+      })) ||
+      (await this.kycApplicationRepo.findOne({
+        where: {
+          phone_number: normalizedPhone,
+          status: ApplicationStatus.REJECTED,
+        },
+        order: { created_at: 'DESC' },
+      }));
 
     console.log('📋 KYC application lookup result:', {
       found: !!application,
@@ -1159,6 +1172,24 @@ export class WhatsappBotService implements OnModuleInit {
             status: kycApplication.status,
             applicantName: `${kycApplication.first_name} ${kycApplication.last_name}`,
           });
+
+          // AI assistant for applicants (gated by AI_ASSISTANT_ENABLED). Falls
+          // back to the static reply below if disabled/unconfigured, the message
+          // has no readable text, or anything throws.
+          const applicantText =
+            message.text?.body ||
+            message.interactive?.button_reply?.title ||
+            message.interactive?.list_reply?.title ||
+            '';
+          if (
+            await this.applicantAiService.tryHandle(
+              defaultPhone,
+              applicantText,
+              kycApplication,
+            )
+          ) {
+            return;
+          }
 
           // Handle KYC applicant based on application status
           await this.handleKYCApplicantMessage(defaultPhone, kycApplication);

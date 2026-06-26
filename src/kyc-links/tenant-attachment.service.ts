@@ -9,6 +9,7 @@ import { KYCLink } from './entities/kyc-link.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import { rejectOtherPendingApplications } from './reject-other-applications';
 import { Rent } from '../rents/entities/rent.entity';
 import { Account } from '../users/entities/account.entity';
 import { Users } from '../users/entities/user.entity';
@@ -416,64 +417,13 @@ export class TenantAttachmentService {
     excludeApplicationId: string,
     manager: any,
   ): Promise<void> {
-    // Get all applications that will be rejected
-    const applicationsToReject = await manager.find(KYCApplication, {
-      where: {
-        property_id: propertyId,
-        status: ApplicationStatus.PENDING,
-      },
-    });
-
-    // Filter out the approved application
-    const rejectedApplications = applicationsToReject.filter(
-      (app: KYCApplication) => app.id !== excludeApplicationId,
+    // Delegates to the shared helper so every attachment path rejects
+    // competitors with identical semantics (see reject-other-applications.ts).
+    await rejectOtherPendingApplications(
+      manager,
+      propertyId,
+      excludeApplicationId,
     );
-
-    // Update status to rejected
-    await manager
-      .createQueryBuilder()
-      .update(KYCApplication)
-      .set({ status: ApplicationStatus.REJECTED })
-      .where('property_id = :propertyId', { propertyId })
-      .andWhere('status = :status', { status: ApplicationStatus.PENDING })
-      .andWhere('id != :excludeApplicationId', { excludeApplicationId })
-      .execute();
-
-    // Create property history events for each rejected application
-    const formattedDate = new Date().toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-    const formattedTime = new Date().toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    });
-
-    for (const application of rejectedApplications) {
-      try {
-        const applicantName = `${application.first_name} ${application.last_name}`;
-        const propertyHistory = manager.create(PropertyHistory, {
-          property_id: propertyId,
-          tenant_id: application.tenant_id || null,
-          event_type: 'kyc_application_rejected',
-          event_description: `KYC application rejected for ${applicantName} — ${formattedDate} at ${formattedTime}`,
-          related_entity_id: application.id,
-          related_entity_type: 'kyc_application',
-        });
-
-        await manager.save(propertyHistory);
-        console.log(
-          `Property history created for rejected application: ${application.id}`,
-        );
-      } catch (error) {
-        console.error(
-          `Failed to create property history for rejected application ${application.id}:`,
-          error,
-        );
-      }
-    }
   }
 
 

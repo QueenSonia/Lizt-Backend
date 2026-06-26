@@ -46,6 +46,7 @@ import { FlowTokenService } from './flow-token.service';
 import { MaintenanceMediaService } from './maintenance-media.service';
 import { AiModule } from 'src/ai/ai.module';
 import { UnknownsAiService } from './unknowns-ai.service';
+import { ApplicantAiService } from './applicant-ai.service';
 
 @Module({
   imports: [
@@ -97,6 +98,7 @@ import { UnknownsAiService } from './unknowns-ai.service';
     FlowTokenService,
     MaintenanceMediaService,
     UnknownsAiService,
+    ApplicantAiService,
   ],
   exports: [
     TemplateSenderService,

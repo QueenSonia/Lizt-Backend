@@ -47,6 +47,7 @@ import { MaintenanceMediaService } from './maintenance-media.service';
 import { AiModule } from 'src/ai/ai.module';
 import { UnknownsAiService } from './unknowns-ai.service';
 import { ApplicantAiService } from './applicant-ai.service';
+import { TenantAiService } from './tenant-ai.service';
 import { NotificationModule } from 'src/notifications/notification.module';
 
 @Module({
@@ -101,6 +102,7 @@ import { NotificationModule } from 'src/notifications/notification.module';
     MaintenanceMediaService,
     UnknownsAiService,
     ApplicantAiService,
+    TenantAiService,
   ],
   exports: [
     TemplateSenderService,

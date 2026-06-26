@@ -22,6 +22,19 @@ export enum MaintenanceRequestStatusEnum {
   REJECTED = 'rejected',
   PENDING_TENANT_CONFIRMATION = 'pending_tenant_confirmation',
   DENIED_BY_TENANT = 'denied_by_tenant',
+  // Open state for a tenant-filed NOTICE (kind='notice'): informational, no FM,
+  // awaiting landlord acknowledgement. Acknowledging transitions it to CLOSED.
+  NOTICE_OPEN = 'notice_open',
+}
+
+/**
+ * Distinguishes a repair (something to fix → FM pipeline) from a notice
+ * (informational message for the landlord → landlord-ack lifecycle, no FM).
+ * Defaults to REPAIR everywhere so existing/legacy requests are repairs.
+ */
+export enum MaintenanceRequestKindEnum {
+  REPAIR = 'repair',
+  NOTICE = 'notice',
 }
 
 export enum MaintenanceRequestScopeEnum {
@@ -92,6 +105,17 @@ export class CreateMaintenanceRequestDto {
   @IsEnum(MaintenanceRequestScopeEnum)
   scope?: MaintenanceRequestScopeEnum;
 
+  @ApiProperty({
+    enum: MaintenanceRequestKindEnum,
+    required: false,
+    default: MaintenanceRequestKindEnum.REPAIR,
+    description:
+      "repair = something to fix (FM pipeline); notice = informational for the landlord (no FM). Defaults to repair.",
+  })
+  @IsOptional()
+  @IsEnum(MaintenanceRequestKindEnum)
+  kind?: MaintenanceRequestKindEnum;
+
   @ApiProperty({ required: false, default: false })
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true')
@@ -148,6 +172,11 @@ export class MaintenanceRequestFilter {
   @IsOptional()
   @IsEnum(MaintenanceRequestScopeEnum)
   scope?: MaintenanceRequestScopeEnum;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsEnum(MaintenanceRequestKindEnum)
+  kind?: MaintenanceRequestKindEnum;
 
   @IsOptional()
   @IsEnum(MaintenanceRequestCreatorTypeEnum)

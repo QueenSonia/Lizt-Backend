@@ -10,6 +10,7 @@ import { Users } from '../../users/entities/user.entity';
 import { Property } from '../../properties/entities/property.entity';
 import {
   MaintenanceRequestCreatorTypeEnum,
+  MaintenanceRequestKindEnum,
   MaintenanceRequestScopeEnum,
   MaintenanceRequestStatusEnum,
   MediaItem,
@@ -107,6 +108,7 @@ export class MaintenanceRequest extends BaseEntity {
       MaintenanceRequestStatusEnum.REJECTED,
       MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
       MaintenanceRequestStatusEnum.DENIED_BY_TENANT,
+      MaintenanceRequestStatusEnum.NOTICE_OPEN,
     ],
     default: MaintenanceRequestStatusEnum.NOT_APPROVED,
   })
@@ -143,6 +145,20 @@ export class MaintenanceRequest extends BaseEntity {
     default: MaintenanceRequestCreatorTypeEnum.TENANT,
   })
   creator_type: MaintenanceRequestCreatorTypeEnum;
+
+  // repair = something to fix (FM pipeline); notice = informational message for
+  // the landlord (no FM, landlord-ack lifecycle). Defaults to repair so every
+  // existing request and all non-notice paths are repairs.
+  @Column({
+    nullable: false,
+    type: 'enum',
+    enum: [
+      MaintenanceRequestKindEnum.REPAIR,
+      MaintenanceRequestKindEnum.NOTICE,
+    ],
+    default: MaintenanceRequestKindEnum.REPAIR,
+  })
+  kind: MaintenanceRequestKindEnum;
 
   @Column({ nullable: true, type: 'uuid' })
   creator_user_id: string | null;

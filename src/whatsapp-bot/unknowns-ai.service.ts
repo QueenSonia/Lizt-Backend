@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 
 import { LlmService } from '../ai/llm.service';
 import { UNKNOWNS_KNOWLEDGE } from '../ai/knowledge/unknowns';
+import { OTP_GUARDRAIL, redactSensitiveContent } from '../ai/guardrails';
 import { AiMessage, AiTool, AiToolUse } from '../ai/ai.types';
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
@@ -93,6 +94,8 @@ Tools (call them, don't just talk about them):
 
 KNOWLEDGE:
 ${UNKNOWNS_KNOWLEDGE}
+
+${OTP_GUARDRAIL}
 `.trim();
 
 const TOOLS: AiTool[] = [
@@ -240,7 +243,12 @@ export class UnknownsAiService {
 
     const messages: AiMessage[] = [];
     for (const row of rows) {
-      const content = (row.content || '').trim();
+      // Redact OTP/verification codes before they ever enter the model context.
+      const content = redactSensitiveContent(
+        (row.content || '').trim(),
+        (row.metadata as { template?: { name?: string } } | null)?.template
+          ?.name,
+      );
       // Skip empties and opaque markers (flow completions, etc.) — not readable turns.
       if (!content || content.startsWith('flow:')) continue;
       const role =

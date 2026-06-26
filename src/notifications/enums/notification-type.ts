@@ -49,4 +49,5 @@
   REMOVAL_SCHEDULED = 'Removal Scheduled',
   SCHEDULED_END_CANCELLED = 'Scheduled End Cancelled',
   APPLICANT_HANDOFF = 'Applicant Handoff',
+  TENANT_HANDOFF = 'Tenant Handoff',
 }

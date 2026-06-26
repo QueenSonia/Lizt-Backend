@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger } from '@nestjs/common';
+﻿import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, Not, In } from 'typeorm';
@@ -26,6 +26,7 @@ import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
 import {
   MaintenanceRequestCreatorTypeEnum,
+  MaintenanceRequestKindEnum,
   MaintenanceRequestStatusEnum,
 } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { mapMRStatusForTenant } from 'src/maintenance-requests/utils/tenant-view';
@@ -42,6 +43,11 @@ import { IncomingMessage } from '../utils';
 import { WhatsAppNotificationLogService } from '../whatsapp-notification-log.service';
 import { FlowTokenService, FlowProperty } from '../flow-token.service';
 import { MaintenanceMediaService } from '../maintenance-media.service';
+import {
+  TenantAiService,
+  TenantAiContext,
+  TenantProp,
+} from '../tenant-ai.service';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import {
   Fee,
@@ -152,6 +158,8 @@ export class TenantFlowService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly nextPeriodStateResolver: NextPeriodStateResolver,
     private readonly eventEmitter: EventEmitter2,
+    @Inject(forwardRef(() => TenantAiService))
+    private readonly tenantAiService: TenantAiService,
   ) {}
 
   /**
@@ -319,8 +327,42 @@ export class TenantFlowService {
       return;
     }
 
+    // Stray free text with no active state. When the AI receptionist is
+    // enabled, let it drive the conversation (capture issue/notice, ask for
+    // media, file via tool). It falls back to the legacy Yes/No button offer if
+    // disabled or anything throws.
+    if (this.tenantAiService.isEnabled()) {
+      const ctx = await this.resolveTenantContext(from);
+      if (ctx && (await this.tenantAiService.tryHandleText(from, text, ctx))) {
+        return;
+      }
+    }
+
     // Default: offer to log the stray text as a maintenance request.
     await this.offerCreateFromText(from, text);
+  }
+
+  /**
+   * Resolve a tenant's user id + their active properties from a phone number,
+   * for the AI receptionist. Returns null if there's no tenant account or no
+   * active tenancy (the caller then falls back to the legacy offer).
+   */
+  private async resolveTenantContext(
+    from: string,
+  ): Promise<TenantAiContext | null> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return null;
+    const accountId = user.accounts[0].id;
+    const propertyTenants = await this.propertyTenantRepo.find({
+      where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
+      relations: ['property'],
+    });
+    if (!propertyTenants?.length) return null;
+    const properties: TenantProp[] = propertyTenants.map((pt) => ({
+      id: pt.property_id,
+      name: pt.property?.name ?? 'Your property',
+    }));
+    return { tenantUserId: user.id, properties };
   }
 
   /**
@@ -1207,6 +1249,7 @@ export class TenantFlowService {
     tenantUserId: string;
     propertyId: string;
     text: string;
+    kind?: MaintenanceRequestKindEnum;
   }): Promise<{ id: string; request_id: string } | null> {
     const user = await this.usersRepo.findOne({
       where: { id: params.tenantUserId },
@@ -1218,9 +1261,12 @@ export class TenantFlowService {
       return null;
     }
 
+    const kind = params.kind ?? MaintenanceRequestKindEnum.REPAIR;
+    const isNotice = kind === MaintenanceRequestKindEnum.NOTICE;
+
     const created =
       await this.maintenanceRequestService.createMaintenanceRequest(
-        { property_id: params.propertyId, text: params.text },
+        { property_id: params.propertyId, text: params.text, kind },
         { id: params.tenantUserId, role: RolesEnum.TENANT },
       );
     if (!created) return null;
@@ -1235,35 +1281,58 @@ export class TenantFlowService {
       request_id,
     } = created;
 
-    try {
-      await this.queueFacilityManagerNotifications(
-        facility_managers,
-        user,
-        property_name,
-        property_location,
-        params.text,
-        created_at,
-        id,
-      );
-    } catch (err) {
-      this.logger.error('Failed to queue FM notifications (flow):', err);
-    }
+    // Notices are landlord-only, informational items — no FM dispatch and no
+    // WhatsApp approve/reject ping. The in-app landlord notification (emitted by
+    // createMaintenanceRequest's maintenance.created handler) is the only alert.
+    if (!isNotice) {
+      try {
+        await this.queueFacilityManagerNotifications(
+          facility_managers,
+          user,
+          property_name,
+          property_location,
+          params.text,
+          created_at,
+          id,
+        );
+      } catch (err) {
+        this.logger.error('Failed to queue FM notifications (flow):', err);
+      }
 
-    try {
-      await this.queueLandlordNotification(
-        property_id,
-        user,
-        property_name,
-        property_location,
-        params.text,
-        created_at,
-        id,
-      );
-    } catch (err) {
-      this.logger.error('Failed to queue landlord notification (flow):', err);
+      try {
+        await this.queueLandlordNotification(
+          property_id,
+          user,
+          property_name,
+          property_location,
+          params.text,
+          created_at,
+          id,
+        );
+      } catch (err) {
+        this.logger.error('Failed to queue landlord notification (flow):', err);
+      }
     }
 
     return { id, request_id };
+  }
+
+  /**
+   * Append tenant-provided detail to an existing request they just filed (used
+   * by the AI receptionist when a follow-up message elaborates on the same
+   * issue rather than raising a new one). Returns true if the append landed.
+   */
+  async updateTenantMaintenanceRequest(params: {
+    tenantUserId: string;
+    requestId: string;
+    addition: string;
+  }): Promise<boolean> {
+    const updated = await this.maintenanceRequestService.appendTenantRequestDetail(
+      params.requestId,
+      params.tenantUserId,
+      params.addition,
+    );
+    return !!updated;
   }
 
   /**
@@ -1345,6 +1414,36 @@ export class TenantFlowService {
         );
       }
       return;
+    }
+
+    // Stray media — no active window. When the AI receptionist is enabled, eagerly
+    // re-host the media to Cloudinary (Meta's download URLs are short-lived),
+    // buffer it for the eventual report tool, and hand the AI a breadcrumb so it
+    // can acknowledge and continue the conversation. Falls back to the legacy
+    // offer if disabled, the upload fails, or the AI declines the turn.
+    if (this.tenantAiService.isEnabled()) {
+      const item = await this.maintenanceMediaService.uploadStrayInbound({
+        id: media.id,
+        link: media.link,
+        type: mediaType,
+      });
+      if (item) {
+        await this.tenantAiService.bufferMedia(from, {
+          type: item.type,
+          url: item.url,
+        });
+      }
+      const caption = (media.caption ?? '').trim();
+      const breadcrumb = caption
+        ? `[tenant attached a ${mediaType}] ${caption}`
+        : `[tenant attached a ${mediaType}]`;
+      const ctx = await this.resolveTenantContext(from);
+      if (
+        ctx &&
+        (await this.tenantAiService.tryHandleMedia(from, breadcrumb, ctx))
+      ) {
+        return;
+      }
     }
 
     // Stray media — no active window. Offer to log a new request with it.

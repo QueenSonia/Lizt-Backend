@@ -47,6 +47,7 @@ import { MaintenanceMediaService } from './maintenance-media.service';
 import { AiModule } from 'src/ai/ai.module';
 import { UnknownsAiService } from './unknowns-ai.service';
 import { ApplicantAiService } from './applicant-ai.service';
+import { NotificationModule } from 'src/notifications/notification.module';
 
 @Module({
   imports: [
@@ -77,6 +78,7 @@ import { ApplicantAiService } from './applicant-ai.service';
     PdfModule,
     ChatModule,
     AiModule,
+    forwardRef(() => NotificationModule),
   ],
   controllers: [WhatsappBotController],
   providers: [

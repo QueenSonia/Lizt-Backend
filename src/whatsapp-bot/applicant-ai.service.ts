@@ -18,6 +18,8 @@ import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { ChatLogService } from './chat-log.service';
 import { MessageDirection } from './entities/message-direction.enum';
 import { TemplateSenderService } from './template-sender';
+import { NotificationService } from 'src/notifications/notification.service';
+import { NotificationType } from 'src/notifications/enums/notification-type';
 
 /** Coerce an unknown tool-input value to a trimmed string (never "[object Object]"). */
 const asStr = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
@@ -178,6 +180,7 @@ export class ApplicantAiService {
     private readonly propertyTenantRepo: Repository<PropertyTenant>,
     @InjectRepository(Property)
     private readonly propertyRepo: Repository<Property>,
+    private readonly notificationService: NotificationService,
   ) {}
 
   /**
@@ -387,7 +390,7 @@ export class ApplicantAiService {
     }
   }
 
-  /** Flag the applicant for human follow-up (stored only — no notification this phase). */
+  /** Flag the applicant for human follow-up + surface it on the landlord's feed. */
   private async handoff(
     from: string,
     application: KYCApplication,
@@ -401,6 +404,49 @@ export class ApplicantAiService {
     }
     if (!wl.source) wl.source = 'applicant';
     await this.waitlistRepo.save(wl);
+
+    await this.logHandoffToLandlordFeed(application, summary);
+  }
+
+  /**
+   * Append a "needs help" item to the owning landlord's dashboard live feed.
+   * Best-effort: a feed failure must never break the handoff or the reply.
+   * The landlord is the applied-for property's owner (`owner_id` = Account.id).
+   */
+  private async logHandoffToLandlordFeed(
+    application: KYCApplication,
+    summary: string,
+  ): Promise<void> {
+    try {
+      if (!application.property_id) return;
+      const property = await this.propertyRepo.findOne({
+        where: { id: application.property_id },
+      });
+      if (!property?.owner_id) return;
+
+      const applicantName =
+        `${application.first_name || ''} ${application.last_name || ''}`.trim() ||
+        'An applicant';
+      const propertyName = property.name?.trim();
+      const description =
+        `${applicantName} (applicant${
+          propertyName ? ` for ${propertyName}` : ''
+        }) asked to speak with someone on WhatsApp` +
+        (summary ? `: ${summary}` : '.');
+
+      await this.notificationService.create({
+        date: new Date().toISOString(),
+        type: NotificationType.APPLICANT_HANDOFF,
+        description,
+        status: 'Pending',
+        property_id: application.property_id,
+        user_id: property.owner_id,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Failed to log applicant handoff to landlord feed: ${(err as Error).message}`,
+      );
+    }
   }
 
   /** Find this phone's waitlist row, or build a new (unsaved) one for the applicant. */

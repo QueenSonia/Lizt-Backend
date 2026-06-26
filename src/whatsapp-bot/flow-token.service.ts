@@ -42,7 +42,12 @@ export type FlowTokenPayload =
       attempt: number;
     };
 
-const FLOW_TOKEN_TTL_SECONDS = 1800; // 30 minutes
+// 90 minutes. Tenants hand-type long, sometimes distressed descriptions and
+// attach photos before submitting; the prior 30-minute window expired mid-
+// compose and silently dropped reports (the token resolves to nothing, the
+// submit 500s). Long enough to cover slow composition without keeping these
+// single-use create/reopen tokens around indefinitely.
+const FLOW_TOKEN_TTL_SECONDS = 5400;
 const keyFor = (token: string) => `flow_token_${token}`;
 
 @Injectable()

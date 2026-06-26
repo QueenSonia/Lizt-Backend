@@ -180,6 +180,38 @@ export class WhatsappBotService implements OnModuleInit {
           tokenPayload,
         );
       }
+
+      // Token present but unresolvable — its payload expired out of Redis (or
+      // was evicted). For the tenant maintenance Flow this used to fall all the
+      // way through to the `throw` below and 500, which made WhatsApp show a
+      // generic error; the tenant then re-submitted into the same dead token
+      // repeatedly and their report (text + photos) was silently lost.
+      //
+      // Instead fail gracefully: re-show REPORT_ISSUE (the only tenant-flow
+      // screen Meta knows, so we can't invent an "expired" screen) with a clear
+      // "start over" message. We scope this to screen === 'REPORT_ISSUE' so the
+      // FM password Flow (screen FM_SET_PASSWORD, DB-backed token) keeps its own
+      // expiry handling in the data_exchange switch below.
+      if (screen === 'REPORT_ISSUE') {
+        this.logger.warn(
+          `Expired tenant maintenance Flow token on ${action}; ` +
+            `returning graceful expired screen. flow_token=${flowToken}`,
+        );
+        return {
+          screen: 'REPORT_ISSUE',
+          data: {
+            mode: 'create',
+            heading: 'This form has expired',
+            description_label: 'Describe the issue',
+            has_multiple_properties: false,
+            properties: [],
+            error_message:
+              'This form expired before it could be submitted. Please close ' +
+              'this window and tap "Maintenance Request" again to start over.',
+            error_visible: true,
+          },
+        };
+      }
     }
 
     // FM password-setup Flow: the flow_token is the PasswordResetToken value

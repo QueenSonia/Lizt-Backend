@@ -378,10 +378,14 @@ export class TenantFlowService {
       id: pt.property_id,
       name: pt.property?.name ?? 'Your property',
     }));
+    const pendingConfirmations = await this.findResolvedAwaitingConfirmation(
+      user.id,
+    );
     return {
       tenantUserId: user.id,
       firstName: this.utilService.toSentenceCase(user.first_name ?? '') || undefined,
       properties,
+      pendingConfirmations,
     };
   }
 
@@ -1353,6 +1357,107 @@ export class TenantFlowService {
       params.addition,
     );
     return !!updated;
+  }
+
+  /**
+   * Requests the FM has marked RESOLVED that are awaiting this tenant's
+   * confirmation — i.e. the ones a free-text "it's fixed" / "still broken" reply
+   * could be about. Injected into the AI context so it can map an ambiguous
+   * reply to the right request and either confirm (close) or reopen it.
+   */
+  async findResolvedAwaitingConfirmation(
+    tenantUserId: string,
+  ): Promise<Array<{ requestId: string; description: string; resolvedOn: string }>> {
+    const rows = await this.maintenanceRequestRepo.find({
+      where: {
+        tenant: { user: { id: tenantUserId } },
+        status: MaintenanceRequestStatusEnum.RESOLVED,
+      },
+      relations: ['tenant', 'tenant.user'],
+      order: { resolution_date: 'DESC' },
+      take: 10,
+    });
+    return rows.map((r) => ({
+      requestId: r.request_id,
+      description: r.description,
+      resolvedOn: r.resolution_date
+        ? new Date(r.resolution_date).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })
+        : '—',
+    }));
+  }
+
+  /**
+   * AI-driven "Yes, it's fixed": close a resolved request the tenant confirms is
+   * sorted, by its human request_id (SR…). Mirrors handleConfirmResolutionYes —
+   * closes via the service then pings landlord + FMs with the closed template.
+   */
+  async confirmTenantRequestFixed(params: {
+    tenantUserId: string;
+    requestId: string;
+  }): Promise<boolean> {
+    const row = await this.maintenanceRequestRepo.findOne({
+      where: {
+        request_id: params.requestId,
+        tenant: { user: { id: params.tenantUserId } },
+      },
+      relations: ['tenant', 'tenant.user'],
+    });
+    if (!row) return false;
+    const ok = await this.maintenanceRequestService.confirmTenantRequestResolved(
+      row.id,
+      params.tenantUserId,
+    );
+    if (ok && row.property_id) {
+      const safe = this.utilService.sanitizeTemplateParam(row.description);
+      await this.notifyPropertyStakeholders(row.property_id, (phone) =>
+        this.templateSenderService.sendMaintenanceRequestClosedNotification({
+          phone_number: phone,
+          maintenance_request: safe,
+        }),
+      );
+    }
+    return ok;
+  }
+
+  /**
+   * AI-driven "No, not fixed": reopen a resolved request by its human request_id
+   * (SR…). Mirrors handleConfirmResolutionNo — reopens via the service (which
+   * bumps the attempt and emits the event) then pings landlord + FMs with the
+   * reopened template. Returns the new attempt + uuid so fresh media can attach.
+   */
+  async reopenTenantRequestForTenant(params: {
+    tenantUserId: string;
+    requestId: string;
+    reason: string;
+  }): Promise<{ ok: boolean; attempt?: number; id?: string }> {
+    const row = await this.maintenanceRequestRepo.findOne({
+      where: {
+        request_id: params.requestId,
+        tenant: { user: { id: params.tenantUserId } },
+      },
+      relations: ['tenant', 'tenant.user'],
+    });
+    if (!row) return { ok: false };
+    const res = await this.maintenanceRequestService.reopenTenantRequest(
+      row.id,
+      params.tenantUserId,
+      params.reason,
+    );
+    if (!res) return { ok: false };
+    if (row.property_id) {
+      const safe = this.utilService.sanitizeTemplateParam(row.description);
+      await this.notifyPropertyStakeholders(row.property_id, (phone) =>
+        this.templateSenderService.sendMaintenanceRequestReopenedNotification({
+          phone_number: phone,
+          maintenance_request: safe,
+        }),
+      );
+    }
+    return { ok: true, attempt: res.attempt, id: row.id };
   }
 
   /**

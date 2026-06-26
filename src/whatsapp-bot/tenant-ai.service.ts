@@ -47,12 +47,23 @@ export interface TenantProp {
   name: string;
 }
 
+/** A resolved request awaiting the tenant's "is it fixed?" confirmation. */
+export interface PendingConfirmation {
+  /** Human request id (e.g. SR1234). */
+  requestId: string;
+  description: string;
+  /** Formatted date the FM marked it resolved. */
+  resolvedOn: string;
+}
+
 /** Per-turn tenant context resolved by the caller (TenantFlowService). */
 export interface TenantAiContext {
   tenantUserId: string;
   /** Tenant's first name, so the assistant can greet/address them by it. */
   firstName?: string;
   properties: TenantProp[];
+  /** Resolved requests awaiting confirmation — drive confirm/reopen routing. */
+  pendingConfirmations?: PendingConfirmation[];
 }
 
 /** Buffered media item (already uploaded to Cloudinary) keyed per phone. */
@@ -113,6 +124,47 @@ const TOOLS: AiTool[] = [
     },
   },
   {
+    name: 'confirm_request_fixed',
+    description:
+      'Mark a resolved maintenance request as fixed and close it — use when the ' +
+      'tenant confirms one of the requests listed as AWAITING CONFIRMATION is now ' +
+      'sorted. Pass its request_id. Only confirm when they clearly say it is fixed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        request_id: {
+          type: 'string',
+          description:
+            'The request_id (e.g. SR1234) from the awaiting-confirmation list.',
+        },
+      },
+      required: ['request_id'],
+    },
+  },
+  {
+    name: 'reopen_maintenance_request',
+    description:
+      'Reopen a resolved request the tenant says is NOT actually fixed. Pass its ' +
+      "request_id (from the awaiting-confirmation list) and a short reason for what's " +
+      'still wrong. If their complaint is a brand-new problem, or a previously closed ' +
+      'issue that has recurred, file a new one with report_maintenance instead.',
+    parameters: {
+      type: 'object',
+      properties: {
+        request_id: {
+          type: 'string',
+          description:
+            'The request_id (e.g. SR1234) from the awaiting-confirmation list.',
+        },
+        reason: {
+          type: 'string',
+          description: "Short note on what's still wrong.",
+        },
+      },
+      required: ['request_id'],
+    },
+  },
+  {
     name: 'get_tenancy_details',
     description:
       "Look up the tenant's verified lease facts (rent, fees, service charge, " +
@@ -157,10 +209,25 @@ const TOOLS: AiTool[] = [
 function buildSystemPrompt(opts: {
   firstName?: string;
   properties: TenantProp[];
+  pendingConfirmations?: PendingConfirmation[];
 }): string {
   const { firstName, properties } = opts;
+  const pending = opts.pendingConfirmations ?? [];
   const nameLine = firstName
     ? `\n- The tenant's name is ${firstName} — address them by their first name when it reads naturally, especially in your first reply (e.g. "Hi ${firstName}, …").`
+    : '';
+  const pendingList = pending
+    .map((p) => {
+      return `- ${p.requestId}: "${p.description}" (marked fixed ${p.resolvedOn})`;
+    })
+    .join('\n');
+  const pendingBlock = pending.length
+    ? `\nAWAITING THE TENANT'S CONFIRMATION — these requests were marked FIXED by the facility manager and need the tenant to confirm:
+${pendingList}
+Do NOT bring these up on your own, list them, or nag about them — the tenant has already been asked separately. Only act when the TENANT themselves mentions one of these issues or gives a clear cue (e.g. "the plumber came", "thanks for sorting that", "the tap's still leaking"):
+- If they indicate one is now sorted/working/fine, call confirm_request_fixed with its request_id.
+- If they say one is still broken / not fixed / the problem persists, call reopen_maintenance_request with its request_id and a short reason for what's still wrong.
+Match by what they describe; if it's unclear WHICH one, ask. If it's unclear whether it's actually fixed, ask before doing anything — never close a request that isn't confirmed fixed. If their message is about a DIFFERENT or brand-new issue, ignore this list and treat it as a new request.`
     : '';
   const propertyBlock =
     properties.length === 1
@@ -260,6 +327,7 @@ getting worse", "forgot to say it's the upstairs one") OR a photo/video of it �
 call update_maintenance_request to attach it (don't file a duplicate; for a
 photo-only follow-up just call it with no text). A genuinely DIFFERENT issue →
 file a new one with report_maintenance.
+${pendingBlock}
 
 STYLE
 - Human, warm, concise. This is WhatsApp — keep replies short (1-3 sentences),
@@ -273,6 +341,8 @@ STYLE
 Tools (call them, don't just talk about them):
 - report_maintenance: file a repair or notice after a one-line read-back confirmation.
 - update_maintenance_request: add detail to the request just filed in this chat.
+- confirm_request_fixed: close a resolved request the tenant confirms is sorted.
+- reopen_maintenance_request: reopen a resolved request the tenant says isn't fixed.
 - get_tenancy_details: look up verified lease facts to answer a tenancy question (only when asked).
 - handoff_to_landlord: when they want a human, are upset, or you can't help.
 
@@ -368,6 +438,7 @@ export class TenantAiService {
       const system = buildSystemPrompt({
         firstName: ctx.firstName,
         properties: ctx.properties,
+        pendingConfirmations: ctx.pendingConfirmations,
       });
       const messages = await this.buildHistory(from, userTurn);
       const body = await this.runConversationWithRetry(from, ctx, {
@@ -474,6 +545,15 @@ export class TenantAiService {
           );
         case 'get_tenancy_details':
           return await this.handleTenancyInfo(ctx, asStr(input.property_id));
+        case 'confirm_request_fixed':
+          return await this.handleConfirmFixed(ctx, asStr(input.request_id));
+        case 'reopen_maintenance_request':
+          return await this.handleReopen(
+            from,
+            ctx,
+            asStr(input.request_id),
+            asStr(input.reason),
+          );
         case 'handoff_to_landlord':
           return await this.handleHandoff(from, ctx, asStr(input.summary));
         default:
@@ -636,14 +716,58 @@ export class TenantAiService {
     ].join('\n');
   }
 
-  /** Move any buffered Cloudinary media onto the freshly-created request. */
-  private async drainMediaBuffer(from: string, requestId: string): Promise<void> {
+  /** Confirm a resolved request is fixed → close it. */
+  private async handleConfirmFixed(
+    ctx: TenantAiContext,
+    requestId: string,
+  ): Promise<string> {
+    if (!requestId) {
+      return 'Ask the tenant which request is fixed (use the awaiting-confirmation list).';
+    }
+    const ok = await this.tenantFlow.confirmTenantRequestFixed({
+      tenantUserId: ctx.tenantUserId,
+      requestId,
+    });
+    if (!ok) {
+      return 'Could not close that request (it may not be awaiting your confirmation). Check the request_id against the awaiting-confirmation list.';
+    }
+    return 'Closed it and let the landlord/FM know. Thank them warmly that it is sorted.';
+  }
+
+  /** Reopen a resolved request the tenant says is not fixed; attach any media. */
+  private async handleReopen(
+    from: string,
+    ctx: TenantAiContext,
+    requestId: string,
+    reason: string,
+  ): Promise<string> {
+    if (!requestId) {
+      return 'Ask the tenant which request is still unfixed (use the awaiting-confirmation list).';
+    }
+    const res = await this.tenantFlow.reopenTenantRequestForTenant({
+      tenantUserId: ctx.tenantUserId,
+      requestId,
+      reason,
+    });
+    if (!res.ok) {
+      return "Could not reopen that request (it may not be one of the resolved ones). If it's a new or previously closed issue, file a new one with report_maintenance.";
+    }
+    if (res.id) await this.drainMediaBuffer(from, res.id, res.attempt ?? 2);
+    return 'Reopened it and notified the landlord/FM. Reassure them someone will take another look.';
+  }
+
+  /** Move any buffered Cloudinary media onto a request, tagged to its attempt. */
+  private async drainMediaBuffer(
+    from: string,
+    requestId: string,
+    attempt = 1,
+  ): Promise<void> {
     const key = this.mediaBufferKey(from);
     const buf = await this.cache.get<BufferedMedia[]>(key);
     if (buf?.length) {
       await this.maintenanceMediaService.appendMedia(
         requestId,
-        buf.map((m) => ({ type: m.type, url: m.url, attempt: 1 })),
+        buf.map((m) => ({ type: m.type, url: m.url, attempt })),
       );
     }
     await this.cache.delete(key);

@@ -1420,6 +1420,18 @@ export class TenanciesService {
     propertyTenant: PropertyTenant,
     rentId: string,
   ): Promise<void> {
+    // The details changed, so the tenant's prior confirmation is stale: clear
+    // it (NULL re-gates them in the bot) so the `tenancy_details_updated_tenant`
+    // card they're about to receive forces a fresh "Yes, correct". Done first
+    // and unconditionally — the phone early-return below must not skip it.
+    try {
+      await this.propertyTenantRepository.update(propertyTenant.id, {
+        details_confirmed_at: null,
+      });
+    } catch (err) {
+      console.error('Failed to invalidate tenancy-details confirmation:', err);
+    }
+
     try {
       const tenantUser = propertyTenant.tenant?.user;
       if (!tenantUser?.phone_number) {

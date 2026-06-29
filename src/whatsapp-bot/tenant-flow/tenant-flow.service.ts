@@ -1,7 +1,7 @@
 ﻿import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike, Not, In } from 'typeorm';
+import { Repository, ILike, Not, In, IsNull } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import { Users } from 'src/users/entities/user.entity';
@@ -1003,6 +1003,106 @@ export class TenantFlowService {
           'Unknown option selected.',
         );
     }
+  }
+
+  /**
+   * Gate the bot for tenants who haven't confirmed their tenancy details.
+   *
+   * Called once before the tenant message-type dispatch, so it covers text,
+   * interactive/button, and media in a single deterministic check (no AI).
+   * Rule: if the tenant has ANY active tenancy with `details_confirmed_at`
+   * still NULL, block the turn and re-show the confirm card (throttled to once
+   * per session). Returns true when it blocked — the caller then stops.
+   *
+   * The confirm/dispute flow is exempt (otherwise a blocked tenant could never
+   * escape), and the check is FAIL-OPEN: any error — including the column not
+   * existing before the migration runs — serves the tenant rather than locking
+   * everyone out. See plan: gate unconfirmed tenants out of the WhatsApp bot.
+   */
+  async gateUnconfirmedTenant(
+    message: IncomingMessage,
+    from: string,
+  ): Promise<boolean> {
+    try {
+      // 1. Let the escape hatch through (confirm/dispute interactions).
+      if (await this.isConfirmFlowInteraction(message, from)) return false;
+
+      // 2. Any unconfirmed ACTIVE tenancy? Selection mirrors the migration's
+      //    grandfather backfill (status = ACTIVE), so existing tenants — whose
+      //    rows were backfilled non-NULL — are never gated.
+      const user = await this.findTenantByPhone(from);
+      if (!user?.accounts?.length) return false;
+      const accountIds = user.accounts.map((a) => a.id);
+      const unconfirmed = await this.propertyTenantRepo.find({
+        where: {
+          tenant_id: In(accountIds),
+          status: TenantStatusEnum.ACTIVE,
+          details_confirmed_at: IsNull(),
+        },
+        order: { created_at: 'ASC' },
+      });
+      if (!unconfirmed.length) return false;
+
+      // 3. Blocked. Re-show the confirm card for the oldest unconfirmed
+      //    property once per session; a brief nudge on repeats avoids spamming.
+      const shownKey = `tenancy_gate_card_shown_${from}`;
+      if (await this.cache.get(shownKey)) {
+        await this.templateSenderService.sendText(
+          from,
+          'Please confirm your tenancy details using the buttons above to continue.',
+        );
+      } else {
+        await this.handleConfirmTenancyDetails(from, unconfirmed[0].property_id);
+        await this.cache.set(shownKey, '1', this.SESSION_TIMEOUT_MS);
+      }
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `Tenant confirmation gate failed for ${from}; failing open:`,
+        err,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * True when this inbound is part of the tenancy-confirm/dispute escape hatch
+   * and must bypass the gate: the multi-property confirm picker, the free-text
+   * dispute reply, or one of the confirm/dispute buttons.
+   */
+  private async isConfirmFlowInteraction(
+    message: IncomingMessage,
+    from: string,
+  ): Promise<boolean> {
+    // Mid-flow states: choosing which property to confirm, or typing what's wrong.
+    if (await this.cache.get(`tenancy_details_selection_${from}`)) return true;
+    const mrState = await this.cache.get<string>(
+      `maintenance_request_state_${from}`,
+    );
+    if (
+      typeof mrState === 'string' &&
+      mrState.startsWith('awaiting_tenancy_dispute_reason')
+    ) {
+      return true;
+    }
+
+    // Confirm/dispute buttons (same extraction as handleInteractive).
+    const buttonReply =
+      (
+        message.interactive as {
+          button_reply?: { id?: string; payload?: string };
+        }
+      )?.button_reply ||
+      (message as unknown as { button?: { id?: string; payload?: string } })
+        .button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
+    if (!buttonId) return false;
+    const action = buttonId.includes(':') ? buttonId.split(':')[0] : buttonId;
+    return (
+      action === 'confirm_tenancy_details' ||
+      action === 'tenancy_details_correct' ||
+      action === 'tenancy_details_incorrect'
+    );
   }
 
   /**
@@ -3377,6 +3477,17 @@ export class TenantFlowService {
     await this.cache.delete(`tenancy_confirmation_pending_${from}`);
 
     if (propertyId) {
+      // Persist the confirmation so the bot gate (gateUnconfirmedTenant) lets
+      // this tenant through. Clearing the per-session throttle key means that,
+      // for a multi-property tenant, the next unconfirmed property's card shows
+      // straight away on their next message.
+      try {
+        await this.markTenancyDetailsConfirmed(from, propertyId);
+        await this.cache.delete(`tenancy_gate_card_shown_${from}`);
+      } catch (err) {
+        this.logger.error('Failed to persist tenancy-details confirmation:', err);
+      }
+
       try {
         await this.queueTenancyReviewLandlordNotification(
           from,
@@ -3395,6 +3506,28 @@ export class TenantFlowService {
       from,
       `Great, you're all set.\n\nYou can now use Lizt to report issues, make payments and stay updated.\n\nSimply tap Hi to get started.`,
       [{ id: 'main_menu', title: 'Hi' }],
+    );
+  }
+
+  /**
+   * Stamp `details_confirmed_at` on the tenant's ACTIVE tenancy for this
+   * property — the durable record the bot gate reads. Resolved from the phone
+   * the same way handleConfirmTenancyDetails does (tenant accounts + property +
+   * ACTIVE), so the gate and this write agree on which row.
+   */
+  private async markTenancyDetailsConfirmed(
+    from: string,
+    propertyId: string,
+  ): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return;
+    await this.propertyTenantRepo.update(
+      {
+        tenant_id: In(user.accounts.map((a) => a.id)),
+        property_id: propertyId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+      { details_confirmed_at: new Date() },
     );
   }
 

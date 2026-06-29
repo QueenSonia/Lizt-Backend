@@ -1122,6 +1122,19 @@ export class WhatsappBotService implements OnModuleInit {
           }
         }
 
+        // Block tenants who haven't confirmed their tenancy details. Sits
+        // before the message-type dispatch so it gates text, buttons and media
+        // in one place (and the AI fork downstream). Fail-open + exempts the
+        // confirm/dispute flow so a blocked tenant can always get out.
+        if (
+          await this.tenantFlowService.gateUnconfirmedTenant(
+            message,
+            tenantPhone,
+          )
+        ) {
+          return;
+        }
+
         // Delegate to TenantFlowService
         // Requirements: 2.5
         if (message.type === 'interactive' || message.type === 'button') {

@@ -26,7 +26,6 @@ import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
 import {
   MaintenanceRequestCreatorTypeEnum,
-  MaintenanceRequestKindEnum,
   MaintenanceRequestStatusEnum,
 } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { mapMRStatusForTenant } from 'src/maintenance-requests/utils/tenant-view';
@@ -1273,7 +1272,6 @@ export class TenantFlowService {
     tenantUserId: string;
     propertyId: string;
     text: string;
-    kind?: MaintenanceRequestKindEnum;
   }): Promise<{ id: string; request_id: string } | null> {
     const user = await this.usersRepo.findOne({
       where: { id: params.tenantUserId },
@@ -1285,12 +1283,9 @@ export class TenantFlowService {
       return null;
     }
 
-    const kind = params.kind ?? MaintenanceRequestKindEnum.REPAIR;
-    const isNotice = kind === MaintenanceRequestKindEnum.NOTICE;
-
     const created =
       await this.maintenanceRequestService.createMaintenanceRequest(
-        { property_id: params.propertyId, text: params.text, kind },
+        { property_id: params.propertyId, text: params.text },
         { id: params.tenantUserId, role: RolesEnum.TENANT },
       );
     if (!created) return null;
@@ -1305,37 +1300,32 @@ export class TenantFlowService {
       request_id,
     } = created;
 
-    // Notices are landlord-only, informational items — no FM dispatch and no
-    // WhatsApp approve/reject ping. The in-app landlord notification (emitted by
-    // createMaintenanceRequest's maintenance.created handler) is the only alert.
-    if (!isNotice) {
-      try {
-        await this.queueFacilityManagerNotifications(
-          facility_managers,
-          user,
-          property_name,
-          property_location,
-          params.text,
-          created_at,
-          id,
-        );
-      } catch (err) {
-        this.logger.error('Failed to queue FM notifications (flow):', err);
-      }
+    try {
+      await this.queueFacilityManagerNotifications(
+        facility_managers,
+        user,
+        property_name,
+        property_location,
+        params.text,
+        created_at,
+        id,
+      );
+    } catch (err) {
+      this.logger.error('Failed to queue FM notifications (flow):', err);
+    }
 
-      try {
-        await this.queueLandlordNotification(
-          property_id,
-          user,
-          property_name,
-          property_location,
-          params.text,
-          created_at,
-          id,
-        );
-      } catch (err) {
-        this.logger.error('Failed to queue landlord notification (flow):', err);
-      }
+    try {
+      await this.queueLandlordNotification(
+        property_id,
+        user,
+        property_name,
+        property_location,
+        params.text,
+        created_at,
+        id,
+      );
+    } catch (err) {
+      this.logger.error('Failed to queue landlord notification (flow):', err);
     }
 
     return { id, request_id };

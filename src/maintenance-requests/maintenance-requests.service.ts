@@ -9,7 +9,6 @@ import {
   CreateMaintenanceRequestDto,
   MaintenanceRequestCreatorTypeEnum,
   MaintenanceRequestFilter,
-  MaintenanceRequestKindEnum,
   MaintenanceRequestScopeEnum,
   MaintenanceRequestStatusEnum,
 } from './dto/create-maintenance-request.dto';
@@ -225,14 +224,6 @@ export class MaintenanceRequestsService {
     const tenantName =
       `${tenantExistInProperty.tenant.user.first_name} ${tenantExistInProperty.tenant.user.last_name}`.trim();
 
-    // A notice is informational for the landlord only — no FM, no approval. It
-    // opens in NOTICE_OPEN and is closed when the landlord acknowledges it.
-    const kind = data.kind ?? MaintenanceRequestKindEnum.REPAIR;
-    const isNotice = kind === MaintenanceRequestKindEnum.NOTICE;
-    const initialStatus = isNotice
-      ? MaintenanceRequestStatusEnum.NOTICE_OPEN
-      : MaintenanceRequestStatusEnum.NOT_APPROVED;
-
     const request = this.maintenanceRequestRepository.create({
       request_id: requestId,
       tenant_id: tenantExistInProperty.tenant.id,
@@ -245,8 +236,7 @@ export class MaintenanceRequestsService {
         : null,
       date_reported: new Date(),
       description: data.text,
-      status: initialStatus,
-      kind,
+      status: MaintenanceRequestStatusEnum.NOT_APPROVED,
       scope: data.scope ?? MaintenanceRequestScopeEnum.UNIT,
       is_urgent: data.is_urgent ?? false,
       creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
@@ -258,10 +248,10 @@ export class MaintenanceRequestsService {
     await this.createStatusHistoryEntry(
       savedRequest.id,
       null,
-      initialStatus,
+      MaintenanceRequestStatusEnum.NOT_APPROVED,
       tenantExistInProperty.tenant.user.id,
       'tenant',
-      isNotice ? 'Notice created' : 'Maintenance request created',
+      'Maintenance request created',
     );
 
     try {
@@ -276,7 +266,6 @@ export class MaintenanceRequestsService {
         created_at: savedRequest.created_at,
         creator_type: MaintenanceRequestCreatorTypeEnum.TENANT,
         scope: savedRequest.scope,
-        kind,
         is_urgent: savedRequest.is_urgent,
       });
     } catch (error) {
@@ -998,12 +987,6 @@ export class MaintenanceRequestsService {
         },
       );
 
-      // Notices are landlord-only, informational items with no FM involvement —
-      // they must never appear in any FM view.
-      qb.andWhere('sr.kind = :repairKind', {
-        repairKind: MaintenanceRequestKindEnum.REPAIR,
-      });
-
       // Narrow to "assigned to me" when the caller asks for it. Use the
       // FM's TeamMember ids across all the landlord teams they sit on.
       if (queryParams?.assigned_to === 'me') {
@@ -1038,9 +1021,6 @@ export class MaintenanceRequestsService {
     }
     if (queryParams?.scope) {
       qb.andWhere('sr.scope = :scope', { scope: queryParams.scope });
-    }
-    if (queryParams?.kind) {
-      qb.andWhere('sr.kind = :kind', { kind: queryParams.kind });
     }
     if (queryParams?.creator_type) {
       qb.andWhere('sr.creator_type = :creator_type', {
@@ -2031,11 +2011,7 @@ export class MaintenanceRequestsService {
             landlordAccountIds.length > 0 ? landlordAccountIds : ['__none__'],
         },
       )
-      .andWhere('sr.deleted_at IS NULL')
-      // Notices are landlord-only — keep them out of FM-facing feeds/lists.
-      .andWhere('sr.kind = :repairKind', {
-        repairKind: MaintenanceRequestKindEnum.REPAIR,
-      });
+      .andWhere('sr.deleted_at IS NULL');
 
     if (options?.landlordId) {
       // `landlordId` is the landlord's Account.id, which both owner columns
@@ -3539,67 +3515,6 @@ export class MaintenanceRequestsService {
   }
 
   /**
-   * Landlord acknowledges a tenant-filed NOTICE (kind='notice'), closing the
-   * informational item. Notices have no FM and never reach the approval flow,
-   * so this is the only landlord action on them: NOTICE_OPEN → CLOSED. No
-   * assignment, no WhatsApp pings — the status-history row is the record.
-   */
-  async acknowledgeNotice(
-    requestId: string,
-    landlordAccountId: string,
-    source: 'dashboard' | 'whatsapp' = 'dashboard',
-  ): Promise<MaintenanceRequest> {
-    const sr = await this.maintenanceRequestRepository.findOne({
-      where: { id: requestId },
-      relations: ['property', 'common_area'],
-    });
-    if (!sr) {
-      throw new NotFoundException('Maintenance request not found');
-    }
-
-    await this.assertLandlordOwnsRequest(sr, landlordAccountId);
-
-    if (sr.kind !== MaintenanceRequestKindEnum.NOTICE) {
-      throw new HttpException(
-        'This request is not a notice',
-        HttpStatus.CONFLICT,
-      );
-    }
-    if (sr.status !== MaintenanceRequestStatusEnum.NOTICE_OPEN) {
-      throw new HttpException(
-        `Notice is no longer open (current status: ${sr.status})`,
-        HttpStatus.CONFLICT,
-      );
-    }
-
-    const landlordUserId = await this.resolveActorUserId(landlordAccountId);
-
-    await this.dataSource.transaction(async (manager) => {
-      await manager.update(MaintenanceRequest, requestId, {
-        status: MaintenanceRequestStatusEnum.CLOSED,
-      });
-      await this.createStatusHistoryEntry(
-        requestId,
-        MaintenanceRequestStatusEnum.NOTICE_OPEN,
-        MaintenanceRequestStatusEnum.CLOSED,
-        landlordUserId,
-        'landlord',
-        `Landlord acknowledged notice via ${
-          source === 'whatsapp' ? 'WhatsApp' : 'dashboard'
-        }`,
-        undefined,
-        manager,
-      );
-    });
-
-    const updated = await this.maintenanceRequestRepository.findOne({
-      where: { id: requestId },
-      relations: ['property', 'common_area'],
-    });
-    return updated as MaintenanceRequest;
-  }
-
-  /**
    * Append extra detail a tenant added shortly after filing (e.g. "it's getting
    * worse" / "forgot to mention the upstairs one") to the SAME request, rather
    * than creating a duplicate. Used by the WhatsApp tenant AI when it judges a
@@ -3638,7 +3553,6 @@ export class MaintenanceRequestsService {
       MaintenanceRequestStatusEnum.APPROVED,
       MaintenanceRequestStatusEnum.REOPENED,
       MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
-      MaintenanceRequestStatusEnum.NOTICE_OPEN,
     ];
     if (!APPENDABLE_STATUSES.includes(sr.status)) {
       return null;

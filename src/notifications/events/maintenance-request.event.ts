@@ -19,9 +19,6 @@ export interface MaintenanceRequestCreatedEvent {
   creator_type?: 'tenant' | 'facility_manager' | 'landlord';
   creator_name?: string;
   scope?: 'unit' | 'common_area';
-  // 'notice' = informational tenant message for the landlord (no FM). Drives a
-  // notice-specific in-app headline; absent/'repair' behaves as before.
-  kind?: 'repair' | 'notice';
   is_urgent?: boolean;
   description: string;
   created_at: Date;

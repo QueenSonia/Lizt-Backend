@@ -472,24 +472,6 @@ export class MaintenanceRequestsController {
     );
   }
 
-  @ApiOperation({ summary: 'Acknowledge a tenant notice (closes it)' })
-  @ApiOkResponse({ description: 'Notice acknowledged' })
-  @ApiNotFoundResponse({ description: 'Maintenance request not found' })
-  @ApiSecurity('access_token')
-  @Post(':id/acknowledge')
-  @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
-  async acknowledgeNotice(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @CurrentUser() requester: Account,
-  ) {
-    return this.maintenanceRequestsService.acknowledgeNotice(
-      id,
-      requester.id,
-      'dashboard',
-    );
-  }
-
   @ApiOperation({ summary: 'Update Maintenance Request' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ type: UpdateMaintenanceRequestResponseDto })

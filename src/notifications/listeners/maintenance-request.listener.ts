@@ -197,13 +197,6 @@ export class MaintenanceRequestListener {
     const location =
       event.property_name ?? event.common_area_name ?? 'their property';
     const description = event.description ?? '';
-    // A notice is an informational message for the landlord (no FM, no repair) —
-    // render it as a notice rather than "made a maintenance request".
-    if (event.kind === 'notice') {
-      const noticeFrom = event.tenant_name ?? event.creator_name ?? 'A tenant';
-      return `${noticeFrom} sent a notice about ${location}.
-${description}`;
-    }
     if (event.creator_type === 'landlord') {
       return `You filed a maintenance request for ${location}.
 ${description}`;

@@ -8,13 +8,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { LlmService } from '../ai/llm.service';
-import { UNKNOWNS_KNOWLEDGE } from '../ai/knowledge/unknowns';
+import { TENANTS_KNOWLEDGE } from '../ai/knowledge/tenants';
 import { OTP_GUARDRAIL, redactSensitiveContent } from '../ai/guardrails';
 import { AiMessage, AiTool, AiToolUse } from '../ai/ai.types';
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
 import { Property } from 'src/properties/entities/property.entity';
-import { MaintenanceRequestKindEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { ChatLogService } from './chat-log.service';
 import { MessageDirection } from './entities/message-direction.enum';
 import { TemplateSenderService } from './template-sender';
@@ -76,9 +75,9 @@ const TOOLS: AiTool[] = [
   {
     name: 'report_maintenance',
     description:
-      "File the tenant's maintenance item once you have a clear one-line issue " +
-      'summary, the property it concerns, and whether it is a repair or a notice. ' +
-      'Only call this after a quick read-back confirmation from the tenant.',
+      "File the tenant's maintenance request once you have a clear one-line issue " +
+      'summary and the property it concerns. Only call this after a quick read-back ' +
+      'confirmation from the tenant.',
     parameters: {
       type: 'object',
       properties: {
@@ -90,18 +89,10 @@ const TOOLS: AiTool[] = [
         issue_summary: {
           type: 'string',
           description:
-            'One clear line describing the issue or notice, in the tenant\'s own words.',
-        },
-        kind: {
-          type: 'string',
-          enum: ['repair', 'notice'],
-          description:
-            'repair = the tenant wants something acted on (a problem, fault, or ' +
-            'complaint to handle, including non-physical ones like noise); ' +
-            "notice = they're just informing the landlord, no action expected.",
+            "One clear line describing the issue, in the tenant's own words.",
         },
       },
-      required: ['property_id', 'issue_summary', 'kind'],
+      required: ['property_id', 'issue_summary'],
     },
   },
   {
@@ -249,39 +240,40 @@ a facility manager or the landlord handles the actual work.
 YOU DO TWO JOBS for the property manager: (1) capture maintenance, and (2) answer
 factual questions about the tenant's own tenancy WHEN THEY ASK. Nothing else.
 
-JOB 1 — CAPTURE MAINTENANCE — two kinds:
-- Maintenance requests (pass kind="repair") — the tenant wants something looked
-  into, sorted out, or acted on: a problem, fault, or complaint they expect
-  someone to handle. This is the broad bucket — physical repairs (leaking tap,
-  faulty socket, broken gate, blocked toilet) AND other issues that need
-  attention (a noise complaint, a recurring nuisance, a safety/security concern).
-- Notices (pass kind="notice") — the tenant is just letting the landlord know
-  something; no action is expected (e.g. "I'll be travelling next month", "a
-  guest will be staying", a general heads-up).
-Decide with one test: does the tenant want someone to ACT on this, or are they
-just informing the landlord? Wants action → maintenance request. Just informing →
-notice. Only if it's genuinely unclear, ask ONE short question.
+JOB 1 — CAPTURE MAINTENANCE: anything the tenant wants to raise with the property
+manager — a problem, fault, or complaint to act on (leaking tap, faulty socket,
+broken gate, blocked toilet, a noise complaint, a safety/security concern), OR
+something they simply want the landlord to know (e.g. "I'll be travelling next
+month", "a guest will be staying"). Capture all of it as a single maintenance
+request — you don't categorise it; the facility manager and landlord take it from
+there.
 
 JOB 2 — ANSWER TENANCY QUESTIONS — see "ANSWERING TENANCY QUESTIONS" below.
 
-For anything else — what they owe, balances, payments made, invoices, payment
-plans, renewals — do NOT answer or guess. Briefly say it's handled from the menu
-and ask them to reply *menu*.
+For anything else, separate EXPLAINING from their FIGURES and from ACTIONS:
+- EXPLAINING is allowed: a general "what does this message mean?" or "how does
+  this work?" question — about a reminder, an invoice, a renewal, a payment plan,
+  a receipt, an outstanding balance, KYC, an OTP — you MAY answer briefly using
+  KNOWLEDGE below.
+- Their FIGURES (what they owe, their balance, whether a specific payment landed)
+  and any ACTION (paying, starting/requesting a payment plan, accepting an offer
+  or renewal) — do NOT answer, compute, or guess. Say it's handled from the menu
+  and ask them to reply *menu*. (Verified lease facts are the exception — see
+  Job 2.)
 
 HOW TO HANDLE A MAINTENANCE CONVERSATION, in order:
 1. Understand what the tenant wants.
-2. Decide whether it's a repair or a notice.
-3. Collect ONLY what's still needed to identify the issue and its property —
+2. Collect ONLY what's still needed to identify the issue and its property —
    nothing that's merely "nice to have". The facility manager gathers the rest
    later, and the tenant can attach photos/videos.
-4. A quick confirmation before filing is good — but it is NOT compulsory and must
+3. A quick confirmation before filing is good — but it is NOT compulsory and must
    NEVER happen twice. If the tenant has already made their intent clear (they
    asked you to report/log it, or answered yes to a question you already asked),
    just file it — do not ask again. Otherwise read the issue back in one short,
    clear line and check it's right (e.g. "Got it — leaking roof. Shall I send this
    to your landlord now?").
-5. File it with report_maintenance.
-6. Reassure them warmly that it's been passed on.
+4. File it with report_maintenance.
+5. Reassure them warmly that it's been passed on.
 
 If the tenant's opening message already gives you the issue (and, for a
 multi-property tenant, names the property), do NOT ask anything — go straight to a
@@ -309,8 +301,10 @@ ANSWERING TENANCY QUESTIONS (Job 2)
   they want it all.
 - If it returns no tenancy/rent on file, say you don't have it to hand and they
   should check with their landlord.
-- Lease FACTS only. If they ask what they OWE, their balance, whether rent is paid,
-  invoices, payment plans, or renewals — that's the menu; don't answer it here.
+- Lease FACTS only. If they ask what they OWE, their balance, or whether a specific
+  payment landed — that's the menu; don't answer it here. (You may still explain in
+  general terms what an invoice, payment plan, or renewal IS from KNOWLEDGE — just
+  never their specific figures or actions.)
 
 ${propertyBlock}
 
@@ -347,7 +341,7 @@ Tools (call them, don't just talk about them):
 - handoff_to_landlord: when they want a human, are upset, or you can't help.
 
 KNOWLEDGE (only state facts from here):
-${UNKNOWNS_KNOWLEDGE}
+${TENANTS_KNOWLEDGE}
 
 ${OTP_GUARDRAIL}
 `.trim();
@@ -598,16 +592,10 @@ export class TenantAiService {
       return 'That exact issue was just logged — do not file it again. If the tenant added new detail to it, use update_maintenance_request; otherwise reassure them it is already with their landlord.';
     }
 
-    const kind =
-      asStr(input.kind) === 'notice'
-        ? MaintenanceRequestKindEnum.NOTICE
-        : MaintenanceRequestKindEnum.REPAIR;
-
     const created = await this.tenantFlow.createTenantMaintenanceRequest({
       tenantUserId: ctx.tenantUserId,
       propertyId,
       text,
-      kind,
     });
     if (!created) {
       return 'Filing failed. Apologise briefly and suggest they reply *menu* to try again.';
@@ -627,9 +615,7 @@ export class TenantAiService {
     );
     await this.drainMediaBuffer(from, created.id);
 
-    return kind === MaintenanceRequestKindEnum.NOTICE
-      ? 'Notice logged for the landlord. Confirm warmly that you have passed it on.'
-      : 'Maintenance request logged and the landlord/facility manager notified. Reassure them someone will look into it.';
+    return 'Maintenance request logged and the landlord/facility manager notified. Reassure them someone will look into it.';
   }
 
   /**

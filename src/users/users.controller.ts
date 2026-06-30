@@ -64,7 +64,11 @@ import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/current-user.decorator';
 import { Account } from 'src/users/entities/account.entity';
 import { Team } from 'src/users/entities/team.entity';
-import { TeamMemberDto } from 'src/users/dto/team-member.dto';
+import {
+  TeamMemberDto,
+  AssignCollaboratorDto,
+  UpdateTeamMemberDto,
+} from 'src/users/dto/team-member.dto';
 
 @ApiTags('Users')
 @Controller('users')
@@ -120,7 +124,7 @@ export class UsersController {
   @Put('team-members/:id')
   async updateTeamMember(
     @Param('id') id: string,
-    @Body() body: { name: string; phone: string },
+    @Body() body: UpdateTeamMemberDto,
     @CurrentUser() requester: Account,
   ) {
     return this.usersService.updateTeamMember(id, body, requester);
@@ -667,15 +671,7 @@ export class UsersController {
 
   @Post('assign-collaborator')
   async assignCollaborator(
-    @Body()
-    team_member: {
-      email: string;
-      permissions: string[];
-      role: RolesEnum;
-      first_name: string;
-      last_name: string;
-      phone_number: string;
-    },
+    @Body() team_member: AssignCollaboratorDto,
     @Req() req: any,
   ) {
     return this.usersService.assignCollaboratorToTeam(req.user.id, team_member);

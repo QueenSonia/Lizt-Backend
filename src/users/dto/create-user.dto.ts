@@ -9,11 +9,9 @@ import {
   IsNotEmpty,
   IsNumber,
   IsOptional,
-  IsPhoneNumber,
   IsString,
   IsUUID,
   Matches,
-  MinLength,
   ValidateIf,
 } from 'class-validator';
 import {
@@ -22,6 +20,7 @@ import {
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
 import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
+import { IsValidPhoneNumber } from '../../common/validation/is-valid-phone.decorator';
 
 export class CreateTenantDto {
   @IsString()
@@ -197,6 +196,8 @@ export class CreateTenantKycDto {
 
   @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
   @IsString()
+  @IsValidPhoneNumber()
+  @NormalizePhoneNumber()
   spouse_phone_number: string;
 
   @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
@@ -235,8 +236,7 @@ export class CreateUserDto {
     description: 'Phone number of the user',
   })
   @IsNotEmpty()
-  @IsPhoneNumber()
-  @MinLength(10)
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   phone_number: string;
 
@@ -478,7 +478,8 @@ export class CreateUserDto {
   })
   @ValidateIf((o) => o.marital_status === MaritalStatus.MARRIED)
   @IsNotEmpty()
-  @IsPhoneNumber()
+  @IsValidPhoneNumber()
+  @NormalizePhoneNumber()
   spouse_phone_number?: string;
 
   @ApiProperty({
@@ -613,7 +614,7 @@ export class CreateAdminDto {
   })
   @IsNotEmpty()
   @IsString()
-  @MinLength(10)
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   phone_number: string;
 
@@ -687,7 +688,7 @@ export class CreateLandlordDto {
   })
   @IsNotEmpty()
   @IsString()
-  @MinLength(10)
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   phone_number: string;
 
@@ -755,7 +756,7 @@ export class CreateCustomerRepDto {
   })
   @IsNotEmpty()
   @IsString()
-  @MinLength(10)
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   phone_number: string;
 

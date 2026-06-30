@@ -13,7 +13,8 @@ export class KycVerifyOTPDto {
 
   @ApiProperty({
     example: '+2348123456789',
-    description: 'Phone number that received the OTP',
+    description:
+      'Phone number that received the OTP (Nigerian local or any international +country-code number)',
   })
   @IsString()
   @IsNotEmpty({ message: 'Phone number is required' })

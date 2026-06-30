@@ -24,6 +24,7 @@ import { PaymentPlanScope } from 'src/payment-plans/entities/payment-plan.entity
 import { buildInstallmentPlanClause } from 'src/payment-plans/installment-description.util';
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
+import { formatPhoneForDisplay } from 'src/utils/phone-number.transformer';
 import { RolesEnum } from 'src/base.entity';
 import {
   MaintenanceRequestCreatorTypeEnum,
@@ -732,10 +733,12 @@ export class TenantFlowService {
     );
   }
 
-  /** Convert a phone number to Nigerian local format (0xxx) */
+  /**
+   * Format a phone number for display: NG in local 0xxx form, other countries
+   * in full international form.
+   */
   private toLocalPhone(phone: string): string {
-    if (phone.startsWith('234')) return '0' + phone.slice(3);
-    return phone.replace(/^\+234/, '0');
+    return formatPhoneForDisplay(phone, '');
   }
 
   /** Format a date in Africa/Lagos timezone */

@@ -4,7 +4,6 @@ import {
   IsNotEmpty,
   IsDateString,
   IsOptional,
-  IsPhoneNumber,
   IsNumberString,
   ValidateIf,
   IsIn,
@@ -19,6 +18,7 @@ import {
   MaritalStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
 import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
+import { IsValidPhoneNumber } from '../../common/validation/is-valid-phone.decorator';
 
 /**
  * Base DTO containing all fields shared between KYC submission flows.
@@ -31,7 +31,7 @@ export class BaseKYCApplicationFieldsDto {
   kyc_token: string;
 
   // Personal Information
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @IsNotEmpty()
   @NormalizePhoneNumber()
   phone_number: string;
@@ -115,7 +115,7 @@ export class BaseKYCApplicationFieldsDto {
 
   @ValidateIf((o) => o.employment_status === EmploymentStatus.EMPLOYED)
   @IsNotEmpty()
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   work_phone_number?: string;
 
@@ -159,7 +159,7 @@ export class BaseKYCApplicationFieldsDto {
   next_of_kin_relationship: string;
 
   @IsNotEmpty()
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   next_of_kin_phone_number: string;
 
@@ -175,7 +175,7 @@ export class BaseKYCApplicationFieldsDto {
   referral_agent_full_name?: string;
 
   @IsOptional()
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   referral_agent_phone_number?: string;
 

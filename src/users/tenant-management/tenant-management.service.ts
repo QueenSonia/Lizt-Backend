@@ -1155,21 +1155,13 @@ export class TenantManagementService {
       console.log('🔍 Looking for existing user with phone:', normalizedPhone);
       console.log('📞 Original phone number:', phone_number);
 
-      // Create comprehensive list of phone number variations to try
-      const phoneVariations = [
-        normalizedPhone,
-        phone_number,
-        phone_number.startsWith('+') ? phone_number.substring(1) : phone_number,
-        phone_number.startsWith('+234')
-          ? '0' + phone_number.substring(4)
-          : null,
-        phone_number.startsWith('234') ? '0' + phone_number.substring(3) : null,
-        phone_number.startsWith('0') ? phone_number.substring(1) : null,
-        phone_number.startsWith('0') ? '234' + phone_number.substring(1) : null,
-        phone_number.startsWith('0')
-          ? '+234' + phone_number.substring(1)
-          : null,
-      ].filter(Boolean) as string[];
+      // Storage is canonical: every write goes through normalizePhoneNumber and
+      // the users_phone_number_canonical CHECK guarantees the digits-only E.164
+      // form (NG -> 234...), so a single canonical lookup matches any country.
+      // (The old multi-format fan-out only existed to catch legacy NG rows that
+      // pre-dated the constraint; with country-aware normalization it would also
+      // degenerate for foreign numbers.)
+      const phoneVariations = [normalizedPhone];
 
       console.log('🔍 Phone variations to try:', phoneVariations);
 
@@ -1248,14 +1240,8 @@ export class TenantManagementService {
               '⚠️ Duplicate key error caught, searching for existing user again...',
             );
 
-            // Try all possible phone number formats
-            const phoneVariants = [
-              normalizedPhone,
-              phone_number,
-              phone_number.startsWith('+')
-                ? phone_number.substring(1)
-                : `+${phone_number}`,
-            ];
+            // Re-query the canonical form that would have been saved.
+            const phoneVariants = [normalizedPhone];
 
             for (const phoneVariant of phoneVariants) {
               const foundUser = await manager.getRepository(Users).findOne({

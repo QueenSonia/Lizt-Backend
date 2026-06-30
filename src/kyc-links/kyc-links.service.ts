@@ -25,6 +25,7 @@ import {
 import { ChatLog } from '../whatsapp-bot/entities/chat-log.entity';
 import { MessageStatus } from '../whatsapp-bot/entities/message-status.enum';
 import { UtilService } from '../utils/utility-service';
+import { isValidPhone } from '../utils/phone-number.transformer';
 
 export interface KYCLinkResponse {
   token: string;
@@ -324,56 +325,22 @@ export class KYCLinksService {
 
     const trimmedPhone = phoneNumber.trim();
 
-    // Check for minimum length (at least 10 digits)
-    const digitsOnly = trimmedPhone.replace(/\D/g, '');
-    if (digitsOnly.length < 10) {
+    // Validity is delegated to libphonenumber (default region NG). This accepts
+    // a Nigerian local number (0803...) and any international number with its
+    // country code (+44...), and rejects everything else.
+    if (!isValidPhone(trimmedPhone)) {
       return {
         isValid: false,
-        error: 'Phone number must contain at least 10 digits',
+        error:
+          'Invalid phone number. Include the country code for non-Nigerian numbers (e.g. +44...).',
       };
     }
 
-    // Check for maximum length (no more than 15 digits as per E.164 standard)
-    if (digitsOnly.length > 15) {
-      return {
-        isValid: false,
-        error: 'Phone number is too long (maximum 15 digits)',
-      };
-    }
-
-    try {
-      const normalizedPhone =
-        this.utilService.normalizePhoneNumber(trimmedPhone);
-
-      if (!normalizedPhone) {
-        return {
-          isValid: false,
-          error:
-            'Invalid phone number format. Please use a valid international format',
-        };
-      }
-
-      // Additional validation for Nigerian numbers (common use case)
-      if (normalizedPhone.startsWith('234')) {
-        const nigerianNumber = normalizedPhone.substring(3);
-        if (nigerianNumber.length !== 10) {
-          return {
-            isValid: false,
-            error: 'Invalid Nigerian phone number format',
-          };
-        }
-      }
-
-      return {
-        isValid: true,
-        normalizedPhone,
-      };
-    } catch (error) {
-      return {
-        isValid: false,
-        error: 'Failed to process phone number. Please check the format',
-      };
-    }
+    const normalizedPhone = this.utilService.normalizePhoneNumber(trimmedPhone);
+    return {
+      isValid: true,
+      normalizedPhone,
+    };
   }
 
   /**

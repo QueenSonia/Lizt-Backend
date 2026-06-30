@@ -2167,7 +2167,6 @@ export class PaymentPlansService {
     const paidAt = args.paidAt ?? new Date();
     const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
     const receiptNumber = `PLAN-R-${Date.now()}`;
-    const isManual = args.method !== InstallmentPaymentMethod.PAYSTACK;
 
     const plan = installment.plan;
     const propertyId = plan.property_id;
@@ -2213,32 +2212,12 @@ export class PaymentPlansService {
         return;
       }
 
-      // 2. Apply a ledger entry so tenant balance reflects the payment.
-      //    For manual payments, also write a user_added_payment row so the
-      //    existing property_history aggregation picks it up — matches the
-      //    renewal-invoice manual-payment path.
+      // 2. Apply a ledger entry so tenant balance reflects the payment. The
+      //    property/tenant timeline row + livefeed notification for this
+      //    installment are written by logPlanEvent in step 5/6 below (which
+      //    already runs for both Paystack and manual payments), so there is
+      //    deliberately no property_history write here.
       if (landlordId) {
-        if (isManual) {
-          const manualEntry = manager.create(PropertyHistory, {
-            property_id: propertyId,
-            tenant_id: tenantId,
-            event_type: 'user_added_payment',
-            event_description: JSON.stringify({
-              paymentAmount: args.amount,
-              paymentMethod: args.method,
-              source: 'payment_plan_installment',
-              paymentPlanId: plan.id,
-              installmentId: installment.id,
-              sequence: installment.sequence,
-              note: args.note ?? null,
-            }),
-            related_entity_id: installment.id,
-            related_entity_type: 'payment_plan_installment',
-            move_in_date: paidAt,
-          });
-          await manager.save(manualEntry);
-        }
-
         // Only wallet-backed plans (Outstanding Balance / ad-hoc / arrears)
         // credit the wallet. An invoice-fee charge plan already carved its fee
         // out of the invoice at creation; crediting here would double-reduce the
@@ -2442,6 +2421,8 @@ export class PaymentPlansService {
         NotificationType.PAYMENT_PLAN_INSTALLMENT_PAID,
         installment.id,
         'payment_plan_installment',
+        // Lets the timeline row deep-link to the installment receipt page.
+        { receiptToken },
       );
 
       if (refreshedPlan.status === PaymentPlanStatus.COMPLETED) {
@@ -2902,9 +2883,12 @@ export class PaymentPlansService {
     notificationType: NotificationType,
     relatedEntityId?: string,
     relatedEntityType?: string,
+    metadata?: Record<string, any>,
   ): Promise<void> {
     try {
-      // Property/tenant timeline row (single write hits both views).
+      // Property/tenant timeline row (single write hits both views). `metadata`
+      // carries structured extras the timeline builder needs — e.g. the
+      // installment receipt token so the row can deep-link to the receipt page.
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
           property_id: plan.property_id,
@@ -2913,6 +2897,7 @@ export class PaymentPlansService {
           event_description: description,
           related_entity_id: relatedEntityId ?? plan.id,
           related_entity_type: relatedEntityType ?? 'payment_plan',
+          metadata: metadata ?? null,
         }),
       );
 

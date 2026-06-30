@@ -53,9 +53,11 @@ import {
   InstallmentStatus,
 } from '../payment-plans/entities/payment-plan-installment.entity';
 import {
+  PaymentPlan,
   PaymentPlanScope,
   PaymentPlanStatus,
 } from '../payment-plans/entities/payment-plan.entity';
+import { buildInstallmentPlanClause } from '../payment-plans/installment-description.util';
 
 /**
  * Lead-day ladder for a FORCED scheduled removal ("end on a specific date").
@@ -225,16 +227,22 @@ export class RentReminderService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Sends payment plan installment notices on four windows, deduplicated per
-   * installment per day via `last_reminder_sent_on` so the cron can run more
-   * than once safely:
-   *   - 7 days before the due date  (upcoming reminder)
-   *   - 1 day before the due date   (upcoming reminder)
-   *   - on the due date             (upcoming reminder)
-   *   - 1 day after the due date    (OVERDUE notice, if still unpaid)
+   * Sends payment-plan installment notices for the EARLIEST UNPAID installment
+   * of each active plan only — reminders are strictly sequential, so an
+   * installment stays silent until every installment before it is paid. The
+   * moment the active one is paid, the next becomes the earliest-unpaid and
+   * picks up its own cadence from today (an immediate overdue notice if it is
+   * already past due).
    *
-   * Upcoming windows use the `installment_reminder` template; the overdue
-   * window uses the `installment_overdue` template.
+   * For that earliest-unpaid installment:
+   *   - upcoming: 7 days before, 1 day before, and on the due date
+   *     (`installment_reminder`)
+   *   - overdue: a first notice the day after the due date, then REPEATED every
+   *     7 days until paid (`installment_overdue_reminder`)
+   *
+   * Deduped per installment per day via `last_reminder_sent_on` (stamped to
+   * today on every send), which also anchors the weekly overdue cadence — see
+   * shouldSendInstallmentReminderToday.
    */
   async checkInstallmentReminders(): Promise<void> {
     this.logger.log('Processing payment plan installment reminders...');
@@ -242,41 +250,45 @@ export class RentReminderService {
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
-    const dateAtOffset = (days: number): string => {
-      const d = new Date(today);
-      d.setUTCDate(today.getUTCDate() + days);
-      return d.toISOString().split('T')[0];
-    };
-
-    const todayStr = dateAtOffset(0);
-    const yesterdayStr = dateAtOffset(-1); // D+1 overdue notice
-    const tomorrowStr = dateAtOffset(1); // D-1 reminder
-    const inSevenDaysStr = dateAtOffset(7); // D-7 reminder
-
-    const installments = await this.installmentRepository
+    // Every not-yet-fully-paid installment on an ACTIVE plan, earliest-sequence
+    // first, so we can reduce to the single earliest-unpaid installment per
+    // plan below. PARTIAL counts as unpaid: a half-paid installment must keep
+    // blocking the ones behind it (and keep being reminded) until it's PAID.
+    const pending = await this.installmentRepository
       .createQueryBuilder('inst')
       .leftJoinAndSelect('inst.plan', 'plan')
       .leftJoinAndSelect('plan.property', 'property')
       .leftJoinAndSelect('plan.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
-      .where('inst.status = :status', { status: InstallmentStatus.PENDING })
+      .where('inst.status IN (:...unpaidStatuses)', {
+        unpaidStatuses: [InstallmentStatus.PENDING, InstallmentStatus.PARTIAL],
+      })
       .andWhere('plan.status = :planStatus', {
         planStatus: PaymentPlanStatus.ACTIVE,
       })
-      .andWhere('DATE(inst.due_date) IN (:...dates)', {
-        dates: [yesterdayStr, todayStr, tomorrowStr, inSevenDaysStr],
-      })
-      .andWhere(
-        '(inst.last_reminder_sent_on IS NULL OR DATE(inst.last_reminder_sent_on) < :today)',
-        { today: todayStr },
-      )
+      .orderBy('inst.plan_id', 'ASC')
+      .addOrderBy('inst.sequence', 'ASC')
       .getMany();
 
-    this.logger.log(
-      `Found ${installments.length} installments needing reminders today.`,
+    // First unpaid installment seen per plan = its earliest-unpaid one (the
+    // query is ordered by sequence). Everything behind it is silenced.
+    const earliestUnpaidByPlan = new Map<string, PaymentPlanInstallment>();
+    for (const inst of pending) {
+      if (!earliestUnpaidByPlan.has(inst.plan_id)) {
+        earliestUnpaidByPlan.set(inst.plan_id, inst);
+      }
+    }
+
+    const dueToday = [...earliestUnpaidByPlan.values()].filter((inst) =>
+      this.shouldSendInstallmentReminderToday(inst, today),
     );
 
-    for (const installment of installments) {
+    this.logger.log(
+      `Found ${dueToday.length} installment(s) needing a reminder today ` +
+        `(of ${earliestUnpaidByPlan.size} active plan(s) with an unpaid installment).`,
+    );
+
+    for (const installment of dueToday) {
       try {
         await this.sendInstallmentReminder(installment, today);
       } catch (error) {
@@ -286,6 +298,56 @@ export class RentReminderService {
         );
       }
     }
+  }
+
+  /**
+   * Whether the earliest-unpaid installment of a plan should get a reminder
+   * today. All dates are normalised to UTC midnight.
+   *
+   *   - Upcoming (due today or later): only on the D-7 / D-1 / D-0 windows.
+   *   - Overdue (due date passed): the FIRST overdue notice fires once the due
+   *     date is behind us — detected via `last_reminder_sent_on` being null or
+   *     on/before the due date (i.e. the last send, if any, was a pre-due
+   *     reminder) — then REPEATS every 7 days until paid.
+   *
+   * The "already sent today" short-circuit keeps the cron idempotent within a
+   * day; the weekly cadence counts days since the last send.
+   */
+  private shouldSendInstallmentReminderToday(
+    installment: PaymentPlanInstallment,
+    today: Date,
+  ): boolean {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+    const dueDate = new Date(installment.due_date);
+    dueDate.setUTCHours(0, 0, 0, 0);
+
+    const lastSent = installment.last_reminder_sent_on
+      ? new Date(installment.last_reminder_sent_on)
+      : null;
+    if (lastSent) lastSent.setUTCHours(0, 0, 0, 0);
+
+    // Never send twice in one day, whatever the window.
+    if (lastSent && lastSent.getTime() >= today.getTime()) return false;
+
+    const daysUntilDue = Math.round(
+      (dueDate.getTime() - today.getTime()) / MS_PER_DAY,
+    );
+
+    if (daysUntilDue >= 0) {
+      // Upcoming — only the three pre-due windows.
+      return daysUntilDue === 7 || daysUntilDue === 1 || daysUntilDue === 0;
+    }
+
+    // Overdue. First overdue notice = no overdue reminder sent yet (last send
+    // was null or a pre-due one, i.e. stamped on/before the due date).
+    if (!lastSent || lastSent.getTime() <= dueDate.getTime()) return true;
+
+    // Subsequent overdue notices repeat weekly.
+    const daysSinceLast = Math.round(
+      (today.getTime() - lastSent.getTime()) / MS_PER_DAY,
+    );
+    return daysSinceLast >= 7;
   }
 
   private async sendInstallmentReminder(
@@ -298,6 +360,7 @@ export class RentReminderService {
     const phone = plan.tenant?.user?.phone_number;
     const tenantName = plan.tenant?.user?.first_name;
     const propertyName = plan.property?.name;
+    const landlordId = plan.property?.owner_id;
 
     if (!phone || !tenantName || !propertyName) {
       this.logger.warn(
@@ -311,7 +374,12 @@ export class RentReminderService {
     });
     const installmentLabel = `${installment.sequence} of ${totalInstallments}`;
 
-    const amount = Number(installment.amount).toLocaleString('en-NG', {
+    // Show what's still owed: the full amount for PENDING, the balance for a
+    // PARTIAL installment (amount_paid is null/0 for PENDING, so this is a
+    // no-op there).
+    const remainingDue =
+      Number(installment.amount) - Number(installment.amount_paid ?? 0);
+    const amount = remainingDue.toLocaleString('en-NG', {
       style: 'currency',
       currency: 'NGN',
     });
@@ -319,36 +387,72 @@ export class RentReminderService {
       'en-GB',
     );
 
-    // Tenant-facing label: "Tenancy" reads better than the stored
-    // "Entire Tenancy" sentinel for tenancy-scope plans (matches the
-    // payment_plan_created_tenant send).
-    const displayChargeName =
-      plan.scope === PaymentPlanScope.TENANCY ? 'Tenancy' : plan.charge_name;
-
     // An installment whose due date is before today is overdue — use the
     // overdue-toned template; otherwise it's an upcoming reminder.
     const dueDate = new Date(installment.due_date);
     dueDate.setUTCHours(0, 0, 0, 0);
     const isOverdue = dueDate.getTime() < today.getTime();
 
-    const senderMethod = isOverdue
-      ? 'sendInstallmentOverdueTemplate'
-      : 'sendInstallmentReminderTemplate';
-
-    await this.whatsAppNotificationLogService.queue(
-      senderMethod,
-      {
-        phone_number: phone,
-        tenant_name: tenantName,
-        property_name: propertyName,
-        charge_name: displayChargeName,
-        installment_label: installmentLabel,
-        amount,
-        due_date: dueDateStr,
-        pay_token: installment.id,
-      },
-      installment.id,
-    );
+    if (isOverdue) {
+      // Overdue notice mirrors the reminder's shape: property / charge /
+      // tenancy-period folded into plan_description ({{6}}), and {{3}} carries
+      // the past-tense "due ago" word so the weekly repeats don't all read
+      // "yesterday".
+      const planDescription = await this.buildInstallmentPlanDescription(
+        plan,
+        propertyName,
+      );
+      const daysOverdue = Math.round(
+        (today.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000),
+      );
+      const overduePhrase =
+        daysOverdue === 1 ? 'yesterday' : `${daysOverdue} days ago`;
+      await this.whatsAppNotificationLogService.queue(
+        'sendInstallmentOverdueTemplate',
+        {
+          phone_number: phone,
+          tenant_name: tenantName,
+          amount,
+          due_phrase: overduePhrase,
+          due_date: dueDateStr,
+          installment_label: installmentLabel,
+          plan_description: planDescription,
+          pay_token: installment.id,
+        },
+        installment.id,
+      );
+    } else {
+      // Upcoming reminder fires on D-7 / D-1 / D-0; the relative-day word
+      // adapts ("today" / "tomorrow" / "in N days") while the literal due
+      // date stays alongside it.
+      const planDescription = await this.buildInstallmentPlanDescription(
+        plan,
+        propertyName,
+      );
+      const daysUntilDue = Math.round(
+        (dueDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000),
+      );
+      const duePhrase =
+        daysUntilDue <= 0
+          ? 'today'
+          : daysUntilDue === 1
+            ? 'tomorrow'
+            : `in ${daysUntilDue} days`;
+      await this.whatsAppNotificationLogService.queue(
+        'sendInstallmentReminderTemplate',
+        {
+          phone_number: phone,
+          tenant_name: tenantName,
+          amount,
+          due_phrase: duePhrase,
+          due_date: dueDateStr,
+          installment_label: installmentLabel,
+          plan_description: planDescription,
+          pay_token: installment.id,
+        },
+        installment.id,
+      );
+    }
 
     await this.installmentRepository.update(installment.id, {
       last_reminder_sent_on: today,
@@ -369,11 +473,94 @@ export class RentReminderService {
       }),
     );
 
+    // Surface the send on the landlord Live Feed too (the feed reads the
+    // `notifications` table, not `property_history`). Mirrors logReminderSent.
+    // Kept in its own try/catch so a notification failure (e.g. the enum
+    // migration not yet run) never loses the WhatsApp send or timeline row.
+    if (landlordId) {
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PAYMENT_PLAN_INSTALLMENT_REMINDER,
+          description: isOverdue
+            ? `Overdue installment notice sent to ${tenantName} for ${propertyName}. Installment ${installmentLabel} — ${amount} was due ${dueDateStr}.`
+            : `Installment reminder sent to ${tenantName} for ${propertyName}. Installment ${installmentLabel} — ${amount} due ${dueDateStr}.`,
+          status: 'Completed',
+          property_id: plan.property_id,
+          user_id: landlordId,
+        });
+      } catch (error) {
+        this.logger.error(
+          `Failed to create live-feed notification for installment ${installment.id}`,
+          error,
+        );
+      }
+    }
+
     this.logger.log(
       `Queued installment ${
         isOverdue ? 'overdue notice' : 'reminder'
       } for installment ${installment.id} (${installmentLabel}, due ${dueDateStr}).`,
     );
+  }
+
+  /**
+   * Resolve the folded `plan_description` clause for a plan (template var
+   * {{6}} on the reminder, {{5}} on the overdue notice). Resolves the tenancy
+   * period for tenancy-scope plans, then defers the wording to the shared
+   * buildInstallmentPlanClause so the cron and the tap-pay short-circuit can't
+   * drift.
+   */
+  private async buildInstallmentPlanDescription(
+    plan: PaymentPlan,
+    propertyName: string,
+  ): Promise<string> {
+    const tenancyPeriod =
+      plan.scope === PaymentPlanScope.TENANCY
+        ? await this.resolveTenancyPeriodLabel(plan)
+        : null;
+    return buildInstallmentPlanClause({
+      scope: plan.scope,
+      chargeName: plan.charge_name,
+      propertyName,
+      location: plan.property?.location,
+      tenancyPeriod,
+    });
+  }
+
+  /**
+   * dd/MM/yyyy "{start} – {end}" label for a tenancy plan's billed period.
+   * Prefers the renewal invoice the plan settles (the exact period billed),
+   * falling back to the active rent's period. Returns null when neither
+   * resolves, so the caller can drop the period clause gracefully.
+   */
+  private async resolveTenancyPeriodLabel(
+    plan: PaymentPlan,
+  ): Promise<string | null> {
+    const fmt = (d: Date | string): string =>
+      new Date(d).toLocaleDateString('en-GB');
+
+    if (plan.renewal_invoice_id) {
+      const inv = await this.renewalInvoiceRepository.findOne({
+        where: { id: plan.renewal_invoice_id },
+      });
+      if (inv?.start_date && inv?.end_date) {
+        return `${fmt(inv.start_date)} – ${fmt(inv.end_date)}`;
+      }
+    }
+
+    const rent = await this.rentRepository.findOne({
+      where: {
+        property_id: plan.property_id,
+        tenant_id: plan.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+    if (rent?.rent_start_date && rent?.expiry_date) {
+      return `${fmt(rent.rent_start_date)} – ${fmt(rent.expiry_date)}`;
+    }
+
+    return null;
   }
 
   // ---------------------------------------------------------------------------
@@ -1423,6 +1610,19 @@ export class RentReminderService {
       ? 'sendRenewalLetterLink'
       : 'sendRentReminderWithRenewalTemplate';
 
+    // Plan-coverage gate: when an ACTIVE tenancy-scope payment plan covers this
+    // period, the tenant already receives that plan's installment reminders, so
+    // we suppress BOTH ordinary renewal sends (the SENT letter link and the
+    // accepted-invoice link) — no double-nudging for the same money. Withhold
+    // without logging a "sent" event (like the credit gate below) so the
+    // ordinary reminder resumes on the next tick if the plan is cancelled.
+    if (await this.isTargetPeriodCoveredByActiveTenancyPlan(renewalInvoice)) {
+      this.logger.log(
+        `Suppressing renewal reminder for rent ${rent.id}: an active tenancy payment plan covers this period.`,
+      );
+      return;
+    }
+
     // Credit-coverage gate: when wallet credit already fully covers the next
     // period (total_amount nets to 0), suppress the "pay now" reminder — the
     // invoice will auto-settle from credit at the due-date rollover. We do NOT
@@ -1756,6 +1956,16 @@ export class RentReminderService {
     if (!renewalInvoice) {
       this.logger.warn(
         `Skipping overdue reminder for rent ${rent.id}: no renewal invoice.`,
+      );
+      return;
+    }
+
+    // Plan-coverage gate: an active tenancy-scope plan covers this period via
+    // its own installment reminders — suppress the ordinary overdue ping.
+    // Withhold without logging so it resumes next tick if the plan is cancelled.
+    if (await this.isTargetPeriodCoveredByActiveTenancyPlan(renewalInvoice)) {
+      this.logger.log(
+        `Suppressing overdue reminder for rent ${rent.id}: an active tenancy payment plan covers this period.`,
       );
       return;
     }
@@ -2126,6 +2336,62 @@ export class RentReminderService {
       },
     });
     return !!paid;
+  }
+
+  /**
+   * True when an ACTIVE, TENANCY-scope payment plan exists for this renewal
+   * invoice's tenancy. A tenancy plan is the agreed vehicle for the WHOLE
+   * period and emits its own installment reminders (checkInstallmentReminders),
+   * so the ordinary renewal/overdue reminders for the same period must be
+   * suppressed — otherwise the tenant gets two sets of reminders for the same
+   * money (the reported bug).
+   *
+   * Only scope=TENANCY suppresses. A CHARGE plan carves a single fee out of the
+   * invoice (the rest of the period is still owed and legitimately reminded,
+   * now at the reduced total); wallet-backed OB/ad-hoc plans settle prior
+   * arrears and are already netted out of total_amount by the renewal fold.
+   *
+   * Keyed on the DURABLE property_tenant_id, NOT renewal_invoice_id — that
+   * column is nullable and regenerated between plan creation and settlement
+   * (see payment-plan.entity.ts), so it can be stale/null for a live plan.
+   * Queried through installmentRepository's `plan` join to avoid injecting a
+   * second repo. Fail-open: a DB error sends the reminder rather than silencing
+   * a real debt, matching the wallet-claim helper's convention.
+   *
+   * Only suppress when the plan still FULLY COVERS the live invoice total
+   * (`plan.total_amount >= total - 1`, the same 1-naira rounding tolerance
+   * createPlan uses). If a landlord later revises the renewal letter into a
+   * LARGER invoice, the old plan is sized to the smaller amount and a tenancy
+   * plan's claim is never folded out of the new total — so without this guard
+   * the tenant would be silently under-reminded for the delta. Once the plan no
+   * longer covers the bill, the ordinary reminder is let through.
+   */
+  private async isTargetPeriodCoveredByActiveTenancyPlan(
+    renewalInvoice: RenewalInvoice,
+  ): Promise<boolean> {
+    try {
+      const count = await this.installmentRepository
+        .createQueryBuilder('inst')
+        .leftJoin('inst.plan', 'plan')
+        .where('plan.property_tenant_id = :pt', {
+          pt: renewalInvoice.property_tenant_id,
+        })
+        .andWhere('plan.scope = :scope', { scope: PaymentPlanScope.TENANCY })
+        .andWhere('plan.status = :status', {
+          status: PaymentPlanStatus.ACTIVE,
+        })
+        .andWhere('plan.total_amount >= :minCover', {
+          minCover: Number(renewalInvoice.total_amount || 0) - 1,
+        })
+        .getCount();
+      return count > 0;
+    } catch (error) {
+      this.logger.error(
+        `isTargetPeriodCoveredByActiveTenancyPlan failed for invoice ${renewalInvoice.id}`,
+        error as Error,
+      );
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------------------

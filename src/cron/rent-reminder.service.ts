@@ -53,9 +53,11 @@ import {
   InstallmentStatus,
 } from '../payment-plans/entities/payment-plan-installment.entity';
 import {
+  PaymentPlan,
   PaymentPlanScope,
   PaymentPlanStatus,
 } from '../payment-plans/entities/payment-plan.entity';
+import { buildInstallmentPlanClause } from '../payment-plans/installment-description.util';
 
 /**
  * Lead-day ladder for a FORCED scheduled removal ("end on a specific date").
@@ -298,6 +300,7 @@ export class RentReminderService {
     const phone = plan.tenant?.user?.phone_number;
     const tenantName = plan.tenant?.user?.first_name;
     const propertyName = plan.property?.name;
+    const landlordId = plan.property?.owner_id;
 
     if (!phone || !tenantName || !propertyName) {
       this.logger.warn(
@@ -319,36 +322,65 @@ export class RentReminderService {
       'en-GB',
     );
 
-    // Tenant-facing label: "Tenancy" reads better than the stored
-    // "Entire Tenancy" sentinel for tenancy-scope plans (matches the
-    // payment_plan_created_tenant send).
-    const displayChargeName =
-      plan.scope === PaymentPlanScope.TENANCY ? 'Tenancy' : plan.charge_name;
-
     // An installment whose due date is before today is overdue — use the
     // overdue-toned template; otherwise it's an upcoming reminder.
     const dueDate = new Date(installment.due_date);
     dueDate.setUTCHours(0, 0, 0, 0);
     const isOverdue = dueDate.getTime() < today.getTime();
 
-    const senderMethod = isOverdue
-      ? 'sendInstallmentOverdueTemplate'
-      : 'sendInstallmentReminderTemplate';
-
-    await this.whatsAppNotificationLogService.queue(
-      senderMethod,
-      {
-        phone_number: phone,
-        tenant_name: tenantName,
-        property_name: propertyName,
-        charge_name: displayChargeName,
-        installment_label: installmentLabel,
-        amount,
-        due_date: dueDateStr,
-        pay_token: installment.id,
-      },
-      installment.id,
-    );
+    if (isOverdue) {
+      // The overdue notice folds the property / charge / tenancy-period detail
+      // into one pre-composed clause (template var {{5}}), varied by plan scope,
+      // so charge/OB plans (which have no tenancy period) still read correctly.
+      const planDescription = await this.buildInstallmentPlanDescription(
+        plan,
+        propertyName,
+      );
+      await this.whatsAppNotificationLogService.queue(
+        'sendInstallmentOverdueTemplate',
+        {
+          phone_number: phone,
+          tenant_name: tenantName,
+          amount,
+          due_date: dueDateStr,
+          installment_label: installmentLabel,
+          plan_description: planDescription,
+          pay_token: installment.id,
+        },
+        installment.id,
+      );
+    } else {
+      // Upcoming reminder fires on D-7 / D-1 / D-0; the relative-day word
+      // adapts ("today" / "tomorrow" / "in N days") while the literal due
+      // date stays alongside it.
+      const planDescription = await this.buildInstallmentPlanDescription(
+        plan,
+        propertyName,
+      );
+      const daysUntilDue = Math.round(
+        (dueDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000),
+      );
+      const duePhrase =
+        daysUntilDue <= 0
+          ? 'today'
+          : daysUntilDue === 1
+            ? 'tomorrow'
+            : `in ${daysUntilDue} days`;
+      await this.whatsAppNotificationLogService.queue(
+        'sendInstallmentReminderTemplate',
+        {
+          phone_number: phone,
+          tenant_name: tenantName,
+          amount,
+          due_phrase: duePhrase,
+          due_date: dueDateStr,
+          installment_label: installmentLabel,
+          plan_description: planDescription,
+          pay_token: installment.id,
+        },
+        installment.id,
+      );
+    }
 
     await this.installmentRepository.update(installment.id, {
       last_reminder_sent_on: today,
@@ -369,11 +401,94 @@ export class RentReminderService {
       }),
     );
 
+    // Surface the send on the landlord Live Feed too (the feed reads the
+    // `notifications` table, not `property_history`). Mirrors logReminderSent.
+    // Kept in its own try/catch so a notification failure (e.g. the enum
+    // migration not yet run) never loses the WhatsApp send or timeline row.
+    if (landlordId) {
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PAYMENT_PLAN_INSTALLMENT_REMINDER,
+          description: isOverdue
+            ? `Overdue installment notice sent to ${tenantName} for ${propertyName}. Installment ${installmentLabel} — ${amount} was due ${dueDateStr}.`
+            : `Installment reminder sent to ${tenantName} for ${propertyName}. Installment ${installmentLabel} — ${amount} due ${dueDateStr}.`,
+          status: 'Completed',
+          property_id: plan.property_id,
+          user_id: landlordId,
+        });
+      } catch (error) {
+        this.logger.error(
+          `Failed to create live-feed notification for installment ${installment.id}`,
+          error,
+        );
+      }
+    }
+
     this.logger.log(
       `Queued installment ${
         isOverdue ? 'overdue notice' : 'reminder'
       } for installment ${installment.id} (${installmentLabel}, due ${dueDateStr}).`,
     );
+  }
+
+  /**
+   * Resolve the folded `plan_description` clause for a plan (template var
+   * {{6}} on the reminder, {{5}} on the overdue notice). Resolves the tenancy
+   * period for tenancy-scope plans, then defers the wording to the shared
+   * buildInstallmentPlanClause so the cron and the tap-pay short-circuit can't
+   * drift.
+   */
+  private async buildInstallmentPlanDescription(
+    plan: PaymentPlan,
+    propertyName: string,
+  ): Promise<string> {
+    const tenancyPeriod =
+      plan.scope === PaymentPlanScope.TENANCY
+        ? await this.resolveTenancyPeriodLabel(plan)
+        : null;
+    return buildInstallmentPlanClause({
+      scope: plan.scope,
+      chargeName: plan.charge_name,
+      propertyName,
+      location: plan.property?.location,
+      tenancyPeriod,
+    });
+  }
+
+  /**
+   * dd/MM/yyyy "{start} – {end}" label for a tenancy plan's billed period.
+   * Prefers the renewal invoice the plan settles (the exact period billed),
+   * falling back to the active rent's period. Returns null when neither
+   * resolves, so the caller can drop the period clause gracefully.
+   */
+  private async resolveTenancyPeriodLabel(
+    plan: PaymentPlan,
+  ): Promise<string | null> {
+    const fmt = (d: Date | string): string =>
+      new Date(d).toLocaleDateString('en-GB');
+
+    if (plan.renewal_invoice_id) {
+      const inv = await this.renewalInvoiceRepository.findOne({
+        where: { id: plan.renewal_invoice_id },
+      });
+      if (inv?.start_date && inv?.end_date) {
+        return `${fmt(inv.start_date)} – ${fmt(inv.end_date)}`;
+      }
+    }
+
+    const rent = await this.rentRepository.findOne({
+      where: {
+        property_id: plan.property_id,
+        tenant_id: plan.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+    if (rent?.rent_start_date && rent?.expiry_date) {
+      return `${fmt(rent.rent_start_date)} – ${fmt(rent.expiry_date)}`;
+    }
+
+    return null;
   }
 
   // ---------------------------------------------------------------------------

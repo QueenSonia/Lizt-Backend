@@ -37,6 +37,7 @@
   PAYMENT_PLAN_UPDATED = 'Payment Plan Updated',
   PAYMENT_PLAN_CANCELLED = 'Payment Plan Cancelled',
   PAYMENT_PLAN_INSTALLMENT_PAID = 'Payment Plan Installment Paid',
+  PAYMENT_PLAN_INSTALLMENT_REMINDER = 'Payment Plan Installment Reminder',
   PAYMENT_PLAN_COMPLETED = 'Payment Plan Completed',
   PAYMENT_PLAN_REQUEST_SUBMITTED = 'Payment Plan Request Submitted',
   PAYMENT_PLAN_REQUEST_APPROVED = 'Payment Plan Request Approved',

@@ -21,6 +21,7 @@ import {
   NextPeriodState,
 } from './next-period-state.resolver';
 import { PaymentPlanScope } from 'src/payment-plans/entities/payment-plan.entity';
+import { buildInstallmentPlanClause } from 'src/payment-plans/installment-description.util';
 import { CacheService } from 'src/lib/cache';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
@@ -2827,23 +2828,51 @@ export class TenantFlowService {
       'en-NG',
       { style: 'currency', currency: 'NGN' },
     );
-    const dueDateStr = new Date(
-      state.nextInstallment.due_date,
-    ).toLocaleDateString('en-GB');
+    const fmtDate = (d: Date | string) =>
+      new Date(d).toLocaleDateString('en-GB');
+    const dueDateStr = fmtDate(state.nextInstallment.due_date);
 
-    const displayChargeName =
-      state.plan.scope === PaymentPlanScope.TENANCY
-        ? 'Tenancy'
-        : state.plan.charge_name;
+    // Relative-day word for "...is due {{3}}, {{4}}." — computed off UTC
+    // midnight to match the cron. A tap-pay of an already-due installment
+    // collapses to "today" (daysUntilDue <= 0).
+    const dueMidnight = new Date(state.nextInstallment.due_date);
+    dueMidnight.setUTCHours(0, 0, 0, 0);
+    const todayMidnight = new Date();
+    todayMidnight.setUTCHours(0, 0, 0, 0);
+    const daysUntilDue = Math.round(
+      (dueMidnight.getTime() - todayMidnight.getTime()) /
+        (24 * 60 * 60 * 1000),
+    );
+    const duePhrase =
+      daysUntilDue <= 0
+        ? 'today'
+        : daysUntilDue === 1
+          ? 'tomorrow'
+          : `in ${daysUntilDue} days`;
+
+    // Same folded clause as the cron — period comes from the rent in hand.
+    const tenancyPeriod =
+      state.plan.scope === PaymentPlanScope.TENANCY &&
+      rent.rent_start_date &&
+      rent.expiry_date
+        ? `${fmtDate(rent.rent_start_date)} – ${fmtDate(rent.expiry_date)}`
+        : null;
+    const planDescription = buildInstallmentPlanClause({
+      scope: state.plan.scope,
+      chargeName: state.plan.charge_name,
+      propertyName: rent.property.name,
+      location: rent.property?.location,
+      tenancyPeriod,
+    });
 
     await this.notificationLogService.queue('sendInstallmentReminderTemplate', {
       phone_number: from,
       tenant_name: tenantName,
-      property_name: rent.property.name,
-      charge_name: displayChargeName,
-      installment_label: installmentLabel,
       amount,
+      due_phrase: duePhrase,
       due_date: dueDateStr,
+      installment_label: installmentLabel,
+      plan_description: planDescription,
       pay_token: state.nextInstallment.id,
     });
   }

@@ -928,26 +928,35 @@ export interface RentOverdueWithRenewalParams {
 export interface InstallmentReminderParams {
   phone_number: string;
   tenant_name: string;
-  property_name: string;
-  charge_name: string;
-  installment_label: string; // e.g. "2 of 4"
   amount: string;
+  due_phrase: string; // relative-day word: "today" | "tomorrow" | "in N days"
   due_date: string;
+  installment_label: string; // e.g. "1 of 4"
+  /** Same folded clause as the overdue notice — see InstallmentOverdueParams. */
+  plan_description: string;
   pay_token: string; // installment id used as URL path
 }
 
 /**
  * Parameters for payment plan installment OVERDUE notice to tenant
- * (same shape as InstallmentReminderParams — fired the day after due date)
+ * (fired the day after the due date). Unlike the upcoming reminder, the
+ * property / charge / tenancy-period detail is folded into a single
+ * pre-composed `plan_description` clause, varied by plan scope and built by
+ * RentReminderService.buildInstallmentPlanDescription.
  */
 export interface InstallmentOverdueParams {
   phone_number: string;
   tenant_name: string;
-  property_name: string;
-  charge_name: string;
-  installment_label: string; // e.g. "2 of 4"
   amount: string;
   due_date: string;
+  installment_label: string; // e.g. "1 of 4"
+  /**
+   * The "...under {{5}}." clause, e.g. "your tenancy payment plan for
+   * {property}, {location}, covering the tenancy period {start} – {end}"
+   * (tenancy) or "your {charge} payment plan for {property}, {location}"
+   * (charge / OB).
+   */
+  plan_description: string;
   pay_token: string; // installment id used as URL path
 }
 
@@ -5096,17 +5105,17 @@ export class TemplateSenderService {
 
   /**
    * Send payment plan installment reminder template to tenant via WhatsApp.
-   * Fired 1 day before and on the installment due date.
+   * Fired 7 days before, 1 day before, and on the installment due date.
    * Template: installment_reminder
    */
   async sendInstallmentReminderTemplate({
     phone_number,
     tenant_name,
-    property_name,
-    charge_name,
-    installment_label,
     amount,
+    due_phrase,
     due_date,
+    installment_label,
+    plan_description,
     pay_token,
   }: InstallmentReminderParams): Promise<void> {
     const payload: WhatsAppPayload = {
@@ -5121,11 +5130,11 @@ export class TemplateSenderService {
             type: 'body',
             parameters: [
               { type: 'text', text: tenant_name },
-              { type: 'text', text: installment_label },
-              { type: 'text', text: charge_name },
-              { type: 'text', text: property_name },
               { type: 'text', text: amount },
+              { type: 'text', text: due_phrase },
               { type: 'text', text: due_date },
+              { type: 'text', text: installment_label },
+              { type: 'text', text: plan_description },
             ],
           },
           {
@@ -5154,11 +5163,10 @@ export class TemplateSenderService {
   async sendInstallmentOverdueTemplate({
     phone_number,
     tenant_name,
-    property_name,
-    charge_name,
-    installment_label,
     amount,
     due_date,
+    installment_label,
+    plan_description,
     pay_token,
   }: InstallmentOverdueParams): Promise<void> {
     const payload: WhatsAppPayload = {
@@ -5173,11 +5181,10 @@ export class TemplateSenderService {
             type: 'body',
             parameters: [
               { type: 'text', text: tenant_name },
-              { type: 'text', text: installment_label },
-              { type: 'text', text: charge_name },
-              { type: 'text', text: property_name },
               { type: 'text', text: amount },
               { type: 'text', text: due_date },
+              { type: 'text', text: installment_label },
+              { type: 'text', text: plan_description },
             ],
           },
           {
@@ -5927,9 +5934,9 @@ export class TemplateSenderService {
     rent_overdue_with_renewal:
       "Hello {{1}},\n\nThis is a reminder that we haven't received your payment of {{2}} for the tenancy period of {{3}} for {{4}}, which was due {{5}}.\n\nWe'd like you to maintain a good payment history and relationship with us.\nPlease tap on the link below to view your invoice and make payment.",
     installment_reminder:
-      'Hi {{1}},\n\nThis is a reminder for installment {{2}} of your {{3}} payment plan at {{4}}.\n\nAmount: {{5}}\nDue date: {{6}}\n\nPlease use the link below to complete your payment.',
+      'Hello {{1}},\n\nThis is a reminder that your payment of {{2}} is due {{3}}, {{4}}.\n\nThis payment represents Installment {{5}} under {{6}}.\n\nWe encourage you to make your payment on or before the due date to maintain a positive payment history and good standing with your landlord.\n\nPlease tap the link below to view your invoice and complete your payment.',
     installment_overdue:
-      "Hello {{1}},\n\nThis is a reminder that we haven't received payment of {{5}} for installment {{2}} of your {{3}} payment plan at {{4}}, which was due {{6}}.\n\nWe'd like you to maintain a good payment history and relationship with us.\nPlease tap on the link below to make payment.",
+      'Hello {{1}},\n\nThis is a reminder that we have not yet received your payment of {{2}}, which became due yesterday, {{3}}.\n\nThis payment represents Installment {{4}} under {{5}}.\n\nWe encourage you to make your payment promptly to maintain a positive payment history and good standing with your landlord.\n\nPlease tap the link below to view your invoice and complete your payment.',
     installment_receipt_tenant:
       'Hi {{1}}, your installment payment of {{2}} for {{3}} at {{4}} has been received.\n\nClick the button below to view your receipt.',
     installment_paid_landlord:

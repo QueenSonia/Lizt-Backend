@@ -10,8 +10,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * Create migrations (1900000000000/1900000000001) ever ran on a given DB.
  * down() is intentionally a no-op — we are not bringing this approach back.
  */
-export class DropAiBotTables1909000000000 implements MigrationInterface {
-  name = 'DropAiBotTables1909000000000';
+export class DropAiBotTables1909000000001 implements MigrationInterface {
+  name = 'DropAiBotTables1909000000001';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query('DROP TABLE IF EXISTS "ai_intent_log" CASCADE');

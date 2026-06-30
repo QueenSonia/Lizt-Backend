@@ -1610,6 +1610,19 @@ export class RentReminderService {
       ? 'sendRenewalLetterLink'
       : 'sendRentReminderWithRenewalTemplate';
 
+    // Plan-coverage gate: when an ACTIVE tenancy-scope payment plan covers this
+    // period, the tenant already receives that plan's installment reminders, so
+    // we suppress BOTH ordinary renewal sends (the SENT letter link and the
+    // accepted-invoice link) — no double-nudging for the same money. Withhold
+    // without logging a "sent" event (like the credit gate below) so the
+    // ordinary reminder resumes on the next tick if the plan is cancelled.
+    if (await this.isTargetPeriodCoveredByActiveTenancyPlan(renewalInvoice)) {
+      this.logger.log(
+        `Suppressing renewal reminder for rent ${rent.id}: an active tenancy payment plan covers this period.`,
+      );
+      return;
+    }
+
     // Credit-coverage gate: when wallet credit already fully covers the next
     // period (total_amount nets to 0), suppress the "pay now" reminder — the
     // invoice will auto-settle from credit at the due-date rollover. We do NOT
@@ -1943,6 +1956,16 @@ export class RentReminderService {
     if (!renewalInvoice) {
       this.logger.warn(
         `Skipping overdue reminder for rent ${rent.id}: no renewal invoice.`,
+      );
+      return;
+    }
+
+    // Plan-coverage gate: an active tenancy-scope plan covers this period via
+    // its own installment reminders — suppress the ordinary overdue ping.
+    // Withhold without logging so it resumes next tick if the plan is cancelled.
+    if (await this.isTargetPeriodCoveredByActiveTenancyPlan(renewalInvoice)) {
+      this.logger.log(
+        `Suppressing overdue reminder for rent ${rent.id}: an active tenancy payment plan covers this period.`,
       );
       return;
     }
@@ -2313,6 +2336,62 @@ export class RentReminderService {
       },
     });
     return !!paid;
+  }
+
+  /**
+   * True when an ACTIVE, TENANCY-scope payment plan exists for this renewal
+   * invoice's tenancy. A tenancy plan is the agreed vehicle for the WHOLE
+   * period and emits its own installment reminders (checkInstallmentReminders),
+   * so the ordinary renewal/overdue reminders for the same period must be
+   * suppressed — otherwise the tenant gets two sets of reminders for the same
+   * money (the reported bug).
+   *
+   * Only scope=TENANCY suppresses. A CHARGE plan carves a single fee out of the
+   * invoice (the rest of the period is still owed and legitimately reminded,
+   * now at the reduced total); wallet-backed OB/ad-hoc plans settle prior
+   * arrears and are already netted out of total_amount by the renewal fold.
+   *
+   * Keyed on the DURABLE property_tenant_id, NOT renewal_invoice_id — that
+   * column is nullable and regenerated between plan creation and settlement
+   * (see payment-plan.entity.ts), so it can be stale/null for a live plan.
+   * Queried through installmentRepository's `plan` join to avoid injecting a
+   * second repo. Fail-open: a DB error sends the reminder rather than silencing
+   * a real debt, matching the wallet-claim helper's convention.
+   *
+   * Only suppress when the plan still FULLY COVERS the live invoice total
+   * (`plan.total_amount >= total - 1`, the same 1-naira rounding tolerance
+   * createPlan uses). If a landlord later revises the renewal letter into a
+   * LARGER invoice, the old plan is sized to the smaller amount and a tenancy
+   * plan's claim is never folded out of the new total — so without this guard
+   * the tenant would be silently under-reminded for the delta. Once the plan no
+   * longer covers the bill, the ordinary reminder is let through.
+   */
+  private async isTargetPeriodCoveredByActiveTenancyPlan(
+    renewalInvoice: RenewalInvoice,
+  ): Promise<boolean> {
+    try {
+      const count = await this.installmentRepository
+        .createQueryBuilder('inst')
+        .leftJoin('inst.plan', 'plan')
+        .where('plan.property_tenant_id = :pt', {
+          pt: renewalInvoice.property_tenant_id,
+        })
+        .andWhere('plan.scope = :scope', { scope: PaymentPlanScope.TENANCY })
+        .andWhere('plan.status = :status', {
+          status: PaymentPlanStatus.ACTIVE,
+        })
+        .andWhere('plan.total_amount >= :minCover', {
+          minCover: Number(renewalInvoice.total_amount || 0) - 1,
+        })
+        .getCount();
+      return count > 0;
+    } catch (error) {
+      this.logger.error(
+        `isTargetPeriodCoveredByActiveTenancyPlan failed for invoice ${renewalInvoice.id}`,
+        error as Error,
+      );
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------------------

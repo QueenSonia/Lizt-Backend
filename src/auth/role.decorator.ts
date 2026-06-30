@@ -1,12 +1,11 @@
-// import { SetMetadata } from '@nestjs/common';
-// import { ADMIN_ROLES } from 'src/base.entity';
-
-// export const ROLES_KEY = 'roles';
-// export const Roles = (...roles: ADMIN_ROLES[]) => SetMetadata(ROLES_KEY, roles);
-
 import { SetMetadata } from '@nestjs/common';
+import { RolesEnum } from 'src/base.entity';
 
 export const ROLES_KEY = 'roles';
-export type UserRole = 'user' | 'admin' | 'landlord' | 'facility_manager';
 
-export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
+/**
+ * Restrict a route to one or more roles. Pass {@link RolesEnum} members
+ * (type-safe — bare strings are rejected at compile time). The RoleGuard
+ * compares the caller's ACTIVE session role against this list.
+ */
+export const Roles = (...roles: RolesEnum[]) => SetMetadata(ROLES_KEY, roles);

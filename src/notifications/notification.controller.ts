@@ -36,20 +36,24 @@ export class NotificationController {
   }
 
   @Get()
-  findAll(): Promise<Notification[]> {
-    return this.service.findAll();
+  findAll(@Req() req): Promise<Notification[]> {
+    return this.service.findAll(req?.user?.id);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string): Promise<Notification | null> {
-    return this.service.findOne(id);
+  findOne(
+    @Param('id') id: string,
+    @Req() req,
+  ): Promise<Notification | null> {
+    return this.service.findOneForRequester(id, req?.user?.id);
   }
 
   @Get('/property/:property_id')
   findByPropertyId(
     @Param('property_id') property_id: string,
+    @Req() req,
   ): Promise<Notification[]> {
-    return this.service.findByPropertyId(property_id);
+    return this.service.findByPropertyId(property_id, req?.user?.id);
   }
   @Post('subscribe')
   subscribe(@Body() subscription: any, @Req() req) {

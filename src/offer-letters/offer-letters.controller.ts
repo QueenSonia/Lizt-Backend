@@ -5,6 +5,7 @@ import {
   Body,
   Param,
   UseGuards,
+  UseInterceptors,
   ValidationPipe,
   Res,
   StreamableFile,
@@ -14,6 +15,7 @@ import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
+import { RolesEnum } from 'src/base.entity';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SkipAuth } from '../auth/auth.decorator';
 import { Account } from '../users/entities/account.entity';
@@ -27,6 +29,8 @@ import {
   OfferLetterResponse,
   AcceptanceInitiationResponse,
 } from './dto/offer-letter-response.dto';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 /**
  * OfferLettersController
@@ -47,13 +51,14 @@ export class OfferLettersController {
    * Requirements: 10.1, 10.8, 10.9
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
   @Post()
   async create(
     @Body(ValidationPipe) createOfferLetterDto: CreateOfferLetterDto,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<OfferLetterResponse> {
-    return this.offerLettersService.create(createOfferLetterDto, user.id);
+    return this.offerLettersService.create(createOfferLetterDto, landlordIds);
   }
 
   /**
@@ -61,12 +66,15 @@ export class OfferLettersController {
    * POST /offer-letters/:id/send
    * Requirements: 7.1, 7.2
    */
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
   @Post(':id/send')
   async sendOfferLetter(
     @Param('id') id: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{ success: boolean; message: string }> {
-    await this.offerLettersService.sendOfferLetterById(id, user.id);
+    await this.offerLettersService.sendOfferLetterById(id, landlordIds);
     return {
       success: true,
       message: 'Offer letter sent successfully',
@@ -79,17 +87,18 @@ export class OfferLettersController {
    * Returns the existing offer letter if found, or null
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
   @Get('check/:kycApplicationId/:propertyId')
   async checkExistingOffer(
     @Param('kycApplicationId') kycApplicationId: string,
     @Param('propertyId') propertyId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<OfferLetterResponse | null> {
     return this.offerLettersService.findByKycApplicationAndProperty(
       kycApplicationId,
       propertyId,
-      user.id,
+      landlordIds,
     );
   }
 
@@ -244,11 +253,12 @@ export class OfferLettersController {
    * GET /offer-letters/:id/history
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
   @Get(':id/history')
   async getOfferLetterHistory(
     @Param('id') id: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<
     Array<{
       id: string;
@@ -257,7 +267,7 @@ export class OfferLettersController {
       createdAt: string;
     }>
   > {
-    return this.offerLettersService.getOfferLetterHistory(id, user.id);
+    return this.offerLettersService.getOfferLetterHistory(id, landlordIds);
   }
 
   /**

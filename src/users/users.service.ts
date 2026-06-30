@@ -14,6 +14,7 @@ import {
   CreateAdminDto,
   CreateCustomerRepDto,
   CreateLandlordDto,
+  CreateManagedLandlordDto,
   CreateTenantDto,
   CreateTenantKycDto,
   CreateUserDto,
@@ -69,7 +70,7 @@ import { CreateKycDto } from './dto/create-kyc.dto';
 import { UpdateKycDto } from './dto/update-kyc.dto';
 import bcrypt from 'bcryptjs/umd/types';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Account } from './entities/account.entity';
+import { Account, LandlordType } from './entities/account.entity';
 import { AnyAaaaRecord } from 'node:dns';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Team } from './entities/team.entity';
@@ -753,15 +754,19 @@ export class UsersService {
     // Clear rate limit on successful login
     await this.cache.delete(rateLimitKey);
 
-    // Filter to roles the multi-role sign-in supports today (landlord + FM only).
+    // Only admins (property managers) and facility managers may access the
+    // dashboard. Landlords no longer sign in — their property manager operates
+    // on their behalf — and tenants use WhatsApp, not the dashboard.
     const allowedRoles = (account.roles ?? []).filter(
-      (r) =>
-        r === RolesEnum.LANDLORD || r === RolesEnum.FACILITY_MANAGER,
+      (r) => r === RolesEnum.ADMIN || r === RolesEnum.FACILITY_MANAGER,
     );
 
     if (allowedRoles.length === 0) {
+      const isLandlord = (account.roles ?? []).includes(RolesEnum.LANDLORD);
       throw new ForbiddenException(
-        'This account does not have access to a sign-in surface yet.',
+        isLandlord
+          ? 'Landlord accounts no longer sign in here — your property manager now manages your properties on your behalf.'
+          : 'This account does not have access to the dashboard.',
       );
     }
 
@@ -1089,9 +1094,9 @@ export class UsersService {
    * Get tenants of a specific admin/landlord
    * Delegates to TenantManagementService
    */
-  async getTenantsOfAnAdmin(creator_id: string, queryParams: UserFilter) {
-    return this.tenantManagementService.getTenantsOfAnAdmin(
-      creator_id,
+  async getManagedTenants(landlordIds: string[], queryParams: UserFilter) {
+    return this.tenantManagementService.getManagedTenants(
+      landlordIds,
       queryParams,
     );
   }
@@ -1100,18 +1105,18 @@ export class UsersService {
    * Get a single tenant of an admin with full details
    * Delegates to TenantManagementService
    */
-  async getSingleTenantOfAnAdmin(
-    tenantId: string,
-    adminId: string,
-  ): Promise<TenantDetailDto> {
-    return this.tenantManagementService.getSingleTenantOfAnAdmin(
+  async getManagedTenant(tenantId: string, landlordIds: string[]) {
+    return this.tenantManagementService.getManagedTenant(
       tenantId,
-      adminId,
+      landlordIds,
     );
   }
 
-  async getTenantBalance(tenantId: string, adminId: string) {
-    return this.tenantManagementService.getTenantBalance(tenantId, adminId);
+  async getTenantBalance(tenantId: string, landlordIds: string[]) {
+    return this.tenantManagementService.getTenantBalance(
+      tenantId,
+      landlordIds,
+    );
   }
 
   async uploadLogos(
@@ -1650,6 +1655,194 @@ export class UsersService {
         accounts: { roles: ArrayContains([RolesEnum.LANDLORD]) },
       },
       relations: ['accounts'],
+    });
+  }
+
+  /**
+   * Property-manager (admin) creates a MANAGED landlord — login-disabled (no
+   * password), parented to the admin via `creator_id`. The landlord never signs
+   * in; the admin operates on their behalf and all tenant-facing docs carry the
+   * Property Kraft brand.
+   *
+   * Accounts can be entangled (a person may already be a tenant/FM) and
+   * email/phone are unique — so we find-or-append the LANDLORD role to an
+   * existing identity instead of failing on the unique indexes. Mirrors the
+   * reconciliation in createLandlord / assignCollaboratorToTeam.
+   */
+  async createManagedLandlord(
+    adminId: string,
+    data: CreateManagedLandlordDto,
+  ): Promise<Account> {
+    return await this.dataSource.transaction(async (manager) => {
+      const admin = await manager.getRepository(Account).findOne({
+        where: { id: adminId },
+        select: { id: true, roles: true },
+      });
+      if (!admin?.roles?.includes(RolesEnum.ADMIN)) {
+        throw new ForbiddenException('Only administrators can add landlords');
+      }
+
+      const email = (data.email ?? '').trim().toLowerCase();
+      const phone = data.phone_number; // normalized by the DTO transformer
+      const isCorporate = data.landlord_type === LandlordType.CORPORATE;
+      const firstName = (data.first_name ?? '').trim();
+      const lastName = (data.last_name ?? '').trim();
+      const businessName = (data.business_name ?? '').trim();
+
+      if (isCorporate && !businessName) {
+        throw new BadRequestException(
+          'A business name is required for corporate landlords',
+        );
+      }
+      if (!isCorporate && !firstName) {
+        throw new BadRequestException(
+          "An individual landlord's first name is required",
+        );
+      }
+
+      // Display name: corporate → business name; individual → first + last.
+      const profileName = isCorporate
+        ? businessName
+        : `${firstName} ${lastName}`.trim();
+      // users.first_name is NOT NULL — a corporate landlord with no contact name
+      // falls back to the business name.
+      const userFirstName = firstName || businessName;
+
+      // A "new" landlord may already exist (tenant/FM). Look up by email, then
+      // by phone via the linked user.
+      let account = await manager.getRepository(Account).findOne({
+        where: { email },
+        relations: ['user'],
+      });
+      if (!account && phone) {
+        account = await manager.getRepository(Account).findOne({
+          where: { user: { phone_number: phone } },
+          relations: ['user'],
+        });
+      }
+
+      if (account?.roles?.includes(RolesEnum.LANDLORD)) {
+        throw new ConflictException(
+          'A landlord account with this email or phone already exists',
+        );
+      }
+      // Same phone bound to a different REAL email → real-data conflict.
+      if (
+        account &&
+        account.email !== email &&
+        !isPlaceholderEmail(account.email) &&
+        !isPlaceholderEmail(email)
+      ) {
+        throw new ConflictException(
+          `Phone ${phone} is already linked to a different account (${account.email}).`,
+        );
+      }
+
+      // Find-or-create the underlying user row (dedup by phone, then email).
+      let user =
+        account?.user ??
+        (await manager.getRepository(Users).findOne({
+          where: { phone_number: phone },
+        }));
+      if (!user) {
+        user = await manager
+          .getRepository(Users)
+          .findOne({ where: { email } });
+      }
+      if (!user) {
+        user = await manager.getRepository(Users).save({
+          email,
+          phone_number: phone,
+          first_name: userFirstName,
+          last_name: lastName,
+          is_verified: true,
+        });
+      }
+
+      if (account) {
+        // Existing identity → make them a managed landlord: append the role,
+        // parent to this admin, set the type. Their password (for any other
+        // role) is left untouched — landlords just get no dashboard.
+        if (
+          account.email !== email &&
+          isPlaceholderEmail(account.email) &&
+          !isPlaceholderEmail(email)
+        ) {
+          account.email = email; // self-heal placeholder → real email
+        }
+        account.roles = Array.from(
+          new Set([...(account.roles ?? []), RolesEnum.LANDLORD]),
+        );
+        account.creator_id = admin.id;
+        account.landlord_type = data.landlord_type;
+        // Corporate display name must be the business name; for an individual
+        // keep any existing display name, else set first+last.
+        account.profile_name = isCorporate
+          ? profileName
+          : account.profile_name ?? profileName;
+        account.is_verified = true;
+        await manager.getRepository(Account).save(account);
+        await this.accountCacheService.invalidate(account.id);
+        return account;
+      }
+
+      // Brand-new identity → login-disabled managed landlord (no password).
+      const landlord = manager.getRepository(Account).create({
+        user,
+        email,
+        roles: [RolesEnum.LANDLORD],
+        creator_id: admin.id,
+        landlord_type: data.landlord_type,
+        profile_name: profileName,
+        is_verified: true,
+      });
+      await manager.getRepository(Account).save(landlord);
+      return landlord;
+    });
+  }
+
+  /**
+   * Clean, admin-scoped list of the landlords a property manager manages — one
+   * row per landlord ACCOUNT (id = the owner_id used across the system), with a
+   * resolved display name + type. Backs the landlord picker (act-on-behalf) and
+   * the Landlords management screen. Scoped by creator_id so it is multi-PM
+   * correct — unlike the legacy getLandlords(), which returns every landlord
+   * globally and is keyed on the User row.
+   */
+  async getManagedLandlords(adminId: string): Promise<
+    Array<{
+      id: string;
+      name: string;
+      landlord_type: LandlordType | null;
+      email: string;
+      phone: string | null;
+      first_name: string;
+      last_name: string;
+    }>
+  > {
+    const accounts = await this.accountRepository.find({
+      where: {
+        creator_id: adminId,
+        roles: ArrayContains([RolesEnum.LANDLORD]),
+      },
+      relations: ['user'],
+      order: { profile_name: 'ASC' },
+    });
+
+    return accounts.map((a) => {
+      const first = a.user?.first_name ?? '';
+      const last = a.user?.last_name ?? '';
+      const name =
+        a.profile_name?.trim() || `${first} ${last}`.trim() || a.email;
+      return {
+        id: a.id,
+        name,
+        landlord_type: a.landlord_type ?? null,
+        email: a.email,
+        phone: a.user?.phone_number ?? null,
+        first_name: first,
+        last_name: last,
+      };
     });
   }
 }

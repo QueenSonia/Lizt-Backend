@@ -8,11 +8,13 @@ import { Account } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { TenanciesModule } from 'src/tenancies/tenancies.module';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([TenantKyc, Account, Users, KYCApplication]),
     TenanciesModule,
+    ScopeModule,
   ],
   controllers: [TenantKycController],
   providers: [TenantKycService],

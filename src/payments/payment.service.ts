@@ -977,7 +977,7 @@ export class PaymentService {
    * Get all payments for landlord's properties
    */
   async getLandlordPayments(
-    landlordId: string,
+    landlordId: string | string[],
     filters: {
       status?: string;
       search?: string;
@@ -986,13 +986,21 @@ export class PaymentService {
     },
   ): Promise<any> {
     const { status = 'all', search = '', page = 1, limit = 20 } = filters;
+    const landlordIds = Array.isArray(landlordId) ? landlordId : [landlordId];
+    if (!landlordIds.length) {
+      return {
+        payments: [],
+        refundsRequired: [],
+        pagination: { total: 0, page, limit, totalPages: 0 },
+      };
+    }
 
     // Build query
     const query = this.offerLetterRepository
       .createQueryBuilder('offer')
       .leftJoinAndSelect('offer.property', 'property')
       .leftJoinAndSelect('offer.kyc_application', 'kyc')
-      .where('offer.landlord_id = :landlordId', { landlordId })
+      .where('offer.landlord_id IN (:...landlordIds)', { landlordIds })
       .andWhere('offer.amount_paid > 0');
 
     // Apply status filter

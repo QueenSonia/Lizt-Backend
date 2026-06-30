@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import type { Browser } from 'puppeteer';
 
 import { launchBrowser } from '../common/puppeteer-launch';
@@ -20,11 +20,21 @@ export class InvoicePDFService {
    */
   async generateInvoicePDF(
     invoiceId: string,
-    landlordId: string,
+    landlordId: string | string[],
   ): Promise<Buffer> {
+    const landlordIds = Array.isArray(landlordId) ? landlordId : [landlordId];
+    if (!landlordIds.length) {
+      throw new NotFoundException('Invoice not found');
+    }
     const invoice = await this.invoiceRepository.findOne({
-      where: { id: invoiceId, landlord_id: landlordId },
-      relations: ['property', 'kyc_application', 'tenant', 'line_items'],
+      where: { id: invoiceId, landlord_id: In(landlordIds) },
+      relations: [
+        'property',
+        'kyc_application',
+        'tenant',
+        'tenant.user',
+        'line_items',
+      ],
     });
 
     if (!invoice) {
@@ -102,14 +112,17 @@ export class InvoicePDFService {
   private generateInvoiceHTML(invoice: Invoice): string {
     const tenantName = invoice.kyc_application
       ? `${invoice.kyc_application.first_name} ${invoice.kyc_application.last_name}`
-      : invoice.tenant
-        ? `${invoice.tenant.first_name} ${invoice.tenant.last_name}`
+      : invoice.tenant?.user
+        ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
         : 'Unknown';
     const tenantEmail =
-      invoice.kyc_application?.email || invoice.tenant?.email || '';
+      invoice.kyc_application?.email ||
+      invoice.tenant?.user?.email ||
+      invoice.tenant?.email ||
+      '';
     const tenantPhone =
       invoice.kyc_application?.phone_number ||
-      invoice.tenant?.phone_number ||
+      invoice.tenant?.user?.phone_number ||
       '';
 
     const totalAmount = Number(invoice.total_amount);

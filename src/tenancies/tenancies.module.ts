@@ -24,6 +24,7 @@ import { EventsModule } from 'src/events/events.module';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { PaymentPlansModule } from 'src/payment-plans/payment-plans.module';
 import { RenewalChargeModule } from 'src/renewal-letters/renewal-charge.module';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { RenewalChargeModule } from 'src/renewal-letters/renewal-charge.module';
     forwardRef(() => PaymentPlansModule),
     PdfModule,
     RenewalChargeModule,
+    ScopeModule,
   ],
   controllers: [TenanciesController],
   providers: [

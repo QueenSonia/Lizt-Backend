@@ -8,8 +8,8 @@ import {
   Query,
   ParseUUIDPipe,
   Put,
-  Req,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { RentsService } from './rents.service';
 import { CreateRentDto, RentFilter } from './dto/create-rent.dto';
@@ -31,11 +31,14 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
-import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
+import { RolesEnum } from 'src/base.entity';
 import { CreateRentIncreaseDto } from './dto/create-rent-increase.dto';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 @ApiTags('Rents')
 @Controller('rents')
+@UseInterceptors(ManagedScopeInterceptor)
 export class RentsController {
   constructor(
     private readonly rentsService: RentsService,
@@ -87,13 +90,13 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
-  getAllRents(@Query() query: RentFilter, @Req() req: any) {
-    try {
-      query.owner_id = req?.user?.id;
-      return this.rentsService.getAllRents(query);
-    } catch (error) {
-      throw error;
-    }
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  getAllRents(
+    @Query() query: RentFilter,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.rentsService.getAllRents(query, landlordIds);
   }
 
   @ApiOperation({ summary: 'Get Rents by Tenant ID' })
@@ -105,15 +108,12 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get('tenant/:tenant_id')
+  @Roles(RolesEnum.ADMIN)
   getRentByTenantId(
     @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,
-    @Req() req: any,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    try {
-      return this.rentsService.getRentByTenantId(tenant_id, req?.user?.id);
-    } catch (error) {
-      throw error;
-    }
+    return this.rentsService.getRentByTenantId(tenant_id, landlordIds);
   }
 
   @ApiOperation({ summary: 'Get Due Rents Within 7 Days' })
@@ -125,14 +125,12 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('due')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  getDueRentsWithinSevenDays(@Query() query: RentFilter, @Req() req: any) {
-    try {
-      query.owner_id = req?.user?.id;
-      return this.rentsService.getDueRentsWithinSevenDays(query);
-    } catch (error) {
-      throw error;
-    }
+  @Roles(RolesEnum.ADMIN)
+  getDueRentsWithinSevenDays(
+    @Query() query: RentFilter,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.rentsService.getDueRentsWithinSevenDays(query, landlordIds);
   }
 
   @ApiOperation({ summary: 'Get Overdue Rents' })
@@ -152,17 +150,12 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('overdue')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  getOverdueRents(@Query() query: RentFilter, @Req() req: any) {
-    try {
-      if (!query.property) {
-        query.property = {};
-      }
-      query.property.owner_id = req?.user?.id;
-      return this.rentsService.getOverdueRents(query);
-    } catch (error) {
-      throw error;
-    }
+  @Roles(RolesEnum.ADMIN)
+  getOverdueRents(
+    @Query() query: RentFilter,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.rentsService.getOverdueRents(query, landlordIds);
   }
 
   @ApiOperation({ summary: 'Send Rent Reminder' })
@@ -174,13 +167,12 @@ export class RentsController {
   @ApiSecurity('access_token')
   @Get('reminder/:id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  sendReminder(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: any) {
-    try {
-      return this.rentsService.sendRentReminder(id, req?.user?.id);
-    } catch (error) {
-      throw error;
-    }
+  @Roles(RolesEnum.ADMIN)
+  sendReminder(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.rentsService.sendRentReminder(id, landlordIds);
   }
 
   @ApiOperation({ summary: 'Get One Rent' })
@@ -192,12 +184,12 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  getRentById(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: any) {
-    try {
-      return this.rentsService.getRentById(id, req?.user?.id);
-    } catch (error) {
-      throw error;
-    }
+  @Roles(RolesEnum.ADMIN)
+  getRentById(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.rentsService.getRentById(id, landlordIds);
   }
 
   @ApiOperation({ summary: 'Update Rent' })
@@ -207,24 +199,13 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Put(':id')
-  // @UseInterceptors(FilesInterceptor('rent_receipts', 20))
-  async updatePropertyById(
+  @Roles(RolesEnum.ADMIN)
+  async updateRentById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: UpdateRentDto,
-    @Req() req: any,
-    // @UploadedFiles() files?: Array<Express.Multer.File>,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    try {
-      // if (files?.length) {
-      //   const uploadedUrls = await Promise.all(
-      //     files.map((file) => this.fileUploadService.uploadFile(file, 'rents')),
-      //   );
-      //   body.rent_receipts = uploadedUrls.map((upload) => upload.secure_url);
-      // }
-      return this.rentsService.updateRentById(id, body, req?.user?.id);
-    } catch (error) {
-      throw error;
-    }
+    return this.rentsService.updateRentById(id, body, landlordIds);
   }
 
   @ApiOperation({ summary: 'Delete Rent' })
@@ -232,15 +213,12 @@ export class RentsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Delete(':id')
-  deletePropertyById(
+  @Roles(RolesEnum.ADMIN)
+  deleteRentById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Req() req: any,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    try {
-      return this.rentsService.deleteRentById(id, req?.user?.id);
-    } catch (error) {
-      throw error;
-    }
+    return this.rentsService.deleteRentById(id, landlordIds);
   }
 
   @ApiOperation({ summary: 'Create or update rent increase for a property' })
@@ -248,19 +226,15 @@ export class RentsController {
   @ApiNotFoundResponse({ description: 'You do not own this Property' })
   @Post('increase')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async saveOrUpdateRentIncrease(
     @Body() body: CreateRentIncreaseDto,
-    @Req() req: any,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    try {
-      return this.rentsService.saveOrUpdateRentIncrease(body, req?.user?.id);
-    } catch (error) {
-      throw error;
-    }
+    return this.rentsService.saveOrUpdateRentIncrease(body, landlordIds);
   }
 
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Put('/remove/:tenant_id')
   async removeTenant(
     @Param('tenant_id', new ParseUUIDPipe()) tenant_id: string,

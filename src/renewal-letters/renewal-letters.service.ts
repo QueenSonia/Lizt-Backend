@@ -11,6 +11,7 @@ import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
+import { resolveBrandingUser } from '../common/branding/branding.util';
 import { Rent } from '../rents/entities/rent.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import {
@@ -652,6 +653,8 @@ export class RenewalLettersService {
         'property',
         'property.owner',
         'property.owner.user',
+        'property.owner.creator',
+        'property.owner.creator.user',
         'tenant',
         'tenant.user',
       ],
@@ -669,40 +672,43 @@ export class RenewalLettersService {
 
     const landlordAccount = propertyTenant.property.owner;
     const landlordUser = landlordAccount?.user;
+    // Identity (name) stays the real landlord; BRANDING resolves through the
+    // managing admin (Property Kraft) — see resolveBrandingUser — falling back
+    // to the landlord's own branding pre-reparent.
+    const brandingUser = resolveBrandingUser(landlordAccount);
     const landlordName =
       landlordAccount?.profile_name ||
       `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`
         .trim() ||
       'Your Landlord';
     const landlordCompany: string | null =
-      landlordUser?.branding?.businessName ||
-      landlordUser?.business_name ||
+      brandingUser?.branding?.businessName ||
+      brandingUser?.business_name ||
       null;
-    // Prefer the admin-settings branding letterhead (where landlords now
-    // configure their logo) over the legacy logo_urls slot. This is the same
-    // source the landlord-side RenewTenancyScreen reads via useLandlordBranding,
-    // so the tenant sees the same logo the landlord saw at save time.
+    // Prefer the admin-settings branding letterhead (where branding is now
+    // configured) over the legacy logo_urls slot. This is the same source the
+    // dashboard reads via useLandlordBranding, so the tenant sees the same logo.
     const landlordLogoUrl: string | null =
-      landlordUser?.branding?.letterhead ||
-      (landlordUser?.logo_urls && landlordUser.logo_urls[0]) ||
+      brandingUser?.branding?.letterhead ||
+      (brandingUser?.logo_urls && brandingUser.logo_urls[0]) ||
       null;
 
     // Branding footer fields — surfaced on the tenant page so the structural
-    // letter render can show the landlord's business address / contacts /
-    // website at the bottom of the document, matching the App.tsx design
-    // reference. All optional.
+    // letter render can show the business address / contacts / website at the
+    // bottom of the document, matching the App.tsx design reference. All
+    // optional. Sourced from the managing admin's branding.
     const landlordSignatureUrl: string | null =
-      landlordUser?.branding?.signature ?? null;
+      brandingUser?.branding?.signature ?? null;
     const landlordBusinessAddress: string | null =
-      landlordUser?.branding?.businessAddress ?? null;
+      brandingUser?.branding?.businessAddress ?? null;
     const landlordContactEmail: string | null =
-      landlordUser?.branding?.contactEmail ?? null;
+      brandingUser?.branding?.contactEmail ?? null;
     const landlordContactPhone: string | null =
-      landlordUser?.branding?.contactPhone ?? null;
+      brandingUser?.branding?.contactPhone ?? null;
     const landlordWebsite: string | null =
-      landlordUser?.branding?.websiteLink ?? null;
+      brandingUser?.branding?.websiteLink ?? null;
     const landlordBodyFont: string | null =
-      landlordUser?.branding?.bodyFont ?? null;
+      brandingUser?.branding?.bodyFont ?? null;
 
     return {
       property,

@@ -5,16 +5,14 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { Invoice, InvoiceStatus } from './entities/invoice.entity';
 import { InvoiceLineItem } from './entities/invoice-line-item.entity';
 import { InvoicePayment } from './entities/invoice-payment.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { Property } from '../properties/entities/property.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
-import { Users } from '../users/entities/user.entity';
-import { accountHasRole } from '../users/entities/account.entity';
-import { RolesEnum } from '../base.entity';
+import { Account } from '../users/entities/account.entity';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender/template-sender.service';
 import { PropertyHistoryService } from '../property-history/property-history.service';
@@ -22,6 +20,7 @@ import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { Logger } from '@nestjs/common';
 import { offerLetterToFees, Fee } from '../common/billing/fees';
+import { assertLandlordInScope } from '../common/scope/scope.util';
 
 @Injectable()
 export class InvoicesService {
@@ -40,8 +39,8 @@ export class InvoicesService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(KYCApplication)
     private readonly kycApplicationRepository: Repository<KYCApplication>,
-    @InjectRepository(Users)
-    private readonly usersRepository: Repository<Users>,
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
     private readonly templateSenderService: TemplateSenderService,
     private readonly dataSource: DataSource,
     private readonly propertyHistoryService: PropertyHistoryService,
@@ -79,15 +78,18 @@ export class InvoicesService {
   private transformInvoice(invoice: Invoice) {
     const tenantName = invoice.kyc_application
       ? `${invoice.kyc_application.first_name} ${invoice.kyc_application.last_name}`
-      : invoice.tenant
-        ? `${invoice.tenant.first_name} ${invoice.tenant.last_name}`
+      : invoice.tenant?.user
+        ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
         : 'Unknown';
 
     const tenantEmail =
-      invoice.kyc_application?.email || invoice.tenant?.email || '';
+      invoice.kyc_application?.email ||
+      invoice.tenant?.user?.email ||
+      invoice.tenant?.email ||
+      '';
     const tenantPhone =
       invoice.kyc_application?.phone_number ||
-      invoice.tenant?.phone_number ||
+      invoice.tenant?.user?.phone_number ||
       '';
 
     const lastPayment =
@@ -133,18 +135,26 @@ export class InvoicesService {
   /**
    * Find all invoices for a landlord with filters
    */
-  async findAll(landlordId: string, query: InvoiceQueryDto) {
+  async findAll(landlordId: string | string[], query: InvoiceQueryDto) {
     const { status, search, page = 1, limit = 20 } = query;
+    const landlordIds = Array.isArray(landlordId) ? landlordId : [landlordId];
+    if (!landlordIds.length) {
+      return {
+        invoices: [],
+        pagination: { total: 0, page, limit, totalPages: 0 },
+      };
+    }
 
     const queryBuilder = this.invoiceRepository
       .createQueryBuilder('invoice')
       .leftJoinAndSelect('invoice.property', 'property')
       .leftJoinAndSelect('invoice.kyc_application', 'kyc')
       .leftJoinAndSelect('invoice.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'tenantUser')
       .leftJoinAndSelect('invoice.line_items', 'lineItems')
       .leftJoinAndSelect('invoice.payments', 'payments')
       .leftJoinAndSelect('invoice.offer_letter', 'offerLetter')
-      .where('invoice.landlord_id = :landlordId', { landlordId });
+      .where('invoice.landlord_id IN (:...landlordIds)', { landlordIds });
 
     if (status) {
       queryBuilder.andWhere('invoice.status = :status', { status });
@@ -152,7 +162,7 @@ export class InvoicesService {
 
     if (search) {
       queryBuilder.andWhere(
-        '(kyc.first_name ILIKE :search OR kyc.last_name ILIKE :search OR tenant.first_name ILIKE :search OR tenant.last_name ILIKE :search OR property.name ILIKE :search OR kyc.phone_number ILIKE :search)',
+        '(kyc.first_name ILIKE :search OR kyc.last_name ILIKE :search OR tenantUser.first_name ILIKE :search OR tenantUser.last_name ILIKE :search OR property.name ILIKE :search OR kyc.phone_number ILIKE :search)',
         { search: `%${search}%` },
       );
     }
@@ -179,25 +189,33 @@ export class InvoicesService {
   /**
    * Find actionable invoices (pending or partially paid)
    */
-  async findActionable(landlordId: string, query: InvoiceQueryDto) {
+  async findActionable(landlordId: string | string[], query: InvoiceQueryDto) {
     const { search, page = 1, limit = 20 } = query;
+    const landlordIds = Array.isArray(landlordId) ? landlordId : [landlordId];
+    if (!landlordIds.length) {
+      return {
+        invoices: [],
+        pagination: { total: 0, page, limit, totalPages: 0 },
+      };
+    }
 
     const queryBuilder = this.invoiceRepository
       .createQueryBuilder('invoice')
       .leftJoinAndSelect('invoice.property', 'property')
       .leftJoinAndSelect('invoice.kyc_application', 'kyc')
       .leftJoinAndSelect('invoice.tenant', 'tenant')
+      .leftJoinAndSelect('tenant.user', 'tenantUser')
       .leftJoinAndSelect('invoice.line_items', 'lineItems')
       .leftJoinAndSelect('invoice.payments', 'payments')
       .leftJoinAndSelect('invoice.offer_letter', 'offerLetter')
-      .where('invoice.landlord_id = :landlordId', { landlordId })
+      .where('invoice.landlord_id IN (:...landlordIds)', { landlordIds })
       .andWhere('invoice.status IN (:...statuses)', {
         statuses: [InvoiceStatus.PENDING, InvoiceStatus.PARTIALLY_PAID],
       });
 
     if (search) {
       queryBuilder.andWhere(
-        '(kyc.first_name ILIKE :search OR kyc.last_name ILIKE :search OR tenant.first_name ILIKE :search OR tenant.last_name ILIKE :search OR property.name ILIKE :search OR kyc.phone_number ILIKE :search)',
+        '(kyc.first_name ILIKE :search OR kyc.last_name ILIKE :search OR tenantUser.first_name ILIKE :search OR tenantUser.last_name ILIKE :search OR property.name ILIKE :search OR kyc.phone_number ILIKE :search)',
         { search: `%${search}%` },
       );
     }
@@ -224,13 +242,18 @@ export class InvoicesService {
   /**
    * Find single invoice by ID
    */
-  async findOne(id: string, landlordId: string) {
+  async findOne(id: string, landlordId: string | string[]) {
+    const landlordIds = Array.isArray(landlordId) ? landlordId : [landlordId];
+    if (!landlordIds.length) {
+      throw new NotFoundException('Invoice not found');
+    }
     const invoice = await this.invoiceRepository.findOne({
-      where: { id, landlord_id: landlordId },
+      where: { id, landlord_id: In(landlordIds) },
       relations: [
         'property',
         'kyc_application',
         'tenant',
+        'tenant.user',
         'line_items',
         'payments',
       ],
@@ -251,14 +274,19 @@ export class InvoicesService {
   /**
    * Create a new invoice
    */
-  async create(landlordId: string, dto: CreateInvoiceDto) {
+  async create(dto: CreateInvoiceDto, managedLandlordIds: string[]) {
     const property = await this.propertyRepository.findOne({
-      where: { id: dto.propertyId, owner_id: landlordId },
+      where: { id: dto.propertyId },
     });
 
     if (!property) {
       throw new NotFoundException('Property not found');
     }
+
+    // Act-on-behalf: the invoice is billed under the property's owner, which
+    // the requester must manage.
+    assertLandlordInScope(managedLandlordIds, property.owner_id);
+    const landlordId = property.owner_id;
 
     const totalAmount = dto.lineItems.reduce(
       (sum, item) => sum + item.amount,
@@ -305,12 +333,16 @@ export class InvoicesService {
       let tenantId: string | null = null;
 
       if (dto.tenantId) {
-        const tenant = await this.usersRepository.findOne({
+        const tenantAccount = await this.accountRepository.findOne({
           where: { id: dto.tenantId },
+          relations: ['user'],
         });
-        if (tenant) {
-          tenantName = `${tenant.first_name} ${tenant.last_name}`;
-          tenantId = tenant.id;
+        if (tenantAccount) {
+          tenantName =
+            `${tenantAccount.user?.first_name ?? ''} ${tenantAccount.user?.last_name ?? ''}`.trim() ||
+            tenantAccount.profile_name ||
+            'Unknown';
+          tenantId = tenantAccount.id;
         }
       }
 
@@ -358,25 +390,23 @@ export class InvoicesService {
    */
   async generateFromOfferLetter(
     offerLetterId: string,
-    landlordAccountId: string,
+    managedLandlordIds: string[],
   ) {
+    const ids = managedLandlordIds ?? [];
+    if (!ids.length) {
+      throw new NotFoundException('Offer letter not found');
+    }
     const offerLetter = await this.offerLetterRepository.findOne({
-      where: { id: offerLetterId, landlord_id: landlordAccountId },
-      relations: ['property', 'kyc_application', 'landlord'],
+      where: { id: offerLetterId, landlord_id: In(ids) },
+      relations: ['property', 'kyc_application'],
     });
 
     if (!offerLetter) {
       throw new NotFoundException('Offer letter not found');
     }
 
-    // Get the User ID from the Account (landlord_id in offer letter is Account ID)
-    // Invoice.landlord_id expects a User ID, not Account ID
-    const landlordUserId = offerLetter.landlord?.userId;
-    if (!landlordUserId) {
-      throw new NotFoundException(
-        'Landlord user not found for this offer letter',
-      );
-    }
+    // offer_letters.landlord_id is already an Account.id, and Invoice.landlord_id
+    // is now an Account.id too — store it directly (no User translation needed).
 
     const existingInvoice = await this.invoiceRepository.findOne({
       where: { offer_letter_id: offerLetterId },
@@ -405,7 +435,7 @@ export class InvoicesService {
     const invoice = await this.dataSource.transaction(async (manager) => {
       const newInvoice = manager.create(Invoice, {
         invoice_number: invoiceNumber,
-        landlord_id: landlordUserId,
+        landlord_id: offerLetter.landlord_id,
         kyc_application_id: offerLetter.kyc_application_id,
         property_id: offerLetter.property_id,
         offer_letter_id: offerLetterId,
@@ -471,15 +501,19 @@ export class InvoicesService {
       );
     }
 
-    return this.findOne(invoice.id, landlordUserId);
+    return this.findOne(invoice.id, ids);
   }
 
   /**
    * Update invoice (only before any payment)
    */
-  async update(id: string, landlordId: string, dto: UpdateInvoiceDto) {
+  async update(id: string, managedLandlordIds: string[], dto: UpdateInvoiceDto) {
+    const ids = managedLandlordIds ?? [];
+    if (!ids.length) {
+      throw new NotFoundException('Invoice not found');
+    }
     const invoice = await this.invoiceRepository.findOne({
-      where: { id, landlord_id: landlordId },
+      where: { id, landlord_id: In(ids) },
       relations: ['payments'],
     });
 
@@ -523,15 +557,19 @@ export class InvoicesService {
       }
     });
 
-    return this.findOne(id, landlordId);
+    return this.findOne(id, ids);
   }
 
   /**
    * Cancel invoice
    */
-  async cancel(id: string, landlordId: string) {
+  async cancel(id: string, managedLandlordIds: string[]) {
+    const ids = managedLandlordIds ?? [];
+    if (!ids.length) {
+      throw new NotFoundException('Invoice not found');
+    }
     const invoice = await this.invoiceRepository.findOne({
-      where: { id, landlord_id: landlordId },
+      where: { id, landlord_id: In(ids) },
       relations: ['payments'],
     });
 
@@ -586,7 +624,8 @@ export class InvoicesService {
       await manager.save(InvoicePayment, invoicePayment);
 
       const newAmountPaid = Number(invoice.amount_paid) + amount;
-      const rawOutstandingBalance = Number(invoice.total_amount) - newAmountPaid;
+      const rawOutstandingBalance =
+        Number(invoice.total_amount) - newAmountPaid;
 
       // Calculate credit balance if overpayment occurred
       let newCreditBalance = Number(invoice.credit_balance || 0);
@@ -619,15 +658,20 @@ export class InvoicesService {
   /**
    * Send payment reminder via WhatsApp
    */
-  async sendReminder(id: string, landlordId: string) {
+  async sendReminder(id: string, managedLandlordIds: string[]) {
+    const ids = managedLandlordIds ?? [];
+    if (!ids.length) {
+      throw new NotFoundException('Invoice not found');
+    }
     const invoice = await this.invoiceRepository.findOne({
-      where: { id, landlord_id: landlordId },
+      where: { id, landlord_id: In(ids) },
       relations: [
         'property',
         'kyc_application',
         'tenant',
+        'tenant.user',
         'landlord',
-        'landlord.accounts',
+        'landlord.user',
       ],
     });
 
@@ -640,7 +684,8 @@ export class InvoicesService {
     }
 
     const tenantPhone =
-      invoice.kyc_application?.phone_number || invoice.tenant?.phone_number;
+      invoice.kyc_application?.phone_number ||
+      invoice.tenant?.user?.phone_number;
 
     if (!tenantPhone) {
       throw new BadRequestException('Tenant phone number not available');
@@ -648,17 +693,13 @@ export class InvoicesService {
 
     const tenantName = invoice.kyc_application
       ? `${invoice.kyc_application.first_name} ${invoice.kyc_application.last_name}`
-      : invoice.tenant
-        ? `${invoice.tenant.first_name} ${invoice.tenant.last_name}`
+      : invoice.tenant?.user
+        ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
         : 'Tenant';
 
-    const landlordAccount =
-      invoice.landlord.accounts?.find((a) =>
-        accountHasRole(a, RolesEnum.LANDLORD),
-      ) || invoice.landlord.accounts?.[0];
     const landlordName =
-      landlordAccount?.profile_name ||
-      `${invoice.landlord.first_name} ${invoice.landlord.last_name}`.trim() ||
+      invoice.landlord?.profile_name ||
+      `${invoice.landlord?.user?.first_name ?? ''} ${invoice.landlord?.user?.last_name ?? ''}`.trim() ||
       'Landlord';
 
     await this.templateSenderService.sendInvoiceReminder({

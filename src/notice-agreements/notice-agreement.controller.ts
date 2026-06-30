@@ -6,6 +6,7 @@ import {
   Param,
   Req,
   UseGuards,
+  UseInterceptors,
   Query,
 } from '@nestjs/common';
 import { NoticeAgreementService } from './notice-agreement.service';
@@ -26,15 +27,18 @@ import {
   ApiQuery,
   ApiResponse,
 } from '@nestjs/swagger';
-import { ADMIN_ROLES } from 'src/base.entity';
+import { RolesEnum } from 'src/base.entity';
 import { Roles } from 'src/auth/role.decorator';
 import { NoticeAgreementPaginationResponseDto } from './dto/paginate.dto';
 import { NoticeAnalyticsDTO } from './dto/notice-analytics.dto';
 import { SkipAuth } from 'src/auth/auth.decorator';
 import { UploadNoticeDocumentDto } from './dto/uplaod-notice-document.dto';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 @ApiTags('Notice-Agreements')
 @Controller('notice-agreement')
+@UseInterceptors(ManagedScopeInterceptor)
 export class NoticeAgreementController {
   constructor(private readonly service: NoticeAgreementService) {}
 
@@ -46,16 +50,13 @@ export class NoticeAgreementController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.ADMIN)
   getAllNoticeAgreement(
-    @Req() req: any,
+    @ManagedLandlordIds() landlordIds: string[],
     @Query() query: NoticeAgreementFilter,
   ) {
-    try {
-      const owner_id = req?.user?.id;
-      return this.service.getAllNoticeAgreement(owner_id, query);
-    } catch (error) {
-      throw error;
-    }
+    return this.service.getAllNoticeAgreement(landlordIds, query);
   }
 
   @ApiOperation({ summary: 'Get Notice Agreements by Tenant ID' })
@@ -81,6 +82,7 @@ export class NoticeAgreementController {
   }
 
   @UseGuards(RoleGuard)
+  @Roles(RolesEnum.ADMIN)
   @Get('analytics')
   @ApiOperation({ summary: 'Get analytics of all notice agreements' })
   @ApiResponse({
@@ -88,12 +90,8 @@ export class NoticeAgreementController {
     description: 'The analytics data of notice agreements',
     type: NoticeAnalyticsDTO,
   })
-  async getAnalytics(@Req() req: any) {
-    const owner_id = req?.user?.id;
-    if (!owner_id) {
-      throw new Error('Owner ID not found');
-    }
-    return await this.service.getNoticeAnalytics(owner_id);
+  async getAnalytics(@ManagedLandlordIds() landlordIds: string[]) {
+    return await this.service.getNoticeAnalytics(landlordIds);
   }
 
   @ApiOperation({ summary: 'Create Notice Agreement' })
@@ -102,12 +100,13 @@ export class NoticeAgreementController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post()
-  create(@Body() dto: CreateNoticeAgreementDto) {
-    try {
-      return this.service.create(dto);
-    } catch (error) {
-      throw error;
-    }
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  create(
+    @Body() dto: CreateNoticeAgreementDto,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.service.create(dto, landlordIds);
   }
 
   @ApiOperation({ summary: 'Get One Notice Agreement' })
@@ -119,12 +118,12 @@ export class NoticeAgreementController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get(':id')
-  findOne(@Param('id') id: string, @Req() req: any) {
-    try {
-      return this.service.findOne(id, req?.user?.id);
-    } catch (error) {
-      throw error;
-    }
+  @Roles(RolesEnum.ADMIN)
+  findOne(
+    @Param('id') id: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.service.findOne(id, landlordIds);
   }
 
   @ApiOperation({ summary: 'Resend Notice Agreement' })
@@ -133,24 +132,21 @@ export class NoticeAgreementController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Post('resend/:id')
-  resendNoticeAgreement(@Param('id') id: string, @Req() req: any) {
-    try {
-      return this.service.resendNoticeAgreement(id, req?.user?.id);
-    } catch (error) {
-      throw error;
-    }
+  @Roles(RolesEnum.ADMIN)
+  resendNoticeAgreement(
+    @Param('id') id: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.service.resendNoticeAgreement(id, landlordIds);
   }
 
   @Post('upload-document/:id')
+  @Roles(RolesEnum.ADMIN)
   async attachDocument(
     @Param('id') id: string,
     @Body() body: any,
-    @Req() req: any,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.service.attachNoticeDocument(
-      id,
-      body.document_url,
-      req?.user?.id,
-    );
+    return this.service.attachNoticeDocument(id, body.document_url, landlordIds);
   }
 }

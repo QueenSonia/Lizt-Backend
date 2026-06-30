@@ -9,7 +9,7 @@ import {
   JoinColumn,
   BeforeInsert,
 } from 'typeorm';
-import { Users } from '../../users/entities/user.entity';
+import { Account } from '../../users/entities/account.entity';
 import { Property } from '../../properties/entities/property.entity';
 import { KYCApplication } from '../../kyc-links/entities/kyc-application.entity';
 import { OfferLetter } from '../../offer-letters/entities/offer-letter.entity';
@@ -35,16 +35,20 @@ export class Invoice {
   @Column({ type: 'uuid' })
   landlord_id: string;
 
-  @ManyToOne(() => Users, { nullable: false })
+  // landlord_id is an Account.id (matches property.owner_id, offer_letters.landlord_id,
+  // ad_hoc_invoices, renewal_invoices — the rest of the app keys identity on Account).
+  @ManyToOne(() => Account, { nullable: false })
   @JoinColumn({ name: 'landlord_id' })
-  landlord: Users;
+  landlord: Account;
 
   @Column({ type: 'uuid', nullable: true })
   tenant_id: string;
 
-  @ManyToOne(() => Users, { nullable: true })
+  // tenant_id is an Account.id. Display name/phone come from Account.user; in the
+  // offer-letter flow tenant_id is left null and the tenant is shown via kyc_application.
+  @ManyToOne(() => Account, { nullable: true })
   @JoinColumn({ name: 'tenant_id' })
-  tenant: Users;
+  tenant: Account;
 
   @Column({ type: 'uuid', nullable: true })
   kyc_application_id: string;
@@ -86,7 +90,13 @@ export class Invoice {
   @Column({ type: 'decimal', precision: 15, scale: 2, default: 0 })
   outstanding_balance: number;
 
-  @Column({ type: 'decimal', precision: 15, scale: 2, nullable: true, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 15,
+    scale: 2,
+    nullable: true,
+    default: 0,
+  })
   credit_balance: number;
 
   @Column({ type: 'text', nullable: true })

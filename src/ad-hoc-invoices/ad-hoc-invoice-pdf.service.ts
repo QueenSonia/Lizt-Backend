@@ -5,6 +5,7 @@ import type { Browser } from 'puppeteer';
 
 import { launchBrowser } from '../common/puppeteer-launch';
 import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
+import { resolveBrandingUser } from '../common/branding/branding.util';
 
 import {
   AdHocInvoice,
@@ -28,6 +29,8 @@ export class AdHocInvoicePdfService {
         'property',
         'property.owner',
         'property.owner.user',
+        'property.owner.creator',
+        'property.owner.creator.user',
         'tenant',
         'tenant.user',
       ],
@@ -47,6 +50,8 @@ export class AdHocInvoicePdfService {
         'property',
         'property.owner',
         'property.owner.user',
+        'property.owner.creator',
+        'property.owner.creator.user',
         'tenant',
         'tenant.user',
       ],
@@ -149,7 +154,7 @@ export class AdHocInvoicePdfService {
     name: string;
     branding: any | null;
   } {
-    const landlordUser = (invoice.property as any)?.owner?.user;
+    const landlordUser = resolveBrandingUser((invoice.property as any)?.owner);
     const branding = landlordUser?.branding || null;
     const logoUrl =
       landlordUser?.logo_urls?.[0] || branding?.letterhead || null;
@@ -313,7 +318,7 @@ export class AdHocInvoicePdfService {
       : 'Tenant';
     const tenantPhone = tenantUser?.phone_number ?? null;
 
-    const landlordUser = (property as any)?.owner?.user;
+    const landlordUser = resolveBrandingUser((property as any)?.owner);
     const branding = landlordUser?.branding ?? {};
     const logoUrl =
       landlordUser?.logo_urls?.[0] ?? branding?.letterhead ?? null;

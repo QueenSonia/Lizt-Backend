@@ -44,7 +44,7 @@ export class KycFeedbackController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Get()
   findAll(@CurrentUser('id') landlord_id: string) {
     return this.feedbackService.findAll(landlord_id);
@@ -60,7 +60,7 @@ export class KycFeedbackController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Get('statistics')
   getStatistics(@CurrentUser('id') landlord_id: string) {
     return this.feedbackService.getStatistics(landlord_id);

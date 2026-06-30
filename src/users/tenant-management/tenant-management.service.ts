@@ -1674,8 +1674,8 @@ export class TenantManagementService {
   /**
    * Get tenants of a specific admin/landlord
    */
-  async getTenantsOfAnAdmin(
-    creator_id: string,
+  async getManagedTenants(
+    landlordIds: string[],
     queryParams: UserFilter,
   ): Promise<{
     users: Account[];
@@ -1690,6 +1690,20 @@ export class TenantManagementService {
     const page = queryParams?.page ?? config.DEFAULT_PAGE_NO;
     const size = queryParams?.size ?? config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
+
+    // Admin/PM scope: tenants created by any of the managed landlords.
+    if (!landlordIds.length) {
+      return {
+        users: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
 
     // Only return tenants who have active rents (currently assigned to properties)
     const qb = this.accountRepository
@@ -1727,7 +1741,7 @@ export class TenantManagementService {
         'property.location',
         'property.property_status',
       ])
-      .where('accounts.creator_id = :creator_id', { creator_id });
+      .where('accounts.creator_id IN (:...landlordIds)', { landlordIds });
 
     // Apply sorting
     if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
@@ -1773,17 +1787,108 @@ export class TenantManagementService {
   }
 
   /**
-   * Get a single tenant of an admin with full details
+   * The DISTINCT managed landlords (subset of `landlordIds`) this tenant
+   * rents/rented from. A tenant can be under several landlords; the admin's
+   * tenant view is grouped per landlord. Empty => out of scope (404).
    */
-  async getSingleTenantOfAnAdmin(
+  private async resolveTenantLandlordsInScope(
     tenantId: string,
-    adminId: string,
-  ): Promise<TenantDetailDto> {
-    console.log('🔍 DEBUG: getSingleTenantOfAnAdmin called:', {
-      tenantId,
-      adminId,
-      timestamp: new Date().toISOString(),
+    landlordIds: string[],
+  ): Promise<string[]> {
+    if (!landlordIds.length) return [];
+    const manager = this.accountRepository.manager;
+    const [current, past] = await Promise.all([
+      manager
+        .createQueryBuilder(PropertyTenant, 'pt')
+        .innerJoin('pt.property', 'p')
+        .select('DISTINCT p.owner_id', 'owner_id')
+        .where('pt.tenant_id = :tenantId', { tenantId })
+        .andWhere('p.owner_id IN (:...landlordIds)', { landlordIds })
+        .getRawMany<{ owner_id: string }>(),
+      manager
+        .createQueryBuilder(PropertyHistory, 'ph')
+        .innerJoin('ph.property', 'p')
+        .select('DISTINCT p.owner_id', 'owner_id')
+        .where('ph.tenant_id = :tenantId', { tenantId })
+        .andWhere('p.owner_id IN (:...landlordIds)', { landlordIds })
+        .getRawMany<{ owner_id: string }>(),
+    ]);
+    return Array.from(new Set([...current, ...past].map((r) => r.owner_id)));
+  }
+
+  /**
+   * Display names for a set of landlord accounts (profile_name, else first+last).
+   */
+  private async resolveLandlordNames(
+    landlordIds: string[],
+  ): Promise<Record<string, string>> {
+    if (!landlordIds.length) return {};
+    const accounts = await this.accountRepository.find({
+      where: { id: In(landlordIds) },
+      relations: { user: true },
     });
+    const map: Record<string, string> = {};
+    for (const a of accounts) {
+      map[a.id] =
+        a.profile_name?.trim() ||
+        `${a.user?.first_name ?? ''} ${a.user?.last_name ?? ''}`.trim() ||
+        'Landlord';
+    }
+    return map;
+  }
+
+  /**
+   * Get one tenant (under one of the admin's managed landlords) with full detail.
+   */
+  async getManagedTenant(
+    tenantId: string,
+    landlordIds: string[],
+  ): Promise<{
+    landlords: TenantDetailDto[];
+    summary: { totalOutstandingBalance: number; totalCreditBalance: number };
+  }> {
+    // A tenant can be under several managed landlords; return one full detail
+    // group per landlord plus an overall balance summary. 404 if under none.
+    const tenantLandlordIds = await this.resolveTenantLandlordsInScope(
+      tenantId,
+      landlordIds,
+    );
+    if (!tenantLandlordIds.length) {
+      throw new HttpException(
+        `Tenant with id: ${tenantId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const nameMap = await this.resolveLandlordNames(tenantLandlordIds);
+    const landlords = await Promise.all(
+      tenantLandlordIds.map(async (lid) => {
+        const detail = await this.buildTenantDetailForLandlord(tenantId, lid);
+        detail.landlordId = lid;
+        detail.landlordName = nameMap[lid] ?? 'Landlord';
+        return detail;
+      }),
+    );
+    const summary = {
+      totalOutstandingBalance: landlords.reduce(
+        (s, d) => s + (d.totalOutstandingBalance ?? 0),
+        0,
+      ),
+      totalCreditBalance: landlords.reduce(
+        (s, d) => s + (d.totalCreditBalance ?? 0),
+        0,
+      ),
+    };
+    return { landlords, summary };
+  }
+
+  /**
+   * Build the full tenant detail scoped to ONE landlord — the per-group unit of
+   * the admin tenant view above.
+   */
+  private async buildTenantDetailForLandlord(
+    tenantId: string,
+    landlordId: string,
+  ): Promise<TenantDetailDto> {
 
     // The tenant's latest KYC application and the id/property_id list of all
     // their KYC applications don't depend on the account query — fire them now
@@ -1800,7 +1905,7 @@ export class TenantManagementService {
       .innerJoinAndSelect('app.property', 'property')
       .leftJoinAndSelect('app.offer_letters', 'app_offer_letters')
       .where('app.tenant_id = :tenantId', { tenantId })
-      .andWhere('property.owner_id = :adminId', { adminId })
+      .andWhere('property.owner_id = :landlordId', { landlordId })
       .orderBy('app.created_at', 'DESC')
       .getOne();
     const kycApplicationsPromise = this.kycApplicationRepository.find({
@@ -1846,7 +1951,7 @@ export class TenantManagementService {
       .leftJoin(
         'user.tenant_kycs',
         'tenant_kyc',
-        'tenant_kyc.admin_id = :adminId',
+        'tenant_kyc.admin_id = :landlordId',
       )
       .addSelect([
         'tenant_kyc.id',
@@ -1940,7 +2045,7 @@ export class TenantManagementService {
           .from(PropertyTenant, 'pt')
           .innerJoin('pt.property', 'p')
           .where('pt.tenant_id = account.id')
-          .andWhere('p.owner_id = :adminId')
+          .andWhere('p.owner_id = :landlordId')
           .getQuery();
 
         const pastTenancySubQuery = qb
@@ -1949,17 +2054,17 @@ export class TenantManagementService {
           .from(PropertyHistory, 'ph')
           .innerJoin('ph.property', 'p')
           .where('ph.tenant_id = account.id')
-          .andWhere('p.owner_id = :adminId')
+          .andWhere('p.owner_id = :landlordId')
           .getQuery();
 
         return `(EXISTS ${currentTenancySubQuery} OR EXISTS ${pastTenancySubQuery})`;
       })
-      .setParameters({ tenantId, adminId })
+      .setParameters({ tenantId, landlordId })
       .getOne();
 
     console.log('🔍 DEBUG: Tenant query result:', {
       tenantId,
-      adminId,
+      landlordId,
       found: !!tenantAccount?.id,
       propertyHistoriesCount: tenantAccount?.property_histories?.length || 0,
       rentsCount: tenantAccount?.rents?.length || 0,
@@ -1969,7 +2074,7 @@ export class TenantManagementService {
     if (!tenantAccount?.id) {
       console.log('❌ DEBUG: Tenant not found for landlord:', {
         tenantId,
-        adminId,
+        landlordId,
         timestamp: new Date().toISOString(),
       });
       throw new HttpException(
@@ -2023,7 +2128,7 @@ export class TenantManagementService {
             .where('offer.kyc_application_id IN (:...kycIds)', {
               kycIds: kycApplicationIds,
             })
-            .andWhere('offer.landlord_id = :adminId', { adminId })
+            .andWhere('offer.landlord_id = :landlordId', { landlordId })
             .orderBy('offer.created_at', 'DESC')
             .getMany()
         : Promise.resolve([] as OfferLetter[]),
@@ -2068,7 +2173,7 @@ export class TenantManagementService {
     return await this.formatTenantData(
       tenantAccount,
       kycApplication,
-      adminId,
+      landlordId,
       offerLetters,
       payments,
     );
@@ -2085,13 +2190,31 @@ export class TenantManagementService {
    */
   async getTenantBalance(
     tenantId: string,
-    adminId: string,
+    landlordIds: string[],
   ): Promise<{
-    totalOutstandingBalance: number;
-    totalCreditBalance: number;
-    outstandingBalanceBreakdown: TenantDetailDto['outstandingBalanceBreakdown'];
-    paymentTransactions: TenantDetailDto['paymentTransactions'];
+    byLandlord: Array<{
+      landlordId: string;
+      landlordName: string;
+      totalOutstandingBalance: number;
+      totalCreditBalance: number;
+      outstandingBalanceBreakdown: TenantDetailDto['outstandingBalanceBreakdown'];
+      paymentTransactions: TenantDetailDto['paymentTransactions'];
+    }>;
+    summary: { totalOutstandingBalance: number; totalCreditBalance: number };
   }> {
+    const tenantLandlordIds = await this.resolveTenantLandlordsInScope(
+      tenantId,
+      landlordIds,
+    );
+    if (!tenantLandlordIds.length) {
+      throw new HttpException(
+        `Tenant with id: ${tenantId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    // Load the tenant account once (rents + property owner + histories); the
+    // per-landlord split happens below. Scope is already proven by the resolve.
     const tenantAccount = await this.accountRepository
       .createQueryBuilder('account')
       .leftJoin('account.rents', 'rents')
@@ -2116,28 +2239,6 @@ export class TenantManagementService {
       .leftJoin('property_histories.property', 'past_property')
       .addSelect(['past_property.id', 'past_property.owner_id'])
       .where('account.id = :tenantId', { tenantId })
-      .andWhere((qb) => {
-        const currentTenancySubQuery = qb
-          .subQuery()
-          .select('1')
-          .from(PropertyTenant, 'pt')
-          .innerJoin('pt.property', 'p')
-          .where('pt.tenant_id = account.id')
-          .andWhere('p.owner_id = :adminId')
-          .getQuery();
-
-        const pastTenancySubQuery = qb
-          .subQuery()
-          .select('1')
-          .from(PropertyHistory, 'ph')
-          .innerJoin('ph.property', 'p')
-          .where('ph.tenant_id = account.id')
-          .andWhere('p.owner_id = :adminId')
-          .getQuery();
-
-        return `(EXISTS ${currentTenancySubQuery} OR EXISTS ${pastTenancySubQuery})`;
-      })
-      .setParameters({ tenantId, adminId })
       .getOne();
 
     if (!tenantAccount?.id) {
@@ -2147,10 +2248,35 @@ export class TenantManagementService {
       );
     }
 
-    const rents =
-      tenantAccount.rents?.filter((r) => r.property?.owner_id === adminId) || [];
-
-    return this.computeTenantBalance(tenantAccount, adminId, rents);
+    const nameMap = await this.resolveLandlordNames(tenantLandlordIds);
+    const byLandlord = await Promise.all(
+      tenantLandlordIds.map(async (lid) => {
+        const rents =
+          tenantAccount.rents?.filter((r) => r.property?.owner_id === lid) ||
+          [];
+        const balance = await this.computeTenantBalance(
+          tenantAccount,
+          lid,
+          rents,
+        );
+        return {
+          landlordId: lid,
+          landlordName: nameMap[lid] ?? 'Landlord',
+          ...balance,
+        };
+      }),
+    );
+    const summary = {
+      totalOutstandingBalance: byLandlord.reduce(
+        (s, b) => s + b.totalOutstandingBalance,
+        0,
+      ),
+      totalCreditBalance: byLandlord.reduce(
+        (s, b) => s + b.totalCreditBalance,
+        0,
+      ),
+    };
+    return { byLandlord, summary };
   }
 
   /**
@@ -2185,12 +2311,12 @@ export class TenantManagementService {
    * the tenant detail. Extracted out of formatTenantData so the standalone
    * balance endpoint can reuse it without recomputing the whole tenant payload.
    *
-   * `rents` must be the adminId-filtered rent list (passed in so it stays
+   * `rents` must be the landlordId-filtered rent list (passed in so it stays
    * identical to the value formatTenantData uses elsewhere in its response).
    */
   private async computeTenantBalance(
     account: Account,
-    adminId: string | undefined,
+    landlordId: string | undefined,
     rents: Rent[],
   ): Promise<{
     totalOutstandingBalance: number;
@@ -2198,12 +2324,12 @@ export class TenantManagementService {
     outstandingBalanceBreakdown: TenantDetailDto['outstandingBalanceBreakdown'];
     paymentTransactions: TenantDetailDto['paymentTransactions'];
   }> {
-    // Fetch wallet balance and ledger (requires adminId as landlordId)
+    // Fetch wallet balance and ledger (requires landlordId as landlordId)
     let walletBalance = 0;
     let ledgerEntries: TenantBalanceLedger[] = [];
     let overduePlanByProperty: Record<string, number> = {};
     let overduePlanInstallments = 0;
-    if (adminId) {
+    if (landlordId) {
       // getBalance, getLedger and the active-plans lookup are independent reads —
       // run them concurrently instead of as three back-to-back Neon round-trips.
       // Carved invoice-fee charge plans never debit the wallet, so their overdue
@@ -2212,8 +2338,8 @@ export class TenantManagementService {
       // real wallet OB, so the shared helper excludes it (no double-count).
       const [walletBalanceResult, ledgerResult, activePlans] =
         await Promise.all([
-          this.tenantBalancesService.getBalance(account.id, adminId),
-          this.tenantBalancesService.getLedger(account.id, adminId),
+          this.tenantBalancesService.getBalance(account.id, landlordId),
+          this.tenantBalancesService.getLedger(account.id, landlordId),
           this.dataSource.getRepository(PaymentPlan).find({
             where: { tenant_id: account.id, status: PaymentPlanStatus.ACTIVE },
             relations: ['installments', 'property'],
@@ -2221,7 +2347,7 @@ export class TenantManagementService {
         ]);
       walletBalance = walletBalanceResult;
       ledgerEntries = ledgerResult;
-      const overdue = sumOverdueInvoiceFeeInstallments(activePlans, adminId);
+      const overdue = sumOverdueInvoiceFeeInstallments(activePlans, landlordId);
       overduePlanByProperty = overdue.byProperty;
       overduePlanInstallments = overdue.total;
     }
@@ -2513,7 +2639,7 @@ export class TenantManagementService {
       ...(account.property_histories || [])
         .filter((h) => {
           if (h.event_type !== 'user_added_payment') return false;
-          if (adminId && h.property?.owner_id !== adminId) return false;
+          if (landlordId && h.property?.owner_id !== landlordId) return false;
           return true;
         })
         .map((ph) => {
@@ -2570,7 +2696,7 @@ export class TenantManagementService {
   private async formatTenantData(
     account: Account,
     kycApplication?: KYCApplication | null,
-    adminId?: string,
+    landlordId?: string,
     offerLetters?: OfferLetter[],
     payments?: Payment[],
   ): Promise<TenantDetailDto> {
@@ -2579,9 +2705,9 @@ export class TenantManagementService {
     const tenantKyc = (user as Users & { tenant_kycs?: TenantKycRecord[] })
       .tenant_kycs?.[0];
 
-    // Filter data by adminId if provided
-    const rents = adminId
-      ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
+    // Filter data by landlordId if provided
+    const rents = landlordId
+      ? account.rents?.filter((r) => r.property?.owner_id === landlordId) || []
       : account.rents || [];
 
     // Outstanding balance, credit, the per-property breakdown and the
@@ -2592,23 +2718,23 @@ export class TenantManagementService {
       totalCreditBalance,
       outstandingBalanceBreakdown,
       paymentTransactions,
-    } = await this.computeTenantBalance(account, adminId, rents);
+    } = await this.computeTenantBalance(account, landlordId, rents);
 
-    const maintenanceRequests = adminId
+    const maintenanceRequests = landlordId
       ? account.maintenance_requests?.filter(
-          (sr) => sr.property?.owner_id === adminId,
+          (sr) => sr.property?.owner_id === landlordId,
         ) || []
       : account.maintenance_requests || [];
 
-    const propertyHistories = adminId
+    const propertyHistories = landlordId
       ? account.property_histories?.filter(
-          (ph) => ph.property?.owner_id === adminId,
+          (ph) => ph.property?.owner_id === landlordId,
         ) || []
       : account.property_histories || [];
 
-    const noticeAgreements = adminId
+    const noticeAgreements = landlordId
       ? account.notice_agreements?.filter(
-          (na) => na.property?.owner_id === adminId,
+          (na) => na.property?.owner_id === landlordId,
         ) || []
       : account.notice_agreements || [];
 
@@ -2660,7 +2786,7 @@ export class TenantManagementService {
     // Fire them concurrently up front (one round-trip wave instead of five
     // back-to-back) and await each at its existing use-site, leaving every
     // in-memory transformation untouched.
-    const ownerScope = adminId ? { property: { owner_id: adminId } } : {};
+    const ownerScope = landlordId ? { property: { owner_id: landlordId } } : {};
 
     const pendingInvoicesPromise =
       activeRentPropertyIds.length > 0
@@ -2724,7 +2850,7 @@ export class TenantManagementService {
       .find({
         where: {
           tenant_id: account.id,
-          ...(adminId ? { landlord_id: adminId } : {}),
+          ...(landlordId ? { landlord_id: landlordId } : {}),
         },
         relations: ['property'],
         order: { created_at: 'DESC' },
@@ -2735,7 +2861,7 @@ export class TenantManagementService {
       .find({
         where: {
           tenant_id: account.id,
-          ...(adminId ? { property: { owner_id: adminId } } : {}),
+          ...(landlordId ? { property: { owner_id: landlordId } } : {}),
         },
         relations: ['property', 'installments'],
         order: { created_at: 'DESC' },
@@ -2746,7 +2872,7 @@ export class TenantManagementService {
       .find({
         where: {
           tenant_id: account.id,
-          ...(adminId ? { property: { owner_id: adminId } } : {}),
+          ...(landlordId ? { property: { owner_id: landlordId } } : {}),
         },
         relations: ['property'],
         order: { created_at: 'DESC' },

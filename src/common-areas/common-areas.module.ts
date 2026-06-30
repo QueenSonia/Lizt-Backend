@@ -6,6 +6,7 @@ import { CommonAreasController } from './common-areas.controller';
 import { MaintenanceRequest } from '../maintenance-requests/entities/maintenance-request.entity';
 import { TeamMember } from '../users/entities/team-member.entity';
 import { Account } from '../users/entities/account.entity';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { Account } from '../users/entities/account.entity';
       TeamMember,
       Account,
     ]),
+    ScopeModule,
   ],
   controllers: [CommonAreasController],
   providers: [CommonAreasService],

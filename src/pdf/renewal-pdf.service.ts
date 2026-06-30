@@ -5,6 +5,7 @@ import type { Browser } from 'puppeteer';
 
 import { launchBrowser } from '../common/puppeteer-launch';
 import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
+import { resolveBrandingUser } from '../common/branding/branding.util';
 import { RenewalInvoice } from '../tenancies/entities/renewal-invoice.entity';
 import { renewalInvoiceToFees, sumAll, Fee } from '../common/billing/fees';
 
@@ -33,6 +34,8 @@ export class RenewalPDFService {
         'property',
         'property.owner',
         'property.owner.user',
+        'property.owner.creator',
+        'property.owner.creator.user',
         'tenant',
         'tenant.user',
         'tenant.user.tenant_kycs',
@@ -58,6 +61,8 @@ export class RenewalPDFService {
         'property',
         'property.owner',
         'property.owner.user',
+        'property.owner.creator',
+        'property.owner.creator.user',
         'tenant',
         'tenant.user',
         'propertyTenant',
@@ -238,7 +243,7 @@ export class RenewalPDFService {
       isPaid && invoice.paid_at ? this.formatDate(invoice.paid_at) : null;
 
     // Get landlord logo URL
-    const landlordUser = (invoice.property as any)?.owner?.user;
+    const landlordUser = resolveBrandingUser((invoice.property as any)?.owner);
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] ||
       landlordUser?.branding?.letterhead ||
@@ -579,7 +584,7 @@ export class RenewalPDFService {
     const amountPaidNum = Number(invoice.amount_paid ?? totalAmountNum) || 0;
     const remaining = Math.max(totalAmountNum - amountPaidNum, 0);
 
-    const landlordUser = (invoice.property as any)?.owner?.user;
+    const landlordUser = resolveBrandingUser((invoice.property as any)?.owner);
     const branding = landlordUser?.branding ?? {};
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] ?? branding?.letterhead ?? null;

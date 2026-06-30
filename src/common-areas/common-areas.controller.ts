@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
@@ -24,12 +25,16 @@ import { UpdateCommonAreaDto } from './dto/update-common-area.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Account } from '../users/entities/account.entity';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 // common_areas.owner_id FKs to accounts.id (same shape as property.owner_id).
 // The JWT carries Account.id, so every handler passes `requester.id` straight
-// through as the owner — no User.id resolution needed.
+// through as the owner — no User.id resolution needed. Admin (PM) list reads
+// fan out across the managed-landlord set via @ManagedLandlordIds.
 @ApiTags('Common-Areas')
 @UseGuards(JwtAuthGuard)
+@UseInterceptors(ManagedScopeInterceptor)
 @Controller('common-areas')
 export class CommonAreasController {
   constructor(private readonly commonAreasService: CommonAreasService) {}
@@ -45,9 +50,9 @@ export class CommonAreasController {
   @Post()
   create(
     @Body() dto: CreateCommonAreaDto,
-    @CurrentUser() requester: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.commonAreasService.create(requester.id, dto);
+    return this.commonAreasService.create(dto, landlordIds);
   }
 
   @ApiOperation({
@@ -56,8 +61,8 @@ export class CommonAreasController {
   @ApiOkResponse({ description: 'Common areas owned by the caller' })
   @ApiSecurity('access_token')
   @Get()
-  findAll(@CurrentUser() requester: Account) {
-    return this.commonAreasService.findAllForLandlord(requester.id);
+  findAll(@ManagedLandlordIds() landlordIds: string[]) {
+    return this.commonAreasService.findAllForLandlord(landlordIds);
   }
 
   @ApiOperation({
@@ -79,9 +84,9 @@ export class CommonAreasController {
   @Get(':id')
   findOne(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @CurrentUser() requester: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.commonAreasService.findOne(id, requester.id);
+    return this.commonAreasService.findOne(id, landlordIds);
   }
 
   @ApiOperation({ summary: 'Update a common area (owner only)' })
@@ -91,9 +96,9 @@ export class CommonAreasController {
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateCommonAreaDto,
-    @CurrentUser() requester: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.commonAreasService.update(id, requester.id, dto);
+    return this.commonAreasService.update(id, dto, landlordIds);
   }
 
   @ApiOperation({ summary: 'Soft-delete a common area (owner only)' })
@@ -102,8 +107,8 @@ export class CommonAreasController {
   @Delete(':id')
   remove(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @CurrentUser() requester: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.commonAreasService.softDelete(id, requester.id);
+    return this.commonAreasService.softDelete(id, landlordIds);
   }
 }

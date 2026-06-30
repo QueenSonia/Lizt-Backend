@@ -17,6 +17,7 @@ import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenanc
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { UtilService } from 'src/utils/utility-service';
 import { Account } from 'src/users/entities/account.entity';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { Account } from 'src/users/entities/account.entity';
       Account,
     ]),
     forwardRef(() => WhatsappBotModule),
+    ScopeModule,
   ],
   controllers: [NotificationController],
   providers: [

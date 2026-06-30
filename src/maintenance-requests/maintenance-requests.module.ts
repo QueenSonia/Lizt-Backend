@@ -14,6 +14,7 @@ import { UtilsModule } from 'src/utils/utils.module';
 import { CommonArea } from 'src/common-areas/entities/common-area.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { ArtisansModule } from 'src/artisans/artisans.module';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { ArtisansModule } from 'src/artisans/artisans.module';
     ]),
     UtilsModule,
     ArtisansModule,
+    ScopeModule,
   ],
   controllers: [MaintenanceRequestsController],
   providers: [MaintenanceRequestsService, FileUploadService],

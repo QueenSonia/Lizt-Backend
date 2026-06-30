@@ -23,6 +23,7 @@ import {
   CreateAdminDto,
   CreateCustomerRepDto,
   CreateLandlordDto,
+  CreateManagedLandlordDto,
   CreateTenantDto,
   CreateUserDto,
   LoginDto,
@@ -36,9 +37,11 @@ import { AttachTenantToPropertyDto } from './dto/attach-tenant-to-property.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
-import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
+import { RolesEnum } from 'src/base.entity';
 import { Response } from 'express';
 import { SkipAuth } from 'src/auth/auth.decorator';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -81,17 +84,41 @@ export class UsersController {
   // }
 
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(RolesEnum.ADMIN)
   @Get('/waitlist')
   async getWaitlist() {
     return this.usersService.getWaitlist();
   }
 
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(RolesEnum.ADMIN)
   @Get('/landlord')
   async getLandlords() {
     return this.usersService.getLandlords();
+  }
+
+  @ApiOperation({ summary: 'Property manager adds a managed landlord' })
+  @ApiCreatedResponse({
+    description: 'Managed landlord created (login-disabled, parented to admin)',
+  })
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @Post('/landlord')
+  async createLandlord(
+    @Body() body: CreateManagedLandlordDto,
+    @CurrentUser() admin: Account,
+  ) {
+    return this.usersService.createManagedLandlord(admin.id, body);
+  }
+
+  @ApiOperation({
+    summary: 'List the landlords this property manager manages (scoped)',
+  })
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @Get('/managed-landlords')
+  async getManagedLandlords(@CurrentUser() admin: Account) {
+    return this.usersService.getManagedLandlords(admin.id);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -137,7 +164,7 @@ export class UsersController {
 
   @Post()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async addTenant(@Body() body: CreateTenantDto, @Req() req: any) {
     try {
       const user_id = req?.user?.id;
@@ -149,7 +176,7 @@ export class UsersController {
 
   @Post('attach-tenant-from-kyc')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async attachTenantFromKyc(
     @Body() body: AttachTenantFromKycDto,
     @Req() req: any,
@@ -169,7 +196,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Post(':tenantId/attach-to-property')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async attachTenantToProperty(
     @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
     @Body() body: AttachTenantToPropertyDto,
@@ -189,7 +216,7 @@ export class UsersController {
 
   // @Post()
   // @UseGuards(RoleGuard)
-  // @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  // @Roles(RolesEnum.ADMIN)
   // async createUser(@Body() body: CreateUserDto, @Req() req: any) {
   //   try {
   //     const user_id = req?.user?.id;
@@ -215,7 +242,7 @@ export class UsersController {
   })
   @ApiBadRequestResponse()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @ApiBearerAuth()
   @Get('/tenants')
   getAllTenants(@Query() query: UserFilter) {
@@ -258,12 +285,14 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Get('tenant-list')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  getTenantsOfAnAdmin(@Query() query: UserFilter, @Req() req: any) {
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
+  getManagedTenants(
+    @Query() query: UserFilter,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
     try {
-      const creator_id = req?.user?.id;
-
-      return this.usersService.getTenantsOfAnAdmin(creator_id, query);
+      return this.usersService.getManagedTenants(landlordIds, query);
     } catch (error) {
       throw error;
     }
@@ -271,13 +300,14 @@ export class UsersController {
 
   @Get('tenant-list/:tenant_id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  getSingleTenantOfAnAdmin(@Req() req: any) {
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
+  getManagedTenant(
+    @Param('tenant_id') tenant_id: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
     try {
-      const adminId = req?.user?.id;
-      const tenant_id = req?.params.tenant_id;
-
-      return this.usersService.getSingleTenantOfAnAdmin(tenant_id, adminId);
+      return this.usersService.getManagedTenant(tenant_id, landlordIds);
     } catch (error) {
       throw error;
     }
@@ -287,13 +317,14 @@ export class UsersController {
   // (no cache) while the heavier tenant payload above is cached.
   @Get('tenant-list/:tenant_id/balance')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  getTenantBalance(@Req() req: any) {
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
+  getTenantBalance(
+    @Param('tenant_id') tenant_id: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
     try {
-      const adminId = req?.user?.id;
-      const tenant_id = req?.params.tenant_id;
-
-      return this.usersService.getTenantBalance(tenant_id, adminId);
+      return this.usersService.getTenantBalance(tenant_id, landlordIds);
     } catch (error) {
       throw error;
     }
@@ -381,7 +412,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Get()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(RolesEnum.ADMIN)
   getAllUsers(@Query() query: UserFilter) {
     try {
       return this.usersService.getAllUsers(query);
@@ -468,7 +499,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Delete(':id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   deleteUserById(@Param('id', new ParseUUIDPipe()) id: string) {
     try {
       return this.usersService.deleteUserById(id);
@@ -565,7 +596,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Post('upload-logos')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @UseInterceptors(FilesInterceptor('logos', 10))
   async uploadLogos(
     @UploadedFiles() files: Array<Express.Multer.File>,
@@ -586,7 +617,7 @@ export class UsersController {
   @ApiSecurity('access_token')
   @Post('upload-branding-asset')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @UseInterceptors(FileInterceptor('file'))
   async uploadBrandingAsset(
     @UploadedFile() file: Express.Multer.File,
@@ -682,7 +713,7 @@ export class UsersController {
   }
 
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(RolesEnum.ADMIN)
   @Post('sync-tenant-data')
   async syncTenantData() {
     return this.syncTenantDataService.syncTenantNames();

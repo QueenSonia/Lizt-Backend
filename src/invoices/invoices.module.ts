@@ -9,11 +9,12 @@ import { InvoicePayment } from './entities/invoice-payment.entity';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { Property } from '../properties/entities/property.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
-import { Users } from '../users/entities/user.entity';
+import { Account } from '../users/entities/account.entity';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { AuthModule } from '../auth/auth.module';
 import { PropertyHistoryModule } from '../property-history/property-history.module';
 import { NotificationModule } from '../notifications/notification.module';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
@@ -24,12 +25,13 @@ import { NotificationModule } from '../notifications/notification.module';
       OfferLetter,
       Property,
       KYCApplication,
-      Users,
+      Account,
     ]),
     forwardRef(() => WhatsappBotModule),
     AuthModule,
     PropertyHistoryModule,
     NotificationModule,
+    ScopeModule,
   ],
   controllers: [InvoicesController],
   providers: [InvoicesService, InvoicePDFService],

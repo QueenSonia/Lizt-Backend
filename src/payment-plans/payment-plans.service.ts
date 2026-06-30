@@ -54,6 +54,7 @@ import { Fee, FeeKind } from '../common/billing/fees';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../utils/utility-service';
 import { PaymentPlanRequestsService } from './payment-plan-requests.service';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
 
 export interface PlanPaymentInitializationResult {
   accessCode: string;
@@ -94,7 +95,21 @@ export class PaymentPlansService {
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
     private readonly requestsService: PaymentPlanRequestsService,
+    private readonly scopeService: ManagementScopeService,
   ) {}
+
+  /**
+   * True when `userId` may act on a plan owned by `ownerId`: either they ARE
+   * that landlord, or they are an admin (property manager) who manages them.
+   */
+  private async canManageOwner(
+    ownerId: string | null | undefined,
+    userId: string,
+  ): Promise<boolean> {
+    if (!ownerId) return false;
+    if (ownerId === userId) return true;
+    return this.scopeService.managesLandlord(userId, ownerId);
+  }
 
   /**
    * Is this a charge-scope plan that targets a *current-period invoice fee*
@@ -130,7 +145,7 @@ export class PaymentPlansService {
 
   async createPlan(
     dto: CreatePaymentPlanDto,
-    createdByUserId?: string,
+    createdByUserId: string,
   ): Promise<PaymentPlan> {
     const propertyTenant = await this.propertyTenantRepository.findOne({
       where: { id: dto.propertyTenantId },
@@ -138,6 +153,20 @@ export class PaymentPlansService {
     });
     if (!propertyTenant) {
       throw new NotFoundException('Tenancy not found');
+    }
+
+    // Authorization: the caller must own — or, as an admin/FM, manage — the
+    // landlord whose tenancy this plan settles. Runs before either plan path
+    // (ad-hoc-invoice or renewal-fee) below.
+    if (
+      !(await this.canManageOwner(
+        propertyTenant.property?.owner_id,
+        createdByUserId,
+      ))
+    ) {
+      throw new ForbiddenException(
+        'You do not manage the landlord that owns this tenancy',
+      );
     }
 
     if (dto.installments.length < 1) {
@@ -937,16 +966,26 @@ export class PaymentPlansService {
   // ───────────────────────────────────────────────────────────────────────
 
   async listPlans(
+    requesterUserId: string,
     propertyTenantId?: string,
     tenantId?: string,
     propertyId?: string,
   ): Promise<PaymentPlan[]> {
+    // Scope to the owners the requester may act for: themselves (legacy
+    // landlord path) plus, for an admin, the landlords they manage. Closes the
+    // read-side IDOR where any caller could list another landlord's plans.
+    const managed =
+      await this.scopeService.resolveManagedLandlordIds(requesterUserId);
+    const ownerScope = Array.from(new Set([requesterUserId, ...managed]));
+
     const qb = this.planRepository
       .createQueryBuilder('plan')
       .leftJoinAndSelect('plan.installments', 'installments')
+      .leftJoin('plan.property', 'scopeProperty')
       .where('plan.status != :cancelledStatus', {
         cancelledStatus: PaymentPlanStatus.CANCELLED,
       })
+      .andWhere('scopeProperty.owner_id IN (:...ownerScope)', { ownerScope })
       .orderBy('plan.created_at', 'DESC')
       .addOrderBy('installments.sequence', 'ASC');
 
@@ -982,6 +1021,24 @@ export class PaymentPlansService {
     });
     if (!plan) {
       throw new NotFoundException('Payment plan not found');
+    }
+    return plan;
+  }
+
+  /**
+   * Scoped read of a single plan — the requester must own (or, as an admin/FM,
+   * manage) the landlord that owns the plan's property. Closes the by-id read
+   * IDOR on GET /payment-plans/:id. Internal callers keep using getPlan().
+   */
+  async getPlanForRequester(
+    id: string,
+    requesterUserId: string,
+  ): Promise<PaymentPlan> {
+    const plan = await this.getPlan(id);
+    if (!(await this.canManageOwner(plan.property?.owner_id, requesterUserId))) {
+      throw new ForbiddenException(
+        'You do not have access to this payment plan',
+      );
     }
     return plan;
   }
@@ -1028,7 +1085,9 @@ export class PaymentPlansService {
 
     const plan = installment.plan;
     const property = plan.property;
-    const landlordUser = property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -1294,7 +1353,9 @@ export class PaymentPlansService {
 
     const plan = installment.plan;
     const property = plan.property;
-    const landlordUser = property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -1364,8 +1425,15 @@ export class PaymentPlansService {
   // Cancel
   // ───────────────────────────────────────────────────────────────────────
 
-  async cancelPlan(id: string, cancelledByUserId?: string): Promise<void> {
+  async cancelPlan(id: string, cancelledByUserId: string): Promise<void> {
     const plan = await this.getPlan(id);
+
+    // Authorization: only the owning landlord, or an admin/FM who manages them.
+    if (!(await this.canManageOwner(plan.property?.owner_id, cancelledByUserId))) {
+      throw new ForbiddenException(
+        'Only the property landlord can modify this plan',
+      );
+    }
 
     if (plan.status !== PaymentPlanStatus.ACTIVE) {
       throw new ConflictException('Plan is not active');
@@ -1546,9 +1614,16 @@ export class PaymentPlansService {
   async updatePlan(
     id: string,
     dto: UpdatePaymentPlanDto,
-    updatedByUserId?: string,
+    updatedByUserId: string,
   ): Promise<PaymentPlan> {
     const plan = await this.getPlan(id);
+
+    // Authorization: only the owning landlord, or an admin/FM who manages them.
+    if (!(await this.canManageOwner(plan.property?.owner_id, updatedByUserId))) {
+      throw new ForbiddenException(
+        'Only the property landlord can modify this plan',
+      );
+    }
 
     if (plan.status !== PaymentPlanStatus.ACTIVE) {
       throw new ConflictException('Plan is not active');
@@ -1718,7 +1793,9 @@ export class PaymentPlansService {
       .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
 
     const property = plan.property;
-    const landlordUser = property?.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      property?.owner_id,
+    );
     const landlordBranding =
       (landlordUser?.branding as Record<string, unknown> | undefined) || null;
     const landlordLogoUrl =
@@ -2109,7 +2186,7 @@ export class PaymentPlansService {
     if (!property) {
       throw new NotFoundException('Property not found');
     }
-    if (property.owner_id !== markedByUserId) {
+    if (!(await this.canManageOwner(property.owner_id, markedByUserId))) {
       throw new ForbiddenException(
         'Only the property landlord can mark installments paid',
       );

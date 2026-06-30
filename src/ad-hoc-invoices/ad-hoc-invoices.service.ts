@@ -29,6 +29,7 @@ import { TenantBalancesService } from '../tenant-balances/tenant-balances.servic
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../utils/utility-service';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
 
 export interface AdHocInvoiceInitializationResult {
   accessCode: string;
@@ -58,7 +59,20 @@ export class AdHocInvoicesService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
+    private readonly scopeService: ManagementScopeService,
   ) {}
+
+  /**
+   * True when `userId` may act on an invoice owned by `ownerId`: either they ARE
+   * that landlord, or they are an admin (property manager) who manages them.
+   */
+  private async canManageOwner(
+    ownerId: string,
+    userId: string,
+  ): Promise<boolean> {
+    if (ownerId && ownerId === userId) return true;
+    return this.scopeService.managesLandlord(userId, ownerId);
+  }
 
   // ───────────────────────────────────────────────────────────────────────
   // Landlord-facing
@@ -79,7 +93,10 @@ export class AdHocInvoicesService {
     if (!property) {
       throw new NotFoundException('Property not found for this tenancy');
     }
-    if (createdByUserId && property.owner_id !== createdByUserId) {
+    if (
+      createdByUserId &&
+      !(await this.canManageOwner(property.owner_id, createdByUserId))
+    ) {
       throw new ForbiddenException(
         'Only the property landlord can issue invoices',
       );
@@ -170,7 +187,7 @@ export class AdHocInvoicesService {
     userId?: string,
   ): Promise<AdHocInvoice> {
     const invoice = await this.getInvoiceInternal(id);
-    if (userId && invoice.landlord_id !== userId) {
+    if (userId && !(await this.canManageOwner(invoice.landlord_id, userId))) {
       throw new ForbiddenException('Only the landlord can edit this invoice');
     }
 
@@ -293,7 +310,10 @@ export class AdHocInvoicesService {
 
   async getInvoice(id: string, landlordId?: string): Promise<AdHocInvoice> {
     const invoice = await this.getInvoiceInternal(id);
-    if (landlordId && invoice.landlord_id !== landlordId) {
+    if (
+      landlordId &&
+      !(await this.canManageOwner(invoice.landlord_id, landlordId))
+    ) {
       throw new ForbiddenException('Access denied for this invoice');
     }
     return this.withComputedStatus(invoice);
@@ -301,7 +321,7 @@ export class AdHocInvoicesService {
 
   async cancelInvoice(id: string, userId?: string): Promise<void> {
     const invoice = await this.getInvoiceInternal(id);
-    if (userId && invoice.landlord_id !== userId) {
+    if (userId && !(await this.canManageOwner(invoice.landlord_id, userId))) {
       throw new ForbiddenException('Only the landlord can cancel this invoice');
     }
     if (invoice.status === AdHocInvoiceStatus.PAID) {
@@ -380,7 +400,9 @@ export class AdHocInvoicesService {
     }
 
     const property = invoice.property;
-    const landlordUser = property?.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -644,7 +666,9 @@ export class AdHocInvoicesService {
     }
 
     const property = invoice.property;
-    const landlordUser = property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;

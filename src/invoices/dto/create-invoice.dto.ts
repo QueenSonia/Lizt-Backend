@@ -20,6 +20,7 @@ export class LineItemDto {
 }
 
 export class CreateInvoiceDto {
+  /** Account.id of the tenant (optional; the offer-letter flow uses kycApplicationId instead). */
   @IsUUID()
   @IsOptional()
   tenantId?: string;

@@ -60,11 +60,13 @@ export class PaymentPlansController {
   @ApiSecurity('access_token')
   @Get()
   list(
+    @Req() req: any,
     @Query('propertyTenantId') propertyTenantId?: string,
     @Query('tenantId') tenantId?: string,
     @Query('propertyId') propertyId?: string,
   ) {
     return this.paymentPlansService.listPlans(
+      req?.user?.id,
       propertyTenantId,
       tenantId,
       propertyId,
@@ -75,8 +77,8 @@ export class PaymentPlansController {
   @ApiOkResponse({ description: 'Payment plan' })
   @ApiSecurity('access_token')
   @Get(':id')
-  getOne(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.paymentPlansService.getPlan(id);
+  getOne(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: any) {
+    return this.paymentPlansService.getPlanForRequester(id, req?.user?.id);
   }
 
   @ApiOperation({ summary: 'Cancel a payment plan' })

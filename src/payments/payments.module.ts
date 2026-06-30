@@ -26,6 +26,7 @@ import { ReceiptsModule } from '../receipts/receipts.module';
 import { TenanciesModule } from '../tenancies/tenancies.module';
 import { PaymentPlansModule } from '../payment-plans/payment-plans.module';
 import { AdHocInvoicesModule } from '../ad-hoc-invoices/ad-hoc-invoices.module';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { AdHocInvoicesModule } from '../ad-hoc-invoices/ad-hoc-invoices.module';
     forwardRef(() => TenanciesModule),
     forwardRef(() => PaymentPlansModule),
     forwardRef(() => AdHocInvoicesModule),
+    ScopeModule,
   ],
   controllers: [WebhooksController, PaymentsController],
   providers: [PaystackService, PaystackLogger, PaymentService],

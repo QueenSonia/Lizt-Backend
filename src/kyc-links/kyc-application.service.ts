@@ -18,7 +18,9 @@ import {
   ApplicationType,
 } from './entities/kyc-application.entity';
 import { transformApplicationForFrontend } from './kyc-application.transform';
-import { KYCLink } from './entities/kyc-link.entity';
+import { assertLandlordInScope } from '../common/scope/scope.util';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
+import { KYCLink, KycLinkScope } from './entities/kyc-link.entity';
 import { KYCOtp } from './entities/kyc-otp.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
@@ -69,6 +71,7 @@ export class KYCApplicationService {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     private readonly utilService: UtilService,
     private readonly configService: ConfigService,
+    private readonly scopeService: ManagementScopeService,
     @Optional()
     @Inject(forwardRef(() => EventsGateway))
     private readonly eventsGateway?: EventsGateway,
@@ -166,13 +169,27 @@ export class KYCApplicationService {
       );
     }
 
-    // Validate the selected property belongs to the landlord and is vacant
-    const selectedProperty = await this.propertyRepository.findOne({
-      where: {
-        id: kycData.property_id,
-        owner_id: kycLink.landlord_id,
-      },
-    });
+    // Validate the selected property is within this link's scope and is vacant.
+    // A landlord-scoped link covers its single owner; an admin-scoped link
+    // covers every landlord the admin manages — so the property's real owner
+    // (never the admin) must fall within that resolved set.
+    let scopedOwnerIds: string[];
+    if (kycLink.scope_type === KycLinkScope.ADMIN && kycLink.admin_creator_id) {
+      scopedOwnerIds = await this.scopeService.resolveManagedLandlordIds(
+        kycLink.admin_creator_id,
+      );
+    } else {
+      scopedOwnerIds = [kycLink.landlord_id];
+    }
+
+    const selectedProperty = scopedOwnerIds.length
+      ? await this.propertyRepository.findOne({
+          where: {
+            id: kycData.property_id,
+            owner_id: In(scopedOwnerIds),
+          },
+        })
+      : null;
 
     if (!selectedProperty) {
       throw new BadRequestException(
@@ -679,12 +696,12 @@ export class KYCApplicationService {
    */
   async getApplicationsByProperty(
     propertyId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<any[]> {
     // Validate property ownership and get property details
     const property = await this.validatePropertyOwnership(
       propertyId,
-      landlordId,
+      managedLandlordIds,
     );
 
     // Determine which applications to show based on property status
@@ -715,7 +732,7 @@ export class KYCApplicationService {
    */
   async getApplicationsByPropertyWithFilters(
     propertyId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
     filters?: {
       status?: ApplicationStatus;
       sortBy?: 'created_at' | 'first_name' | 'status';
@@ -725,7 +742,7 @@ export class KYCApplicationService {
     // Validate property ownership and get property details
     const property = await this.validatePropertyOwnership(
       propertyId,
-      landlordId,
+      managedLandlordIds,
     );
 
     const queryBuilder = this.kycApplicationRepository
@@ -852,11 +869,11 @@ export class KYCApplicationService {
    */
   async getApplicationById(
     applicationId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<any> {
     console.log('🔍 Fetching KYC application:', {
       applicationId,
-      landlordId,
+      managedLandlordIds,
     });
 
     const application = await this.kycApplicationRepository.findOne({
@@ -877,7 +894,10 @@ export class KYCApplicationService {
 
     // Validate that the landlord owns the property
     try {
-      await this.validatePropertyOwnership(application.property_id, landlordId);
+      await this.validatePropertyOwnership(
+        application.property_id,
+        managedLandlordIds,
+      );
       console.log('✅ Landlord ownership validated');
     } catch (error) {
       console.log('❌ Landlord ownership validation failed:', error.message);
@@ -912,7 +932,7 @@ export class KYCApplicationService {
    */
   async getApplicationStatistics(
     propertyId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<{
     total: number;
     pending: number;
@@ -922,7 +942,7 @@ export class KYCApplicationService {
     // Validate property ownership and get property details
     const property = await this.validatePropertyOwnership(
       propertyId,
-      landlordId,
+      managedLandlordIds,
     );
 
     if (property.property_status === 'vacant') {
@@ -969,7 +989,7 @@ export class KYCApplicationService {
    * Optimized: Only select columns needed for frontend transformation
    */
   async getAllApplications(
-    landlordId: string,
+    landlordIds: string | string[],
     query: ListKycApplicationsDto = {},
   ): Promise<{
     applications: any[];
@@ -981,9 +1001,27 @@ export class KYCApplicationService {
       hasNextPage: boolean;
     };
   }> {
+    const ids = Array.isArray(landlordIds)
+      ? landlordIds
+      : landlordIds
+        ? [landlordIds]
+        : [];
     const page = query.page ? Number(query.page) : config.DEFAULT_PAGE_NO;
     const size = query.size ? Number(query.size) : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
+
+    if (ids.length === 0) {
+      return {
+        applications: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
 
     const [applications, count] = await this.kycApplicationRepository
       .createQueryBuilder('application')
@@ -1014,7 +1052,7 @@ export class KYCApplicationService {
         'offer_letters.created_at',
         'offer_letters.sent_at',
       ])
-      .where('property.owner_id = :landlordId', { landlordId })
+      .where('property.owner_id IN (:...landlordIds)', { landlordIds: ids })
       .andWhere('application.deleted_at IS NULL')
       .orderBy('application.created_at', 'DESC')
       .addOrderBy('application.id', 'ASC')
@@ -1044,7 +1082,7 @@ export class KYCApplicationService {
    */
   async getApplicationsByTenant(
     tenantId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<any[]> {
     // Get all applications for the tenant
     const applications = await this.kycApplicationRepository.find({
@@ -1057,7 +1095,10 @@ export class KYCApplicationService {
 
     // Validate that the landlord owns all properties associated with these applications
     for (const application of applications) {
-      await this.validatePropertyOwnership(application.property_id, landlordId);
+      await this.validatePropertyOwnership(
+        application.property_id,
+        managedLandlordIds,
+      );
     }
 
     return applications.map((app) => this.transformApplicationForFrontend(app));
@@ -1100,7 +1141,7 @@ export class KYCApplicationService {
    */
   async getKYCApplicationHistory(
     applicationId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<
     Array<{
       id: string;
@@ -1111,18 +1152,17 @@ export class KYCApplicationService {
   > {
     const application = await this.kycApplicationRepository.findOne({
       where: { id: applicationId },
-      relations: ['kyc_link'],
+      relations: ['property'],
     });
 
     if (!application) {
       throw new NotFoundException('KYC application not found');
     }
 
-    if (application.kyc_link?.landlord_id !== landlordId) {
-      throw new ForbiddenException(
-        'Not authorized to view this application history',
-      );
-    }
+    // Attribute by the property's REAL owner, not kyc_link.landlord_id — an
+    // admin-scoped link's landlord_id is the admin (not in the managed set),
+    // so the link is the wrong ownership anchor. The property owner is.
+    assertLandlordInScope(managedLandlordIds, application.property?.owner_id);
 
     const { PropertyHistory } = await import(
       '../property-history/entities/property-history.entity'
@@ -1856,7 +1896,7 @@ export class KYCApplicationService {
    */
   async getKYCTokenForApplication(
     applicationId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<string> {
     try {
       // Find the application with its KYC link
@@ -1870,7 +1910,10 @@ export class KYCApplicationService {
       }
 
       // Validate property ownership
-      await this.validatePropertyOwnership(application.property_id, landlordId);
+      await this.validatePropertyOwnership(
+        application.property_id,
+        managedLandlordIds,
+      );
 
       if (!application.kyc_link) {
         throw new NotFoundException('KYC link not found for this application');
@@ -1885,7 +1928,7 @@ export class KYCApplicationService {
       console.error('❌ Error getting KYC token for application:', {
         error: error instanceof Error ? error.message : String(error),
         applicationId,
-        landlordId,
+        managedLandlordIds,
         timestamp: new Date().toISOString(),
       });
 
@@ -1912,7 +1955,7 @@ export class KYCApplicationService {
    */
   async resendKYCCompletionLink(
     applicationId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<void> {
     try {
       // Find the application with all necessary relations
@@ -1931,7 +1974,10 @@ export class KYCApplicationService {
       }
 
       // Validate property ownership
-      await this.validatePropertyOwnership(application.property_id, landlordId);
+      await this.validatePropertyOwnership(
+        application.property_id,
+        managedLandlordIds,
+      );
 
       if (!application.kyc_link) {
         throw new NotFoundException('KYC link not found for this application');
@@ -1986,7 +2032,7 @@ export class KYCApplicationService {
       console.error('❌ Error resending KYC completion link:', {
         error: error instanceof Error ? error.message : String(error),
         applicationId,
-        landlordId,
+        managedLandlordIds,
         timestamp: new Date().toISOString(),
       });
 
@@ -2014,7 +2060,7 @@ export class KYCApplicationService {
    */
   private async validatePropertyOwnership(
     propertyId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<Property> {
     const property = await this.propertyRepository.findOne({
       where: { id: propertyId },
@@ -2024,11 +2070,8 @@ export class KYCApplicationService {
       throw new NotFoundException('Property not found');
     }
 
-    if (property.owner_id !== landlordId) {
-      throw new ForbiddenException(
-        'You are not authorized to access applications for this property',
-      );
-    }
+    // The requester must manage the landlord that owns this property.
+    assertLandlordInScope(managedLandlordIds, property.owner_id);
 
     return property;
   }
@@ -2056,7 +2099,7 @@ export class KYCApplicationService {
    */
   async getApplicationTimeline(
     applicationId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<TimelineEvent[]> {
     const application = await this.kycApplicationRepository.findOne({
       where: { id: applicationId },
@@ -2067,17 +2110,15 @@ export class KYCApplicationService {
       throw new NotFoundException('Application not found');
     }
 
-    if (application.property?.owner_id !== landlordId) {
-      throw new ForbiddenException(
-        'Not authorized to view this application timeline',
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, application.property?.owner_id);
 
     const offerLetters = await this.offerLetterRepository
       .createQueryBuilder('offer')
       .leftJoinAndSelect('offer.property', 'property')
       .where('offer.kyc_application_id = :applicationId', { applicationId })
-      .andWhere('offer.landlord_id = :landlordId', { landlordId })
+      .andWhere('offer.landlord_id = :ownerId', {
+        ownerId: application.property?.owner_id,
+      })
       .orderBy('offer.created_at', 'DESC')
       .getMany();
 

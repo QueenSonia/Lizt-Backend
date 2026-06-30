@@ -18,6 +18,15 @@ export enum PropertyStatusEnum {
 }
 
 export class CreatePropertyDto {
+  @ApiProperty({
+    example: 'a1b2c3d4-0000-0000-0000-000000000000',
+    description:
+      'Account.id of the landlord this property belongs to. The requester (admin/FM) must manage this landlord.',
+  })
+  @IsNotEmpty()
+  @IsString()
+  landlord_id: string;
+
   @ApiProperty({ example: 'Abuja Duplex', description: 'Name of the property' })
   @IsNotEmpty()
   @IsString()

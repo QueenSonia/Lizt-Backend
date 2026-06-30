@@ -38,7 +38,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
-import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
+import { RolesEnum } from 'src/base.entity';
 import {
   MoveTenantInDto,
   MoveTenantOutDto,
@@ -52,9 +52,12 @@ import { CurrentUser } from 'src/auth/current-user.decorator';
 import { Property } from 'src/properties/entities/property.entity';
 import { FixEmptyLastnameService } from 'src/utils/fix-empty-lastname';
 import { SkipAuth } from 'src/auth/auth.decorator';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 @ApiTags('Properties')
 @Controller('properties')
+@UseInterceptors(ManagedScopeInterceptor)
 export class PropertiesController {
   constructor(
     private readonly propertiesService: PropertiesService,
@@ -70,13 +73,13 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post()
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   // @UseInterceptors(FilesInterceptor('property_images', 20))
   async createProperty(
     @Body() body: CreatePropertyDto,
-    @CurrentUser() requester: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<Property> {
-    return this.propertiesService.createProperty(body, requester.id);
+    return this.propertiesService.createProperty(body, landlordIds);
   }
 
   @ApiOperation({ summary: 'Check for Duplicate Tenant Phone Number' })
@@ -93,7 +96,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('check-duplicate-phone')
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async checkDuplicatePhone(
     @Query('phone') phone: string,
     @CurrentUser() requester: Account,
@@ -124,10 +127,10 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('create-with-tenant')
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async createPropertyWithTenant(
     @Body() body: CreatePropertyWithTenantDto,
-    @CurrentUser() requester: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     property: Property;
     message: string;
@@ -139,7 +142,7 @@ export class PropertiesController {
         await this.propertiesService.createPropertyWithExistingTenant(
           body,
           body.existingTenant,
-          requester.id,
+          landlordIds,
         );
 
       // Provide appropriate message based on KYC status
@@ -201,10 +204,12 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
-  getAllProperties(@Query() query: PropertyFilter, @Req() req: any) {
+  getAllProperties(
+    @Query() query: PropertyFilter,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
     try {
-      query.owner_id = req?.user?.id;
-      return this.propertiesService.getAllProperties(query);
+      return this.propertiesService.getAllProperties(query, landlordIds);
     } catch (error) {
       throw error;
     }
@@ -212,8 +217,10 @@ export class PropertiesController {
 
   @UseGuards(JwtAuthGuard)
   @Get('/vacant')
-  getVacantProperties(@CurrentUser() requester: Account): Promise<Property[]> {
-    return this.propertiesService.fetchAllVacantProperties(requester.id);
+  getVacantProperties(
+    @ManagedLandlordIds() landlordIds: string[],
+  ): Promise<Property[]> {
+    return this.propertiesService.fetchAllVacantProperties(landlordIds);
   }
 
   @ApiOperation({
@@ -238,9 +245,9 @@ export class PropertiesController {
   @UseGuards(JwtAuthGuard)
   @Get('/marketing-ready')
   getMarketingReadyProperties(
-    @CurrentUser() requester: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<Property[]> {
-    return this.propertiesService.getMarketingReadyProperties(requester.id);
+    return this.propertiesService.getMarketingReadyProperties(landlordIds);
   }
 
   @ApiOperation({ summary: 'Get All Property Groups' })
@@ -251,11 +258,10 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('property-groups')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
-  async getAllPropertyGroups(@Req() req: any) {
+  @Roles(RolesEnum.ADMIN)
+  async getAllPropertyGroups(@ManagedLandlordIds() landlordIds: string[]) {
     try {
-      const owner_id = req?.user?.id;
-      return this.propertiesService.getAllPropertyGroups(owner_id);
+      return this.propertiesService.getAllPropertyGroups(landlordIds);
     } catch (error) {
       throw error;
     }
@@ -271,7 +277,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('check-tenant-data-fix')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async checkTenantDataFix(@CurrentUser() requester: Account) {
     return this.propertiesService.checkTenantDataFix(requester.id);
   }
@@ -285,7 +291,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('diagnose-tenant-data-leakage')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async diagnoseTenantDataLeakage(@CurrentUser() requester: Account) {
     return this.propertiesService.diagnoseTenantDataLeakage(requester.id);
   }
@@ -299,7 +305,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('cleanup-duplicate-tenants')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async cleanupDuplicateTenants(@CurrentUser() requester: Account) {
     return this.propertiesService.cleanupDuplicateTenantAssignments(
       requester.id,
@@ -315,7 +321,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('fix-orphaned-rents')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async fixOrphanedRents(@CurrentUser() requester: Account) {
     return this.propertiesService.fixOrphanedRentRecords(requester.id);
   }
@@ -454,7 +460,7 @@ export class PropertiesController {
   async updatePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: UpdatePropertyDto,
-    @CurrentUser() requester: Account, // Get the authenticated user
+    @ManagedLandlordIds() landlordIds: string[],
     // @UploadedFiles() files?: Array<Express.Multer.File>,
   ) {
     try {
@@ -466,9 +472,7 @@ export class PropertiesController {
       //   );
       //   body.property_images = uploadedUrls.map((upload) => upload.secure_url);
       // }
-      console.log(body);
-
-      return this.propertiesService.updatePropertyById(id, body, requester.id);
+      return this.propertiesService.updatePropertyById(id, body, landlordIds);
     } catch (error) {
       throw error;
     }
@@ -480,13 +484,13 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Delete(':id')
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async deletePropertyById(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @CurrentUser() requester: Account, // Get the logged-in user
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
     try {
-      await this.propertiesService.deletePropertyById(id, requester.id);
+      await this.propertiesService.deletePropertyById(id, landlordIds);
 
       return {
         statusCode: HttpStatus.OK,
@@ -510,7 +514,7 @@ export class PropertiesController {
   })
   @Get('admin/dashboard')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async getAdminDashboardStats(@Req() req: any) {
     try {
       const user_id = req?.user?.id;
@@ -525,7 +529,7 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Post('move-in')
   moveTenantIn(@Body() moveInData: MoveTenantInDto) {
     try {
@@ -540,7 +544,7 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Post('move-out')
   moveTenantOut(
     @Body() moveOutData: MoveTenantOutDto,
@@ -561,7 +565,7 @@ export class PropertiesController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Post('deactivate-renewal')
   deactivateRenewal(
     @Body() body: DeactivateRenewalDto,
@@ -581,7 +585,7 @@ export class PropertiesController {
   @ApiOperation({ summary: 'Get scheduled move-outs' })
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Get('scheduled-move-outs')
   getScheduledMoveOuts(@CurrentUser() requester: Account) {
     try {
@@ -594,7 +598,7 @@ export class PropertiesController {
   @ApiOperation({ summary: 'Cancel scheduled move-out' })
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Delete('scheduled-move-outs/:id')
   cancelScheduledMoveOut(
     @Param('id') scheduleId: string,
@@ -613,7 +617,7 @@ export class PropertiesController {
   @ApiOperation({ summary: 'Process scheduled move-outs (Admin only)' })
   @ApiSecurity('access_token')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(RolesEnum.ADMIN)
   @Post('process-scheduled-move-outs')
   processScheduledMoveOuts() {
     try {
@@ -630,7 +634,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('property-group')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async createPropertyGroup(
     @Body() body: CreatePropertyGroupDto,
     @Req() req: any,
@@ -649,7 +653,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Get('property-group/:id')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async getPropertyGroupById(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
@@ -678,7 +682,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('sync-statuses')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async syncPropertyStatuses(@CurrentUser() requester: Account) {
     // Scope to the caller's properties — matches cleanupDuplicateTenants and
     // fixTenantDataLeakage. Without this, every landlord's Fix Status click
@@ -702,7 +706,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('fix-tenant-data-leakage')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async fixTenantDataLeakage(@CurrentUser() requester: Account) {
     return this.propertiesService.fixTenantDataLeakage(requester.id);
   }
@@ -724,7 +728,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('fix-empty-lastnames')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async fixEmptyLastNames(@CurrentUser() requester: Account) {
     const userResult = await this.fixEmptyLastnameService.fixEmptyLastNames(
       requester.id,
@@ -761,7 +765,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('check-fix-rent-consistency')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async checkAndFixRentConsistency(@CurrentUser() requester: Account) {
     return this.propertiesService.checkAndFixRentConsistency(requester.id);
   }
@@ -784,7 +788,7 @@ export class PropertiesController {
   @ApiSecurity('access_token')
   @Post('fix-rent-record/:rentId')
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async fixSpecificRentRecord(
     @Param('rentId', new ParseUUIDPipe()) rentId: string,
     @CurrentUser() requester: Account,

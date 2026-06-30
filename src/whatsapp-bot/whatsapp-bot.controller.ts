@@ -562,18 +562,24 @@ export class WhatsappBotController {
 
       // Get facility managers from team members with enhanced error handling
       try {
-        const team = await this.teamRepository.findOne({
-          where: { creatorId: landlordId },
+        // Post-reparent the FMs sit on the managing admin's team, not the
+        // landlord's own; accept either as the team owner so the simulator's
+        // contact list still includes this landlord's facility managers.
+        const teamOwnerIds = [landlordId, landlordAccount.creator_id].filter(
+          (v): v is string => !!v,
+        );
+        const teams = await this.teamRepository.find({
+          where: { creatorId: In(teamOwnerIds) },
         });
 
-        if (team) {
+        if (teams.length) {
           const members = await this.teamMemberRepository.find({
-            where: { teamId: team.id },
+            where: { teamId: In(teams.map((t) => t.id)) },
             relations: ['account', 'account.user'],
           });
 
           this.logger.log(
-            `🤝 Found ${members.length} team members for team ${team.id}.`,
+            `🤝 Found ${members.length} team members across ${teams.length} team(s).`,
           );
 
           for (const teamMember of members) {

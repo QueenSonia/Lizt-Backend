@@ -9,6 +9,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  UseInterceptors,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
@@ -17,15 +18,17 @@ import { TenantKycService } from './tenant-kyc.service';
 import { CreateTenantKycDto, UpdateTenantKycDto } from './dto';
 import { SkipAuth } from 'src/auth/auth.decorator';
 import { RoleGuard } from 'src/auth/role.guard';
-import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
+import { RolesEnum } from 'src/base.entity';
 import { Roles } from 'src/auth/role.decorator';
-import { CurrentUser } from 'src/lib/utils';
 import {
   BulkDeleteTenantKycDto,
   ParseTenantKycQueryDto,
 } from './dto/others.dto';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 @Controller('tenant-kyc')
+@UseInterceptors(ManagedScopeInterceptor)
 export class TenantKycController {
   constructor(private readonly tenantKycService: TenantKycService) {}
 
@@ -55,19 +58,19 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Post('existing-tenant')
   createForExistingTenant(
     @Body()
-    createTenantKycDto: Omit<CreateTenantKycDto, 'landlord_id'> & {
+    createTenantKycDto: CreateTenantKycDto & {
       tenant_id?: string;
     },
-    @CurrentUser('id') landlord_id: string,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.tenantKycService.createForExistingTenant({
-      ...createTenantKycDto,
-      landlord_id,
-    });
+    return this.tenantKycService.createForExistingTenant(
+      createTenantKycDto,
+      landlordIds,
+    );
   }
 
   /**
@@ -81,13 +84,13 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Get()
   findAll(
     @Query() query: ParseTenantKycQueryDto,
-    @CurrentUser('id') admin_id: string,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.tenantKycService.findAll(admin_id, query);
+    return this.tenantKycService.findAll(landlordIds, query);
   }
 
   /**
@@ -101,10 +104,13 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN)
+  @Roles(RolesEnum.ADMIN)
   @Get(':id')
-  findOne(@Param('id') id: string, @CurrentUser('id') admin_id: string) {
-    return this.tenantKycService.findOne(admin_id, id);
+  findOne(
+    @Param('id') id: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.tenantKycService.findOne(landlordIds, id);
   }
 
   /**
@@ -118,7 +124,7 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Get('user/:user_id')
   findByUserId(@Param('user_id') user_id: string) {
     return this.tenantKycService.findByUserId(user_id);
@@ -135,14 +141,14 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Patch(':id')
   update(
     @Param('id') id: string,
     @Body() updateTenantKycDto: UpdateTenantKycDto,
-    @CurrentUser('id') admin_id: string,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.tenantKycService.update(admin_id, id, updateTenantKycDto);
+    return this.tenantKycService.update(landlordIds, id, updateTenantKycDto);
   }
 
   /**
@@ -156,10 +162,13 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Delete(':id')
-  deleteOne(@Param('id') id: string, @CurrentUser('id') admin_id: string) {
-    return this.tenantKycService.deleteOne(admin_id, id);
+  deleteOne(
+    @Param('id') id: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    return this.tenantKycService.deleteOne(landlordIds, id);
   }
 
   /**
@@ -172,13 +181,13 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Delete('bulk')
   deleteMany(
     @Body() bulkDeleteTenantKycDto: BulkDeleteTenantKycDto,
-    @CurrentUser('id') admin_id: string,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
-    return this.tenantKycService.deleteMany(admin_id, bulkDeleteTenantKycDto);
+    return this.tenantKycService.deleteMany(landlordIds, bulkDeleteTenantKycDto);
   }
 
   /**
@@ -191,9 +200,9 @@ export class TenantKycController {
   @ApiOkResponse({ description: 'Operation successful' })
   @ApiBearerAuth()
   @UseGuards(RoleGuard)
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Delete()
-  deleteAll(@CurrentUser('id') admin_id: string) {
-    return this.tenantKycService.deleteAll(admin_id);
+  deleteAll(@ManagedLandlordIds() landlordIds: string[]) {
+    return this.tenantKycService.deleteAll(landlordIds);
   }
 }

@@ -3,16 +3,29 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { KycFeedback } from './entities/kyc-feedback.entity';
 import { CreateKycFeedbackDto } from './dto';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 
 @Injectable()
 export class KycFeedbackService {
   constructor(
     @InjectRepository(KycFeedback)
     private feedbackRepo: Repository<KycFeedback>,
+    private readonly scopeService: ManagementScopeService,
   ) {}
 
   async create(dto: CreateKycFeedbackDto) {
-    const feedback = this.feedbackRepo.create(dto);
+    // Feedback rates the KYC form experience, which belongs to the property
+    // manager — attribute it to the managing admin (the landlord's creator_id)
+    // so it surfaces in the admin's feedback views. Fall back to the landlord
+    // id when no managing admin is set (pre-reparent / legacy links).
+    const landlordId = dto.landlord_id;
+    const managingAdminId = landlordId
+      ? await this.scopeService.resolveManagingAdminId(landlordId)
+      : null;
+    const feedback = this.feedbackRepo.create({
+      ...dto,
+      landlord_id: managingAdminId ?? landlordId,
+    });
     await this.feedbackRepo.save(feedback);
 
     return {

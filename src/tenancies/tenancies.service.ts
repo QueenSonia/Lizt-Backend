@@ -36,6 +36,7 @@ import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { RenewalChargeService } from 'src/renewal-letters/renewal-charge.service';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
@@ -94,7 +95,22 @@ export class TenanciesService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly renewalChargeService: RenewalChargeService,
     private dataSource: DataSource,
+    private readonly scopeService: ManagementScopeService,
   ) {}
+
+  /**
+   * True when `userId` may act on a tenancy/invoice owned by `ownerId`: either
+   * they ARE that landlord (the original dashboard contract, still used by the
+   * WhatsApp/cron paths) or they are an admin (property manager) who manages
+   * that landlord and is acting on their behalf.
+   */
+  private async canManageOwner(
+    ownerId: string,
+    userId: string,
+  ): Promise<boolean> {
+    if (ownerId && ownerId === userId) return true;
+    return this.scopeService.managesLandlord(userId, ownerId);
+  }
 
   async createTenancyFromKYC(
     kycApplication: KYCApplication,
@@ -178,7 +194,7 @@ export class TenanciesService {
         `Property tenant relationship with ID ${propertyTenantId} not found`,
       );
     }
-    if (propertyTenant.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(propertyTenant.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to renew this tenancy',
         HttpStatus.FORBIDDEN,
@@ -333,7 +349,7 @@ export class TenanciesService {
       }
 
       // 2. Verify ownership
-      if (propertyTenant.property.owner_id !== userId) {
+      if (!(await this.canManageOwner(propertyTenant.property.owner_id, userId))) {
         throw new HttpException(
           'You do not have permission to renew this tenancy',
           HttpStatus.FORBIDDEN,
@@ -507,7 +523,7 @@ export class TenanciesService {
     }
 
     // 2. Verify ownership
-    if (propertyTenant.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(propertyTenant.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to initiate renewal for this tenancy',
         HttpStatus.FORBIDDEN,
@@ -1073,7 +1089,7 @@ export class TenanciesService {
       throw new NotFoundException('Tenancy not found');
     }
 
-    if (propertyTenant.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(propertyTenant.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to edit this tenancy',
         HttpStatus.FORBIDDEN,
@@ -1627,7 +1643,7 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    if (invoice.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(invoice.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to edit this invoice',
         HttpStatus.FORBIDDEN,
@@ -1782,7 +1798,7 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    if (invoice.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(invoice.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to edit this invoice',
         HttpStatus.FORBIDDEN,
@@ -2441,7 +2457,9 @@ export class TenanciesService {
       return date.toISOString().split('T')[0];
     };
 
-    const landlordUser = invoice.property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      invoice.property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -2677,7 +2695,9 @@ export class TenanciesService {
       return date.toISOString();
     };
 
-    const landlordUser = invoice.property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      invoice.property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -3650,7 +3670,7 @@ export class TenanciesService {
       relations: ['property'],
     });
     if (!propertyTenant) throw new NotFoundException('Tenancy not found');
-    if (propertyTenant.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(propertyTenant.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to preview this tenancy',
         HttpStatus.FORBIDDEN,
@@ -3689,7 +3709,7 @@ export class TenanciesService {
       relations: ['property'],
     });
     if (!propertyTenant) throw new NotFoundException('Tenancy not found');
-    if (propertyTenant.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(propertyTenant.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to preview this renewal',
         HttpStatus.FORBIDDEN,
@@ -3733,7 +3753,7 @@ export class TenanciesService {
       relations: ['property'],
     });
     if (!invoice) throw new NotFoundException('Renewal invoice not found');
-    if (invoice.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(invoice.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to preview this invoice',
         HttpStatus.FORBIDDEN,

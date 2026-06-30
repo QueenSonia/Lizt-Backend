@@ -6,7 +6,8 @@ import {
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { ArrayContains, Repository } from 'typeorm';
+import { ArrayContains, In, Repository } from 'typeorm';
+import { assertLandlordInScope } from 'src/common/scope/scope.util';
 
 import { CreateTenantKycDto, UpdateTenantKycDto } from './dto';
 import { TenantKyc } from './entities/tenant-kyc.entity';
@@ -71,7 +72,10 @@ export class TenantKycService {
 
   async createForExistingTenant(
     dto: CreateTenantKycDto & { tenant_id?: string; property_id?: string },
+    managedLandlordIds: string[],
   ) {
+    // Act-on-behalf: the KYC is filed for the landlord named in the payload.
+    assertLandlordInScope(managedLandlordIds, dto.landlord_id);
     const landlord = await this.accountRepo.findOneBy({
       id: dto.landlord_id,
       roles: ArrayContains([RolesEnum.LANDLORD]),
@@ -147,16 +151,38 @@ export class TenantKycService {
     };
   }
 
-  async findAll(admin_id: string, query: ParseTenantKycQueryDto) {
+  async findAll(
+    landlordIds: string | string[],
+    query: ParseTenantKycQueryDto,
+  ) {
+    const ids = Array.isArray(landlordIds)
+      ? landlordIds
+      : landlordIds
+        ? [landlordIds]
+        : [];
     const { limit, page, fields } = query;
 
     const selectFields = fields ? fields.split(',').filter(Boolean) : undefined;
+
+    if (ids.length === 0) {
+      return {
+        data: [],
+        pagination: {
+          total: 0,
+          page: Number(page) || 1,
+          limit: Math.min(Number(limit) || 10, 50),
+          totalPages: 0,
+        },
+      };
+    }
 
     const { data, pagination } = await paginate(this.tenantKycRepo, {
       page,
       limit,
       options: {
-        where: { admin_id },
+        // admin_id is a misnomer — it holds the landlord's Account.id (see
+        // create(), which maps landlord_id → admin_id). Scope to the managed set.
+        where: { admin_id: In(ids) },
         select: selectFields as any,
         order: { created_at: 'DESC' },
       },
@@ -165,13 +191,13 @@ export class TenantKycService {
     return { data, pagination };
   }
 
-  async findOne(admin_id: string, id: string) {
-    const kyc_data = await this.tenantKycRepo.findOneBy({
-      id,
-      admin_id,
-    });
+  async findOne(managedLandlordIds: string[], id: string) {
+    const kyc_data = await this.tenantKycRepo.findOneBy({ id });
 
     if (!kyc_data) throw new NotFoundException();
+
+    // admin_id holds the owning landlord's Account.id (see create()).
+    assertLandlordInScope(managedLandlordIds, kyc_data.admin_id);
 
     return kyc_data;
   }
@@ -184,13 +210,19 @@ export class TenantKycService {
     return kyc_data;
   }
 
-  async update(admin_id: string, id: string, dto: UpdateTenantKycDto) {
+  async update(
+    managedLandlordIds: string[],
+    id: string,
+    dto: UpdateTenantKycDto,
+  ) {
     const kyc_data = await this.tenantKycRepo.findOne({
-      where: { id, admin_id },
+      where: { id },
       relations: ['user'],
     });
 
     if (!kyc_data) throw new NotFoundException();
+
+    assertLandlordInScope(managedLandlordIds, kyc_data.admin_id);
 
     Object.assign(kyc_data, dto);
     const updatedKyc = await this.tenantKycRepo.save(kyc_data);
@@ -234,19 +266,29 @@ export class TenantKycService {
     return updatedKyc;
   }
 
-  async deleteOne(admin_id: string, id: string) {
-    const result = await this.tenantKycRepo.delete({ id, admin_id });
+  async deleteOne(managedLandlordIds: string[], id: string) {
+    const kyc_data = await this.tenantKycRepo.findOneBy({ id });
+    if (!kyc_data) throw new NotFoundException('KYC record not found');
 
-    if (result.affected === 0)
-      throw new NotFoundException('KYC record not found');
+    assertLandlordInScope(managedLandlordIds, kyc_data.admin_id);
+
+    await this.tenantKycRepo.delete({ id });
   }
 
-  async deleteMany(admin_id: string, { ids }: BulkDeleteTenantKycDto) {
-    await this.tenantKycRepo.delete(ids.map((id) => ({ id, admin_id })));
+  async deleteMany(
+    managedLandlordIds: string[],
+    { ids }: BulkDeleteTenantKycDto,
+  ) {
+    const scope = Array.isArray(managedLandlordIds) ? managedLandlordIds : [];
+    if (scope.length === 0 || !ids?.length) return;
+    // Only delete rows belonging to a landlord the requester manages.
+    await this.tenantKycRepo.delete({ id: In(ids), admin_id: In(scope) });
   }
 
-  async deleteAll(admin_id: string) {
-    await this.tenantKycRepo.delete({ admin_id });
+  async deleteAll(managedLandlordIds: string[]) {
+    const scope = Array.isArray(managedLandlordIds) ? managedLandlordIds : [];
+    if (scope.length === 0) return;
+    await this.tenantKycRepo.delete({ admin_id: In(scope) });
   }
 
 }

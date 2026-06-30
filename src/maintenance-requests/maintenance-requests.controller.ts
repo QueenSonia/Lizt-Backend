@@ -48,9 +48,12 @@ import {
 import { MaintenanceRequestPaginationResponseDto } from './dto/paginate.dto';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 @ApiTags('Maintenance-Requests')
 @Controller('maintenance-requests')
+@UseInterceptors(ManagedScopeInterceptor)
 export class MaintenanceRequestsController {
   constructor(
     private readonly maintenanceRequestsService: MaintenanceRequestsService,
@@ -169,13 +172,18 @@ export class MaintenanceRequestsController {
   @ApiBadRequestResponse()
   @ApiSecurity('access_token')
   @Get()
-  getAllMaintenanceRequests(@Query() query: MaintenanceRequestFilter, @Req() req: any) {
+  getAllMaintenanceRequests(
+    @Query() query: MaintenanceRequestFilter,
+    @Req() req: any,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
     const user_id = req?.user?.id;
     const role = req?.user?.role;
     return this.maintenanceRequestsService.getAllMaintenanceRequests(
       user_id,
       query,
       role,
+      landlordIds,
     );
   }
 
@@ -191,11 +199,11 @@ export class MaintenanceRequestsController {
   @Get('pending-urgent')
   getPendingAndUrgentRequests(
     @Query() query: MaintenanceRequestFilter,
-    @Req() req: any,
+    @ManagedLandlordIds() landlordIds: string[],
   ) {
     return this.maintenanceRequestsService.getPendingAndUrgentRequests(
       query,
-      req?.user.id,
+      landlordIds,
     );
   }
 
@@ -314,7 +322,7 @@ export class MaintenanceRequestsController {
   @ApiSecurity('access_token')
   @Patch(':id/assignee')
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async setMaintenanceRequestAssignee(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: AssignMaintenanceRequestDto,
@@ -339,7 +347,7 @@ export class MaintenanceRequestsController {
   @ApiSecurity('access_token')
   @Patch(':id/priority')
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async setMaintenanceRequestPriority(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: SetPriorityDto,
@@ -409,7 +417,7 @@ export class MaintenanceRequestsController {
   @ApiSecurity('access_token')
   @Post(':id/landlord-force-confirm')
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async landlordForceConfirmMaintenanceRequest(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() requester: Account,
@@ -432,7 +440,7 @@ export class MaintenanceRequestsController {
   @ApiSecurity('access_token')
   @Post(':id/reject')
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async rejectMaintenanceRequest(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: RejectMaintenanceRequestDto,
@@ -458,7 +466,7 @@ export class MaintenanceRequestsController {
   @ApiSecurity('access_token')
   @Post(':id/approve')
   @UseGuards(RoleGuard)
-  @Roles(RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   async approveMaintenanceRequest(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: ApproveMaintenanceRequestDto,

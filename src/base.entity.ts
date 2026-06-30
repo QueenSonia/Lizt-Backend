@@ -37,10 +37,6 @@ export interface IReqUser {
   role: string;
 }
 
-export enum ADMIN_ROLES {
-  ADMIN = 'admin',
-}
-
 export enum RolesEnum {
   ADMIN = 'admin',
   TENANT = 'tenant',

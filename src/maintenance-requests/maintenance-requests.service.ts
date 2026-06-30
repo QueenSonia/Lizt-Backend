@@ -34,6 +34,7 @@ import { CommonArea } from 'src/common-areas/entities/common-area.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { Users } from 'src/users/entities/user.entity';
 import { ArtisansService } from 'src/artisans/artisans.service';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 
 export interface TawkWebhookPayload {
   event: 'chat:start' | 'chat:end';
@@ -88,6 +89,7 @@ export class MaintenanceRequestsService {
     private readonly eventEmitter: EventEmitter2,
     private readonly utilService: UtilService,
     private readonly artisansService: ArtisansService,
+    private readonly scopeService: ManagementScopeService,
   ) {}
 
   /**
@@ -325,18 +327,22 @@ export class MaintenanceRequestsService {
     }
 
     // scope === UNIT. FM is authorized iff they're on a team whose creator
-    // (the landlord) owns the property. An FM may sit on multiple teams; we
-    // pick the membership matching this property's owner only to validate
-    // authorization — we do NOT auto-assign to it anymore (assignment
-    // happens later at landlord approval, after the tenant gate).
+    // owns — or, as the managing admin, manages the landlord that owns — the
+    // property. An FM may sit on multiple teams; we check membership against
+    // the property's acceptable team owners (the landlord and its admin) only
+    // to validate authorization — we do NOT auto-assign to it anymore
+    // (assignment happens later at landlord approval, after the tenant gate).
     const property = await this.propertyRepository.findOne({
       where: { id: data.property_id },
     });
     if (!property) {
       throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
     }
+    const acceptableTeamOwners =
+      await this.scopeService.resolveTeamOwnersForLandlord(property.owner_id);
     const authorizingTm = fmTeamMembers.find(
-      (tm) => tm.team?.creatorId === property.owner_id,
+      (tm) =>
+        tm.team?.creatorId && acceptableTeamOwners.includes(tm.team.creatorId),
     );
     if (!authorizingTm) {
       throw new HttpException(
@@ -473,15 +479,20 @@ export class MaintenanceRequestsService {
     }
 
     // common_area.owner_id is the landlord's Account.id (matches
-    // property.owner_id). Verify the acting FM is on that landlord's team,
-    // matching the FM by account id and the landlord by team.creatorId.
+    // property.owner_id). Verify the acting FM is on the team serving that
+    // landlord — either the landlord's own team (legacy) or the managing
+    // admin's team (post-reparent), per resolveTeamOwnersForLandlord.
     const landlordAccountId = commonArea.owner_id;
+    const acceptableTeamOwners =
+      await this.scopeService.resolveTeamOwnersForLandlord(landlordAccountId);
     const teamMembership = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .where('tm.accountId = :accountId', { accountId: actor.id })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('team.creatorId = :ownerId', { ownerId: landlordAccountId })
+      .andWhere('team.creatorId IN (:...teamOwnerIds)', {
+        teamOwnerIds: acceptableTeamOwners,
+      })
       .getOne();
     if (!teamMembership) {
       throw new HttpException(
@@ -920,6 +931,7 @@ export class MaintenanceRequestsService {
     user_id: string,
     queryParams: MaintenanceRequestFilter,
     role?: string,
+    managedLandlordIds: string[] = [],
   ) {
     const page = queryParams?.page
       ? Number(queryParams?.page)
@@ -966,13 +978,18 @@ export class MaintenanceRequestsService {
           },
         };
       }
-      const landlordAccountIds = Array.from(
+      const teamCreatorIds = Array.from(
         new Set(
           myTeamMemberships
             .map((m) => m.team?.creator?.id)
             .filter((v): v is string => !!v),
         ),
       );
+      // Team creators are the managing admins after the re-parent (or the
+      // landlord itself on a legacy self-owned team); expand to the landlord
+      // set whose properties / common areas this FM may see.
+      const landlordAccountIds =
+        await this.scopeService.resolveLandlordsForTeamCreators(teamCreatorIds);
 
       // Visible to FM: every unit-scoped request on a property owned by a
       // landlord they're teamed with, OR every common-area request whose
@@ -995,6 +1012,16 @@ export class MaintenanceRequestsService {
           assignedTmIds: tmIds.length > 0 ? tmIds : ['__none__'],
         });
       }
+    } else if (role === RolesEnum.ADMIN) {
+      // Property-manager view: requests on any property OR common area owned by
+      // one of the admin's managed landlords. Empty scope => nothing.
+      qb.andWhere(
+        '(property.owner_id IN (:...managedLandlordIds) OR common_area.owner_id IN (:...managedLandlordIds))',
+        {
+          managedLandlordIds:
+            managedLandlordIds.length > 0 ? managedLandlordIds : ['__none__'],
+        },
+      );
     } else {
       // Landlord view: own properties OR own common areas. Both owner columns
       // hold the landlord's Account.id (user_id here is the caller's
@@ -1753,14 +1780,20 @@ export class MaintenanceRequestsService {
         HttpStatus.NOT_FOUND,
       );
     }
-    const landlordUserId =
+    const ownerAccountId =
       maintenanceRequest.property?.owner_id ??
       maintenanceRequest.common_area?.owner_id ??
       null;
+    // Allow the tenant, the original creator, the owning landlord, or an admin
+    // who manages that landlord (acting on their behalf from the dashboard).
+    const isManagingAdmin = ownerAccountId
+      ? await this.scopeService.managesLandlord(userId, ownerAccountId)
+      : false;
     if (
       maintenanceRequest.tenant_id !== userId &&
       maintenanceRequest.creator_user_id !== userId &&
-      landlordUserId !== userId
+      ownerAccountId !== userId &&
+      !isManagingAdmin
     ) {
       throw new HttpException(
         'You do not have permission to delete this maintenance request',
@@ -1772,8 +1805,9 @@ export class MaintenanceRequestsService {
 
   async getPendingAndUrgentRequests(
     queryParams: MaintenanceRequestFilter,
-    owner_id: string,
+    owner_id: string | string[],
   ) {
+    const ownerIds = Array.isArray(owner_id) ? owner_id : [owner_id];
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -1781,6 +1815,19 @@ export class MaintenanceRequestsService {
       ? Number(queryParams.size)
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
+
+    if (!ownerIds.length) {
+      return {
+        maintenance_requests: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
 
     const query = await buildMaintenanceRequestFilter(queryParams);
 
@@ -1799,8 +1846,8 @@ export class MaintenanceRequestsService {
       .leftJoinAndSelect('sr.statusHistory', 'history')
       .leftJoinAndSelect('history.changedBy', 'changedBy')
       .where(
-        '(property.owner_id = :ownerAccountId OR common_area.owner_id = :ownerAccountId)',
-        { ownerAccountId: owner_id },
+        '(property.owner_id IN (:...ownerAccountIds) OR common_area.owner_id IN (:...ownerAccountIds))',
+        { ownerAccountIds: ownerIds },
       )
       .andWhere('(sr.status = :notApproved OR sr.is_urgent = :urgent)', {
         notApproved: MaintenanceRequestStatusEnum.NOT_APPROVED,
@@ -1983,13 +2030,17 @@ export class MaintenanceRequestsService {
     if (teamMemberships.length === 0) {
       return { items: [], pagination: { nextCursor: null, hasNextPage: false } };
     }
-    const landlordAccountIds = Array.from(
+    const teamCreatorIds = Array.from(
       new Set(
         teamMemberships
           .map((tm) => tm.team?.creator?.id)
           .filter((v): v is string => !!v),
       ),
     );
+    // Team creators are the managing admins after the re-parent (or the
+    // landlord on a legacy self-owned team); expand to the FM's landlord set.
+    const landlordAccountIds =
+      await this.scopeService.resolveLandlordsForTeamCreators(teamCreatorIds);
 
     const qb = this.statusHistoryRepository
       .createQueryBuilder('h')
@@ -2182,6 +2233,14 @@ export class MaintenanceRequestsService {
     if (ownerAccountId && ownerAccountId === userId) {
       return 'landlord';
     }
+    // Admin (PM) managing the owner acts with landlord authority on their
+    // behalf — same transitions; audit is attributed to the admin's own user.
+    if (
+      ownerAccountId &&
+      (await this.scopeService.managesLandlord(userId, ownerAccountId))
+    ) {
+      return 'landlord';
+    }
     if (
       maintenanceRequest.tenant_id &&
       (await this.isTenantUser(maintenanceRequest, userId))
@@ -2199,14 +2258,19 @@ export class MaintenanceRequestsService {
     if (!ownerAccountId) return null;
 
     // FM teamed with the landlord that owns the property or common area.
-    // Match the requester by Account.id and the landlord (team creator) by
-    // Account.id — the same shape for both scopes.
+    // Match the requester by Account.id; accept either the landlord's own team
+    // or the managing admin's team as the owning team (post-reparent the FM
+    // sits on the admin's team) — see resolveTeamOwnersForLandlord.
+    const acceptableTeamOwners =
+      await this.scopeService.resolveTeamOwnersForLandlord(ownerAccountId);
     const fm = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .where('tm.accountId = :userId', { userId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('team.creatorId = :ownerId', { ownerId: ownerAccountId })
+      .andWhere('team.creatorId IN (:...teamOwnerIds)', {
+        teamOwnerIds: acceptableTeamOwners,
+      })
       .getOne();
     return fm ? 'facility_manager' : null;
   }
@@ -2227,12 +2291,18 @@ export class MaintenanceRequestsService {
       null;
     if (!ownerAccountId) return null;
 
+    // Accept either the landlord's own team or the managing admin's team as the
+    // owning team (post-reparent the FM sits on the admin's team).
+    const acceptableTeamOwners =
+      await this.scopeService.resolveTeamOwnersForLandlord(ownerAccountId);
     const tm = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
       .where('tm.accountId = :accountId', { accountId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('team.creatorId = :ownerId', { ownerId: ownerAccountId })
+      .andWhere('team.creatorId IN (:...teamOwnerIds)', {
+        teamOwnerIds: acceptableTeamOwners,
+      })
       .getOne();
     return tm?.id ?? null;
   }
@@ -2590,18 +2660,25 @@ export class MaintenanceRequestsService {
    * common area. Both owner columns hold the landlord's Account.id, so a
    * direct compare covers both scopes. Throws 403 otherwise.
    */
-  private assertLandlordOwnsRequest(
+  private async assertLandlordOwnsRequest(
     sr: MaintenanceRequest,
-    landlordAccountId: string,
-  ): void {
+    actorAccountId: string,
+  ): Promise<void> {
     const ownerAccountId =
       sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    if (ownerAccountId !== landlordAccountId) {
-      throw new HttpException(
-        'You do not own this request',
-        HttpStatus.FORBIDDEN,
-      );
+    // The actor may be the owning landlord themselves (WhatsApp flow) OR an
+    // admin acting on their behalf (dashboard). Either is allowed; anyone else
+    // is rejected.
+    if (ownerAccountId && ownerAccountId === actorAccountId) {
+      return;
     }
+    if (
+      ownerAccountId &&
+      (await this.scopeService.managesLandlord(actorAccountId, ownerAccountId))
+    ) {
+      return;
+    }
+    throw new HttpException('You do not own this request', HttpStatus.FORBIDDEN);
   }
 
   /**
@@ -3151,10 +3228,23 @@ export class MaintenanceRequestsService {
       throw new NotFoundException('Maintenance request not found');
     }
 
+    // Common-area MRs never enter PENDING_TENANT_CONFIRMATION, so we only need
+    // the property-owner branch here. The actor may be the owning landlord
+    // (WhatsApp) or an admin managing them (dashboard).
     const ownerAccountId = sr.property?.owner_id ?? null;
-    if (!ownerAccountId || ownerAccountId !== landlordAccountId) {
-      // Common-area MRs never enter PENDING_TENANT_CONFIRMATION, so we only
-      // need the property-owner branch here.
+    if (!ownerAccountId) {
+      throw new HttpException(
+        'You do not own this request',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    if (
+      ownerAccountId !== landlordAccountId &&
+      !(await this.scopeService.managesLandlord(
+        landlordAccountId,
+        ownerAccountId,
+      ))
+    ) {
       throw new HttpException(
         'You do not own this request',
         HttpStatus.FORBIDDEN,
@@ -3677,12 +3767,20 @@ export class MaintenanceRequestsService {
   async findTeamFmsForLandlord(
     landlordAccountId: string,
   ): Promise<TeamMember[]> {
+    // Post-reparent the FMs sit on the managing admin's team, not the
+    // landlord's own; accept either as the team owner (see
+    // resolveTeamOwnersForLandlord) so fan-out still reaches the whole team.
+    const acceptableTeamOwners =
+      await this.scopeService.resolveTeamOwnersForLandlord(landlordAccountId);
+    if (!acceptableTeamOwners.length) return [];
     return this.teamMemberRepository
       .createQueryBuilder('tm')
       .leftJoinAndSelect('tm.account', 'account')
       .leftJoinAndSelect('account.user', 'user')
       .innerJoin('tm.team', 'team')
-      .where('team.creatorId = :landlordAccountId', { landlordAccountId })
+      .where('team.creatorId IN (:...teamOwnerIds)', {
+        teamOwnerIds: acceptableTeamOwners,
+      })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
       .getMany();
   }

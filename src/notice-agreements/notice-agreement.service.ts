@@ -6,7 +6,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
+import { assertLandlordInScope } from 'src/common/scope/scope.util';
 import {
   NoticeAgreement,
   NoticeStatus,
@@ -42,11 +43,22 @@ export class NoticeAgreementService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  async create(dto: CreateNoticeAgreementDto) {
+  async create(
+    dto: CreateNoticeAgreementDto,
+    managedLandlordIds: string[],
+  ) {
     const property = await this.propertyRepo.findOne({
       where: { id: dto.property_id },
       relations: ['property_tenants'],
     });
+
+    if (!property) {
+      throw new NotFoundException('Property not found');
+    }
+
+    // Act-on-behalf: the requester must manage the property's owner before
+    // a notice can be served to its tenant.
+    assertLandlordInScope(managedLandlordIds, property.owner_id);
 
     const doesTenantExist = property?.property_tenants.find(
       (tenant) => tenant.tenant_id === dto.tenant_id,
@@ -113,7 +125,7 @@ export class NoticeAgreementService {
     return agreement;
   }
 
-  async findOne(id: string, userId: string) {
+  async findOne(id: string, managedLandlordIds: string[]) {
     const noticeAgreement = await this.noticeRepo.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -124,23 +136,15 @@ export class NoticeAgreementService {
         HttpStatus.NOT_FOUND,
       );
     }
-    // Allow if user is the tenant OR the landlord
-    if (
-      noticeAgreement.tenant_id !== userId &&
-      noticeAgreement.property.owner_id !== userId
-    ) {
-      throw new HttpException(
-        'You do not have permission to view this notice agreement',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, noticeAgreement.property.owner_id);
     return noticeAgreement;
   }
 
   async getAllNoticeAgreement(
-    ownerId: string,
+    ownerIds: string | string[],
     queryParams: NoticeAgreementFilter,
   ) {
+    const ids = Array.isArray(ownerIds) ? ownerIds : ownerIds ? [ownerIds] : [];
     const page = queryParams.page
       ? Number(queryParams.page)
       : config.DEFAULT_PAGE_NO;
@@ -149,10 +153,23 @@ export class NoticeAgreementService {
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
+    if (ids.length === 0) {
+      return {
+        notice: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
+
     const qb = await this.noticeRepo
       .createQueryBuilder('notice')
       .leftJoinAndSelect('notice.property', 'property')
-      .where('property.owner_id = :ownerId', { ownerId });
+      .where('property.owner_id IN (:...ownerIds)', { ownerIds: ids });
 
     // Apply sorting (rent requires custom logic)
     if (queryParams.sort_by && queryParams?.sort_order) {
@@ -178,7 +195,7 @@ export class NoticeAgreementService {
     };
   }
 
-  async resendNoticeAgreement(id: string, userId: string) {
+  async resendNoticeAgreement(id: string, managedLandlordIds: string[]) {
     const noticeAgreement = await this.noticeRepo.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -191,12 +208,7 @@ export class NoticeAgreementService {
       );
     }
 
-    if (noticeAgreement.property.owner_id !== userId) {
-      throw new HttpException(
-        'You do not have permission to resend this notice agreement',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, noticeAgreement.property.owner_id);
 
     if (!noticeAgreement.notice_image) {
       throw new NotFoundException('Notice agreement PDF not found');
@@ -252,24 +264,30 @@ export class NoticeAgreementService {
     };
   }
 
-  async getNoticeAnalytics(id: string) {
-    const totalNotices = await this.noticeRepo.count({
-      where: {
-        property: {
-          owner_id: id,
-        },
-      },
-    });
+  async getNoticeAnalytics(ownerIds: string | string[]) {
+    const ids = Array.isArray(ownerIds) ? ownerIds : ownerIds ? [ownerIds] : [];
+    if (ids.length === 0) {
+      return {
+        totalNotices: 0,
+        acknowledgedNotices: 0,
+        unacknowledgedNotices: 0,
+        pendingNotices: 0,
+      };
+    }
+
+    // Every count is scoped to the managed owner set. The per-status counts
+    // were previously unscoped (counted across all landlords) — fixed here.
+    const ownerScope = { property: { owner_id: In(ids) } };
+
+    const totalNotices = await this.noticeRepo.count({ where: ownerScope });
     const acknowledgedNotices = await this.noticeRepo.count({
-      where: { status: NoticeStatus.ACKNOWLEDGED },
+      where: { ...ownerScope, status: NoticeStatus.ACKNOWLEDGED },
     });
-
     const unacknowledgedNotices = await this.noticeRepo.count({
-      where: { status: NoticeStatus.NOT_ACKNOWLEDGED },
+      where: { ...ownerScope, status: NoticeStatus.NOT_ACKNOWLEDGED },
     });
-
     const pendingNotices = await this.noticeRepo.count({
-      where: { status: NoticeStatus.PENDING },
+      where: { ...ownerScope, status: NoticeStatus.PENDING },
     });
 
     return {
@@ -279,7 +297,11 @@ export class NoticeAgreementService {
       pendingNotices,
     };
   }
-  async attachNoticeDocument(id: string, url: string, userId: string) {
+  async attachNoticeDocument(
+    id: string,
+    url: string,
+    managedLandlordIds: string[],
+  ) {
     const noticeAgreement = await this.noticeRepo.findOne({
       where: { id },
       relations: ['property'],
@@ -292,12 +314,7 @@ export class NoticeAgreementService {
       );
     }
 
-    if (noticeAgreement.property.owner_id !== userId) {
-      throw new HttpException(
-        'You do not have permission to attach documents to this notice agreement',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, noticeAgreement.property.owner_id);
 
     return this.noticeRepo.update(id, {
       notice_image: url,

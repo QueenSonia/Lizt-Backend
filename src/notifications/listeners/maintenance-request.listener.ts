@@ -14,6 +14,7 @@ import { UtilService } from 'src/utils/utility-service';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { RolesEnum } from 'src/base.entity';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 
 @Injectable()
 export class MaintenanceRequestListener {
@@ -54,6 +55,7 @@ export class MaintenanceRequestListener {
     @Inject(forwardRef(() => TemplateSenderService))
     private readonly templateSenderService: TemplateSenderService,
     private readonly utilService: UtilService,
+    private readonly managementScopeService: ManagementScopeService,
   ) {}
 
   /**
@@ -723,18 +725,26 @@ ${event.description ?? ''}`,
           : tenantPhoneRaw.replace(/^\+234/, '0')
         : '—';
 
-      // Fan out to every FM on the landlord's team (including the assignee
-      // — see template doc comment for the redundancy tradeoff).
-      const teamFms = await this.teamMemberRepository
-        .createQueryBuilder('tm')
-        .leftJoinAndSelect('tm.account', 'account')
-        .leftJoinAndSelect('account.user', 'user')
-        .innerJoin('tm.team', 'team')
-        .where('team.creatorId = :landlordAccountId', {
-          landlordAccountId: event.landlord_id,
-        })
-        .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-        .getMany();
+      // Fan out to every FM on the team serving this landlord (including the
+      // assignee — see template doc comment for the redundancy tradeoff).
+      // After the re-parent the team belongs to the managing admin, not the
+      // landlord, so accept either as the team owner.
+      const acceptableTeamOwners =
+        await this.managementScopeService.resolveTeamOwnersForLandlord(
+          event.landlord_id,
+        );
+      const teamFms = acceptableTeamOwners.length
+        ? await this.teamMemberRepository
+            .createQueryBuilder('tm')
+            .leftJoinAndSelect('tm.account', 'account')
+            .leftJoinAndSelect('account.user', 'user')
+            .innerJoin('tm.team', 'team')
+            .where('team.creatorId IN (:...teamOwnerIds)', {
+              teamOwnerIds: acceptableTeamOwners,
+            })
+            .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
+            .getMany()
+        : [];
 
       for (const fm of teamFms) {
         const phoneRaw = fm.account?.user?.phone_number;

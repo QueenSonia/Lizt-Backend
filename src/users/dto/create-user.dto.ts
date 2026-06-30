@@ -22,6 +22,7 @@ import {
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
 import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
+import { LandlordType } from '../entities/account.entity';
 
 export class CreateTenantDto {
   @IsString()
@@ -725,6 +726,87 @@ export class CreateLandlordDto {
     },
   )
   password: string;
+}
+
+/**
+ * Property-manager (admin) creates a MANAGED landlord. The landlord never signs
+ * in — the admin operates on their behalf — so there is NO password here; the
+ * account is created login-disabled and parented to the admin via creator_id.
+ *
+ * Naming follows the corporate/individual split: corporate landlords carry the
+ * company name in `business_name` (→ accounts.profile_name); individuals use
+ * `first_name`/`last_name`. Email + phone are both required and unique (DB has
+ * NOT NULL + unique indexes on each; phone is normalized to 234XXXXXXXXXX).
+ */
+export class CreateManagedLandlordDto {
+  @ApiProperty({
+    enum: LandlordType,
+    example: LandlordType.INDIVIDUAL,
+    description:
+      'individual → display name from first/last; corporate → display name from business_name.',
+  })
+  @IsEnum(LandlordType)
+  @IsNotEmpty()
+  landlord_type: LandlordType;
+
+  @ApiProperty({
+    example: 'John',
+    required: false,
+    description:
+      "Individual: the landlord's first name (required). Corporate: the primary contact's first name (optional).",
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  first_name?: string;
+
+  @ApiProperty({
+    example: 'Doe',
+    required: false,
+    description: 'Last name / primary-contact surname.',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  last_name?: string;
+
+  @ApiProperty({
+    example: 'Adeyemi Holdings Ltd',
+    required: false,
+    description:
+      'Business / corporate name. Required for corporate landlords; becomes the display name (profile_name).',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  business_name?: string;
+
+  @ApiProperty({
+    example: 'landlord@example.com',
+    description: 'Unique email — used for identity and tenant-facing documents.',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toLowerCase().trim() : value,
+  )
+  @IsNotEmpty()
+  @IsEmail()
+  email: string;
+
+  @ApiProperty({
+    example: '+2348104467932',
+    description: 'Unique phone number (normalized to 234XXXXXXXXXX).',
+  })
+  @IsNotEmpty()
+  @IsString()
+  @MinLength(10)
+  @NormalizePhoneNumber()
+  phone_number: string;
 }
 
 export class CreateCustomerRepDto {

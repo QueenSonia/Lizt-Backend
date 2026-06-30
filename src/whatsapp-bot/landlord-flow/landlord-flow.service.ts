@@ -663,9 +663,13 @@ export class LandlordFlowService {
     // visibility is on the web app.
     const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: {
-        property: {
-          owner_id: teamMemberInfo.team.creatorId,
-        },
+        // Identify this FM's work by the assignment FK alone. The old
+        // `property.owner_id = team.creatorId` filter assumed each landlord
+        // owned their FM's team; after the re-parent the team belongs to the
+        // managing admin (who owns no properties), so that filter would hide
+        // everything. `assigned_to` already pins these to this FM across all
+        // the managed landlords — and includes common-area assignments, which
+        // the render below already handles ("Common area").
         assigned_to: teamMemberInfo.id,
         status: In([
           MaintenanceRequestStatusEnum.APPROVED,

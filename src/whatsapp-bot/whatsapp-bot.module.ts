@@ -40,11 +40,15 @@ import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { PdfModule } from 'src/pdf/pdf.module';
 import { ChatModule } from 'src/chat/chat.module';
-import { IntentRouterModule } from './intent-router/intent-router.module';
 import { FileUploadService } from 'src/utils/cloudinary';
 import { WhatsAppMediaService } from './whatsapp-media.service';
 import { FlowTokenService } from './flow-token.service';
 import { MaintenanceMediaService } from './maintenance-media.service';
+import { AiModule } from 'src/ai/ai.module';
+import { UnknownsAiService } from './unknowns-ai.service';
+import { ApplicantAiService } from './applicant-ai.service';
+import { TenantAiService } from './tenant-ai.service';
+import { NotificationModule } from 'src/notifications/notification.module';
 
 @Module({
   imports: [
@@ -74,7 +78,8 @@ import { MaintenanceMediaService } from './maintenance-media.service';
     TenantBalancesModule,
     PdfModule,
     ChatModule,
-    forwardRef(() => IntentRouterModule),
+    AiModule,
+    forwardRef(() => NotificationModule),
   ],
   controllers: [WhatsappBotController],
   providers: [
@@ -95,6 +100,9 @@ import { MaintenanceMediaService } from './maintenance-media.service';
     WhatsAppMediaService,
     FlowTokenService,
     MaintenanceMediaService,
+    UnknownsAiService,
+    ApplicantAiService,
+    TenantAiService,
   ],
   exports: [
     TemplateSenderService,

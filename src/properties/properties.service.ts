@@ -70,6 +70,7 @@ import { ExistingTenantDto } from './dto/existing-tenant.dto';
 import { CreatePropertyWithTenantDto } from './dto/create-property-with-tenant.dto';
 import { RolesEnum } from 'src/base.entity';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
+import { rejectOtherPendingApplications } from 'src/kyc-links/reject-other-applications';
 import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
 import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { NotificationService } from 'src/notifications/notification.service';
@@ -3286,6 +3287,10 @@ export class PropertiesService {
         property_status: PropertyStatusEnum.OCCUPIED,
         is_marketing_ready: false,
       });
+
+      // Admin move-in (no KYC application) — the property is now taken, so
+      // reject any competing PENDING applications for it.
+      await rejectOtherPendingApplications(queryRunner.manager, property_id);
 
       await queryRunner.manager.save(PropertyHistory, {
         property_id,

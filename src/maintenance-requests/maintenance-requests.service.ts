@@ -3515,6 +3515,161 @@ export class MaintenanceRequestsService {
   }
 
   /**
+   * Append extra detail a tenant added shortly after filing (e.g. "it's getting
+   * worse" / "forgot to mention the upstairs one") to the SAME request, rather
+   * than creating a duplicate. Used by the WhatsApp tenant AI when it judges a
+   * follow-up message to be elaboration on the just-filed request.
+   *
+   * Guards: the request must have been created by this tenant, and must still be
+   * actionable — appending to a resolved/closed/rejected request is refused
+   * (returns null). No re-notification: the FM/landlord see the fuller text when
+   * they next open the request; the status-history row records the addition.
+   */
+  async appendTenantRequestDetail(
+    requestId: string,
+    tenantUserId: string,
+    addition: string,
+  ): Promise<MaintenanceRequest | null> {
+    const extra = (addition || '').trim();
+    if (!extra) return null;
+
+    const sr = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+    });
+    if (!sr) return null;
+
+    // Ownership: only the tenant who filed it can append (creator_user_id is the
+    // tenant's Users.id, which is what the AI flow passes as tenantUserId).
+    if (sr.creator_user_id !== tenantUserId) {
+      this.logger.warn(
+        `appendTenantRequestDetail: ${tenantUserId} is not the creator of ${requestId}`,
+      );
+      return null;
+    }
+
+    // Only append while the request is still actionable.
+    const APPENDABLE_STATUSES: ReadonlyArray<MaintenanceRequestStatusEnum> = [
+      MaintenanceRequestStatusEnum.NOT_APPROVED,
+      MaintenanceRequestStatusEnum.APPROVED,
+      MaintenanceRequestStatusEnum.REOPENED,
+      MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
+    ];
+    if (!APPENDABLE_STATUSES.includes(sr.status)) {
+      return null;
+    }
+
+    sr.description = `${sr.description}\n\n— Tenant added: ${extra}`;
+    await this.maintenanceRequestRepository.save(sr);
+
+    await this.createStatusHistoryEntry(
+      requestId,
+      sr.status,
+      sr.status,
+      tenantUserId,
+      'tenant',
+      'Tenant added detail via WhatsApp',
+    );
+
+    return sr;
+  }
+
+  /**
+   * Reopen a tenant's RESOLVED request when they say it isn't actually fixed —
+   * the AI-driven equivalent of tapping "No" on the resolution-confirmation
+   * prompt. Reuses updateStatus(REOPENED) (which bumps current_attempt, stamps
+   * reopened_at, records the resolution-attempt outcome, and pings landlord +
+   * FMs) and stores the tenant's explanation via appendReopenNoteWithDedup.
+   *
+   * Guards: must be the tenant's own request, and must currently be RESOLVED
+   * (awaiting their confirmation). A CLOSED request is NOT reopenable here —
+   * callers file a new request for a recurrence. Returns the new attempt number
+   * (so fresh media can be tagged to it), or null if it couldn't be reopened.
+   */
+  async reopenTenantRequest(
+    requestId: string,
+    tenantUserId: string,
+    reason: string,
+  ): Promise<{ attempt: number } | null> {
+    const sr = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+      relations: ['tenant', 'tenant.user'],
+    });
+    if (!sr) return null;
+    if (sr.tenant?.user?.id !== tenantUserId) {
+      this.logger.warn(
+        `reopenTenantRequest: ${tenantUserId} is not the tenant of ${requestId}`,
+      );
+      return null;
+    }
+    if (sr.status !== MaintenanceRequestStatusEnum.RESOLVED) return null;
+
+    const trimmed = (reason || '').trim();
+    const note =
+      trimmed || 'Tenant reported the issue is not fully resolved via WhatsApp';
+    const name =
+      `${sr.tenant.user.first_name ?? ''} ${sr.tenant.user.last_name ?? ''}`.trim() ||
+      'Tenant';
+
+    await this.updateStatus(
+      requestId,
+      MaintenanceRequestStatusEnum.REOPENED,
+      note,
+      { id: tenantUserId, role: 'tenant', name },
+    );
+    if (trimmed) {
+      await this.appendReopenNoteWithDedup(
+        requestId,
+        tenantUserId,
+        'tenant',
+        trimmed,
+      );
+    }
+
+    const reopened = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+    });
+    return { attempt: reopened?.current_attempt ?? 2 };
+  }
+
+  /**
+   * Close a tenant's RESOLVED request when they confirm it's actually fixed —
+   * the AI-driven equivalent of tapping "Yes, it's fixed" on the
+   * resolution-confirmation prompt. Reuses updateStatus(CLOSED) (which records
+   * the resolution-attempt outcome as CONFIRMED and emits maintenance.updated).
+   * Guards: must be the tenant's own request and currently RESOLVED. Returns
+   * true if it closed, false otherwise. The caller sends the closed WhatsApp
+   * notification to stakeholders (mirrors the existing button handler).
+   */
+  async confirmTenantRequestResolved(
+    requestId: string,
+    tenantUserId: string,
+  ): Promise<boolean> {
+    const sr = await this.maintenanceRequestRepository.findOne({
+      where: { id: requestId },
+      relations: ['tenant', 'tenant.user'],
+    });
+    if (!sr) return false;
+    if (sr.tenant?.user?.id !== tenantUserId) {
+      this.logger.warn(
+        `confirmTenantRequestResolved: ${tenantUserId} is not the tenant of ${requestId}`,
+      );
+      return false;
+    }
+    if (sr.status !== MaintenanceRequestStatusEnum.RESOLVED) return false;
+
+    const name =
+      `${sr.tenant.user.first_name ?? ''} ${sr.tenant.user.last_name ?? ''}`.trim() ||
+      'Tenant';
+    await this.updateStatus(
+      requestId,
+      MaintenanceRequestStatusEnum.CLOSED,
+      'Tenant confirmed issue is fully resolved via WhatsApp',
+      { id: tenantUserId, role: 'tenant', name },
+    );
+    return true;
+  }
+
+  /**
    * Every FM on the landlord's team. Used for stakeholder fan-out when a
    * maintenance request is filed (or any other property-level event that
    * should notify the whole team rather than a single per-property FM).

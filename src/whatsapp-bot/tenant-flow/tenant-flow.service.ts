@@ -1,7 +1,7 @@
 ﻿import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike, Not, In } from 'typeorm';
+import { Repository, ILike, Not, In, IsNull } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import { Users } from 'src/users/entities/user.entity';
@@ -30,9 +30,6 @@ import {
   MaintenanceRequestStatusEnum,
 } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { mapMRStatusForTenant } from 'src/maintenance-requests/utils/tenant-view';
-import { IntentRouterService } from '../intent-router/intent-router.service';
-import { PendingConfirmation } from '../intent-router/dto/pending-confirmation.dto';
-import { SubIntent } from '../intent-router/intent-taxonomy';
 import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { MaintenanceRequestsService } from 'src/maintenance-requests/maintenance-requests.service';
 import {
@@ -46,6 +43,11 @@ import { IncomingMessage } from '../utils';
 import { WhatsAppNotificationLogService } from '../whatsapp-notification-log.service';
 import { FlowTokenService, FlowProperty } from '../flow-token.service';
 import { MaintenanceMediaService } from '../maintenance-media.service';
+import {
+  TenantAiService,
+  TenantAiContext,
+  TenantProp,
+} from '../tenant-ai.service';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import {
   Fee,
@@ -57,6 +59,22 @@ import {
 } from 'src/common/billing/fees';
 import { computeRenewalFold } from 'src/common/billing/renewal-fold';
 import { nextPeriodEndInclusive } from 'src/common/utils/rent-date.util';
+
+/** Verified lease facts for the AI tenancy-info branch (amounts pre-formatted). */
+export interface TenancyDetails {
+  propertyName: string;
+  location: string;
+  paymentFrequency: string;
+  /** Formatted "dd Mmm yyyy". */
+  startDate: string;
+  endDate: string;
+  /** Every fee on the lease, recurring and one-time, amounts pre-formatted. */
+  fees: Array<{ label: string; amount: string; recurring: boolean }>;
+  /** Sum of recurring fees per payment period, pre-formatted. */
+  totalRecurring: string;
+  /** Plain-English time until the end date, precomputed. */
+  timeToExpiry: string;
+}
 
 /** A media item to attach once a deferred stray-input request is created. */
 interface PendingMediaRef {
@@ -156,9 +174,8 @@ export class TenantFlowService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly nextPeriodStateResolver: NextPeriodStateResolver,
     private readonly eventEmitter: EventEmitter2,
-
-    @Inject(forwardRef(() => IntentRouterService))
-    private readonly intentRouter: IntentRouterService,
+    @Inject(forwardRef(() => TenantAiService))
+    private readonly tenantAiService: TenantAiService,
   ) {}
 
   /**
@@ -326,14 +343,50 @@ export class TenantFlowService {
       return;
     }
 
-    // Default: try AI intent router, then offer to log the stray text as a
-    // maintenance request. The router self-gates on INTENT_ROUTER_ENABLED and
-    // fetches its own conversational context; it returns true only when it has
-    // handled the message (executed a safe read or sent a confirmation card).
-    const handled = await this.intentRouter.handleFreeText(from, text);
-    if (!handled) {
-      await this.offerCreateFromText(from, text);
+    // Stray free text with no active state. When the AI receptionist is
+    // enabled, let it drive the conversation (capture issue/notice, ask for
+    // media, file via tool). It falls back to the legacy Yes/No button offer if
+    // disabled or anything throws.
+    if (this.tenantAiService.isEnabled()) {
+      const ctx = await this.resolveTenantContext(from);
+      if (ctx && (await this.tenantAiService.tryHandleText(from, text, ctx))) {
+        return;
+      }
     }
+
+    // Default: offer to log the stray text as a maintenance request.
+    await this.offerCreateFromText(from, text);
+  }
+
+  /**
+   * Resolve a tenant's user id + their active properties from a phone number,
+   * for the AI receptionist. Returns null if there's no tenant account or no
+   * active tenancy (the caller then falls back to the legacy offer).
+   */
+  private async resolveTenantContext(
+    from: string,
+  ): Promise<TenantAiContext | null> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return null;
+    const accountId = user.accounts[0].id;
+    const propertyTenants = await this.propertyTenantRepo.find({
+      where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
+      relations: ['property'],
+    });
+    if (!propertyTenants?.length) return null;
+    const properties: TenantProp[] = propertyTenants.map((pt) => ({
+      id: pt.property_id,
+      name: pt.property?.name ?? 'Your property',
+    }));
+    const pendingConfirmations = await this.findResolvedAwaitingConfirmation(
+      user.id,
+    );
+    return {
+      tenantUserId: user.id,
+      firstName: this.utilService.toSentenceCase(user.first_name ?? '') || undefined,
+      properties,
+      pendingConfirmations,
+    };
   }
 
   /**
@@ -755,135 +808,6 @@ export class TenantFlowService {
   }
 
   /**
-   * Dispatcher invoked by the IntentRouter after the tenant has tapped
-   * Confirm on a confirmation card. Translates a classified sub-intent
-   * into the same handler that the equivalent button tap would trigger.
-   *
-   * Only sub-intents that map to existing tenant flows reach here —
-   * MESSAGE_TO_HUMAN / postpone / move-out / etc. are handled inside the
-   * router itself by writing a tenant_notices row.
-   */
-  async executeAiIntent(
-    from: string,
-    pending: PendingConfirmation,
-  ): Promise<void> {
-    switch (pending.subIntent) {
-      case SubIntent.MR_REPORT_NEW: {
-        // The AI already extracted the description. Pre-seed the state and
-        // jump straight to the description handler so the tenant doesn't
-        // have to retype what they already said.
-        const description = pending.extracted.description?.trim();
-        if (!description) {
-          await this.handleNewMaintenanceRequest(from);
-          return;
-        }
-        const user = await this.findTenantByPhone(from);
-        const accountId = user?.accounts?.[0]?.id;
-        const activeTenancies = accountId
-          ? await this.propertyTenantRepo.find({
-              where: { tenant_id: accountId, status: TenantStatusEnum.ACTIVE },
-            })
-          : [];
-        if (activeTenancies.length === 1) {
-          const stateKey = `awaiting_description:${activeTenancies[0].property_id}`;
-          await this.cache.set(
-            `maintenance_request_state_${from}`,
-            stateKey,
-            this.SESSION_TIMEOUT_MS,
-          );
-          await this.handleMaintenanceRequestDescription(
-            from,
-            description,
-            stateKey,
-          );
-          return;
-        }
-        // Multi-property: defer to the existing prompt — the AI's property
-        // hint isn't reliable enough to bypass tenant selection.
-        await this.handleNewMaintenanceRequest(from);
-        return;
-      }
-
-      case SubIntent.MR_CONFIRM_RESOLVED:
-        await this.handleConfirmResolutionYes(from);
-        return;
-
-      case SubIntent.MR_DISPUTE_RESOLVED:
-        await this.handleConfirmResolutionNo(from);
-        return;
-
-      case SubIntent.MR_CONFIRM_FILED_REQUEST: {
-        const mrId = pending.resolved.maintenanceRequestId;
-        if (!mrId) {
-          await this.templateSenderService.sendText(
-            from,
-            "I couldn't find a request waiting for your confirmation.",
-          );
-          return;
-        }
-        await this.handleTenantConfirmMaintenanceRequest(from, mrId);
-        return;
-      }
-
-      case SubIntent.MR_DENY_FILED_REQUEST: {
-        const mrId = pending.resolved.maintenanceRequestId;
-        if (!mrId) {
-          await this.templateSenderService.sendText(
-            from,
-            "I couldn't find a request waiting for your confirmation.",
-          );
-          return;
-        }
-        // Seed the deny-reason state so the existing deny path can pick up
-        // the AI-extracted reason without needing the tenant to retype.
-        const reason = pending.extracted.reason?.trim();
-        if (reason) {
-          await this.cache.set(
-            `tenant_deny_state_${from}`,
-            { request_id: mrId, awaiting_reason: true },
-            this.SESSION_TIMEOUT_MS,
-          );
-          await this.handleTenantDenyReasonReply(from, reason, {
-            request_id: mrId,
-            awaiting_reason: true,
-          } as never);
-          return;
-        }
-        await this.handleTenantDenyMaintenanceRequestPrompt(from, mrId);
-        return;
-      }
-
-      case SubIntent.PAY_RENT:
-      case SubIntent.TENANCY_RENEWAL_INTENT:
-        await this.handlePayRent(from);
-        return;
-
-      case SubIntent.PAY_OUTSTANDING:
-        await this.handlePayOutstandingBalance(from);
-        return;
-
-      case SubIntent.PAY_CANCEL:
-        await this.templateSenderService.sendText(from, 'Payment cancelled.');
-        return;
-
-      case SubIntent.TENANCY_VIEW:
-        await this.handleViewTenancy(from);
-        return;
-
-      case SubIntent.TENANCY_DISPUTE:
-        await this.handleTenancyDetailsIncorrect(from);
-        return;
-
-      default:
-        this.logger.warn(
-          `executeAiIntent: no handler for sub_intent=${pending.subIntent}; showing menu`,
-        );
-        await this.showTenantMenu(from);
-        return;
-    }
-  }
-
-  /**
    * Show tenant menu
    */
   private async showTenantMenu(from: string): Promise<void> {
@@ -927,18 +851,6 @@ export class TenantFlowService {
 
     if (!buttonReply) return;
     this.logger.log(`Button ID: ${buttonId}`);
-
-    // Intent-router confirmation card buttons. Intercept before the rest of
-    // the switch so a stale or expired confirmation doesn't trip the
-    // "Unknown option selected" fallback.
-    if (
-      buttonId &&
-      (buttonId.startsWith('ai_confirm:') || buttonId.startsWith('ai_cancel:'))
-    ) {
-      if (await this.intentRouter.handleConfirmationButton(from, buttonId)) {
-        return;
-      }
-    }
 
     // Handle role selection buttons
     if (
@@ -1092,6 +1004,106 @@ export class TenantFlowService {
           'Unknown option selected.',
         );
     }
+  }
+
+  /**
+   * Gate the bot for tenants who haven't confirmed their tenancy details.
+   *
+   * Called once before the tenant message-type dispatch, so it covers text,
+   * interactive/button, and media in a single deterministic check (no AI).
+   * Rule: if the tenant has ANY active tenancy with `details_confirmed_at`
+   * still NULL, block the turn and re-show the confirm card (throttled to once
+   * per session). Returns true when it blocked — the caller then stops.
+   *
+   * The confirm/dispute flow is exempt (otherwise a blocked tenant could never
+   * escape), and the check is FAIL-OPEN: any error — including the column not
+   * existing before the migration runs — serves the tenant rather than locking
+   * everyone out. See plan: gate unconfirmed tenants out of the WhatsApp bot.
+   */
+  async gateUnconfirmedTenant(
+    message: IncomingMessage,
+    from: string,
+  ): Promise<boolean> {
+    try {
+      // 1. Let the escape hatch through (confirm/dispute interactions).
+      if (await this.isConfirmFlowInteraction(message, from)) return false;
+
+      // 2. Any unconfirmed ACTIVE tenancy? Selection mirrors the migration's
+      //    grandfather backfill (status = ACTIVE), so existing tenants — whose
+      //    rows were backfilled non-NULL — are never gated.
+      const user = await this.findTenantByPhone(from);
+      if (!user?.accounts?.length) return false;
+      const accountIds = user.accounts.map((a) => a.id);
+      const unconfirmed = await this.propertyTenantRepo.find({
+        where: {
+          tenant_id: In(accountIds),
+          status: TenantStatusEnum.ACTIVE,
+          details_confirmed_at: IsNull(),
+        },
+        order: { created_at: 'ASC' },
+      });
+      if (!unconfirmed.length) return false;
+
+      // 3. Blocked. Re-show the confirm card for the oldest unconfirmed
+      //    property once per session; a brief nudge on repeats avoids spamming.
+      const shownKey = `tenancy_gate_card_shown_${from}`;
+      if (await this.cache.get(shownKey)) {
+        await this.templateSenderService.sendText(
+          from,
+          'Please confirm your tenancy details using the buttons above to continue.',
+        );
+      } else {
+        await this.handleConfirmTenancyDetails(from, unconfirmed[0].property_id);
+        await this.cache.set(shownKey, '1', this.SESSION_TIMEOUT_MS);
+      }
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `Tenant confirmation gate failed for ${from}; failing open:`,
+        err,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * True when this inbound is part of the tenancy-confirm/dispute escape hatch
+   * and must bypass the gate: the multi-property confirm picker, the free-text
+   * dispute reply, or one of the confirm/dispute buttons.
+   */
+  private async isConfirmFlowInteraction(
+    message: IncomingMessage,
+    from: string,
+  ): Promise<boolean> {
+    // Mid-flow states: choosing which property to confirm, or typing what's wrong.
+    if (await this.cache.get(`tenancy_details_selection_${from}`)) return true;
+    const mrState = await this.cache.get<string>(
+      `maintenance_request_state_${from}`,
+    );
+    if (
+      typeof mrState === 'string' &&
+      mrState.startsWith('awaiting_tenancy_dispute_reason')
+    ) {
+      return true;
+    }
+
+    // Confirm/dispute buttons (same extraction as handleInteractive).
+    const buttonReply =
+      (
+        message.interactive as {
+          button_reply?: { id?: string; payload?: string };
+        }
+      )?.button_reply ||
+      (message as unknown as { button?: { id?: string; payload?: string } })
+        .button;
+    const buttonId = buttonReply?.id || buttonReply?.payload;
+    if (!buttonId) return false;
+    const action = buttonId.includes(':') ? buttonId.split(':')[0] : buttonId;
+    return (
+      action === 'confirm_tenancy_details' ||
+      action === 'tenancy_details_correct' ||
+      action === 'tenancy_details_incorrect'
+    );
   }
 
   /**
@@ -1421,6 +1433,205 @@ export class TenantFlowService {
   }
 
   /**
+   * Append tenant-provided detail to an existing request they just filed (used
+   * by the AI receptionist when a follow-up message elaborates on the same
+   * issue rather than raising a new one). Returns true if the append landed.
+   */
+  async updateTenantMaintenanceRequest(params: {
+    tenantUserId: string;
+    requestId: string;
+    addition: string;
+  }): Promise<boolean> {
+    const updated = await this.maintenanceRequestService.appendTenantRequestDetail(
+      params.requestId,
+      params.tenantUserId,
+      params.addition,
+    );
+    return !!updated;
+  }
+
+  /**
+   * Requests the FM has marked RESOLVED that are awaiting this tenant's
+   * confirmation — i.e. the ones a free-text "it's fixed" / "still broken" reply
+   * could be about. Injected into the AI context so it can map an ambiguous
+   * reply to the right request and either confirm (close) or reopen it.
+   */
+  async findResolvedAwaitingConfirmation(
+    tenantUserId: string,
+  ): Promise<Array<{ requestId: string; description: string; resolvedOn: string }>> {
+    const rows = await this.maintenanceRequestRepo.find({
+      where: {
+        tenant: { user: { id: tenantUserId } },
+        status: MaintenanceRequestStatusEnum.RESOLVED,
+      },
+      relations: ['tenant', 'tenant.user'],
+      order: { resolution_date: 'DESC' },
+      take: 10,
+    });
+    return rows.map((r) => ({
+      requestId: r.request_id,
+      description: r.description,
+      resolvedOn: r.resolution_date
+        ? new Date(r.resolution_date).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })
+        : '—',
+    }));
+  }
+
+  /**
+   * AI-driven "Yes, it's fixed": close a resolved request the tenant confirms is
+   * sorted, by its human request_id (SR…). Mirrors handleConfirmResolutionYes —
+   * closes via the service then pings landlord + FMs with the closed template.
+   */
+  async confirmTenantRequestFixed(params: {
+    tenantUserId: string;
+    requestId: string;
+  }): Promise<boolean> {
+    const row = await this.maintenanceRequestRepo.findOne({
+      where: {
+        request_id: params.requestId,
+        tenant: { user: { id: params.tenantUserId } },
+      },
+      relations: ['tenant', 'tenant.user'],
+    });
+    if (!row) return false;
+    const ok = await this.maintenanceRequestService.confirmTenantRequestResolved(
+      row.id,
+      params.tenantUserId,
+    );
+    if (ok && row.property_id) {
+      const safe = this.utilService.sanitizeTemplateParam(row.description);
+      await this.notifyPropertyStakeholders(row.property_id, (phone) =>
+        this.templateSenderService.sendMaintenanceRequestClosedNotification({
+          phone_number: phone,
+          maintenance_request: safe,
+        }),
+      );
+    }
+    return ok;
+  }
+
+  /**
+   * AI-driven "No, not fixed": reopen a resolved request by its human request_id
+   * (SR…). Mirrors handleConfirmResolutionNo — reopens via the service (which
+   * bumps the attempt and emits the event) then pings landlord + FMs with the
+   * reopened template. Returns the new attempt + uuid so fresh media can attach.
+   */
+  async reopenTenantRequestForTenant(params: {
+    tenantUserId: string;
+    requestId: string;
+    reason: string;
+  }): Promise<{ ok: boolean; attempt?: number; id?: string }> {
+    const row = await this.maintenanceRequestRepo.findOne({
+      where: {
+        request_id: params.requestId,
+        tenant: { user: { id: params.tenantUserId } },
+      },
+      relations: ['tenant', 'tenant.user'],
+    });
+    if (!row) return { ok: false };
+    const res = await this.maintenanceRequestService.reopenTenantRequest(
+      row.id,
+      params.tenantUserId,
+      params.reason,
+    );
+    if (!res) return { ok: false };
+    if (row.property_id) {
+      const safe = this.utilService.sanitizeTemplateParam(row.description);
+      await this.notifyPropertyStakeholders(row.property_id, (phone) =>
+        this.templateSenderService.sendMaintenanceRequestReopenedNotification({
+          phone_number: phone,
+          maintenance_request: safe,
+        }),
+      );
+    }
+    return { ok: true, attempt: res.attempt, id: row.id };
+  }
+
+  /**
+   * Verified, read-only lease facts for the AI receptionist's tenancy-info
+   * branch. Same source as the "View tenancy details" card — the ACTIVE Rent row
+   * for this tenant + property — but returned as a structured object with ALL
+   * fees (recurring AND one-time) and a couple of precomputed values (total
+   * recurring per period, time-to-expiry) so the assistant never does its own
+   * maths. Deliberately omits payment status / balances — that's a separate
+   * branch. Returns null when there's no active tenancy or rent on file.
+   */
+  async getTenancyDetails(
+    tenantUserId: string,
+    propertyId: string,
+  ): Promise<TenancyDetails | null> {
+    const propertyTenant = await this.propertyTenantRepo.findOne({
+      where: {
+        tenant: { user: { id: tenantUserId } },
+        property_id: propertyId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+      relations: ['property', 'tenant', 'tenant.user'],
+    });
+    if (!propertyTenant?.property) return null;
+
+    const rent = await this.rentRepo.findOne({
+      where: {
+        tenant_id: propertyTenant.tenant_id,
+        property_id: propertyId,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+    });
+    if (!rent) return null;
+
+    const formatNGN = (amount: number) =>
+      amount != null
+        ? amount.toLocaleString('en-NG', { style: 'currency', currency: 'NGN' })
+        : '—';
+    const formatDate = (date: Date | string | null | undefined) =>
+      date
+        ? new Date(date).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })
+        : '—';
+
+    const allFees = rentToFees(rent);
+    const totalRecurring = allFees
+      .filter((f) => f.recurring)
+      .reduce((sum, f) => sum + (f.amount ?? 0), 0);
+
+    return {
+      propertyName: propertyTenant.property.name,
+      location: propertyTenant.property.location ?? '—',
+      paymentFrequency: rent.payment_frequency ?? '—',
+      startDate: formatDate(rent.rent_start_date),
+      endDate: formatDate(rent.expiry_date),
+      fees: allFees.map((f) => ({
+        label: f.label,
+        amount: formatNGN(f.amount),
+        recurring: f.recurring,
+      })),
+      totalRecurring: formatNGN(totalRecurring),
+      timeToExpiry: this.describeTimeToExpiry(rent.expiry_date),
+    };
+  }
+
+  /** Plain-English time remaining until a tenancy's end date (precomputed so
+   * the AI never does date maths). */
+  private describeTimeToExpiry(expiry?: Date | string | null): string {
+    if (!expiry) return 'no end date on file';
+    const days = Math.round(
+      (new Date(expiry).getTime() - Date.now()) / 86_400_000,
+    );
+    if (days < 0) return `ended ${Math.abs(days)} day(s) ago`;
+    if (days === 0) return 'ends today';
+    if (days < 14) return `about ${days} day(s) away`;
+    if (days < 60) return `about ${Math.round(days / 7)} week(s) away`;
+    return `about ${Math.round(days / 30)} month(s) away`;
+  }
+
+  /**
    * Inbound photo/video from a tenant. If a video window is open (armed when a
    * tenant opts into "I also have a video" in the Flow), attach the media to
    * that request. Otherwise treat it as a stray attachment and offer to create
@@ -1499,6 +1710,36 @@ export class TenantFlowService {
         );
       }
       return;
+    }
+
+    // Stray media — no active window. When the AI receptionist is enabled, eagerly
+    // re-host the media to Cloudinary (Meta's download URLs are short-lived),
+    // buffer it for the eventual report tool, and hand the AI a breadcrumb so it
+    // can acknowledge and continue the conversation. Falls back to the legacy
+    // offer if disabled, the upload fails, or the AI declines the turn.
+    if (this.tenantAiService.isEnabled()) {
+      const item = await this.maintenanceMediaService.uploadStrayInbound({
+        id: media.id,
+        link: media.link,
+        type: mediaType,
+      });
+      if (item) {
+        await this.tenantAiService.bufferMedia(from, {
+          type: item.type,
+          url: item.url,
+        });
+      }
+      const caption = (media.caption ?? '').trim();
+      const breadcrumb = caption
+        ? `[tenant attached a ${mediaType}] ${caption}`
+        : `[tenant attached a ${mediaType}]`;
+      const ctx = await this.resolveTenantContext(from);
+      if (
+        ctx &&
+        (await this.tenantAiService.tryHandleMedia(from, breadcrumb, ctx))
+      ) {
+        return;
+      }
     }
 
     // Stray media — no active window. Offer to log a new request with it.
@@ -3265,6 +3506,17 @@ export class TenantFlowService {
     await this.cache.delete(`tenancy_confirmation_pending_${from}`);
 
     if (propertyId) {
+      // Persist the confirmation so the bot gate (gateUnconfirmedTenant) lets
+      // this tenant through. Clearing the per-session throttle key means that,
+      // for a multi-property tenant, the next unconfirmed property's card shows
+      // straight away on their next message.
+      try {
+        await this.markTenancyDetailsConfirmed(from, propertyId);
+        await this.cache.delete(`tenancy_gate_card_shown_${from}`);
+      } catch (err) {
+        this.logger.error('Failed to persist tenancy-details confirmation:', err);
+      }
+
       try {
         await this.queueTenancyReviewLandlordNotification(
           from,
@@ -3283,6 +3535,28 @@ export class TenantFlowService {
       from,
       `Great, you're all set.\n\nYou can now use Lizt to report issues, make payments and stay updated.\n\nSimply tap Hi to get started.`,
       [{ id: 'main_menu', title: 'Hi' }],
+    );
+  }
+
+  /**
+   * Stamp `details_confirmed_at` on the tenant's ACTIVE tenancy for this
+   * property — the durable record the bot gate reads. Resolved from the phone
+   * the same way handleConfirmTenancyDetails does (tenant accounts + property +
+   * ACTIVE), so the gate and this write agree on which row.
+   */
+  private async markTenancyDetailsConfirmed(
+    from: string,
+    propertyId: string,
+  ): Promise<void> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return;
+    await this.propertyTenantRepo.update(
+      {
+        tenant_id: In(user.accounts.map((a) => a.id)),
+        property_id: propertyId,
+        status: TenantStatusEnum.ACTIVE,
+      },
+      { details_confirmed_at: new Date() },
     );
   }
 

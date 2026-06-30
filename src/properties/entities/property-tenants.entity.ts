@@ -21,6 +21,15 @@ export class PropertyTenant extends BaseEntity {
   })
   status: TenantStatusEnum;
 
+  /**
+   * When the tenant confirmed these tenancy details over WhatsApp (the
+   * "Yes, correct" tap). NULL = not yet confirmed — the bot gates such tenants
+   * until they confirm. Cleared back to NULL when a landlord edits the details,
+   * forcing a re-confirm. See `gateUnconfirmedTenant` in TenantFlowService.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  details_confirmed_at: Date | null;
+
   @ManyToOne(() => Property, (p) => p.property_tenants, {
     onDelete: 'CASCADE',
   })

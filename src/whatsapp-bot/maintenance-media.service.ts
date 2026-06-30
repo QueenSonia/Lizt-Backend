@@ -117,20 +117,8 @@ export class MaintenanceMediaService {
     attempt: number,
   ): Promise<MediaItem | null> {
     try {
-      if (media.link) {
-        const item: MediaItem = {
-          type: media.type,
-          url: media.link,
-          attempt,
-        };
-        await this.appendMedia(requestId, [item]);
-        return item;
-      }
-      if (!media.id) return null;
-      const { buffer, mimeType } = await this.media.downloadInboundMedia(
-        media.id,
-      );
-      const item = await this.media.uploadToCloud(buffer, mimeType, attempt);
+      const item = await this.uploadStrayInbound(media, attempt);
+      if (!item) return null;
       await this.appendMedia(requestId, [item]);
       return item;
     } catch (err) {
@@ -138,6 +126,32 @@ export class MaintenanceMediaService {
         `Failed to ingest inbound media for request ${requestId}`,
         err as Error,
       );
+      return null;
+    }
+  }
+
+  /**
+   * Download + re-host an inbound WhatsApp media item to Cloudinary WITHOUT
+   * attaching it to any request — used by the tenant AI flow, which buffers
+   * media before a maintenance request exists, then drains the buffer into
+   * `issue_media` once the request is filed. Simulator `link` media is used
+   * directly. Returns the `{type, url, attempt}` item, or null on failure.
+   */
+  async uploadStrayInbound(
+    media: { id?: string; link?: string; type: 'image' | 'video' },
+    attempt = 1,
+  ): Promise<MediaItem | null> {
+    try {
+      if (media.link) {
+        return { type: media.type, url: media.link, attempt };
+      }
+      if (!media.id) return null;
+      const { buffer, mimeType } = await this.media.downloadInboundMedia(
+        media.id,
+      );
+      return await this.media.uploadToCloud(buffer, mimeType, attempt);
+    } catch (err) {
+      this.logger.error('Failed to upload stray inbound media', err as Error);
       return null;
     }
   }

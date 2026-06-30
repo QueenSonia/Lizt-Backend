@@ -35,6 +35,7 @@ import {
   ApplicationStatus,
 } from 'src/kyc-links/entities/kyc-application.entity';
 import { transformApplicationForFrontend } from 'src/kyc-links/kyc-application.transform';
+import { rejectOtherPendingApplications } from 'src/kyc-links/reject-other-applications';
 import {
   TenantKyc,
   Gender,
@@ -595,6 +596,10 @@ export class TenantManagementService {
           property_status: PropertyStatusEnum.OCCUPIED,
           is_marketing_ready: false,
         });
+
+        // 9b. Direct attach (no KYC application) — the property is now taken,
+        // so reject any competing PENDING applications for it.
+        await rejectOtherPendingApplications(manager, propertyId);
 
         // 10. Create property history record
         const propertyHistory = manager.getRepository(PropertyHistory).create({
@@ -1520,6 +1525,15 @@ export class TenantManagementService {
         property_status: PropertyStatusEnum.OCCUPIED,
         is_marketing_ready: false,
       });
+
+      // 8b. Reject competing PENDING applications for this now-taken property,
+      // sparing the one being approved. The caller marks THIS application
+      // APPROVED after the tx, so it is still PENDING here — exclude it by id.
+      await rejectOtherPendingApplications(
+        manager,
+        property_id,
+        kycApplication?.id,
+      );
 
       // 9. Create property history record
       const propertyHistory = manager.getRepository(PropertyHistory).create({

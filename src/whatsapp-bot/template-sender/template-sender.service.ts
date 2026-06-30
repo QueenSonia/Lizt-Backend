@@ -938,20 +938,22 @@ export interface InstallmentReminderParams {
 }
 
 /**
- * Parameters for payment plan installment OVERDUE notice to tenant
- * (fired the day after the due date). Unlike the upcoming reminder, the
- * property / charge / tenancy-period detail is folded into a single
- * pre-composed `plan_description` clause, varied by plan scope and built by
- * RentReminderService.buildInstallmentPlanDescription.
+ * Parameters for payment plan installment OVERDUE notice to tenant. Fired the
+ * day after the due date, then repeated every 7 days until paid — so {{3}}
+ * carries a past-tense "due ago" word ("yesterday" / "N days ago") rather than
+ * hardcoding "yesterday". Same shape as InstallmentReminderParams; the
+ * property / charge / tenancy-period detail is folded into the pre-composed
+ * `plan_description` clause built by RentReminderService.
  */
 export interface InstallmentOverdueParams {
   phone_number: string;
   tenant_name: string;
   amount: string;
+  due_phrase: string; // past-tense "due ago" word: "yesterday" | "N days ago"
   due_date: string;
   installment_label: string; // e.g. "1 of 4"
   /**
-   * The "...under {{5}}." clause, e.g. "your tenancy payment plan for
+   * The "...under {{6}}." clause, e.g. "your tenancy payment plan for
    * {property}, {location}, covering the tenancy period {start} – {end}"
    * (tenancy) or "your {charge} payment plan for {property}, {location}"
    * (charge / OB).
@@ -5157,13 +5159,14 @@ export class TemplateSenderService {
 
   /**
    * Send payment plan installment OVERDUE notice to tenant via WhatsApp.
-   * Fired the day after the installment due date while still unpaid.
-   * Template: installment_overdue
+   * Fired once the due date has passed, then repeated every 7 days until paid.
+   * Template: installment_overdue_reminder
    */
   async sendInstallmentOverdueTemplate({
     phone_number,
     tenant_name,
     amount,
+    due_phrase,
     due_date,
     installment_label,
     plan_description,
@@ -5174,7 +5177,7 @@ export class TemplateSenderService {
       to: phone_number,
       type: 'template',
       template: {
-        name: 'installment_overdue',
+        name: 'installment_overdue_reminder',
         language: { code: 'en' },
         components: [
           {
@@ -5182,6 +5185,7 @@ export class TemplateSenderService {
             parameters: [
               { type: 'text', text: tenant_name },
               { type: 'text', text: amount },
+              { type: 'text', text: due_phrase },
               { type: 'text', text: due_date },
               { type: 'text', text: installment_label },
               { type: 'text', text: plan_description },
@@ -5935,8 +5939,8 @@ export class TemplateSenderService {
       "Hello {{1}},\n\nThis is a reminder that we haven't received your payment of {{2}} for the tenancy period of {{3}} for {{4}}, which was due {{5}}.\n\nWe'd like you to maintain a good payment history and relationship with us.\nPlease tap on the link below to view your invoice and make payment.",
     installment_reminder:
       'Hello {{1}},\n\nThis is a reminder that your payment of {{2}} is due {{3}}, {{4}}.\n\nThis payment represents Installment {{5}} under {{6}}.\n\nWe encourage you to make your payment on or before the due date to maintain a positive payment history and good standing with your landlord.\n\nPlease tap the link below to view your invoice and complete your payment.',
-    installment_overdue:
-      'Hello {{1}},\n\nThis is a reminder that we have not yet received your payment of {{2}}, which became due yesterday, {{3}}.\n\nThis payment represents Installment {{4}} under {{5}}.\n\nWe encourage you to make your payment promptly to maintain a positive payment history and good standing with your landlord.\n\nPlease tap the link below to view your invoice and complete your payment.',
+    installment_overdue_reminder:
+      'Hello {{1}},\n\nThis is a reminder that we have not yet received your payment of {{2}}, which became due {{3}}, {{4}}.\n\nThis payment represents Installment {{5}} under {{6}}.\n\nWe encourage you to make your payment promptly to maintain a positive payment history and good standing with your landlord.\n\nPlease tap the link below to view your invoice and complete your payment.',
     installment_receipt_tenant:
       'Hi {{1}}, your installment payment of {{2}} for {{3}} at {{4}} has been received.\n\nClick the button below to view your receipt.',
     installment_paid_landlord:

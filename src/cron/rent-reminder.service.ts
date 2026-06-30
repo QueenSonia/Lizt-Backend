@@ -227,16 +227,22 @@ export class RentReminderService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Sends payment plan installment notices on four windows, deduplicated per
-   * installment per day via `last_reminder_sent_on` so the cron can run more
-   * than once safely:
-   *   - 7 days before the due date  (upcoming reminder)
-   *   - 1 day before the due date   (upcoming reminder)
-   *   - on the due date             (upcoming reminder)
-   *   - 1 day after the due date    (OVERDUE notice, if still unpaid)
+   * Sends payment-plan installment notices for the EARLIEST UNPAID installment
+   * of each active plan only — reminders are strictly sequential, so an
+   * installment stays silent until every installment before it is paid. The
+   * moment the active one is paid, the next becomes the earliest-unpaid and
+   * picks up its own cadence from today (an immediate overdue notice if it is
+   * already past due).
    *
-   * Upcoming windows use the `installment_reminder` template; the overdue
-   * window uses the `installment_overdue` template.
+   * For that earliest-unpaid installment:
+   *   - upcoming: 7 days before, 1 day before, and on the due date
+   *     (`installment_reminder`)
+   *   - overdue: a first notice the day after the due date, then REPEATED every
+   *     7 days until paid (`installment_overdue_reminder`)
+   *
+   * Deduped per installment per day via `last_reminder_sent_on` (stamped to
+   * today on every send), which also anchors the weekly overdue cadence — see
+   * shouldSendInstallmentReminderToday.
    */
   async checkInstallmentReminders(): Promise<void> {
     this.logger.log('Processing payment plan installment reminders...');
@@ -244,41 +250,45 @@ export class RentReminderService {
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
-    const dateAtOffset = (days: number): string => {
-      const d = new Date(today);
-      d.setUTCDate(today.getUTCDate() + days);
-      return d.toISOString().split('T')[0];
-    };
-
-    const todayStr = dateAtOffset(0);
-    const yesterdayStr = dateAtOffset(-1); // D+1 overdue notice
-    const tomorrowStr = dateAtOffset(1); // D-1 reminder
-    const inSevenDaysStr = dateAtOffset(7); // D-7 reminder
-
-    const installments = await this.installmentRepository
+    // Every not-yet-fully-paid installment on an ACTIVE plan, earliest-sequence
+    // first, so we can reduce to the single earliest-unpaid installment per
+    // plan below. PARTIAL counts as unpaid: a half-paid installment must keep
+    // blocking the ones behind it (and keep being reminded) until it's PAID.
+    const pending = await this.installmentRepository
       .createQueryBuilder('inst')
       .leftJoinAndSelect('inst.plan', 'plan')
       .leftJoinAndSelect('plan.property', 'property')
       .leftJoinAndSelect('plan.tenant', 'tenant')
       .leftJoinAndSelect('tenant.user', 'user')
-      .where('inst.status = :status', { status: InstallmentStatus.PENDING })
+      .where('inst.status IN (:...unpaidStatuses)', {
+        unpaidStatuses: [InstallmentStatus.PENDING, InstallmentStatus.PARTIAL],
+      })
       .andWhere('plan.status = :planStatus', {
         planStatus: PaymentPlanStatus.ACTIVE,
       })
-      .andWhere('DATE(inst.due_date) IN (:...dates)', {
-        dates: [yesterdayStr, todayStr, tomorrowStr, inSevenDaysStr],
-      })
-      .andWhere(
-        '(inst.last_reminder_sent_on IS NULL OR DATE(inst.last_reminder_sent_on) < :today)',
-        { today: todayStr },
-      )
+      .orderBy('inst.plan_id', 'ASC')
+      .addOrderBy('inst.sequence', 'ASC')
       .getMany();
 
-    this.logger.log(
-      `Found ${installments.length} installments needing reminders today.`,
+    // First unpaid installment seen per plan = its earliest-unpaid one (the
+    // query is ordered by sequence). Everything behind it is silenced.
+    const earliestUnpaidByPlan = new Map<string, PaymentPlanInstallment>();
+    for (const inst of pending) {
+      if (!earliestUnpaidByPlan.has(inst.plan_id)) {
+        earliestUnpaidByPlan.set(inst.plan_id, inst);
+      }
+    }
+
+    const dueToday = [...earliestUnpaidByPlan.values()].filter((inst) =>
+      this.shouldSendInstallmentReminderToday(inst, today),
     );
 
-    for (const installment of installments) {
+    this.logger.log(
+      `Found ${dueToday.length} installment(s) needing a reminder today ` +
+        `(of ${earliestUnpaidByPlan.size} active plan(s) with an unpaid installment).`,
+    );
+
+    for (const installment of dueToday) {
       try {
         await this.sendInstallmentReminder(installment, today);
       } catch (error) {
@@ -288,6 +298,56 @@ export class RentReminderService {
         );
       }
     }
+  }
+
+  /**
+   * Whether the earliest-unpaid installment of a plan should get a reminder
+   * today. All dates are normalised to UTC midnight.
+   *
+   *   - Upcoming (due today or later): only on the D-7 / D-1 / D-0 windows.
+   *   - Overdue (due date passed): the FIRST overdue notice fires once the due
+   *     date is behind us — detected via `last_reminder_sent_on` being null or
+   *     on/before the due date (i.e. the last send, if any, was a pre-due
+   *     reminder) — then REPEATS every 7 days until paid.
+   *
+   * The "already sent today" short-circuit keeps the cron idempotent within a
+   * day; the weekly cadence counts days since the last send.
+   */
+  private shouldSendInstallmentReminderToday(
+    installment: PaymentPlanInstallment,
+    today: Date,
+  ): boolean {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+    const dueDate = new Date(installment.due_date);
+    dueDate.setUTCHours(0, 0, 0, 0);
+
+    const lastSent = installment.last_reminder_sent_on
+      ? new Date(installment.last_reminder_sent_on)
+      : null;
+    if (lastSent) lastSent.setUTCHours(0, 0, 0, 0);
+
+    // Never send twice in one day, whatever the window.
+    if (lastSent && lastSent.getTime() >= today.getTime()) return false;
+
+    const daysUntilDue = Math.round(
+      (dueDate.getTime() - today.getTime()) / MS_PER_DAY,
+    );
+
+    if (daysUntilDue >= 0) {
+      // Upcoming — only the three pre-due windows.
+      return daysUntilDue === 7 || daysUntilDue === 1 || daysUntilDue === 0;
+    }
+
+    // Overdue. First overdue notice = no overdue reminder sent yet (last send
+    // was null or a pre-due one, i.e. stamped on/before the due date).
+    if (!lastSent || lastSent.getTime() <= dueDate.getTime()) return true;
+
+    // Subsequent overdue notices repeat weekly.
+    const daysSinceLast = Math.round(
+      (today.getTime() - lastSent.getTime()) / MS_PER_DAY,
+    );
+    return daysSinceLast >= 7;
   }
 
   private async sendInstallmentReminder(
@@ -314,7 +374,12 @@ export class RentReminderService {
     });
     const installmentLabel = `${installment.sequence} of ${totalInstallments}`;
 
-    const amount = Number(installment.amount).toLocaleString('en-NG', {
+    // Show what's still owed: the full amount for PENDING, the balance for a
+    // PARTIAL installment (amount_paid is null/0 for PENDING, so this is a
+    // no-op there).
+    const remainingDue =
+      Number(installment.amount) - Number(installment.amount_paid ?? 0);
+    const amount = remainingDue.toLocaleString('en-NG', {
       style: 'currency',
       currency: 'NGN',
     });
@@ -329,19 +394,26 @@ export class RentReminderService {
     const isOverdue = dueDate.getTime() < today.getTime();
 
     if (isOverdue) {
-      // The overdue notice folds the property / charge / tenancy-period detail
-      // into one pre-composed clause (template var {{5}}), varied by plan scope,
-      // so charge/OB plans (which have no tenancy period) still read correctly.
+      // Overdue notice mirrors the reminder's shape: property / charge /
+      // tenancy-period folded into plan_description ({{6}}), and {{3}} carries
+      // the past-tense "due ago" word so the weekly repeats don't all read
+      // "yesterday".
       const planDescription = await this.buildInstallmentPlanDescription(
         plan,
         propertyName,
       );
+      const daysOverdue = Math.round(
+        (today.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000),
+      );
+      const overduePhrase =
+        daysOverdue === 1 ? 'yesterday' : `${daysOverdue} days ago`;
       await this.whatsAppNotificationLogService.queue(
         'sendInstallmentOverdueTemplate',
         {
           phone_number: phone,
           tenant_name: tenantName,
           amount,
+          due_phrase: overduePhrase,
           due_date: dueDateStr,
           installment_label: installmentLabel,
           plan_description: planDescription,

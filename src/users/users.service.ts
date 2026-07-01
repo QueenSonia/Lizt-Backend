@@ -1821,6 +1821,8 @@ export class UsersService {
       phone: string | null;
       first_name: string;
       last_name: string;
+      properties: number;
+      active_tenancies: number;
     }>
   > {
     const accounts = await this.accountRepository.find({
@@ -1831,6 +1833,40 @@ export class UsersService {
       relations: ['user'],
       order: { profile_name: 'ASC' },
     });
+
+    const landlordIds = accounts.map((a) => a.id);
+
+    // Property + active-tenancy counts per landlord, computed in two grouped
+    // queries (not N+1). `properties.owner_id` is the landlord Account.id.
+    const [propertyCounts, tenancyCounts] = landlordIds.length
+      ? await Promise.all([
+          this.propertyTenantRepository.manager
+            .createQueryBuilder(Property, 'p')
+            .select('p.owner_id', 'ownerId')
+            .addSelect('COUNT(*)', 'count')
+            .where('p.owner_id IN (:...ids)', { ids: landlordIds })
+            .groupBy('p.owner_id')
+            .getRawMany<{ ownerId: string; count: string }>(),
+          this.propertyTenantRepository
+            .createQueryBuilder('pt')
+            .innerJoin('pt.property', 'p')
+            .select('p.owner_id', 'ownerId')
+            .addSelect('COUNT(*)', 'count')
+            .where('p.owner_id IN (:...ids)', { ids: landlordIds })
+            .andWhere('pt.status = :status', {
+              status: TenantStatusEnum.ACTIVE,
+            })
+            .groupBy('p.owner_id')
+            .getRawMany<{ ownerId: string; count: string }>(),
+        ])
+      : [[], []];
+
+    const propertyCountByOwner = new Map(
+      propertyCounts.map((r) => [r.ownerId, Number(r.count)]),
+    );
+    const tenancyCountByOwner = new Map(
+      tenancyCounts.map((r) => [r.ownerId, Number(r.count)]),
+    );
 
     return accounts.map((a) => {
       const first = a.user?.first_name ?? '';
@@ -1845,6 +1881,8 @@ export class UsersService {
         phone: a.user?.phone_number ?? null,
         first_name: first,
         last_name: last,
+        properties: propertyCountByOwner.get(a.id) ?? 0,
+        active_tenancies: tenancyCountByOwner.get(a.id) ?? 0,
       };
     });
   }

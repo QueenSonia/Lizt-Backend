@@ -188,7 +188,7 @@ export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'timestamptz', nullable: true })
   accepted_at: Date | null;
 
-  @Column({ type: 'varchar', length: 16, nullable: true })
+  @Column({ type: 'varchar', length: 20, nullable: true })
   accepted_by_phone: string | null;
 
   /**
@@ -207,7 +207,7 @@ export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'timestamptz', nullable: true })
   declined_at: Date | null;
 
-  @Column({ type: 'varchar', length: 16, nullable: true })
+  @Column({ type: 'varchar', length: 20, nullable: true })
   declined_by_phone: string | null;
 
   /**

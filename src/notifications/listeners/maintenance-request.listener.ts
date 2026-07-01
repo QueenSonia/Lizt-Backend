@@ -11,6 +11,7 @@ import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenanc
 import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { TemplateSenderService } from 'src/whatsapp-bot/template-sender';
 import { UtilService } from 'src/utils/utility-service';
+import { formatPhoneForDisplay } from 'src/utils/phone-number.transformer';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { Account } from 'src/users/entities/account.entity';
 import { RolesEnum } from 'src/base.entity';
@@ -98,13 +99,12 @@ export class MaintenanceRequestListener {
   }
 
   /**
-   * Format a tenant phone (Meta-stored +234... or 234...) into Nigerian
-   * local 0xxx form for display inside templates. Returns '—' when missing.
+   * Format a stored tenant phone for display inside templates: Nigerian numbers
+   * render in local 0xxx form, other countries in full international form.
+   * Returns '—' when missing.
    */
   private formatTenantPhoneLocal(phoneRaw: string | null | undefined): string {
-    if (!phoneRaw) return '—';
-    if (phoneRaw.startsWith('234')) return '0' + phoneRaw.slice(3);
-    return phoneRaw.replace(/^\+234/, '0');
+    return formatPhoneForDisplay(phoneRaw);
   }
 
   /**
@@ -716,14 +716,12 @@ ${event.description ?? ''}`,
       const description = this.utilService.sanitizeTemplateParam(
         sr.description ?? '',
       );
-      // Render tenant phone in Nigerian local format (0xxx) to match the
-      // existing fm_maintenance_request_notification precedent.
-      const tenantPhoneRaw = sr.tenant?.user?.phone_number ?? '';
-      const tenantPhoneLocal = tenantPhoneRaw
-        ? tenantPhoneRaw.startsWith('234')
-          ? '0' + tenantPhoneRaw.slice(3)
-          : tenantPhoneRaw.replace(/^\+234/, '0')
-        : '—';
+      // Render tenant phone for display: NG in local 0xxx (matching the
+      // existing fm_maintenance_request_notification precedent), other
+      // countries in full international form.
+      const tenantPhoneLocal = formatPhoneForDisplay(
+        sr.tenant?.user?.phone_number,
+      );
 
       // Fan out to every FM on the team serving this landlord (including the
       // assignee — see template doc comment for the redundancy tradeoff).

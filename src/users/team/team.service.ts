@@ -137,12 +137,11 @@ export class TeamService {
         //    email at this stage misses dupes added via the legacy fake-email
         //    forms, where every add gets a unique synthetic email.
 
-        // 4. Normalize phone number
-        let normalizedPhoneNumber = teamMember.phone_number.replace(/\D/g, '');
-        if (!normalizedPhoneNumber.startsWith('234')) {
-          normalizedPhoneNumber =
-            '234' + normalizedPhoneNumber.replace(/^0+/, '');
-        }
+        // 4. Normalize phone number (country-aware; NG stays 234..., other
+        //    countries keep their own E.164 digits)
+        const normalizedPhoneNumber = this.utilService.normalizePhoneNumber(
+          teamMember.phone_number,
+        );
 
         // 5. Get or create user - check by phone number first to avoid duplicates
         let user = await manager.getRepository(Users).findOne({

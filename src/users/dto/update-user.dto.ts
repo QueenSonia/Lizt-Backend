@@ -15,6 +15,7 @@ import {
   EmploymentStatus,
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
 import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
+import { IsValidPhoneNumber } from '../../common/validation/is-valid-phone.decorator';
 import { OfferLetterTemplateDto } from './offer-letter-template.dto';
 
 export class UpdateUserDto {
@@ -70,6 +71,7 @@ export class UpdateUserDto {
   })
   @IsOptional()
   @IsString()
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   phone_number?: string;
 
@@ -209,6 +211,8 @@ export class UpdateUserDto {
   })
   @IsOptional()
   @IsString()
+  @IsValidPhoneNumber()
+  @NormalizePhoneNumber()
   spouse_phone_number?: string;
 
   @ApiProperty({

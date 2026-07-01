@@ -79,5 +79,35 @@ describe('UtilService', () => {
       // All should produce the same result: 234XXXXXXXXXX (no + prefix)
       expect(results.every((result) => result === '2348031234567')).toBe(true);
     });
+
+    it('should keep an international number entered with an explicit + (UK)', () => {
+      expect(service.normalizePhoneNumber('+447911123456')).toBe(
+        '447911123456',
+      );
+    });
+
+    it('should keep a bare already-international number (inbound WhatsApp `from`)', () => {
+      // Meta delivers `from` as country-code digits with no `+`; it must NOT be
+      // re-interpreted as a Nigerian national number.
+      expect(service.normalizePhoneNumber('447911123456')).toBe('447911123456');
+    });
+
+    it('should normalize a formatted US number', () => {
+      expect(service.normalizePhoneNumber('+1 (415) 555-2671')).toBe(
+        '14155552671',
+      );
+    });
+
+    it('should be idempotent for a foreign number', () => {
+      const once = service.normalizePhoneNumber('+447911123456');
+      expect(service.normalizePhoneNumber(once)).toBe(once);
+    });
+
+    it('should not mis-parse NG mobile prefixes that collide with country codes', () => {
+      // bare 70/81/90 collide with +7/+81/+90 — must still resolve to NG.
+      expect(service.normalizePhoneNumber('7012345678')).toBe('2347012345678');
+      expect(service.normalizePhoneNumber('8112345678')).toBe('2348112345678');
+      expect(service.normalizePhoneNumber('9012345678')).toBe('2349012345678');
+    });
   });
 });

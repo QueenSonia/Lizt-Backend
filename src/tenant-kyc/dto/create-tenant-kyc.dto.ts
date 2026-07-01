@@ -4,7 +4,6 @@ import {
   IsNotEmpty,
   IsDateString,
   IsOptional,
-  IsPhoneNumber,
   IsNumberString,
   ValidateIf,
   IsUUID,
@@ -17,6 +16,7 @@ import {
   MaritalStatus,
 } from '../entities/tenant-kyc.entity';
 import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
+import { IsValidPhoneNumber } from '../../common/validation/is-valid-phone.decorator';
 
 export class CreateTenantKycDto {
   @IsString()
@@ -40,7 +40,7 @@ export class CreateTenantKycDto {
    * @example +2348148696119
    */
   @ValidateIf((o) => !o.email?.trim())
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   phone_number?: string;
 
@@ -120,7 +120,7 @@ export class CreateTenantKycDto {
 
   /** Only required when `employment_status` is `employed` */
   @ValidateIf((o) => o.employment_status === 'employed')
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   @IsNotEmpty()
   work_phone_number?: string;
@@ -175,7 +175,7 @@ export class CreateTenantKycDto {
   next_of_kin_relationship: string;
 
   @IsNotEmpty()
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   next_of_kin_phone_number: string;
 
@@ -187,7 +187,7 @@ export class CreateTenantKycDto {
   @IsNotEmpty()
   referral_agent_full_name: string;
 
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   referral_agent_phone_number: string;
 

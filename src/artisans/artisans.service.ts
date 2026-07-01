@@ -11,6 +11,7 @@ import { Team } from '../users/entities/team.entity';
 import { TeamMember } from '../users/entities/team-member.entity';
 import { Account } from '../users/entities/account.entity';
 import { UtilService } from '../utils/utility-service';
+import { isValidPhone } from '../utils/phone-number.transformer';
 
 interface FindOrCreateForResolutionArgs {
   teamId: string;
@@ -121,9 +122,9 @@ export class ArtisansService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    if (!/^234[0-9]{10}$/.test(phone)) {
+    if (!isValidPhone(phone)) {
       throw new HttpException(
-        'artisan phone is not a valid Nigerian number',
+        'artisan phone is not a valid phone number',
         HttpStatus.BAD_REQUEST,
       );
     }

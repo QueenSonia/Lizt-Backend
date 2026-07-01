@@ -98,6 +98,8 @@ export class NotificationService {
         return 'Receipt Viewed';
       case NotificationType.RENT_REMINDER:
         return 'Rent Reminder';
+      case NotificationType.PAYMENT_PLAN_INSTALLMENT_REMINDER:
+        return 'Installment Reminder';
       case NotificationType.RENEWAL_LINK_SENT:
         return 'Renewal Link Sent';
       case NotificationType.RENEWAL_PAYMENT_RECEIVED:

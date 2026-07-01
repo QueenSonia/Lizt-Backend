@@ -92,7 +92,12 @@ export class PasswordService {
       return { kind: 'email', value: trimmed.toLowerCase() };
     }
     if (isPhone) {
-      return { kind: 'phone', value: trimmed.replace(/[\s\-()+]/g, '') };
+      // Canonical normalize so the lookup matches the stored users.phone_number
+      // for any country (non-Nigerian identifiers must include the country code).
+      return {
+        kind: 'phone',
+        value: this.utilService.normalizePhoneNumber(trimmed),
+      };
     }
     throw new HttpException(
       'Invalid email or phone number format',

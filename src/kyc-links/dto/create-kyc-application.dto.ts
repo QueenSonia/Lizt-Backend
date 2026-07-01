@@ -4,10 +4,10 @@ import {
   IsNumberString,
   IsOptional,
   IsBoolean,
-  IsPhoneNumber,
 } from 'class-validator';
 import { BaseKYCApplicationFieldsDto } from './base-kyc-application-fields.dto';
 import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
+import { IsValidPhoneNumber } from '../../common/validation/is-valid-phone.decorator';
 
 /**
  * DTO for KYC Application submission (full submission by tenant).
@@ -53,7 +53,7 @@ export class CreateKYCApplicationDto extends BaseKYCApplicationFieldsDto {
   referral_agent_full_name: string;
 
   @IsNotEmpty()
-  @IsPhoneNumber('NG')
+  @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   referral_agent_phone_number: string;
 

@@ -129,20 +129,6 @@ export class KYCValidationUtil {
       });
     }
 
-    // Additional validation for Nigerian numbers (common use case)
-    if (trimmedPhone.startsWith('+234') || trimmedPhone.startsWith('234')) {
-      const nigerianNumber = trimmedPhone.replace(/^\+?234/, '');
-      if (nigerianNumber.length !== 10) {
-        errors.push({
-          field: 'phoneNumber',
-          message:
-            'Invalid Nigerian phone number format (should be 10 digits after country code)',
-          code: 'INVALID_NIGERIAN_FORMAT',
-          value: trimmedPhone,
-        });
-      }
-    }
-
     return {
       isValid: errors.length === 0,
       errors,

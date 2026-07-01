@@ -701,9 +701,12 @@ export class UsersService {
     // Normalize once so the rate-limit bucket and the DB lookup use the same
     // value — otherwise "+234…", "234…", "0…" each get their own counter and
     // a lockout under one format can't be cleared by retrying with another.
+    // Phone uses the shared canonical normalizer so it matches the stored
+    // users.phone_number for any country (NG local 0… included). Non-Nigerian
+    // numbers must include their country code (e.g. +44…) to resolve.
     const normalizedIdentifier = isEmail
       ? identifier.toLowerCase().trim()
-      : identifier.replace(/[\s\-()+]/g, '');
+      : this.utilService.normalizePhoneNumber(identifier);
 
     const rateLimitKey = `login_attempts:${normalizedIdentifier}`;
     const attempts = await this.cache.get(rateLimitKey);

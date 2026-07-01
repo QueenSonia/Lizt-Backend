@@ -2412,6 +2412,27 @@ export class PropertiesService {
               details: tenantName,
               amount: null,
             };
+          case 'payment_plan_installment_paid': {
+            // logPlanEvent already wrote a human-readable description, e.g.
+            // "Installment 1 paid — ₦3,531,250 (paystack)" (or "Partial plan
+            // payoff — <charge> — ₦X"). Surface it on the property timeline and
+            // expose the receipt token (per-installment rows carry it in
+            // metadata; bulk-payoff rows don't) so the row can deep-link to the
+            // installment receipt page.
+            const instAmtMatch = hist.event_description?.match(/₦([\d,]+)/);
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'payment_plan_installment_paid',
+              title: hist.event_description || 'Installment paid',
+              description: hist.event_description || 'Installment paid',
+              details: tenantName,
+              amount: instAmtMatch ? instAmtMatch[1] : null,
+              receiptToken:
+                (hist.metadata as { receiptToken?: string } | null)
+                  ?.receiptToken ?? null,
+            };
+          }
           case 'rent_reminder_sent':
             return {
               id: hist.id,

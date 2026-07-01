@@ -1537,6 +1537,13 @@ export class PaymentPlansService {
    * preserved untouched; their sum is subtracted from plan.total_amount to
    * determine the budget the new unpaid rows must match exactly.
    *
+   * The unpaid rows are reconciled IN PLACE — matched positionally to the
+   * existing pending rows (ordered by sequence) and UPDATEd, rather than
+   * deleted and recreated. This preserves each row's id, so any pay link
+   * already sent to the tenant (the reminder and Paystack callback are both
+   * keyed on `installment.id`) keeps resolving after an edit. Only the surplus
+   * tail is deleted when the new schedule has fewer installments than the old.
+   *
    * Why not allow editing total_amount? Charge-scope plans carve their total
    * out of the parent renewal invoice at creation (`subtractChargeFromInvoice`)
    * and restore it symmetrically on cancel. Mutating total mid-life would
@@ -1586,30 +1593,55 @@ export class PaymentPlansService {
       );
     }
 
+    // Queued (not-yet-dispatched) reminders for every prior unpaid row are
+    // cancelled — they carry stale amount/date params. Already-delivered links
+    // survive because reconcile-in-place keeps the row ids (below).
     const cancelledReminderIds = unpaid.map((i) => i.id);
     const maxPaidSequence = paid.reduce(
       (max, i) => Math.max(max, i.sequence),
       0,
     );
+    // Positional match: new installment[idx] reuses existing pending row[idx].
+    const unpaidSorted = [...unpaid].sort((a, b) => a.sequence - b.sequence);
 
     await this.dataSource.transaction(async (manager) => {
-      if (unpaid.length > 0) {
-        await manager.delete(
-          PaymentPlanInstallment,
-          unpaid.map((i) => i.id),
-        );
+      for (let idx = 0; idx < dto.installments.length; idx++) {
+        const inst = dto.installments[idx];
+        const sequence = maxPaidSequence + idx + 1;
+        const existing = unpaidSorted[idx];
+        if (existing) {
+          // Reschedule in place — id preserved so an in-the-wild pay link
+          // keyed on this installment keeps working. Reset the reminder dedup
+          // so the new due date gets a fresh reminder cadence.
+          await manager.update(PaymentPlanInstallment, existing.id, {
+            sequence,
+            amount: Number(inst.amount),
+            due_date: new Date(inst.dueDate),
+            status: InstallmentStatus.PENDING,
+            last_reminder_sent_on: null,
+          });
+        } else {
+          // New schedule is longer than the old one — genuinely new row.
+          await manager.save(
+            manager.create(PaymentPlanInstallment, {
+              plan_id: plan.id,
+              sequence,
+              amount: Number(inst.amount),
+              due_date: new Date(inst.dueDate),
+              status: InstallmentStatus.PENDING,
+            }),
+          );
+        }
       }
 
-      const rows = dto.installments.map((inst, idx) =>
-        manager.create(PaymentPlanInstallment, {
-          plan_id: plan.id,
-          sequence: maxPaidSequence + idx + 1,
-          amount: Number(inst.amount),
-          due_date: new Date(inst.dueDate),
-          status: InstallmentStatus.PENDING,
-        }),
-      );
-      await manager.save(PaymentPlanInstallment, rows);
+      // New schedule is shorter — delete the surplus tail of old pending rows.
+      const surplus = unpaidSorted.slice(dto.installments.length);
+      if (surplus.length > 0) {
+        await manager.delete(
+          PaymentPlanInstallment,
+          surplus.map((i) => i.id),
+        );
+      }
 
       if (dto.planType) {
         await manager.update(PaymentPlan, plan.id, { plan_type: dto.planType });

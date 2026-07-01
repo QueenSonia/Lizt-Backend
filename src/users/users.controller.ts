@@ -125,6 +125,20 @@ export class UsersController {
     return this.usersService.getManagedLandlords(admin.id);
   }
 
+  @ApiOperation({
+    summary:
+      'Full detail for one managed landlord (profile, properties, tenants)',
+  })
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @Get('/managed-landlords/:landlordId/detail')
+  async getManagedLandlordDetail(
+    @CurrentUser() admin: Account,
+    @Param('landlordId') landlordId: string,
+  ) {
+    return this.usersService.getManagedLandlordDetail(admin.id, landlordId);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('team-members')
   async getTeamMembers(

@@ -33,6 +33,7 @@ import { Users } from './entities/user.entity';
 import {
   ArrayContains,
   DataSource,
+  In,
   Not,
   QueryRunner,
   Repository,
@@ -81,7 +82,10 @@ import { Waitlist } from './entities/waitlist.entity';
 import { TenantDetailDto } from 'src/users/dto/tenant-detail.dto';
 import { time } from 'node:console';
 import { TeamMemberDto } from 'src/users/dto/team-member.dto';
-import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
+import {
+  KYCApplication,
+  ApplicationStatus,
+} from 'src/kyc-links/entities/kyc-application.entity';
 import { AccountCacheService } from 'src/auth/account-cache.service';
 import { TenantManagementService } from './tenant-management';
 import { TeamService, TeamMemberInput } from './team';
@@ -1885,5 +1889,177 @@ export class UsersService {
         active_tenancies: tenancyCountByOwner.get(a.id) ?? 0,
       };
     });
+  }
+
+  /**
+   * Full detail aggregate for ONE managed landlord, for the admin's landlord
+   * detail page. Authorized here by the same rule as {@link getManagedLandlords}
+   * (the landlord's `creator_id` must be this admin) so a client-supplied
+   * landlordId can never reach another admin's landlord.
+   *
+   * Returns, in one payload:
+   *  - profile: name (+ corporate contact name), email, phone, and counts
+   *  - properties: EVERY property the landlord owns (all statuses); occupied
+   *    ones carry their active tenancy + rent details, vacant ones don't
+   *  - tenants: everyone who has ever been a tenant on those properties
+   *    (current + previous) plus KYC applicants who applied to them (an
+   *    applicant who is already a tenant is folded into the tenant entry)
+   */
+  async getManagedLandlordDetail(adminId: string, landlordId: string) {
+    const account = await this.accountRepository.findOne({
+      where: {
+        id: landlordId,
+        creator_id: adminId,
+        roles: ArrayContains([RolesEnum.LANDLORD]),
+      },
+      relations: ['user'],
+    });
+    if (!account) {
+      throw new NotFoundException(
+        'Landlord not found or not managed by you.',
+      );
+    }
+
+    const em = this.propertyTenantRepository.manager;
+    const first = account.user?.first_name ?? '';
+    const last = account.user?.last_name ?? '';
+    const contactName = `${first} ${last}`.trim();
+
+    // ── Properties (all statuses) with their active tenancy + rent ──────────
+    const properties = await em.find(Property, {
+      where: { owner_id: landlordId },
+      relations: ['rents', 'rents.tenant', 'rents.tenant.user'],
+      order: { created_at: 'DESC' },
+    });
+
+    const propertyPayload = properties.map((p) => {
+      const activeRent = (p.rents ?? []).find(
+        (r) => r.rent_status === RentStatusEnum.ACTIVE,
+      );
+      const tenantUser = activeRent?.tenant?.user;
+      const tenancy = activeRent
+        ? {
+            tenantId: activeRent.tenant_id,
+            tenantName:
+              `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+              activeRent.tenant?.profile_name ||
+              activeRent.tenant?.email ||
+              'Tenant',
+            tenantPhone: tenantUser?.phone_number ?? null,
+            rentAmount: activeRent.rental_price ?? null,
+            frequency: activeRent.payment_frequency ?? null,
+            serviceCharge: activeRent.service_charge ?? null,
+            startDate: activeRent.rent_start_date ?? null,
+            expiryDate: activeRent.expiry_date ?? null,
+          }
+        : null;
+
+      return {
+        id: p.id,
+        name: p.name,
+        location: p.location,
+        status: p.property_status,
+        isMarketingReady: p.is_marketing_ready,
+        rentalPrice: p.rental_price ?? null,
+        tenancy,
+      };
+    });
+
+    const propertyIds = properties.map((p) => p.id);
+
+    // ── Tenants ever on those properties (current + previous) ───────────────
+    const propertyTenants = propertyIds.length
+      ? await em.find(PropertyTenant, {
+          where: { property_id: In(propertyIds) },
+          relations: ['tenant', 'tenant.user', 'property'],
+          order: { created_at: 'DESC' },
+        })
+      : [];
+
+    // Collapse to one entry per tenant: current (any active row) wins over
+    // previous, and we surface the property that row belongs to.
+    const tenantsById = new Map<
+      string,
+      {
+        id: string;
+        kind: 'current' | 'previous';
+        name: string;
+        phone: string | null;
+        email: string | null;
+        propertyName: string | null;
+      }
+    >();
+    for (const pt of propertyTenants) {
+      const u = pt.tenant?.user;
+      const isActive = pt.status === TenantStatusEnum.ACTIVE;
+      const existing = tenantsById.get(pt.tenant_id);
+      // Skip if we already have a current row and this one isn't a better match.
+      if (existing && (existing.kind === 'current' || !isActive)) continue;
+      tenantsById.set(pt.tenant_id, {
+        id: pt.tenant_id,
+        kind: isActive ? 'current' : 'previous',
+        name:
+          `${u?.first_name ?? ''} ${u?.last_name ?? ''}`.trim() ||
+          pt.tenant?.profile_name ||
+          pt.tenant?.email ||
+          'Tenant',
+        phone: u?.phone_number ?? null,
+        email: pt.tenant?.email ?? u?.email ?? null,
+        propertyName: pt.property?.name ?? null,
+      });
+    }
+
+    // ── KYC applicants for those properties (excluding ones already tenants) ─
+    const applications = propertyIds.length
+      ? await this.kycApplicationRepository.find({
+          where: { property_id: In(propertyIds) },
+          relations: ['property'],
+          order: { created_at: 'DESC' },
+        })
+      : [];
+
+    const applicantPayload = applications
+      .filter((a) => !(a.tenant_id && tenantsById.has(a.tenant_id)))
+      .map((a) => ({
+        id: `app-${a.id}`,
+        kind: 'applicant' as const,
+        name: `${a.first_name ?? ''} ${a.last_name ?? ''}`.trim() || 'Applicant',
+        phone: a.phone_number ?? null,
+        email: a.email ?? null,
+        propertyName: a.property?.name ?? null,
+        status: a.status as ApplicationStatus,
+      }));
+
+    const currentTenants = [...tenantsById.values()].filter(
+      (t) => t.kind === 'current',
+    );
+    const previousTenants = [...tenantsById.values()].filter(
+      (t) => t.kind === 'previous',
+    );
+
+    return {
+      profile: {
+        id: account.id,
+        name:
+          account.profile_name?.trim() ||
+          contactName ||
+          account.email,
+        contactName:
+          account.landlord_type === LandlordType.CORPORATE
+            ? contactName || null
+            : null,
+        landlordType: account.landlord_type ?? null,
+        email: account.email,
+        phone: account.user?.phone_number ?? null,
+        propertiesCount: properties.length,
+        tenantsCount: tenantsById.size,
+      },
+      properties: propertyPayload,
+      tenants: [
+        ...currentTenants,
+        ...previousTenants,
+        ...applicantPayload,
+      ],
+    };
   }
 }

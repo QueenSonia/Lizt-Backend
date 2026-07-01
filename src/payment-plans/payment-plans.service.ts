@@ -607,6 +607,62 @@ export class PaymentPlansService {
     }
   }
 
+  private async dispatchPlanUpdatedNotifications(
+    plan: PaymentPlan,
+  ): Promise<void> {
+    try {
+      const tenantUser = plan.tenant?.user;
+      const tenantPhone = tenantUser?.phone_number
+        ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
+        : null;
+      if (!tenantPhone) return;
+
+      const property = plan.property;
+      // Combined "Name, Address" — mirrors the pay page, which maps
+      // property.address from property.location.
+      const propertyLabel =
+        [property?.name, property?.location].filter(Boolean).join(', ') ||
+        'your property';
+      const tenantName =
+        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+        'there';
+
+      // Scope-aware label: "Tenancy" reads better than the stored
+      // "Entire Tenancy" sentinel; charge/OB plans use the charge name.
+      const chargeLabel =
+        plan.scope === PaymentPlanScope.TENANCY ? 'Tenancy' : plan.charge_name;
+
+      // Link target = earliest-UNPAID installment. Its id is preserved across
+      // the reconcile-in-place edit, so any reminder link already in the
+      // tenant's chat keeps resolving to this same (now-rescheduled) row.
+      const firstPending = [...(plan.installments ?? [])]
+        .filter((i) => i.status === InstallmentStatus.PENDING)
+        .sort((a, b) => a.sequence - b.sequence)[0];
+      if (!firstPending) return;
+
+      await this.whatsappNotificationLog.queue(
+        'sendPaymentPlanUpdatedTenant',
+        {
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          charge_label: chargeLabel,
+          property_label: propertyLabel,
+          updated_total: Number(plan.total_amount),
+          installment_count: String((plan.installments ?? []).length),
+          first_installment_id: firstPending.id,
+          landlord_id: property?.owner_id,
+          property_id: property?.id,
+          recipient_name: tenantName,
+        },
+        plan.id,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to queue plan-updated WhatsApp notification for plan ${plan.id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   /**
    * The slice of wallet-backed debt a NEW Outstanding-Balance plan may cover:
    * the net wallet OB minus
@@ -1666,6 +1722,9 @@ export class PaymentPlansService {
       fresh,
       NotificationType.PAYMENT_PLAN_UPDATED,
     );
+
+    // Tell the tenant their schedule changed, with a live link to pay.
+    await this.dispatchPlanUpdatedNotifications(fresh);
 
     return fresh;
   }

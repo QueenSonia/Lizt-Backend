@@ -1022,6 +1022,22 @@ export interface PaymentPlanCreatedTenantParams {
 }
 
 /**
+ * Parameters for payment plan UPDATE (reschedule) notice to tenant. Fired from
+ * updatePlan() after the reconcile-in-place transaction commits. The button
+ * deep-links to the earliest-unpaid installment, whose id is preserved across
+ * the edit — so the link stays valid.
+ */
+export interface PaymentPlanUpdatedTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  charge_label: string; // "Tenancy" for tenancy-scope, else the charge name
+  property_label: string; // combined "Name, Address"
+  updated_total: number;
+  installment_count: string; // total installments in the plan, as a string
+  first_installment_id: string;
+}
+
+/**
  * Parameters for ad-hoc invoice pay-link to tenant (sent on invoice creation)
  */
 export interface AdhocInvoiceLinkTenantParams {
@@ -5298,6 +5314,51 @@ export class TemplateSenderService {
   }
 
   /**
+   * Notify tenant that their payment plan was updated (rescheduled) by the
+   * landlord. Button deep-links to the earliest-unpaid installment.
+   * Template: payment_plan_updated_tenant
+   */
+  async sendPaymentPlanUpdatedTenant({
+    phone_number,
+    tenant_name,
+    charge_label,
+    property_label,
+    updated_total,
+    installment_count,
+    first_installment_id,
+  }: PaymentPlanUpdatedTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'payment_plan_updated_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: charge_label },
+              { type: 'text', text: property_label },
+              { type: 'text', text: `₦${updated_total.toLocaleString()}` },
+              { type: 'text', text: installment_count },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: first_installment_id }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Congratulate tenant on completing a charge-scope payment plan.
    * Template: payment_plan_completed_tenant
    */
@@ -5911,6 +5972,8 @@ export class TemplateSenderService {
       'Your tenant {{1}} has just paid installment {{2}} for {{3}} at {{4}}.\n\nAmount received: {{5}}.\n\nThe payment has been recorded and the tenant balance has been updated automatically on your dashboard.',
     payment_plan_created_tenant:
       'Hi {{1}},\n\nYour payment plan for {{2}} at {{3}} has been created by your landlord.\n\nTotal: {{4}}\nNumber of installments: {{5}}\n\nTap the button below to view your full plan and pay.',
+    payment_plan_updated_tenant:
+      'Hi {{1}},\n\nYour landlord has updated your {{2}} payment plan for {{3}}.\n\nUpdated Total: {{4}}\nNumber of installments: {{5}}\n\nTap the button below to view your updated payment plan and make your payment.',
     payment_plan_completed_tenant:
       'Congratulations {{1}}! You have completed your {{2}} payment plan at {{3}}.\n\nTotal paid: {{4}}. Thank you.',
     payment_plan_completed_landlord:

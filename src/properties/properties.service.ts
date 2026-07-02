@@ -1459,8 +1459,19 @@ export class PropertiesService {
       letterStatus: string;
       letterBodyHtml: string | null;
       letterBodyFields: Record<string, unknown> | null;
+      letterBodyJson: Record<string, unknown> | null;
       letterSentAt: string | null;
       supersedesId: string | null;
+    } | null = null;
+    // The invoice PaymentPlansService.createPlan will target for fee/tenancy
+    // plans: latest UNPAID landlord-token non-superseded row. Distinct from
+    // `pendingRenewalInvoice`, which also surfaces unsent DRAFT letters so the
+    // renew screen can hydrate — a draft's fees aren't owed yet, so plan
+    // options built off it diverge from server-side installment validation.
+    let plannableRenewalInvoice: {
+      id: string;
+      totalAmount: number;
+      feeBreakdown: Fee[];
     } | null = null;
     let pendingAdHocInvoiceFees: Array<{
       invoiceId: string;
@@ -1527,10 +1538,24 @@ export class PropertiesService {
           'letter_status',
           'letter_body_html',
           'letter_body_fields',
+          'letter_body_json',
           'letter_sent_at',
           'supersedes_id',
           'accepted_at',
         ],
+      });
+      // Mirrors PaymentPlansService.createPlan's invoice lookup exactly so the
+      // payment-plan picker builds its options from the invoice the server
+      // will validate installments against (unsent drafts excluded).
+      const plannableInvoicePromise = this.renewalInvoiceRepository.findOne({
+        where: {
+          property_tenant_id: activeTenantRelation.id,
+          payment_status: RenewalPaymentStatus.UNPAID,
+          token_type: 'landlord',
+          superseded_by_id: IsNull(),
+        },
+        order: { created_at: 'DESC' },
+        select: ['id', 'total_amount', 'fee_breakdown'],
       });
       const walletBalPromise = this.tenantBalancesService.getBalance(
         activeTenantRelation.tenant.id,
@@ -1569,6 +1594,15 @@ export class PropertiesService {
       // must not hide the real renewal) AND exclude superseded rows — those
       // are historical versions that have been replaced by a new letter.
       const latestRenewalInvoice = await latestRenewalInvoicePromise;
+
+      const plannableInvoice = await plannableInvoicePromise;
+      plannableRenewalInvoice = plannableInvoice
+        ? {
+            id: plannableInvoice.id,
+            totalAmount: parseFloat(plannableInvoice.total_amount.toString()),
+            feeBreakdown: plannableInvoice.fee_breakdown ?? [],
+          }
+        : null;
 
       let renewalStatus:
         | 'letter_sent'
@@ -1656,6 +1690,10 @@ export class PropertiesService {
                 (latestRenewalInvoice as unknown as {
                   letter_body_fields?: Record<string, unknown> | null;
                 }).letter_body_fields ?? null,
+              letterBodyJson:
+                (latestRenewalInvoice as unknown as {
+                  letter_body_json?: Record<string, unknown> | null;
+                }).letter_body_json ?? null,
               letterSentAt: latestRenewalInvoice.letter_sent_at
                 ? latestRenewalInvoice.letter_sent_at.toISOString()
                 : null,
@@ -2726,6 +2764,7 @@ export class PropertiesService {
       scheduledEndDate,
       scheduledMoveOutId,
       pendingRenewalInvoice: pendingRenewalInvoice || null,
+      plannableRenewalInvoice,
       pendingAdHocInvoiceFees,
       adHocInvoiceOptions,
       rentalPrice: property.rental_price || null,

@@ -15,6 +15,13 @@ export class RenewalLetterPublicDto {
   @ApiPropertyOptional() letterBodyFields: Record<string, unknown> | null;
 
   /**
+   * TipTap/ProseMirror editor JSON (canonical document). Exposed for future
+   * JSON-based rendering; the tenant page currently renders letterBodyHtml.
+   * NULL for legacy rows authored before the editor migration.
+   */
+  @ApiPropertyOptional() letterBodyJson: Record<string, unknown> | null;
+
+  /**
    * Wall-clock moment the letter transitioned to SENT (manual Send button or
    * cron draft-promotion). Null while the letter is a draft. The client uses
    * this to override the date baked into letterBodyHtml at render time, so

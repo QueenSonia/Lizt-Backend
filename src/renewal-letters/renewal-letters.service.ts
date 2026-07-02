@@ -145,6 +145,7 @@ export class RenewalLettersService {
       paymentStatus: invoice.payment_status,
       letterBodyHtml: invoice.letter_body_html,
       letterBodyFields: invoice.letter_body_fields,
+      letterBodyJson: invoice.letter_body_json,
       letterSentAt: invoice.letter_sent_at
         ? invoice.letter_sent_at.toISOString()
         : null,

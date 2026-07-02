@@ -182,6 +182,17 @@ export class RenewalInvoice extends BaseEntity {
   @Column({ type: 'jsonb', nullable: true })
   letter_body_fields: Record<string, any> | null;
 
+  /**
+   * TipTap/ProseMirror editor JSON — the canonical document structure, prose,
+   * block order and formatting authored in the Notion-style editor. NULL for
+   * legacy rows authored before the editor migration (they carry only
+   * letter_body_html); those get JSON lazily the first time a landlord edits
+   * them. Field-node values inside this JSON are advisory — the typed money
+   * columns above win, so the doc can never drift from what billing charges.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  letter_body_json: Record<string, any> | null;
+
   @Column({ type: 'timestamptz', nullable: true })
   letter_sent_at: Date | null;
 

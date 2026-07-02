@@ -480,6 +480,7 @@ export class TenanciesService {
       }>;
       letterBodyHtml?: string;
       letterBodyFields?: Record<string, unknown>;
+      letterBodyJson?: Record<string, unknown>;
     },
   ): Promise<{
     token: string;
@@ -530,8 +531,14 @@ export class TenanciesService {
     }
 
     if (!activeRent.expiry_date) {
+      // Not merely a start-date derivation issue — an ACTIVE rent with no
+      // expiry is a data anomaly. Even when the caller supplies an explicit
+      // start/end date, expiry_date backstops the OWING-period calculation
+      // and the overlap guard below, so passing dates in the body cannot
+      // substitute for it. Fail hard rather than proceed with a silently
+      // disabled overlap check.
       throw new BadRequestException(
-        'Active rent has no expiry date set. Cannot calculate renewal period.',
+        'Active rent has no expiry date set — the tenancy is in an inconsistent state and cannot be renewed. Please contact support.',
       );
     }
 
@@ -715,6 +722,16 @@ export class TenanciesService {
 
     const sanitizedLetterHtml = sanitizeLetterHtml(body?.letterBodyHtml);
     const letterBodyFields = body?.letterBodyFields ?? null;
+    // TipTap/ProseMirror doc JSON from the new editor. Size-guard it here
+    // since @IsObject on the DTO is unbounded (ProseMirror JSON is more
+    // verbose than the equivalent HTML, so allow well above the 50k HTML cap).
+    const letterBodyJson = body?.letterBodyJson ?? null;
+    if (
+      letterBodyJson !== null &&
+      JSON.stringify(letterBodyJson).length > 200_000
+    ) {
+      throw new BadRequestException('Renewal letter document is too large.');
+    }
 
     // 6. Version-aware upsert inside a transaction with pessimistic row
     // locking. Editing a letter that's already `sent` or `accepted` creates
@@ -787,6 +804,9 @@ export class TenanciesService {
           if (letterBodyFields !== null) {
             existingInvoice.letter_body_fields = letterBodyFields;
           }
+          if (letterBodyJson !== null) {
+            existingInvoice.letter_body_json = letterBodyJson;
+          }
           existingInvoice.letter_status = nextLetterStatus;
           if (!isSilent) {
             existingInvoice.letter_sent_at = new Date();
@@ -820,6 +840,8 @@ export class TenanciesService {
               sanitizedLetterHtml ?? existingInvoice.letter_body_html,
             letter_body_fields:
               letterBodyFields ?? existingInvoice.letter_body_fields,
+            letter_body_json:
+              letterBodyJson ?? existingInvoice.letter_body_json,
             letter_status: nextLetterStatus,
             letter_sent_at: isSilent ? null : new Date(),
             supersedes_id: existingInvoice.id,
@@ -868,6 +890,7 @@ export class TenanciesService {
             token_type: isSilent ? 'draft' : 'landlord',
             letter_body_html: sanitizedLetterHtml,
             letter_body_fields: letterBodyFields,
+            letter_body_json: letterBodyJson,
             letter_status: nextLetterStatus,
             letter_sent_at: isSilent ? null : new Date(),
           });

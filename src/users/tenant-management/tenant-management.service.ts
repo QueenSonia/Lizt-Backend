@@ -1775,9 +1775,10 @@ export class TenantManagementService {
 
   /**
    * Flat list of ACTIVE tenancies across the managed landlords — one row per
-   * active property_tenant link, carrying that tenant's active rent terms on
-   * the property, the landlord's display name, and the outstanding balance a
-   * landlord view would show: wallet OB for the tenant-landlord pair plus the
+   * active property_tenant link that also has an ACTIVE rent (the rent holds
+   * the tenancy terms; a link without one is not an ongoing tenancy), with
+   * the landlord's display name and the outstanding balance a landlord view
+   * would show: wallet OB for the tenant-landlord pair plus the
    * property's overdue carved invoice-fee plan installments (the headline
    * figure computeTenantBalance derives; display-only, nothing is written).
    *
@@ -1802,6 +1803,7 @@ export class TenantManagementService {
       startDate: Date | null;
       endDate: Date | null;
       outstandingBalance: number;
+      creditBalance: number;
     }>
   > {
     if (!landlordIds.length) return [];
@@ -1825,7 +1827,10 @@ export class TenantManagementService {
         'tenantUser.phone_number',
       ])
       // The tenant's ACTIVE rent on this property holds the tenancy terms.
-      .leftJoin(
+      // INNER join: an active property_tenant link without an active rent is
+      // not an ongoing tenancy (stale attach / data edge) — only rows with a
+      // live rent qualify as "active tenancies".
+      .innerJoin(
         'property.rents',
         'rent',
         'rent.tenant_id = pt.tenant_id AND rent.rent_status = :activeRent AND rent.deleted_at IS NULL',
@@ -1932,6 +1937,9 @@ export class TenantManagementService {
         endDate: rent?.expiry_date ?? null,
         outstandingBalance:
           (wallet < 0 ? -wallet : 0) + overdueOnProperty,
+        // Positive wallet = credit (mirrors computeTenantBalance's
+        // totalCreditBalance). Same per-pair caveat as the wallet OB above.
+        creditBalance: wallet > 0 ? wallet : 0,
       };
     });
   }

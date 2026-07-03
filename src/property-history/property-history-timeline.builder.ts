@@ -29,6 +29,12 @@ export interface TimelineEvent {
    * `description` are shown to the user.
    */
   metadata?: string;
+  /**
+   * Optional muted second line rendered under the title row (e.g. property
+   * name + address for a payment-plan installment payment). Distinct from
+   * `description`, which the timeline only renders for maintenance events.
+   */
+  secondaryText?: string;
   offerLetterData?: {
     id: string;
     token: string;
@@ -680,6 +686,41 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           time: formatTime(eventDate),
           relatedEntityId: ph.related_entity_id || undefined,
           relatedEntityType: 'payment_plan_request',
+        });
+      }
+
+      if (ph.event_type === 'payment_plan_installment_paid') {
+        const prop = ph.property;
+        // event_description is already a human-readable line written by
+        // logPlanEvent, e.g. "Installment 1 paid — ₦3,531,250 (paystack)" (or
+        // "Partial plan payoff — <charge> — ₦X" for a bulk early payoff). Use
+        // it verbatim as the title; the property + address go on their own
+        // muted line. These rows carry no move_in_date, so anchor on created_at
+        // (the row is written at payment time).
+        const eventDate = new Date(ph.created_at || new Date());
+        const propertyLine = prop?.name
+          ? `${prop.name}${prop.location ? ` at ${prop.location}` : ''}`
+          : undefined;
+        // Per-installment rows carry the receipt token in metadata so the
+        // frontend can deep-link to the installment receipt page (view + PDF).
+        // Bulk-payoff rows have no token.
+        const receiptToken =
+          (ph.metadata as { receiptToken?: string } | null)?.receiptToken ||
+          null;
+        tenancyEvents.push({
+          id: `plan-installment-paid-${ph.id}`,
+          type: 'payment',
+          title: ph.event_description || 'Installment paid',
+          description: propertyLine || '',
+          secondaryText: propertyLine,
+          metadata: JSON.stringify({
+            receiptToken,
+            installmentId: ph.related_entity_id || null,
+          }),
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          relatedEntityId: ph.related_entity_id || undefined,
+          relatedEntityType: ph.related_entity_type || undefined,
         });
       }
 

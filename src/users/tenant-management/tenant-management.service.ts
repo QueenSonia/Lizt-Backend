@@ -2647,8 +2647,9 @@ export class TenantManagementService {
         })
         .filter((t): t is NonNullable<typeof t> => t !== null),
 
-      // Renewal-invoice payments and GENUINE ad-hoc payments — no property
-      // history entry is created for these, so we read them from the ledger.
+      // Renewal-invoice payments, payment-plan installment payments and
+      // GENUINE ad-hoc payments — no property history entry is created for
+      // these, so we read them from the ledger.
       // Ad-hoc cancellation / edit-down REVERSALS (metadata.reversal) are not
       // payments: they are netted against their charge in the breakdown above
       // and must not appear here as money received.
@@ -2657,6 +2658,7 @@ export class TenantManagementService {
           (e) =>
             Number(e.balance_change) > 0 &&
             (e.related_entity_type === 'renewal_invoice' ||
+              e.related_entity_type === 'payment_plan_installment' ||
               (e.related_entity_type === 'ad_hoc_invoice' &&
                 !isAdHocReversalLeg(e))),
         )

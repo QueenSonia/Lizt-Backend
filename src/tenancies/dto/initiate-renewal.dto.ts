@@ -144,4 +144,12 @@ export class InitiateRenewalDto {
   @IsOptional()
   @IsObject()
   letterBodyFields?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description:
+      'TipTap/ProseMirror editor JSON (canonical document structure). Only sent by the new Notion-style editor. Size-guarded server-side (see initiateRenewal).',
+  })
+  @IsOptional()
+  @IsObject()
+  letterBodyJson?: Record<string, unknown>;
 }

@@ -496,6 +496,7 @@ export class TenanciesService {
       }>;
       letterBodyHtml?: string;
       letterBodyFields?: Record<string, unknown>;
+      letterBodyJson?: Record<string, unknown>;
     },
   ): Promise<{
     token: string;
@@ -546,8 +547,14 @@ export class TenanciesService {
     }
 
     if (!activeRent.expiry_date) {
+      // Not merely a start-date derivation issue — an ACTIVE rent with no
+      // expiry is a data anomaly. Even when the caller supplies an explicit
+      // start/end date, expiry_date backstops the OWING-period calculation
+      // and the overlap guard below, so passing dates in the body cannot
+      // substitute for it. Fail hard rather than proceed with a silently
+      // disabled overlap check.
       throw new BadRequestException(
-        'Active rent has no expiry date set. Cannot calculate renewal period.',
+        'Active rent has no expiry date set — the tenancy is in an inconsistent state and cannot be renewed. Please contact support.',
       );
     }
 
@@ -731,6 +738,16 @@ export class TenanciesService {
 
     const sanitizedLetterHtml = sanitizeLetterHtml(body?.letterBodyHtml);
     const letterBodyFields = body?.letterBodyFields ?? null;
+    // TipTap/ProseMirror doc JSON from the new editor. Size-guard it here
+    // since @IsObject on the DTO is unbounded (ProseMirror JSON is more
+    // verbose than the equivalent HTML, so allow well above the 50k HTML cap).
+    const letterBodyJson = body?.letterBodyJson ?? null;
+    if (
+      letterBodyJson !== null &&
+      JSON.stringify(letterBodyJson).length > 200_000
+    ) {
+      throw new BadRequestException('Renewal letter document is too large.');
+    }
 
     // 6. Version-aware upsert inside a transaction with pessimistic row
     // locking. Editing a letter that's already `sent` or `accepted` creates
@@ -803,6 +820,9 @@ export class TenanciesService {
           if (letterBodyFields !== null) {
             existingInvoice.letter_body_fields = letterBodyFields;
           }
+          if (letterBodyJson !== null) {
+            existingInvoice.letter_body_json = letterBodyJson;
+          }
           existingInvoice.letter_status = nextLetterStatus;
           if (!isSilent) {
             existingInvoice.letter_sent_at = new Date();
@@ -836,6 +856,8 @@ export class TenanciesService {
               sanitizedLetterHtml ?? existingInvoice.letter_body_html,
             letter_body_fields:
               letterBodyFields ?? existingInvoice.letter_body_fields,
+            letter_body_json:
+              letterBodyJson ?? existingInvoice.letter_body_json,
             letter_status: nextLetterStatus,
             letter_sent_at: isSilent ? null : new Date(),
             supersedes_id: existingInvoice.id,
@@ -884,6 +906,7 @@ export class TenanciesService {
             token_type: isSilent ? 'draft' : 'landlord',
             letter_body_html: sanitizedLetterHtml,
             letter_body_fields: letterBodyFields,
+            letter_body_json: letterBodyJson,
             letter_status: nextLetterStatus,
             letter_sent_at: isSilent ? null : new Date(),
           });
@@ -2385,15 +2408,17 @@ export class TenanciesService {
       })
       .filter((r): r is NonNullable<typeof r> => r !== null);
 
-    // Renewal-invoice payments and GENUINE ad-hoc payments from ledger (no
-    // property_history row exists for these). Ad-hoc cancellation / edit-down
-    // REVERSALS are not payments: they are netted against their charge in the
-    // ad-hoc breakdown above and must not appear here as money received.
+    // Renewal-invoice payments, payment-plan installment payments and GENUINE
+    // ad-hoc payments from ledger (no property_history row exists for these).
+    // Ad-hoc cancellation / edit-down REVERSALS are not payments: they are
+    // netted against their charge in the ad-hoc breakdown above and must not
+    // appear here as money received.
     const renewalPaymentRows = ledgerEntries
       .filter(
         (e) =>
           Number(e.balance_change) > 0 &&
           (e.related_entity_type === 'renewal_invoice' ||
+            e.related_entity_type === 'payment_plan_installment' ||
             (e.related_entity_type === 'ad_hoc_invoice' &&
               !isAdHocReversalLeg(e))),
       )
@@ -2871,6 +2896,16 @@ export class TenanciesService {
       : RenewalPaymentStatus.PARTIAL;
     if (isCompletingPayment) {
       invoice.paid_at = new Date();
+    }
+    // The Paystack verify/webhook path stamps receipt_token before calling
+    // here, but the payment-plan ripple-up (markInstallmentPaid →
+    // markInvoiceAsPaid) doesn't — leaving the completing payment without a
+    // receipt, which makes sendRenewalPaymentTenant's receipt-PDF lookup fail
+    // permanently. Stamp one for any completing payment that lacks it; never
+    // overwrite an existing token (WhatsApp links to it may already be out).
+    if (isCompletingPayment && !invoice.receipt_token) {
+      invoice.receipt_token = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
+      invoice.receipt_number = `RR-${Date.now()}`;
     }
 
     await this.renewalInvoiceRepository.save(invoice);

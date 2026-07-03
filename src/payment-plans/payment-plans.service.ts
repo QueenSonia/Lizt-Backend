@@ -636,6 +636,62 @@ export class PaymentPlansService {
     }
   }
 
+  private async dispatchPlanUpdatedNotifications(
+    plan: PaymentPlan,
+  ): Promise<void> {
+    try {
+      const tenantUser = plan.tenant?.user;
+      const tenantPhone = tenantUser?.phone_number
+        ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
+        : null;
+      if (!tenantPhone) return;
+
+      const property = plan.property;
+      // Combined "Name, Address" — mirrors the pay page, which maps
+      // property.address from property.location.
+      const propertyLabel =
+        [property?.name, property?.location].filter(Boolean).join(', ') ||
+        'your property';
+      const tenantName =
+        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+        'there';
+
+      // Scope-aware label: "Tenancy" reads better than the stored
+      // "Entire Tenancy" sentinel; charge/OB plans use the charge name.
+      const chargeLabel =
+        plan.scope === PaymentPlanScope.TENANCY ? 'Tenancy' : plan.charge_name;
+
+      // Link target = earliest-UNPAID installment. Its id is preserved across
+      // the reconcile-in-place edit, so any reminder link already in the
+      // tenant's chat keeps resolving to this same (now-rescheduled) row.
+      const firstPending = [...(plan.installments ?? [])]
+        .filter((i) => i.status === InstallmentStatus.PENDING)
+        .sort((a, b) => a.sequence - b.sequence)[0];
+      if (!firstPending) return;
+
+      await this.whatsappNotificationLog.queue(
+        'sendPaymentPlanUpdatedTenant',
+        {
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          charge_label: chargeLabel,
+          property_label: propertyLabel,
+          updated_total: Number(plan.total_amount),
+          installment_count: String((plan.installments ?? []).length),
+          first_installment_id: firstPending.id,
+          landlord_id: property?.owner_id,
+          property_id: property?.id,
+          recipient_name: tenantName,
+        },
+        plan.id,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to queue plan-updated WhatsApp notification for plan ${plan.id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   /**
    * The slice of wallet-backed debt a NEW Outstanding-Balance plan may cover:
    * the net wallet OB minus
@@ -1605,6 +1661,13 @@ export class PaymentPlansService {
    * preserved untouched; their sum is subtracted from plan.total_amount to
    * determine the budget the new unpaid rows must match exactly.
    *
+   * The unpaid rows are reconciled IN PLACE — matched positionally to the
+   * existing pending rows (ordered by sequence) and UPDATEd, rather than
+   * deleted and recreated. This preserves each row's id, so any pay link
+   * already sent to the tenant (the reminder and Paystack callback are both
+   * keyed on `installment.id`) keeps resolving after an edit. Only the surplus
+   * tail is deleted when the new schedule has fewer installments than the old.
+   *
    * Why not allow editing total_amount? Charge-scope plans carve their total
    * out of the parent renewal invoice at creation (`subtractChargeFromInvoice`)
    * and restore it symmetrically on cancel. Mutating total mid-life would
@@ -1661,30 +1724,55 @@ export class PaymentPlansService {
       );
     }
 
+    // Queued (not-yet-dispatched) reminders for every prior unpaid row are
+    // cancelled — they carry stale amount/date params. Already-delivered links
+    // survive because reconcile-in-place keeps the row ids (below).
     const cancelledReminderIds = unpaid.map((i) => i.id);
     const maxPaidSequence = paid.reduce(
       (max, i) => Math.max(max, i.sequence),
       0,
     );
+    // Positional match: new installment[idx] reuses existing pending row[idx].
+    const unpaidSorted = [...unpaid].sort((a, b) => a.sequence - b.sequence);
 
     await this.dataSource.transaction(async (manager) => {
-      if (unpaid.length > 0) {
-        await manager.delete(
-          PaymentPlanInstallment,
-          unpaid.map((i) => i.id),
-        );
+      for (let idx = 0; idx < dto.installments.length; idx++) {
+        const inst = dto.installments[idx];
+        const sequence = maxPaidSequence + idx + 1;
+        const existing = unpaidSorted[idx];
+        if (existing) {
+          // Reschedule in place — id preserved so an in-the-wild pay link
+          // keyed on this installment keeps working. Reset the reminder dedup
+          // so the new due date gets a fresh reminder cadence.
+          await manager.update(PaymentPlanInstallment, existing.id, {
+            sequence,
+            amount: Number(inst.amount),
+            due_date: new Date(inst.dueDate),
+            status: InstallmentStatus.PENDING,
+            last_reminder_sent_on: null,
+          });
+        } else {
+          // New schedule is longer than the old one — genuinely new row.
+          await manager.save(
+            manager.create(PaymentPlanInstallment, {
+              plan_id: plan.id,
+              sequence,
+              amount: Number(inst.amount),
+              due_date: new Date(inst.dueDate),
+              status: InstallmentStatus.PENDING,
+            }),
+          );
+        }
       }
 
-      const rows = dto.installments.map((inst, idx) =>
-        manager.create(PaymentPlanInstallment, {
-          plan_id: plan.id,
-          sequence: maxPaidSequence + idx + 1,
-          amount: Number(inst.amount),
-          due_date: new Date(inst.dueDate),
-          status: InstallmentStatus.PENDING,
-        }),
-      );
-      await manager.save(PaymentPlanInstallment, rows);
+      // New schedule is shorter — delete the surplus tail of old pending rows.
+      const surplus = unpaidSorted.slice(dto.installments.length);
+      if (surplus.length > 0) {
+        await manager.delete(
+          PaymentPlanInstallment,
+          surplus.map((i) => i.id),
+        );
+      }
 
       if (dto.planType) {
         await manager.update(PaymentPlan, plan.id, { plan_type: dto.planType });
@@ -1709,6 +1797,9 @@ export class PaymentPlansService {
       fresh,
       NotificationType.PAYMENT_PLAN_UPDATED,
     );
+
+    // Tell the tenant their schedule changed, with a live link to pay.
+    await this.dispatchPlanUpdatedNotifications(fresh);
 
     return fresh;
   }
@@ -2244,7 +2335,6 @@ export class PaymentPlansService {
     const paidAt = args.paidAt ?? new Date();
     const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
     const receiptNumber = `PLAN-R-${Date.now()}`;
-    const isManual = args.method !== InstallmentPaymentMethod.PAYSTACK;
 
     const plan = installment.plan;
     const propertyId = plan.property_id;
@@ -2290,32 +2380,12 @@ export class PaymentPlansService {
         return;
       }
 
-      // 2. Apply a ledger entry so tenant balance reflects the payment.
-      //    For manual payments, also write a user_added_payment row so the
-      //    existing property_history aggregation picks it up — matches the
-      //    renewal-invoice manual-payment path.
+      // 2. Apply a ledger entry so tenant balance reflects the payment. The
+      //    property/tenant timeline row + livefeed notification for this
+      //    installment are written by logPlanEvent in step 5/6 below (which
+      //    already runs for both Paystack and manual payments), so there is
+      //    deliberately no property_history write here.
       if (landlordId) {
-        if (isManual) {
-          const manualEntry = manager.create(PropertyHistory, {
-            property_id: propertyId,
-            tenant_id: tenantId,
-            event_type: 'user_added_payment',
-            event_description: JSON.stringify({
-              paymentAmount: args.amount,
-              paymentMethod: args.method,
-              source: 'payment_plan_installment',
-              paymentPlanId: plan.id,
-              installmentId: installment.id,
-              sequence: installment.sequence,
-              note: args.note ?? null,
-            }),
-            related_entity_id: installment.id,
-            related_entity_type: 'payment_plan_installment',
-            move_in_date: paidAt,
-          });
-          await manager.save(manualEntry);
-        }
-
         // Only wallet-backed plans (Outstanding Balance / ad-hoc / arrears)
         // credit the wallet. An invoice-fee charge plan already carved its fee
         // out of the invoice at creation; crediting here would double-reduce the
@@ -2519,6 +2589,8 @@ export class PaymentPlansService {
         NotificationType.PAYMENT_PLAN_INSTALLMENT_PAID,
         installment.id,
         'payment_plan_installment',
+        // Lets the timeline row deep-link to the installment receipt page.
+        { receiptToken },
       );
 
       if (refreshedPlan.status === PaymentPlanStatus.COMPLETED) {
@@ -2979,9 +3051,12 @@ export class PaymentPlansService {
     notificationType: NotificationType,
     relatedEntityId?: string,
     relatedEntityType?: string,
+    metadata?: Record<string, any>,
   ): Promise<void> {
     try {
-      // Property/tenant timeline row (single write hits both views).
+      // Property/tenant timeline row (single write hits both views). `metadata`
+      // carries structured extras the timeline builder needs — e.g. the
+      // installment receipt token so the row can deep-link to the receipt page.
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
           property_id: plan.property_id,
@@ -2990,6 +3065,7 @@ export class PaymentPlansService {
           event_description: description,
           related_entity_id: relatedEntityId ?? plan.id,
           related_entity_type: relatedEntityType ?? 'payment_plan',
+          metadata: metadata ?? null,
         }),
       );
 

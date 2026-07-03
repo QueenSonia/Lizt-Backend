@@ -380,6 +380,27 @@ export class PaymentPlanRequestsService {
           related_entity_type: 'payment_plan_request',
         }),
       );
+
+      // Landlord livefeed
+      const landlordId = property?.owner_id;
+      if (landlordId) {
+        const description = `Payment plan request from ${tenantName} for ${propertyName} was declined`;
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.PAYMENT_PLAN_REQUEST_DECLINED,
+          description,
+          status: 'Completed',
+          property_id: request.property_id,
+          user_id: landlordId,
+        });
+        this.eventsGateway.emitHistoryAdded(landlordId, {
+          propertyId: request.property_id,
+          propertyName,
+          tenantName,
+          displayType: NotificationType.PAYMENT_PLAN_REQUEST_DECLINED,
+          description,
+        });
+      }
     } catch (err) {
       this.logger.warn(
         `Failed to log declined-history for request ${request.id}: ${(err as Error).message}`,
@@ -395,7 +416,9 @@ export class PaymentPlanRequestsService {
             tenant_name: tenantName,
             property_name: propertyName,
             total_amount: Number(request.total_amount),
-            decline_reason: request.decline_reason ?? '',
+            decline_reason: this.utilService.sanitizeTemplateParam(
+              request.decline_reason ?? '',
+            ),
             landlord_id: property?.owner_id,
             property_id: request.property_id,
             recipient_name: tenantName,

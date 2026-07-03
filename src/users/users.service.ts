@@ -1134,6 +1134,17 @@ export class UsersService {
     return this.tenantManagementService.getManagedTenancies(landlordIds);
   }
 
+  /**
+   * All invoices + payment plans for one active tenancy (admin Invoices
+   * page). Delegates to TenantManagementService.
+   */
+  async getTenancyInvoices(propertyTenantId: string, landlordIds: string[]) {
+    return this.tenantManagementService.getTenancyInvoices(
+      propertyTenantId,
+      landlordIds,
+    );
+  }
+
   async uploadLogos(
     userId: string,
     files: Express.Multer.File[],

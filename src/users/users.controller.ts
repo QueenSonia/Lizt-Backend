@@ -364,6 +364,29 @@ export class UsersController {
     }
   }
 
+  @ApiOperation({
+    summary:
+      'All invoices (renewal, ad-hoc, new-tenancy) + payment plans for one tenancy',
+  })
+  @ApiSecurity('access_token')
+  @Get('tenancies/:propertyTenantId/invoices')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
+  getTenancyInvoices(
+    @Param('propertyTenantId', new ParseUUIDPipe()) propertyTenantId: string,
+    @ManagedLandlordIds() landlordIds: string[],
+  ) {
+    try {
+      return this.usersService.getTenancyInvoices(
+        propertyTenantId,
+        landlordIds,
+      );
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get Tenant and Property They Occupy' })
   @ApiOkResponse({ type: CreateUserDto })
   @ApiNotFoundResponse({ description: 'Tenant not found' })

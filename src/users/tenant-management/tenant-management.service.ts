@@ -50,8 +50,14 @@ import { Payment, PaymentStatus } from 'src/payments/entities/payment.entity';
 import { TenantDetailDto } from '../dto/tenant-detail.dto';
 import {
   RenewalInvoice,
+  RenewalLetterStatus,
   RenewalPaymentStatus,
 } from 'src/tenancies/entities/renewal-invoice.entity';
+import {
+  TenancyInvoiceRow,
+  TenancyInvoicesResponse,
+  TenancyPaymentPlan,
+} from '../dto/tenancy-invoices.dto';
 
 import {
   CreateTenantDto,
@@ -87,9 +93,17 @@ import {
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { TenantBalance } from 'src/tenant-balances/entities/tenant-balance.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
-import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import {
+  AdHocInvoice,
+  AdHocInvoiceStatus,
+} from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import {
+  Invoice,
+  InvoiceStatus,
+} from 'src/invoices/entities/invoice.entity';
 import {
   PaymentPlan,
+  PaymentPlanScope,
   PaymentPlanStatus,
 } from 'src/payment-plans/entities/payment-plan.entity';
 import { sumOverdueInvoiceFeeInstallments } from 'src/common/billing/plan-classification';
@@ -1942,6 +1956,335 @@ export class TenantManagementService {
         creditBalance: wallet > 0 ? wallet : 0,
       };
     });
+  }
+
+  /**
+   * Every invoice for one tenancy — the admin Invoices page.
+   *
+   * Unifies the three invoice tables into one display list:
+   *  - renewal_invoices: landlord-token rows only (sent letters / cron
+   *    invoices). Drafts, tenant-token OB scaffolding and superseded
+   *    versions are excluded — they either aren't billed yet or would
+   *    double-display debt that lives elsewhere.
+   *  - ad_hoc_invoices (with line items)
+   *  - standalone invoices (new-tenancy/offer flow, with line items)
+   *
+   * Plus the tenancy's payment plans (non-cancelled, with installments) so
+   * rows whose debt an active plan owns can badge it; those rows never show
+   * `overdue` — the plan's installment statuses carry the urgency.
+   */
+  async getTenancyInvoices(
+    propertyTenantId: string,
+    landlordIds: string[],
+  ): Promise<TenancyInvoicesResponse> {
+    const pt = await this.propertyTenantRepository.findOne({
+      where: { id: propertyTenantId },
+      relations: { property: true, tenant: { user: true } },
+    });
+    // 404 (not 403) when out of scope — don't confirm the id exists.
+    if (!pt?.property || !landlordIds.includes(pt.property.owner_id)) {
+      throw new NotFoundException('Tenancy not found');
+    }
+    const ownerId = pt.property.owner_id;
+
+    const [renewalRows, adHocRows, newTenancyRows, planRows, nameMap] =
+      await Promise.all([
+        this.dataSource.getRepository(RenewalInvoice).find({
+          where: {
+            property_tenant_id: pt.id,
+            token_type: 'landlord',
+            superseded_by_id: IsNull(),
+          },
+          order: { start_date: 'DESC' },
+        }),
+        this.dataSource.getRepository(AdHocInvoice).find({
+          where: { property_tenant_id: pt.id },
+          relations: { line_items: true },
+          order: { due_date: 'DESC' },
+        }),
+        // The standalone table has no property_tenant_id; (tenant, property)
+        // is the tightest join. Offer-flow rows whose tenant_id was never
+        // backfilled (null) can't be attributed to a tenancy — skipped.
+        this.dataSource.getRepository(Invoice).find({
+          where: { tenant_id: pt.tenant_id, property_id: pt.property_id },
+          relations: { line_items: true },
+          order: { invoice_date: 'DESC' },
+        }),
+        this.dataSource.getRepository(PaymentPlan).find({
+          where: {
+            property_tenant_id: pt.id,
+            status: Not(PaymentPlanStatus.CANCELLED),
+          },
+          relations: { installments: true },
+          order: { created_at: 'DESC' },
+        }),
+        this.resolveLandlordNames([ownerId]),
+      ]);
+
+    const num = (v: unknown): number =>
+      v == null ? 0 : parseFloat(v.toString()) || 0;
+    const iso = (v: Date | string | null | undefined): string | null =>
+      v == null ? null : typeof v === 'string' ? v : v.toISOString();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const isPast = (v: Date | string | null | undefined): boolean => {
+      if (!v) return false;
+      const d = new Date(v);
+      d.setHours(0, 0, 0, 0);
+      return d.getTime() < today.getTime();
+    };
+
+    const activePlans = planRows.filter(
+      (p) => p.status === PaymentPlanStatus.ACTIVE,
+    );
+    const activePlanIds = new Set(activePlans.map((p) => p.id));
+    const plansByRenewalInvoice = new Map<string, PaymentPlan[]>();
+    for (const plan of activePlans) {
+      if (!plan.renewal_invoice_id) continue;
+      const list = plansByRenewalInvoice.get(plan.renewal_invoice_id) ?? [];
+      list.push(plan);
+      plansByRenewalInvoice.set(plan.renewal_invoice_id, list);
+    }
+
+    const invoices: TenancyInvoiceRow[] = [];
+
+    for (const inv of renewalRows) {
+      // Declined/lapsed letters aren't payable ("no money is expected") —
+      // an UNPAID one would render as a phantom overdue row.
+      if (
+        inv.letter_status === RenewalLetterStatus.DECLINED &&
+        inv.payment_status !== RenewalPaymentStatus.PAID &&
+        inv.payment_status !== RenewalPaymentStatus.PARTIAL
+      ) {
+        continue;
+      }
+
+      const plans = plansByRenewalInvoice.get(inv.id) ?? [];
+      // A TENANCY-scope plan owns the whole invoice; CHARGE carves already
+      // removed their fee from the invoice totals, so the remainder can
+      // still legitimately go overdue.
+      const wholeInvoicePlanned = plans.some(
+        (p) => p.scope === PaymentPlanScope.TENANCY,
+      );
+
+      let status: TenancyInvoiceRow['status'];
+      if (inv.payment_status === RenewalPaymentStatus.PAID) status = 'paid';
+      else if (inv.payment_status === RenewalPaymentStatus.PARTIAL)
+        status = 'partial';
+      else if (isPast(inv.start_date) && !wholeInvoicePlanned)
+        status = 'overdue';
+      else status = 'upcoming';
+
+      const lines = (inv.fee_breakdown ?? []).map((f) => ({
+        name: f.label,
+        amount: num(f.amount),
+      }));
+      if (!lines.length) {
+        // Legacy rows predate fee_breakdown — rebuild from the typed columns.
+        const cols: Array<[string, number]> = [
+          ['Rent', num(inv.rent_amount)],
+          ['Service Charge', num(inv.service_charge)],
+          ['Legal Fee', num(inv.legal_fee)],
+          ['Agency Fee', num(inv.agency_fee)],
+          ['Caution Deposit', num(inv.caution_deposit)],
+          ['Other Charges', num(inv.other_charges)],
+        ];
+        for (const [name, amount] of cols)
+          if (amount > 0) lines.push({ name, amount });
+        for (const f of inv.other_fees ?? [])
+          if (num(f.amount) > 0)
+            lines.push({ name: f.name, amount: num(f.amount) });
+      }
+      // The wallet fold (prior debt or credit) is in total_amount but never
+      // in fee_breakdown — surface the difference so lines sum to the total.
+      const lineSum = lines.reduce((s, l) => s + l.amount, 0);
+      const foldDiff = num(inv.total_amount) - lineSum;
+      if (Math.abs(foldDiff) >= 0.01) {
+        lines.push({
+          name: foldDiff > 0 ? 'Previous Balance' : 'Credit Applied',
+          amount: foldDiff,
+        });
+      }
+
+      invoices.push({
+        id: inv.id,
+        source: 'renewal',
+        description: 'Rent Invoice',
+        invoiceNumber: null,
+        dueDate: iso(inv.start_date),
+        periodStart: iso(inv.start_date),
+        periodEnd: iso(inv.end_date),
+        status,
+        totalAmount: num(inv.total_amount),
+        amountPaid: num(inv.amount_paid),
+        lines,
+        token: inv.token,
+        publicToken: null,
+        receiptToken: inv.receipt_token || null,
+        paidAt: iso(inv.paid_at),
+        createdAt: iso(inv.created_at) ?? new Date().toISOString(),
+        paymentPlanIds: plans.map((p) => p.id),
+      });
+    }
+
+    for (const inv of adHocRows) {
+      if (inv.status === AdHocInvoiceStatus.CANCELLED) continue;
+
+      const coveredByActivePlan =
+        !!inv.covered_by_plan_id && activePlanIds.has(inv.covered_by_plan_id);
+      let status: TenancyInvoiceRow['status'];
+      if (inv.status === AdHocInvoiceStatus.PAID) status = 'paid';
+      else if (inv.status === AdHocInvoiceStatus.PARTIAL) status = 'partial';
+      // Mirrors AdHocInvoicesService.computeStatus: OVERDUE is derived at
+      // read time and suppressed while a plan owns the debt.
+      else if (isPast(inv.due_date) && !coveredByActivePlan)
+        status = 'overdue';
+      else status = 'upcoming';
+
+      const items = (inv.line_items ?? [])
+        .slice()
+        .sort((a, b) => a.sequence - b.sequence);
+
+      invoices.push({
+        id: inv.id,
+        source: 'ad_hoc',
+        description:
+          items.length === 1
+            ? items[0].description
+            : items.length > 1
+              ? `${items[0].description} + ${items.length - 1} more`
+              : 'Ad-hoc Invoice',
+        invoiceNumber: inv.invoice_number,
+        dueDate: iso(inv.due_date),
+        periodStart: null,
+        periodEnd: null,
+        status,
+        totalAmount: num(inv.total_amount),
+        amountPaid: num(inv.amount_paid),
+        lines: items.map((li) => ({
+          name: li.description,
+          amount: num(li.amount),
+        })),
+        token: null,
+        publicToken: inv.public_token,
+        receiptToken: inv.receipt_token || null,
+        paidAt: iso(inv.paid_at),
+        createdAt: iso(inv.created_at) ?? new Date().toISOString(),
+        paymentPlanIds: coveredByActivePlan ? [inv.covered_by_plan_id!] : [],
+      });
+    }
+
+    for (const inv of newTenancyRows) {
+      if (inv.status === InvoiceStatus.CANCELLED) continue;
+
+      let status: TenancyInvoiceRow['status'];
+      if (inv.status === InvoiceStatus.PAID) status = 'paid';
+      else if (inv.status === InvoiceStatus.PARTIALLY_PAID)
+        status = 'partial';
+      // No due-date column here; trust the stored status rather than
+      // deriving OVERDUE from invoice_date (that's the creation date).
+      else if (inv.status === InvoiceStatus.OVERDUE) status = 'overdue';
+      else status = 'upcoming';
+
+      invoices.push({
+        id: inv.id,
+        source: 'new_tenancy',
+        description: 'New Tenancy Invoice',
+        invoiceNumber: inv.invoice_number,
+        dueDate: iso(inv.invoice_date),
+        periodStart: null,
+        periodEnd: null,
+        status,
+        totalAmount: num(inv.total_amount),
+        amountPaid: num(inv.amount_paid),
+        lines: (inv.line_items ?? []).map((li) => ({
+          name: li.description,
+          amount: num(li.amount),
+        })),
+        token: null,
+        publicToken: null,
+        receiptToken: null,
+        paidAt: null,
+        createdAt: iso(inv.created_at) ?? new Date().toISOString(),
+        paymentPlanIds: [],
+      });
+    }
+
+    invoices.sort((a, b) => {
+      const ta = a.dueDate ? new Date(a.dueDate).getTime() : 0;
+      const tb = b.dueDate ? new Date(b.dueDate).getTime() : 0;
+      return tb - ta;
+    });
+
+    const adHocIds = new Set(adHocRows.map((r) => r.id));
+    const renewalIds = new Set(renewalRows.map((r) => r.id));
+    const paymentPlans: TenancyPaymentPlan[] = planRows.map((plan) => {
+      // Which unified row does this plan fund? OB/wallet-backed plans fund
+      // ledger debt, not a listed invoice — they get no link.
+      let linkedInvoiceId: string | null = null;
+      let linkedInvoiceSource: TenancyPaymentPlan['linkedInvoiceSource'] =
+        null;
+      if (plan.renewal_invoice_id && renewalIds.has(plan.renewal_invoice_id)) {
+        linkedInvoiceId = plan.renewal_invoice_id;
+        linkedInvoiceSource = 'renewal';
+      } else if (
+        plan.ad_hoc_invoice_id &&
+        adHocIds.has(plan.ad_hoc_invoice_id)
+      ) {
+        linkedInvoiceId = plan.ad_hoc_invoice_id;
+        linkedInvoiceSource = 'ad_hoc';
+      }
+
+      return {
+        id: plan.id,
+        scope: plan.scope,
+        sourceType: plan.source_type,
+        planType: plan.plan_type,
+        status: plan.status,
+        chargeName: plan.charge_name,
+        totalAmount: num(plan.total_amount),
+        createdAt: iso(plan.created_at) ?? new Date().toISOString(),
+        linkedInvoiceId,
+        linkedInvoiceSource,
+        installments: (plan.installments ?? [])
+          .slice()
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((inst) => ({
+            id: inst.id,
+            sequence: inst.sequence,
+            amount: num(inst.amount),
+            amountPaid: num(inst.amount_paid),
+            dueDate: iso(inst.due_date) ?? '',
+            status: inst.status,
+            paidAt: iso(inst.paid_at),
+            paymentMethod: inst.payment_method ?? null,
+            receiptToken: inst.receipt_token || null,
+          })),
+      };
+    });
+
+    const tenantName =
+      `${pt.tenant?.user?.first_name ?? ''} ${
+        pt.tenant?.user?.last_name ?? ''
+      }`.trim() ||
+      pt.tenant?.profile_name?.trim() ||
+      'Tenant';
+
+    return {
+      tenancy: {
+        id: pt.id,
+        tenantId: pt.tenant_id,
+        tenantName,
+        tenantPhone: pt.tenant?.user?.phone_number ?? null,
+        propertyId: pt.property_id,
+        propertyName: pt.property?.name ?? '',
+        propertyAddress: pt.property?.location ?? '',
+        landlordId: ownerId,
+        landlordName: nameMap[ownerId] ?? 'Landlord',
+      },
+      invoices,
+      paymentPlans,
+    };
   }
 
   /**

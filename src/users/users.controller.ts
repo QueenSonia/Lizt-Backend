@@ -348,6 +348,22 @@ export class UsersController {
     }
   }
 
+  @ApiOperation({
+    summary: 'Get all active tenancies across the managed landlords',
+  })
+  @ApiSecurity('access_token')
+  @Get('tenancies')
+  @UseGuards(RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
+  getManagedTenancies(@ManagedLandlordIds() landlordIds: string[]) {
+    try {
+      return this.usersService.getManagedTenancies(landlordIds);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   @ApiOperation({ summary: 'Get Tenant and Property They Occupy' })
   @ApiOkResponse({ type: CreateUserDto })
   @ApiNotFoundResponse({ description: 'Tenant not found' })

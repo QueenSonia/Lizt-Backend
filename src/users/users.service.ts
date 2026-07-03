@@ -1126,6 +1126,14 @@ export class UsersService {
     );
   }
 
+  /**
+   * Flat active-tenancy list for the admin Tenancies screen.
+   * Delegates to TenantManagementService
+   */
+  async getManagedTenancies(landlordIds: string[]) {
+    return this.tenantManagementService.getManagedTenancies(landlordIds);
+  }
+
   async uploadLogos(
     userId: string,
     files: Express.Multer.File[],

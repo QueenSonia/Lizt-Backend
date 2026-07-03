@@ -174,7 +174,10 @@ export class NotificationService {
   async findByUserId(
     user_id: string,
     options: { page: number; limit: number },
-  ): Promise<{ notifications: Notification[]; total: number }> {
+  ): Promise<{
+    notifications: (Notification & { landlord_name: string | null })[];
+    total: number;
+  }> {
     console.log(
       `Finding notifications for user_id: ${user_id} with page: ${options.page}, limit: ${options.limit}`,
     );
@@ -194,12 +197,38 @@ export class NotificationService {
       .leftJoinAndSelect('property.property_tenants', 'property_tenants')
       .leftJoinAndSelect('property_tenants.tenant', 'tenant')
       .leftJoinAndSelect('notification.maintenanceRequest', 'maintenanceRequest')
+      // Owning landlord's account, name columns only (never leak the full
+      // account row — it carries the password hash).
+      .leftJoin('notification.user', 'owner')
+      .leftJoin('owner.user', 'ownerUser')
+      .addSelect([
+        'owner.id',
+        'owner.profile_name',
+        'ownerUser.id',
+        'ownerUser.first_name',
+        'ownerUser.last_name',
+      ])
       .where('notification.user_id IN (:...ownerIds)', { ownerIds })
       .orderBy('notification.date', 'DESC')
       .skip(skip)
       .take(limit);
 
-    const [notifications, total] = await query.getManyAndCount();
+    const [rows, total] = await query.getManyAndCount();
+
+    // The admin feed spans several landlords, so each row carries the owning
+    // landlord's display name (accounts.profile_name, else the person's name).
+    const notifications = rows.map((row) => {
+      const { user: owner, ...rest } = row;
+      const landlord_name =
+        owner?.profile_name ||
+        [owner?.user?.first_name, owner?.user?.last_name]
+          .filter(Boolean)
+          .join(' ') ||
+        null;
+      return { ...rest, landlord_name } as Notification & {
+        landlord_name: string | null;
+      };
+    });
 
     return { notifications, total };
   }

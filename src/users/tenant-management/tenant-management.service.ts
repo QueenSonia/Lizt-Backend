@@ -85,6 +85,7 @@ import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import { TenantBalance } from 'src/tenant-balances/entities/tenant-balance.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
 import {
@@ -1770,6 +1771,169 @@ export class TenantManagementService {
         hasNextPage: page < totalPages,
       },
     };
+  }
+
+  /**
+   * Flat list of ACTIVE tenancies across the managed landlords — one row per
+   * active property_tenant link, carrying that tenant's active rent terms on
+   * the property, the landlord's display name, and the outstanding balance a
+   * landlord view would show: wallet OB for the tenant-landlord pair plus the
+   * property's overdue carved invoice-fee plan installments (the headline
+   * figure computeTenantBalance derives; display-only, nothing is written).
+   *
+   * The wallet is one signed ledger per tenant-landlord pair, so if a tenant
+   * holds several properties under the SAME landlord the pair's wallet OB
+   * repeats on each of those rows — same compromise the per-tenant screens
+   * make; there is no per-property attribution of wallet debt.
+   */
+  async getManagedTenancies(landlordIds: string[]): Promise<
+    Array<{
+      id: string;
+      tenantId: string;
+      tenantName: string;
+      tenantPhone: string | null;
+      propertyId: string;
+      propertyName: string;
+      propertyAddress: string;
+      landlordId: string;
+      landlordName: string;
+      rentAmount: number | null;
+      paymentFrequency: string | null;
+      startDate: Date | null;
+      endDate: Date | null;
+      outstandingBalance: number;
+    }>
+  > {
+    if (!landlordIds.length) return [];
+
+    const links = await this.propertyTenantRepository
+      .createQueryBuilder('pt')
+      .innerJoin('pt.property', 'property')
+      .addSelect([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.owner_id',
+      ])
+      .innerJoin('pt.tenant', 'tenant')
+      .addSelect(['tenant.id', 'tenant.profile_name'])
+      .leftJoin('tenant.user', 'tenantUser')
+      .addSelect([
+        'tenantUser.id',
+        'tenantUser.first_name',
+        'tenantUser.last_name',
+        'tenantUser.phone_number',
+      ])
+      // The tenant's ACTIVE rent on this property holds the tenancy terms.
+      .leftJoin(
+        'property.rents',
+        'rent',
+        'rent.tenant_id = pt.tenant_id AND rent.rent_status = :activeRent AND rent.deleted_at IS NULL',
+        { activeRent: RentStatusEnum.ACTIVE },
+      )
+      .addSelect([
+        'rent.id',
+        'rent.rental_price',
+        'rent.payment_frequency',
+        'rent.rent_start_date',
+        'rent.expiry_date',
+      ])
+      .where('pt.status = :activeTenant', {
+        activeTenant: TenantStatusEnum.ACTIVE,
+      })
+      .andWhere('pt.deleted_at IS NULL')
+      .andWhere('property.owner_id IN (:...landlordIds)', { landlordIds })
+      .getMany();
+
+    if (!links.length) return [];
+
+    const tenantIds = Array.from(new Set(links.map((l) => l.tenant_id)));
+    const ownerIds = Array.from(
+      new Set(links.map((l) => l.property.owner_id)),
+    );
+
+    const [nameMap, balances, activePlans] = await Promise.all([
+      this.resolveLandlordNames(ownerIds),
+      this.dataSource.getRepository(TenantBalance).find({
+        where: { tenant_id: In(tenantIds), landlord_id: In(ownerIds) },
+      }),
+      this.dataSource.getRepository(PaymentPlan).find({
+        where: { tenant_id: In(tenantIds), status: PaymentPlanStatus.ACTIVE },
+        relations: ['installments', 'property'],
+      }),
+    ]);
+
+    const walletByPair = new Map<string, number>();
+    for (const b of balances) {
+      walletByPair.set(
+        `${b.tenant_id}|${b.landlord_id}`,
+        parseFloat(b.balance as unknown as string) || 0,
+      );
+    }
+
+    const plansByTenant = new Map<string, PaymentPlan[]>();
+    for (const plan of activePlans) {
+      const list = plansByTenant.get(plan.tenant_id);
+      if (list) list.push(plan);
+      else plansByTenant.set(plan.tenant_id, [plan]);
+    }
+    // sumOverdueInvoiceFeeInstallments walks a tenant's plans once per
+    // landlord; cache per pair so multi-property tenants don't recompute.
+    const overdueByPair = new Map<string, Record<string, number>>();
+    const overdueForPair = (tenantId: string, landlordId: string) => {
+      const key = `${tenantId}|${landlordId}`;
+      let byProperty = overdueByPair.get(key);
+      if (!byProperty) {
+        byProperty = sumOverdueInvoiceFeeInstallments(
+          plansByTenant.get(tenantId) ?? [],
+          landlordId,
+        ).byProperty;
+        overdueByPair.set(key, byProperty);
+      }
+      return byProperty;
+    };
+
+    return links.map((pt) => {
+      const ownerId = pt.property.owner_id;
+      // Defensive: multiple active rent rows for the pair is a data edge —
+      // surface the one ending last.
+      const rent =
+        (pt.property.rents ?? [])
+          .slice()
+          .sort(
+            (a, b) =>
+              new Date(b.expiry_date ?? 0).getTime() -
+              new Date(a.expiry_date ?? 0).getTime(),
+          )[0] ?? null;
+      const wallet = walletByPair.get(`${pt.tenant_id}|${ownerId}`) ?? 0;
+      const overdueOnProperty =
+        overdueForPair(pt.tenant_id, ownerId)[pt.property_id] ?? 0;
+      const tenantName =
+        `${pt.tenant?.user?.first_name ?? ''} ${
+          pt.tenant?.user?.last_name ?? ''
+        }`.trim() ||
+        pt.tenant?.profile_name?.trim() ||
+        'Tenant';
+
+      return {
+        id: pt.id,
+        tenantId: pt.tenant_id,
+        tenantName,
+        tenantPhone: pt.tenant?.user?.phone_number ?? null,
+        propertyId: pt.property_id,
+        propertyName: pt.property?.name ?? '',
+        propertyAddress: pt.property?.location ?? '',
+        landlordId: ownerId,
+        landlordName: nameMap[ownerId] ?? 'Landlord',
+        rentAmount:
+          rent?.rental_price != null ? Number(rent.rental_price) : null,
+        paymentFrequency: rent?.payment_frequency ?? null,
+        startDate: rent?.rent_start_date ?? null,
+        endDate: rent?.expiry_date ?? null,
+        outstandingBalance:
+          (wallet < 0 ? -wallet : 0) + overdueOnProperty,
+      };
+    });
   }
 
   /**

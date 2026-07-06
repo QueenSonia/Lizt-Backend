@@ -131,7 +131,14 @@ export class MaintenanceRequestsService {
     if (actor?.role === RolesEnum.FACILITY_MANAGER) {
       return this.createMaintenanceRequestAsFacilityManager(data, actor);
     }
-    if (actor?.role === RolesEnum.LANDLORD) {
+    // Admins (property managers) file on behalf of a landlord they manage —
+    // same flow as the landlord path, whose per-target ownership checks accept
+    // a managing admin. Without this branch an admin fell through to the
+    // TENANT path and failed its tenancy lookup.
+    if (
+      actor?.role === RolesEnum.LANDLORD ||
+      actor?.role === RolesEnum.ADMIN
+    ) {
       return this.createMaintenanceRequestAsLandlord(data, actor);
     }
     return this.createMaintenanceRequestAsTenant(data, actor);
@@ -799,8 +806,12 @@ export class MaintenanceRequestsService {
     if (!commonArea) {
       throw new HttpException('Common area not found', HttpStatus.NOT_FOUND);
     }
-    // common_area.owner_id is the landlord's Account.id (= actor.id).
-    if (commonArea.owner_id !== actor.id) {
+    // common_area.owner_id is the landlord's Account.id. The filer must BE
+    // that landlord, or be an admin (property manager) who manages them.
+    if (
+      commonArea.owner_id !== actor.id &&
+      !(await this.scopeService.managesLandlord(actor.id, commonArea.owner_id))
+    ) {
       throw new HttpException(
         'You do not own this common area',
         HttpStatus.FORBIDDEN,
@@ -843,15 +854,16 @@ export class MaintenanceRequestsService {
       `Maintenance request created by ${landlordName}`,
     );
 
-    // landlord_id must be the landlord's Account.id. For landlord-filed
-    // common-area MRs the acting landlord IS the owner, so actor.id (the JWT's
-    // Account.id — per req_user_id_is_account_id memory) is the correct value,
-    // and equals common_area.owner_id.
+    // landlord_id must be the OWNING landlord's Account.id — which is
+    // commonArea.owner_id, not actor.id: with the admin/PM act-on-behalf path
+    // the filer may be a managing admin, and livefeed/notification attribution
+    // must stay anchored on the landlord. user_id stays the filer, mirroring
+    // the FM common-area path.
     try {
       this.eventEmitter.emit('maintenance.created', {
         user_id: actor.id,
         property_id: null,
-        landlord_id: actor.id,
+        landlord_id: commonArea.owner_id,
         common_area_id: commonArea.id,
         common_area_name: commonArea.name,
         tenant_id: null,
@@ -874,7 +886,7 @@ export class MaintenanceRequestsService {
           previous_assignee_name: 'unassigned',
           new_assignee: assigneeTm.id,
           new_assignee_name: assigneeFmName,
-          landlord_id: actor.id,
+          landlord_id: commonArea.owner_id,
           property_id: null,
           common_area_id: commonArea.id,
           description: data.text,

@@ -3,10 +3,12 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -24,6 +26,19 @@ class CreateInstallmentDto {
 
   @IsDateString()
   dueDate: string;
+}
+
+export class NewChargeDto {
+  /** Line-item label for the invoice this charge becomes (e.g. "Generator repair"). */
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  description: string;
+
+  @IsNumber()
+  @Min(1)
+  @Type(() => Number)
+  amount: number;
 }
 
 export class CreatePaymentPlanDto {
@@ -77,4 +92,17 @@ export class CreatePaymentPlanDto {
   @IsOptional()
   @IsUUID()
   adHocInvoiceId?: string;
+
+  /**
+   * When set, a brand-new ad-hoc invoice for this charge and the plan covering
+   * it are created atomically in one transaction. The tenant receives ONLY the
+   * plan-created WhatsApp — the invoice pay-link message is suppressed because
+   * the invoice is born plan-covered (its public link is locked from the
+   * start). Mutually exclusive with adHocInvoiceId and
+   * expectedOutstandingBalance. Installments must sum to `newCharge.amount`.
+   */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => NewChargeDto)
+  newCharge?: NewChargeDto;
 }

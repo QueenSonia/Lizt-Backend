@@ -80,14 +80,24 @@ export class PaymentPlansController {
   }
 
   @ApiOperation({ summary: 'Cancel a payment plan' })
+  @ApiQuery({
+    name: 'sendInvoiceLink',
+    required: false,
+    type: Boolean,
+    description:
+      'When true, the tenant is sent the public pay link for every ad-hoc invoice this cancellation re-opens with money still owing.',
+  })
   @ApiOkResponse({ description: 'Payment plan cancelled' })
   @ApiSecurity('access_token')
   @Delete(':id')
   async cancel(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: any,
+    @Query('sendInvoiceLink') sendInvoiceLink?: string,
   ) {
-    await this.paymentPlansService.cancelPlan(id, req?.user?.id);
+    await this.paymentPlansService.cancelPlan(id, req?.user?.id, {
+      sendInvoiceLink: sendInvoiceLink === 'true' || sendInvoiceLink === '1',
+    });
     return { message: 'Payment plan cancelled' };
   }
 

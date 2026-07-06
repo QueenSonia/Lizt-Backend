@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  forwardRef,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -31,6 +33,7 @@ import {
   AdHocInvoice,
   AdHocInvoiceStatus,
 } from '../ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import { AdHocInvoicesService } from '../ad-hoc-invoices/ad-hoc-invoices.service';
 import { CreatePaymentPlanDto } from './dto/create-payment-plan.dto';
 import { UpdatePaymentPlanDto } from './dto/update-payment-plan.dto';
 import { MarkInstallmentPaidDto } from './dto/mark-installment-paid.dto';
@@ -94,6 +97,8 @@ export class PaymentPlansService {
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
     private readonly requestsService: PaymentPlanRequestsService,
+    @Inject(forwardRef(() => AdHocInvoicesService))
+    private readonly adHocInvoicesService: AdHocInvoicesService,
   ) {}
 
   /**
@@ -149,6 +154,24 @@ export class PaymentPlansService {
     );
     if (totalAmount <= 0) {
       throw new BadRequestException('Total amount must be greater than zero');
+    }
+
+    // Combined "new charge + plan" (wallet-backed, Type B): create a brand-new
+    // ad-hoc invoice for the charge AND the plan settling it, atomically. The
+    // invoice is born plan-covered, so the tenant is sent only the
+    // plan-created message — never the invoice pay-link message.
+    if (dto.newCharge) {
+      if (dto.adHocInvoiceId || dto.expectedOutstandingBalance != null) {
+        throw new BadRequestException(
+          'newCharge cannot be combined with adHocInvoiceId or expectedOutstandingBalance',
+        );
+      }
+      return this.createNewChargePlan(
+        dto,
+        propertyTenant,
+        totalAmount,
+        createdByUserId,
+      );
     }
 
     // Ad-hoc-invoice plan (wallet-backed, Type B): settles a single ad-hoc
@@ -380,6 +403,164 @@ export class PaymentPlansService {
     }
 
     const fullPlan = await this.getPlan(saved.id);
+    await this.dispatchPlanCreatedNotifications(fullPlan);
+    return fullPlan;
+  }
+
+  /**
+   * Combined "new charge + plan": create a brand-new ad-hoc invoice for the
+   * charge AND the wallet-backed plan that settles it, in ONE transaction.
+   *
+   * The invoice is stamped `covered_by_plan_id` before commit, so its public
+   * pay link is locked from the first moment it exists — which is exactly why
+   * the invoice pay-link WhatsApp is suppressed here (the link would 409).
+   * The tenant's single message is the plan-created one. If the plan is later
+   * cancelled, cancelPlan re-opens the link charging the uncollected
+   * remainder, and the landlord can opt to send the pay-link message then.
+   *
+   * Atomicity also means no stranded state: if plan creation fails, the
+   * invoice and its wallet debit roll back with it.
+   */
+  private async createNewChargePlan(
+    dto: CreatePaymentPlanDto,
+    propertyTenant: PropertyTenant,
+    totalAmount: number,
+    createdByUserId?: string,
+  ): Promise<PaymentPlan> {
+    const description = dto.newCharge!.description.trim();
+    const amount = Number(dto.newCharge!.amount);
+    if (!description) {
+      throw new BadRequestException('Charge name is required');
+    }
+    if (!(amount > 0)) {
+      throw new BadRequestException(
+        'Charge amount must be greater than zero',
+      );
+    }
+    // Installments must sum to the new charge's full amount (same ±1 naira
+    // rounding tolerance as the other plan paths).
+    if (Math.abs(totalAmount - amount) > 1) {
+      throw new BadRequestException(
+        `Installments (₦${totalAmount.toLocaleString()}) must equal the charge amount (₦${amount.toLocaleString()})`,
+      );
+    }
+    // Same guard as standalone invoice creation — a new charge debits the
+    // tenant wallet, so only the property's landlord may create one.
+    if (
+      createdByUserId &&
+      propertyTenant.property?.owner_id !== createdByUserId
+    ) {
+      throw new ForbiddenException(
+        'Only the property landlord can create charges',
+      );
+    }
+
+    // The invoice needs a due date but the modal doesn't ask for one — the
+    // plan's schedule is the real due-date story. Use the last installment's
+    // due date so a later cancellation never re-opens an instantly-overdue
+    // invoice.
+    const lastDueMs = Math.max(
+      ...dto.installments.map((i) => new Date(i.dueDate).getTime()),
+    );
+    if (!Number.isFinite(lastDueMs)) {
+      throw new BadRequestException('Invalid installment due date');
+    }
+    const invoiceDueDate = new Date(lastDueMs);
+
+    const { savedPlan, invoiceId } = await this.dataSource.transaction(
+      async (manager) => {
+        const invoice = await this.adHocInvoicesService.createInvoiceCore(
+          manager,
+          {
+            propertyTenant,
+            lineItems: [{ description, amount }],
+            dueDate: invoiceDueDate,
+            createdByUserId: createdByUserId ?? null,
+          },
+        );
+
+        const plan = manager.create(PaymentPlan, {
+          property_tenant_id: propertyTenant.id,
+          property_id: propertyTenant.property_id,
+          tenant_id: propertyTenant.tenant_id,
+          renewal_invoice_id: null,
+          scope: PaymentPlanScope.CHARGE,
+          charge_name: description.substring(0, 255),
+          charge_fee_kind: null,
+          charge_external_id: null,
+          source_type: PaymentPlanSourceType.AD_HOC_INVOICE,
+          ad_hoc_invoice_id: invoice.id,
+          total_amount: totalAmount,
+          plan_type: dto.planType,
+          status: PaymentPlanStatus.ACTIVE,
+          created_by_user_id: createdByUserId ?? null,
+        });
+        const saved = await manager.save(plan);
+
+        const installments = dto.installments.map((inst, idx) =>
+          manager.create(PaymentPlanInstallment, {
+            plan_id: saved.id,
+            sequence: idx + 1,
+            amount: Number(inst.amount),
+            due_date: new Date(inst.dueDate),
+            status: InstallmentStatus.PENDING,
+          }),
+        );
+        await manager.save(installments);
+
+        // Freeze the single FIFO source (mirrors createAdHocInvoicePlan).
+        await manager.save(
+          manager.create(PaymentPlanSource, {
+            plan_id: saved.id,
+            source_kind: PaymentPlanSourceKind.AD_HOC_INVOICE,
+            source_ad_hoc_invoice_id: invoice.id,
+            arrears_bucket_key: null,
+            covered_amount: amount,
+            due_seq: 0,
+          }),
+        );
+
+        // Born covered. No FOR-UPDATE lock / IS NULL re-check needed here —
+        // the invoice was created inside THIS transaction, so no concurrent
+        // plan create can have seen it yet.
+        await manager.update(AdHocInvoice, invoice.id, {
+          covered_by_plan_id: saved.id,
+        });
+
+        saved.installments = installments;
+        return { savedPlan: saved, invoiceId: invoice.id };
+      },
+    );
+
+    // Re-fold any unpaid renewal invoice: the new wallet debit is plan-owned
+    // from birth, so the renewal must not absorb it. Non-blocking — committed.
+    try {
+      await this.tenanciesService.refreshInvoiceTotals(
+        propertyTenant.tenant_id,
+        propertyTenant.property.owner_id,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Post-create renewal re-fold failed for plan ${savedPlan.id}: ${(err as Error)?.message}`,
+      );
+    }
+
+    // Landlord-facing records for BOTH halves; tenant WhatsApp only for the plan.
+    try {
+      await this.adHocInvoicesService.logInvoiceCreatedByPlanEvent(invoiceId);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to log invoice-created event for ${invoiceId}: ${(err as Error)?.message}`,
+      );
+    }
+    await this.logPlanEvent(
+      'payment_plan_created',
+      `Payment plan created — ${savedPlan.charge_name} — ₦${totalAmount.toLocaleString()} across ${dto.installments.length} installments`,
+      savedPlan,
+      NotificationType.PAYMENT_PLAN_CREATED,
+    );
+
+    const fullPlan = await this.getPlan(savedPlan.id);
     await this.dispatchPlanCreatedNotifications(fullPlan);
     return fullPlan;
   }
@@ -1420,12 +1601,28 @@ export class PaymentPlansService {
   // Cancel
   // ───────────────────────────────────────────────────────────────────────
 
-  async cancelPlan(id: string, cancelledByUserId?: string): Promise<void> {
+  async cancelPlan(
+    id: string,
+    cancelledByUserId?: string,
+    opts?: {
+      /**
+       * Queue the tenant's public pay-link WhatsApp for every ad-hoc invoice
+       * this cancellation re-opens still owing money. Landlord's choice in the
+       * delete-plan dialog — essential when the invoice was born inside a
+       * combined "new charge + plan" create (the link message was never sent).
+       */
+      sendInvoiceLink?: boolean;
+    },
+  ): Promise<void> {
     const plan = await this.getPlan(id);
 
     if (plan.status !== PaymentPlanStatus.ACTIVE) {
       throw new ConflictException('Plan is not active');
     }
+
+    // Ad-hoc invoices this cancel re-opens with money still to collect —
+    // candidates for the opt-in pay-link send after commit.
+    const reopenedUnpaidInvoiceIds: string[] = [];
 
     const paidInstallments = plan.installments.filter(
       (i) => i.status === InstallmentStatus.PAID,
@@ -1526,6 +1723,9 @@ export class PaymentPlansService {
               ? AdHocInvoiceStatus.PARTIAL
               : AdHocInvoiceStatus.PENDING,
         });
+        if (!fullyPaid) {
+          reopenedUnpaidInvoiceIds.push(invoice.id);
+        }
       }
 
       await manager.update(PaymentPlan, plan.id, {
@@ -1544,6 +1744,23 @@ export class PaymentPlansService {
           err,
         ),
       );
+
+    // Landlord opted to send the tenant the direct pay link(s) for the debt
+    // this cancellation re-opened. Post-commit and non-blocking: the cancel
+    // stands even if a queue call fails.
+    if (opts?.sendInvoiceLink) {
+      for (const invoiceId of reopenedUnpaidInvoiceIds) {
+        try {
+          await this.adHocInvoicesService.sendInvoiceLinkNotification(
+            invoiceId,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Failed to queue re-opened invoice link for ${invoiceId} after cancelling plan ${plan.id}: ${(err as Error)?.message}`,
+          );
+        }
+      }
+    }
 
     const description =
       paidInstallments.length > 0

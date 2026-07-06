@@ -658,7 +658,12 @@ export class MaintenanceRequestsService {
     if (!property) {
       throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
     }
-    if (property.owner_id !== actor.id) {
+    // Filer must BE the owning landlord, or be an admin (property manager)
+    // who manages them.
+    if (
+      property.owner_id !== actor.id &&
+      !(await this.scopeService.managesLandlord(actor.id, property.owner_id))
+    ) {
       throw new HttpException(
         'You do not own this property',
         HttpStatus.FORBIDDEN,

@@ -3431,6 +3431,21 @@ export class PropertiesService {
     }
   }
 
+  /**
+   * True when `requesterId` may act on a property owned by `ownerId`: either
+   * they ARE that landlord, or they are an admin (property manager) who
+   * manages them. Mirrors the canManageOwner pattern used by payment-plans /
+   * ad-hoc-invoices.
+   */
+  private async canManageOwner(
+    ownerId: string | null | undefined,
+    requesterId: string,
+  ): Promise<boolean> {
+    if (!ownerId) return false;
+    if (ownerId === requesterId) return true;
+    return this.managementScopeService.managesLandlord(requesterId, ownerId);
+  }
+
   async moveTenantOut(moveOutData: MoveTenantOutDto, requesterId?: string) {
     const { property_id, tenant_id, move_out_date } = moveOutData;
     if (!DateService.isValidFormat_YYYY_MM_DD(move_out_date)) {
@@ -3449,7 +3464,7 @@ export class PropertiesService {
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
 
-      if (property.owner_id !== requesterId) {
+      if (!(await this.canManageOwner(property.owner_id, requesterId))) {
         throw new ForbiddenException(
           'You are not authorized to end tenancy for this property',
         );
@@ -4130,8 +4145,11 @@ export class PropertiesService {
       id: scheduled.property_id,
     });
 
-    // If ownerId is provided, validate ownership
-    if (ownerId && (!property || property.owner_id !== ownerId)) {
+    // If ownerId is provided, validate ownership (landlord or managing admin)
+    if (
+      ownerId &&
+      (!property || !(await this.canManageOwner(property.owner_id, ownerId)))
+    ) {
       throw new ForbiddenException(
         'You are not authorized to cancel this scheduled move-out',
       );
@@ -4190,7 +4208,10 @@ export class PropertiesService {
     if (!property) {
       throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
     }
-    if (requesterId && property.owner_id !== requesterId) {
+    if (
+      requesterId &&
+      !(await this.canManageOwner(property.owner_id, requesterId))
+    ) {
       throw new ForbiddenException(
         'You are not authorized to deactivate renewal for this property',
       );

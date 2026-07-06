@@ -89,6 +89,7 @@ import { config } from 'src/config';
 import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { AttachResult } from 'src/common/interfaces';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 import { AttachTenantFromKycDto } from '../dto/attach-tenant-from-kyc.dto';
 import {
   TenantBalanceLedger,
@@ -207,6 +208,7 @@ export class TenantManagementService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly propertyHistoryService: PropertyHistoryService,
     private readonly accountCacheService: AccountCacheService,
+    private readonly scopeService: ManagementScopeService,
   ) {}
 
   /**
@@ -619,11 +621,23 @@ export class TenantManagementService {
           throw new NotFoundException('Property not found');
         }
 
-        if (property.owner_id !== landlordId) {
+        if (
+          property.owner_id !== landlordId &&
+          !(await this.scopeService.managesLandlord(
+            landlordId,
+            property.owner_id,
+          ))
+        ) {
           throw new ForbiddenException(
             'You are not authorized to attach tenants to this property',
           );
         }
+        // The requester may be a managing admin acting for the landlord.
+        // Re-anchor on the property's owner so every downstream write keyed on
+        // landlordId (the tenant-wallet ledger counterparty, the landlord
+        // account resolved for the tenant's WhatsApp) stays on the LANDLORD —
+        // mirrors the tenantId re-anchor above.
+        landlordId = property.owner_id;
 
         // 3. Check if property is available for tenant attachment
         if (property.property_status === PropertyStatusEnum.OCCUPIED) {

@@ -13,6 +13,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   ArrayContains,
   DataSource,
+  EntityManager,
   In,
   IsNull,
   Not,
@@ -81,6 +82,8 @@ import {
 } from 'src/properties/dto/create-property.dto';
 import { DateService } from 'src/utils/date.helper';
 import { UtilService } from 'src/utils/utility-service';
+import { isPlaceholderEmail } from 'src/utils/placeholder-email';
+import { AccountCacheService } from 'src/auth/account-cache.service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { config } from 'src/config';
 import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
@@ -203,7 +206,152 @@ export class TenantManagementService {
     private readonly whatsappBotService: WhatsappBotService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly propertyHistoryService: PropertyHistoryService,
+    private readonly accountCacheService: AccountCacheService,
   ) {}
+
+  /**
+   * Resolve the Users row for an incoming tenant identity — by phone first,
+   * then by real email — creating it only when the person is genuinely new.
+   * One person = one Users row, even when they hold several roles; the
+   * `users` table has hard unique indexes on both phone_number and email, so
+   * blindly inserting for a known phone/email would crash.
+   */
+  private async resolveTenantUser(
+    manager: EntityManager,
+    params: {
+      phone: string; // already normalized
+      email?: string | null;
+      createFields: Partial<Users>; // used only when creating a new row
+    },
+  ): Promise<Users> {
+    const email = params.email?.trim().toLowerCase() || null;
+
+    let user = await manager.getRepository(Users).findOne({
+      where: { phone_number: params.phone },
+    });
+
+    if (!user && email && !isPlaceholderEmail(email)) {
+      user = await manager.getRepository(Users).findOne({ where: { email } });
+      // Same real email already bound to a different phone → two different
+      // people (or stale data) — refuse rather than silently hijack the row.
+      if (user && user.phone_number && user.phone_number !== params.phone) {
+        throw new ConflictException(
+          `Email ${email} is already linked to a different phone number.`,
+        );
+      }
+    }
+
+    if (!user) {
+      user = await manager.getRepository(Users).save({
+        ...params.createFields,
+        phone_number: params.phone,
+        email: email ?? params.createFields.email,
+        is_verified: true,
+      });
+    }
+
+    return user;
+  }
+
+  /**
+   * Find-or-append pattern for the TENANT role: a person who already exists
+   * as landlord/FM/etc. keeps their single Account and gains the TENANT role
+   * instead of the write failing on the unique email index. Mirrors the
+   * reconciliation in createLandlord / assignCollaboratorToTeam /
+   * createManagedLandlord.
+   *
+   * Never touches the password of an existing account — their current
+   * credentials keep working for every role; multi-role login shows the
+   * role picker.
+   */
+  private async resolveTenantAccount(
+    manager: EntityManager,
+    user: Users,
+    opts: {
+      email?: string | null;
+      creatorId?: string;
+      /** used only when creating a brand-new account */
+      passwordHash?: string;
+      profileName?: string;
+    },
+  ): Promise<Account> {
+    const accountRepo = manager.getRepository(Account);
+    const email = opts.email?.trim().toLowerCase() || null;
+    const incomingIsPlaceholder = !email || isPlaceholderEmail(email);
+
+    // 1. Prefer an account of this user that already carries TENANT.
+    let account = await accountRepo.findOne({
+      where: { userId: user.id, roles: ArrayContains([RolesEnum.TENANT]) },
+    });
+
+    // 2. Else any account holding this real email (landlord/FM/admin/etc.).
+    if (!account && email && !incomingIsPlaceholder) {
+      account = await accountRepo.findOne({ where: { email } });
+      if (account && account.userId && account.userId !== user.id) {
+        // Real email already on an account anchored to a different person.
+        throw new ConflictException(
+          `Email ${email} is already linked to a different account.`,
+        );
+      }
+    }
+
+    // 3. Else any account already linked to this user row.
+    if (!account) {
+      account = await accountRepo.findOne({ where: { userId: user.id } });
+    }
+
+    if (account) {
+      // Email reconciliation (same rules as team.service):
+      //   placeholder → real: upgrade; real vs different real: conflict.
+      if (email && account.email !== email) {
+        const existingIsPlaceholder = isPlaceholderEmail(account.email);
+        if (existingIsPlaceholder && !incomingIsPlaceholder) {
+          account.email = email;
+        } else if (!existingIsPlaceholder && !incomingIsPlaceholder) {
+          throw new ConflictException(
+            `Phone ${user.phone_number} is already linked to an account with a different email (${account.email}).`,
+          );
+        }
+      }
+
+      if (!account.userId) account.user = user;
+      if (!account.roles?.includes(RolesEnum.TENANT)) {
+        account.roles = [...(account.roles ?? []), RolesEnum.TENANT];
+      }
+      account.creator_id = account.creator_id ?? opts.creatorId;
+      account.is_verified = true;
+      account = await accountRepo.save(account);
+      // JwtAuthGuard hydrates req.user from a cached Account — a stale entry
+      // would keep denying the new role until TTL.
+      await this.accountCacheService.invalidate(account.id);
+      return account;
+    }
+
+    // Prefer a real email over an incoming synthetic one; the placeholder is
+    // only a last resort so the NOT NULL column is satisfied.
+    const accountEmail =
+      (!incomingIsPlaceholder && email) || user.email || email;
+    if (!accountEmail) {
+      throw new HttpException(
+        'Email is required to create tenant account',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    return await accountRepo.save(
+      accountRepo.create({
+        user,
+        email: accountEmail,
+        password: opts.passwordHash,
+        is_verified: true,
+        profile_name:
+          opts.profileName ??
+          `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim(),
+        roles: [RolesEnum.TENANT],
+        creator_id: opts.creatorId,
+      }),
+    );
+  }
 
   /**
    * Add a new tenant with basic information
@@ -235,20 +383,6 @@ export class TenantManagementService {
 
     return await this.dataSource.transaction(async (manager) => {
       try {
-        // 1. Check existing user
-        let tenantUser = await manager.getRepository(Users).findOne({
-          where: {
-            phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          },
-        });
-
-        if (tenantUser) {
-          throw new HttpException(
-            `Account with phone: ${this.utilService.normalizePhoneNumber(phone_number)} already exists`,
-            HttpStatus.UNPROCESSABLE_ENTITY,
-          );
-        }
-
         const property = await manager.getRepository(Property).findOne({
           where: { id: property_id },
         });
@@ -272,32 +406,36 @@ export class TenantManagementService {
         }
 
         const [first_name, last_name] = full_name.split(' ');
-        // 2. Create tenant user
-        tenantUser = manager.getRepository(Users).create({
-          first_name: this.utilService.toSentenceCase(first_name),
-          last_name: this.utilService.toSentenceCase(last_name),
+        const normalizedPhone =
+          this.utilService.normalizePhoneNumber(phone_number);
+
+        // 1-2. Find-or-create the person. An existing landlord/FM/tenant with
+        // this phone or email is reused — the TENANT role is appended to
+        // their account instead of failing on the unique indexes.
+        const tenantUser = await this.resolveTenantUser(manager, {
+          phone: normalizedPhone,
           email,
-          phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          is_verified: true,
+          createFields: {
+            first_name: this.utilService.toSentenceCase(first_name),
+            last_name: this.utilService.toSentenceCase(last_name),
+          },
         });
 
-        await manager.getRepository(Users).save(tenantUser);
-
-        // 3. Create tenant account
+        // 3. Find-or-create the account; password is only set for brand-new
+        // accounts (existing credentials keep working for all roles).
         const { hash: generatedPasswordHash } =
           await this.utilService.generatePassword();
 
-        const userAccount = manager.getRepository(Account).create({
-          user: tenantUser,
-          email,
-          password: generatedPasswordHash,
-          is_verified: true,
-          profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-          roles: [RolesEnum.TENANT],
-          creator_id: user_id,
-        });
-
-        await manager.getRepository(Account).save(userAccount);
+        const userAccount = await this.resolveTenantAccount(
+          manager,
+          tenantUser,
+          {
+            email,
+            creatorId: user_id,
+            passwordHash: generatedPasswordHash,
+            profileName: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          },
+        );
 
         property.property_status = PropertyStatusEnum.OCCUPIED;
         property.is_marketing_ready = false;
@@ -789,20 +927,6 @@ export class TenantManagementService {
 
     return await this.dataSource.transaction(async (manager) => {
       try {
-        // 1. Check existing user
-        let tenantUser = await manager.getRepository(Users).findOne({
-          where: {
-            phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          },
-        });
-
-        if (tenantUser) {
-          throw new HttpException(
-            `Account with phone: ${this.utilService.normalizePhoneNumber(phone_number)} already exists`,
-            HttpStatus.UNPROCESSABLE_ENTITY,
-          );
-        }
-
         const property = await manager.getRepository(Property).findOne({
           where: { id: property_id },
         });
@@ -825,55 +949,56 @@ export class TenantManagementService {
           );
         }
 
-        // 2. Create tenant user
-        tenantUser = manager.getRepository(Users).create({
-          first_name: this.utilService.toSentenceCase(first_name),
-          last_name: this.utilService.toSentenceCase(last_name),
+        // 1-2. Find-or-create the person. An existing landlord/FM/tenant with
+        // this phone or email is reused — the TENANT role is appended to
+        // their account instead of failing on the unique indexes.
+        const tenantUser = await this.resolveTenantUser(manager, {
+          phone: this.utilService.normalizePhoneNumber(phone_number),
           email,
-          phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          date_of_birth,
-          gender,
-          state_of_origin,
-          lga,
-          nationality,
-          employment_status,
-          marital_status,
-          is_verified: true,
-          employer_name,
-          job_title,
-          employer_address,
-          monthly_income,
-          work_email,
-          nature_of_business,
-          business_name,
-          business_address,
-          business_monthly_income,
-          business_website,
-          source_of_funds,
-          monthly_income_estimate,
-          spouse_full_name,
-          spouse_phone_number,
-          spouse_occupation,
-          spouse_employer,
+          createFields: {
+            first_name: this.utilService.toSentenceCase(first_name),
+            last_name: this.utilService.toSentenceCase(last_name),
+            date_of_birth,
+            gender,
+            state_of_origin,
+            lga,
+            nationality,
+            employment_status,
+            marital_status,
+            employer_name,
+            job_title,
+            employer_address,
+            monthly_income,
+            work_email,
+            nature_of_business,
+            business_name,
+            business_address,
+            business_monthly_income,
+            business_website,
+            source_of_funds,
+            monthly_income_estimate,
+            spouse_full_name,
+            spouse_phone_number,
+            spouse_occupation,
+            spouse_employer,
+          },
         });
 
-        await manager.getRepository(Users).save(tenantUser);
-
-        // 3. Create tenant account
+        // 3. Find-or-create the account; password is only set for brand-new
+        // accounts (existing credentials keep working for all roles).
         const { hash: generatedPasswordHash } =
           await this.utilService.generatePassword();
 
-        const userAccount = manager.getRepository(Account).create({
-          user: tenantUser,
-          email,
-          password: generatedPasswordHash,
-          is_verified: true,
-          profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-          roles: [RolesEnum.TENANT],
-          creator_id: user_id,
-        });
-
-        await manager.getRepository(Account).save(userAccount);
+        const userAccount = await this.resolveTenantAccount(
+          manager,
+          tenantUser,
+          {
+            email,
+            creatorId: user_id,
+            passwordHash: generatedPasswordHash,
+            profileName: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          },
+        );
 
         property.property_status = PropertyStatusEnum.OCCUPIED;
         property.is_marketing_ready = false;
@@ -1320,32 +1445,18 @@ export class TenantManagementService {
         );
       }
 
-      // 5. Create account for tenant if it doesn't exist
-      let tenantAccount = await manager.getRepository(Account).findOne({
-        where: {
-          userId: tenantUser.id,
-          roles: ArrayContains([RolesEnum.TENANT]),
+      // 5. Find-or-create the tenant account. If this person already has an
+      // account under another role (landlord/FM/...), TENANT is appended to
+      // it instead of inserting a second account that would collide with the
+      // unique email index.
+      const tenantAccount = await this.resolveTenantAccount(
+        manager,
+        tenantUser,
+        {
+          email: email || tenantUser.email,
+          creatorId: landlordId,
         },
-      });
-
-      if (!tenantAccount) {
-        const accountEmail = tenantUser.email || email;
-        if (!accountEmail) {
-          throw new HttpException(
-            'Email is required to create tenant account',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-
-        tenantAccount = manager.getRepository(Account).create({
-          userId: tenantUser.id,
-          roles: [RolesEnum.TENANT],
-          email: accountEmail,
-        });
-        tenantAccount = await manager
-          .getRepository(Account)
-          .save(tenantAccount);
-      }
+      );
 
       // 5b. Upsert per-landlord tenant_kyc snapshot from the application data.
       // Keyed by (admin_id, phone_number) — the table's unique index — so

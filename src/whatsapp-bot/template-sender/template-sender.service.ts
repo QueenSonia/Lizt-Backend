@@ -1048,6 +1048,27 @@ export interface AdhocInvoiceLinkTenantParams {
 }
 
 /**
+ * Parameters for the combined "new charge + payment plan" notice to tenant.
+ * Sent INSTEAD of payment_plan_created_tenant when the landlord created the
+ * charge's invoice and its covering plan in one step (the plain invoice
+ * pay-link message is suppressed there — the invoice is born plan-covered).
+ * Button opens the FIRST installment's pay page, which already shows the full
+ * plan breakdown and takes payment.
+ */
+export interface AdhocInvoiceWithPlanTenantParams {
+  phone_number: string;
+  tenant_name: string;
+  /** Charge / invoice label. Landlord-typed — caller must sanitize. */
+  charge_name: string;
+  /** Combined "Name, Address". */
+  property_label: string;
+  total_amount: number;
+  /** Total installments in the plan, as a string. */
+  installment_count: string;
+  first_installment_id: string;
+}
+
+/**
  * Parameters for ad-hoc invoice paid receipt link to tenant
  */
 export interface AdhocInvoicePaidTenantParams {
@@ -5467,6 +5488,52 @@ export class TemplateSenderService {
   }
 
   /**
+   * Combined "new charge + payment plan" notice to tenant — one message that
+   * announces the invoice AND the plan created for it. Replaces the separate
+   * payment_plan_created_tenant send on the combo create path.
+   * Template: adhoc_invoice_with_plan_tenant
+   */
+  async sendAdhocInvoiceWithPlanTenant({
+    phone_number,
+    tenant_name,
+    charge_name,
+    property_label,
+    total_amount,
+    installment_count,
+    first_installment_id,
+  }: AdhocInvoiceWithPlanTenantParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'adhoc_invoice_with_plan_tenant',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: charge_name },
+              { type: 'text', text: property_label },
+              { type: 'text', text: `₦${total_amount.toLocaleString()}` },
+              { type: 'text', text: installment_count },
+            ],
+          },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: first_installment_id }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
    * Send ad-hoc invoice receipt link to tenant after payment.
    * Template: adhoc_invoice_paid_tenant
    */
@@ -5980,6 +6047,8 @@ export class TemplateSenderService {
       'Your tenant {{1}} has just completed their {{2}} payment plan at {{3}}.\n\nTotal received across all installments: {{4}}.\n\nThe plan has been closed automatically and no further reminders will be sent.',
     adhoc_invoice_link_tenant:
       'Hi {{1}},\n\nA new invoice for {{2}} has been issued to you.\n\nClick the button below to view the invoice and complete your payment.',
+    adhoc_invoice_with_plan_tenant:
+      'Hi {{1}},\n\nA new invoice has been issued to you, and your landlord has created a payment plan for it.\n\n*Invoice:* {{2}}\n*Property:* {{3}}\n\n*Total:* {{4}}\n*Number of installments:* {{5}}\n\nTap the button below to view your invoice, see your payment plan, and make your payment.',
     adhoc_invoice_paid_tenant:
       'Your payment of {{1}} has been received. Thank you.\n\nClick the button to view your receipt.',
     adhoc_invoice_paid_landlord:

@@ -595,8 +595,69 @@ export class PaymentPlansService {
     );
 
     const fullPlan = await this.getPlan(savedPlan.id);
-    await this.dispatchPlanCreatedNotifications(fullPlan);
+    // Combo-specific tenant message: announces the invoice AND the plan in one
+    // send (adhoc_invoice_with_plan_tenant) — NOT the generic plan-created one.
+    await this.dispatchNewChargePlanNotification(fullPlan);
     return fullPlan;
+  }
+
+  /**
+   * Tenant notice for the combined "new charge + plan" create. The button
+   * deep-links to the FIRST installment's pay page, which already shows the
+   * full plan breakdown and takes payment — same link target as the generic
+   * plan-created message.
+   */
+  private async dispatchNewChargePlanNotification(
+    plan: PaymentPlan,
+  ): Promise<void> {
+    try {
+      const tenantUser = plan.tenant?.user;
+      const tenantPhone = tenantUser?.phone_number
+        ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
+        : null;
+      if (!tenantPhone) return;
+
+      const installments = [...(plan.installments ?? [])].sort(
+        (a, b) => a.sequence - b.sequence,
+      );
+      const firstInstallment = installments[0];
+      if (!firstInstallment) return;
+
+      const property = plan.property;
+      // Combined "Name, Address" — mirrors the pay page and the plan-updated
+      // template's property label.
+      const propertyLabel =
+        [property?.name, property?.location].filter(Boolean).join(', ') ||
+        'your property';
+      const tenantName =
+        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+        'there';
+
+      await this.whatsappNotificationLog.queue(
+        'sendAdhocInvoiceWithPlanTenant',
+        {
+          phone_number: tenantPhone,
+          tenant_name: tenantName,
+          // Landlord-typed label, and the body wraps it in *…* — sanitize so
+          // stray whitespace can't break the bold markers or trip Meta 132018.
+          charge_name: this.utilService.sanitizeTemplateParam(
+            plan.charge_name,
+          ),
+          property_label: propertyLabel,
+          total_amount: Number(plan.total_amount),
+          installment_count: String(installments.length),
+          first_installment_id: firstInstallment.id,
+          landlord_id: property?.owner_id,
+          property_id: property?.id,
+          recipient_name: tenantName,
+        },
+        plan.id,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to queue new-charge plan WhatsApp for plan ${plan.id}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**

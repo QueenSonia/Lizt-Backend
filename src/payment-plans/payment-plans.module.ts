@@ -18,6 +18,7 @@ import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
 
+import { AdHocInvoicesModule } from '../ad-hoc-invoices/ad-hoc-invoices.module';
 import { NotificationModule } from '../notifications/notification.module';
 import { EventsModule } from '../events/events.module';
 import { PaymentsModule } from '../payments/payments.module';
@@ -44,6 +45,8 @@ import { ScopeModule } from '../common/scope/scope.module';
     ]),
     NotificationModule,
     EventsModule,
+    // forwardRef: AdHocInvoices → Payments → (webhooks) → PaymentPlans cycle.
+    forwardRef(() => AdHocInvoicesModule),
     forwardRef(() => PaymentsModule),
     forwardRef(() => TenanciesModule),
     TenantBalancesModule,

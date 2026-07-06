@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
@@ -118,60 +118,24 @@ export class AdHocInvoicesService {
       throw new BadRequestException('Invalid due date');
     }
 
-    const invoiceNumber = await this.generateInvoiceNumber();
-    const publicToken = uuidv4().replace(/-/g, '');
-
-    const saved = await this.dataSource.transaction(async (manager) => {
-      const invoice = manager.create(AdHocInvoice, {
-        invoice_number: invoiceNumber,
-        landlord_id: property.owner_id,
-        property_id: property.id,
-        property_tenant_id: propertyTenant.id,
-        tenant_id: propertyTenant.tenant_id,
-        public_token: publicToken,
-        total_amount: totalAmount,
-        status: AdHocInvoiceStatus.PENDING,
-        due_date: dueDate,
-        notes: dto.notes ?? null,
-        created_by_user_id: createdByUserId ?? null,
-      });
-      const savedInvoice = await manager.save(invoice);
-
-      const lineItems = dto.lineItems.map((item, idx) =>
-        manager.create(AdHocInvoiceLineItem, {
-          invoice_id: savedInvoice.id,
-          description: item.description.trim(),
+    const saved = await this.dataSource.transaction(async (manager) =>
+      this.createInvoiceCore(manager, {
+        propertyTenant,
+        lineItems: dto.lineItems.map((item) => ({
+          description: item.description,
           amount: Number(item.amount),
-          sequence: idx + 1,
-        }),
-      );
-      await manager.save(lineItems);
-
-      // Debit the tenant wallet — they now owe this amount.
-      await this.tenantBalancesService.applyChange(
-        propertyTenant.tenant_id,
-        property.owner_id,
-        -totalAmount,
-        {
-          type: TenantBalanceLedgerType.OB_CHARGE,
-          description: `Invoice ${invoiceNumber} — ₦${totalAmount.toLocaleString()}`,
-          propertyId: property.id,
-          relatedEntityType: 'ad_hoc_invoice',
-          relatedEntityId: savedInvoice.id,
-        },
-        undefined,
-        manager,
-      );
-
-      savedInvoice.line_items = lineItems;
-      return savedInvoice;
-    });
+        })),
+        dueDate,
+        notes: dto.notes ?? null,
+        createdByUserId: createdByUserId ?? null,
+      }),
+    );
 
     const fresh = await this.getInvoiceInternal(saved.id);
 
     await this.logInvoiceEvent(
       'ad_hoc_invoice_created',
-      `Invoice ${invoiceNumber} generated — ₦${totalAmount.toLocaleString()} (${dto.lineItems.length} line item${dto.lineItems.length === 1 ? '' : 's'})`,
+      `Invoice ${saved.invoice_number} generated — ₦${totalAmount.toLocaleString()} (${dto.lineItems.length} line item${dto.lineItems.length === 1 ? '' : 's'})`,
       fresh,
       NotificationType.AD_HOC_INVOICE_CREATED,
     );
@@ -179,6 +143,107 @@ export class AdHocInvoicesService {
     await this.dispatchInvoiceLinkNotification(fresh);
 
     return fresh;
+  }
+
+  /**
+   * Transactional core of invoice creation: invoice row + line items + the
+   * tenant-wallet debit. Shared with PaymentPlansService so a "new charge +
+   * plan" is created atomically in ONE transaction. Sends nothing and logs
+   * nothing — the caller owns all post-commit dispatch (the plan path
+   * deliberately suppresses the pay-link message because the invoice is born
+   * plan-covered and its public link would 409).
+   */
+  async createInvoiceCore(
+    manager: EntityManager,
+    args: {
+      propertyTenant: PropertyTenant;
+      lineItems: { description: string; amount: number }[];
+      dueDate: Date;
+      notes?: string | null;
+      createdByUserId?: string | null;
+    },
+  ): Promise<AdHocInvoice> {
+    const { propertyTenant } = args;
+    const property = propertyTenant.property;
+    const totalAmount = args.lineItems.reduce(
+      (sum, item) => sum + Number(item.amount),
+      0,
+    );
+
+    const invoiceNumber = await this.generateInvoiceNumber(manager);
+    const publicToken = uuidv4().replace(/-/g, '');
+
+    const invoice = manager.create(AdHocInvoice, {
+      invoice_number: invoiceNumber,
+      landlord_id: property.owner_id,
+      property_id: property.id,
+      property_tenant_id: propertyTenant.id,
+      tenant_id: propertyTenant.tenant_id,
+      public_token: publicToken,
+      total_amount: totalAmount,
+      status: AdHocInvoiceStatus.PENDING,
+      due_date: args.dueDate,
+      notes: args.notes ?? null,
+      created_by_user_id: args.createdByUserId ?? null,
+    });
+    const savedInvoice = await manager.save(invoice);
+
+    const lineItems = args.lineItems.map((item, idx) =>
+      manager.create(AdHocInvoiceLineItem, {
+        invoice_id: savedInvoice.id,
+        description: item.description.trim(),
+        amount: Number(item.amount),
+        sequence: idx + 1,
+      }),
+    );
+    await manager.save(lineItems);
+
+    // Debit the tenant wallet — they now owe this amount.
+    await this.tenantBalancesService.applyChange(
+      propertyTenant.tenant_id,
+      property.owner_id,
+      -totalAmount,
+      {
+        type: TenantBalanceLedgerType.OB_CHARGE,
+        description: `Invoice ${invoiceNumber} — ₦${totalAmount.toLocaleString()}`,
+        propertyId: property.id,
+        relatedEntityType: 'ad_hoc_invoice',
+        relatedEntityId: savedInvoice.id,
+      },
+      undefined,
+      manager,
+    );
+
+    savedInvoice.line_items = lineItems;
+    return savedInvoice;
+  }
+
+  /**
+   * Post-commit logging for an invoice born inside a payment-plan transaction.
+   * Mirrors createInvoice's created-event (livefeed + notification) but does
+   * NOT queue the tenant pay-link WhatsApp — the plan-created message is the
+   * one tenant-facing send for a combined "new charge + plan".
+   */
+  async logInvoiceCreatedByPlanEvent(invoiceId: string): Promise<void> {
+    const fresh = await this.getInvoiceInternal(invoiceId);
+    const count = fresh.line_items?.length ?? 1;
+    await this.logInvoiceEvent(
+      'ad_hoc_invoice_created',
+      `Invoice ${fresh.invoice_number} generated — ₦${Number(fresh.total_amount).toLocaleString()} (${count} line item${count === 1 ? '' : 's'})`,
+      fresh,
+      NotificationType.AD_HOC_INVOICE_CREATED,
+    );
+  }
+
+  /**
+   * Queue the tenant's public pay-link WhatsApp for an existing invoice — used
+   * when cancelling a payment plan re-opens the invoice and the landlord opted
+   * to send the link. The link charges total − amount_paid, so a partially
+   * collected plan leaves it asking for exactly the remainder.
+   */
+  async sendInvoiceLinkNotification(invoiceId: string): Promise<void> {
+    const fresh = await this.getInvoiceInternal(invoiceId);
+    await this.dispatchInvoiceLinkNotification(fresh);
   }
 
   async updateInvoice(
@@ -1145,10 +1210,15 @@ export class AdHocInvoicesService {
     return invoice;
   }
 
-  private async generateInvoiceNumber(): Promise<string> {
+  private async generateInvoiceNumber(
+    manager?: EntityManager,
+  ): Promise<string> {
     const year = new Date().getFullYear();
     const prefix = `AHI-${year}-`;
-    const last = await this.invoiceRepository
+    const repo = manager
+      ? manager.getRepository(AdHocInvoice)
+      : this.invoiceRepository;
+    const last = await repo
       .createQueryBuilder('inv')
       .where('inv.invoice_number LIKE :prefix', { prefix: `${prefix}%` })
       .orderBy('inv.invoice_number', 'DESC')

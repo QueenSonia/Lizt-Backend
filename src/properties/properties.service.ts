@@ -1436,6 +1436,7 @@ export class PropertiesService {
       propertyHistories,
       kycApplications,
       deletionEligibility,
+      landlordAccount,
     ] = await Promise.all([
       activeRent
         ? this.dataSource
@@ -1493,7 +1494,21 @@ export class PropertiesService {
         property.id,
         property.property_status as PropertyStatusEnum,
       ),
+      // Owning landlord's display name for the detail-page header. owner_id is
+      // Account.id; join the user for the first/last-name fallback.
+      this.accountRepository.findOne({
+        where: { id: property.owner_id },
+        relations: ['user'],
+      }),
     ]);
+
+    // Landlord (owner) display name — profile_name, else first+last, else blank.
+    const landlordName =
+      landlordAccount?.profile_name?.trim() ||
+      `${landlordAccount?.user?.first_name ?? ''} ${
+        landlordAccount?.user?.last_name ?? ''
+      }`.trim() ||
+      '';
 
     // Current tenant information
     let currentTenant: any | null = null;
@@ -2790,6 +2805,10 @@ export class PropertiesService {
       id: property.id,
       name: property.name,
       address: property.location,
+      // Owning landlord — Account.id (= owner_id) + display name, for the
+      // detail-page header's clickable "Landlord: …" line.
+      landlordId: property.owner_id,
+      landlordName,
       type: property.property_type,
       bedrooms: property.no_of_bedrooms,
       bathrooms: property.no_of_bathrooms,

@@ -847,6 +847,15 @@ export class AdHocInvoicesService {
     }
 
     if (invoice.status === AdHocInvoiceStatus.PAID) {
+      // Same reference = the charge that paid this invoice being confirmed
+      // again (webhook + redirect-verify race). Only one charge exists, so
+      // there is nothing to refund — don't raise an alarm on the timeline.
+      if (invoice.payment_reference === data.reference) {
+        this.logger.log(
+          `Invoice ${invoice.id} already paid by reference ${data.reference} — same charge confirmed twice, ignoring`,
+        );
+        return;
+      }
       this.logger.warn(
         `Duplicate Paystack payment for already-paid invoice ${invoice.id} (ref: ${data.reference})`,
       );

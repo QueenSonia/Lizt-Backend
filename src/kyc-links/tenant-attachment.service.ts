@@ -9,6 +9,7 @@ import { KYCLink } from './entities/kyc-link.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import { PROPERTY_LEVEL_EVENT_TYPES } from '../property-history/property-history.constants';
 import { rejectOtherPendingApplications } from './reject-other-applications';
 import { Rent } from '../rents/entities/rent.entity';
 import { Account } from '../users/entities/account.entity';
@@ -345,11 +346,33 @@ export class TenantAttachmentService {
 
     console.log('KYC application updated to APPROVED');
 
-    // Backfill tenant_id on applicant-phase property history records
-    // These events (KYC submitted, offer letter sent/accepted, invoice generated/sent, etc.)
-    // were created before the tenant account existed, so they have tenant_id = NULL
+    // Backfill tenant_id on applicant-phase property history records.
+    // These events were created before the tenant account existed, so they
+    // have tenant_id = NULL. Two scopes, claimed separately:
+    //   1. THIS application's journey rows (form viewed, submitted, staged
+    //      entries replay left untouched) — matched by application id, across
+    //      any property, because an applicant can be attached to a different
+    //      property than the one they applied for.
+    //   2. Tenant-relevant pre-attach rows on the attach property (offer
+    //      letter, invoice, payment events) that carry no application id.
+    // Never claimed: other applications' rows (they belong to applicants who
+    // may be attached later — stealing them starves their replay), anonymous
+    // kyc_link form views (not attributable to one applicant), and
+    // property-level events (property/marketing changes are not tenant
+    // events).
     try {
-      const backfillResult = await manager
+      const journeyResult = await manager
+        .createQueryBuilder()
+        .update(PropertyHistory)
+        .set({ tenant_id: tenantAccount.id })
+        .where("related_entity_type = 'kyc_application'")
+        .andWhere('related_entity_id = :applicationId', {
+          applicationId: application.id,
+        })
+        .andWhere('tenant_id IS NULL')
+        .execute();
+
+      const propertyResult = await manager
         .createQueryBuilder()
         .update(PropertyHistory)
         .set({ tenant_id: tenantAccount.id })
@@ -357,10 +380,16 @@ export class TenantAttachmentService {
           propertyId: offerLetter.property_id,
         })
         .andWhere('tenant_id IS NULL')
+        .andWhere(
+          "(related_entity_type IS NULL OR related_entity_type NOT IN ('kyc_application', 'kyc_link'))",
+        )
+        .andWhere('event_type NOT IN (:...propertyLevelEvents)', {
+          propertyLevelEvents: PROPERTY_LEVEL_EVENT_TYPES,
+        })
         .execute();
 
       console.log(
-        `Backfilled tenant_id on ${backfillResult.affected} applicant-phase property history records`,
+        `Backfilled tenant_id on ${journeyResult.affected} application journey rows and ${propertyResult.affected} pre-attach property rows`,
       );
     } catch (backfillError) {
       console.error(

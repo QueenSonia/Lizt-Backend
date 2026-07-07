@@ -21,7 +21,6 @@ import {
 } from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
-import { Users } from '../users/entities/user.entity';
 import { PropertyStatusEnum } from '../properties/dto/create-property.dto';
 import { CreateOfferLetterDto } from './dto/create-offer-letter.dto';
 import {
@@ -36,6 +35,8 @@ import { PDFGeneratorService } from './pdf-generator.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { InvoicesService } from '../invoices/invoices.service';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 /**
  * OfferLetterService
@@ -66,6 +67,7 @@ export class OfferLettersService {
     @Inject(forwardRef(() => InvoicesService))
     private readonly invoicesService: InvoicesService,
     private readonly configService: ConfigService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   /**
@@ -270,9 +272,8 @@ export class OfferLettersService {
 
     // Create property history event
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -421,9 +422,8 @@ export class OfferLettersService {
 
     // Create property history event for offer letter sent
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -772,9 +772,8 @@ export class OfferLettersService {
 
     // Create history entry for invoice sent
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -804,9 +803,8 @@ export class OfferLettersService {
 
     // Create history entry for offer letter acceptance
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -855,17 +853,12 @@ export class OfferLettersService {
     status: 'accepted' | 'rejected',
   ): Promise<void> {
     try {
-      // Phone number and name live on the Users entity, not Account
-      const landlordAccount = await this.propertyRepository.manager
-        .getRepository('Account')
-        .findOne({
-          where: { id: offerLetter.landlord_id },
-          relations: ['user'],
-        });
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        offerLetter.landlord_id,
+        NotificationCategory.OFFER_LETTERS,
+      );
 
-      const landlordUser = (landlordAccount as { user?: Users })?.user;
-
-      if (!landlordUser || !landlordUser.phone_number) {
+      if (!recipients.some((r) => r.phone)) {
         this.logger.warn(
           `Could not notify landlord ${offerLetter.landlord_id} - no phone number`,
         );
@@ -873,20 +866,18 @@ export class OfferLettersService {
       }
 
       const tenantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
-      const landlordAccountForName = landlordAccount as { profile_name?: string };
-      const landlordName =
-        landlordAccountForName?.profile_name ||
-        `${landlordUser.first_name || ''} ${landlordUser.last_name || ''}`.trim() ||
-        'Landlord';
 
-      await this.templateSenderService.sendOfferLetterStatusNotification({
-        phone_number: landlordUser.phone_number,
-        landlord_name: landlordName,
-        tenant_name: tenantName,
-        property_name: property.name,
-        property_id: property.id,
-        status,
-      });
+      for (const recipient of recipients) {
+        if (!recipient.phone) continue;
+        await this.templateSenderService.sendOfferLetterStatusNotification({
+          phone_number: recipient.phone,
+          landlord_name: recipient.name,
+          tenant_name: tenantName,
+          property_name: property.name,
+          property_id: property.id,
+          status,
+        });
+      }
 
       this.logger.log(
         `Landlord notified of offer ${status} for token ${offerLetter.token.substring(0, 8)}...`,
@@ -969,9 +960,8 @@ export class OfferLettersService {
 
     // Create history entry for offer letter rejection
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -1266,9 +1256,8 @@ export class OfferLettersService {
 
     // Create history entry for this offer letter view event
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -1332,9 +1321,8 @@ export class OfferLettersService {
     assertLandlordInScope(managedLandlordIds, offerLetter.landlord_id);
 
     // Get property history events for this offer letter
-    const { PropertyHistory } = await import(
-      '../property-history/entities/property-history.entity'
-    );
+    const { PropertyHistory } =
+      await import('../property-history/entities/property-history.entity');
     const propertyHistoryRepo =
       this.offerLetterRepository.manager.getRepository(PropertyHistory);
 

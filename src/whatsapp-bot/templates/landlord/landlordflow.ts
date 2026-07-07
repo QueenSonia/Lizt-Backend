@@ -37,12 +37,9 @@ import { WhatsAppNotificationLogService } from 'src/whatsapp-bot/whatsapp-notifi
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import {
-  rentToFees,
-  nextPeriodFees,
-  Fee,
-} from 'src/common/billing/fees';
+import { rentToFees, nextPeriodFees, Fee } from 'src/common/billing/fees';
 import { computeRenewalFold } from 'src/common/billing/renewal-fold';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 
 @Injectable()
 export class LandlordFlow {
@@ -85,6 +82,7 @@ export class LandlordFlow {
     private readonly eventEmitter: EventEmitter2,
     private readonly maintenanceRequestsService: MaintenanceRequestsService,
     private readonly chatService: ChatService,
+    private readonly scopeService: ManagementScopeService,
   ) {
     const config = new ConfigService();
     this.whatsappUtil = new WhatsappUtils(config, chatLogService);
@@ -97,6 +95,7 @@ export class LandlordFlow {
       maintenanceRequestRepo,
       utilService,
       kycLinksService,
+      scopeService,
       chatLogService,
     );
   }
@@ -132,9 +131,7 @@ export class LandlordFlow {
     // because it shadows every other state — once the user starts a reply
     // they almost certainly mean to finish it, and the alternative
     // (treating their text as a digit reply) is confusing.
-    const chatReplyState = await this.cache.get(
-      `chat_awaiting_reply_${from}`,
-    );
+    const chatReplyState = await this.cache.get(`chat_awaiting_reply_${from}`);
     if (chatReplyState) {
       await this.handleMrChatReplyText(from, text, chatReplyState);
       return;
@@ -160,7 +157,9 @@ export class LandlordFlow {
       return;
     }
 
-    const raw = await this.cache.get(`maintenance_request_state_landlord_${from}`);
+    const raw = await this.cache.get(
+      `maintenance_request_state_landlord_${from}`,
+    );
     if (!raw) {
       await this.lookup.handleExitOrMenu(from, text);
       return;
@@ -209,7 +208,15 @@ export class LandlordFlow {
 
     const sr = await this.maintenanceRequestRepo.findOne({
       where: { id: ids[idx] },
-      relations: ['property', 'common_area', 'tenant', 'tenant.user', 'facilityManager', 'facilityManager.account', 'facilityManager.account.user'],
+      relations: [
+        'property',
+        'common_area',
+        'tenant',
+        'tenant.user',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
     });
 
     if (!sr) {
@@ -225,9 +232,15 @@ export class LandlordFlow {
     const reporter = sr.tenant?.user
       ? `${sr.tenant.user.first_name} ${sr.tenant.user.last_name}`.trim()
       : sr.tenant_name || 'Facility manager';
-    const assignee = sr.facilityManager?.account?.profile_name
-      || [sr.facilityManager?.account?.user?.first_name, sr.facilityManager?.account?.user?.last_name].filter(Boolean).join(' ')
-      || null;
+    const assignee =
+      sr.facilityManager?.account?.profile_name ||
+      [
+        sr.facilityManager?.account?.user?.first_name,
+        sr.facilityManager?.account?.user?.last_name,
+      ]
+        .filter(Boolean)
+        .join(' ') ||
+      null;
 
     const lines = [
       `*${sr.description}*`,
@@ -294,16 +307,24 @@ export class LandlordFlow {
       return;
     }
 
-    const latestRent = pt.property?.rents?.[pt.property.rents.length - 1] || null;
+    const latestRent =
+      pt.property?.rents?.[pt.property.rents.length - 1] || null;
     const tenantName = pt.tenant?.user
       ? `${pt.tenant.user.first_name} ${pt.tenant.user.last_name}`.trim()
       : 'Vacant';
     const tenantPhone = pt.tenant?.user?.phone_number || '—';
     const rentAmount = latestRent?.rental_price
-      ? Number(latestRent.rental_price).toLocaleString('en-NG', { style: 'currency', currency: 'NGN' })
+      ? Number(latestRent.rental_price).toLocaleString('en-NG', {
+          style: 'currency',
+          currency: 'NGN',
+        })
       : '——';
     const expiry = latestRent?.expiry_date
-      ? new Date(latestRent.expiry_date).toLocaleDateString('en-NG', { year: 'numeric', month: 'short', day: 'numeric' })
+      ? new Date(latestRent.expiry_date).toLocaleDateString('en-NG', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        })
       : '——';
 
     const lines = [
@@ -450,6 +471,17 @@ export class LandlordFlow {
 
     if (!invoice) {
       await this.whatsappUtil.sendText(from, 'This request was not found.');
+      return;
+    }
+
+    // Ownership guard: only the owning landlord or their managing admin may
+    // approve. Previously any phone that replayed the button payload could.
+    const actor = await this.resolveActor(from);
+    if (!actor || !actor.landlordIds.includes(invoice.property.owner_id)) {
+      await this.whatsappUtil.sendText(
+        from,
+        'You do not have access to this request.',
+      );
       return;
     }
 
@@ -666,6 +698,16 @@ export class LandlordFlow {
       return;
     }
 
+    // Same ownership guard as the approve path.
+    const actor = await this.resolveActor(from);
+    if (!actor || !actor.landlordIds.includes(invoice.property.owner_id)) {
+      await this.whatsappUtil.sendText(
+        from,
+        'You do not have access to this request.',
+      );
+      return;
+    }
+
     if (invoice.superseded_by_id) {
       await this.whatsappUtil.sendText(
         from,
@@ -718,39 +760,71 @@ export class LandlordFlow {
   // ------------------------
 
   /**
-   * Resolve the landlord's Account (and underlying Users row) from the
-   * inbound phone number. Returns null if no landlord account is wired
-   * up for that phone.
+   * Resolve the acting operator from the inbound phone number: an ADMIN
+   * (property manager) account acting for every landlord it manages, or a
+   * plain LANDLORD account acting for itself. `landlordIds` is the set of
+   * landlord Account.ids the actor may act on (owner columns hold landlord
+   * ids, never admin ids). Returns null if the phone maps to neither role.
    */
-  private async resolveLandlordAccount(
-    from: string,
-  ): Promise<{ accountId: string; user: Users; account: Account } | null> {
+  private async resolveActor(from: string): Promise<{
+    accountId: string;
+    user: Users;
+    account: Account;
+    landlordIds: string[];
+    isAdmin: boolean;
+  } | null> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
     const user = await this.usersRepo.findOne({
       where: { phone_number: normalizedPhone },
       relations: ['accounts'],
     });
     if (!user) return null;
+
+    const adminAccount = user.accounts?.find((a) =>
+      accountHasRole(a, RolesEnum.ADMIN),
+    );
+    if (adminAccount) {
+      const landlordIds = await this.scopeService.resolveManagedLandlordIds(
+        adminAccount.id,
+      );
+      return {
+        accountId: adminAccount.id,
+        user,
+        account: adminAccount,
+        landlordIds,
+        isAdmin: true,
+      };
+    }
+
     const landlordAccount = user.accounts?.find((a) =>
       accountHasRole(a, RolesEnum.LANDLORD),
     );
     if (!landlordAccount) return null;
-    return { accountId: landlordAccount.id, user, account: landlordAccount };
+    return {
+      accountId: landlordAccount.id,
+      user,
+      account: landlordAccount,
+      landlordIds: [landlordAccount.id],
+      isAdmin: false,
+    };
   }
 
   /**
    * Ownership check for a maintenance request, mirroring the service-layer
-   * MaintenanceRequestsService.assertLandlordOwnsRequest. Both owner columns
-   * (property.owner_id and common_area.owner_id) hold the landlord's
-   * Account.id, so a direct compare covers both scopes.
+   * MaintenanceRequestsService.assertLandlordOwnsRequest (which also admits
+   * managing admins). Both owner columns (property.owner_id and
+   * common_area.owner_id) hold a landlord's Account.id, so membership in
+   * the actor's landlord set covers both scopes and both personas.
    */
-  private landlordOwnsRequest(
+  private actorOwnsRequest(
     sr: MaintenanceRequest,
-    landlord: { accountId: string },
+    actor: { landlordIds: string[] },
   ): boolean {
     const ownerAccountId =
       sr.property?.owner_id ?? sr.common_area?.owner_id ?? null;
-    return ownerAccountId === landlord.accountId;
+    return (
+      ownerAccountId !== null && actor.landlordIds.includes(ownerAccountId)
+    );
   }
 
   /**
@@ -792,7 +866,7 @@ export class LandlordFlow {
     from: string,
     requestId: string,
   ): Promise<void> {
-    const landlord = await this.resolveLandlordAccount(from);
+    const landlord = await this.resolveActor(from);
     if (!landlord) {
       await this.whatsappUtil.sendText(
         from,
@@ -803,14 +877,20 @@ export class LandlordFlow {
 
     const sr = await this.maintenanceRequestRepo.findOne({
       where: { id: requestId },
-      relations: ['property', 'common_area', 'facilityManager', 'facilityManager.account', 'facilityManager.account.user'],
+      relations: [
+        'property',
+        'common_area',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
     });
     if (!sr) {
       await this.whatsappUtil.sendText(from, 'This request was not found.');
       return;
     }
 
-    if (!this.landlordOwnsRequest(sr, landlord)) {
+    if (!this.actorOwnsRequest(sr, landlord)) {
       await this.whatsappUtil.sendText(
         from,
         'You do not have access to this request.',
@@ -822,13 +902,21 @@ export class LandlordFlow {
       const assigneeName = sr.facilityManager
         ? this.fmDisplayName(sr.facilityManager)
         : null;
-      await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+      await this.whatsappUtil.sendText(
+        from,
+        this.staleTapReply(sr, assigneeName),
+      );
       return;
     }
 
+    // Key the FM team off the REQUEST's owning landlord, not the actor —
+    // an admin acts across many landlords, and findTeamFmsForLandlord
+    // already resolves a landlord up to its managing admin's team.
+    const requestOwnerId =
+      sr.property?.owner_id ?? sr.common_area?.owner_id ?? landlord.accountId;
     const teamFms =
       await this.maintenanceRequestsService.findTeamFmsForLandlord(
-        landlord.accountId,
+        requestOwnerId,
       );
 
     if (!teamFms.length) {
@@ -890,7 +978,7 @@ export class LandlordFlow {
 
     const teamMemberId = state.fmIds[selectedIndex];
 
-    const landlord = await this.resolveLandlordAccount(from);
+    const landlord = await this.resolveActor(from);
     if (!landlord) {
       await this.cache.delete(`maintenance_approve_state_${from}`);
       await this.whatsappUtil.sendText(
@@ -919,7 +1007,10 @@ export class LandlordFlow {
     } catch (err) {
       const message = (err as { message?: string })?.message ?? '';
       const status = (err as { status?: number })?.status;
-      if (status === 409 || message.toLowerCase().includes('no longer pending approval')) {
+      if (
+        status === 409 ||
+        message.toLowerCase().includes('no longer pending approval')
+      ) {
         const sr = await this.maintenanceRequestRepo.findOne({
           where: { id: state.requestId },
           relations: [
@@ -932,7 +1023,10 @@ export class LandlordFlow {
           const assigneeName = sr.facilityManager
             ? this.fmDisplayName(sr.facilityManager)
             : null;
-          await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+          await this.whatsappUtil.sendText(
+            from,
+            this.staleTapReply(sr, assigneeName),
+          );
           await this.cache.delete(`maintenance_approve_state_${from}`);
           return;
         }
@@ -952,7 +1046,7 @@ export class LandlordFlow {
     from: string,
     requestId: string,
   ): Promise<void> {
-    const landlord = await this.resolveLandlordAccount(from);
+    const landlord = await this.resolveActor(from);
     if (!landlord) {
       await this.whatsappUtil.sendText(
         from,
@@ -976,7 +1070,7 @@ export class LandlordFlow {
       return;
     }
 
-    if (!this.landlordOwnsRequest(sr, landlord)) {
+    if (!this.actorOwnsRequest(sr, landlord)) {
       await this.whatsappUtil.sendText(
         from,
         'You do not have access to this request.',
@@ -988,7 +1082,10 @@ export class LandlordFlow {
       const assigneeName = sr.facilityManager
         ? this.fmDisplayName(sr.facilityManager)
         : null;
-      await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+      await this.whatsappUtil.sendText(
+        from,
+        this.staleTapReply(sr, assigneeName),
+      );
       return;
     }
 
@@ -1012,7 +1109,7 @@ export class LandlordFlow {
     from: string,
     requestId: string,
   ): Promise<void> {
-    const landlord = await this.resolveLandlordAccount(from);
+    const landlord = await this.resolveActor(from);
     if (!landlord) {
       await this.whatsappUtil.sendText(
         from,
@@ -1037,7 +1134,7 @@ export class LandlordFlow {
       await this.whatsappUtil.sendText(from, 'This request was not found.');
       return;
     }
-    if (!this.landlordOwnsRequest(sr, landlord)) {
+    if (!this.actorOwnsRequest(sr, landlord)) {
       await this.whatsappUtil.sendText(
         from,
         'You do not have access to this request.',
@@ -1048,7 +1145,10 @@ export class LandlordFlow {
       const assigneeName = sr.facilityManager
         ? this.fmDisplayName(sr.facilityManager)
         : null;
-      await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+      await this.whatsappUtil.sendText(
+        from,
+        this.staleTapReply(sr, assigneeName),
+      );
       return;
     }
 
@@ -1075,7 +1175,7 @@ export class LandlordFlow {
       return;
     }
 
-    const landlord = await this.resolveLandlordAccount(from);
+    const landlord = await this.resolveActor(from);
     if (!landlord) {
       await this.cache.delete(`maintenance_reject_state_${from}`);
       await this.whatsappUtil.sendText(
@@ -1104,7 +1204,10 @@ export class LandlordFlow {
     } catch (err) {
       const message = (err as { message?: string })?.message ?? '';
       const status = (err as { status?: number })?.status;
-      if (status === 409 || message.toLowerCase().includes('no longer pending approval')) {
+      if (
+        status === 409 ||
+        message.toLowerCase().includes('no longer pending approval')
+      ) {
         const sr = await this.maintenanceRequestRepo.findOne({
           where: { id: state.requestId },
           relations: [
@@ -1117,7 +1220,10 @@ export class LandlordFlow {
           const assigneeName = sr.facilityManager
             ? this.fmDisplayName(sr.facilityManager)
             : null;
-          await this.whatsappUtil.sendText(from, this.staleTapReply(sr, assigneeName));
+          await this.whatsappUtil.sendText(
+            from,
+            this.staleTapReply(sr, assigneeName),
+          );
           await this.cache.delete(`maintenance_reject_state_${from}`);
           return;
         }
@@ -1157,9 +1263,11 @@ export class LandlordFlow {
   // MR chat — Quick reply via WhatsApp
   // ──────────────────────────────────────────────────────────────────────
 
-  // Resolves any team account for this phone — landlord OR facility_manager.
-  // The chat reply template can land on either role, so we pick whichever
-  // account fits. Preference order: LANDLORD first (more authority), then FM.
+  // Resolves any team account for this phone — admin, landlord OR
+  // facility_manager. The chat reply template can land on any of them, so we
+  // pick whichever account fits. Preference order: ADMIN first (the
+  // property-manager operator persona; ChatService.resolveWriteRole stamps a
+  // managing admin as the LANDLORD sender), then LANDLORD, then FM.
   private async resolveTeamAccount(from: string): Promise<Account | null> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
     const user = await this.usersRepo.findOne({
@@ -1167,15 +1275,18 @@ export class LandlordFlow {
       relations: ['accounts'],
     });
     if (!user) return null;
+    const adminAccount = user.accounts?.find((a) =>
+      accountHasRole(a, RolesEnum.ADMIN),
+    );
+    if (adminAccount) return { ...adminAccount, user };
     const landlordAccount = user.accounts?.find((a) =>
       accountHasRole(a, RolesEnum.LANDLORD),
     );
-    if (landlordAccount)
-      return { ...landlordAccount, user } as Account;
+    if (landlordAccount) return { ...landlordAccount, user };
     const fmAccount = user.accounts?.find((a) =>
       accountHasRole(a, RolesEnum.FACILITY_MANAGER),
     );
-    if (fmAccount) return { ...fmAccount, user } as Account;
+    if (fmAccount) return { ...fmAccount, user };
     return null;
   }
 
@@ -1285,7 +1396,7 @@ export class LandlordFlow {
         requestId: state.mr_id,
         // Cast: ChatService treats the account as the JWT-style overlay
         // (full Account + scalar id). The shape matches at runtime.
-        authorAccount: account as Account & { id: string },
+        authorAccount: account,
         activeRole: account.roles?.[0] ?? RolesEnum.LANDLORD,
         content: text,
       });

@@ -13,6 +13,7 @@ import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { UtilsModule } from '../utils/utils.module';
 import { AppCacheModule } from '../lib/cache';
 import { PdfModule } from '../pdf/pdf.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { PdfModule } from '../pdf/pdf.module';
     AppCacheModule,
     PdfModule,
     RenewalChargeModule,
+    NotifyModule,
   ],
   controllers: [RenewalLettersController],
   providers: [RenewalLettersService, RenewalLetterOtpService],

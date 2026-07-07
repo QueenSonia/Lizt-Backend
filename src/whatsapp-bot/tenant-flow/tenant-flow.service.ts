@@ -60,6 +60,8 @@ import {
 } from 'src/common/billing/fees';
 import { computeRenewalFold } from 'src/common/billing/renewal-fold';
 import { nextPeriodEndInclusive } from 'src/common/utils/rent-date.util';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 /** Verified lease facts for the AI tenancy-info branch (amounts pre-formatted). */
 export interface TenancyDetails {
@@ -175,6 +177,7 @@ export class TenantFlowService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly nextPeriodStateResolver: NextPeriodStateResolver,
     private readonly eventEmitter: EventEmitter2,
+    private readonly notificationRecipients: NotificationRecipientsService,
     @Inject(forwardRef(() => TenantAiService))
     private readonly tenantAiService: TenantAiService,
   ) {}
@@ -384,7 +387,8 @@ export class TenantFlowService {
     );
     return {
       tenantUserId: user.id,
-      firstName: this.utilService.toSentenceCase(user.first_name ?? '') || undefined,
+      firstName:
+        this.utilService.toSentenceCase(user.first_name ?? '') || undefined,
       properties,
       pendingConfirmations,
     };
@@ -643,7 +647,8 @@ export class TenantFlowService {
     const tenantLocalPhone = this.toLocalPhone(user.phone_number);
     const tenantName = `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`;
     const formattedDate = this.formatDateLagos(createdAt);
-    const safeRequest = this.utilService.sanitizeTemplateParam(maintenanceRequest);
+    const safeRequest =
+      this.utilService.sanitizeTemplateParam(maintenanceRequest);
 
     for (const manager of facilityManagers) {
       const params: FacilityMaintenanceRequestParams = {
@@ -682,19 +687,26 @@ export class TenantFlowService {
   ): Promise<void> {
     const property = await this.propertyRepo.findOne({
       where: { id: propertyId },
-      relations: ['owner', 'owner.user'],
+      select: { id: true, owner_id: true },
     });
 
-    if (!property?.owner?.user?.phone_number) {
+    if (!property) {
+      this.logger.warn(
+        `Cannot notify landlord: property ${propertyId} not found`,
+      );
+      return;
+    }
+
+    const recipients = await this.notificationRecipients.resolveRecipients(
+      property.owner_id,
+      NotificationCategory.MAINTENANCE,
+    );
+    if (!recipients.length) {
       this.logger.warn(
         `Cannot notify landlord: owner data missing for property ${propertyId}`,
       );
       return;
     }
-
-    const adminPhoneNumber = this.utilService.normalizePhoneNumber(
-      property.owner.user.phone_number,
-    );
 
     const tenantLocalPhone = this.toLocalPhone(user.phone_number);
 
@@ -710,27 +722,32 @@ export class TenantFlowService {
       return;
     }
 
-    const params: FacilityMaintenanceRequestParams = {
-      phone_number: adminPhoneNumber,
-      manager_name: this.utilService.toSentenceCase(
-        property.owner.user.first_name,
-      ),
-      property_name: propertyName,
-      property_location: propertyLocation,
-      maintenance_request:
-        this.utilService.sanitizeTemplateParam(maintenanceRequest),
-      tenant_name: `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`,
-      tenant_phone_number: tenantLocalPhone,
-      date_created: this.formatDateLagos(createdAt),
-      is_landlord: true,
-      maintenance_request_id: maintenanceRequestId,
-    };
+    for (const [index, recipient] of recipients.entries()) {
+      if (!recipient.phone) continue;
+      const params: FacilityMaintenanceRequestParams = {
+        phone_number: recipient.phone,
+        manager_name: this.utilService.toSentenceCase(recipient.name),
+        property_name: propertyName,
+        property_location: propertyLocation,
+        maintenance_request:
+          this.utilService.sanitizeTemplateParam(maintenanceRequest),
+        tenant_name: `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`,
+        tenant_phone_number: tenantLocalPhone,
+        date_created: this.formatDateLagos(createdAt),
+        is_landlord: true,
+        maintenance_request_id: maintenanceRequestId,
+      };
 
-    await this.notificationLogService.queue(
-      'sendFacilityMaintenanceRequest',
-      params,
-      maintenanceRequestId,
-    );
+      // Primary recipient keeps the bare reference id (existing dedup keys
+      // on it); any additional recipient gets an account-suffixed one.
+      await this.notificationLogService.queue(
+        'sendFacilityMaintenanceRequest',
+        params,
+        index === 0
+          ? maintenanceRequestId
+          : `${maintenanceRequestId}:${recipient.accountId}`,
+      );
+    }
   }
 
   /**
@@ -1056,7 +1073,10 @@ export class TenantFlowService {
           'Please confirm your tenancy details using the buttons above to continue.',
         );
       } else {
-        await this.handleConfirmTenancyDetails(from, unconfirmed[0].property_id);
+        await this.handleConfirmTenancyDetails(
+          from,
+          unconfirmed[0].property_id,
+        );
         await this.cache.set(shownKey, '1', this.SESSION_TIMEOUT_MS);
       }
       return true;
@@ -1341,7 +1361,9 @@ export class TenantFlowService {
         // property dropdown is populated without an endpoint INIT round-trip.
         flow_action_data: {
           mode: 'create',
-          heading: seed ? 'Add details to your request' : 'Report a maintenance issue',
+          heading: seed
+            ? 'Add details to your request'
+            : 'Report a maintenance issue',
           description_label: seed ? 'Add more details' : 'Describe the issue',
           has_multiple_properties: properties.length > 1,
           properties,
@@ -1445,11 +1467,12 @@ export class TenantFlowService {
     requestId: string;
     addition: string;
   }): Promise<boolean> {
-    const updated = await this.maintenanceRequestService.appendTenantRequestDetail(
-      params.requestId,
-      params.tenantUserId,
-      params.addition,
-    );
+    const updated =
+      await this.maintenanceRequestService.appendTenantRequestDetail(
+        params.requestId,
+        params.tenantUserId,
+        params.addition,
+      );
     return !!updated;
   }
 
@@ -1461,7 +1484,9 @@ export class TenantFlowService {
    */
   async findResolvedAwaitingConfirmation(
     tenantUserId: string,
-  ): Promise<Array<{ requestId: string; description: string; resolvedOn: string }>> {
+  ): Promise<
+    Array<{ requestId: string; description: string; resolvedOn: string }>
+  > {
     const rows = await this.maintenanceRequestRepo.find({
       where: {
         tenant: { user: { id: tenantUserId } },
@@ -1501,10 +1526,11 @@ export class TenantFlowService {
       relations: ['tenant', 'tenant.user'],
     });
     if (!row) return false;
-    const ok = await this.maintenanceRequestService.confirmTenantRequestResolved(
-      row.id,
-      params.tenantUserId,
-    );
+    const ok =
+      await this.maintenanceRequestService.confirmTenantRequestResolved(
+        row.id,
+        params.tenantUserId,
+      );
     if (ok && row.property_id) {
       const safe = this.utilService.sanitizeTemplateParam(row.description);
       await this.notifyPropertyStakeholders(row.property_id, (phone) =>
@@ -1909,7 +1935,11 @@ export class TenantFlowService {
       pending.description = [pending.description, trimmed]
         .filter((s) => (s ?? '').trim())
         .join('\n');
-      await this.cache.setWithTtlSeconds(`pending_create_${from}`, pending, 900);
+      await this.cache.setWithTtlSeconds(
+        `pending_create_${from}`,
+        pending,
+        900,
+      );
     }
     await this.resolvePropertyAndCreate(from);
   }
@@ -2286,11 +2316,13 @@ export class TenantFlowService {
   }
 
   /**
-   * Fan out a per-recipient send to the property's landlord + every FM on
-   * the landlord's team. The caller passes a closure that knows which
-   * template (and params) to send for each normalized phone — this keeps
-   * the fan-out logic template-agnostic so new MR-status notifications can
-   * reuse it without piling on overloads.
+   * Fan out a per-recipient send to the property's owner-side recipients
+   * (the managing admin — and, once subscribed, the landlord) + every FM on
+   * the team. The caller passes a closure that knows which template (and
+   * params) to send for each normalized phone — this keeps the fan-out
+   * logic template-agnostic so new MR-status notifications can reuse it
+   * without piling on overloads. Phones are de-duped across legs (an admin
+   * who is also on the FM team gets one message).
    */
   private async notifyPropertyStakeholders(
     propertyId: string,
@@ -2299,28 +2331,34 @@ export class TenantFlowService {
     try {
       const property = await this.propertyRepo.findOne({
         where: { id: propertyId },
-        relations: ['owner', 'owner.user'],
+        select: { id: true, owner_id: true },
       });
 
       if (!property) return;
 
-      if (property.owner?.user?.phone_number) {
-        await send(
-          this.utilService.normalizePhoneNumber(
-            property.owner.user.phone_number,
-          ),
-        );
+      const seenPhones = new Set<string>();
+
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        property.owner_id,
+        NotificationCategory.MAINTENANCE,
+      );
+      for (const recipient of recipients) {
+        if (!recipient.phone || seenPhones.has(recipient.phone)) continue;
+        seenPhones.add(recipient.phone);
+        await send(recipient.phone);
       }
 
       const fms = await this.maintenanceRequestService.findTeamFmsForLandlord(
         property.owner_id,
       );
       for (const fm of fms) {
-        if (fm.account?.user?.phone_number) {
-          await send(
-            this.utilService.normalizePhoneNumber(fm.account.user.phone_number),
-          );
-        }
+        if (!fm.account?.user?.phone_number) continue;
+        const phone = this.utilService.normalizePhoneNumber(
+          fm.account.user.phone_number,
+        );
+        if (seenPhones.has(phone)) continue;
+        seenPhones.add(phone);
+        await send(phone);
       }
     } catch (error) {
       this.logger.error('Failed to notify property stakeholders:', error);
@@ -3084,8 +3122,7 @@ export class TenantFlowService {
     const todayMidnight = new Date();
     todayMidnight.setUTCHours(0, 0, 0, 0);
     const daysUntilDue = Math.round(
-      (dueMidnight.getTime() - todayMidnight.getTime()) /
-        (24 * 60 * 60 * 1000),
+      (dueMidnight.getTime() - todayMidnight.getTime()) / (24 * 60 * 60 * 1000),
     );
     const duePhrase =
       daysUntilDue <= 0
@@ -3319,31 +3356,38 @@ export class TenantFlowService {
   ): Promise<boolean> {
     const property = await this.propertyRepo.findOne({
       where: { id: rent.property_id },
-      relations: ['owner', 'owner.user'],
+      select: { id: true, owner_id: true },
     });
 
-    if (!property?.owner?.user?.phone_number) {
+    const recipients = property
+      ? await this.notificationRecipients.resolveRecipients(
+          property.owner_id,
+          NotificationCategory.RENEWALS,
+        )
+      : [];
+    const reachable = recipients.filter((r) => r.phone);
+    if (!reachable.length) {
       this.logger.warn(
         `Cannot send approval request: owner data missing for property ${rent.property_id}`,
       );
       return false;
     }
 
-    const landlordPhone = this.utilService.normalizePhoneNumber(
-      property.owner.user.phone_number,
-    );
-    const landlordName = this.utilService.toSentenceCase(
-      property.owner.user.first_name,
-    );
     const tenantName = `${this.utilService.toSentenceCase(user.first_name)} ${this.utilService.toSentenceCase(user.last_name)}`;
 
-    await this.notificationLogService.queue('sendRenewalRequestLandlord', {
-      phone_number: landlordPhone,
-      landlord_name: landlordName,
-      tenant_name: tenantName,
-      property_name: rent.property.name,
-      invoice_id: invoiceId,
-    });
+    for (const [index, recipient] of reachable.entries()) {
+      await this.notificationLogService.queue(
+        'sendRenewalRequestLandlord',
+        {
+          phone_number: recipient.phone,
+          landlord_name: this.utilService.toSentenceCase(recipient.name),
+          tenant_name: tenantName,
+          property_name: rent.property.name,
+          invoice_id: invoiceId,
+        },
+        index === 0 ? undefined : `${invoiceId}:${recipient.accountId}`,
+      );
+    }
     return true;
   }
 
@@ -3517,7 +3561,10 @@ export class TenantFlowService {
         await this.markTenancyDetailsConfirmed(from, propertyId);
         await this.cache.delete(`tenancy_gate_card_shown_${from}`);
       } catch (err) {
-        this.logger.error('Failed to persist tenancy-details confirmation:', err);
+        this.logger.error(
+          'Failed to persist tenancy-details confirmation:',
+          err,
+        );
       }
 
       try {
@@ -3614,10 +3661,16 @@ export class TenantFlowService {
   ): Promise<void> {
     const property = await this.propertyRepo.findOne({
       where: { id: propertyId },
-      relations: ['owner', 'owner.user'],
+      select: { id: true, owner_id: true, name: true },
     });
 
-    if (!property?.owner?.user?.phone_number) {
+    const recipients = property
+      ? await this.notificationRecipients.resolveRecipients(
+          property.owner_id,
+          NotificationCategory.TENANCY,
+        )
+      : [];
+    if (!recipients.some((r) => r.phone)) {
       this.logger.warn(
         `Cannot notify landlord of tenancy review: owner data missing for property ${propertyId}`,
       );
@@ -3632,25 +3685,24 @@ export class TenantFlowService {
       return;
     }
 
-    const params: TenancyDetailsReviewLandlordParams = {
-      phone_number: this.utilService.normalizePhoneNumber(
-        property.owner.user.phone_number,
-      ),
-      landlord_name: this.utilService.toSentenceCase(
-        property.owner.user.first_name,
-      ),
-      tenant_name: `${this.utilService.toSentenceCase(
-        tenant.first_name,
-      )} ${this.utilService.toSentenceCase(tenant.last_name)}`,
-      tenant_phone_number: this.toLocalPhone(tenant.phone_number),
-      property_name: property.name,
-      status,
-    };
+    for (const recipient of recipients) {
+      if (!recipient.phone) continue;
+      const params: TenancyDetailsReviewLandlordParams = {
+        phone_number: recipient.phone,
+        landlord_name: this.utilService.toSentenceCase(recipient.name),
+        tenant_name: `${this.utilService.toSentenceCase(
+          tenant.first_name,
+        )} ${this.utilService.toSentenceCase(tenant.last_name)}`,
+        tenant_phone_number: this.toLocalPhone(tenant.phone_number),
+        property_name: property!.name,
+        status,
+      };
 
-    await this.notificationLogService.queue(
-      'sendTenancyDetailsReviewLandlord',
-      params,
-    );
+      await this.notificationLogService.queue(
+        'sendTenancyDetailsReviewLandlord',
+        params,
+      );
+    }
   }
 
   /**
@@ -3730,10 +3782,16 @@ export class TenantFlowService {
   ): Promise<void> {
     const property = await this.propertyRepo.findOne({
       where: { id: propertyId },
-      relations: ['owner', 'owner.user'],
+      select: { id: true, owner_id: true, name: true },
     });
 
-    if (!property?.owner?.user?.phone_number) {
+    const recipients = property
+      ? await this.notificationRecipients.resolveRecipients(
+          property.owner_id,
+          NotificationCategory.TENANCY,
+        )
+      : [];
+    if (!recipients.some((r) => r.phone)) {
       this.logger.warn(
         `Cannot notify landlord of dispute reason: owner data missing for property ${propertyId}`,
       );
@@ -3748,25 +3806,24 @@ export class TenantFlowService {
       return;
     }
 
-    const params: TenancyDetailsDisputeReasonLandlordParams = {
-      phone_number: this.utilService.normalizePhoneNumber(
-        property.owner.user.phone_number,
-      ),
-      landlord_name: this.utilService.toSentenceCase(
-        property.owner.user.first_name,
-      ),
-      tenant_name: `${this.utilService.toSentenceCase(
-        tenant.first_name,
-      )} ${this.utilService.toSentenceCase(tenant.last_name)}`,
-      property_name: property.name,
-      reason,
-      tenant_phone_number: this.toLocalPhone(tenant.phone_number),
-    };
+    for (const recipient of recipients) {
+      if (!recipient.phone) continue;
+      const params: TenancyDetailsDisputeReasonLandlordParams = {
+        phone_number: recipient.phone,
+        landlord_name: this.utilService.toSentenceCase(recipient.name),
+        tenant_name: `${this.utilService.toSentenceCase(
+          tenant.first_name,
+        )} ${this.utilService.toSentenceCase(tenant.last_name)}`,
+        property_name: property!.name,
+        reason,
+        tenant_phone_number: this.toLocalPhone(tenant.phone_number),
+      };
 
-    await this.notificationLogService.queue(
-      'sendTenancyDetailsDisputeReasonLandlord',
-      params,
-    );
+      await this.notificationLogService.queue(
+        'sendTenancyDetailsDisputeReasonLandlord',
+        params,
+      );
+    }
   }
 
   /**

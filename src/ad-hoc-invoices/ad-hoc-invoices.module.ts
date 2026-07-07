@@ -18,6 +18,7 @@ import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module'
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { UtilService } from '../utils/utility-service';
 import { ScopeModule } from '../common/scope/scope.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { ScopeModule } from '../common/scope/scope.module';
     TenantBalancesModule,
     WhatsappBotModule,
     ScopeModule,
+    NotifyModule,
   ],
   controllers: [AdHocInvoicesController],
   providers: [AdHocInvoicesService, AdHocInvoicePdfService, UtilService],

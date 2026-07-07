@@ -30,6 +30,8 @@ import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-bala
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../utils/utility-service';
 import { ManagementScopeService } from '../common/scope/management-scope.service';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 export interface AdHocInvoiceInitializationResult {
   accessCode: string;
@@ -60,6 +62,7 @@ export class AdHocInvoicesService {
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
     private readonly scopeService: ManagementScopeService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   /**
@@ -1084,23 +1087,14 @@ export class AdHocInvoicesService {
   ): Promise<void> {
     try {
       const property = invoice.property;
-      const landlordAccount = property?.owner;
-      const landlordUser = landlordAccount?.user;
       const tenantUser = invoice.tenant?.user;
 
       const tenantName =
         `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
         'there';
-      const landlordName =
-        landlordAccount?.profile_name ||
-        `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`.trim() ||
-        'there';
 
       const tenantPhone = tenantUser?.phone_number
         ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
-        : null;
-      const landlordPhone = landlordUser?.phone_number
-        ? this.utilService.normalizePhoneNumber(landlordUser.phone_number)
         : null;
 
       const amount = Number(invoice.total_amount);
@@ -1123,19 +1117,24 @@ export class AdHocInvoicesService {
         );
       }
 
-      if (landlordPhone) {
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        property?.owner_id,
+        NotificationCategory.PAYMENTS,
+      );
+      for (const [index, recipient] of recipients.entries()) {
+        if (!recipient.phone) continue;
         await this.whatsappNotificationLog.queue(
           'sendAdhocInvoicePaidLandlord',
           {
-            phone_number: landlordPhone,
+            phone_number: recipient.phone,
             tenant_name: tenantName,
             amount,
             fees,
             landlord_id: property?.owner_id,
             property_id: property?.id,
-            recipient_name: landlordName,
+            recipient_name: recipient.name,
           },
-          invoice.id,
+          index === 0 ? invoice.id : `${invoice.id}:${recipient.accountId}`,
         );
       }
     } catch (err) {
@@ -1259,7 +1258,7 @@ export class AdHocInvoicesService {
   private withComputedStatus(invoice: AdHocInvoice): AdHocInvoice {
     const computed = this.computeStatus(invoice);
     if (computed !== invoice.status) {
-      return { ...invoice, status: computed } as AdHocInvoice;
+      return { ...invoice, status: computed };
     }
     return invoice;
   }

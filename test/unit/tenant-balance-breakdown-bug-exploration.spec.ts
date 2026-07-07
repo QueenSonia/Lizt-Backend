@@ -1,406 +1,459 @@
+// @ts-nocheck
 import * as fc from 'fast-check';
+import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { TenantManagementService } from '../../src/users/tenant-management/tenant-management.service';
+import { Users } from '../../src/users/entities/user.entity';
+import { Account } from '../../src/users/entities/account.entity';
+import { Rent } from '../../src/rents/entities/rent.entity';
+import { PropertyTenant } from '../../src/properties/entities/property-tenants.entity';
+import { KYCApplication } from '../../src/kyc-links/entities/kyc-application.entity';
+import { OfferLetter } from '../../src/offer-letters/entities/offer-letter.entity';
+import { Payment } from '../../src/payments/entities/payment.entity';
+import { AdHocInvoiceLineItem } from '../../src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import { UtilService } from '../../src/utils/utility-service';
+import { WhatsappBotService } from '../../src/whatsapp-bot/whatsapp-bot.service';
+import { TenantBalancesService } from '../../src/tenant-balances/tenant-balances.service';
+import { PropertyHistoryService } from '../../src/property-history/property-history.service';
+import { AccountCacheService } from '../../src/auth/account-cache.service';
+import { ManagementScopeService } from '../../src/common/scope/management-scope.service';
+import { TenantBalanceLedgerType } from '../../src/tenant-balances/entities/tenant-balance-ledger.entity';
 
 /**
  * Bug Condition Exploration Test for Tenant Balance Breakdown Date and Payment Source Issues
  *
- * **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
- * **DO NOT attempt to fix the test or the code when it fails**
- * **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
- * **GOAL**: Surface counterexamples that demonstrate the bug exists
+ * **STATUS: BUG FIXED — SPEC UPDATED TO ENCODE THE FIXED BEHAVIOR**
  *
- * Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8
+ * The original version of this spec was written to FAIL while the bug existed:
+ * it compared hard-coded "current buggy" values (ledger created_at used as the
+ * display date, payments read only from property history, "Unknown Property"
+ * for NULL property_id migration rows, one shared rent period for every row)
+ * against the intended values, so a red run proved the bug. The product has
+ * since been fixed in TenantManagementService.computeTenantBalance()
+ * (src/users/tenant-management/tenant-management.service.ts):
+ *
+ *  - Rent-related charge rows resolve their date AND period label from the
+ *    specific rent record via related_entity_id (rent_start_date/expiry_date),
+ *    falling back to created_at only when the rent record is missing.
+ *  - Payment transactions are unified: manual payments come from property
+ *    history (edited in place — the authority for current amounts, dated by
+ *    move_in_date), while renewal-invoice / payment-plan-installment / genuine
+ *    ad-hoc payments are read from the wallet ledger. Note the shipped design
+ *    deliberately does NOT sum raw reversal legs (the original spec's naive
+ *    "sum every negative ledger row" oracle would double-count edited
+ *    payments); reversal legs net silently and only current amounts surface.
+ *  - Migration rows with NULL property_id resolve the property name from the
+ *    tenant's rent records instead of rendering "Unknown Property".
+ *
+ * This spec therefore now instantiates the real service (mocked repositories /
+ * collaborators, per test/unit conventions) and asserts the FIXED behavior.
+ * If any of these tests regress to red, the display bug has been reintroduced.
+ *
+ * Validates: Requirements 1.1–1.8, 2.1, 2.2, 2.5
  */
 describe('Bug Condition Exploration: Tenant Balance Breakdown Date and Payment Source Issues', () => {
-  // Test tenant ID with known issues from bug report
+  // Test tenant ID with known issues from the original bug report
   const TEST_TENANT_ID = '3bb32f23-f98f-4589-8728-6b1b0f73a496';
+  const LANDLORD_ID = 'landlord-1';
+  const PROPERTY = {
+    id: 'property-1',
+    name: 'Sunset Apartments Unit 5A',
+    owner_id: LANDLORD_ID,
+  };
 
-  /**
-   * Property 1: Bug Condition - Date and Payment Source Issues
-   *
-   * **Validates: Requirements 2.1, 2.2, 2.5**
-   *
-   * This test focuses on tenant '3bb32f23-f98f-4589-8728-6b1b0f73a496' with known issues:
-   * - Charge entries should show rent_start_date instead of created_at for rent-related ledger entries
-   * - Payment transactions should include all negative ledger entries instead of only property history
-   * - Migration entries should show correct property name instead of "Unknown Property"
-   * - Payment dates should show actual payment date instead of ledger created_at
-   */
-  describe('Property 1: Bug Condition - Accurate Business Date Display and Unified Payment Source', () => {
-    it('should show rent_start_date instead of created_at for rent-related charge entries', () => {
-      // **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
+  let service: TenantManagementService;
 
-      // Mock data representing the current buggy state
-      const mockLedgerEntry = {
-        id: 'ledger-1',
-        tenant_id: TEST_TENANT_ID,
-        type: 'initial_balance',
-        description: 'Rent charge for Feb 2026',
-        outstanding_balance_change: 250000,
-        related_entity_type: 'rent',
-        related_entity_id: 'rent-1',
-        created_at: new Date('2026-04-04T00:00:00Z'), // Bug: showing created_at
-        property_id: 'property-1',
-      };
+  const tenantBalancesService = {
+    getBalance: jest.fn(),
+    getLedger: jest.fn(),
+  };
+  const paymentPlanRepository = { find: jest.fn() };
+  const adHocInvoiceLineItemRepository = { find: jest.fn() };
 
-      const mockRentRecord = {
-        id: 'rent-1',
-        tenant_id: TEST_TENANT_ID,
-        property_id: 'property-1',
-        rent_start_date: new Date('2026-02-12T00:00:00Z'), // Expected: should show this date
-        expiry_date: new Date('2026-03-11T00:00:00Z'),
-      };
-
-      // **BUG CONDITION CHECK**: The current system shows created_at instead of rent_start_date
-      // This simulates the current buggy behavior in formatTenantData
-      const currentBuggyDisplayDate = mockLedgerEntry.created_at; // Current implementation uses this
-      const expectedCorrectDisplayDate = mockRentRecord.rent_start_date; // Should use this instead
-
-      // This assertion SHOULD FAIL on unfixed code (proving the bug exists)
-      // Expected: charge date should be rent_start_date (2026-02-12)
-      // Actual (buggy): charge date will be created_at (2026-04-04)
-      expect(currentBuggyDisplayDate).toEqual(expectedCorrectDisplayDate);
-
-      // Document the counterexample when this fails
-      if (
-        currentBuggyDisplayDate.getTime() !==
-        expectedCorrectDisplayDate.getTime()
-      ) {
-        console.log('COUNTEREXAMPLE FOUND - Date Display Bug:');
-        console.log(`Expected: ${expectedCorrectDisplayDate.toISOString()}`);
-        console.log(`Actual: ${currentBuggyDisplayDate.toISOString()}`);
-        console.log(
-          'This confirms the bug exists: showing created_at instead of rent_start_date',
-        );
-      }
-    });
-
-    it('should include all negative ledger entries in payment transactions instead of only property history', () => {
-      // **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
-
-      // Mock data representing the payment source mismatch issue
-      const mockLedgerEntries = [
-        // Positive entries (charges)
+  beforeAll(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TenantManagementService,
+        { provide: getRepositoryToken(Users), useValue: {} },
+        { provide: getRepositoryToken(Account), useValue: {} },
+        { provide: getRepositoryToken(Rent), useValue: {} },
+        { provide: getRepositoryToken(PropertyTenant), useValue: {} },
+        { provide: getRepositoryToken(KYCApplication), useValue: {} },
+        { provide: getRepositoryToken(OfferLetter), useValue: {} },
+        { provide: getRepositoryToken(Payment), useValue: {} },
         {
-          id: 'charge-1',
-          outstanding_balance_change: 250000,
-          type: 'initial_balance',
+          provide: getRepositoryToken(AdHocInvoiceLineItem),
+          useValue: adHocInvoiceLineItemRepository,
         },
         {
-          id: 'charge-2',
-          outstanding_balance_change: 250000,
-          type: 'initial_balance',
-        },
-        // Negative entries (payments) - including reversal pairs from edited payments
-        {
-          id: 'payment-1',
-          outstanding_balance_change: -250000,
-          type: 'rent_payment',
-        }, // Original payment (reversal)
-        {
-          id: 'payment-2',
-          outstanding_balance_change: -310000,
-          type: 'rent_payment',
-        }, // New payment amount
-        {
-          id: 'renewal-payment-1',
-          outstanding_balance_change: -200000,
-          type: 'auto_renewal',
-        }, // Renewal payment (only in ledger)
-      ];
-
-      const mockPropertyHistories = [
-        // Only shows updated payment amounts, missing reversal entries and renewal payments
-        {
-          id: 'ph-1',
-          event_type: 'user_added_payment',
-          event_description: JSON.stringify({ paymentAmount: 310000 }),
-          move_in_date: new Date('2026-02-15T00:00:00Z'),
-        },
-      ];
-
-      // **BUG CONDITION CHECK**: Payment transactions should include ALL negative ledger entries
-      const totalPaymentsFromLedger = mockLedgerEntries
-        .filter((e) => Number(e.outstanding_balance_change) < 0)
-        .reduce(
-          (sum, e) => sum + Math.abs(Number(e.outstanding_balance_change)),
-          0,
-        );
-
-      // Current buggy implementation only uses property history
-      const totalPaymentsFromPropertyHistory = mockPropertyHistories
-        .map((ph) => {
-          try {
-            const data = JSON.parse(ph.event_description || '{}');
-            return data.paymentAmount || 0;
-          } catch {
-            return 0;
-          }
-        })
-        .reduce((sum, amount) => sum + amount, 0);
-
-      // This assertion SHOULD FAIL on unfixed code (proving the bug exists)
-      // Expected: ₦760,000 (250k + 310k + 200k from all negative ledger entries)
-      // Actual (buggy): ₦310,000 (only from property history)
-      expect(totalPaymentsFromPropertyHistory).toBe(totalPaymentsFromLedger);
-
-      // Document the counterexample when this fails
-      if (totalPaymentsFromPropertyHistory !== totalPaymentsFromLedger) {
-        console.log('COUNTEREXAMPLE FOUND - Payment Source Bug:');
-        console.log(
-          `Expected total payments (from ledger): ₦${totalPaymentsFromLedger.toLocaleString()}`,
-        );
-        console.log(
-          `Actual total payments (from property history): ₦${totalPaymentsFromPropertyHistory.toLocaleString()}`,
-        );
-        console.log(
-          `Gap: ₦${(totalPaymentsFromLedger - totalPaymentsFromPropertyHistory).toLocaleString()}`,
-        );
-        console.log(
-          'This confirms the bug exists: missing reversal entries and renewal payments',
-        );
-      }
-    });
-
-    it('should show correct property name instead of "Unknown Property" for migration entries', () => {
-      // **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
-
-      // Mock data representing the NULL property_id issue
-      const mockMigrationEntry = {
-        id: 'migration-1',
-        tenant_id: TEST_TENANT_ID,
-        type: 'migration',
-        description: 'Migration balance',
-        outstanding_balance_change: 100000,
-        property_id: null, // Bug: NULL property_id
-        property: null,
-      };
-
-      const mockRentRecords = [
-        {
-          id: 'rent-1',
-          tenant_id: TEST_TENANT_ID,
-          property_id: 'property-1',
-          property: {
-            id: 'property-1',
-            name: 'Sunset Apartments Unit 5A',
+          provide: DataSource,
+          useValue: {
+            getRepository: jest.fn().mockReturnValue(paymentPlanRepository),
           },
         },
-      ];
+        { provide: UtilService, useValue: {} },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: WhatsappBotService, useValue: {} },
+        { provide: TenantBalancesService, useValue: tenantBalancesService },
+        { provide: PropertyHistoryService, useValue: {} },
+        { provide: AccountCacheService, useValue: {} },
+        { provide: ManagementScopeService, useValue: {} },
+      ],
+    }).compile();
 
-      // **BUG CONDITION CHECK**: Migration entry should show correct property name
-      // Current buggy implementation shows "Unknown Property" for NULL property_id
-      const currentBuggyPropertyName =
-        (mockMigrationEntry.property as any)?.name || 'Unknown Property';
-      const expectedCorrectPropertyName = mockRentRecords[0].property.name; // Should resolve from tenant's rent records
+    service = module.get(TenantManagementService);
+  });
 
-      // This assertion SHOULD FAIL on unfixed code (proving the bug exists)
-      // Expected: "Sunset Apartments Unit 5A" (resolved from tenant's rent records)
-      // Actual (buggy): "Unknown Property" (due to NULL property_id)
-      expect(currentBuggyPropertyName).toBe(expectedCorrectPropertyName);
+  beforeEach(() => {
+    jest.clearAllMocks();
+    tenantBalancesService.getBalance.mockResolvedValue(0);
+    tenantBalancesService.getLedger.mockResolvedValue([]);
+    paymentPlanRepository.find.mockResolvedValue([]);
+    adHocInvoiceLineItemRepository.find.mockResolvedValue([]);
+  });
 
-      // Document the counterexample when this fails
-      if (currentBuggyPropertyName === 'Unknown Property') {
-        console.log('COUNTEREXAMPLE FOUND - Property Resolution Bug:');
-        console.log(`Expected: "${expectedCorrectPropertyName}"`);
-        console.log(`Actual: "${currentBuggyPropertyName}"`);
-        console.log(
-          'This confirms the bug exists: NULL property_id not resolved from tenant context',
-        );
-      }
+  /** Invoke the real (private) breakdown builder the modal endpoints use. */
+  const computeBalance = (account, rents) =>
+    (service as any).computeTenantBalance(account, LANDLORD_ID, rents);
+
+  const makeAccount = (propertyHistories = []) => ({
+    id: TEST_TENANT_ID,
+    property_histories: propertyHistories,
+  });
+
+  const makeRent = (overrides = {}) => ({
+    id: 'rent-1',
+    property_id: PROPERTY.id,
+    property: PROPERTY,
+    rent_start_date: new Date('2026-02-12T00:00:00Z'),
+    expiry_date: new Date('2026-03-11T00:00:00Z'),
+    ...overrides,
+  });
+
+  // Same formatting the service uses, so the expectation is timezone-stable.
+  const fmt = (d: Date) =>
+    d.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  const periodLabel = (rent) =>
+    `(${fmt(new Date(rent.rent_start_date))} - ${fmt(new Date(rent.expiry_date))})`;
+
+  const allBreakdownTransactions = (result) =>
+    result.outstandingBalanceBreakdown.flatMap((b) => b.transactions);
+
+  describe('Property 1: Fixed Behavior - Accurate Business Date Display and Unified Payment Source', () => {
+    it('shows rent_start_date instead of created_at for rent-related charge entries', async () => {
+      // FIXED: the display date is resolved from the related rent record.
+      const rent = makeRent();
+      tenantBalancesService.getLedger.mockResolvedValue([
+        {
+          id: 'ledger-1',
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description: 'Rent charge for Feb 2026',
+          balance_change: -250000, // charge = negative wallet change
+          related_entity_type: 'rent',
+          related_entity_id: rent.id,
+          created_at: new Date('2026-04-04T00:00:00Z'), // ledger write date — must NOT display
+          property_id: PROPERTY.id,
+          metadata: null,
+        },
+      ]);
+
+      const result = await computeBalance(makeAccount(), [rent]);
+
+      expect(result.outstandingBalanceBreakdown).toHaveLength(1);
+      const [tx] = result.outstandingBalanceBreakdown[0].transactions;
+      expect(tx.amount).toBe(250000);
+      // Fixed behavior: business date (rent_start_date), not ledger created_at
+      expect(tx.date).toEqual(new Date('2026-02-12T00:00:00Z'));
+      expect(tx.date).not.toEqual(new Date('2026-04-04T00:00:00Z'));
     });
 
-    it('should show actual payment date instead of ledger created_at for payment entries', () => {
-      // **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
-
-      // Mock data representing the payment date issue
-      const mockPaymentLedgerEntry = {
-        id: 'payment-ledger-1',
-        tenant_id: TEST_TENANT_ID,
-        type: 'rent_payment',
-        description: 'Payment received',
-        outstanding_balance_change: -310000,
-        related_entity_type: 'property_history',
-        related_entity_id: 'ph-1',
-        created_at: new Date('2026-04-04T00:00:00Z'), // Bug: showing ledger created_at
-      };
-
-      const mockPropertyHistory = {
+    it('unifies payment transactions: in-place property-history amount plus ledger-only payments, with reversal legs netted away', async () => {
+      // Scenario from the original bug report: a manual payment edited from
+      // ₦250,000 to ₦310,000 plus a renewal payment of ₦200,000 that exists
+      // only on the ledger.
+      const rent = makeRent();
+      const manualPayment = {
         id: 'ph-1',
         event_type: 'user_added_payment',
-        move_in_date: new Date('2026-02-15T00:00:00Z'), // Expected: actual payment date
+        property: PROPERTY,
+        // Property history is updated IN PLACE on edit — current amount only.
+        event_description: JSON.stringify({
+          paymentAmount: 310000,
+          description: 'Manual payment',
+        }),
+        move_in_date: new Date('2026-02-15T00:00:00Z'),
+        created_at: new Date('2026-04-04T00:00:00Z'),
+      };
+      tenantBalancesService.getLedger.mockResolvedValue([
+        {
+          id: 'charge-1',
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
+          description: 'Rent charge for Feb 2026',
+          balance_change: -250000,
+          related_entity_type: 'rent',
+          related_entity_id: rent.id,
+          created_at: new Date('2026-02-12T00:00:00Z'),
+          property_id: PROPERTY.id,
+          metadata: null,
+        },
+        // Edit reversal pair — accounting artifacts, must surface NOWHERE:
+        {
+          id: 'edit-reversal',
+          type: TenantBalanceLedgerType.OB_CHARGE,
+          description: 'Historical payment updated (reversal)',
+          balance_change: -250000,
+          related_entity_type: 'property_history',
+          related_entity_id: manualPayment.id,
+          created_at: new Date('2026-04-04T00:00:00Z'),
+          property_id: PROPERTY.id,
+          metadata: null,
+        },
+        {
+          id: 'edit-new-amount',
+          type: TenantBalanceLedgerType.OB_PAYMENT,
+          description: 'Manual payment of ₦310,000 received',
+          balance_change: 310000,
+          related_entity_type: 'property_history',
+          related_entity_id: manualPayment.id,
+          created_at: new Date('2026-04-04T00:00:00Z'),
+          property_id: PROPERTY.id,
+          metadata: null,
+        },
+        // Renewal payment — exists only on the ledger, must be included:
+        {
+          id: 'renewal-pay-1',
+          type: TenantBalanceLedgerType.OB_PAYMENT,
+          description: 'Renewal invoice payment',
+          balance_change: 200000,
+          related_entity_type: 'renewal_invoice',
+          related_entity_id: 'ri-1',
+          created_at: new Date('2026-03-20T00:00:00Z'),
+          property_id: PROPERTY.id,
+          metadata: null,
+        },
+      ]);
+
+      const result = await computeBalance(makeAccount([manualPayment]), [
+        rent,
+      ]);
+
+      // Both payment sources are represented…
+      const manualRow = result.paymentTransactions.find(
+        (t) => t.id === 'payment-history-ph-1',
+      );
+      const renewalRow = result.paymentTransactions.find(
+        (t) => t.id === 'renewal-pay-1',
+      );
+      expect(manualRow).toBeDefined();
+      expect(manualRow.amount).toBe(-310000); // current (edited) amount, once
+      expect(renewalRow).toBeDefined();
+      expect(renewalRow.amount).toBe(-200000); // ledger-only renewal payment
+      expect(result.paymentTransactions).toHaveLength(2);
+
+      // …and total money received reflects both, without reversal-leg noise.
+      const totalPayments = result.paymentTransactions.reduce(
+        (sum, t) => sum + Math.abs(t.amount),
+        0,
+      );
+      expect(totalPayments).toBe(510000);
+
+      // The reversal pair must not leak into the charges side either.
+      const chargeIds = allBreakdownTransactions(result).map((t) => t.id);
+      expect(chargeIds).toEqual(['charge-1']);
+    });
+
+    it('shows the correct property name instead of "Unknown Property" for NULL-property migration entries', async () => {
+      // FIXED: NULL property_id (migration) rows resolve the property name
+      // from the tenant's rent records.
+      const rent = makeRent();
+      tenantBalancesService.getLedger.mockResolvedValue([
+        {
+          id: 'migration-1',
+          type: TenantBalanceLedgerType.MIGRATION,
+          description: 'Migration balance',
+          balance_change: -100000,
+          related_entity_type: null,
+          related_entity_id: null,
+          created_at: new Date('2026-01-15T00:00:00Z'),
+          property_id: null, // the condition that used to render "Unknown Property"
+          property: null,
+          metadata: null,
+        },
+      ]);
+
+      const result = await computeBalance(makeAccount(), [rent]);
+
+      expect(result.outstandingBalanceBreakdown).toHaveLength(1);
+      const row = result.outstandingBalanceBreakdown[0];
+      expect(row.propertyName).toBe('Sunset Apartments Unit 5A');
+      expect(row.propertyName).not.toBe('Unknown Property');
+      // Migration rows are normalized to the shared historical-charge label.
+      expect(row.transactions[0].type).toBe('Historical tenancy recorded');
+    });
+
+    it('shows the actual payment date (property history move_in_date) instead of ledger created_at', async () => {
+      const rent = makeRent();
+      const manualPayment = {
+        id: 'ph-1',
+        event_type: 'user_added_payment',
+        property: PROPERTY,
         event_description: JSON.stringify({
           paymentAmount: 310000,
           paymentDate: '2026-02-15T00:00:00Z',
         }),
+        move_in_date: new Date('2026-02-15T00:00:00Z'), // actual payment date
+        created_at: new Date('2026-04-04T00:00:00Z'), // record write date
       };
 
-      // **BUG CONDITION CHECK**: Payment date should come from property history, not ledger created_at
-      // Current buggy implementation uses ledger created_at
-      const currentBuggyPaymentDate = mockPaymentLedgerEntry.created_at;
-      const expectedCorrectPaymentDate = mockPropertyHistory.move_in_date;
+      const result = await computeBalance(makeAccount([manualPayment]), [
+        rent,
+      ]);
 
-      // This assertion SHOULD FAIL on unfixed code (proving the bug exists)
-      // Expected: payment date should be move_in_date (2026-02-15)
-      // Actual (buggy): payment date will be ledger created_at (2026-04-04)
-      expect(currentBuggyPaymentDate).toEqual(expectedCorrectPaymentDate);
-
-      // Document the counterexample when this fails
-      if (
-        currentBuggyPaymentDate.getTime() !==
-        expectedCorrectPaymentDate.getTime()
-      ) {
-        console.log('COUNTEREXAMPLE FOUND - Payment Date Bug:');
-        console.log(`Expected: ${expectedCorrectPaymentDate.toISOString()}`);
-        console.log(`Actual: ${currentBuggyPaymentDate.toISOString()}`);
-        console.log(
-          'This confirms the bug exists: showing ledger created_at instead of actual payment date',
-        );
-      }
+      expect(result.paymentTransactions).toHaveLength(1);
+      const [payment] = result.paymentTransactions;
+      expect(payment.date).toEqual(new Date('2026-02-15T00:00:00Z'));
+      expect(payment.date).not.toEqual(new Date('2026-04-04T00:00:00Z'));
+      expect(payment.amount).toBe(-310000);
     });
 
-    it('should show specific rent periods instead of same period for all transactions', () => {
-      // **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
-
-      // Mock data representing the period description issue
-      const mockLedgerEntries = [
+    it('shows each transaction with its own specific rent period, not one shared period', async () => {
+      const rentA = makeRent({
+        id: 'rent-1',
+        rent_start_date: new Date('2026-02-12T00:00:00Z'),
+        expiry_date: new Date('2026-03-11T00:00:00Z'),
+      });
+      const rentB = makeRent({
+        id: 'rent-2',
+        rent_start_date: new Date('2026-03-12T00:00:00Z'),
+        expiry_date: new Date('2026-04-11T00:00:00Z'),
+      });
+      tenantBalancesService.getLedger.mockResolvedValue([
         {
           id: 'ledger-1',
-          related_entity_type: 'rent',
-          related_entity_id: 'rent-1',
+          type: TenantBalanceLedgerType.INITIAL_BALANCE,
           description: 'Rent charge for Feb 2026',
+          balance_change: -250000,
+          related_entity_type: 'rent',
+          related_entity_id: rentA.id,
+          created_at: new Date('2026-04-04T00:00:00Z'),
+          property_id: PROPERTY.id,
+          metadata: null,
         },
         {
           id: 'ledger-2',
-          related_entity_type: 'rent',
-          related_entity_id: 'rent-2',
+          type: TenantBalanceLedgerType.AUTO_RENEWAL,
           description: 'Rent charge for Mar 2026',
+          balance_change: -250000,
+          related_entity_type: 'rent',
+          related_entity_id: rentB.id,
+          created_at: new Date('2026-04-04T00:00:00Z'),
+          property_id: PROPERTY.id,
+          metadata: null,
         },
-      ];
+      ]);
 
-      const mockRentRecords = [
-        {
-          id: 'rent-1',
-          rent_start_date: new Date('2026-02-12T00:00:00Z'),
-          expiry_date: new Date('2026-03-11T00:00:00Z'),
-        },
-        {
-          id: 'rent-2',
-          rent_start_date: new Date('2026-03-12T00:00:00Z'),
-          expiry_date: new Date('2026-04-11T00:00:00Z'),
-        },
-      ];
+      const result = await computeBalance(makeAccount(), [rentA, rentB]);
 
-      // **BUG CONDITION CHECK**: Each transaction should show its specific rent period
-      // Current buggy implementation uses the first rent record for all transactions
-      const firstRentPeriod = `(${mockRentRecords[0].rent_start_date.toLocaleDateString('en-GB')} - ${mockRentRecords[0].expiry_date.toLocaleDateString('en-GB')})`;
-      const secondRentPeriod = `(${mockRentRecords[1].rent_start_date.toLocaleDateString('en-GB')} - ${mockRentRecords[1].expiry_date.toLocaleDateString('en-GB')})`;
-
-      // Current buggy behavior: all transactions show the same period (first rent found)
-      const currentBuggyBehavior = [firstRentPeriod, firstRentPeriod]; // Both show same period
-      const expectedCorrectBehavior = [firstRentPeriod, secondRentPeriod]; // Each shows specific period
-
-      // This assertion SHOULD FAIL on unfixed code (proving the bug exists)
-      expect(currentBuggyBehavior).toEqual(expectedCorrectBehavior);
-
-      // Document the counterexample when this fails
-      if (
-        JSON.stringify(currentBuggyBehavior) !==
-        JSON.stringify(expectedCorrectBehavior)
-      ) {
-        console.log('COUNTEREXAMPLE FOUND - Period Description Bug:');
-        console.log(
-          `Expected periods: ${JSON.stringify(expectedCorrectBehavior)}`,
-        );
-        console.log(`Actual periods: ${JSON.stringify(currentBuggyBehavior)}`);
-        console.log(
-          'This confirms the bug exists: all transactions show same period instead of specific periods',
-        );
-      }
+      const transactions = allBreakdownTransactions(result);
+      expect(transactions).toHaveLength(2);
+      const byId = Object.fromEntries(transactions.map((t) => [t.id, t]));
+      expect(byId['ledger-1'].type).toBe(
+        `Rent charge for Feb 2026 ${periodLabel(rentA)}`,
+      );
+      expect(byId['ledger-2'].type).toBe(
+        `Rent charge for Mar 2026 ${periodLabel(rentB)}`,
+      );
+      // The two rows must NOT share one period label (the original bug).
+      expect(byId['ledger-1'].type).not.toBe(byId['ledger-2'].type);
+      // And each row is dated by its own rent period start.
+      expect(byId['ledger-1'].date).toEqual(rentA.rent_start_date);
+      expect(byId['ledger-2'].date).toEqual(rentB.rent_start_date);
     });
   });
 
   /**
-   * Property-Based Test: Bug Condition Detection Across Multiple Tenants
+   * Property-Based Test: Fixed Behavior Across Multiple Tenant Configurations
    *
-   * This test generates various tenant configurations to verify the bug condition
-   * holds across different scenarios, not just the specific test tenant.
+   * Generates varied rent/ledger configurations and asserts the real
+   * implementation always dates rent-related charge rows by the related
+   * rent record's rent_start_date — never by the ledger row's created_at.
    */
-  describe('Property-Based Bug Condition Detection', () => {
-    it('should detect date display bugs across various tenant configurations', () => {
-      fc.assert(
-        fc.property(
-          // Generate tenant configurations with rent-related ledger entries
+  describe('Property-Based Fixed Behavior Detection', () => {
+    it('always uses the related rent record dates across various tenant configurations', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.record({
-            tenantId: fc.uuid(),
-            ledgerEntries: fc.array(
-              fc.record({
-                id: fc.uuid(),
-                type: fc.constantFrom('initial_balance', 'auto_renewal'),
-                relatedEntityType: fc.constant('rent'),
-                relatedEntityId: fc.uuid(),
-                createdAt: fc.date({
-                  min: new Date('2026-03-01'),
-                  max: new Date('2026-04-30'),
-                }),
-                outstandingBalanceChange: fc.integer({
-                  min: 100000,
-                  max: 500000,
-                }),
-              }),
-              { minLength: 1, maxLength: 5 },
-            ),
-            rentRecords: fc.array(
-              fc.record({
-                id: fc.uuid(),
-                rentStartDate: fc.date({
-                  min: new Date('2026-01-01'),
-                  max: new Date('2026-02-28'),
-                }),
-                expiryDate: fc.date({
-                  min: new Date('2026-03-01'),
-                  max: new Date('2026-12-31'),
-                }),
+            rentStartDates: fc.array(
+              fc.date({
+                min: new Date('2026-01-01'),
+                max: new Date('2026-02-28'),
+                noInvalidDate: true,
               }),
               { minLength: 1, maxLength: 3 },
             ),
+            entrySeeds: fc.array(
+              fc.record({
+                createdAt: fc.date({
+                  min: new Date('2026-03-01'),
+                  max: new Date('2026-04-30'),
+                  noInvalidDate: true,
+                }),
+                amount: fc.integer({ min: 100000, max: 500000 }),
+                type: fc.constantFrom(
+                  TenantBalanceLedgerType.INITIAL_BALANCE,
+                  TenantBalanceLedgerType.AUTO_RENEWAL,
+                ),
+              }),
+              { minLength: 1, maxLength: 5 },
+            ),
           }),
-          (config) => {
-            // **BUG CONDITION**: For rent-related entries, the system should show rent_start_date
-            // but currently shows created_at (this property will fail on unfixed code)
+          async (config) => {
+            const rents = config.rentStartDates.map((start, i) =>
+              makeRent({
+                id: `rent-${i}`,
+                rent_start_date: start,
+                expiry_date: new Date('2026-12-31T00:00:00Z'),
+              }),
+            );
+            const ledgerEntries = config.entrySeeds.map((seed, i) => ({
+              id: `charge-${i}`,
+              type: seed.type,
+              description: `Rent charge ${i}`,
+              balance_change: -seed.amount,
+              related_entity_type: 'rent',
+              related_entity_id: rents[i % rents.length].id,
+              created_at: seed.createdAt,
+              property_id: PROPERTY.id,
+              metadata: null,
+            }));
+            tenantBalancesService.getLedger.mockResolvedValue(ledgerEntries);
 
-            config.ledgerEntries.forEach((ledgerEntry, index) => {
-              const matchingRent =
-                config.rentRecords[index % config.rentRecords.length];
+            const result = await computeBalance(makeAccount(), rents);
+            const transactions = allBreakdownTransactions(result);
+            expect(transactions).toHaveLength(ledgerEntries.length);
 
-              // The bug condition: created_at should NOT be used for display when rent_start_date is available
-              const bugCondition =
-                ledgerEntry.relatedEntityType === 'rent' &&
-                ledgerEntry.createdAt.getTime() !==
-                  matchingRent.rentStartDate.getTime();
-
-              // This assertion documents the expected behavior (will fail on unfixed code)
-              if (bugCondition) {
-                // Expected: display date should be rent_start_date
-                // Actual (buggy): display date is created_at
-                console.log(
-                  `Bug condition detected for tenant ${config.tenantId}:`,
-                );
-                console.log(
-                  `  Ledger created_at: ${ledgerEntry.createdAt.toISOString()}`,
-                );
-                console.log(
-                  `  Expected rent_start_date: ${matchingRent.rentStartDate.toISOString()}`,
-                );
-              }
-
-              // This property encodes the expected behavior
-              // For this exploration test, we expect this to fail on unfixed code
-              expect(bugCondition).toBe(false); // Will fail on unfixed code when dates differ
-            });
+            for (const tx of transactions) {
+              const entry = ledgerEntries.find((e) => e.id === tx.id);
+              const rent = rents.find((r) => r.id === entry.related_entity_id);
+              // Fixed behavior: the display date is the rent period start…
+              expect(tx.date.getTime()).toBe(
+                new Date(rent.rent_start_date).getTime(),
+              );
+              // …and never falls back to created_at when the rent exists
+              // (generator ranges guarantee the two dates differ).
+              expect(tx.date.getTime()).not.toBe(entry.created_at.getTime());
+              expect(tx.amount).toBe(-Number(entry.balance_change));
+            }
           },
         ),
         {
-          numRuns: 10, // Reduced for exploration phase
+          numRuns: 10, // service call per run — keep the exploration cheap
           verbose: true,
         },
       );

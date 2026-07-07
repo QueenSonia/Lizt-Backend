@@ -36,7 +36,6 @@ import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { Account, accountHasRole } from 'src/users/entities/account.entity';
 import { LandlordFlow } from './templates/landlord/landlordflow';
 import { LandlordLookup } from './templates/landlord/landlordlookup';
-import { LandlordInteractive } from './templates/landlord/landinteractive';
 import { ChatLogService } from './chat-log.service';
 import { MessageDirection } from './entities/message-direction.enum';
 import {
@@ -788,7 +787,8 @@ export class WhatsappBotService implements OnModuleInit {
     if (
       buttonId === 'select_role_fm' ||
       buttonId === 'select_role_landlord' ||
-      buttonId === 'select_role_tenant'
+      buttonId === 'select_role_tenant' ||
+      buttonId === 'select_role_admin'
     ) {
       console.log('🎯 Role selection button detected, handling directly');
       // Handle role selection in the appropriate handler based on message type
@@ -800,7 +800,9 @@ export class WhatsappBotService implements OnModuleInit {
             ? RolesEnum.FACILITY_MANAGER
             : buttonId === 'select_role_landlord'
               ? RolesEnum.LANDLORD
-              : RolesEnum.TENANT;
+              : buttonId === 'select_role_admin'
+                ? RolesEnum.ADMIN
+                : RolesEnum.TENANT;
 
         console.log('✅ User selected role:', selectedRole);
 
@@ -963,12 +965,20 @@ export class WhatsappBotService implements OnModuleInit {
         // — `accounts.role` is a stale mirror of `roles[0]`, so a multi-role
         // account like {tenant, facility_manager} has role='tenant' but
         // roles contains both; the helper checks `roles[]` with `role` as fallback.
+        const hasAdmin = user.accounts.some((acc) =>
+          accountHasRole(acc, RolesEnum.ADMIN),
+        );
         const hasFM = user.accounts.some((acc) =>
           accountHasRole(acc, RolesEnum.FACILITY_MANAGER),
         );
-        const hasLandlord = user.accounts.some((acc) =>
-          accountHasRole(acc, RolesEnum.LANDLORD),
-        );
+        // The admin (property-manager) persona is a superset of the landlord
+        // flow — it runs the same conversation scoped across every managed
+        // landlord. Suppress the separate Landlord option when the phone also
+        // holds an admin account: it would be redundant AND would push the
+        // role menu past WhatsApp's 3-button cap.
+        const hasLandlord =
+          !hasAdmin &&
+          user.accounts.some((acc) => accountHasRole(acc, RolesEnum.LANDLORD));
         let hasTenant = user.accounts.some((acc) =>
           accountHasRole(acc, RolesEnum.TENANT),
         );
@@ -989,7 +999,7 @@ export class WhatsappBotService implements OnModuleInit {
           );
         }
 
-        const roleCount = [hasFM, hasLandlord, hasTenant].filter(
+        const roleCount = [hasAdmin, hasFM, hasLandlord, hasTenant].filter(
           Boolean,
         ).length;
 
@@ -998,8 +1008,15 @@ export class WhatsappBotService implements OnModuleInit {
             '👥 User has multiple roles, showing role selection menu',
           );
 
-          // Build role selection buttons
+          // Build role selection buttons (max 3 — hasLandlord is already
+          // suppressed when hasAdmin, so the count can't exceed the cap)
           const roleButtons: { id: string; title: string }[] = [];
+          if (hasAdmin) {
+            roleButtons.push({
+              id: 'select_role_admin',
+              title: 'Property Manager',
+            });
+          }
           if (hasFM) {
             roleButtons.push({
               id: 'select_role_fm',
@@ -1036,11 +1053,18 @@ export class WhatsappBotService implements OnModuleInit {
           return;
         }
 
-        // Single role - use priority order
+        // Single role - use priority order (ADMIN first: the property
+        // manager is the primary operator persona)
+        const adminAccount = user.accounts.find((acc) =>
+          accountHasRole(acc, RolesEnum.ADMIN),
+        );
         const facilityAccount = user.accounts.find((acc) =>
           accountHasRole(acc, RolesEnum.FACILITY_MANAGER),
         );
-        if (facilityAccount) {
+        if (adminAccount) {
+          console.log('✅ Found ADMIN account:', adminAccount.id);
+          role = RolesEnum.ADMIN;
+        } else if (facilityAccount) {
           console.log('✅ Found FACILITY_MANAGER account:', facilityAccount.id);
           role = RolesEnum.FACILITY_MANAGER;
         } else {
@@ -1074,6 +1098,7 @@ export class WhatsappBotService implements OnModuleInit {
           RolesEnum.TENANT,
           RolesEnum.LANDLORD,
           RolesEnum.FACILITY_MANAGER,
+          RolesEnum.ADMIN,
         ].includes(role),
     });
 
@@ -1182,6 +1207,10 @@ export class WhatsappBotService implements OnModuleInit {
         }
         break;
       }
+      // Admin (property manager) rides the landlord conversation flow —
+      // LandlordFlow resolves the actor from the inbound phone and scopes
+      // every query across the admin's managed landlords.
+      case RolesEnum.ADMIN:
       case RolesEnum.LANDLORD: {
         console.log('In Landlord');
 
@@ -1273,10 +1302,11 @@ export class WhatsappBotService implements OnModuleInit {
       pay_rent: [RolesEnum.TENANT],
       pay_outstanding_balance: [RolesEnum.TENANT],
       new_maintenance_request: [RolesEnum.TENANT],
-      // Landlord
-      view_properties: [RolesEnum.LANDLORD],
-      view_maintenance: [RolesEnum.LANDLORD],
-      generate_kyc_link: [RolesEnum.LANDLORD],
+      // Landlord / admin (property manager) — the admin persona runs the
+      // landlord flow scoped across managed landlords
+      view_properties: [RolesEnum.LANDLORD, RolesEnum.ADMIN],
+      view_maintenance: [RolesEnum.LANDLORD, RolesEnum.ADMIN],
+      generate_kyc_link: [RolesEnum.LANDLORD, RolesEnum.ADMIN],
     };
     return map[buttonId] ?? null;
   }
@@ -1297,7 +1327,7 @@ export class WhatsappBotService implements OnModuleInit {
         userPhone,
         this.utilService.toSentenceCase(user?.first_name || ''),
       );
-    } else if (role === RolesEnum.LANDLORD) {
+    } else if (role === RolesEnum.LANDLORD || role === RolesEnum.ADMIN) {
       await this.sendLandlordMainMenu(
         userPhone,
         this.utilService.toSentenceCase(user?.first_name || 'there'),
@@ -1324,6 +1354,10 @@ export class WhatsappBotService implements OnModuleInit {
    */
   private roleButtonsFor(roles: RolesEnum[]): { id: string; title: string }[] {
     const byRole: Partial<Record<RolesEnum, { id: string; title: string }>> = {
+      [RolesEnum.ADMIN]: {
+        id: 'select_role_admin',
+        title: 'Property Manager',
+      },
       [RolesEnum.FACILITY_MANAGER]: {
         id: 'select_role_fm',
         title: 'Facility Manager',

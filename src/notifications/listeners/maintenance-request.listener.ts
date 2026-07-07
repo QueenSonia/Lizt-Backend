@@ -13,9 +13,13 @@ import { TemplateSenderService } from 'src/whatsapp-bot/template-sender';
 import { UtilService } from 'src/utils/utility-service';
 import { formatPhoneForDisplay } from 'src/utils/phone-number.transformer';
 import { TeamMember } from 'src/users/entities/team-member.entity';
-import { Account } from 'src/users/entities/account.entity';
 import { RolesEnum } from 'src/base.entity';
 import { ManagementScopeService } from 'src/common/scope/management-scope.service';
+import {
+  NotificationRecipientsService,
+  NotifyRecipient,
+} from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 @Injectable()
 export class MaintenanceRequestListener {
@@ -51,51 +55,26 @@ export class MaintenanceRequestListener {
     private readonly maintenanceRequestRepository: Repository<MaintenanceRequest>,
     @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
-    @InjectRepository(Account)
-    private readonly accountRepository: Repository<Account>,
     @Inject(forwardRef(() => TemplateSenderService))
     private readonly templateSenderService: TemplateSenderService,
     private readonly utilService: UtilService,
     private readonly managementScopeService: ManagementScopeService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   /**
-   * Resolve the landlord's normalized WhatsApp phone number from their
-   * Account.id. Returns null when the account or phone is missing.
+   * Who actually receives the WhatsApp pings for this landlord's requests:
+   * the managing admin (plus, later, a category-subscribed landlord). Each
+   * recipient carries their own normalized phone + greeting name.
    */
-  private async resolveLandlordPhone(
+  private async resolveLandlordRecipients(
     landlordAccountId: string | null | undefined,
-  ): Promise<string | null> {
-    if (!landlordAccountId) return null;
-    const account = await this.accountRepository.findOne({
-      where: { id: landlordAccountId },
-      relations: ['user'],
-    });
-    const phoneRaw = account?.user?.phone_number;
-    if (!phoneRaw) return null;
-    return this.utilService.normalizePhoneNumber(phoneRaw);
-  }
-
-  /**
-   * Resolve the landlord's display name for use in WhatsApp template bodies.
-   * Follows the project_landlord_display_name memory: prefer
-   * accounts.profile_name, fall back to first+last from the joined user
-   * row, fall back to 'there' if nothing is set.
-   */
-  private async resolveLandlordDisplayName(
-    landlordAccountId: string | null | undefined,
-  ): Promise<string> {
-    if (!landlordAccountId) return 'there';
-    const account = await this.accountRepository.findOne({
-      where: { id: landlordAccountId },
-      relations: ['user'],
-    });
-    const profile = account?.profile_name?.trim();
-    if (profile) return profile;
-    const first = account?.user?.first_name?.trim() ?? '';
-    const last = account?.user?.last_name?.trim() ?? '';
-    const combined = `${first} ${last}`.trim();
-    return combined || 'there';
+  ): Promise<NotifyRecipient[]> {
+    if (!landlordAccountId) return [];
+    return this.notificationRecipients.resolveRecipients(
+      landlordAccountId,
+      NotificationCategory.MAINTENANCE,
+    );
   }
 
   /**
@@ -203,8 +182,7 @@ export class MaintenanceRequestListener {
       return `You filed a maintenance request for ${location}.
 ${description}`;
     }
-    const creatorName =
-      event.creator_name ?? event.tenant_name ?? 'Someone';
+    const creatorName = event.creator_name ?? event.tenant_name ?? 'Someone';
     const isFmFiled = event.creator_type === 'facility_manager';
     const subject = isFmFiled
       ? `Facility manager ${creatorName}`
@@ -227,7 +205,10 @@ ${description}`;
         maintenance_request_id: event.maintenance_request_id,
       });
     } catch (error) {
-      this.logger.error('Failed to create maintenance request notification', error);
+      this.logger.error(
+        'Failed to create maintenance request notification',
+        error,
+      );
     }
 
     // FM-filed MRs that bypass the tenant gate (common-area, or vacant unit)
@@ -260,38 +241,42 @@ ${description}`;
       return;
     }
 
-    const phone = await this.resolveLandlordPhone(event.landlord_id);
-    if (!phone) return;
+    const recipients = await this.resolveLandlordRecipients(event.landlord_id);
+    if (!recipients.length) return;
 
     const createdAt =
       event.created_at instanceof Date
         ? event.created_at
         : new Date(event.created_at ?? Date.now());
 
-    await this.templateSenderService.sendFacilityMaintenanceRequest({
-      phone_number: phone,
-      manager_name: event.creator_name ?? 'your facility manager',
-      property_name: event.property_name ?? event.common_area_name ?? '',
-      property_location: event.property_location ?? '',
-      maintenance_request: this.utilService.sanitizeTemplateParam(
-        event.description ?? '',
-      ),
-      tenant_name: event.tenant_name ?? event.creator_name ?? 'Facility manager',
-      tenant_phone_number: this.formatTenantPhoneLocal(
-        event.tenant_phone_number,
-      ),
-      date_created: createdAt.toLocaleString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-        timeZone: 'Africa/Lagos',
-      }),
-      is_landlord: true,
-      maintenance_request_id: event.maintenance_request_id,
-    });
+    for (const recipient of recipients) {
+      if (!recipient.phone) continue;
+      await this.templateSenderService.sendFacilityMaintenanceRequest({
+        phone_number: recipient.phone,
+        manager_name: event.creator_name ?? 'your facility manager',
+        property_name: event.property_name ?? event.common_area_name ?? '',
+        property_location: event.property_location ?? '',
+        maintenance_request: this.utilService.sanitizeTemplateParam(
+          event.description ?? '',
+        ),
+        tenant_name:
+          event.tenant_name ?? event.creator_name ?? 'Facility manager',
+        tenant_phone_number: this.formatTenantPhoneLocal(
+          event.tenant_phone_number,
+        ),
+        date_created: createdAt.toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+          timeZone: 'Africa/Lagos',
+        }),
+        is_landlord: true,
+        maintenance_request_id: event.maintenance_request_id,
+      });
+    }
   }
 
   /**
@@ -335,13 +320,15 @@ ${event.description ?? ''}`,
       )
     ) {
       try {
-        const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
-        if (landlordPhone) {
+        const recipients = await this.resolveLandlordRecipients(
+          event.landlord_id,
+        );
+        for (const recipient of recipients) {
+          if (!recipient.phone) continue;
           await this.templateSenderService.sendLandlordFmFiledRequestNotification(
             {
-              phone_number: landlordPhone,
-              landlord_name:
-                event.landlord_first_name ?? 'there',
+              phone_number: recipient.phone,
+              landlord_name: recipient.name,
               fm_name: event.creator_name ?? 'your facility manager',
               property_name:
                 event.property_name ?? event.common_area_name ?? '',
@@ -364,7 +351,8 @@ ${event.description ?? ''}`,
       try {
         const tenantPhoneRaw: string | undefined = event.tenant_phone_number;
         if (tenantPhoneRaw) {
-          const tenantPhone = this.utilService.normalizePhoneNumber(tenantPhoneRaw);
+          const tenantPhone =
+            this.utilService.normalizePhoneNumber(tenantPhoneRaw);
           await this.templateSenderService.sendTenantConfirmFiledRequest({
             phone_number: tenantPhone,
             tenant_name: this.utilService.toSentenceCase(
@@ -523,22 +511,23 @@ ${event.description ?? ''}`,
     // by the separate maintenance.assigned emit.
     if (isLandlordFiled) {
       try {
-        const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
-        if (!landlordPhone) return;
-        const landlordName = await this.resolveLandlordDisplayName(
+        const recipients = await this.resolveLandlordRecipients(
           event.landlord_id,
         );
-        await this.templateSenderService.sendLandlordFiledRequestConfirmedByTenant(
-          {
-            phone_number: landlordPhone,
-            landlord_name: landlordName,
-            tenant_name: event.tenant_name || 'Your tenant',
-            property_name: event.property_name || 'your property',
-            maintenance_request: this.utilService.sanitizeTemplateParam(
-              event.description ?? '',
-            ),
-          },
-        );
+        for (const recipient of recipients) {
+          if (!recipient.phone) continue;
+          await this.templateSenderService.sendLandlordFiledRequestConfirmedByTenant(
+            {
+              phone_number: recipient.phone,
+              landlord_name: recipient.name,
+              tenant_name: event.tenant_name || 'Your tenant',
+              property_name: event.property_name || 'your property',
+              maintenance_request: this.utilService.sanitizeTemplateParam(
+                event.description ?? '',
+              ),
+            },
+          );
+        }
       } catch (err) {
         this.logger.warn(
           `Failed to send landlord WA after landlord-filed tenant-confirm for ${requestId}: ${(err as Error)?.message ?? err}`,
@@ -554,36 +543,41 @@ ${event.description ?? ''}`,
       });
       if (!sr) return;
 
-      const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
-      if (!landlordPhone) return;
+      const recipients = await this.resolveLandlordRecipients(
+        event.landlord_id,
+      );
+      if (!recipients.length) return;
 
       const createdAt =
         sr.created_at instanceof Date ? sr.created_at : new Date();
 
-      await this.templateSenderService.sendFacilityMaintenanceRequest({
-        phone_number: landlordPhone,
-        manager_name: 'there',
-        property_name: sr.property?.name ?? sr.property_name ?? '',
-        property_location: sr.property?.location ?? '',
-        maintenance_request: this.utilService.sanitizeTemplateParam(
-          sr.description ?? '',
-        ),
-        tenant_name: sr.tenant_name ?? 'The tenant',
-        tenant_phone_number: this.formatTenantPhoneLocal(
-          sr.tenant?.user?.phone_number ?? null,
-        ),
-        date_created: createdAt.toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-          timeZone: 'Africa/Lagos',
-        }),
-        is_landlord: true,
-        maintenance_request_id: sr.id,
-      });
+      for (const recipient of recipients) {
+        if (!recipient.phone) continue;
+        await this.templateSenderService.sendFacilityMaintenanceRequest({
+          phone_number: recipient.phone,
+          manager_name: 'there',
+          property_name: sr.property?.name ?? sr.property_name ?? '',
+          property_location: sr.property?.location ?? '',
+          maintenance_request: this.utilService.sanitizeTemplateParam(
+            sr.description ?? '',
+          ),
+          tenant_name: sr.tenant_name ?? 'The tenant',
+          tenant_phone_number: this.formatTenantPhoneLocal(
+            sr.tenant?.user?.phone_number ?? null,
+          ),
+          date_created: createdAt.toLocaleString('en-US', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+            timeZone: 'Africa/Lagos',
+          }),
+          is_landlord: true,
+          maintenance_request_id: sr.id,
+        });
+      }
     } catch (err) {
       this.logger.warn(
         `Failed to send landlord WA after tenant-confirm for ${requestId}: ${(err as Error)?.message ?? err}`,
@@ -638,8 +632,9 @@ ${event.description ?? ''}`,
     }
 
     try {
-      const landlordPhone = await this.resolveLandlordPhone(event.landlord_id);
-      if (!landlordPhone) return;
+      const recipients = await this.resolveLandlordRecipients(
+        event.landlord_id,
+      );
 
       // Compose the {{3}} body slot so the message reads naturally after
       // "denied the maintenance request":
@@ -649,15 +644,18 @@ ${event.description ?? ''}`,
         ? 'you filed'
         : `filed by your facility manager ${event.creator_name ?? 'team'}`;
 
-      await this.templateSenderService.sendLandlordRequestDeniedByTenant({
-        phone_number: landlordPhone,
-        landlord_name: event.landlord_first_name ?? 'there',
-        tenant_name: event.tenant_name ?? 'The tenant',
-        filed_by_label: filedByLabel,
-        maintenance_request: this.utilService.sanitizeTemplateParam(
-          event.description ?? '',
-        ),
-      });
+      for (const recipient of recipients) {
+        if (!recipient.phone) continue;
+        await this.templateSenderService.sendLandlordRequestDeniedByTenant({
+          phone_number: recipient.phone,
+          landlord_name: recipient.name,
+          tenant_name: event.tenant_name ?? 'The tenant',
+          filed_by_label: filedByLabel,
+          maintenance_request: this.utilService.sanitizeTemplateParam(
+            event.description ?? '',
+          ),
+        });
+      }
     } catch (err) {
       this.logger.warn(
         `Failed to send landlord_request_denied_by_tenant for ${requestId}: ${(err as Error)?.message ?? err}`,
@@ -895,15 +893,14 @@ ${event.description ?? ''}`,
         ),
         tenant_name: event.tenant_name,
         tenant_phone_number: tenantPhone,
-        date_created:
-          (event.updated_at instanceof Date
-            ? event.updated_at
-            : new Date(event.updated_at ?? Date.now())
-          ).toLocaleDateString('en-GB', {
-            day: 'numeric',
-            month: 'long',
-            year: 'numeric',
-          }),
+        date_created: (event.updated_at instanceof Date
+          ? event.updated_at
+          : new Date(event.updated_at ?? Date.now())
+        ).toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        }),
       });
     } catch (err) {
       this.logger.warn(

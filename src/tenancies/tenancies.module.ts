@@ -25,6 +25,7 @@ import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module
 import { PaymentPlansModule } from 'src/payment-plans/payment-plans.module';
 import { RenewalChargeModule } from 'src/renewal-letters/renewal-charge.module';
 import { ScopeModule } from 'src/common/scope/scope.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 @Module({
   imports: [
@@ -52,16 +53,10 @@ import { ScopeModule } from 'src/common/scope/scope.module';
     PdfModule,
     RenewalChargeModule,
     ScopeModule,
+    NotifyModule,
   ],
   controllers: [TenanciesController],
-  providers: [
-    TenanciesService,
-    RenewalPaymentService,
-  ],
-  exports: [
-    TenanciesService,
-    RenewalPaymentService,
-    PdfModule,
-  ],
+  providers: [TenanciesService, RenewalPaymentService],
+  exports: [TenanciesService, RenewalPaymentService, PdfModule],
 })
-export class TenanciesModule { }
+export class TenanciesModule {}

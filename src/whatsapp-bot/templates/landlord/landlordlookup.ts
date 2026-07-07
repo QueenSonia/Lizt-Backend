@@ -2,7 +2,10 @@
 import { RolesEnum } from 'src/base.entity';
 import { CacheService } from 'src/lib/cache';
 import { Property } from 'src/properties/entities/property.entity';
-import { PropertyStatusEnum, TenantStatusEnum } from 'src/properties/dto/create-property.dto';
+import {
+  PropertyStatusEnum,
+  TenantStatusEnum,
+} from 'src/properties/dto/create-property.dto';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { Account, accountHasRole } from 'src/users/entities/account.entity';
@@ -10,9 +13,23 @@ import { Users } from 'src/users/entities/user.entity';
 import { UtilService } from 'src/utils/utility-service';
 import { WhatsappUtils } from 'src/whatsapp-bot/utils/whatsapp';
 import { Repository } from 'typeorm/repository/Repository';
-import { Not, IsNull } from 'typeorm';
+import { In } from 'typeorm';
 import { KYCLinksService } from 'src/kyc-links/kyc-links.service';
 import { ChatLogService } from 'src/whatsapp-bot/chat-log.service';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
+
+/**
+ * The acting operator behind an inbound landlord-flow message: an ADMIN
+ * (property manager) spanning every managed landlord, or a plain LANDLORD
+ * spanning only itself. `landlordIds` is the set of landlord Account.ids the
+ * actor's queries must scope to (owner columns hold landlord ids only).
+ */
+interface LookupActor {
+  account: Account;
+  user: Users;
+  landlordIds: string[];
+  isAdmin: boolean;
+}
 
 // --- landlordLookup.ts ---
 export class LandlordLookup {
@@ -30,6 +47,7 @@ export class LandlordLookup {
     private readonly maintenanceRequestRepo: Repository<MaintenanceRequest>,
     private readonly utilService: UtilService,
     private readonly kycLinksService: KYCLinksService,
+    private readonly scopeService: ManagementScopeService,
     private readonly chatLogService?: ChatLogService,
   ) {
     const config = new ConfigService();
@@ -40,8 +58,76 @@ export class LandlordLookup {
     return `maintenance_request_state_landlord_${from}`;
   }
 
+  private ownerDisplayName(owner: Account | null | undefined): string {
+    return (
+      owner?.profile_name ||
+      `${owner?.user?.first_name ?? ''} ${owner?.user?.last_name ?? ''}`.trim() ||
+      'Unnamed landlord'
+    );
+  }
+
+  /** Mirrors LandlordFlow.resolveActor — see that method for the contract. */
+  private async resolveActor(from: string): Promise<LookupActor | null> {
+    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const user = await this.usersRepo.findOne({
+      where: { phone_number: normalizedPhone },
+      relations: ['accounts'],
+    });
+    if (!user) return null;
+
+    const adminAccount = user.accounts?.find((a) =>
+      accountHasRole(a, RolesEnum.ADMIN),
+    );
+    if (adminAccount) {
+      const landlordIds = await this.scopeService.resolveManagedLandlordIds(
+        adminAccount.id,
+      );
+      return { account: adminAccount, user, landlordIds, isAdmin: true };
+    }
+
+    const landlordAccount = user.accounts?.find((a) =>
+      accountHasRole(a, RolesEnum.LANDLORD),
+    );
+    if (!landlordAccount) return null;
+    return {
+      account: landlordAccount,
+      user,
+      landlordIds: [landlordAccount.id],
+      isAdmin: false,
+    };
+  }
+
+  /**
+   * Digit reply while a `generate_kyc_link` selection state is live: an
+   * admin with several managed landlords picked which landlord to generate
+   * the (landlord-scoped) KYC link for. Anything else falls back to the menu.
+   */
   async handleGenerateKYCLinkText(from: string, text: string) {
-    // Since we now generate general links immediately, this method just handles exit/menu
+    const raw = await this.cache.get(this.key(from));
+    const state = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+    if (
+      state?.type === 'generate_kyc_link' &&
+      Array.isArray(state.ids) &&
+      state.ids.length
+    ) {
+      const selectedIndex = parseInt(text.trim(), 10) - 1;
+      if (
+        !isNaN(selectedIndex) &&
+        selectedIndex >= 0 &&
+        selectedIndex < state.ids.length
+      ) {
+        await this.cache.delete(this.key(from));
+        await this.generateAndSendKycLink(from, state.ids[selectedIndex]);
+        return;
+      }
+      await this.whatsappUtil.sendText(
+        from,
+        'Invalid selection. Please reply with a valid number, or "done" to exit.',
+      );
+      return;
+    }
+
     await this.handleExitOrMenu(from, text);
   }
 
@@ -53,20 +139,12 @@ export class LandlordLookup {
       );
       await this.cache.delete(`maintenance_request_state_landlord_${from}`);
     } else {
-      const ownerUser = await this.usersRepo.findOne({
-        where: { phone_number: `${from}` },
-        relations: ['accounts'],
-      });
-
-      const landlordAccount = ownerUser?.accounts?.find((acc) =>
-        accountHasRole(acc, RolesEnum.LANDLORD),
-      );
-
-      const landlordName =
-        landlordAccount?.profile_name || ownerUser?.first_name || 'there';
+      const actor = await this.resolveActor(from);
+      const greetName =
+        actor?.account?.profile_name || actor?.user?.first_name || 'there';
 
       // Use template with URL buttons for direct redirects
-      await this.whatsappUtil.sendLandlordMainMenu(from, landlordName);
+      await this.whatsappUtil.sendLandlordMainMenu(from, greetName);
       return;
     }
   }
@@ -74,28 +152,8 @@ export class LandlordLookup {
   async startGenerateKYCLinkFlow(from: string) {
     console.log('🔍 startGenerateKYCLinkFlow called with phone:', from);
 
-    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-
-    console.log('📞 Phone format:', {
-      original: from,
-      normalized: normalizedPhone,
-    });
-
-    const user = await this.usersRepo.findOne({
-      where: { phone_number: normalizedPhone },
-      relations: ['accounts'],
-    });
-
-    console.log('👤 User lookup result:', {
-      found: !!user,
-      userId: user?.id,
-      userPhone: user?.phone_number,
-      accountsCount: user?.accounts?.length || 0,
-      accounts:
-        user?.accounts?.map((acc) => ({ id: acc.id, roles: acc.roles })) || [],
-    });
-
-    if (!user) {
+    const actor = await this.resolveActor(from);
+    if (!actor) {
       await this.whatsappUtil.sendText(
         from,
         'Account not found. Please try again.',
@@ -103,41 +161,28 @@ export class LandlordLookup {
       return;
     }
 
-    // Find the landlord account for this user
-    const landlordAccount = user.accounts?.find((account) =>
-      accountHasRole(account, RolesEnum.LANDLORD),
-    );
-
-    console.log('🏠 Landlord account lookup:', {
-      found: !!landlordAccount,
-      accountId: landlordAccount?.id,
-      accountRoles: landlordAccount?.roles,
-      searchingFor: RolesEnum.LANDLORD,
-    });
-
-    if (!landlordAccount) {
+    if (!actor.landlordIds.length) {
       await this.whatsappUtil.sendText(
         from,
-        'Landlord account not found. Please try again.',
+        "You don't have any landlords yet. Add a landlord in the web app to generate KYC links.",
       );
       return;
     }
 
-    const ownerUser = user;
-
-    // Fetch all vacant and ready for marketing properties (including offer_pending and offer_accepted)
+    // Fetch all vacant and ready for marketing properties (including
+    // offer_pending and offer_accepted) across the actor's landlord scope.
     const properties = await this.propertyRepo.find({
       where: [
         {
-          owner_id: landlordAccount.id,
+          owner_id: In(actor.landlordIds),
           property_status: PropertyStatusEnum.VACANT,
         },
         {
-          owner_id: landlordAccount.id,
+          owner_id: In(actor.landlordIds),
           property_status: PropertyStatusEnum.OFFER_PENDING,
         },
         {
-          owner_id: landlordAccount.id,
+          owner_id: In(actor.landlordIds),
           property_status: PropertyStatusEnum.OFFER_ACCEPTED,
         },
       ],
@@ -151,22 +196,76 @@ export class LandlordLookup {
       return;
     }
 
+    // KYC links are landlord-scoped. A plain landlord (or an admin managing
+    // exactly one landlord) generates directly; an admin with several
+    // managed landlords picks which landlord the link is for. Only offer
+    // landlords that actually have marketable properties.
+    const landlordIdsWithVacancies = Array.from(
+      new Set(properties.map((p) => p.owner_id)),
+    );
+
+    if (landlordIdsWithVacancies.length === 1) {
+      await this.generateAndSendKycLink(from, landlordIdsWithVacancies[0]);
+      return;
+    }
+
+    const landlordAccounts = await this.accountRepo.find({
+      where: { id: In(landlordIdsWithVacancies) },
+      relations: ['user'],
+    });
+    // Keep the option order stable and index-aligned with the cached ids.
+    const options = landlordIdsWithVacancies.map((id) => {
+      const account = landlordAccounts.find((a) => a.id === id);
+      const name =
+        account?.profile_name ||
+        `${account?.user?.first_name ?? ''} ${account?.user?.last_name ?? ''}`.trim() ||
+        'Unnamed landlord';
+      return { id, name };
+    });
+
+    let message = 'Which landlord is this KYC link for?\n\n';
+    options.forEach((opt, i) => {
+      message += `${i + 1}. ${opt.name}\n`;
+    });
+    message += '\nReply with the number of the landlord.';
+
+    await this.whatsappUtil.sendText(from, message);
+
+    await this.cache.set(
+      this.key(from),
+      JSON.stringify({
+        type: 'generate_kyc_link',
+        ids: options.map((opt) => opt.id),
+        step: 'no_step',
+        data: {},
+      }),
+      this.SESSION_TIMEOUT_MS,
+    );
+  }
+
+  /**
+   * Generate (or fetch) the landlord-scoped general KYC link and send it to
+   * the requesting phone. Shared by the direct path and the admin's
+   * landlord-selection path.
+   */
+  private async generateAndSendKycLink(
+    from: string,
+    landlordAccountId: string,
+  ): Promise<void> {
     try {
-      // Generate or retrieve existing general KYC link for landlord
-      const kycLinkResponse = await this.kycLinksService.generateKYCLink(
-        ownerUser.accounts[0].id,
-      );
+      const kycLinkResponse =
+        await this.kycLinksService.generateKYCLink(landlordAccountId);
 
       const baseUrl = process.env.FRONTEND_URL || 'https://www.lizt.co';
       const kycLink = `${baseUrl}/kyc/${kycLinkResponse.token}`;
 
-      // Get vacant properties count
-      const vacantPropertiesCount = properties.length;
-
-      // Get landlord's profile name
+      const landlordAccount = await this.accountRepo.findOne({
+        where: { id: landlordAccountId },
+        relations: ['user'],
+      });
       const landlordName =
-        ownerUser.accounts[0].profile_name ||
-        `${ownerUser.first_name} ${ownerUser.last_name}`.trim() ||
+        landlordAccount?.profile_name ||
+        `${landlordAccount?.user?.first_name ?? ''} ${landlordAccount?.user?.last_name ?? ''}`.trim() ||
         'Your Properties';
 
       // Send the general KYC link
@@ -201,34 +300,31 @@ export class LandlordLookup {
   }
 
   async handleViewTenancies(from: string) {
-    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const actor = await this.resolveActor(from);
 
-    const user = await this.usersRepo.findOne({
-      where: { phone_number: normalizedPhone },
-      relations: ['accounts'],
-    });
-
-    if (!user) {
+    if (!actor) {
       await this.whatsappUtil.sendText(from, 'No tenancy info available.');
       return;
     }
 
-    // Find the landlord account for this user
-    const landlordAccount = user.accounts?.find((account) =>
-      accountHasRole(account, RolesEnum.LANDLORD),
-    );
-
-    if (!landlordAccount) {
-      await this.whatsappUtil.sendText(from, 'Landlord account not found.');
+    if (!actor.landlordIds.length) {
+      await this.whatsappUtil.sendText(from, 'No tenancies found.');
       return;
     }
 
     const propertyTenants = await this.propertyTenantRepo.find({
       where: {
-        property: { owner_id: landlordAccount.id },
+        property: { owner_id: In(actor.landlordIds) },
         status: TenantStatusEnum.ACTIVE,
       },
-      relations: ['property', 'property.rents', 'tenant', 'tenant.user'],
+      relations: [
+        'property',
+        'property.owner',
+        'property.owner.user',
+        'property.rents',
+        'tenant',
+        'tenant.user',
+      ],
     });
 
     if (!propertyTenants?.length) {
@@ -259,7 +355,12 @@ export class LandlordLookup {
           })
         : '——';
 
-      tenancyMessage += `${i + 1}. ${pt.property.name}\n${tenantName}\n${rentAmount}/yr\nNext rent due: ${dueDate}\n\n`;
+      // The admin's list spans several landlords — say whose tenancy each is.
+      const ownerLine = actor.isAdmin
+        ? `Landlord: ${this.ownerDisplayName(pt.property.owner)}\n`
+        : '';
+
+      tenancyMessage += `${i + 1}. ${pt.property.name}\n${ownerLine}${tenantName}\n${rentAmount}/yr\nNext rent due: ${dueDate}\n\n`;
     }
 
     await this.whatsappUtil.sendText(from, tenancyMessage);
@@ -281,35 +382,25 @@ export class LandlordLookup {
   }
 
   async handleViewMaintenance(from: string) {
-    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+    const actor = await this.resolveActor(from);
 
-    const user = await this.usersRepo.findOne({
-      where: { phone_number: normalizedPhone },
-      relations: ['accounts'],
-    });
-
-    if (!user) {
+    if (!actor) {
       await this.whatsappUtil.sendText(from, 'No maintenance info available.');
       return;
     }
 
-    // Find the landlord account for this user
-    const landlordAccount = user.accounts?.find((account) =>
-      accountHasRole(account, RolesEnum.LANDLORD),
-    );
-
-    if (!landlordAccount) {
-      await this.whatsappUtil.sendText(from, 'Landlord account not found.');
+    if (!actor.landlordIds.length) {
+      await this.whatsappUtil.sendText(from, 'No maintenance requests found.');
       return;
     }
 
-    // Landlord's requests across BOTH scopes: unit (property.owner_id) and
-    // common area (common_area.owner_id). Both owner columns hold the
-    // landlord's Account.id, so the array-of-where ORs them on the same id.
+    // Requests across BOTH scopes: unit (property.owner_id) and common area
+    // (common_area.owner_id). Both owner columns hold a landlord's
+    // Account.id, so the array-of-where ORs them over the actor's scope.
     const maintenanceRequests = await this.maintenanceRequestRepo.find({
       where: [
-        { property: { owner_id: landlordAccount.id } },
-        { common_area: { owner_id: landlordAccount.id } },
+        { property: { owner_id: In(actor.landlordIds) } },
+        { common_area: { owner_id: In(actor.landlordIds) } },
       ],
       relations: [
         'property',

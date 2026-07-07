@@ -27,6 +27,8 @@ import { EventsGateway } from '../events/events.gateway';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../utils/utility-service';
 import { Fee } from '../common/billing/fees';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 @Injectable()
 export class PaymentPlanRequestsService {
@@ -45,6 +47,7 @@ export class PaymentPlanRequestsService {
     private readonly eventsGateway: EventsGateway,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   // ───────────────────────────────────────────────────────────────────────
@@ -57,13 +60,7 @@ export class PaymentPlanRequestsService {
   ): Promise<PaymentPlanRequest> {
     const invoice = await this.renewalInvoiceRepository.findOne({
       where: { token },
-      relations: [
-        'property',
-        'property.owner',
-        'property.owner.user',
-        'tenant',
-        'tenant.user',
-      ],
+      relations: ['property', 'tenant', 'tenant.user'],
     });
 
     if (!invoice) {
@@ -208,22 +205,13 @@ export class PaymentPlanRequestsService {
   ): Promise<void> {
     const property = invoice.property;
     const propertyName = property?.name ?? 'your property';
-    const landlordAccount = property?.owner;
-    const landlordUser = landlordAccount?.user;
     const tenantUser = invoice.tenant?.user;
 
     const tenantName =
       `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
       'there';
-    const landlordName =
-      landlordAccount?.profile_name ||
-      `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`.trim() ||
-      'there';
     const tenantPhone = tenantUser?.phone_number
       ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
-      : null;
-    const landlordPhone = landlordUser?.phone_number
-      ? this.utilService.normalizePhoneNumber(landlordUser.phone_number)
       : null;
 
     // Property/tenant timeline
@@ -292,12 +280,17 @@ export class PaymentPlanRequestsService {
           request.id,
         );
       }
-      if (landlordPhone) {
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        property?.owner_id,
+        NotificationCategory.PAYMENTS,
+      );
+      for (const [index, recipient] of recipients.entries()) {
+        if (!recipient.phone) continue;
         await this.whatsappNotificationLog.queue(
           'sendPaymentPlanRequestLandlordNotify',
           {
-            phone_number: landlordPhone,
-            landlord_name: landlordName,
+            phone_number: recipient.phone,
+            landlord_name: recipient.name,
             tenant_name: tenantName,
             property_name: propertyName,
             total_amount: Number(request.total_amount),
@@ -305,9 +298,9 @@ export class PaymentPlanRequestsService {
             tenant_note: safeTenantNote,
             landlord_id: property?.owner_id,
             property_id: request.property_id,
-            recipient_name: landlordName,
+            recipient_name: recipient.name,
           },
-          request.id,
+          index === 0 ? request.id : `${request.id}:${recipient.accountId}`,
         );
       }
     } catch (err) {

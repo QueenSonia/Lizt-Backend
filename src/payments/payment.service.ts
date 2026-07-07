@@ -34,6 +34,8 @@ import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
 import { ReceiptGeneratorService } from '../receipts/receipt-generator.service';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 // In-memory lock to prevent concurrent processing of the same payment reference
 const processingLocks = new Map<string, boolean>();
@@ -70,6 +72,7 @@ export class PaymentService {
     @Inject(forwardRef(() => ReceiptGeneratorService))
     private readonly receiptGeneratorService: ReceiptGeneratorService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   /**
@@ -711,10 +714,13 @@ export class PaymentService {
           );
         }
       } catch (err) {
-        this.paystackLogger.error('Failed to queue losing tenant notification', {
-          offer_id: losingOffer.id,
-          error: err.message,
-        });
+        this.paystackLogger.error(
+          'Failed to queue losing tenant notification',
+          {
+            offer_id: losingOffer.id,
+            error: err.message,
+          },
+        );
       }
     }
   }
@@ -741,33 +747,33 @@ export class PaymentService {
 
     // Queue race condition notifications (logged to DB, sent async with retries)
     try {
-      const landlordAccount = await this.accountRepository.findOne({
-        where: { id: offerLetter.property.owner_id },
-        relations: ['user'],
-      });
-      const landlord = landlordAccount?.user;
       const kycApplication = await this.kycApplicationRepository.findOne({
         where: { id: offerLetter.kyc_application_id },
       });
 
-      if (landlord?.phone_number && kycApplication) {
-        const landlordName =
-          landlordAccount?.profile_name ||
-          `${landlord.first_name} ${landlord.last_name}`.trim() ||
-          'Landlord';
-        await this.whatsappNotificationLog.queue(
-          'sendLandlordRaceCondition',
-          {
-            phone_number: landlord.phone_number,
-            landlord_name: landlordName,
-            tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-            property_name: offerLetter.property.name,
-            amount: Number(offerLetter.amount_paid),
-            landlord_id: offerLetter.property.owner_id,
-            recipient_name: landlordName,
-          },
-          offerLetter.id,
+      if (kycApplication) {
+        const recipients = await this.notificationRecipients.resolveRecipients(
+          offerLetter.property.owner_id,
+          NotificationCategory.PAYMENTS,
         );
+        for (const [index, recipient] of recipients.entries()) {
+          if (!recipient.phone) continue;
+          await this.whatsappNotificationLog.queue(
+            'sendLandlordRaceCondition',
+            {
+              phone_number: recipient.phone,
+              landlord_name: recipient.name,
+              tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+              property_name: offerLetter.property.name,
+              amount: Number(offerLetter.amount_paid),
+              landlord_id: offerLetter.property.owner_id,
+              recipient_name: recipient.name,
+            },
+            index === 0
+              ? offerLetter.id
+              : `${offerLetter.id}:${recipient.accountId}`,
+          );
+        }
       }
 
       if (kycApplication?.phone_number) {
@@ -1220,7 +1226,10 @@ export class PaymentService {
     });
 
     if (!payment) {
-      this.paystackLogger.error('Payment not found for rejected bank transfer', { reference });
+      this.paystackLogger.error(
+        'Payment not found for rejected bank transfer',
+        { reference },
+      );
       return;
     }
 
@@ -1427,56 +1436,52 @@ export class PaymentService {
         return;
       }
 
-      const landlordAccount = await this.accountRepository.findOne({
-        where: { id: offerLetter.property.owner_id },
-        relations: ['user'],
-      });
-      const landlord = landlordAccount?.user;
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        offerLetter.property.owner_id,
+        NotificationCategory.PAYMENTS,
+      );
 
       const kycApplication = await this.kycApplicationRepository.findOne({
         where: { id: offerLetter.kyc_application_id },
       });
 
-      if (!landlord?.phone_number || !kycApplication) {
+      if (!recipients.some((r) => r.phone) || !kycApplication) {
         this.paystackLogger.warn('Cannot send landlord payment notification', {
           offer_id: offerLetter.id,
-          reason: 'Missing landlord phone or KYC application',
-          landlord_id: landlord?.id,
-          landlord_phone: landlord?.phone_number ? 'present' : 'missing',
+          reason: 'No reachable recipient phone or missing KYC application',
+          landlord_id: offerLetter.property.owner_id,
           kyc_application_id: offerLetter.kyc_application_id,
           kyc_found: !!kycApplication,
         });
         return;
       }
 
-      const landlordName =
-        landlordAccount?.profile_name ||
-        `${landlord.first_name} ${landlord.last_name}`.trim() ||
-        'Landlord';
-
-      if (newOutstandingBalance === 0) {
-        await this.templateSenderService.sendLandlordPaymentComplete({
-          phone_number: landlord.phone_number,
-          landlord_name: landlordName,
-          tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-          property_name: offerLetter.property.name,
-          total_amount: Number(offerLetter.total_amount),
-          property_id: offerLetter.property.id,
-        });
-      } else {
-        await this.templateSenderService.sendLandlordPaymentReceived({
-          phone_number: landlord.phone_number,
-          landlord_name: landlordName,
-          tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
-          property_name: offerLetter.property.name,
-          amount: Number(payment.amount),
-          outstanding_balance: newOutstandingBalance,
-        });
+      for (const recipient of recipients) {
+        if (!recipient.phone) continue;
+        if (newOutstandingBalance === 0) {
+          await this.templateSenderService.sendLandlordPaymentComplete({
+            phone_number: recipient.phone,
+            landlord_name: recipient.name,
+            tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            property_name: offerLetter.property.name,
+            total_amount: Number(offerLetter.total_amount),
+            property_id: offerLetter.property.id,
+          });
+        } else {
+          await this.templateSenderService.sendLandlordPaymentReceived({
+            phone_number: recipient.phone,
+            landlord_name: recipient.name,
+            tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            property_name: offerLetter.property.name,
+            amount: Number(payment.amount),
+            outstanding_balance: newOutstandingBalance,
+          });
+        }
       }
 
       this.paystackLogger.info('Landlord payment notification sent', {
         offer_id: offerLetter.id,
-        landlord_id: landlord.id,
+        landlord_id: offerLetter.property.owner_id,
         amount: payment.amount,
         outstanding_balance: newOutstandingBalance,
       });

@@ -9,8 +9,16 @@ import { PropertyHistory } from '../../src/property-history/entities/property-hi
 import { Users } from '../../src/users/entities/user.entity';
 import { RentIncrease } from '../../src/rents/entities/rent-increase.entity';
 import { RenewalInvoice } from '../../src/tenancies/entities/renewal-invoice.entity';
+import { AdHocInvoiceLineItem } from '../../src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import { TenantKyc } from '../../src/tenant-kyc/entities/tenant-kyc.entity';
 import { WhatsappBotService } from '../../src/whatsapp-bot/whatsapp-bot.service';
+import { WhatsAppNotificationLogService } from '../../src/whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../../src/utils/utility-service';
+import { NotificationService } from '../../src/notifications/notification.service';
+import { TenantBalancesService } from '../../src/tenant-balances/tenant-balances.service';
+import { RenewalChargeService } from '../../src/renewal-letters/renewal-charge.service';
+import { ManagementScopeService } from '../../src/common/scope/management-scope.service';
+import { NotificationRecipientsService } from '../../src/common/notify/notification-recipients.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, Repository } from 'typeorm';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
@@ -45,9 +53,17 @@ describe('TenanciesService', () => {
   let usersRepository: MockRepository;
   let rentIncreaseRepository: MockRepository;
   let renewalInvoiceRepository: MockRepository;
+  let adHocInvoiceLineItemRepository: MockRepository;
+  let tenantKycRepository: MockRepository;
   let whatsappBotService: Partial<WhatsappBotService>;
+  let whatsappNotificationLogService: Partial<WhatsAppNotificationLogService>;
   let utilService: Partial<UtilService>;
   let eventEmitter: Partial<EventEmitter2>;
+  let notificationService: Partial<NotificationService>;
+  let tenantBalancesService: Partial<TenantBalancesService>;
+  let renewalChargeService: Partial<RenewalChargeService>;
+  let managementScopeService: Partial<ManagementScopeService>;
+  let notificationRecipientsService: Partial<NotificationRecipientsService>;
   let dataSource: Partial<DataSource>;
 
   /**
@@ -78,10 +94,17 @@ describe('TenanciesService', () => {
     usersRepository = createMockRepository();
     rentIncreaseRepository = createMockRepository();
     renewalInvoiceRepository = createMockRepository();
+    adHocInvoiceLineItemRepository = createMockRepository();
+    tenantKycRepository = createMockRepository();
 
     // Mock WhatsApp service (we don't want to send real messages in tests!)
     whatsappBotService = {
       sendTenantAttachmentNotification: jest.fn().mockResolvedValue(undefined),
+    };
+
+    // Mock WhatsApp notification log (queued template sends)
+    whatsappNotificationLogService = {
+      queue: jest.fn().mockResolvedValue(undefined),
     };
 
     // Mock EventEmitter2
@@ -92,6 +115,38 @@ describe('TenanciesService', () => {
     // Mock utility service
     utilService = {
       normalizePhoneNumber: jest.fn((phone) => phone),
+    };
+
+    // Mock in-app notification service
+    notificationService = {
+      create: jest.fn().mockResolvedValue(undefined),
+    };
+
+    // Mock tenant wallet/balances service
+    tenantBalancesService = {
+      getBalance: jest.fn().mockResolvedValue(0),
+      sumActiveWalletBackedPlanClaims: jest.fn().mockResolvedValue(0),
+      applyChange: jest.fn().mockResolvedValue(undefined),
+      getLedger: jest.fn().mockResolvedValue([]),
+    };
+
+    // Mock renewal charge service
+    renewalChargeService = {
+      getLetterAcceptedChargeAmount: jest.fn().mockResolvedValue(0),
+      getRentOwnPeriodChargeAmount: jest.fn().mockResolvedValue(0),
+      letterHasAcceptedCharge: jest.fn().mockResolvedValue(false),
+      reverseChargesForLetter: jest.fn().mockResolvedValue(undefined),
+      renewOneFromWalletCredit: jest.fn(),
+    };
+
+    // Mock management scope service (admin-manages-landlord checks)
+    managementScopeService = {
+      managesLandlord: jest.fn().mockResolvedValue(false),
+    };
+
+    // Mock notification recipients resolver
+    notificationRecipientsService = {
+      resolveRecipients: jest.fn().mockResolvedValue([]),
     };
 
     // Mock DataSource for transaction handling
@@ -147,8 +202,20 @@ describe('TenanciesService', () => {
           useValue: renewalInvoiceRepository,
         },
         {
+          provide: getRepositoryToken(AdHocInvoiceLineItem),
+          useValue: adHocInvoiceLineItemRepository,
+        },
+        {
+          provide: getRepositoryToken(TenantKyc),
+          useValue: tenantKycRepository,
+        },
+        {
           provide: WhatsappBotService,
           useValue: whatsappBotService,
+        },
+        {
+          provide: WhatsAppNotificationLogService,
+          useValue: whatsappNotificationLogService,
         },
         {
           provide: UtilService,
@@ -159,8 +226,28 @@ describe('TenanciesService', () => {
           useValue: eventEmitter,
         },
         {
+          provide: NotificationService,
+          useValue: notificationService,
+        },
+        {
+          provide: TenantBalancesService,
+          useValue: tenantBalancesService,
+        },
+        {
+          provide: RenewalChargeService,
+          useValue: renewalChargeService,
+        },
+        {
           provide: DataSource,
           useValue: dataSource,
+        },
+        {
+          provide: ManagementScopeService,
+          useValue: managementScopeService,
+        },
+        {
+          provide: NotificationRecipientsService,
+          useValue: notificationRecipientsService,
         },
       ],
     }).compile();
@@ -256,7 +343,8 @@ describe('TenanciesService', () => {
         phone_number: '+1234567890',
         tenant_name: 'John Doe',
         landlord_name: 'Jane',
-        apartment_name: 'Sunset Apartments',
+        property_name: 'Sunset Apartments',
+        property_id: 'property-456',
       });
     });
 
@@ -365,9 +453,12 @@ describe('TenanciesService', () => {
     /**
      * TEST 4: Testing Validation Logic
      *
-     * Shows how to test that your service validates input correctly
+     * Shows how to test that your service validates input correctly.
+     * Note: renewTenancy no longer takes start/end dates — the new period is
+     * derived from the active rent's expiry date + the payment frequency, so
+     * the validation guard is "active rent must have an expiry date".
      */
-    it('should throw BadRequestException when end date is before start date', async () => {
+    it('should throw BadRequestException when active rent has no expiry date', async () => {
       // ===== ARRANGE =====
       const mockPropertyTenant = {
         id: 'pt-001',
@@ -384,15 +475,13 @@ describe('TenanciesService', () => {
         property_id: 'property-456',
         tenant_id: 'tenant-789',
         rent_status: RentStatusEnum.ACTIVE,
-        expiry_date: new Date('2024-06-30'),
-      } as Rent;
+        expiry_date: null, // No expiry date set!
+      } as any as Rent;
 
       propertyTenantRepository.findOne.mockResolvedValue(mockPropertyTenant);
       rentRepository.findOne.mockResolvedValue(mockRent);
 
-      const invalidDto = {
-        startDate: '2024-12-31',
-        endDate: '2024-01-01', // End before start!
+      const renewDto = {
         rentAmount: 1000,
         paymentFrequency: 'monthly',
       };
@@ -400,12 +489,12 @@ describe('TenanciesService', () => {
       // ===== ACT & ASSERT =====
       // Use rejects.toThrow to test async errors
       await expect(
-        service.renewTenancy('pt-001', invalidDto as any, 'owner-123'),
+        service.renewTenancy('pt-001', renewDto as any, 'owner-123'),
       ).rejects.toThrow(BadRequestException);
 
       await expect(
-        service.renewTenancy('pt-001', invalidDto as any, 'owner-123'),
-      ).rejects.toThrow('End date must be after start date');
+        service.renewTenancy('pt-001', renewDto as any, 'owner-123'),
+      ).rejects.toThrow('Active rent has no expiry date set');
     });
 
     /**

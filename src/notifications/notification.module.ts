@@ -18,6 +18,7 @@ import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { UtilService } from 'src/utils/utility-service';
 import { Account } from 'src/users/entities/account.entity';
 import { ScopeModule } from 'src/common/scope/scope.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { ScopeModule } from 'src/common/scope/scope.module';
     ]),
     forwardRef(() => WhatsappBotModule),
     ScopeModule,
+    NotifyModule,
   ],
   controllers: [NotificationController],
   providers: [
@@ -46,4 +48,4 @@ import { ScopeModule } from 'src/common/scope/scope.module';
   ],
   exports: [NotificationService, PushNotificationService],
 })
-export class NotificationModule { }
+export class NotificationModule {}

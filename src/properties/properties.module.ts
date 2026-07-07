@@ -38,6 +38,7 @@ import { OfferLetter } from 'src/offer-letters/entities/offer-letter.entity';
 import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { ScopeModule } from 'src/common/scope/scope.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { ScopeModule } from 'src/common/scope/scope.module';
     TenantBalancesModule,
     RenewalChargeModule,
     ScopeModule,
+    NotifyModule,
   ],
   controllers: [PropertiesController],
   providers: [
@@ -84,4 +86,4 @@ import { ScopeModule } from 'src/common/scope/scope.module';
     DatabaseErrorHandlerService,
   ],
 })
-export class PropertiesModule { }
+export class PropertiesModule {}

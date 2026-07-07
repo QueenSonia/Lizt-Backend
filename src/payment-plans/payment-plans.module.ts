@@ -28,6 +28,7 @@ import { RenewalChargeModule } from '../renewal-letters/renewal-charge.module';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { UtilService } from '../utils/utility-service';
 import { ScopeModule } from '../common/scope/scope.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { ScopeModule } from '../common/scope/scope.module';
     RenewalChargeModule,
     WhatsappBotModule,
     ScopeModule,
+    NotifyModule,
   ],
   controllers: [PaymentPlansController, PaymentPlanRequestsController],
   providers: [

@@ -47,6 +47,8 @@ import {
   buildTimelineEvents,
   TimelineEvent,
 } from '../property-history/property-history-timeline.builder';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 @Injectable()
 export class KYCApplicationService {
@@ -72,6 +74,7 @@ export class KYCApplicationService {
     private readonly utilService: UtilService,
     private readonly configService: ConfigService,
     private readonly scopeService: ManagementScopeService,
+    private readonly notificationRecipients: NotificationRecipientsService,
     @Optional()
     @Inject(forwardRef(() => EventsGateway))
     private readonly eventsGateway?: EventsGateway,
@@ -358,13 +361,14 @@ export class KYCApplicationService {
 
     // Create property history events for tracking timeline
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.kycApplicationRepository.manager.getRepository(PropertyHistory);
 
-      const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
+      const historyEvents: Array<
+        Partial<InstanceType<typeof PropertyHistory>>
+      > = [];
 
       // One "form viewed" event per session-captured view (or fallback to
       // form_opened_at for clients that don't send view_events).
@@ -439,38 +443,32 @@ export class KYCApplicationService {
     if (this.whatsappNotificationLog && applicationWithRelations.property) {
       const property = applicationWithRelations.property;
 
-      // Notification to landlord — need to look up landlord phone first
+      // Notification to the owner-side recipients (managing admin)
       try {
-        const landlord = await this.propertyRepository
-          .createQueryBuilder('property')
-          .leftJoinAndSelect('property.owner', 'owner')
-          .leftJoinAndSelect('owner.user', 'user')
-          .where('property.id = :propertyId', { propertyId: property.id })
-          .getOne();
+        const recipients = await this.notificationRecipients.resolveRecipients(
+          property.owner_id,
+          NotificationCategory.KYC,
+        );
+        const frontendUrl =
+          this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
 
-        if (landlord?.owner?.user?.phone_number) {
-          const landlordPhone = this.utilService.normalizePhoneNumber(
-            landlord.owner.user.phone_number,
-          );
-          const landlordName =
-            landlord.owner.profile_name ||
-            `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
-          const frontendUrl =
-            this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
-
+        for (const [index, recipient] of recipients.entries()) {
+          if (!recipient.phone) continue;
           await this.whatsappNotificationLog.queue(
             'sendKYCApplicationNotification',
             {
-              phone_number: landlordPhone,
-              landlord_name: landlordName,
+              phone_number: recipient.phone,
+              landlord_name: recipient.name,
               tenant_name: `${kycData.first_name} ${kycData.last_name}`,
               property_name: property.name,
               application_id: savedApplication.id,
               frontend_url: frontendUrl,
-              landlord_id: landlord.owner.user.id,
-              recipient_name: landlordName,
+              landlord_id: property.owner_id,
+              recipient_name: recipient.name,
             },
-            savedApplication.id,
+            index === 0
+              ? savedApplication.id
+              : `${savedApplication.id}:${recipient.accountId}`,
           );
         }
       } catch (error) {
@@ -531,9 +529,8 @@ export class KYCApplicationService {
   ): Promise<KYCApplication> {
     const MAX_RESUBMISSIONS = 2; // 2 updates after the original = 3 total submissions
 
-    const { PropertyHistory } = await import(
-      '../property-history/entities/property-history.entity'
-    );
+    const { PropertyHistory } =
+      await import('../property-history/entities/property-history.entity');
     const propertyHistoryRepo =
       this.kycApplicationRepository.manager.getRepository(PropertyHistory);
 
@@ -613,10 +610,7 @@ export class KYCApplicationService {
         });
       }
     } catch (error) {
-      console.error(
-        'Failed to create KYC resubmission notification:',
-        error,
-      );
+      console.error('Failed to create KYC resubmission notification:', error);
     }
 
     // Same WebSocket event as the create path — landlord UI just refetches
@@ -646,36 +640,28 @@ export class KYCApplicationService {
     if (this.whatsappNotificationLog && updated.property) {
       try {
         const property = updated.property;
-        const landlord = await this.propertyRepository
-          .createQueryBuilder('property')
-          .leftJoinAndSelect('property.owner', 'owner')
-          .leftJoinAndSelect('owner.user', 'user')
-          .where('property.id = :propertyId', { propertyId: property.id })
-          .getOne();
+        const recipients = await this.notificationRecipients.resolveRecipients(
+          property.owner_id,
+          NotificationCategory.KYC,
+        );
+        const frontendUrl =
+          this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
 
-        if (landlord?.owner?.user?.phone_number) {
-          const landlordPhone = this.utilService.normalizePhoneNumber(
-            landlord.owner.user.phone_number,
-          );
-          const landlordName =
-            landlord.owner.profile_name ||
-            `${landlord.owner.user.first_name} ${landlord.owner.user.last_name}`;
-          const frontendUrl =
-            this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
-
+        for (const [index, recipient] of recipients.entries()) {
+          if (!recipient.phone) continue;
           await this.whatsappNotificationLog.queue(
             'sendKYCApplicationNotification',
             {
-              phone_number: landlordPhone,
-              landlord_name: landlordName,
+              phone_number: recipient.phone,
+              landlord_name: recipient.name,
               tenant_name: `${updated.first_name} ${updated.last_name}`,
               property_name: property.name,
               application_id: updated.id,
               frontend_url: frontendUrl,
-              landlord_id: landlord.owner.user.id,
-              recipient_name: landlordName,
+              landlord_id: property.owner_id,
+              recipient_name: recipient.name,
             },
-            updated.id,
+            index === 0 ? updated.id : `${updated.id}:${recipient.accountId}`,
           );
         }
       } catch (error) {
@@ -1164,9 +1150,8 @@ export class KYCApplicationService {
     // so the link is the wrong ownership anchor. The property owner is.
     assertLandlordInScope(managedLandlordIds, application.property?.owner_id);
 
-    const { PropertyHistory } = await import(
-      '../property-history/entities/property-history.entity'
-    );
+    const { PropertyHistory } =
+      await import('../property-history/entities/property-history.entity');
     const propertyHistoryRepo =
       this.kycApplicationRepository.manager.getRepository(PropertyHistory);
 
@@ -1638,7 +1623,9 @@ export class KYCApplicationService {
         'next_of_kin_address',
         'next_of_kin_email',
         // Tenancy fields are supplied by the landlord for property_addition — not required from tenant
-        ...(kyc.application_type !== ApplicationType.PROPERTY_ADDITION ? tenancyFields : []),
+        ...(kyc.application_type !== ApplicationType.PROPERTY_ADDITION
+          ? tenancyFields
+          : []),
         'passport_photo_url',
         'id_document_url',
       ];
@@ -1673,13 +1660,14 @@ export class KYCApplicationService {
 
       // Create property history events for tracking timeline
       try {
-        const { PropertyHistory } = await import(
-          '../property-history/entities/property-history.entity'
-        );
+        const { PropertyHistory } =
+          await import('../property-history/entities/property-history.entity');
         const propertyHistoryRepo =
           this.kycApplicationRepository.manager.getRepository(PropertyHistory);
 
-        const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
+        const historyEvents: Array<
+          Partial<InstanceType<typeof PropertyHistory>>
+        > = [];
 
         // One "form viewed" event per session-captured view (or fallback to
         // form_opened_at for clients that don't send view_events).
@@ -1754,39 +1742,33 @@ export class KYCApplicationService {
         if (this.whatsappBotService && updatedKyc.property) {
           const property = updatedKyc.property;
 
-          // Get landlord details
-          const landlord = await this.propertyRepository
-            .createQueryBuilder('property')
-            .leftJoinAndSelect('property.owner', 'owner')
-            .leftJoinAndSelect('owner.user', 'user')
-            .where('property.id = :propertyId', { propertyId: property.id })
-            .getOne();
-
-          if (landlord?.owner?.user?.phone_number && updatedKyc.tenant_id) {
-            const landlordPhone = this.utilService.normalizePhoneNumber(
-              landlord.owner.user.phone_number,
-            );
-            const landlordName =
-              landlord.owner.profile_name ||
-              this.utilService.toSentenceCase(landlord.owner.user.first_name);
+          if (updatedKyc.tenant_id) {
+            const recipients =
+              await this.notificationRecipients.resolveRecipients(
+                property.owner_id,
+                NotificationCategory.KYC,
+              );
             const tenantName = this.utilService.toSentenceCase(
               updatedKyc.first_name,
             );
 
-            await this.whatsappBotService.sendKYCCompletionNotification({
-              phone_number: landlordPhone,
-              landlord_name: landlordName,
-              tenant_name: tenantName,
-              property_name: property.name,
-              tenant_id: updatedKyc.tenant_id,
-            });
+            for (const recipient of recipients) {
+              if (!recipient.phone) continue;
+              await this.whatsappBotService.sendKYCCompletionNotification({
+                phone_number: recipient.phone,
+                landlord_name: recipient.name,
+                tenant_name: tenantName,
+                property_name: property.name,
+                tenant_id: updatedKyc.tenant_id,
+              });
 
-            console.log('✅ WhatsApp KYC completion notification sent:', {
-              to: landlordPhone,
-              tenant: tenantName,
-              property: property.name,
-              tenantId: updatedKyc.tenant_id,
-            });
+              console.log('✅ WhatsApp KYC completion notification sent:', {
+                to: recipient.phone,
+                tenant: tenantName,
+                property: property.name,
+                tenantId: updatedKyc.tenant_id,
+              });
+            }
           }
         }
       } catch (error) {
@@ -2210,7 +2192,11 @@ export class KYCApplicationService {
    */
   async submitPropertyAdditionKYC(
     token: string,
-    kycData: BaseKYCApplicationFieldsDto & { property_id: string; first_name: string; last_name: string },
+    kycData: BaseKYCApplicationFieldsDto & {
+      property_id: string;
+      first_name: string;
+      last_name: string;
+    },
   ): Promise<KYCApplication> {
     // Validate the KYC token and get the associated link
     const kycLink = await this.validateKYCToken(token);
@@ -2239,7 +2225,10 @@ export class KYCApplicationService {
       where: {
         phone_number: kycData.phone_number,
         kyc_link: { landlord_id: kycLink.landlord_id },
-        status: In([ApplicationStatus.PENDING_COMPLETION, ApplicationStatus.APPROVED]),
+        status: In([
+          ApplicationStatus.PENDING_COMPLETION,
+          ApplicationStatus.APPROVED,
+        ]),
       },
       relations: ['kyc_link', 'property', 'tenant'],
       order: {
@@ -2299,13 +2288,14 @@ export class KYCApplicationService {
 
     // Property history
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.kycApplicationRepository.manager.getRepository(PropertyHistory);
 
-      const historyEvents: Array<Partial<InstanceType<typeof PropertyHistory>>> = [];
+      const historyEvents: Array<
+        Partial<InstanceType<typeof PropertyHistory>>
+      > = [];
 
       // One "form viewed" event per session-captured view (or fallback to
       // form_opened_at for clients that don't send view_events).
@@ -2377,41 +2367,42 @@ export class KYCApplicationService {
     try {
       if (this.whatsappBotService && savedApplication.property) {
         const property = savedApplication.property;
-        const landlordWithUser = await this.propertyRepository
-          .createQueryBuilder('property')
-          .leftJoinAndSelect('property.owner', 'owner')
-          .leftJoinAndSelect('owner.user', 'user')
-          .where('property.id = :propertyId', { propertyId: property.id })
-          .getOne();
 
-        if (landlordWithUser?.owner?.user?.phone_number && savedApplication.tenant_id) {
-          const landlordPhone = this.utilService.normalizePhoneNumber(
-            landlordWithUser.owner.user.phone_number,
-          );
-          const landlordName =
-            landlordWithUser.owner.profile_name ||
-            this.utilService.toSentenceCase(
-              landlordWithUser.owner.user.first_name,
+        if (savedApplication.tenant_id) {
+          const recipients =
+            await this.notificationRecipients.resolveRecipients(
+              property.owner_id,
+              NotificationCategory.KYC,
             );
-          const tenantName = this.utilService.toSentenceCase(savedApplication.first_name);
+          const tenantName = this.utilService.toSentenceCase(
+            savedApplication.first_name,
+          );
 
-          await this.whatsappBotService.sendKYCCompletionNotification({
-            phone_number: landlordPhone,
-            landlord_name: landlordName,
-            tenant_name: tenantName,
-            property_name: property.name,
-            tenant_id: savedApplication.tenant_id,
-          });
+          for (const recipient of recipients) {
+            if (!recipient.phone) continue;
+            await this.whatsappBotService.sendKYCCompletionNotification({
+              phone_number: recipient.phone,
+              landlord_name: recipient.name,
+              tenant_name: tenantName,
+              property_name: property.name,
+              tenant_id: savedApplication.tenant_id,
+            });
+          }
         }
       }
     } catch (error) {
-      console.error('Failed to send WhatsApp KYC completion notification:', error);
+      console.error(
+        'Failed to send WhatsApp KYC completion notification:',
+        error,
+      );
     }
 
     // WhatsApp confirmation to tenant
     try {
       if (this.whatsappBotService && savedApplication.phone_number) {
-        const tenantPhone = this.utilService.normalizePhoneNumber(savedApplication.phone_number);
+        const tenantPhone = this.utilService.normalizePhoneNumber(
+          savedApplication.phone_number,
+        );
         const tenantName = `${savedApplication.first_name} ${savedApplication.last_name}`;
 
         await this.whatsappBotService.sendKYCSubmissionConfirmation({
@@ -2420,7 +2411,10 @@ export class KYCApplicationService {
         });
       }
     } catch (error) {
-      console.error('Failed to send tenant KYC submission confirmation:', error);
+      console.error(
+        'Failed to send tenant KYC submission confirmation:',
+        error,
+      );
     }
 
     return savedApplication;

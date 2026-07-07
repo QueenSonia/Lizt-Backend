@@ -6,15 +6,19 @@ import { CreateNotificationDto } from './dto/create-notification.dto';
 import { PushNotificationService } from './push-notification.service';
 import { NotificationType } from './enums/notification-type';
 import { ManagementScopeService } from '../common/scope/management-scope.service';
+import { Account, accountHasRole } from '../users/entities/account.entity';
+import { RolesEnum } from '../base.entity';
 
 @Injectable()
 export class NotificationService {
   constructor(
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
     private readonly pushNotificationService: PushNotificationService,
     private readonly scopeService: ManagementScopeService,
-  ) { }
+  ) {}
 
   /**
    * The notification "owner" ids a requester may see: their own account id plus
@@ -27,9 +31,8 @@ export class NotificationService {
     requesterId: string,
   ): Promise<string[]> {
     if (!requesterId) return [];
-    const managed = await this.scopeService.resolveManagedLandlordIds(
-      requesterId,
-    );
+    const managed =
+      await this.scopeService.resolveManagedLandlordIds(requesterId);
     return Array.from(new Set([requesterId, ...managed]));
   }
 
@@ -37,10 +40,12 @@ export class NotificationService {
     const notification = this.notificationRepository.create(dto);
     const saved = await this.notificationRepository.save(notification);
 
-    // Trigger push notification to the user's subscribed devices
+    // Trigger push notification to the operator's subscribed devices
     if (dto.user_id) {
+      const pushTargetId = await this.resolvePushTargetId(dto.user_id);
       const pushTitle = this.getPushTitle(dto.type);
-      this.pushNotificationService.sendToUser(dto.user_id, {
+      // Fire-and-forget: push delivery must never block or fail the insert.
+      void this.pushNotificationService.sendToUser(pushTargetId, {
         title: pushTitle,
         body: dto.description,
         url: dto.property_id
@@ -50,6 +55,25 @@ export class NotificationService {
     }
 
     return saved;
+  }
+
+  /**
+   * Push goes to whoever operates the dashboard, while the feed row stays
+   * addressed to the landlord (attribution + read-side scoping). For a
+   * LANDLORD-addressed notification that is the managing admin
+   * (`accounts.creator_id`); legacy landlords with no admin keep their own
+   * push. Non-landlord recipients (tenant-addressed rows exist, e.g. the
+   * properties tenant flows) are never redirected.
+   */
+  private async resolvePushTargetId(ownerAccountId: string): Promise<string> {
+    const account = await this.accountRepository.findOne({
+      where: { id: ownerAccountId },
+      select: { id: true, roles: true, creator_id: true },
+    });
+    if (!account || !accountHasRole(account, RolesEnum.LANDLORD)) {
+      return ownerAccountId;
+    }
+    return account.creator_id ?? ownerAccountId;
   }
 
   private getPushTitle(type?: string): string {
@@ -196,7 +220,10 @@ export class NotificationService {
       .leftJoinAndSelect('notification.property', 'property')
       .leftJoinAndSelect('property.property_tenants', 'property_tenants')
       .leftJoinAndSelect('property_tenants.tenant', 'tenant')
-      .leftJoinAndSelect('notification.maintenanceRequest', 'maintenanceRequest')
+      .leftJoinAndSelect(
+        'notification.maintenanceRequest',
+        'maintenanceRequest',
+      )
       // Owning landlord's account, name columns only (never leak the full
       // account row — it carries the password hash).
       .leftJoin('notification.user', 'owner')

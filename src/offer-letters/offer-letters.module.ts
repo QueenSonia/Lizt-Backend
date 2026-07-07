@@ -15,6 +15,7 @@ import { PaymentsModule } from '../payments/payments.module';
 import { NotificationModule } from '../notifications/notification.module';
 import { InvoicesModule } from '../invoices/invoices.module';
 import { ScopeModule } from '../common/scope/scope.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 /**
  * OfferLettersModule
@@ -31,6 +32,7 @@ import { ScopeModule } from '../common/scope/scope.module';
     forwardRef(() => NotificationModule),
     forwardRef(() => InvoicesModule),
     ScopeModule,
+    NotifyModule,
   ],
   controllers: [OfferLettersController],
   providers: [OfferLettersService, PDFGeneratorService, OTPService],

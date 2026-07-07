@@ -58,6 +58,8 @@ import {
   PaymentPlanStatus,
 } from '../payment-plans/entities/payment-plan.entity';
 import { buildInstallmentPlanClause } from '../payment-plans/installment-description.util';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 /**
  * Lead-day ladder for a FORCED scheduled removal ("end on a specific date").
@@ -94,6 +96,7 @@ export class RentReminderService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly renewalChargeService: RenewalChargeService,
     private readonly propertiesService: PropertiesService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   /**
@@ -687,7 +690,7 @@ export class RentReminderService {
       latestLetter.letter_status === RenewalLetterStatus.ACCEPTED &&
       !latestLetter.superseded_by_id;
     const covered = accepted
-      ? await this.isNextPeriodFullyCovered(rent, latestLetter as RenewalInvoice)
+      ? await this.isNextPeriodFullyCovered(rent, latestLetter)
       : false;
     if (!accepted || !covered) {
       this.logger.log(
@@ -1084,12 +1087,10 @@ export class RentReminderService {
     const serviceChargeStr = fmtNgn(summary.serviceCharge);
     const expectedAmountStr = fmtNgn(summary.totalAmount);
 
-    const owner = rent.property?.owner;
-    const landlordName =
-      owner?.profile_name ||
-      `${owner?.user?.first_name ?? ''} ${owner?.user?.last_name ?? ''}`.trim() ||
-      'there';
-    const landlordPhone = owner?.user?.phone_number;
+    const recipients = await this.notificationRecipients.resolveRecipients(
+      ownerId,
+      NotificationCategory.RENEWALS,
+    );
     const tenantName =
       `${rent.tenant?.user?.first_name ?? ''} ${rent.tenant?.user?.last_name ?? ''}`.trim() ||
       'your tenant';
@@ -1109,27 +1110,30 @@ export class RentReminderService {
     }
 
     // WhatsApp first so the dedup log entry exists before the in-app write.
-    if (landlordPhone) {
-      await this.whatsAppNotificationLogService.queue(
-        templateName,
-        {
-          phone_number: landlordPhone,
-          landlord_name: landlordName,
-          tenant_name: tenantName,
-          property_name: propertyName,
-          period,
-          rent_amount: rentAmountStr,
-          service_charge: serviceChargeStr,
-          expected_amount: expectedAmountStr,
-          status_note: statusNote,
-          // Meta URL-button dynamic var must be clean + last, so it's the bare
-          // propertyId; the base path (.../renew-tenancy/{{1}}) carries the
-          // action and forwards to the Renew Tenancy screen.
-          review_path: rent.property_id,
-          days_before_expiry: daysBefore,
-        },
-        rent.id,
-      );
+    if (recipients.some((r) => r.phone)) {
+      for (const [index, recipient] of recipients.entries()) {
+        if (!recipient.phone) continue;
+        await this.whatsAppNotificationLogService.queue(
+          templateName,
+          {
+            phone_number: recipient.phone,
+            landlord_name: recipient.name,
+            tenant_name: tenantName,
+            property_name: propertyName,
+            period,
+            rent_amount: rentAmountStr,
+            service_charge: serviceChargeStr,
+            expected_amount: expectedAmountStr,
+            status_note: statusNote,
+            // Meta URL-button dynamic var must be clean + last, so it's the bare
+            // propertyId; the base path (.../renew-tenancy/{{1}}) carries the
+            // action and forwards to the Renew Tenancy screen.
+            review_path: rent.property_id,
+            days_before_expiry: daysBefore,
+          },
+          index === 0 ? rent.id : `${rent.id}:${recipient.accountId}`,
+        );
+      }
     } else {
       this.logger.warn(
         `Landlord for rent ${rent.id} has no phone — sending in-app review notice only.`,
@@ -1217,7 +1221,7 @@ export class RentReminderService {
       rent.payment_status === RentPaymentStatusEnum.OWING;
     const sourceRent = isCurrentOwingPeriod
       ? rent
-      : ({ ...rent, ...this.carryForwardFees(rent) } as Rent);
+      : { ...rent, ...this.carryForwardFees(rent) };
     const fees = rentToFees(sourceRent);
     const periodCharge = sumAll(fees);
     // Exclude plan-owned wallet OB so the reminder preview matches the actual
@@ -1808,8 +1812,7 @@ export class RentReminderService {
         // cadence (frequency ladder). A forced end lands on an arbitrary date,
         // so it counts down on a fixed ladder instead — otherwise an off-ladder
         // date would fire no reminders before the tenancy is force-ended.
-        const isLapse =
-          row.move_out_reason === MoveOutReasonEnum.LEASE_ENDED;
+        const isLapse = row.move_out_reason === MoveOutReasonEnum.LEASE_ENDED;
         const schedule = isLapse
           ? RENT_REMINDER_SCHEDULE[effectiveFrequency(rent)] ||
             RENT_REMINDER_SCHEDULE.monthly
@@ -2071,7 +2074,7 @@ export class RentReminderService {
         rent.payment_status === RentPaymentStatusEnum.OWING;
       const sourceRent = isCurrentOwingPeriod
         ? rent
-        : ({ ...rent, ...this.carryForwardFees(rent) } as Rent);
+        : { ...rent, ...this.carryForwardFees(rent) };
 
       const fees: Fee[] = rentToFees(sourceRent);
       const periodCharge = sumAll(fees);

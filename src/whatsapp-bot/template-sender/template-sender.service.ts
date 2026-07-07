@@ -6060,7 +6060,7 @@ export class TemplateSenderService {
     payment_plan_request_landlord_notify:
       'Hi {{1}},\n\n{{2}} has requested a payment plan for {{3}}.\n\nTotal due: {{4}}\nPreferred schedule: {{5}}\nNote: {{6}}\n\nReview and respond from your dashboard.',
     payment_plan_request_declined:
-      'Hi {{1}}, your payment plan request for {{2}} was declined.\n\nReason: {{3}}.\n\nPlease contact your landlord for more info',
+      'Hi {{1}}, your payment plan request for {{2}} was declined.\n\nReason: {{3}}.\n\nPlease contact support at 08036322847 for more info.',
     tenancy_details_review_landlord:
       'Hi {{1}}, \n\nYour tenant {{2}} ({{3}}) just reviewed the tenancy details on record for {{4}}.\n\nTheir response: {{5}}\n\nLog in to your dashboard if you need to update anything.',
     tenancy_details_dispute_reason_landlord:

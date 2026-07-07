@@ -30,6 +30,7 @@ import { PropertyTenant } from 'src/properties/entities/property-tenants.entity'
 import { PropertyHistory } from 'src/property-history/entities/property-history.entity';
 import { buildTimelineEvents } from 'src/property-history/property-history-timeline.builder';
 import { PropertyHistoryService } from 'src/property-history/property-history.service';
+import { PROPERTY_LEVEL_EVENT_TYPES } from 'src/property-history/property-history.constants';
 import {
   KYCApplication,
   ApplicationStatus,
@@ -1070,13 +1071,35 @@ export class TenantManagementService {
       tenant_id: result.tenantAccount.id,
     });
 
-    // 5. Backfill tenant_id on applicant-phase property history records
-    // These events (KYC submitted, offer letter sent/accepted, invoice generated/sent, etc.)
-    // were created before the tenant account existed, so they have tenant_id = NULL
+    // 5. Backfill tenant_id on applicant-phase property history records.
+    // These events were created before the tenant account existed, so they
+    // have tenant_id = NULL. Two scopes, claimed separately:
+    //   1. THIS application's journey rows (form viewed, submitted, staged
+    //      entries replay left untouched) — matched by application id, across
+    //      any property, because an applicant can be attached to a different
+    //      property than the one they applied for.
+    //   2. Tenant-relevant pre-attach rows on the attach property (offer
+    //      letter, invoice, payment events) that carry no application id.
+    // Never claimed: other applications' rows (they belong to applicants who
+    // may be attached later — stealing them starves their replay), anonymous
+    // kyc_link form views (not attributable to one applicant), and
+    // property-level events (property/marketing changes are not tenant
+    // events).
     try {
       const propertyHistoryRepo =
         this.dataSource.getRepository(PropertyHistory);
-      const backfillResult = await propertyHistoryRepo
+      const journeyResult = await propertyHistoryRepo
+        .createQueryBuilder()
+        .update(PropertyHistory)
+        .set({ tenant_id: result.tenantAccount.id })
+        .where("related_entity_type = 'kyc_application'")
+        .andWhere('related_entity_id = :applicationId', {
+          applicationId: dto.kycApplicationId,
+        })
+        .andWhere('tenant_id IS NULL')
+        .execute();
+
+      const propertyResult = await propertyHistoryRepo
         .createQueryBuilder()
         .update(PropertyHistory)
         .set({ tenant_id: result.tenantAccount.id })
@@ -1084,10 +1107,16 @@ export class TenantManagementService {
           propertyId: dto.propertyId,
         })
         .andWhere('tenant_id IS NULL')
+        .andWhere(
+          "(related_entity_type IS NULL OR related_entity_type NOT IN ('kyc_application', 'kyc_link'))",
+        )
+        .andWhere('event_type NOT IN (:...propertyLevelEvents)', {
+          propertyLevelEvents: PROPERTY_LEVEL_EVENT_TYPES,
+        })
         .execute();
 
       console.log(
-        `Backfilled tenant_id on ${backfillResult.affected} applicant-phase property history records`,
+        `Backfilled tenant_id on ${journeyResult.affected} application journey rows and ${propertyResult.affected} pre-attach property rows`,
       );
     } catch (backfillError) {
       console.error(
@@ -1984,9 +2013,12 @@ export class TenantManagementService {
 
     // Applicant-phase histories and offer letters both depend only on the KYC
     // id lists above and are independent of each other — fetch them concurrently.
-    // Fetch history events for the property where tenant_id is NULL (not yet
-    // backfilled) or already belongs to this tenant, avoiding events from other
-    // tenants on the same property.
+    // Fetch history events for the property that already belong to this tenant,
+    // plus not-yet-backfilled (tenant_id IS NULL) rows ONLY when they are tied
+    // to one of THIS tenant's KYC applications — unclaimed rows on the same
+    // property can belong to other applicants (their journey events and staged
+    // payments) or be tenant-neutral property events, and must not leak into
+    // this tenant's timeline or balance breakdown.
     const [applicantPhaseHistories, offerLetters] = await Promise.all([
       kycPropertyIds.length > 0
         ? this.dataSource
@@ -1996,9 +2028,14 @@ export class TenantManagementService {
             .where('ph.property_id IN (:...propertyIds)', {
               propertyIds: kycPropertyIds,
             })
-            .andWhere('(ph.tenant_id IS NULL OR ph.tenant_id = :tenantId)', {
-              tenantId,
-            })
+            .andWhere(
+              `(ph.tenant_id = :tenantId OR (
+                 ph.tenant_id IS NULL
+                 AND ph.related_entity_type = 'kyc_application'
+                 AND ph.related_entity_id IN (:...kycApplicationIds)
+               ))`,
+              { tenantId, kycApplicationIds },
+            )
             .orderBy('ph.created_at', 'ASC')
             .getMany()
         : Promise.resolve([] as PropertyHistory[]),

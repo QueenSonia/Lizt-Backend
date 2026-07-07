@@ -2241,8 +2241,31 @@ export class PaymentPlansService {
 
     const plan = await this.getPlan(planId);
     if (plan.status !== PaymentPlanStatus.ACTIVE) {
-      this.logger.log(
-        `Plan ${planId} not active (status ${plan.status}); payoff ${data.reference} is a no-op (idempotent)`,
+      // If this reference is the one that settled the plan (webhook +
+      // redirect-verify race), only one charge exists — quiet no-op.
+      const isKnownReference = (plan.installments ?? []).some(
+        (i) => i.paystack_reference === data.reference,
+      );
+      if (isKnownReference) {
+        this.logger.log(
+          `Plan ${planId} already settled by reference ${data.reference} — same charge confirmed twice, ignoring`,
+        );
+        return;
+      }
+      // Unknown reference on a non-active plan = a second real charge landed
+      // (or money arrived for a cancelled plan). Flag it — don't credit.
+      this.logger.warn(
+        `Paystack payoff payment for non-active plan ${planId} (status ${plan.status}, ref: ${data.reference})`,
+      );
+      await this.propertyHistoryRepository.save(
+        this.propertyHistoryRepository.create({
+          property_id: plan.property_id,
+          tenant_id: plan.tenant_id,
+          event_type: 'payment_plan_duplicate_payment',
+          event_description: `Duplicate Paystack payoff payment received for plan "${plan.charge_name}" (status ${plan.status}) — reference ${data.reference} — refund investigation required`,
+          related_entity_id: plan.id,
+          related_entity_type: 'payment_plan',
+        }),
       );
       return;
     }
@@ -2439,6 +2462,15 @@ export class PaymentPlansService {
 
     // Idempotency + double-payment detection.
     if (installment.status === InstallmentStatus.PAID) {
+      // Same reference = the charge that paid this installment being confirmed
+      // again (webhook + redirect-verify race). Only one charge exists, so
+      // there is nothing to refund — don't raise an alarm on the timeline.
+      if (installment.paystack_reference === data.reference) {
+        this.logger.log(
+          `Installment ${installmentId} already paid by reference ${data.reference} — same charge confirmed twice, ignoring`,
+        );
+        return;
+      }
       this.logger.warn(
         `Duplicate Paystack payment for already-paid installment ${installmentId} (ref: ${data.reference})`,
       );

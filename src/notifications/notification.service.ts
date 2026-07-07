@@ -104,6 +104,8 @@ export class NotificationService {
         return 'Tenancy Renewed';
       case NotificationType.APPLICANT_HANDOFF:
         return 'Applicant Needs Help';
+      case NotificationType.LANDLORD_ADDED:
+        return 'Landlord Added';
       case NotificationType.NOTICE_AGREEMENT:
         return 'Notice Agreement';
       case NotificationType.PAYMENT_RECEIVED:

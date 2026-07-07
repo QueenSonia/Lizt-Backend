@@ -51,4 +51,5 @@
   SCHEDULED_END_CANCELLED = 'Scheduled End Cancelled',
   APPLICANT_HANDOFF = 'Applicant Handoff',
   TENANT_HANDOFF = 'Tenant Handoff',
+  LANDLORD_ADDED = 'Landlord Added',
 }

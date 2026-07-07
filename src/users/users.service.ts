@@ -1700,7 +1700,8 @@ export class UsersService {
     adminId: string,
     data: CreateManagedLandlordDto,
   ): Promise<Account> {
-    return await this.dataSource.transaction(async (manager) => {
+    const landlordAccount = await this.dataSource.transaction(
+      async (manager) => {
       const admin = await manager.getRepository(Account).findOne({
         where: { id: adminId },
         select: { id: true, roles: true },
@@ -1825,7 +1826,20 @@ export class UsersService {
       });
       await manager.getRepository(Account).save(landlord);
       return landlord;
+      },
+    );
+
+    // Live-feed event, emitted only after the transaction commits (mirrors the
+    // 'user.added' emit) so it never fires on rollback. Covers both entry
+    // points — the standalone Add Landlord modal and the inline "add new
+    // landlord" during property creation both funnel through here.
+    this.eventEmitter.emit('landlord.added', {
+      user_id: landlordAccount.id,
+      profile_name: landlordAccount.profile_name,
+      date: new Date().toISOString(),
     });
+
+    return landlordAccount;
   }
 
   /**

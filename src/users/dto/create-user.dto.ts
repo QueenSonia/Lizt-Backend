@@ -810,6 +810,57 @@ export class CreateManagedLandlordDto {
   phone_number: string;
 }
 
+/**
+ * Edit an existing managed landlord. Every field is optional — only the ones
+ * present are changed. Mirrors {@link CreateManagedLandlordDto}'s shape and
+ * transforms so the service can reuse the same name/type resolution logic.
+ */
+export class UpdateManagedLandlordDto {
+  @ApiProperty({ enum: LandlordType, required: false })
+  @IsOptional()
+  @IsEnum(LandlordType)
+  landlord_type?: LandlordType;
+
+  @ApiProperty({ example: 'John', required: false })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  first_name?: string;
+
+  @ApiProperty({ example: 'Doe', required: false })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  last_name?: string;
+
+  @ApiProperty({ example: 'Adeyemi Holdings Ltd', required: false })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  business_name?: string;
+
+  @ApiProperty({ example: 'landlord@example.com', required: false })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toLowerCase().trim() : value,
+  )
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @ApiProperty({ example: '+2348104467932', required: false })
+  @IsOptional()
+  @IsString()
+  @IsValidPhoneNumber()
+  @NormalizePhoneNumber()
+  phone_number?: string;
+}
+
 export class CreateCustomerRepDto {
   @ApiProperty({ example: 'John', description: 'First name of the user' })
   @Transform((val) => val.value.toLowerCase())

@@ -20,6 +20,7 @@ import {
   CreateUserDto,
   IUser,
   LoginDto,
+  UpdateManagedLandlordDto,
   UserFilter,
 } from './dto/create-user.dto';
 import {
@@ -2080,5 +2081,180 @@ export class UsersService {
         ...applicantPayload,
       ],
     };
+  }
+
+  /**
+   * Edit a managed landlord's profile (type / name / business name / email /
+   * phone). Authorized by the same rule as {@link getManagedLandlordDetail} —
+   * the landlord's `creator_id` must be this admin — so a client-supplied
+   * landlordId can never reach another admin's landlord. Only the fields that
+   * are present in `data` change. Returns the refreshed managed-landlord row
+   * (same shape as {@link getManagedLandlords}).
+   */
+  async updateManagedLandlord(
+    adminId: string,
+    landlordId: string,
+    data: UpdateManagedLandlordDto,
+  ) {
+    await this.dataSource.transaction(async (manager) => {
+      const account = await manager.getRepository(Account).findOne({
+        where: {
+          id: landlordId,
+          creator_id: adminId,
+          roles: ArrayContains([RolesEnum.LANDLORD]),
+        },
+        relations: ['user'],
+      });
+      if (!account) {
+        throw new NotFoundException(
+          'Landlord not found or not managed by you.',
+        );
+      }
+
+      const nextType =
+        data.landlord_type ?? account.landlord_type ?? LandlordType.INDIVIDUAL;
+      const isCorporate = nextType === LandlordType.CORPORATE;
+
+      // Resolve each name piece, falling back to what's already stored when the
+      // caller left it out. For corporate the business name lives in
+      // profile_name; for individual the display name is first+last.
+      const firstName =
+        data.first_name !== undefined
+          ? data.first_name.trim()
+          : account.user?.first_name ?? '';
+      const lastName =
+        data.last_name !== undefined
+          ? data.last_name.trim()
+          : account.user?.last_name ?? '';
+      const businessName =
+        data.business_name !== undefined
+          ? data.business_name.trim()
+          : isCorporate
+            ? account.profile_name ?? ''
+            : '';
+
+      if (isCorporate && !businessName) {
+        throw new BadRequestException(
+          'A business name is required for corporate landlords',
+        );
+      }
+      if (!isCorporate && !firstName) {
+        throw new BadRequestException(
+          "An individual landlord's first name is required",
+        );
+      }
+
+      // ── Email (on the account) ──────────────────────────────────────────────
+      if (data.email !== undefined) {
+        const email = data.email.trim().toLowerCase();
+        if (email && email !== account.email) {
+          const clash = await manager
+            .getRepository(Account)
+            .findOne({ where: { email } });
+          if (clash && clash.id !== account.id) {
+            throw new ConflictException(
+              'Another account already uses this email address.',
+            );
+          }
+          account.email = email;
+        }
+      }
+
+      // ── Phone (on the shared user row) ──────────────────────────────────────
+      if (data.phone_number !== undefined && account.user) {
+        const phone = data.phone_number; // normalized (digits-only) by the DTO
+        if (phone && phone !== account.user.phone_number) {
+          const clash = await manager
+            .getRepository(Users)
+            .findOne({ where: { phone_number: phone } });
+          if (clash && clash.id !== account.user.id) {
+            throw new ConflictException(
+              `Phone ${phone} is already linked to a different account.`,
+            );
+          }
+          account.user.phone_number = phone;
+        }
+      }
+
+      // ── Names on the user row ───────────────────────────────────────────────
+      if (account.user) {
+        // users.first_name is NOT NULL — a corporate landlord with no contact
+        // name falls back to the business name.
+        account.user.first_name =
+          (isCorporate ? firstName || businessName : firstName) ||
+          account.user.first_name;
+        account.user.last_name = lastName;
+        await manager.getRepository(Users).save(account.user);
+      }
+
+      account.landlord_type = nextType;
+      account.profile_name = isCorporate
+        ? businessName
+        : `${firstName} ${lastName}`.trim();
+
+      await manager.getRepository(Account).save(account);
+      await this.accountCacheService.invalidate(account.id);
+    });
+
+    // Return the refreshed row so the client can update in place.
+    const rows = await this.getManagedLandlords(adminId);
+    return rows.find((r) => r.id === landlordId) ?? { id: landlordId };
+  }
+
+  /**
+   * Remove a managed landlord. Refuses while the landlord still owns properties
+   * (their Account.id is the `owner_id` referenced across properties / rents /
+   * tenancies) so we never orphan that data. When the landlord shares its
+   * identity with another role (tenant / FM), only the landlord side is
+   * detached (role + management link removed); a landlord-only account is
+   * soft-deleted. Scoped to this admin's landlords.
+   */
+  async deleteManagedLandlord(adminId: string, landlordId: string) {
+    return await this.dataSource.transaction(async (manager) => {
+      const account = await manager.getRepository(Account).findOne({
+        where: {
+          id: landlordId,
+          creator_id: adminId,
+          roles: ArrayContains([RolesEnum.LANDLORD]),
+        },
+      });
+      if (!account) {
+        throw new NotFoundException(
+          'Landlord not found or not managed by you.',
+        );
+      }
+
+      const propertyCount = await manager
+        .getRepository(Property)
+        .count({ where: { owner_id: landlordId } });
+      if (propertyCount > 0) {
+        throw new BadRequestException(
+          `This landlord still has ${propertyCount} propert${
+            propertyCount === 1 ? 'y' : 'ies'
+          }. Remove or reassign them before deleting the landlord.`,
+        );
+      }
+
+      const remainingRoles = (account.roles ?? []).filter(
+        (r) => r !== RolesEnum.LANDLORD,
+      );
+
+      if (remainingRoles.length > 0) {
+        // Shared identity — detach the landlord side, keep the account.
+        // creator_id / landlord_type are nullable columns typed as non-null on
+        // the entity, so the null-clear needs a cast.
+        await manager.getRepository(Account).update(account.id, {
+          roles: remainingRoles,
+          creator_id: null,
+          landlord_type: null,
+        } as unknown as Partial<Account>);
+      } else {
+        // Landlord-only account → soft-delete it.
+        await manager.getRepository(Account).softDelete(account.id);
+      }
+
+      await this.accountCacheService.invalidate(account.id);
+      return { message: 'Landlord removed successfully' };
+    });
   }
 }

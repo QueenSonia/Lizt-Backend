@@ -28,6 +28,7 @@ import {
   CreateUserDto,
   LoginDto,
   ResetDto,
+  UpdateManagedLandlordDto,
   UploadLogoDto,
   UserFilter,
 } from './dto/create-user.dto';
@@ -137,6 +138,29 @@ export class UsersController {
     @Param('landlordId') landlordId: string,
   ) {
     return this.usersService.getManagedLandlordDetail(admin.id, landlordId);
+  }
+
+  @ApiOperation({ summary: 'Property manager edits a managed landlord' })
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @Put('/managed-landlords/:landlordId')
+  async updateManagedLandlord(
+    @CurrentUser() admin: Account,
+    @Param('landlordId') landlordId: string,
+    @Body() body: UpdateManagedLandlordDto,
+  ) {
+    return this.usersService.updateManagedLandlord(admin.id, landlordId, body);
+  }
+
+  @ApiOperation({ summary: 'Property manager removes a managed landlord' })
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @Delete('/managed-landlords/:landlordId')
+  async deleteManagedLandlord(
+    @CurrentUser() admin: Account,
+    @Param('landlordId') landlordId: string,
+  ) {
+    return this.usersService.deleteManagedLandlord(admin.id, landlordId);
   }
 
   @UseGuards(JwtAuthGuard)

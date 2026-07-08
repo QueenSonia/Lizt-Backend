@@ -8,6 +8,7 @@ import { ReceiptGeneratorService } from './receipt-generator.service';
 import { PropertyHistoryService } from '../property-history/property-history.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
 
 @Injectable()
 export class ReceiptsService {
@@ -23,17 +24,36 @@ export class ReceiptsService {
     private readonly receiptGeneratorService: ReceiptGeneratorService,
     private readonly propertyHistoryService: PropertyHistoryService,
     private readonly notificationService: NotificationService,
+    private readonly scopeService: ManagementScopeService,
   ) {}
+
+  /**
+   * True when `requesterId` may read receipts owned by `ownerId`: either they
+   * ARE that landlord, or they are an admin (property manager) who manages
+   * them. The authed receipt endpoints are admin-guarded, so without the
+   * manages-check every one of them 404'd for the very role allowed to call.
+   */
+  private async canManageOwner(
+    ownerId: string | null | undefined,
+    requesterId: string,
+  ): Promise<boolean> {
+    if (!ownerId) return false;
+    if (ownerId === requesterId) return true;
+    return this.scopeService.managesLandlord(requesterId, ownerId);
+  }
 
   async findByOfferLetterId(
     offerLetterId: string,
-    landlordId: string,
+    requesterId: string,
   ): Promise<Receipt[]> {
-    // Verify landlord ownership via offer letter
+    // Verify the requester is the offer's landlord or a managing admin
     const offerLetter = await this.offerLetterRepository.findOne({
-      where: { id: offerLetterId, landlord_id: landlordId },
+      where: { id: offerLetterId },
     });
-    if (!offerLetter) {
+    if (
+      !offerLetter ||
+      !(await this.canManageOwner(offerLetter.landlord_id, requesterId))
+    ) {
       throw new NotFoundException('Offer letter not found');
     }
 
@@ -45,13 +65,16 @@ export class ReceiptsService {
 
   async findByPropertyId(
     propertyId: string,
-    landlordId: string,
+    requesterId: string,
   ): Promise<Receipt[]> {
-    // Verify landlord ownership directly via property entity
+    // Verify the requester is the property's landlord or a managing admin
     const property = await this.propertyRepository.findOne({
-      where: { id: propertyId, owner_id: landlordId },
+      where: { id: propertyId },
     });
-    if (!property) {
+    if (
+      !property ||
+      !(await this.canManageOwner(property.owner_id, requesterId))
+    ) {
       throw new NotFoundException(
         'Property not found or not owned by landlord',
       );
@@ -63,7 +86,7 @@ export class ReceiptsService {
     });
   }
 
-  async findById(id: string, landlordId: string): Promise<Receipt> {
+  async findById(id: string, requesterId: string): Promise<Receipt> {
     const receipt = await this.receiptRepository.findOne({
       where: { id },
       relations: ['offer_letter'],
@@ -72,8 +95,13 @@ export class ReceiptsService {
       throw new NotFoundException('Receipt not found');
     }
 
-    // Verify landlord ownership
-    if (receipt.offer_letter?.landlord_id !== landlordId) {
+    // Verify the requester is the receipt's landlord or a managing admin
+    if (
+      !(await this.canManageOwner(
+        receipt.offer_letter?.landlord_id,
+        requesterId,
+      ))
+    ) {
       throw new NotFoundException('Receipt not found');
     }
 

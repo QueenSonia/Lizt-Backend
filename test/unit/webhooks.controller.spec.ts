@@ -2,14 +2,36 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { WebhooksController } from '../../src/payments/webhooks.controller';
 import { PaymentService } from '../../src/payments/payment.service';
+import { RenewalPaymentService } from '../../src/tenancies/renewal-payment.service';
 import { PaystackLogger } from '../../src/payments/paystack-logger.service';
+import { PaymentPlansService } from '../../src/payment-plans/payment-plans.service';
+import { AdHocInvoicesService } from '../../src/ad-hoc-invoices/ad-hoc-invoices.service';
 import * as crypto from 'crypto';
+
+/** Webhook processing is deferred via setImmediate — flush the macrotask queue. */
+const flushSetImmediate = () =>
+  new Promise<void>((resolve) => setImmediate(resolve));
 
 describe('WebhooksController', () => {
   let controller: WebhooksController;
 
   const mockPaymentService = {
-    processSuccessfulPayment: jest.fn(),
+    processSuccessfulPayment: jest.fn().mockResolvedValue(undefined),
+    processBankTransferRejected: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockRenewalPaymentService = {
+    processWebhookPayment: jest.fn().mockResolvedValue(undefined),
+    processWebhookTransferRejected: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockPaymentPlansService = {
+    markInstallmentPaidFromWebhook: jest.fn().mockResolvedValue(undefined),
+    markPlanPaidOffFromWebhook: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockAdHocInvoicesService = {
+    markInvoicePaidFromWebhook: jest.fn().mockResolvedValue(undefined),
   };
 
   const mockPaystackLogger = {
@@ -32,12 +54,24 @@ describe('WebhooksController', () => {
           useValue: mockPaymentService,
         },
         {
+          provide: RenewalPaymentService,
+          useValue: mockRenewalPaymentService,
+        },
+        {
           provide: PaystackLogger,
           useValue: mockPaystackLogger,
         },
         {
           provide: ConfigService,
           useValue: mockConfigService,
+        },
+        {
+          provide: PaymentPlansService,
+          useValue: mockPaymentPlansService,
+        },
+        {
+          provide: AdHocInvoicesService,
+          useValue: mockAdHocInvoicesService,
         },
       ],
     }).compile();
@@ -67,7 +101,7 @@ describe('WebhooksController', () => {
       mockConfigService.get.mockReturnValue(secretKey);
     });
 
-    it('should process valid charge.success webhook synchronously', async () => {
+    it('should accept a valid charge.success webhook and process it in the background', async () => {
       const signature = crypto
         .createHmac('sha512', secretKey)
         .update(JSON.stringify(mockWebhookBody))
@@ -85,6 +119,9 @@ describe('WebhooksController', () => {
       );
 
       expect(result).toEqual({ status: 'success' });
+
+      // Processing is deferred to a setImmediate callback
+      await flushSetImmediate();
       expect(mockPaymentService.processSuccessfulPayment).toHaveBeenCalledWith(
         mockWebhookBody.data,
       );
@@ -105,6 +142,7 @@ describe('WebhooksController', () => {
       );
 
       expect(result.status).toBe('error');
+      await flushSetImmediate();
       expect(
         mockPaymentService.processSuccessfulPayment,
       ).not.toHaveBeenCalled();
@@ -124,6 +162,7 @@ describe('WebhooksController', () => {
       );
 
       expect(result.status).toBe('error');
+      await flushSetImmediate();
       expect(
         mockPaymentService.processSuccessfulPayment,
       ).not.toHaveBeenCalled();
@@ -152,6 +191,7 @@ describe('WebhooksController', () => {
       );
 
       expect(result).toEqual({ status: 'success' });
+      await flushSetImmediate();
       expect(
         mockPaymentService.processSuccessfulPayment,
       ).not.toHaveBeenCalled();
@@ -176,6 +216,7 @@ describe('WebhooksController', () => {
       );
 
       expect(result.status).toBe('success');
+      await flushSetImmediate();
       expect(mockPaymentService.processSuccessfulPayment).toHaveBeenCalled();
     });
   });

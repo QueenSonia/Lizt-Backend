@@ -1,407 +1,446 @@
+// @ts-nocheck
 import * as fc from 'fast-check';
+import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { TenantManagementService } from '../../src/users/tenant-management/tenant-management.service';
+import { Users } from '../../src/users/entities/user.entity';
+import { Account } from '../../src/users/entities/account.entity';
+import { Rent } from '../../src/rents/entities/rent.entity';
+import { PropertyTenant } from '../../src/properties/entities/property-tenants.entity';
+import { KYCApplication } from '../../src/kyc-links/entities/kyc-application.entity';
+import { OfferLetter } from '../../src/offer-letters/entities/offer-letter.entity';
+import { Payment } from '../../src/payments/entities/payment.entity';
+import { AdHocInvoiceLineItem } from '../../src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
+import { UtilService } from '../../src/utils/utility-service';
+import { WhatsappBotService } from '../../src/whatsapp-bot/whatsapp-bot.service';
+import { TenantBalancesService } from '../../src/tenant-balances/tenant-balances.service';
+import { PropertyHistoryService } from '../../src/property-history/property-history.service';
+import { AccountCacheService } from '../../src/auth/account-cache.service';
+import { ManagementScopeService } from '../../src/common/scope/management-scope.service';
 import { TenantBalanceLedgerType } from '../../src/tenant-balances/entities/tenant-balance-ledger.entity';
 
 /**
  * Bug Condition Exploration Test for OB Payment Reversal Display Bug
  *
- * **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
- * **DO NOT attempt to fix the test or the code when it fails**
- * **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
- * **GOAL**: Surface counterexamples that demonstrate the bug exists
+ * **STATUS: BUG FIXED — SPEC UPDATED TO ENCODE THE FIXED BEHAVIOR**
+ *
+ * The original version of this spec was written to FAIL while the bug existed:
+ * it reproduced the old `.filter((e) => amount-in-charge-direction)` logic
+ * against hard-coded rows and asserted the intended outcome, so a red run
+ * proved that payment-edit reversal legs surfaced as phantom charges in the
+ * balance breakdown modal. The product has since been fixed in
+ * TenantManagementService.computeTenantBalance()
+ * (src/users/tenant-management/tenant-management.service.ts):
+ *
+ *  - The ledger sign model was clarified: `balance_change` is a signed wallet
+ *    change (negative = charge, positive = payment). OB_PAYMENT is now always
+ *    a positive payment row; the charge-direction leg written when a manual
+ *    payment is edited/deleted is typed OB_CHARGE (see
+ *    PropertyHistoryService.handleUpdatePaymentHistoryEntry, which reverses
+ *    every ledger leg tied to the property_history row and re-applies the new
+ *    amount).
+ *  - The charges filter excludes ALL `related_entity_type = 'property_history'`
+ *    rows (edit/delete reversal artifacts), `rent_edit` reversal rows and
+ *    `metadata.superseded` rows — so reversal accounting never renders as a
+ *    charge. Property history itself (updated in place) is the authority for
+ *    the current manual-payment amount shown in paymentTransactions.
+ *
+ * This spec therefore now instantiates the real service (mocked repositories /
+ * collaborators, per test/unit conventions) and asserts the FIXED behavior.
+ * If any of these tests regress to red, phantom charges are back.
  *
  * Validates: Requirements 2.1, 2.2
  */
 describe('Bug Condition Exploration: OB Payment Reversal Display Bug', () => {
-  /**
-   * Property 1: Bug Condition - OB Payment Phantom Charges
-   *
-   * **Validates: Requirements 2.1, 2.2**
-   *
-   * This test focuses on the bug where ob_payment reversal entries with positive amounts
-   * appear as phantom charges in the balance breakdown modal. The current filter
-   * `.filter((e) => Number(e.outstanding_balance_change) > 0)` includes ALL positive
-   * entries without considering entry type, causing accounting reversals to appear as charges.
-   */
-  describe('Property 1: Bug Condition - OB Payment Phantom Charges', () => {
-    it('should exclude ob_payment entries from charges display but currently includes them', () => {
-      // **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
+  const TENANT_ID = 'tenant-1';
+  const LANDLORD_ID = 'landlord-1';
+  const PROPERTY = {
+    id: 'property-1',
+    name: 'Sunset Apartments Unit 5A',
+    owner_id: LANDLORD_ID,
+  };
 
-      // Mock data representing ob_payment reversal entries that appear as phantom charges
-      const mockLedgerEntries = [
-        // Legitimate charge entry (should appear)
+  let service: TenantManagementService;
+
+  const tenantBalancesService = {
+    getBalance: jest.fn(),
+    getLedger: jest.fn(),
+  };
+  const paymentPlanRepository = { find: jest.fn() };
+  const adHocInvoiceLineItemRepository = { find: jest.fn() };
+
+  beforeAll(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TenantManagementService,
+        { provide: getRepositoryToken(Users), useValue: {} },
+        { provide: getRepositoryToken(Account), useValue: {} },
+        { provide: getRepositoryToken(Rent), useValue: {} },
+        { provide: getRepositoryToken(PropertyTenant), useValue: {} },
+        { provide: getRepositoryToken(KYCApplication), useValue: {} },
+        { provide: getRepositoryToken(OfferLetter), useValue: {} },
+        { provide: getRepositoryToken(Payment), useValue: {} },
         {
-          id: 'charge-1',
-          type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description: 'Rent charge for March 2026',
-          outstanding_balance_change: 250000,
-          property_id: 'property-1',
+          provide: getRepositoryToken(AdHocInvoiceLineItem),
+          useValue: adHocInvoiceLineItemRepository,
         },
-        // OB Payment reversal entry (should NOT appear as charge)
         {
-          id: 'ob-payment-1',
-          type: TenantBalanceLedgerType.OB_PAYMENT,
-          description: 'Payment reversal (edited payment)',
-          outstanding_balance_change: 250000, // Positive amount - this is the bug!
-          property_id: 'property-1',
+          provide: DataSource,
+          useValue: {
+            getRepository: jest.fn().mockReturnValue(paymentPlanRepository),
+          },
         },
-        // New payment entry (negative, appears in payments section)
-        {
-          id: 'payment-1',
-          type: TenantBalanceLedgerType.RENT_PAYMENT,
-          description: 'Updated payment amount',
-          outstanding_balance_change: -310000,
-          property_id: 'property-1',
-        },
-      ];
+        { provide: UtilService, useValue: {} },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: WhatsappBotService, useValue: {} },
+        { provide: TenantBalancesService, useValue: tenantBalancesService },
+        { provide: PropertyHistoryService, useValue: {} },
+        { provide: AccountCacheService, useValue: {} },
+        { provide: ManagementScopeService, useValue: {} },
+      ],
+    }).compile();
 
-      // **BUG CONDITION CHECK**: Current filter includes ALL positive entries
-      // This simulates the current buggy behavior in formatTenantData
-      const currentBuggyFilter = mockLedgerEntries.filter(
-        (e) => Number(e.outstanding_balance_change) > 0,
-      );
+    service = module.get(TenantManagementService);
+  });
 
-      // Expected correct behavior: exclude ob_payment entries from charges
-      const expectedCorrectFilter = mockLedgerEntries.filter(
-        (e) =>
-          Number(e.outstanding_balance_change) > 0 &&
-          e.type !== TenantBalanceLedgerType.OB_PAYMENT,
-      );
+  beforeEach(() => {
+    jest.clearAllMocks();
+    tenantBalancesService.getBalance.mockResolvedValue(0);
+    tenantBalancesService.getLedger.mockResolvedValue([]);
+    paymentPlanRepository.find.mockResolvedValue([]);
+    adHocInvoiceLineItemRepository.find.mockResolvedValue([]);
+  });
 
-      // This assertion SHOULD FAIL on unfixed code (proving the bug exists)
-      // Expected: Only 1 charge entry (legitimate charge)
-      // Actual (buggy): 2 charge entries (legitimate charge + phantom ob_payment)
-      expect(currentBuggyFilter.length).toBe(expectedCorrectFilter.length);
+  /** Invoke the real (private) breakdown builder the modal endpoints use. */
+  const computeBalance = (account, rents) =>
+    (service as any).computeTenantBalance(account, LANDLORD_ID, rents);
 
-      // Document the counterexample when this fails
-      if (currentBuggyFilter.length !== expectedCorrectFilter.length) {
-        console.log('COUNTEREXAMPLE FOUND - OB Payment Phantom Charge Bug:');
-        console.log(`Expected charges count: ${expectedCorrectFilter.length}`);
-        console.log(
-          `Actual charges count (buggy): ${currentBuggyFilter.length}`,
-        );
-        console.log('Phantom charges detected:');
+  const makeAccount = (propertyHistories = []) => ({
+    id: TENANT_ID,
+    property_histories: propertyHistories,
+  });
 
-        const phantomCharges = currentBuggyFilter.filter(
-          (e) => e.type === TenantBalanceLedgerType.OB_PAYMENT,
-        );
-        phantomCharges.forEach((charge) => {
-          console.log(
-            `  - ${charge.description}: ₦${Number(charge.outstanding_balance_change).toLocaleString()}`,
-          );
-        });
+  const RENT = {
+    id: 'rent-1',
+    property_id: PROPERTY.id,
+    property: PROPERTY,
+    rent_start_date: new Date('2026-03-01T00:00:00Z'),
+    expiry_date: new Date('2027-02-28T00:00:00Z'),
+  };
 
-        console.log(
-          'This confirms the bug exists: ob_payment entries appear as phantom charges',
-        );
-      }
+  const baseEntry = (overrides) => ({
+    related_entity_type: null,
+    related_entity_id: null,
+    created_at: new Date('2026-03-05T00:00:00Z'),
+    property_id: PROPERTY.id,
+    metadata: null,
+    ...overrides,
+  });
+
+  const rentCharge = (id, amount, description = 'Rent charge') =>
+    baseEntry({
+      id,
+      type: TenantBalanceLedgerType.INITIAL_BALANCE,
+      description,
+      balance_change: -amount, // charge = negative wallet change
+      related_entity_type: 'rent',
+      related_entity_id: RENT.id,
     });
 
-    it('should demonstrate phantom charge scenario from payment editing', () => {
-      // **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
-
-      // Mock scenario: Payment of ₦250,000 is edited to ₦310,000
-      // System creates ob_payment reversal (+₦250,000) and new payment (-₦310,000)
-      const paymentEditScenario = [
-        // Original charge
-        {
-          id: 'original-charge',
-          type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description: 'Rent charge for March 2026',
-          outstanding_balance_change: 250000,
-        },
-        // OB Payment reversal (accounting entry - should NOT appear as charge)
-        {
-          id: 'ob-reversal',
-          type: TenantBalanceLedgerType.OB_PAYMENT,
-          description: 'Payment reversal (edited payment)',
-          outstanding_balance_change: 250000, // Positive - creates phantom charge
-        },
-        // New payment amount
-        {
-          id: 'new-payment',
-          type: TenantBalanceLedgerType.RENT_PAYMENT,
-          description: 'Updated payment amount',
-          outstanding_balance_change: -310000, // Negative - appears in payments
-        },
-      ];
-
-      // **BUG CONDITION**: Current system shows both original charge AND phantom charge
-      const chargesFromCurrentFilter = paymentEditScenario.filter(
-        (e) => Number(e.outstanding_balance_change) > 0,
-      );
-
-      const paymentsFromCurrentFilter = paymentEditScenario.filter(
-        (e) => Number(e.outstanding_balance_change) < 0,
-      );
-
-      // Calculate what user sees in balance breakdown modal
-      const totalChargesShown = chargesFromCurrentFilter.reduce(
-        (sum, e) => sum + Number(e.outstanding_balance_change),
-        0,
-      );
-      const totalPaymentsShown = paymentsFromCurrentFilter.reduce(
-        (sum, e) => sum + Math.abs(Number(e.outstanding_balance_change)),
-        0,
-      );
-
-      // Expected behavior: Only show legitimate charges (₦250,000)
-      const expectedChargesTotal = 250000; // Only the original charge
-      const expectedPaymentsTotal = 310000; // Only the new payment amount
-
-      // This assertion SHOULD FAIL on unfixed code (proving the bug exists)
-      // Expected: ₦250,000 in charges (original charge only)
-      // Actual (buggy): ₦500,000 in charges (original + phantom ob_payment)
-      expect(totalChargesShown).toBe(expectedChargesTotal);
-
-      // Document the counterexample when this fails
-      if (totalChargesShown !== expectedChargesTotal) {
-        console.log('COUNTEREXAMPLE FOUND - Payment Edit Phantom Charge:');
-        console.log(
-          `Expected total charges: ₦${expectedChargesTotal.toLocaleString()}`,
-        );
-        console.log(
-          `Actual total charges (buggy): ₦${totalChargesShown.toLocaleString()}`,
-        );
-        console.log(
-          `Phantom amount: ₦${(totalChargesShown - expectedChargesTotal).toLocaleString()}`,
-        );
-        console.log(
-          `Total payments shown: ₦${totalPaymentsShown.toLocaleString()}`,
-        );
-        console.log(
-          'User sees confusing phantom charge alongside legitimate payment',
-        );
-        console.log(
-          'This confirms the bug exists: ob_payment reversals appear as charges',
-        );
-      }
+  /** Charge-direction reversal leg written when a manual payment is edited. */
+  const editReversalLeg = (id, amount, phId) =>
+    baseEntry({
+      id,
+      type: TenantBalanceLedgerType.OB_CHARGE,
+      description: 'Historical payment updated (reversal)',
+      balance_change: -amount,
+      related_entity_type: 'property_history',
+      related_entity_id: phId,
     });
 
-    it('should demonstrate multiple phantom charges from multiple payment edits', () => {
-      // **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
+  /** Payment leg (original or re-applied amount) tied to a manual payment. */
+  const manualPaymentLeg = (id, amount, phId) =>
+    baseEntry({
+      id,
+      type: TenantBalanceLedgerType.OB_PAYMENT,
+      description: `Manual payment of ₦${amount.toLocaleString()} received`,
+      balance_change: amount,
+      related_entity_type: 'property_history',
+      related_entity_id: phId,
+    });
 
-      // Mock scenario: Multiple payments edited, creating multiple ob_payment reversals
-      const multipleEditsScenario = [
-        // Original charge
-        {
-          id: 'charge-1',
-          type: TenantBalanceLedgerType.INITIAL_BALANCE,
-          description: 'Rent charge for March 2026',
-          outstanding_balance_change: 300000,
-        },
-        // First payment edit: ₦200,000 → ₦250,000
-        {
-          id: 'ob-reversal-1',
-          type: TenantBalanceLedgerType.OB_PAYMENT,
-          description: 'Payment reversal (first edit)',
-          outstanding_balance_change: 200000, // Phantom charge #1
-        },
-        {
-          id: 'payment-1',
-          type: TenantBalanceLedgerType.RENT_PAYMENT,
-          description: 'First updated payment',
-          outstanding_balance_change: -250000,
-        },
-        // Second payment edit: ₦250,000 → ₦300,000
-        {
-          id: 'ob-reversal-2',
-          type: TenantBalanceLedgerType.OB_PAYMENT,
-          description: 'Payment reversal (second edit)',
-          outstanding_balance_change: 250000, // Phantom charge #2
-        },
-        {
-          id: 'payment-2',
-          type: TenantBalanceLedgerType.RENT_PAYMENT,
-          description: 'Final payment amount',
-          outstanding_balance_change: -300000,
-        },
-      ];
+  const manualPaymentHistory = (id, currentAmount) => ({
+    id,
+    event_type: 'user_added_payment',
+    property: PROPERTY,
+    // Property history is updated in place — it always holds the CURRENT amount.
+    event_description: JSON.stringify({
+      paymentAmount: currentAmount,
+      description: 'Manual payment',
+    }),
+    move_in_date: new Date('2026-03-02T00:00:00Z'),
+    created_at: new Date('2026-03-02T00:00:00Z'),
+  });
 
-      // **BUG CONDITION**: Multiple ob_payment entries create multiple phantom charges
-      const allPositiveEntries = multipleEditsScenario.filter(
-        (e) => Number(e.outstanding_balance_change) > 0,
+  const allBreakdownTransactions = (result) =>
+    result.outstandingBalanceBreakdown.flatMap((b) => b.transactions);
+
+  describe('Property 1: Fixed Behavior - No OB Payment Phantom Charges', () => {
+    it('excludes payment-edit reversal legs from the charges display', async () => {
+      // Payment of ₦250,000 edited to ₦310,000 → reversal pair on the ledger.
+      const ph = manualPaymentHistory('ph-1', 310000);
+      tenantBalancesService.getLedger.mockResolvedValue([
+        rentCharge('charge-1', 250000, 'Rent charge for March 2026'),
+        editReversalLeg('ob-reversal-1', 250000, ph.id),
+        manualPaymentLeg('new-payment-1', 310000, ph.id),
+      ]);
+
+      const result = await computeBalance(makeAccount([ph]), [RENT]);
+
+      // FIXED: only the legitimate charge renders — the reversal leg does not.
+      const charges = allBreakdownTransactions(result);
+      expect(charges.map((t) => t.id)).toEqual(['charge-1']);
+      expect(
+        charges.some((t) => t.id === 'ob-reversal-1'),
+      ).toBe(false);
+    });
+
+    it('shows the edited payment scenario without phantom charge amounts', async () => {
+      // The original counterexample: user saw ₦500,000 of "charges" after
+      // editing a ₦250,000 payment to ₦310,000.
+      const ph = manualPaymentHistory('ph-1', 310000);
+      tenantBalancesService.getLedger.mockResolvedValue([
+        rentCharge('original-charge', 250000, 'Rent charge for March 2026'),
+        editReversalLeg('ob-reversal', 250000, ph.id),
+        manualPaymentLeg('new-payment', 310000, ph.id),
+      ]);
+
+      const result = await computeBalance(makeAccount([ph]), [RENT]);
+
+      // FIXED: charges total the legitimate charge only (was 500,000 pre-fix).
+      const totalChargesShown = result.outstandingBalanceBreakdown.reduce(
+        (sum, b) => sum + b.outstandingAmount,
+        0,
       );
+      expect(totalChargesShown).toBe(250000);
 
-      const legitimateCharges = allPositiveEntries.filter(
-        (e) => e.type !== TenantBalanceLedgerType.OB_PAYMENT,
-      );
+      // The payment side shows the current amount exactly once (from the
+      // in-place-updated property history), not the pre-edit ₦250,000 leg.
+      expect(result.paymentTransactions).toHaveLength(1);
+      expect(result.paymentTransactions[0].id).toBe('payment-history-ph-1');
+      expect(result.paymentTransactions[0].amount).toBe(-310000);
+    });
 
-      const phantomCharges = allPositiveEntries.filter(
-        (e) => e.type === TenantBalanceLedgerType.OB_PAYMENT,
-      );
+    it('produces no accumulating phantom charges across multiple payment edits', async () => {
+      // ₦200,000 → ₦250,000 → ₦300,000: each edit reverses EVERY prior leg
+      // tied to the property_history row and re-applies the new amount.
+      const ph = manualPaymentHistory('ph-1', 300000);
+      tenantBalancesService.getLedger.mockResolvedValue([
+        rentCharge('charge-1', 300000, 'Rent charge for March 2026'),
+        // original payment
+        manualPaymentLeg('pay-original', 200000, ph.id),
+        // first edit: reverse +200k, apply +250k
+        editReversalLeg('rev-1', 200000, ph.id),
+        manualPaymentLeg('pay-edit-1', 250000, ph.id),
+        // second edit: reverse the three existing legs, apply +300k
+        editReversalLeg('rev-2a', 200000, ph.id),
+        manualPaymentLeg('rev-2b', 200000, ph.id), // reversal of rev-1 (payment direction)
+        editReversalLeg('rev-2c', 250000, ph.id),
+        manualPaymentLeg('pay-edit-2', 300000, ph.id),
+      ]);
 
-      // This assertion SHOULD FAIL on unfixed code (proving the bug exists)
-      // Expected: 1 legitimate charge, 0 phantom charges
-      // Actual (buggy): 1 legitimate charge, 2 phantom charges
-      expect(phantomCharges.length).toBe(0);
+      const result = await computeBalance(makeAccount([ph]), [RENT]);
 
-      // Document the counterexample when this fails
-      if (phantomCharges.length > 0) {
-        console.log('COUNTEREXAMPLE FOUND - Multiple Phantom Charges:');
-        console.log(`Legitimate charges: ${legitimateCharges.length}`);
-        console.log(`Phantom charges: ${phantomCharges.length}`);
-        console.log('Phantom charges breakdown:');
+      // FIXED: exactly one legitimate charge, zero phantom rows.
+      const charges = allBreakdownTransactions(result);
+      expect(charges.map((t) => t.id)).toEqual(['charge-1']);
+      expect(charges[0].amount).toBe(300000);
 
-        phantomCharges.forEach((charge, index) => {
-          console.log(
-            `  ${index + 1}. ${charge.description}: ₦${Number(charge.outstanding_balance_change).toLocaleString()}`,
-          );
-        });
-
-        const totalPhantomAmount = phantomCharges.reduce(
-          (sum, e) => sum + Number(e.outstanding_balance_change),
-          0,
-        );
-        console.log(
-          `Total phantom amount: ₦${totalPhantomAmount.toLocaleString()}`,
-        );
-        console.log(
-          'This confirms the bug exists: multiple payment edits create multiple phantom charges',
-        );
-      }
+      // And exactly one payment row at the final amount.
+      expect(result.paymentTransactions).toHaveLength(1);
+      expect(result.paymentTransactions[0].amount).toBe(-300000);
     });
   });
 
   /**
-   * Property-Based Test: Bug Condition Detection Across Various Scenarios
+   * Property-Based Test: Fixed Behavior Across Various Ledger Configurations
    *
-   * This test generates various ledger entry configurations to verify the bug condition
-   * holds across different scenarios with ob_payment entries.
+   * Generates mixed ledgers (legitimate charges + edit-reversal artifacts +
+   * payment legs) and asserts the real implementation never surfaces a
+   * property_history reversal leg — or any positive OB_PAYMENT row — as a
+   * charge, while every legitimate charge is preserved.
    */
-  describe('Property-Based Bug Condition Detection', () => {
-    it('should detect ob_payment phantom charges across various ledger configurations', () => {
-      fc.assert(
-        fc.property(
-          // Generate ledger configurations with mixed entry types
+  describe('Property-Based Fixed Behavior Detection', () => {
+    it('never surfaces reversal legs or OB payments as charges across various ledger configurations', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.record({
-            tenantId: fc.uuid(),
-            ledgerEntries: fc.array(
+            legitimateCharges: fc.array(
               fc.record({
-                id: fc.uuid(),
+                amount: fc.integer({ min: 1, max: 500000 }),
                 type: fc.constantFrom(
                   TenantBalanceLedgerType.INITIAL_BALANCE,
-                  TenantBalanceLedgerType.OB_PAYMENT,
-                  TenantBalanceLedgerType.RENT_PAYMENT,
                   TenantBalanceLedgerType.AUTO_RENEWAL,
                 ),
-                description: fc.string({ minLength: 5, maxLength: 50 }),
-                outstanding_balance_change: fc.integer({
-                  min: -500000,
-                  max: 500000,
-                }),
-                property_id: fc.uuid(),
               }),
-              { minLength: 1, maxLength: 10 },
+              { minLength: 1, maxLength: 5 },
+            ),
+            reversalArtifacts: fc.array(
+              fc.record({
+                amount: fc.integer({ min: 1, max: 500000 }),
+                // Edits write both directions; neither may render as a charge.
+                direction: fc.constantFrom(-1, 1),
+              }),
+              { minLength: 1, maxLength: 3 },
+            ),
+            obPayments: fc.array(
+              fc.record({
+                amount: fc.integer({ min: 1, max: 500000 }),
+                relatedEntityType: fc.constantFrom(
+                  'renewal_invoice',
+                  'payment_plan_installment',
+                  null,
+                ),
+              }),
+              { minLength: 0, maxLength: 3 },
             ),
           }),
-          (config) => {
-            // **BUG CONDITION**: ob_payment entries with positive amounts should NOT appear as charges
-            // but currently do appear (this property will fail on unfixed code)
+          async (config) => {
+            const legitEntries = config.legitimateCharges.map((c, i) =>
+              baseEntry({
+                id: `legit-${i}`,
+                type: c.type,
+                description: `Charge ${i}`,
+                balance_change: -c.amount,
+                related_entity_type: 'rent',
+                related_entity_id: RENT.id,
+              }),
+            );
+            const reversalEntries = config.reversalArtifacts.map((r, i) =>
+              baseEntry({
+                id: `reversal-${i}`,
+                type:
+                  r.direction < 0
+                    ? TenantBalanceLedgerType.OB_CHARGE
+                    : TenantBalanceLedgerType.OB_PAYMENT,
+                description: 'Historical payment updated (reversal)',
+                balance_change: r.direction * r.amount,
+                related_entity_type: 'property_history',
+                related_entity_id: 'ph-1',
+              }),
+            );
+            const paymentEntries = config.obPayments.map((p, i) =>
+              baseEntry({
+                id: `payment-${i}`,
+                type: TenantBalanceLedgerType.OB_PAYMENT,
+                description: `Payment ${i}`,
+                balance_change: p.amount, // OB_PAYMENT is always positive now
+                related_entity_type: p.relatedEntityType,
+                related_entity_id: p.relatedEntityType ? `rel-${i}` : null,
+              }),
+            );
+            tenantBalancesService.getLedger.mockResolvedValue([
+              ...legitEntries,
+              ...reversalEntries,
+              ...paymentEntries,
+            ]);
 
-            const positiveEntries = config.ledgerEntries.filter(
-              (e) => Number(e.outstanding_balance_change) > 0,
+            const result = await computeBalance(makeAccount(), [RENT]);
+            const chargeIds = allBreakdownTransactions(result).map(
+              (t) => t.id,
             );
 
-            const obPaymentPhantomCharges = positiveEntries.filter(
-              (e) => e.type === TenantBalanceLedgerType.OB_PAYMENT,
-            );
-
-            // Document any phantom charges found
-            if (obPaymentPhantomCharges.length > 0) {
-              console.log(
-                `Bug condition detected for tenant ${config.tenantId}:`,
-              );
-              console.log(
-                `  Found ${obPaymentPhantomCharges.length} ob_payment phantom charges`,
-              );
-
-              obPaymentPhantomCharges.forEach((charge) => {
-                console.log(
-                  `    - ${charge.description}: ₦${Number(charge.outstanding_balance_change).toLocaleString()}`,
-                );
-              });
+            // FIXED: no reversal artifact and no OB payment renders as a charge…
+            for (const entry of [...reversalEntries, ...paymentEntries]) {
+              expect(chargeIds).not.toContain(entry.id);
             }
-
-            // This property encodes the expected behavior
-            // For this exploration test, we expect this to fail on unfixed code when ob_payment entries exist
-            expect(obPaymentPhantomCharges.length).toBe(0); // Will fail on unfixed code when ob_payment entries with positive amounts exist
+            // …while every legitimate charge is preserved, exactly once.
+            expect([...chargeIds].sort()).toEqual(
+              legitEntries.map((e) => e.id).sort(),
+            );
           },
         ),
         {
-          numRuns: 20, // Generate multiple scenarios to find counterexamples
+          numRuns: 20, // service call per run — keep the exploration cheap
           verbose: true,
         },
       );
     });
 
-    it('should verify that legitimate charges are preserved while ob_payment entries are excluded', () => {
-      fc.assert(
-        fc.property(
-          // Generate scenarios with both legitimate charges and ob_payment entries
+    it('preserves legitimate charge totals while reversal artifacts net to zero on display', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.record({
             legitimateCharges: fc.array(
-              fc.record({
-                id: fc.uuid(),
-                type: fc.constantFrom(
-                  TenantBalanceLedgerType.INITIAL_BALANCE,
-                  TenantBalanceLedgerType.AUTO_RENEWAL,
-                ),
-                outstanding_balance_change: fc.integer({ min: 1, max: 500000 }),
-              }),
+              fc.integer({ min: 1, max: 500000 }),
               { minLength: 1, maxLength: 5 },
             ),
-            obPaymentEntries: fc.array(
+            editedPaymentAmounts: fc.array(
               fc.record({
-                id: fc.uuid(),
-                type: fc.constant(TenantBalanceLedgerType.OB_PAYMENT),
-                outstanding_balance_change: fc.integer({ min: 1, max: 500000 }),
+                before: fc.integer({ min: 1, max: 500000 }),
+                after: fc.integer({ min: 1, max: 500000 }),
               }),
               { minLength: 1, maxLength: 3 },
             ),
           }),
-          (config) => {
-            const allEntries = [
-              ...config.legitimateCharges,
-              ...config.obPaymentEntries,
-            ];
+          async (config) => {
+            const legitEntries = config.legitimateCharges.map((amount, i) =>
+              baseEntry({
+                id: `legit-${i}`,
+                type: TenantBalanceLedgerType.INITIAL_BALANCE,
+                description: `Charge ${i}`,
+                balance_change: -amount,
+                related_entity_type: 'rent',
+                related_entity_id: RENT.id,
+              }),
+            );
+            // Each edited payment contributes its full reversal pair plus the
+            // re-applied amount — all tied to the property_history row.
+            const histories = config.editedPaymentAmounts.map((p, i) =>
+              manualPaymentHistory(`ph-${i}`, p.after),
+            );
+            const editLegs = config.editedPaymentAmounts.flatMap((p, i) => [
+              manualPaymentLeg(`orig-${i}`, p.before, `ph-${i}`),
+              editReversalLeg(`rev-${i}`, p.before, `ph-${i}`),
+              manualPaymentLeg(`new-${i}`, p.after, `ph-${i}`),
+            ]);
+            tenantBalancesService.getLedger.mockResolvedValue([
+              ...legitEntries,
+              ...editLegs,
+            ]);
 
-            // Current buggy filter (includes ALL positive entries)
-            const currentBuggyResult = allEntries.filter(
-              (e) => Number(e.outstanding_balance_change) > 0,
+            const result = await computeBalance(
+              makeAccount(histories),
+              [RENT],
             );
 
-            // Expected correct filter (excludes ob_payment entries)
-            const expectedCorrectResult = allEntries.filter(
-              (e) =>
-                Number(e.outstanding_balance_change) > 0 &&
-                e.type !== TenantBalanceLedgerType.OB_PAYMENT,
+            // Displayed charges equal the legitimate charges exactly.
+            const totalChargesShown =
+              result.outstandingBalanceBreakdown.reduce(
+                (sum, b) => sum + b.outstandingAmount,
+                0,
+              );
+            const expectedChargesTotal = config.legitimateCharges.reduce(
+              (a, b) => a + b,
+              0,
             );
+            expect(totalChargesShown).toBe(expectedChargesTotal);
 
-            // This assertion documents the preservation requirement
-            // The fix should preserve legitimate charges while excluding ob_payment entries
-            expect(currentBuggyResult.length).toBe(
-              expectedCorrectResult.length,
+            // Payments show each edited payment once, at its CURRENT amount.
+            const expectedPaymentsTotal = config.editedPaymentAmounts.reduce(
+              (sum, p) => sum + p.after,
+              0,
             );
-
-            // Document the difference when this fails
-            if (currentBuggyResult.length !== expectedCorrectResult.length) {
-              console.log('Bug condition detected:');
-              console.log(
-                `  Legitimate charges: ${config.legitimateCharges.length}`,
-              );
-              console.log(
-                `  OB payment entries: ${config.obPaymentEntries.length}`,
-              );
-              console.log(
-                `  Current filter result: ${currentBuggyResult.length} entries`,
-              );
-              console.log(
-                `  Expected filter result: ${expectedCorrectResult.length} entries`,
-              );
-              console.log(
-                `  Phantom charges: ${currentBuggyResult.length - expectedCorrectResult.length}`,
-              );
-            }
+            const totalPaymentsShown = result.paymentTransactions.reduce(
+              (sum, t) => sum + Math.abs(t.amount),
+              0,
+            );
+            expect(result.paymentTransactions).toHaveLength(
+              config.editedPaymentAmounts.length,
+            );
+            expect(totalPaymentsShown).toBe(expectedPaymentsTotal);
           },
         ),
         {

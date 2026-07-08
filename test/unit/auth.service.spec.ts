@@ -161,7 +161,7 @@ describe('AuthService', () => {
         return Promise.resolve(data);
       });
 
-      await service.generateRefreshToken(accountId);
+      await service.generateRefreshToken(accountId, RolesEnum.LANDLORD);
 
       const now = new Date();
       const thirtyDaysLater = new Date();

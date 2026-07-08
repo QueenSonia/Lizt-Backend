@@ -23,6 +23,8 @@ import {
   Repository,
 } from 'typeorm';
 import { buildPropertyFilter } from 'src/filters/query-filter';
+import { assertLandlordInScope } from 'src/common/scope/scope.util';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 import { MaintenanceRequestStatusEnum } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { DateService } from 'src/utils/date.helper';
 import { calculateRentExpiryDate } from 'src/common/utils/rent-date.util';
@@ -147,12 +149,18 @@ export class PropertiesService {
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly renewalChargeService: RenewalChargeService,
+    private readonly managementScopeService: ManagementScopeService,
   ) {}
 
   async createProperty(
     propertyData: CreatePropertyDto,
-    ownerId: string,
+    managedLandlordIds: string[],
   ): Promise<Property> {
+    // Act-on-behalf: the property is created for the landlord named in the
+    // payload, which must be one the requester (admin/FM) manages.
+    assertLandlordInScope(managedLandlordIds, propertyData?.landlord_id);
+    const ownerId = propertyData.landlord_id;
+    delete (propertyData as any).landlord_id;
     try {
       // create the property
       const newProperty = this.propertyRepository.create({
@@ -192,12 +200,16 @@ export class PropertiesService {
   async createPropertyWithExistingTenant(
     propertyData: CreatePropertyDto,
     tenantData: ExistingTenantDto,
-    ownerId: string,
+    managedLandlordIds: string[],
   ): Promise<{
     property: Property;
     kycStatus: string;
     isExistingTenant: boolean;
   }> {
+    // Act-on-behalf: resolve + authorize the target landlord up-front.
+    assertLandlordInScope(managedLandlordIds, propertyData?.landlord_id);
+    const ownerId = propertyData.landlord_id;
+    delete (propertyData as any).landlord_id;
     // Validate input data
     if (!propertyData || !tenantData || !ownerId) {
       throw new HttpException(
@@ -860,7 +872,10 @@ export class PropertiesService {
     }
   }
 
-  async getAllProperties(queryParams: PropertyFilter) {
+  async getAllProperties(
+    queryParams: PropertyFilter,
+    ownerIds: string[] = [],
+  ) {
     const page = queryParams.page
       ? Number(queryParams.page)
       : config.DEFAULT_PAGE_NO;
@@ -868,6 +883,21 @@ export class PropertiesService {
       ? Number(queryParams.size)
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
+
+    // Admin/PM scope: restrict to properties owned by the managed landlords.
+    // An empty scope means "nothing" — never an unfiltered all-properties read.
+    if (!ownerIds.length) {
+      return {
+        properties: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
 
     const { query, searchKeyword } = await buildPropertyFilter(queryParams);
 
@@ -931,7 +961,8 @@ export class PropertiesService {
         'property.offer_letter_count',
         'property.offer_letters',
       )
-      .where(query);
+      .where(query)
+      .andWhere('property.owner_id IN (:...ownerIds)', { ownerIds });
 
     if (searchKeyword) {
       qb.andWhere(
@@ -993,7 +1024,11 @@ export class PropertiesService {
   //   });
   // }
 
-  async getVacantProperties(ownerId: string): Promise<Property[]> {
+  async getVacantProperties(
+    ownerId: string | string[],
+  ): Promise<Property[]> {
+    const ownerIds = Array.isArray(ownerId) ? ownerId : [ownerId];
+    if (!ownerIds.length) return [];
     return this.propertyRepository
       .createQueryBuilder('property')
       .select([
@@ -1004,7 +1039,7 @@ export class PropertiesService {
         'property.rental_price',
         'property.is_marketing_ready',
       ])
-      .where('property.owner_id = :ownerId', { ownerId })
+      .where('property.owner_id IN (:...ownerIds)', { ownerIds })
       .andWhere('property.property_status IN (:...statuses)', {
         statuses: [
           PropertyStatusEnum.VACANT,
@@ -1015,7 +1050,9 @@ export class PropertiesService {
       .getMany();
   }
 
-  async fetchAllVacantProperties(ownerId: string): Promise<Property[]> {
+  async fetchAllVacantProperties(
+    ownerId: string | string[],
+  ): Promise<Property[]> {
     return this.getVacantProperties(ownerId);
   }
 
@@ -1040,19 +1077,33 @@ export class PropertiesService {
     }[]
   > {
     if (landlordAccountId !== requesterAccountId) {
-      // Validate the requester is a FACILITY_MANAGER on a team this landlord
-      // created. One row is enough; no need to materialize the relations.
-      const teamed = await this.dataSource.query(
-        `SELECT 1
-           FROM team_member tm
-           INNER JOIN team t ON t.id = tm."teamId"
-          WHERE tm."accountId" = $1
-            AND t."creatorId" = $2
-            AND tm.role = 'facility_manager'
-          LIMIT 1`,
-        [requesterAccountId, landlordAccountId],
-      );
-      if (!teamed?.length) {
+      // The requester may view this landlord's properties if they either MANAGE
+      // the landlord (admin acting on their behalf) or are a FACILITY_MANAGER
+      // on the team serving the landlord. After the re-parent that team belongs
+      // to the managing admin, so we accept the landlord's own team (legacy) or
+      // the admin's team — see resolveTeamOwnersForLandlord.
+      const acceptableTeamOwners =
+        await this.managementScopeService.resolveTeamOwnersForLandlord(
+          landlordAccountId,
+        );
+      // The managing admin's account id is among the acceptable team owners
+      // (it's the landlord's creator_id); the landlord-self case is handled by
+      // the outer guard, so a hit here means "requester is the managing admin".
+      let authorized = acceptableTeamOwners.includes(requesterAccountId);
+      if (!authorized && acceptableTeamOwners.length > 0) {
+        const teamed = await this.dataSource.query(
+          `SELECT 1
+             FROM team_member tm
+             INNER JOIN team t ON t.id = tm."teamId"
+            WHERE tm."accountId" = $1
+              AND t."creatorId" = ANY($2)
+              AND tm.role = 'facility_manager'
+            LIMIT 1`,
+          [requesterAccountId, acceptableTeamOwners],
+        );
+        authorized = !!teamed?.length;
+      }
+      if (!authorized) {
         throw new HttpException(
           'You are not authorized to view this landlord\'s properties',
           HttpStatus.FORBIDDEN,
@@ -1094,7 +1145,11 @@ export class PropertiesService {
     });
   }
 
-  async getMarketingReadyProperties(ownerId: string): Promise<Property[]> {
+  async getMarketingReadyProperties(
+    ownerId: string | string[],
+  ): Promise<Property[]> {
+    const ownerIds = Array.isArray(ownerId) ? ownerId : [ownerId];
+    if (!ownerIds.length) return [];
     return this.propertyRepository
       .createQueryBuilder('property')
       .select([
@@ -1105,7 +1160,7 @@ export class PropertiesService {
         'property.rental_price',
         'property.is_marketing_ready',
       ])
-      .where('property.owner_id = :ownerId', { ownerId })
+      .where('property.owner_id IN (:...ownerIds)', { ownerIds })
       .andWhere('property.is_marketing_ready = :isReady', { isReady: true })
       .andWhere('property.property_status IN (:...statuses)', {
         statuses: [
@@ -1381,6 +1436,7 @@ export class PropertiesService {
       propertyHistories,
       kycApplications,
       deletionEligibility,
+      landlordAccount,
     ] = await Promise.all([
       activeRent
         ? this.dataSource
@@ -1438,7 +1494,21 @@ export class PropertiesService {
         property.id,
         property.property_status as PropertyStatusEnum,
       ),
+      // Owning landlord's display name for the detail-page header. owner_id is
+      // Account.id; join the user for the first/last-name fallback.
+      this.accountRepository.findOne({
+        where: { id: property.owner_id },
+        relations: ['user'],
+      }),
     ]);
+
+    // Landlord (owner) display name — profile_name, else first+last, else blank.
+    const landlordName =
+      landlordAccount?.profile_name?.trim() ||
+      `${landlordAccount?.user?.first_name ?? ''} ${
+        landlordAccount?.user?.last_name ?? ''
+      }`.trim() ||
+      '';
 
     // Current tenant information
     let currentTenant: any | null = null;
@@ -2735,6 +2805,10 @@ export class PropertiesService {
       id: property.id,
       name: property.name,
       address: property.location,
+      // Owning landlord — Account.id (= owner_id) + display name, for the
+      // detail-page header's clickable "Landlord: …" line.
+      landlordId: property.owner_id,
+      landlordName,
       type: property.property_type,
       bedrooms: property.no_of_bedrooms,
       bathrooms: property.no_of_bathrooms,
@@ -2779,7 +2853,7 @@ export class PropertiesService {
     };
   }
 
-  async getRentsOfAProperty(id: string): Promise<CreatePropertyDto> {
+  async getRentsOfAProperty(id: string): Promise<Property> {
     const propertyAndRent = await this.propertyRepository.findOne({
       where: { id },
       relations: ['rents', 'rents.tenant'],
@@ -2793,7 +2867,7 @@ export class PropertiesService {
     return propertyAndRent;
   }
 
-  async getMaintenanceRequestOfAProperty(id: string): Promise<CreatePropertyDto> {
+  async getMaintenanceRequestOfAProperty(id: string): Promise<Property> {
     const propertyAndRent = await this.propertyRepository.findOne({
       where: { id },
       relations: ['maintenance_requests', 'maintenance_requests.tenant'],
@@ -2846,17 +2920,13 @@ export class PropertiesService {
   async updatePropertyById(
     id: string,
     updatePropertyDto: UpdatePropertyDto,
-    requesterId: string,
+    managedLandlordIds: string[],
   ): Promise<Property> {
     // findOneByOrFail
     const property = await this.propertyRepository.findOneByOrFail({ id });
 
-    // Auth check: Ensure the requester owns the property
-    if (property.owner_id !== requesterId) {
-      throw new ForbiddenException(
-        'You are not authorized to update this property',
-      );
-    }
+    // Auth check: the requester must manage the landlord that owns this property
+    assertLandlordInScope(managedLandlordIds, property.owner_id);
 
     // Snapshot original values so we can report only fields that actually changed
     const original = {
@@ -2892,7 +2962,7 @@ export class PropertiesService {
           description: `Property "${property.name}" has been deactivated`,
           status: 'Completed',
           property_id: id,
-          user_id: requesterId,
+          user_id: property.owner_id,
         });
       } catch (error) {
         console.error(
@@ -2914,7 +2984,7 @@ export class PropertiesService {
           description: `Property "${property.name}" has been activated`,
           status: 'Completed',
           property_id: id,
-          user_id: requesterId,
+          user_id: property.owner_id,
         });
       } catch (error) {
         console.error(
@@ -2936,7 +3006,7 @@ export class PropertiesService {
           description: `"${property.name}" is now ready for marketing — ₦${(property.rental_price || 0).toLocaleString()}`,
           status: 'Completed',
           property_id: id,
-          user_id: requesterId,
+          user_id: property.owner_id,
         });
       } catch (error) {
         console.error(
@@ -2958,7 +3028,7 @@ export class PropertiesService {
           description: `"${property.name}" has been removed from marketing`,
           status: 'Completed',
           property_id: id,
-          user_id: requesterId,
+          user_id: property.owner_id,
         });
       } catch (error) {
         console.error(
@@ -3036,7 +3106,7 @@ export class PropertiesService {
           description: `"${property.name}" — ${changeDescription}`,
           status: 'Completed',
           property_id: id,
-          user_id: requesterId,
+          user_id: property.owner_id,
         });
       } catch (error) {
         console.error('Failed to create property_edited notification:', error);
@@ -3075,18 +3145,21 @@ export class PropertiesService {
     return { canDelete: blockers.length === 0, blockers };
   }
 
-  async deletePropertyById(propertyId: string, ownerId: string): Promise<void> {
+  async deletePropertyById(
+    propertyId: string,
+    managedLandlordIds: string[],
+  ): Promise<void> {
     try {
-      // Ensure the property exists and belongs to the user making the request
+      // Load the property, then ensure the requester manages its owner.
       const property = await this.propertyRepository.findOneBy({
         id: propertyId,
-        owner_id: ownerId,
       });
 
       if (!property) {
-        // Property not found or does not belong to the owner
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
+
+      assertLandlordInScope(managedLandlordIds, property.owner_id);
 
       const { canDelete, blockers } = await this.computeDeletionEligibility(
         propertyId,
@@ -3111,7 +3184,7 @@ export class PropertiesService {
           description: `Property "${property.name}" has been deleted`,
           status: 'Completed',
           property_id: propertyId,
-          user_id: ownerId,
+          user_id: property.owner_id,
         });
       } catch (error) {
         console.error('Failed to create property_deleted notification:', error);
@@ -3377,6 +3450,21 @@ export class PropertiesService {
     }
   }
 
+  /**
+   * True when `requesterId` may act on a property owned by `ownerId`: either
+   * they ARE that landlord, or they are an admin (property manager) who
+   * manages them. Mirrors the canManageOwner pattern used by payment-plans /
+   * ad-hoc-invoices.
+   */
+  private async canManageOwner(
+    ownerId: string | null | undefined,
+    requesterId: string,
+  ): Promise<boolean> {
+    if (!ownerId) return false;
+    if (ownerId === requesterId) return true;
+    return this.managementScopeService.managesLandlord(requesterId, ownerId);
+  }
+
   async moveTenantOut(moveOutData: MoveTenantOutDto, requesterId?: string) {
     const { property_id, tenant_id, move_out_date } = moveOutData;
     if (!DateService.isValidFormat_YYYY_MM_DD(move_out_date)) {
@@ -3395,7 +3483,7 @@ export class PropertiesService {
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
 
-      if (property.owner_id !== requesterId) {
+      if (!(await this.canManageOwner(property.owner_id, requesterId))) {
         throw new ForbiddenException(
           'You are not authorized to end tenancy for this property',
         );
@@ -4076,8 +4164,11 @@ export class PropertiesService {
       id: scheduled.property_id,
     });
 
-    // If ownerId is provided, validate ownership
-    if (ownerId && (!property || property.owner_id !== ownerId)) {
+    // If ownerId is provided, validate ownership (landlord or managing admin)
+    if (
+      ownerId &&
+      (!property || !(await this.canManageOwner(property.owner_id, ownerId)))
+    ) {
       throw new ForbiddenException(
         'You are not authorized to cancel this scheduled move-out',
       );
@@ -4136,7 +4227,10 @@ export class PropertiesService {
     if (!property) {
       throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
     }
-    if (requesterId && property.owner_id !== requesterId) {
+    if (
+      requesterId &&
+      !(await this.canManageOwner(property.owner_id, requesterId))
+    ) {
       throw new ForbiddenException(
         'You are not authorized to deactivate renewal for this property',
       );
@@ -4290,9 +4384,13 @@ export class PropertiesService {
     };
   }
 
-  async getAllPropertyGroups(owner_id: string) {
+  async getAllPropertyGroups(owner_id: string | string[]) {
+    const ownerIds = Array.isArray(owner_id) ? owner_id : [owner_id];
+    if (!ownerIds.length) {
+      return { property_groups: [], total: 0 };
+    }
     const propertyGroups = await this.propertyGroupRepository.find({
-      where: { owner_id },
+      where: { owner_id: In(ownerIds) },
       order: { created_at: 'DESC' },
     });
 

@@ -1,27 +1,51 @@
 ﻿import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Notification } from './entities/notification.entity';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { PushNotificationService } from './push-notification.service';
 import { NotificationType } from './enums/notification-type';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
+import { Account, accountHasRole } from '../users/entities/account.entity';
+import { RolesEnum } from '../base.entity';
 
 @Injectable()
 export class NotificationService {
   constructor(
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
     private readonly pushNotificationService: PushNotificationService,
-  ) { }
+    private readonly scopeService: ManagementScopeService,
+  ) {}
+
+  /**
+   * The notification "owner" ids a requester may see: their own account id plus
+   * — for a property-manager admin — every managed landlord's account id.
+   * Operational notifications (KYC/payments/maintenance) carry
+   * `user_id = property.owner_id` (the landlord), so the admin's live feed must
+   * span the managed set; a non-admin resolves to just themselves.
+   */
+  private async resolveNotificationOwnerIds(
+    requesterId: string,
+  ): Promise<string[]> {
+    if (!requesterId) return [];
+    const managed =
+      await this.scopeService.resolveManagedLandlordIds(requesterId);
+    return Array.from(new Set([requesterId, ...managed]));
+  }
 
   async create(dto: CreateNotificationDto): Promise<Notification> {
     const notification = this.notificationRepository.create(dto);
     const saved = await this.notificationRepository.save(notification);
 
-    // Trigger push notification to the user's subscribed devices
+    // Trigger push notification to the operator's subscribed devices
     if (dto.user_id) {
+      const pushTargetId = await this.resolvePushTargetId(dto.user_id);
       const pushTitle = this.getPushTitle(dto.type);
-      this.pushNotificationService.sendToUser(dto.user_id, {
+      // Fire-and-forget: push delivery must never block or fail the insert.
+      void this.pushNotificationService.sendToUser(pushTargetId, {
         title: pushTitle,
         body: dto.description,
         url: dto.property_id
@@ -31,6 +55,25 @@ export class NotificationService {
     }
 
     return saved;
+  }
+
+  /**
+   * Push goes to whoever operates the dashboard, while the feed row stays
+   * addressed to the landlord (attribution + read-side scoping). For a
+   * LANDLORD-addressed notification that is the managing admin
+   * (`accounts.creator_id`); legacy landlords with no admin keep their own
+   * push. Non-landlord recipients (tenant-addressed rows exist, e.g. the
+   * properties tenant flows) are never redirected.
+   */
+  private async resolvePushTargetId(ownerAccountId: string): Promise<string> {
+    const account = await this.accountRepository.findOne({
+      where: { id: ownerAccountId },
+      select: { id: true, roles: true, creator_id: true },
+    });
+    if (!account || !accountHasRole(account, RolesEnum.LANDLORD)) {
+      return ownerAccountId;
+    }
+    return account.creator_id ?? ownerAccountId;
   }
 
   private getPushTitle(type?: string): string {
@@ -61,6 +104,8 @@ export class NotificationService {
         return 'Tenancy Renewed';
       case NotificationType.APPLICANT_HANDOFF:
         return 'Applicant Needs Help';
+      case NotificationType.LANDLORD_ADDED:
+        return 'Landlord Added';
       case NotificationType.NOTICE_AGREEMENT:
         return 'Notice Agreement';
       case NotificationType.PAYMENT_RECEIVED:
@@ -102,21 +147,54 @@ export class NotificationService {
     }
   }
 
-  async findAll(): Promise<Notification[]> {
-    return await this.notificationRepository.find();
+  // Scoped "all notifications" for the live feed: the requester's own plus, for
+  // an admin, every managed landlord's. Replaces the old unscoped global read.
+  async findAll(requesterId: string): Promise<Notification[]> {
+    const ownerIds = await this.resolveNotificationOwnerIds(requesterId);
+    if (!ownerIds.length) return [];
+    return await this.notificationRepository.find({
+      where: { user_id: In(ownerIds) },
+      order: { date: 'DESC' },
+    });
   }
 
+  // Unscoped by-id read for INTERNAL callers (e.g. update()'s re-fetch). The
+  // public/by-id endpoint must use findOneForRequester instead.
   async findOne(id: string): Promise<Notification | null> {
     return await this.notificationRepository.findOneBy({ id });
   }
 
-  async findByPropertyId(property_id: string): Promise<Notification[]> {
-    return await this.notificationRepository.find({
-      where: {
-        property_id,
-      },
+  async findOneForRequester(
+    id: string,
+    requesterId: string,
+  ): Promise<Notification | null> {
+    const notification = await this.notificationRepository.findOne({
+      where: { id },
       relations: ['property'],
     });
+    if (!notification) return null;
+    // In scope when the notification targets the requester (or a managed
+    // landlord), or sits on a property such an owner owns.
+    const ownerIds = await this.resolveNotificationOwnerIds(requesterId);
+    const inScope =
+      (notification.user_id && ownerIds.includes(notification.user_id)) ||
+      (notification.property?.owner_id &&
+        ownerIds.includes(notification.property.owner_id));
+    return inScope ? notification : null;
+  }
+
+  async findByPropertyId(
+    property_id: string,
+    requesterId: string,
+  ): Promise<Notification[]> {
+    const ownerIds = await this.resolveNotificationOwnerIds(requesterId);
+    if (!ownerIds.length) return [];
+    return await this.notificationRepository
+      .createQueryBuilder('notification')
+      .leftJoinAndSelect('notification.property', 'property')
+      .where('notification.property_id = :property_id', { property_id })
+      .andWhere('property.owner_id IN (:...ownerIds)', { ownerIds })
+      .getMany();
   }
 
   // Looks up all notifications connected to properties owned by a specific user.
@@ -126,7 +204,10 @@ export class NotificationService {
   async findByUserId(
     user_id: string,
     options: { page: number; limit: number },
-  ): Promise<{ notifications: Notification[]; total: number }> {
+  ): Promise<{
+    notifications: (Notification & { landlord_name: string | null })[];
+    total: number;
+  }> {
     console.log(
       `Finding notifications for user_id: ${user_id} with page: ${options.page}, limit: ${options.limit}`,
     );
@@ -134,18 +215,53 @@ export class NotificationService {
     const { page = 1, limit = 20 } = options;
     const skip = (page - 1) * limit;
 
+    // Admin live feed spans the managed landlords (operational notifications
+    // carry user_id = the landlord's account id); a non-admin sees just their
+    // own. resolveNotificationOwnerIds returns [self] when nothing is managed.
+    const ownerIds = await this.resolveNotificationOwnerIds(user_id);
+    if (!ownerIds.length) return { notifications: [], total: 0 };
+
     const query = this.notificationRepository
       .createQueryBuilder('notification')
       .leftJoinAndSelect('notification.property', 'property')
       .leftJoinAndSelect('property.property_tenants', 'property_tenants')
       .leftJoinAndSelect('property_tenants.tenant', 'tenant')
-      .leftJoinAndSelect('notification.maintenanceRequest', 'maintenanceRequest')
-      .where('notification.user_id = :user_id', { user_id })
+      .leftJoinAndSelect(
+        'notification.maintenanceRequest',
+        'maintenanceRequest',
+      )
+      // Owning landlord's account, name columns only (never leak the full
+      // account row — it carries the password hash).
+      .leftJoin('notification.user', 'owner')
+      .leftJoin('owner.user', 'ownerUser')
+      .addSelect([
+        'owner.id',
+        'owner.profile_name',
+        'ownerUser.id',
+        'ownerUser.first_name',
+        'ownerUser.last_name',
+      ])
+      .where('notification.user_id IN (:...ownerIds)', { ownerIds })
       .orderBy('notification.date', 'DESC')
       .skip(skip)
       .take(limit);
 
-    const [notifications, total] = await query.getManyAndCount();
+    const [rows, total] = await query.getManyAndCount();
+
+    // The admin feed spans several landlords, so each row carries the owning
+    // landlord's display name (accounts.profile_name, else the person's name).
+    const notifications = rows.map((row) => {
+      const { user: owner, ...rest } = row;
+      const landlord_name =
+        owner?.profile_name ||
+        [owner?.user?.first_name, owner?.user?.last_name]
+          .filter(Boolean)
+          .join(' ') ||
+        null;
+      return { ...rest, landlord_name } as Notification & {
+        landlord_name: string | null;
+      };
+    });
 
     return { notifications, total };
   }

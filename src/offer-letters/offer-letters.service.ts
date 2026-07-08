@@ -10,8 +10,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
+import { assertLandlordInScope } from '../common/scope/scope.util';
+import { resolveBrandingUser } from '../common/branding/branding.util';
 import {
   OfferLetter,
   OfferLetterStatus,
@@ -19,7 +21,6 @@ import {
 } from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
-import { Users } from '../users/entities/user.entity';
 import { PropertyStatusEnum } from '../properties/dto/create-property.dto';
 import { CreateOfferLetterDto } from './dto/create-offer-letter.dto';
 import {
@@ -34,6 +35,8 @@ import { PDFGeneratorService } from './pdf-generator.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { InvoicesService } from '../invoices/invoices.service';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 /**
  * OfferLetterService
@@ -64,6 +67,7 @@ export class OfferLettersService {
     @Inject(forwardRef(() => InvoicesService))
     private readonly invoicesService: InvoicesService,
     private readonly configService: ConfigService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   /**
@@ -75,7 +79,7 @@ export class OfferLettersService {
    */
   async create(
     dto: CreateOfferLetterDto,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<OfferLetterResponse> {
     // Validate KYC application exists
     const kycApplication = await this.kycApplicationRepository.findOne({
@@ -87,14 +91,7 @@ export class OfferLettersService {
       throw new NotFoundException('KYC application not found');
     }
 
-    // Validate KYC application belongs to landlord
-    if (kycApplication.kyc_link?.landlord_id !== landlordId) {
-      throw new ForbiddenException(
-        'Not authorized to create offer for this KYC application',
-      );
-    }
-
-    // Validate property exists and belongs to landlord
+    // Validate property exists
     const property = await this.propertyRepository.findOne({
       where: { id: dto.propertyId },
     });
@@ -103,9 +100,15 @@ export class OfferLettersService {
       throw new NotFoundException('Property not found');
     }
 
-    if (property.owner_id !== landlordId) {
+    // Act-on-behalf: the offer is created under the property's owner, whom the
+    // requester must manage. That owner is the landlord on the offer letter.
+    assertLandlordInScope(managedLandlordIds, property.owner_id);
+    const landlordId = property.owner_id;
+
+    // The KYC application's link must belong to the same landlord.
+    if (kycApplication.kyc_link?.landlord_id !== landlordId) {
       throw new ForbiddenException(
-        'Not authorized to create offer for this property',
+        'Not authorized to create offer for this KYC application',
       );
     }
 
@@ -164,26 +167,35 @@ export class OfferLettersService {
     // Requirements: 5.3
     const token = uuidv4();
 
-    // Load landlord account and user to get branding data for snapshot
+    // Load the landlord account (+ its managing admin's user) so we can both
+    // identify the landlord AND snapshot the BRANDING from the managing admin
+    // (Property Kraft). The landlord identity stays the real landlord; only the
+    // branding source moves to the admin (falling back to the landlord's own
+    // branding when there's no managing admin — pre-reparent / legacy).
     const landlordAccount = await this.propertyRepository.manager
       .getRepository('Account')
-      .findOne({ where: { id: landlordId }, relations: ['user'] });
+      .findOne({
+        where: { id: landlordId },
+        relations: ['user', 'creator', 'creator.user'],
+      });
 
     const landlord = landlordAccount?.user;
+    const brandingUser = resolveBrandingUser(landlordAccount as any);
+    const brandingSource = brandingUser?.branding;
 
     // Snapshot branding data at time of offer letter creation
-    const brandingSnapshot = landlord?.branding
+    const brandingSnapshot = brandingSource
       ? {
-          businessName: landlord.branding.businessName || '',
-          businessAddress: landlord.branding.businessAddress || '',
-          contactPhone: landlord.branding.contactPhone || '',
-          contactEmail: landlord.branding.contactEmail || '',
-          websiteLink: landlord.branding.websiteLink || '',
-          footerColor: landlord.branding.footerColor || '#6B6B6B',
-          letterhead: landlord.branding.letterhead,
-          signature: landlord.branding.signature,
-          headingFont: landlord.branding.headingFont || 'Inter',
-          bodyFont: landlord.branding.bodyFont || 'Inter',
+          businessName: brandingSource.businessName || '',
+          businessAddress: brandingSource.businessAddress || '',
+          contactPhone: brandingSource.contactPhone || '',
+          contactEmail: brandingSource.contactEmail || '',
+          websiteLink: brandingSource.websiteLink || '',
+          footerColor: brandingSource.footerColor || '#6B6B6B',
+          letterhead: brandingSource.letterhead,
+          signature: brandingSource.signature,
+          headingFont: brandingSource.headingFont || 'Inter',
+          bodyFont: brandingSource.bodyFont || 'Inter',
         }
       : undefined;
 
@@ -260,9 +272,8 @@ export class OfferLettersService {
 
     // Create property history event
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -378,7 +389,7 @@ export class OfferLettersService {
    */
   async sendOfferLetterById(
     offerId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<void> {
     // Find offer letter
     const offerLetter = await this.offerLetterRepository.findOne({
@@ -389,10 +400,8 @@ export class OfferLettersService {
       throw new NotFoundException('Offer letter not found');
     }
 
-    // Verify landlord owns this offer letter
-    if (offerLetter.landlord_id !== landlordId) {
-      throw new ForbiddenException('Not authorized to send this offer letter');
-    }
+    // The requester must manage the landlord this offer letter belongs to.
+    assertLandlordInScope(managedLandlordIds, offerLetter.landlord_id);
 
     // Load related entities
     const kycApplication = await this.kycApplicationRepository.findOne({
@@ -413,9 +422,8 @@ export class OfferLettersService {
 
     // Create property history event for offer letter sent
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -457,7 +465,7 @@ export class OfferLettersService {
 
     // Emit WebSocket event for real-time notification
     const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
-    this.eventsGateway.emitOfferLetterSent(landlordId, {
+    this.eventsGateway.emitOfferLetterSent(offerLetter.landlord_id, {
       propertyId: property.id,
       propertyName: property.name,
       applicantName,
@@ -472,7 +480,7 @@ export class OfferLettersService {
         description: `Offer letter sent to ${applicantName} for ${property.name}`,
         status: 'Completed',
         property_id: property.id,
-        user_id: landlordId,
+        user_id: offerLetter.landlord_id,
       });
     } catch (error) {
       this.logger.error(
@@ -489,14 +497,15 @@ export class OfferLettersService {
   async findByKycApplicationAndProperty(
     kycApplicationId: string,
     propertyId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<OfferLetterResponse | null> {
+    if (!managedLandlordIds?.length) return null;
     // Find the most recent offer letter for this KYC application and property
     const offerLetter = await this.offerLetterRepository.findOne({
       where: {
         kyc_application_id: kycApplicationId,
         property_id: propertyId,
-        landlord_id: landlordId,
+        landlord_id: In(managedLandlordIds),
       },
       order: {
         created_at: 'DESC',
@@ -516,7 +525,7 @@ export class OfferLettersService {
         where: { id: propertyId },
       }),
       this.propertyRepository.manager.getRepository('Account').findOne({
-        where: { id: landlordId },
+        where: { id: offerLetter.landlord_id },
         relations: ['user'],
       }),
     ]);
@@ -729,7 +738,9 @@ export class OfferLettersService {
     try {
       generatedInvoice = await this.invoicesService.generateFromOfferLetter(
         offerLetter.id,
-        offerLetter.landlord_id,
+        // Internal (tenant-accept) flow: authorize against the offer letter's
+        // own landlord as a singleton scope.
+        [offerLetter.landlord_id],
       );
       this.logger.log(`Invoice generated for offer letter ${offerLetter.id}`);
     } catch (error) {
@@ -761,9 +772,8 @@ export class OfferLettersService {
 
     // Create history entry for invoice sent
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -793,9 +803,8 @@ export class OfferLettersService {
 
     // Create history entry for offer letter acceptance
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -844,17 +853,12 @@ export class OfferLettersService {
     status: 'accepted' | 'rejected',
   ): Promise<void> {
     try {
-      // Phone number and name live on the Users entity, not Account
-      const landlordAccount = await this.propertyRepository.manager
-        .getRepository('Account')
-        .findOne({
-          where: { id: offerLetter.landlord_id },
-          relations: ['user'],
-        });
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        offerLetter.landlord_id,
+        NotificationCategory.OFFER_LETTERS,
+      );
 
-      const landlordUser = (landlordAccount as { user?: Users })?.user;
-
-      if (!landlordUser || !landlordUser.phone_number) {
+      if (!recipients.some((r) => r.phone)) {
         this.logger.warn(
           `Could not notify landlord ${offerLetter.landlord_id} - no phone number`,
         );
@@ -862,20 +866,18 @@ export class OfferLettersService {
       }
 
       const tenantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
-      const landlordAccountForName = landlordAccount as { profile_name?: string };
-      const landlordName =
-        landlordAccountForName?.profile_name ||
-        `${landlordUser.first_name || ''} ${landlordUser.last_name || ''}`.trim() ||
-        'Landlord';
 
-      await this.templateSenderService.sendOfferLetterStatusNotification({
-        phone_number: landlordUser.phone_number,
-        landlord_name: landlordName,
-        tenant_name: tenantName,
-        property_name: property.name,
-        property_id: property.id,
-        status,
-      });
+      for (const recipient of recipients) {
+        if (!recipient.phone) continue;
+        await this.templateSenderService.sendOfferLetterStatusNotification({
+          phone_number: recipient.phone,
+          landlord_name: recipient.name,
+          tenant_name: tenantName,
+          property_name: property.name,
+          property_id: property.id,
+          status,
+        });
+      }
 
       this.logger.log(
         `Landlord notified of offer ${status} for token ${offerLetter.token.substring(0, 8)}...`,
@@ -958,9 +960,8 @@ export class OfferLettersService {
 
     // Create history entry for offer letter rejection
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -1255,9 +1256,8 @@ export class OfferLettersService {
 
     // Create history entry for this offer letter view event
     try {
-      const { PropertyHistory } = await import(
-        '../property-history/entities/property-history.entity'
-      );
+      const { PropertyHistory } =
+        await import('../property-history/entities/property-history.entity');
       const propertyHistoryRepo =
         this.offerLetterRepository.manager.getRepository(PropertyHistory);
 
@@ -1300,7 +1300,7 @@ export class OfferLettersService {
    */
   async getOfferLetterHistory(
     offerLetterId: string,
-    landlordId: string,
+    managedLandlordIds: string[],
   ): Promise<
     Array<{
       id: string;
@@ -1309,7 +1309,7 @@ export class OfferLettersService {
       createdAt: string;
     }>
   > {
-    // Verify landlord owns this offer letter
+    // Verify the requester manages the landlord that owns this offer letter
     const offerLetter = await this.offerLetterRepository.findOne({
       where: { id: offerLetterId },
     });
@@ -1318,16 +1318,11 @@ export class OfferLettersService {
       throw new NotFoundException('Offer letter not found');
     }
 
-    if (offerLetter.landlord_id !== landlordId) {
-      throw new ForbiddenException(
-        'Not authorized to view this offer letter history',
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, offerLetter.landlord_id);
 
     // Get property history events for this offer letter
-    const { PropertyHistory } = await import(
-      '../property-history/entities/property-history.entity'
-    );
+    const { PropertyHistory } =
+      await import('../property-history/entities/property-history.entity');
     const propertyHistoryRepo =
       this.offerLetterRepository.manager.getRepository(PropertyHistory);
 

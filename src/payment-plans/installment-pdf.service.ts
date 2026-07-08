@@ -5,6 +5,7 @@ import type { Browser } from 'puppeteer';
 
 import { launchBrowser } from '../common/puppeteer-launch';
 import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
+import { resolveBrandingUser } from '../common/branding/branding.util';
 
 import {
   PaymentPlanInstallment,
@@ -33,6 +34,8 @@ export class InstallmentPDFService {
         'plan.property',
         'plan.property.owner',
         'plan.property.owner.user',
+        'plan.property.owner.creator',
+        'plan.property.owner.creator.user',
         'plan.tenant',
         'plan.tenant.user',
       ],
@@ -58,6 +61,8 @@ export class InstallmentPDFService {
         'plan.property',
         'plan.property.owner',
         'plan.property.owner.user',
+        'plan.property.owner.creator',
+        'plan.property.owner.creator.user',
         'plan.tenant',
         'plan.tenant.user',
       ],
@@ -199,7 +204,9 @@ export class InstallmentPDFService {
     name: string;
     branding: any | null;
   } {
-    const landlordUser = (installment.plan.property as any)?.owner?.user;
+    const landlordUser = resolveBrandingUser(
+      (installment.plan.property as any)?.owner,
+    );
     const branding = landlordUser?.branding || null;
     const logoUrl =
       landlordUser?.logo_urls?.[0] || branding?.letterhead || null;

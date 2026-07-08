@@ -15,6 +15,7 @@ import { InvoicesModule } from '../invoices/invoices.module';
 import { AuthModule } from '../auth/auth.module';
 import { PropertyHistoryModule } from '../property-history/property-history.module';
 import { NotificationModule } from '../notifications/notification.module';
+import { ScopeModule } from '../common/scope/scope.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { NotificationModule } from '../notifications/notification.module';
     AuthModule,
     PropertyHistoryModule,
     NotificationModule,
+    ScopeModule,
   ],
   controllers: [ReceiptsController],
   providers: [ReceiptGeneratorService, ReceiptsService, FileUploadService],

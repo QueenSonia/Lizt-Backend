@@ -9,19 +9,24 @@ import {
   Query,
   Res,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
+import { RolesEnum } from 'src/base.entity';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SkipAuth } from '../auth/auth.decorator';
 import { InvoicesService } from './invoices.service';
 import { InvoicePDFService } from './invoice-pdf.service';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 @Controller('invoices')
 @UseGuards(JwtAuthGuard, RoleGuard)
+@UseInterceptors(ManagedScopeInterceptor)
 export class InvoicesController {
   constructor(
     private readonly invoicesService: InvoicesService,
@@ -32,34 +37,32 @@ export class InvoicesController {
    * Get all invoices for landlord
    */
   @Get()
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async findAll(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Query() query: InvoiceQueryDto,
   ) {
-    return this.invoicesService.findAll(user.userId, query);
+    return this.invoicesService.findAll(landlordIds, query);
   }
 
   /**
    * Get actionable invoices (pending or partially paid)
    */
   @Get('actionable')
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async findActionable(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Query() query: InvoiceQueryDto,
   ) {
-    return this.invoicesService.findActionable(user.userId, query);
+    return this.invoicesService.findActionable(landlordIds, query);
   }
 
   /**
    * Get invoice by offer letter ID
    */
   @Get('by-offer/:offerLetterId')
-  @Roles('landlord', 'admin')
-  async findByOfferLetterId(
-    @Param('offerLetterId') offerLetterId: string,
-  ) {
+  @Roles(RolesEnum.ADMIN)
+  async findByOfferLetterId(@Param('offerLetterId') offerLetterId: string) {
     return this.invoicesService.findByOfferLetterId(offerLetterId);
   }
 
@@ -67,27 +70,27 @@ export class InvoicesController {
    * Get single invoice by ID
    */
   @Get(':id')
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async findOne(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Param('id') id: string,
   ) {
-    return this.invoicesService.findOne(id, user.userId);
+    return this.invoicesService.findOne(id, landlordIds);
   }
 
   /**
    * Download invoice as PDF
    */
   @Get(':id/pdf')
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async downloadPDF(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Param('id') id: string,
     @Res() res: Response,
   ) {
     const pdfBuffer = await this.invoicePDFService.generateInvoicePDF(
       id,
-      user.userId,
+      landlordIds,
     );
 
     res.set({
@@ -103,61 +106,64 @@ export class InvoicesController {
    * Create new invoice
    */
   @Post()
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async create(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Body() dto: CreateInvoiceDto,
   ) {
-    return this.invoicesService.create(user.userId, dto);
+    return this.invoicesService.create(dto, landlordIds);
   }
 
   /**
    * Generate invoice from offer letter
    */
   @Post('from-offer/:offerLetterId')
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async generateFromOfferLetter(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Param('offerLetterId') offerLetterId: string,
   ) {
-    return this.invoicesService.generateFromOfferLetter(offerLetterId, user.id);
+    return this.invoicesService.generateFromOfferLetter(
+      offerLetterId,
+      landlordIds,
+    );
   }
 
   /**
    * Update invoice
    */
   @Put(':id')
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async update(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Param('id') id: string,
     @Body() dto: UpdateInvoiceDto,
   ) {
-    return this.invoicesService.update(id, user.userId, dto);
+    return this.invoicesService.update(id, landlordIds, dto);
   }
 
   /**
    * Cancel invoice
    */
   @Delete(':id')
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async cancel(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Param('id') id: string,
   ) {
-    return this.invoicesService.cancel(id, user.userId);
+    return this.invoicesService.cancel(id, landlordIds);
   }
 
   /**
    * Send payment reminder
    */
   @Post(':id/send-reminder')
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   async sendReminder(
-    @CurrentUser() user: { id: string; userId: string },
+    @ManagedLandlordIds() landlordIds: string[],
     @Param('id') id: string,
   ) {
-    return this.invoicesService.sendReminder(id, user.userId);
+    return this.invoicesService.sendReminder(id, landlordIds);
   }
 
   /**

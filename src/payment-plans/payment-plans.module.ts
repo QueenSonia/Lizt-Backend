@@ -27,6 +27,8 @@ import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module'
 import { RenewalChargeModule } from '../renewal-letters/renewal-charge.module';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
 import { UtilService } from '../utils/utility-service';
+import { ScopeModule } from '../common/scope/scope.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 @Module({
   imports: [
@@ -51,6 +53,8 @@ import { UtilService } from '../utils/utility-service';
     TenantBalancesModule,
     RenewalChargeModule,
     WhatsappBotModule,
+    ScopeModule,
+    NotifyModule,
   ],
   controllers: [PaymentPlansController, PaymentPlanRequestsController],
   providers: [

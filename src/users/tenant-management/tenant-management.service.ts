@@ -13,6 +13,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   ArrayContains,
   DataSource,
+  EntityManager,
   In,
   IsNull,
   Not,
@@ -51,8 +52,14 @@ import { Payment, PaymentStatus } from 'src/payments/entities/payment.entity';
 import { TenantDetailDto } from '../dto/tenant-detail.dto';
 import {
   RenewalInvoice,
+  RenewalLetterStatus,
   RenewalPaymentStatus,
 } from 'src/tenancies/entities/renewal-invoice.entity';
+import {
+  TenancyInvoiceRow,
+  TenancyInvoicesResponse,
+  TenancyPaymentPlan,
+} from '../dto/tenancy-invoices.dto';
 
 import {
   CreateTenantDto,
@@ -76,20 +83,32 @@ import {
 } from 'src/properties/dto/create-property.dto';
 import { DateService } from 'src/utils/date.helper';
 import { UtilService } from 'src/utils/utility-service';
+import { isPlaceholderEmail } from 'src/utils/placeholder-email';
+import { AccountCacheService } from 'src/auth/account-cache.service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { config } from 'src/config';
 import { buildUserFilter, buildUserFilterQB } from 'src/filters/query-filter';
 import { AttachResult } from 'src/common/interfaces';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 import { AttachTenantFromKycDto } from '../dto/attach-tenant-from-kyc.dto';
 import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
 } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
+import { TenantBalance } from 'src/tenant-balances/entities/tenant-balance.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
-import { AdHocInvoice } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import {
+  AdHocInvoice,
+  AdHocInvoiceStatus,
+} from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
+import {
+  Invoice,
+  InvoiceStatus,
+} from 'src/invoices/entities/invoice.entity';
 import {
   PaymentPlan,
+  PaymentPlanScope,
   PaymentPlanStatus,
 } from 'src/payment-plans/entities/payment-plan.entity';
 import { sumOverdueInvoiceFeeInstallments } from 'src/common/billing/plan-classification';
@@ -189,7 +208,153 @@ export class TenantManagementService {
     private readonly whatsappBotService: WhatsappBotService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly propertyHistoryService: PropertyHistoryService,
+    private readonly accountCacheService: AccountCacheService,
+    private readonly scopeService: ManagementScopeService,
   ) {}
+
+  /**
+   * Resolve the Users row for an incoming tenant identity — by phone first,
+   * then by real email — creating it only when the person is genuinely new.
+   * One person = one Users row, even when they hold several roles; the
+   * `users` table has hard unique indexes on both phone_number and email, so
+   * blindly inserting for a known phone/email would crash.
+   */
+  private async resolveTenantUser(
+    manager: EntityManager,
+    params: {
+      phone: string; // already normalized
+      email?: string | null;
+      createFields: Partial<Users>; // used only when creating a new row
+    },
+  ): Promise<Users> {
+    const email = params.email?.trim().toLowerCase() || null;
+
+    let user = await manager.getRepository(Users).findOne({
+      where: { phone_number: params.phone },
+    });
+
+    if (!user && email && !isPlaceholderEmail(email)) {
+      user = await manager.getRepository(Users).findOne({ where: { email } });
+      // Same real email already bound to a different phone → two different
+      // people (or stale data) — refuse rather than silently hijack the row.
+      if (user && user.phone_number && user.phone_number !== params.phone) {
+        throw new ConflictException(
+          `Email ${email} is already linked to a different phone number.`,
+        );
+      }
+    }
+
+    if (!user) {
+      user = await manager.getRepository(Users).save({
+        ...params.createFields,
+        phone_number: params.phone,
+        email: email ?? params.createFields.email,
+        is_verified: true,
+      });
+    }
+
+    return user;
+  }
+
+  /**
+   * Find-or-append pattern for the TENANT role: a person who already exists
+   * as landlord/FM/etc. keeps their single Account and gains the TENANT role
+   * instead of the write failing on the unique email index. Mirrors the
+   * reconciliation in createLandlord / assignCollaboratorToTeam /
+   * createManagedLandlord.
+   *
+   * Never touches the password of an existing account — their current
+   * credentials keep working for every role; multi-role login shows the
+   * role picker.
+   */
+  private async resolveTenantAccount(
+    manager: EntityManager,
+    user: Users,
+    opts: {
+      email?: string | null;
+      creatorId?: string;
+      /** used only when creating a brand-new account */
+      passwordHash?: string;
+      profileName?: string;
+    },
+  ): Promise<Account> {
+    const accountRepo = manager.getRepository(Account);
+    const email = opts.email?.trim().toLowerCase() || null;
+    const incomingIsPlaceholder = !email || isPlaceholderEmail(email);
+
+    // 1. Prefer an account of this user that already carries TENANT.
+    let account = await accountRepo.findOne({
+      where: { userId: user.id, roles: ArrayContains([RolesEnum.TENANT]) },
+    });
+
+    // 2. Else any account holding this real email (landlord/FM/admin/etc.).
+    if (!account && email && !incomingIsPlaceholder) {
+      account = await accountRepo.findOne({ where: { email } });
+      if (account && account.userId && account.userId !== user.id) {
+        // Real email already on an account anchored to a different person.
+        throw new ConflictException(
+          `Email ${email} is already linked to a different account.`,
+        );
+      }
+    }
+
+    // 3. Else any account already linked to this user row.
+    if (!account) {
+      account = await accountRepo.findOne({ where: { userId: user.id } });
+    }
+
+    if (account) {
+      // Email reconciliation (same rules as team.service):
+      //   placeholder → real: upgrade; real vs different real: conflict.
+      if (email && account.email !== email) {
+        const existingIsPlaceholder = isPlaceholderEmail(account.email);
+        if (existingIsPlaceholder && !incomingIsPlaceholder) {
+          account.email = email;
+        } else if (!existingIsPlaceholder && !incomingIsPlaceholder) {
+          throw new ConflictException(
+            `Phone ${user.phone_number} is already linked to an account with a different email (${account.email}).`,
+          );
+        }
+      }
+
+      if (!account.userId) account.user = user;
+      if (!account.roles?.includes(RolesEnum.TENANT)) {
+        account.roles = [...(account.roles ?? []), RolesEnum.TENANT];
+      }
+      account.creator_id = account.creator_id ?? opts.creatorId;
+      account.is_verified = true;
+      account = await accountRepo.save(account);
+      // JwtAuthGuard hydrates req.user from a cached Account — a stale entry
+      // would keep denying the new role until TTL.
+      await this.accountCacheService.invalidate(account.id);
+      return account;
+    }
+
+    // Prefer a real email over an incoming synthetic one; the placeholder is
+    // only a last resort so the NOT NULL column is satisfied.
+    const accountEmail =
+      (!incomingIsPlaceholder && email) || user.email || email;
+    if (!accountEmail) {
+      throw new HttpException(
+        'Email is required to create tenant account',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    return await accountRepo.save(
+      accountRepo.create({
+        user,
+        email: accountEmail,
+        password: opts.passwordHash,
+        is_verified: true,
+        profile_name:
+          opts.profileName ??
+          `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim(),
+        roles: [RolesEnum.TENANT],
+        creator_id: opts.creatorId,
+      }),
+    );
+  }
 
   /**
    * Add a new tenant with basic information
@@ -221,20 +386,6 @@ export class TenantManagementService {
 
     return await this.dataSource.transaction(async (manager) => {
       try {
-        // 1. Check existing user
-        let tenantUser = await manager.getRepository(Users).findOne({
-          where: {
-            phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          },
-        });
-
-        if (tenantUser) {
-          throw new HttpException(
-            `Account with phone: ${this.utilService.normalizePhoneNumber(phone_number)} already exists`,
-            HttpStatus.UNPROCESSABLE_ENTITY,
-          );
-        }
-
         const property = await manager.getRepository(Property).findOne({
           where: { id: property_id },
         });
@@ -258,32 +409,36 @@ export class TenantManagementService {
         }
 
         const [first_name, last_name] = full_name.split(' ');
-        // 2. Create tenant user
-        tenantUser = manager.getRepository(Users).create({
-          first_name: this.utilService.toSentenceCase(first_name),
-          last_name: this.utilService.toSentenceCase(last_name),
+        const normalizedPhone =
+          this.utilService.normalizePhoneNumber(phone_number);
+
+        // 1-2. Find-or-create the person. An existing landlord/FM/tenant with
+        // this phone or email is reused — the TENANT role is appended to
+        // their account instead of failing on the unique indexes.
+        const tenantUser = await this.resolveTenantUser(manager, {
+          phone: normalizedPhone,
           email,
-          phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          is_verified: true,
+          createFields: {
+            first_name: this.utilService.toSentenceCase(first_name),
+            last_name: this.utilService.toSentenceCase(last_name),
+          },
         });
 
-        await manager.getRepository(Users).save(tenantUser);
-
-        // 3. Create tenant account
+        // 3. Find-or-create the account; password is only set for brand-new
+        // accounts (existing credentials keep working for all roles).
         const { hash: generatedPasswordHash } =
           await this.utilService.generatePassword();
 
-        const userAccount = manager.getRepository(Account).create({
-          user: tenantUser,
-          email,
-          password: generatedPasswordHash,
-          is_verified: true,
-          profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-          roles: [RolesEnum.TENANT],
-          creator_id: user_id,
-        });
-
-        await manager.getRepository(Account).save(userAccount);
+        const userAccount = await this.resolveTenantAccount(
+          manager,
+          tenantUser,
+          {
+            email,
+            creatorId: user_id,
+            passwordHash: generatedPasswordHash,
+            profileName: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          },
+        );
 
         property.property_status = PropertyStatusEnum.OCCUPIED;
         property.is_marketing_ready = false;
@@ -467,11 +622,23 @@ export class TenantManagementService {
           throw new NotFoundException('Property not found');
         }
 
-        if (property.owner_id !== landlordId) {
+        if (
+          property.owner_id !== landlordId &&
+          !(await this.scopeService.managesLandlord(
+            landlordId,
+            property.owner_id,
+          ))
+        ) {
           throw new ForbiddenException(
             'You are not authorized to attach tenants to this property',
           );
         }
+        // The requester may be a managing admin acting for the landlord.
+        // Re-anchor on the property's owner so every downstream write keyed on
+        // landlordId (the tenant-wallet ledger counterparty, the landlord
+        // account resolved for the tenant's WhatsApp) stays on the LANDLORD —
+        // mirrors the tenantId re-anchor above.
+        landlordId = property.owner_id;
 
         // 3. Check if property is available for tenant attachment
         if (property.property_status === PropertyStatusEnum.OCCUPIED) {
@@ -775,20 +942,6 @@ export class TenantManagementService {
 
     return await this.dataSource.transaction(async (manager) => {
       try {
-        // 1. Check existing user
-        let tenantUser = await manager.getRepository(Users).findOne({
-          where: {
-            phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          },
-        });
-
-        if (tenantUser) {
-          throw new HttpException(
-            `Account with phone: ${this.utilService.normalizePhoneNumber(phone_number)} already exists`,
-            HttpStatus.UNPROCESSABLE_ENTITY,
-          );
-        }
-
         const property = await manager.getRepository(Property).findOne({
           where: { id: property_id },
         });
@@ -811,55 +964,56 @@ export class TenantManagementService {
           );
         }
 
-        // 2. Create tenant user
-        tenantUser = manager.getRepository(Users).create({
-          first_name: this.utilService.toSentenceCase(first_name),
-          last_name: this.utilService.toSentenceCase(last_name),
+        // 1-2. Find-or-create the person. An existing landlord/FM/tenant with
+        // this phone or email is reused — the TENANT role is appended to
+        // their account instead of failing on the unique indexes.
+        const tenantUser = await this.resolveTenantUser(manager, {
+          phone: this.utilService.normalizePhoneNumber(phone_number),
           email,
-          phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          date_of_birth,
-          gender,
-          state_of_origin,
-          lga,
-          nationality,
-          employment_status,
-          marital_status,
-          is_verified: true,
-          employer_name,
-          job_title,
-          employer_address,
-          monthly_income,
-          work_email,
-          nature_of_business,
-          business_name,
-          business_address,
-          business_monthly_income,
-          business_website,
-          source_of_funds,
-          monthly_income_estimate,
-          spouse_full_name,
-          spouse_phone_number,
-          spouse_occupation,
-          spouse_employer,
+          createFields: {
+            first_name: this.utilService.toSentenceCase(first_name),
+            last_name: this.utilService.toSentenceCase(last_name),
+            date_of_birth,
+            gender,
+            state_of_origin,
+            lga,
+            nationality,
+            employment_status,
+            marital_status,
+            employer_name,
+            job_title,
+            employer_address,
+            monthly_income,
+            work_email,
+            nature_of_business,
+            business_name,
+            business_address,
+            business_monthly_income,
+            business_website,
+            source_of_funds,
+            monthly_income_estimate,
+            spouse_full_name,
+            spouse_phone_number,
+            spouse_occupation,
+            spouse_employer,
+          },
         });
 
-        await manager.getRepository(Users).save(tenantUser);
-
-        // 3. Create tenant account
+        // 3. Find-or-create the account; password is only set for brand-new
+        // accounts (existing credentials keep working for all roles).
         const { hash: generatedPasswordHash } =
           await this.utilService.generatePassword();
 
-        const userAccount = manager.getRepository(Account).create({
-          user: tenantUser,
-          email,
-          password: generatedPasswordHash,
-          is_verified: true,
-          profile_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
-          roles: [RolesEnum.TENANT],
-          creator_id: user_id,
-        });
-
-        await manager.getRepository(Account).save(userAccount);
+        const userAccount = await this.resolveTenantAccount(
+          manager,
+          tenantUser,
+          {
+            email,
+            creatorId: user_id,
+            passwordHash: generatedPasswordHash,
+            profileName: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          },
+        );
 
         property.property_status = PropertyStatusEnum.OCCUPIED;
         property.is_marketing_ready = false;
@@ -1334,32 +1488,18 @@ export class TenantManagementService {
         );
       }
 
-      // 5. Create account for tenant if it doesn't exist
-      let tenantAccount = await manager.getRepository(Account).findOne({
-        where: {
-          userId: tenantUser.id,
-          roles: ArrayContains([RolesEnum.TENANT]),
+      // 5. Find-or-create the tenant account. If this person already has an
+      // account under another role (landlord/FM/...), TENANT is appended to
+      // it instead of inserting a second account that would collide with the
+      // unique email index.
+      const tenantAccount = await this.resolveTenantAccount(
+        manager,
+        tenantUser,
+        {
+          email: email || tenantUser.email,
+          creatorId: landlordId,
         },
-      });
-
-      if (!tenantAccount) {
-        const accountEmail = tenantUser.email || email;
-        if (!accountEmail) {
-          throw new HttpException(
-            'Email is required to create tenant account',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-
-        tenantAccount = manager.getRepository(Account).create({
-          userId: tenantUser.id,
-          roles: [RolesEnum.TENANT],
-          email: accountEmail,
-        });
-        tenantAccount = await manager
-          .getRepository(Account)
-          .save(tenantAccount);
-      }
+      );
 
       // 5b. Upsert per-landlord tenant_kyc snapshot from the application data.
       // Keyed by (admin_id, phone_number) — the table's unique index — so
@@ -1689,8 +1829,8 @@ export class TenantManagementService {
   /**
    * Get tenants of a specific admin/landlord
    */
-  async getTenantsOfAnAdmin(
-    creator_id: string,
+  async getManagedTenants(
+    landlordIds: string[],
     queryParams: UserFilter,
   ): Promise<{
     users: Account[];
@@ -1705,6 +1845,20 @@ export class TenantManagementService {
     const page = queryParams?.page ?? config.DEFAULT_PAGE_NO;
     const size = queryParams?.size ?? config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
+
+    // Admin/PM scope: tenants created by any of the managed landlords.
+    if (!landlordIds.length) {
+      return {
+        users: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
 
     // Only return tenants who have active rents (currently assigned to properties)
     const qb = this.accountRepository
@@ -1742,7 +1896,7 @@ export class TenantManagementService {
         'property.location',
         'property.property_status',
       ])
-      .where('accounts.creator_id = :creator_id', { creator_id });
+      .where('accounts.creator_id IN (:...landlordIds)', { landlordIds });
 
     // Apply sorting
     if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {
@@ -1788,17 +1942,608 @@ export class TenantManagementService {
   }
 
   /**
-   * Get a single tenant of an admin with full details
+   * Flat list of ACTIVE tenancies across the managed landlords — one row per
+   * active property_tenant link that also has an ACTIVE rent (the rent holds
+   * the tenancy terms; a link without one is not an ongoing tenancy), with
+   * the landlord's display name and the outstanding balance a landlord view
+   * would show: wallet OB for the tenant-landlord pair plus the
+   * property's overdue carved invoice-fee plan installments (the headline
+   * figure computeTenantBalance derives; display-only, nothing is written).
+   *
+   * The wallet is one signed ledger per tenant-landlord pair, so if a tenant
+   * holds several properties under the SAME landlord the pair's wallet OB
+   * repeats on each of those rows — same compromise the per-tenant screens
+   * make; there is no per-property attribution of wallet debt.
    */
-  async getSingleTenantOfAnAdmin(
-    tenantId: string,
-    adminId: string,
-  ): Promise<TenantDetailDto> {
-    console.log('🔍 DEBUG: getSingleTenantOfAnAdmin called:', {
-      tenantId,
-      adminId,
-      timestamp: new Date().toISOString(),
+  async getManagedTenancies(landlordIds: string[]): Promise<
+    Array<{
+      id: string;
+      tenantId: string;
+      tenantName: string;
+      tenantPhone: string | null;
+      propertyId: string;
+      propertyName: string;
+      propertyAddress: string;
+      landlordId: string;
+      landlordName: string;
+      rentAmount: number | null;
+      paymentFrequency: string | null;
+      startDate: Date | null;
+      endDate: Date | null;
+      outstandingBalance: number;
+      creditBalance: number;
+    }>
+  > {
+    if (!landlordIds.length) return [];
+
+    const links = await this.propertyTenantRepository
+      .createQueryBuilder('pt')
+      .innerJoin('pt.property', 'property')
+      .addSelect([
+        'property.id',
+        'property.name',
+        'property.location',
+        'property.owner_id',
+      ])
+      .innerJoin('pt.tenant', 'tenant')
+      .addSelect(['tenant.id', 'tenant.profile_name'])
+      .leftJoin('tenant.user', 'tenantUser')
+      .addSelect([
+        'tenantUser.id',
+        'tenantUser.first_name',
+        'tenantUser.last_name',
+        'tenantUser.phone_number',
+      ])
+      // The tenant's ACTIVE rent on this property holds the tenancy terms.
+      // INNER join: an active property_tenant link without an active rent is
+      // not an ongoing tenancy (stale attach / data edge) — only rows with a
+      // live rent qualify as "active tenancies".
+      .innerJoin(
+        'property.rents',
+        'rent',
+        'rent.tenant_id = pt.tenant_id AND rent.rent_status = :activeRent AND rent.deleted_at IS NULL',
+        { activeRent: RentStatusEnum.ACTIVE },
+      )
+      .addSelect([
+        'rent.id',
+        'rent.rental_price',
+        'rent.payment_frequency',
+        'rent.rent_start_date',
+        'rent.expiry_date',
+      ])
+      .where('pt.status = :activeTenant', {
+        activeTenant: TenantStatusEnum.ACTIVE,
+      })
+      .andWhere('pt.deleted_at IS NULL')
+      .andWhere('property.owner_id IN (:...landlordIds)', { landlordIds })
+      .getMany();
+
+    if (!links.length) return [];
+
+    const tenantIds = Array.from(new Set(links.map((l) => l.tenant_id)));
+    const ownerIds = Array.from(
+      new Set(links.map((l) => l.property.owner_id)),
+    );
+
+    const [nameMap, balances, activePlans] = await Promise.all([
+      this.resolveLandlordNames(ownerIds),
+      this.dataSource.getRepository(TenantBalance).find({
+        where: { tenant_id: In(tenantIds), landlord_id: In(ownerIds) },
+      }),
+      this.dataSource.getRepository(PaymentPlan).find({
+        where: { tenant_id: In(tenantIds), status: PaymentPlanStatus.ACTIVE },
+        relations: ['installments', 'property'],
+      }),
+    ]);
+
+    const walletByPair = new Map<string, number>();
+    for (const b of balances) {
+      walletByPair.set(
+        `${b.tenant_id}|${b.landlord_id}`,
+        parseFloat(b.balance as unknown as string) || 0,
+      );
+    }
+
+    const plansByTenant = new Map<string, PaymentPlan[]>();
+    for (const plan of activePlans) {
+      const list = plansByTenant.get(plan.tenant_id);
+      if (list) list.push(plan);
+      else plansByTenant.set(plan.tenant_id, [plan]);
+    }
+    // sumOverdueInvoiceFeeInstallments walks a tenant's plans once per
+    // landlord; cache per pair so multi-property tenants don't recompute.
+    const overdueByPair = new Map<string, Record<string, number>>();
+    const overdueForPair = (tenantId: string, landlordId: string) => {
+      const key = `${tenantId}|${landlordId}`;
+      let byProperty = overdueByPair.get(key);
+      if (!byProperty) {
+        byProperty = sumOverdueInvoiceFeeInstallments(
+          plansByTenant.get(tenantId) ?? [],
+          landlordId,
+        ).byProperty;
+        overdueByPair.set(key, byProperty);
+      }
+      return byProperty;
+    };
+
+    return links.map((pt) => {
+      const ownerId = pt.property.owner_id;
+      // Defensive: multiple active rent rows for the pair is a data edge —
+      // surface the one ending last.
+      const rent =
+        (pt.property.rents ?? [])
+          .slice()
+          .sort(
+            (a, b) =>
+              new Date(b.expiry_date ?? 0).getTime() -
+              new Date(a.expiry_date ?? 0).getTime(),
+          )[0] ?? null;
+      const wallet = walletByPair.get(`${pt.tenant_id}|${ownerId}`) ?? 0;
+      const overdueOnProperty =
+        overdueForPair(pt.tenant_id, ownerId)[pt.property_id] ?? 0;
+      const tenantName =
+        `${pt.tenant?.user?.first_name ?? ''} ${
+          pt.tenant?.user?.last_name ?? ''
+        }`.trim() ||
+        pt.tenant?.profile_name?.trim() ||
+        'Tenant';
+
+      return {
+        id: pt.id,
+        tenantId: pt.tenant_id,
+        tenantName,
+        tenantPhone: pt.tenant?.user?.phone_number ?? null,
+        propertyId: pt.property_id,
+        propertyName: pt.property?.name ?? '',
+        propertyAddress: pt.property?.location ?? '',
+        landlordId: ownerId,
+        landlordName: nameMap[ownerId] ?? 'Landlord',
+        rentAmount:
+          rent?.rental_price != null ? Number(rent.rental_price) : null,
+        paymentFrequency: rent?.payment_frequency ?? null,
+        startDate: rent?.rent_start_date ?? null,
+        endDate: rent?.expiry_date ?? null,
+        outstandingBalance:
+          (wallet < 0 ? -wallet : 0) + overdueOnProperty,
+        // Positive wallet = credit (mirrors computeTenantBalance's
+        // totalCreditBalance). Same per-pair caveat as the wallet OB above.
+        creditBalance: wallet > 0 ? wallet : 0,
+      };
     });
+  }
+
+  /**
+   * Every invoice for one tenancy — the admin Invoices page.
+   *
+   * Unifies the three invoice tables into one display list:
+   *  - renewal_invoices: landlord-token rows only (sent letters / cron
+   *    invoices). Drafts, tenant-token OB scaffolding and superseded
+   *    versions are excluded — they either aren't billed yet or would
+   *    double-display debt that lives elsewhere.
+   *  - ad_hoc_invoices (with line items)
+   *  - standalone invoices (new-tenancy/offer flow, with line items)
+   *
+   * Plus the tenancy's payment plans (non-cancelled, with installments) so
+   * rows whose debt an active plan owns can badge it; those rows never show
+   * `overdue` — the plan's installment statuses carry the urgency.
+   */
+  async getTenancyInvoices(
+    propertyTenantId: string,
+    landlordIds: string[],
+  ): Promise<TenancyInvoicesResponse> {
+    const pt = await this.propertyTenantRepository.findOne({
+      where: { id: propertyTenantId },
+      relations: { property: true, tenant: { user: true } },
+    });
+    // 404 (not 403) when out of scope — don't confirm the id exists.
+    if (!pt?.property || !landlordIds.includes(pt.property.owner_id)) {
+      throw new NotFoundException('Tenancy not found');
+    }
+    const ownerId = pt.property.owner_id;
+
+    const [renewalRows, adHocRows, newTenancyRows, planRows, nameMap] =
+      await Promise.all([
+        this.dataSource.getRepository(RenewalInvoice).find({
+          where: {
+            property_tenant_id: pt.id,
+            token_type: 'landlord',
+            superseded_by_id: IsNull(),
+          },
+          order: { start_date: 'DESC' },
+        }),
+        this.dataSource.getRepository(AdHocInvoice).find({
+          where: { property_tenant_id: pt.id },
+          relations: { line_items: true },
+          order: { due_date: 'DESC' },
+        }),
+        // The standalone table has no property_tenant_id; (tenant, property)
+        // is the tightest join. Offer-flow rows whose tenant_id was never
+        // backfilled (null) can't be attributed to a tenancy — skipped.
+        this.dataSource.getRepository(Invoice).find({
+          where: { tenant_id: pt.tenant_id, property_id: pt.property_id },
+          relations: { line_items: true },
+          order: { invoice_date: 'DESC' },
+        }),
+        this.dataSource.getRepository(PaymentPlan).find({
+          where: {
+            property_tenant_id: pt.id,
+            status: Not(PaymentPlanStatus.CANCELLED),
+          },
+          relations: { installments: true },
+          order: { created_at: 'DESC' },
+        }),
+        this.resolveLandlordNames([ownerId]),
+      ]);
+
+    const num = (v: unknown): number =>
+      v == null ? 0 : parseFloat(v.toString()) || 0;
+    const iso = (v: Date | string | null | undefined): string | null =>
+      v == null ? null : typeof v === 'string' ? v : v.toISOString();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const isPast = (v: Date | string | null | undefined): boolean => {
+      if (!v) return false;
+      const d = new Date(v);
+      d.setHours(0, 0, 0, 0);
+      return d.getTime() < today.getTime();
+    };
+
+    const activePlans = planRows.filter(
+      (p) => p.status === PaymentPlanStatus.ACTIVE,
+    );
+    const activePlanIds = new Set(activePlans.map((p) => p.id));
+    const plansByRenewalInvoice = new Map<string, PaymentPlan[]>();
+    for (const plan of activePlans) {
+      if (!plan.renewal_invoice_id) continue;
+      const list = plansByRenewalInvoice.get(plan.renewal_invoice_id) ?? [];
+      list.push(plan);
+      plansByRenewalInvoice.set(plan.renewal_invoice_id, list);
+    }
+
+    const invoices: TenancyInvoiceRow[] = [];
+
+    for (const inv of renewalRows) {
+      // Declined/lapsed letters aren't payable ("no money is expected") —
+      // an UNPAID one would render as a phantom overdue row.
+      if (
+        inv.letter_status === RenewalLetterStatus.DECLINED &&
+        inv.payment_status !== RenewalPaymentStatus.PAID &&
+        inv.payment_status !== RenewalPaymentStatus.PARTIAL
+      ) {
+        continue;
+      }
+
+      const plans = plansByRenewalInvoice.get(inv.id) ?? [];
+      // A TENANCY-scope plan owns the whole invoice; CHARGE carves already
+      // removed their fee from the invoice totals, so the remainder can
+      // still legitimately go overdue.
+      const wholeInvoicePlanned = plans.some(
+        (p) => p.scope === PaymentPlanScope.TENANCY,
+      );
+
+      let status: TenancyInvoiceRow['status'];
+      if (inv.payment_status === RenewalPaymentStatus.PAID) status = 'paid';
+      else if (inv.payment_status === RenewalPaymentStatus.PARTIAL)
+        status = 'partial';
+      else if (isPast(inv.start_date) && !wholeInvoicePlanned)
+        status = 'overdue';
+      else status = 'upcoming';
+
+      const lines = (inv.fee_breakdown ?? []).map((f) => ({
+        name: f.label,
+        amount: num(f.amount),
+      }));
+      if (!lines.length) {
+        // Legacy rows predate fee_breakdown — rebuild from the typed columns.
+        const cols: Array<[string, number]> = [
+          ['Rent', num(inv.rent_amount)],
+          ['Service Charge', num(inv.service_charge)],
+          ['Legal Fee', num(inv.legal_fee)],
+          ['Agency Fee', num(inv.agency_fee)],
+          ['Caution Deposit', num(inv.caution_deposit)],
+          ['Other Charges', num(inv.other_charges)],
+        ];
+        for (const [name, amount] of cols)
+          if (amount > 0) lines.push({ name, amount });
+        for (const f of inv.other_fees ?? [])
+          if (num(f.amount) > 0)
+            lines.push({ name: f.name, amount: num(f.amount) });
+      }
+      // The wallet fold (prior debt or credit) is in total_amount but never
+      // in fee_breakdown — surface the difference so lines sum to the total.
+      const lineSum = lines.reduce((s, l) => s + l.amount, 0);
+      const foldDiff = num(inv.total_amount) - lineSum;
+      if (Math.abs(foldDiff) >= 0.01) {
+        lines.push({
+          name: foldDiff > 0 ? 'Previous Balance' : 'Credit Applied',
+          amount: foldDiff,
+        });
+      }
+
+      invoices.push({
+        id: inv.id,
+        source: 'renewal',
+        description: 'Rent Invoice',
+        invoiceNumber: null,
+        dueDate: iso(inv.start_date),
+        periodStart: iso(inv.start_date),
+        periodEnd: iso(inv.end_date),
+        status,
+        totalAmount: num(inv.total_amount),
+        amountPaid: num(inv.amount_paid),
+        lines,
+        token: inv.token,
+        publicToken: null,
+        receiptToken: inv.receipt_token || null,
+        paidAt: iso(inv.paid_at),
+        createdAt: iso(inv.created_at) ?? new Date().toISOString(),
+        paymentPlanIds: plans.map((p) => p.id),
+      });
+    }
+
+    for (const inv of adHocRows) {
+      if (inv.status === AdHocInvoiceStatus.CANCELLED) continue;
+
+      const coveredByActivePlan =
+        !!inv.covered_by_plan_id && activePlanIds.has(inv.covered_by_plan_id);
+      let status: TenancyInvoiceRow['status'];
+      if (inv.status === AdHocInvoiceStatus.PAID) status = 'paid';
+      else if (inv.status === AdHocInvoiceStatus.PARTIAL) status = 'partial';
+      // Mirrors AdHocInvoicesService.computeStatus: OVERDUE is derived at
+      // read time and suppressed while a plan owns the debt.
+      else if (isPast(inv.due_date) && !coveredByActivePlan)
+        status = 'overdue';
+      else status = 'upcoming';
+
+      const items = (inv.line_items ?? [])
+        .slice()
+        .sort((a, b) => a.sequence - b.sequence);
+
+      invoices.push({
+        id: inv.id,
+        source: 'ad_hoc',
+        description:
+          items.length === 1
+            ? items[0].description
+            : items.length > 1
+              ? `${items[0].description} + ${items.length - 1} more`
+              : 'Ad-hoc Invoice',
+        invoiceNumber: inv.invoice_number,
+        dueDate: iso(inv.due_date),
+        periodStart: null,
+        periodEnd: null,
+        status,
+        totalAmount: num(inv.total_amount),
+        amountPaid: num(inv.amount_paid),
+        lines: items.map((li) => ({
+          name: li.description,
+          amount: num(li.amount),
+        })),
+        token: null,
+        publicToken: inv.public_token,
+        receiptToken: inv.receipt_token || null,
+        paidAt: iso(inv.paid_at),
+        createdAt: iso(inv.created_at) ?? new Date().toISOString(),
+        paymentPlanIds: coveredByActivePlan ? [inv.covered_by_plan_id!] : [],
+      });
+    }
+
+    for (const inv of newTenancyRows) {
+      if (inv.status === InvoiceStatus.CANCELLED) continue;
+
+      let status: TenancyInvoiceRow['status'];
+      if (inv.status === InvoiceStatus.PAID) status = 'paid';
+      else if (inv.status === InvoiceStatus.PARTIALLY_PAID)
+        status = 'partial';
+      // No due-date column here; trust the stored status rather than
+      // deriving OVERDUE from invoice_date (that's the creation date).
+      else if (inv.status === InvoiceStatus.OVERDUE) status = 'overdue';
+      else status = 'upcoming';
+
+      invoices.push({
+        id: inv.id,
+        source: 'new_tenancy',
+        description: 'New Tenancy Invoice',
+        invoiceNumber: inv.invoice_number,
+        dueDate: iso(inv.invoice_date),
+        periodStart: null,
+        periodEnd: null,
+        status,
+        totalAmount: num(inv.total_amount),
+        amountPaid: num(inv.amount_paid),
+        lines: (inv.line_items ?? []).map((li) => ({
+          name: li.description,
+          amount: num(li.amount),
+        })),
+        token: null,
+        publicToken: null,
+        receiptToken: null,
+        paidAt: null,
+        createdAt: iso(inv.created_at) ?? new Date().toISOString(),
+        paymentPlanIds: [],
+      });
+    }
+
+    invoices.sort((a, b) => {
+      const ta = a.dueDate ? new Date(a.dueDate).getTime() : 0;
+      const tb = b.dueDate ? new Date(b.dueDate).getTime() : 0;
+      return tb - ta;
+    });
+
+    const adHocIds = new Set(adHocRows.map((r) => r.id));
+    const renewalIds = new Set(renewalRows.map((r) => r.id));
+    const paymentPlans: TenancyPaymentPlan[] = planRows.map((plan) => {
+      // Which unified row does this plan fund? OB/wallet-backed plans fund
+      // ledger debt, not a listed invoice — they get no link.
+      let linkedInvoiceId: string | null = null;
+      let linkedInvoiceSource: TenancyPaymentPlan['linkedInvoiceSource'] =
+        null;
+      if (plan.renewal_invoice_id && renewalIds.has(plan.renewal_invoice_id)) {
+        linkedInvoiceId = plan.renewal_invoice_id;
+        linkedInvoiceSource = 'renewal';
+      } else if (
+        plan.ad_hoc_invoice_id &&
+        adHocIds.has(plan.ad_hoc_invoice_id)
+      ) {
+        linkedInvoiceId = plan.ad_hoc_invoice_id;
+        linkedInvoiceSource = 'ad_hoc';
+      }
+
+      return {
+        id: plan.id,
+        scope: plan.scope,
+        sourceType: plan.source_type,
+        planType: plan.plan_type,
+        status: plan.status,
+        chargeName: plan.charge_name,
+        totalAmount: num(plan.total_amount),
+        createdAt: iso(plan.created_at) ?? new Date().toISOString(),
+        linkedInvoiceId,
+        linkedInvoiceSource,
+        installments: (plan.installments ?? [])
+          .slice()
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((inst) => ({
+            id: inst.id,
+            sequence: inst.sequence,
+            amount: num(inst.amount),
+            amountPaid: num(inst.amount_paid),
+            dueDate: iso(inst.due_date) ?? '',
+            status: inst.status,
+            paidAt: iso(inst.paid_at),
+            paymentMethod: inst.payment_method ?? null,
+            receiptToken: inst.receipt_token || null,
+          })),
+      };
+    });
+
+    const tenantName =
+      `${pt.tenant?.user?.first_name ?? ''} ${
+        pt.tenant?.user?.last_name ?? ''
+      }`.trim() ||
+      pt.tenant?.profile_name?.trim() ||
+      'Tenant';
+
+    return {
+      tenancy: {
+        id: pt.id,
+        tenantId: pt.tenant_id,
+        tenantName,
+        tenantPhone: pt.tenant?.user?.phone_number ?? null,
+        propertyId: pt.property_id,
+        propertyName: pt.property?.name ?? '',
+        propertyAddress: pt.property?.location ?? '',
+        landlordId: ownerId,
+        landlordName: nameMap[ownerId] ?? 'Landlord',
+      },
+      invoices,
+      paymentPlans,
+    };
+  }
+
+  /**
+   * The DISTINCT managed landlords (subset of `landlordIds`) this tenant
+   * rents/rented from. A tenant can be under several landlords; the admin's
+   * tenant view is grouped per landlord. Empty => out of scope (404).
+   */
+  private async resolveTenantLandlordsInScope(
+    tenantId: string,
+    landlordIds: string[],
+  ): Promise<string[]> {
+    if (!landlordIds.length) return [];
+    const manager = this.accountRepository.manager;
+    const [current, past] = await Promise.all([
+      manager
+        .createQueryBuilder(PropertyTenant, 'pt')
+        .innerJoin('pt.property', 'p')
+        .select('DISTINCT p.owner_id', 'owner_id')
+        .where('pt.tenant_id = :tenantId', { tenantId })
+        .andWhere('p.owner_id IN (:...landlordIds)', { landlordIds })
+        .getRawMany<{ owner_id: string }>(),
+      manager
+        .createQueryBuilder(PropertyHistory, 'ph')
+        .innerJoin('ph.property', 'p')
+        .select('DISTINCT p.owner_id', 'owner_id')
+        .where('ph.tenant_id = :tenantId', { tenantId })
+        .andWhere('p.owner_id IN (:...landlordIds)', { landlordIds })
+        .getRawMany<{ owner_id: string }>(),
+    ]);
+    return Array.from(new Set([...current, ...past].map((r) => r.owner_id)));
+  }
+
+  /**
+   * Display names for a set of landlord accounts (profile_name, else first+last).
+   */
+  private async resolveLandlordNames(
+    landlordIds: string[],
+  ): Promise<Record<string, string>> {
+    if (!landlordIds.length) return {};
+    const accounts = await this.accountRepository.find({
+      where: { id: In(landlordIds) },
+      relations: { user: true },
+    });
+    const map: Record<string, string> = {};
+    for (const a of accounts) {
+      map[a.id] =
+        a.profile_name?.trim() ||
+        `${a.user?.first_name ?? ''} ${a.user?.last_name ?? ''}`.trim() ||
+        'Landlord';
+    }
+    return map;
+  }
+
+  /**
+   * Get one tenant (under one of the admin's managed landlords) with full detail.
+   */
+  async getManagedTenant(
+    tenantId: string,
+    landlordIds: string[],
+  ): Promise<{
+    landlords: TenantDetailDto[];
+    summary: { totalOutstandingBalance: number; totalCreditBalance: number };
+  }> {
+    // A tenant can be under several managed landlords; return one full detail
+    // group per landlord plus an overall balance summary. 404 if under none.
+    const tenantLandlordIds = await this.resolveTenantLandlordsInScope(
+      tenantId,
+      landlordIds,
+    );
+    if (!tenantLandlordIds.length) {
+      throw new HttpException(
+        `Tenant with id: ${tenantId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const nameMap = await this.resolveLandlordNames(tenantLandlordIds);
+    const landlords = await Promise.all(
+      tenantLandlordIds.map(async (lid) => {
+        const detail = await this.buildTenantDetailForLandlord(tenantId, lid);
+        detail.landlordId = lid;
+        detail.landlordName = nameMap[lid] ?? 'Landlord';
+        return detail;
+      }),
+    );
+    const summary = {
+      totalOutstandingBalance: landlords.reduce(
+        (s, d) => s + (d.totalOutstandingBalance ?? 0),
+        0,
+      ),
+      totalCreditBalance: landlords.reduce(
+        (s, d) => s + (d.totalCreditBalance ?? 0),
+        0,
+      ),
+    };
+    return { landlords, summary };
+  }
+
+  /**
+   * Build the full tenant detail scoped to ONE landlord — the per-group unit of
+   * the admin tenant view above.
+   */
+  private async buildTenantDetailForLandlord(
+    tenantId: string,
+    landlordId: string,
+  ): Promise<TenantDetailDto> {
 
     // The tenant's latest KYC application and the id/property_id list of all
     // their KYC applications don't depend on the account query — fire them now
@@ -1815,7 +2560,7 @@ export class TenantManagementService {
       .innerJoinAndSelect('app.property', 'property')
       .leftJoinAndSelect('app.offer_letters', 'app_offer_letters')
       .where('app.tenant_id = :tenantId', { tenantId })
-      .andWhere('property.owner_id = :adminId', { adminId })
+      .andWhere('property.owner_id = :landlordId', { landlordId })
       .orderBy('app.created_at', 'DESC')
       .getOne();
     const kycApplicationsPromise = this.kycApplicationRepository.find({
@@ -1861,7 +2606,7 @@ export class TenantManagementService {
       .leftJoin(
         'user.tenant_kycs',
         'tenant_kyc',
-        'tenant_kyc.admin_id = :adminId',
+        'tenant_kyc.admin_id = :landlordId',
       )
       .addSelect([
         'tenant_kyc.id',
@@ -1955,7 +2700,7 @@ export class TenantManagementService {
           .from(PropertyTenant, 'pt')
           .innerJoin('pt.property', 'p')
           .where('pt.tenant_id = account.id')
-          .andWhere('p.owner_id = :adminId')
+          .andWhere('p.owner_id = :landlordId')
           .getQuery();
 
         const pastTenancySubQuery = qb
@@ -1964,17 +2709,17 @@ export class TenantManagementService {
           .from(PropertyHistory, 'ph')
           .innerJoin('ph.property', 'p')
           .where('ph.tenant_id = account.id')
-          .andWhere('p.owner_id = :adminId')
+          .andWhere('p.owner_id = :landlordId')
           .getQuery();
 
         return `(EXISTS ${currentTenancySubQuery} OR EXISTS ${pastTenancySubQuery})`;
       })
-      .setParameters({ tenantId, adminId })
+      .setParameters({ tenantId, landlordId })
       .getOne();
 
     console.log('🔍 DEBUG: Tenant query result:', {
       tenantId,
-      adminId,
+      landlordId,
       found: !!tenantAccount?.id,
       propertyHistoriesCount: tenantAccount?.property_histories?.length || 0,
       rentsCount: tenantAccount?.rents?.length || 0,
@@ -1984,7 +2729,7 @@ export class TenantManagementService {
     if (!tenantAccount?.id) {
       console.log('❌ DEBUG: Tenant not found for landlord:', {
         tenantId,
-        adminId,
+        landlordId,
         timestamp: new Date().toISOString(),
       });
       throw new HttpException(
@@ -2046,7 +2791,7 @@ export class TenantManagementService {
             .where('offer.kyc_application_id IN (:...kycIds)', {
               kycIds: kycApplicationIds,
             })
-            .andWhere('offer.landlord_id = :adminId', { adminId })
+            .andWhere('offer.landlord_id = :landlordId', { landlordId })
             .orderBy('offer.created_at', 'DESC')
             .getMany()
         : Promise.resolve([] as OfferLetter[]),
@@ -2091,7 +2836,7 @@ export class TenantManagementService {
     return await this.formatTenantData(
       tenantAccount,
       kycApplication,
-      adminId,
+      landlordId,
       offerLetters,
       payments,
     );
@@ -2108,13 +2853,31 @@ export class TenantManagementService {
    */
   async getTenantBalance(
     tenantId: string,
-    adminId: string,
+    landlordIds: string[],
   ): Promise<{
-    totalOutstandingBalance: number;
-    totalCreditBalance: number;
-    outstandingBalanceBreakdown: TenantDetailDto['outstandingBalanceBreakdown'];
-    paymentTransactions: TenantDetailDto['paymentTransactions'];
+    byLandlord: Array<{
+      landlordId: string;
+      landlordName: string;
+      totalOutstandingBalance: number;
+      totalCreditBalance: number;
+      outstandingBalanceBreakdown: TenantDetailDto['outstandingBalanceBreakdown'];
+      paymentTransactions: TenantDetailDto['paymentTransactions'];
+    }>;
+    summary: { totalOutstandingBalance: number; totalCreditBalance: number };
   }> {
+    const tenantLandlordIds = await this.resolveTenantLandlordsInScope(
+      tenantId,
+      landlordIds,
+    );
+    if (!tenantLandlordIds.length) {
+      throw new HttpException(
+        `Tenant with id: ${tenantId} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    // Load the tenant account once (rents + property owner + histories); the
+    // per-landlord split happens below. Scope is already proven by the resolve.
     const tenantAccount = await this.accountRepository
       .createQueryBuilder('account')
       .leftJoin('account.rents', 'rents')
@@ -2139,28 +2902,6 @@ export class TenantManagementService {
       .leftJoin('property_histories.property', 'past_property')
       .addSelect(['past_property.id', 'past_property.owner_id'])
       .where('account.id = :tenantId', { tenantId })
-      .andWhere((qb) => {
-        const currentTenancySubQuery = qb
-          .subQuery()
-          .select('1')
-          .from(PropertyTenant, 'pt')
-          .innerJoin('pt.property', 'p')
-          .where('pt.tenant_id = account.id')
-          .andWhere('p.owner_id = :adminId')
-          .getQuery();
-
-        const pastTenancySubQuery = qb
-          .subQuery()
-          .select('1')
-          .from(PropertyHistory, 'ph')
-          .innerJoin('ph.property', 'p')
-          .where('ph.tenant_id = account.id')
-          .andWhere('p.owner_id = :adminId')
-          .getQuery();
-
-        return `(EXISTS ${currentTenancySubQuery} OR EXISTS ${pastTenancySubQuery})`;
-      })
-      .setParameters({ tenantId, adminId })
       .getOne();
 
     if (!tenantAccount?.id) {
@@ -2170,10 +2911,35 @@ export class TenantManagementService {
       );
     }
 
-    const rents =
-      tenantAccount.rents?.filter((r) => r.property?.owner_id === adminId) || [];
-
-    return this.computeTenantBalance(tenantAccount, adminId, rents);
+    const nameMap = await this.resolveLandlordNames(tenantLandlordIds);
+    const byLandlord = await Promise.all(
+      tenantLandlordIds.map(async (lid) => {
+        const rents =
+          tenantAccount.rents?.filter((r) => r.property?.owner_id === lid) ||
+          [];
+        const balance = await this.computeTenantBalance(
+          tenantAccount,
+          lid,
+          rents,
+        );
+        return {
+          landlordId: lid,
+          landlordName: nameMap[lid] ?? 'Landlord',
+          ...balance,
+        };
+      }),
+    );
+    const summary = {
+      totalOutstandingBalance: byLandlord.reduce(
+        (s, b) => s + b.totalOutstandingBalance,
+        0,
+      ),
+      totalCreditBalance: byLandlord.reduce(
+        (s, b) => s + b.totalCreditBalance,
+        0,
+      ),
+    };
+    return { byLandlord, summary };
   }
 
   /**
@@ -2208,12 +2974,12 @@ export class TenantManagementService {
    * the tenant detail. Extracted out of formatTenantData so the standalone
    * balance endpoint can reuse it without recomputing the whole tenant payload.
    *
-   * `rents` must be the adminId-filtered rent list (passed in so it stays
+   * `rents` must be the landlordId-filtered rent list (passed in so it stays
    * identical to the value formatTenantData uses elsewhere in its response).
    */
   private async computeTenantBalance(
     account: Account,
-    adminId: string | undefined,
+    landlordId: string | undefined,
     rents: Rent[],
   ): Promise<{
     totalOutstandingBalance: number;
@@ -2221,12 +2987,12 @@ export class TenantManagementService {
     outstandingBalanceBreakdown: TenantDetailDto['outstandingBalanceBreakdown'];
     paymentTransactions: TenantDetailDto['paymentTransactions'];
   }> {
-    // Fetch wallet balance and ledger (requires adminId as landlordId)
+    // Fetch wallet balance and ledger (requires landlordId as landlordId)
     let walletBalance = 0;
     let ledgerEntries: TenantBalanceLedger[] = [];
     let overduePlanByProperty: Record<string, number> = {};
     let overduePlanInstallments = 0;
-    if (adminId) {
+    if (landlordId) {
       // getBalance, getLedger and the active-plans lookup are independent reads —
       // run them concurrently instead of as three back-to-back Neon round-trips.
       // Carved invoice-fee charge plans never debit the wallet, so their overdue
@@ -2235,8 +3001,8 @@ export class TenantManagementService {
       // real wallet OB, so the shared helper excludes it (no double-count).
       const [walletBalanceResult, ledgerResult, activePlans] =
         await Promise.all([
-          this.tenantBalancesService.getBalance(account.id, adminId),
-          this.tenantBalancesService.getLedger(account.id, adminId),
+          this.tenantBalancesService.getBalance(account.id, landlordId),
+          this.tenantBalancesService.getLedger(account.id, landlordId),
           this.dataSource.getRepository(PaymentPlan).find({
             where: { tenant_id: account.id, status: PaymentPlanStatus.ACTIVE },
             relations: ['installments', 'property'],
@@ -2244,7 +3010,7 @@ export class TenantManagementService {
         ]);
       walletBalance = walletBalanceResult;
       ledgerEntries = ledgerResult;
-      const overdue = sumOverdueInvoiceFeeInstallments(activePlans, adminId);
+      const overdue = sumOverdueInvoiceFeeInstallments(activePlans, landlordId);
       overduePlanByProperty = overdue.byProperty;
       overduePlanInstallments = overdue.total;
     }
@@ -2536,7 +3302,7 @@ export class TenantManagementService {
       ...(account.property_histories || [])
         .filter((h) => {
           if (h.event_type !== 'user_added_payment') return false;
-          if (adminId && h.property?.owner_id !== adminId) return false;
+          if (landlordId && h.property?.owner_id !== landlordId) return false;
           return true;
         })
         .map((ph) => {
@@ -2595,7 +3361,7 @@ export class TenantManagementService {
   private async formatTenantData(
     account: Account,
     kycApplication?: KYCApplication | null,
-    adminId?: string,
+    landlordId?: string,
     offerLetters?: OfferLetter[],
     payments?: Payment[],
   ): Promise<TenantDetailDto> {
@@ -2604,9 +3370,9 @@ export class TenantManagementService {
     const tenantKyc = (user as Users & { tenant_kycs?: TenantKycRecord[] })
       .tenant_kycs?.[0];
 
-    // Filter data by adminId if provided
-    const rents = adminId
-      ? account.rents?.filter((r) => r.property?.owner_id === adminId) || []
+    // Filter data by landlordId if provided
+    const rents = landlordId
+      ? account.rents?.filter((r) => r.property?.owner_id === landlordId) || []
       : account.rents || [];
 
     // Outstanding balance, credit, the per-property breakdown and the
@@ -2617,23 +3383,23 @@ export class TenantManagementService {
       totalCreditBalance,
       outstandingBalanceBreakdown,
       paymentTransactions,
-    } = await this.computeTenantBalance(account, adminId, rents);
+    } = await this.computeTenantBalance(account, landlordId, rents);
 
-    const maintenanceRequests = adminId
+    const maintenanceRequests = landlordId
       ? account.maintenance_requests?.filter(
-          (sr) => sr.property?.owner_id === adminId,
+          (sr) => sr.property?.owner_id === landlordId,
         ) || []
       : account.maintenance_requests || [];
 
-    const propertyHistories = adminId
+    const propertyHistories = landlordId
       ? account.property_histories?.filter(
-          (ph) => ph.property?.owner_id === adminId,
+          (ph) => ph.property?.owner_id === landlordId,
         ) || []
       : account.property_histories || [];
 
-    const noticeAgreements = adminId
+    const noticeAgreements = landlordId
       ? account.notice_agreements?.filter(
-          (na) => na.property?.owner_id === adminId,
+          (na) => na.property?.owner_id === landlordId,
         ) || []
       : account.notice_agreements || [];
 
@@ -2685,7 +3451,7 @@ export class TenantManagementService {
     // Fire them concurrently up front (one round-trip wave instead of five
     // back-to-back) and await each at its existing use-site, leaving every
     // in-memory transformation untouched.
-    const ownerScope = adminId ? { property: { owner_id: adminId } } : {};
+    const ownerScope = landlordId ? { property: { owner_id: landlordId } } : {};
 
     const pendingInvoicesPromise =
       activeRentPropertyIds.length > 0
@@ -2749,7 +3515,7 @@ export class TenantManagementService {
       .find({
         where: {
           tenant_id: account.id,
-          ...(adminId ? { landlord_id: adminId } : {}),
+          ...(landlordId ? { landlord_id: landlordId } : {}),
         },
         relations: ['property'],
         order: { created_at: 'DESC' },
@@ -2760,7 +3526,7 @@ export class TenantManagementService {
       .find({
         where: {
           tenant_id: account.id,
-          ...(adminId ? { property: { owner_id: adminId } } : {}),
+          ...(landlordId ? { property: { owner_id: landlordId } } : {}),
         },
         relations: ['property', 'installments'],
         order: { created_at: 'DESC' },
@@ -2771,7 +3537,7 @@ export class TenantManagementService {
       .find({
         where: {
           tenant_id: account.id,
-          ...(adminId ? { property: { owner_id: adminId } } : {}),
+          ...(landlordId ? { property: { owner_id: landlordId } } : {}),
         },
         relations: ['property'],
         order: { created_at: 'DESC' },

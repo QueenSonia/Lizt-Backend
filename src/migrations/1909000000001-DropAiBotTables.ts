@@ -9,6 +9,10 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * Uses CASCADE + IF EXISTS so it is safe whether or not the original
  * Create migrations (1900000000000/1900000000001) ever ran on a given DB.
  * down() is intentionally a no-op — we are not bringing this approach back.
+ *
+ * Timestamp bumped to ...001 so it no longer collides with
+ * AddAiLeadFieldsToWaitlist1909000000000 (TypeORM requires unique migration
+ * timestamps). The two are independent, so the relative order is immaterial.
  */
 export class DropAiBotTables1909000000001 implements MigrationInterface {
   name = 'DropAiBotTables1909000000001';

@@ -27,6 +27,7 @@ import { TeamService } from './team';
 import { PasswordService } from './password';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { PropertyHistoryModule } from 'src/property-history/property-history.module';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Global()
 @Module({
@@ -52,6 +53,7 @@ import { PropertyHistoryModule } from 'src/property-history/property-history.mod
     UtilsModule,
     TenantBalancesModule,
     PropertyHistoryModule,
+    ScopeModule,
   ],
   controllers: [UsersController],
   providers: [

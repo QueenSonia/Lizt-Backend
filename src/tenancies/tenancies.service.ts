@@ -36,6 +36,12 @@ import { NotificationService } from 'src/notifications/notification.service';
 import { NotificationType } from 'src/notifications/enums/notification-type';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { RenewalChargeService } from 'src/renewal-letters/renewal-charge.service';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
+import {
+  NotificationRecipientsService,
+  NotifyRecipient,
+} from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 import {
   TenantBalanceLedger,
   TenantBalanceLedgerType,
@@ -94,7 +100,49 @@ export class TenanciesService {
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly renewalChargeService: RenewalChargeService,
     private dataSource: DataSource,
+    private readonly scopeService: ManagementScopeService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
+
+  /**
+   * Queue a landlord-directed WhatsApp template to whoever actually operates
+   * for that landlord (managing admin, and later a subscribed landlord).
+   * The primary recipient keeps a bare (undefined) reference id to match the
+   * pre-redirect queue rows; extra recipients get `${seed}:{accountId}`.
+   */
+  private async queueOwnerDirectedTemplate(
+    templateType: string,
+    landlordAccountId: string,
+    referenceSeed: string,
+    buildParams: (recipient: NotifyRecipient) => Record<string, any>,
+  ): Promise<void> {
+    const recipients = await this.notificationRecipients.resolveRecipients(
+      landlordAccountId,
+      NotificationCategory.PAYMENTS,
+    );
+    for (const [index, recipient] of recipients.entries()) {
+      if (!recipient.phone) continue;
+      await this.whatsappNotificationLog.queue(
+        templateType,
+        buildParams(recipient),
+        index === 0 ? undefined : `${referenceSeed}:${recipient.accountId}`,
+      );
+    }
+  }
+
+  /**
+   * True when `userId` may act on a tenancy/invoice owned by `ownerId`: either
+   * they ARE that landlord (the original dashboard contract, still used by the
+   * WhatsApp/cron paths) or they are an admin (property manager) who manages
+   * that landlord and is acting on their behalf.
+   */
+  private async canManageOwner(
+    ownerId: string,
+    userId: string,
+  ): Promise<boolean> {
+    if (ownerId && ownerId === userId) return true;
+    return this.scopeService.managesLandlord(userId, ownerId);
+  }
 
   async createTenancyFromKYC(
     kycApplication: KYCApplication,
@@ -178,7 +226,9 @@ export class TenanciesService {
         `Property tenant relationship with ID ${propertyTenantId} not found`,
       );
     }
-    if (propertyTenant.property.owner_id !== userId) {
+    if (
+      !(await this.canManageOwner(propertyTenant.property.owner_id, userId))
+    ) {
       throw new HttpException(
         'You do not have permission to renew this tenancy',
         HttpStatus.FORBIDDEN,
@@ -333,7 +383,9 @@ export class TenanciesService {
       }
 
       // 2. Verify ownership
-      if (propertyTenant.property.owner_id !== userId) {
+      if (
+        !(await this.canManageOwner(propertyTenant.property.owner_id, userId))
+      ) {
         throw new HttpException(
           'You do not have permission to renew this tenancy',
           HttpStatus.FORBIDDEN,
@@ -508,7 +560,9 @@ export class TenanciesService {
     }
 
     // 2. Verify ownership
-    if (propertyTenant.property.owner_id !== userId) {
+    if (
+      !(await this.canManageOwner(propertyTenant.property.owner_id, userId))
+    ) {
       throw new HttpException(
         'You do not have permission to initiate renewal for this tenancy',
         HttpStatus.FORBIDDEN,
@@ -737,8 +791,8 @@ export class TenanciesService {
     // locking. Editing a letter that's already `sent` or `accepted` creates
     // a NEW row that supersedes the previous one (we can't mutate a row
     // whose token is in the wild — WhatsApp links must stay auditable).
-    const { invoice, supersededInvoiceId } =
-      await this.dataSource.transaction(async (manager) => {
+    const { invoice, supersededInvoiceId } = await this.dataSource.transaction(
+      async (manager) => {
         // Lock the latest open (non-superseded, non-paid) row for this
         // property_tenant so two concurrent saves can't race on the version
         // decision. A PAID row terminates the current renewal cycle — the
@@ -915,7 +969,9 @@ export class TenanciesService {
         // decision on the request.
         if (!isSilent) {
           invoice.approval_status = 'approved';
-          if (invoice.payment_status === RenewalPaymentStatus.PENDING_APPROVAL) {
+          if (
+            invoice.payment_status === RenewalPaymentStatus.PENDING_APPROVAL
+          ) {
             invoice.payment_status = RenewalPaymentStatus.UNPAID;
           }
         }
@@ -985,7 +1041,8 @@ export class TenanciesService {
           invoice,
           supersededInvoiceId: superseded,
         };
-      });
+      },
+    );
 
     const token = invoice.token;
 
@@ -1096,7 +1153,9 @@ export class TenanciesService {
       throw new NotFoundException('Tenancy not found');
     }
 
-    if (propertyTenant.property.owner_id !== userId) {
+    if (
+      !(await this.canManageOwner(propertyTenant.property.owner_id, userId))
+    ) {
       throw new HttpException(
         'You do not have permission to edit this tenancy',
         HttpStatus.FORBIDDEN,
@@ -1213,9 +1272,7 @@ export class TenanciesService {
       beforeSnapshot.payment_frequency !== afterSnapshot.payment_frequency;
 
     const anyChange =
-      chargesChanged ||
-      periodOrFrequencyChanged ||
-      recurringChanges.length > 0;
+      chargesChanged || periodOrFrequencyChanged || recurringChanges.length > 0;
 
     if (!chargesChanged) {
       // Only non-amount fields changed (e.g. payment frequency, recurring flags, dates)
@@ -1584,9 +1641,7 @@ export class TenanciesService {
     if (!datesEqual(before.rent_start_date, after.rent_start_date)) {
       updates.move_in_date = after.rent_start_date as Date;
     }
-    if (
-      Number(before.rental_price ?? 0) !== Number(after.rental_price ?? 0)
-    ) {
+    if (Number(before.rental_price ?? 0) !== Number(after.rental_price ?? 0)) {
       updates.monthly_rent = Number(after.rental_price ?? 0);
     }
     if (Object.keys(updates).length === 0) return;
@@ -1650,7 +1705,7 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    if (invoice.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(invoice.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to edit this invoice',
         HttpStatus.FORBIDDEN,
@@ -1805,7 +1860,7 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    if (invoice.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(invoice.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to edit this invoice',
         HttpStatus.FORBIDDEN,
@@ -2466,7 +2521,9 @@ export class TenanciesService {
       return date.toISOString().split('T')[0];
     };
 
-    const landlordUser = invoice.property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      invoice.property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -2511,7 +2568,10 @@ export class TenanciesService {
           invoice.tenant_id,
           invoice.property.owner_id,
         );
-      planCoveredBalance = Math.min(debtForDisplay, Math.max(0, claimedByPlans));
+      planCoveredBalance = Math.min(
+        debtForDisplay,
+        Math.max(0, claimedByPlans),
+      );
     }
 
     return {
@@ -2702,7 +2762,9 @@ export class TenanciesService {
       return date.toISOString();
     };
 
-    const landlordUser = invoice.property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      invoice.property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -3272,29 +3334,22 @@ export class TenanciesService {
           property_id: invoice.property_id,
         });
 
-        // Send notification to landlord
-        if (invoice.property.owner?.user?.phone_number) {
-          const landlordPhone = this.utilService.normalizePhoneNumber(
-            invoice.property.owner.user.phone_number,
-          );
-          const landlordName =
-            invoice.property.owner.profile_name ||
-            invoice.property.owner.user.first_name;
-
-          await this.whatsappNotificationLog.queue(
-            'sendRenewalPaymentLandlord',
-            {
-              phone_number: landlordPhone,
-              landlord_name: landlordName,
-              tenant_name: tenantName,
-              amount,
-              property_name: propertyName,
-              landlord_id: invoice.property.owner_id,
-              recipient_name: landlordName,
-              property_id: invoice.property_id,
-            },
-          );
-        }
+        // Send notification to the owner-side recipients (managing admin)
+        await this.queueOwnerDirectedTemplate(
+          'sendRenewalPaymentLandlord',
+          invoice.property.owner_id,
+          invoice.id,
+          (recipient) => ({
+            phone_number: recipient.phone,
+            landlord_name: recipient.name,
+            tenant_name: tenantName,
+            amount,
+            property_name: propertyName,
+            landlord_id: invoice.property.owner_id,
+            recipient_name: recipient.name,
+            property_id: invoice.property_id,
+          }),
+        );
       } else if (isCompletingPayment) {
         // OB-only invoice (tenant token) fully paid — same templates as today.
         await this.whatsappNotificationLog.queue(
@@ -3309,27 +3364,20 @@ export class TenanciesService {
           },
         );
 
-        if (invoice.property.owner?.user?.phone_number) {
-          const landlordPhone = this.utilService.normalizePhoneNumber(
-            invoice.property.owner.user.phone_number,
-          );
-          const landlordName =
-            invoice.property.owner.profile_name ||
-            invoice.property.owner.user.first_name;
-
-          await this.whatsappNotificationLog.queue(
-            'sendOutstandingBalancePaidLandlord',
-            {
-              phone_number: landlordPhone,
-              landlord_name: landlordName,
-              tenant_name: tenantName,
-              amount,
-              property_name: propertyName,
-              landlord_id: invoice.property.owner_id,
-              recipient_name: landlordName,
-            },
-          );
-        }
+        await this.queueOwnerDirectedTemplate(
+          'sendOutstandingBalancePaidLandlord',
+          invoice.property.owner_id,
+          invoice.id,
+          (recipient) => ({
+            phone_number: recipient.phone,
+            landlord_name: recipient.name,
+            tenant_name: tenantName,
+            amount,
+            property_name: propertyName,
+            landlord_id: invoice.property.owner_id,
+            recipient_name: recipient.name,
+          }),
+        );
       } else if (isOBOnlyTenantToken) {
         // Partial OB payment on a tenant-token, OB-only invoice — no
         // WhatsApp (see isOBOnlyTenantToken comment above).
@@ -3355,28 +3403,21 @@ export class TenanciesService {
           property_id: invoice.property_id,
         });
 
-        if (invoice.property.owner?.user?.phone_number) {
-          const landlordPhone = this.utilService.normalizePhoneNumber(
-            invoice.property.owner.user.phone_number,
-          );
-          const landlordName =
-            invoice.property.owner.profile_name ||
-            invoice.property.owner.user.first_name;
-
-          await this.whatsappNotificationLog.queue(
-            'sendRenewalPaymentLandlord',
-            {
-              phone_number: landlordPhone,
-              landlord_name: landlordName,
-              tenant_name: tenantName,
-              amount,
-              property_name: propertyName,
-              landlord_id: invoice.property.owner_id,
-              recipient_name: landlordName,
-              property_id: invoice.property_id,
-            },
-          );
-        }
+        await this.queueOwnerDirectedTemplate(
+          'sendRenewalPaymentLandlord',
+          invoice.property.owner_id,
+          invoice.id,
+          (recipient) => ({
+            phone_number: recipient.phone,
+            landlord_name: recipient.name,
+            tenant_name: tenantName,
+            amount,
+            property_name: propertyName,
+            landlord_id: invoice.property.owner_id,
+            recipient_name: recipient.name,
+            property_id: invoice.property_id,
+          }),
+        );
       }
     } catch (error) {
       console.error('Error queueing payment notifications:', error);
@@ -3685,7 +3726,9 @@ export class TenanciesService {
       relations: ['property'],
     });
     if (!propertyTenant) throw new NotFoundException('Tenancy not found');
-    if (propertyTenant.property.owner_id !== userId) {
+    if (
+      !(await this.canManageOwner(propertyTenant.property.owner_id, userId))
+    ) {
       throw new HttpException(
         'You do not have permission to preview this tenancy',
         HttpStatus.FORBIDDEN,
@@ -3724,7 +3767,9 @@ export class TenanciesService {
       relations: ['property'],
     });
     if (!propertyTenant) throw new NotFoundException('Tenancy not found');
-    if (propertyTenant.property.owner_id !== userId) {
+    if (
+      !(await this.canManageOwner(propertyTenant.property.owner_id, userId))
+    ) {
       throw new HttpException(
         'You do not have permission to preview this renewal',
         HttpStatus.FORBIDDEN,
@@ -3768,7 +3813,7 @@ export class TenanciesService {
       relations: ['property'],
     });
     if (!invoice) throw new NotFoundException('Renewal invoice not found');
-    if (invoice.property.owner_id !== userId) {
+    if (!(await this.canManageOwner(invoice.property.owner_id, userId))) {
       throw new HttpException(
         'You do not have permission to preview this invoice',
         HttpStatus.FORBIDDEN,

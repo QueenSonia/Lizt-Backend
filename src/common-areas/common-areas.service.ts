@@ -5,7 +5,7 @@
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { CommonArea } from './entities/common-area.entity';
 import { CreateCommonAreaDto } from './dto/create-common-area.dto';
 import { UpdateCommonAreaDto } from './dto/update-common-area.dto';
@@ -15,7 +15,10 @@ import {
   MaintenanceRequestStatusEnum,
 } from '../maintenance-requests/dto/create-maintenance-request.dto';
 import { TeamMember } from '../users/entities/team-member.entity';
+import { Account } from '../users/entities/account.entity';
 import { RolesEnum } from '../base.entity';
+import { assertLandlordInScope } from '../common/scope/scope.util';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
 
 export interface LandlordCommonAreaRow {
   id: string;
@@ -46,14 +49,19 @@ export class CommonAreasService {
     private readonly maintenanceRequestRepository: Repository<MaintenanceRequest>,
     @InjectRepository(TeamMember)
     private readonly teamMemberRepository: Repository<TeamMember>,
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
+    private readonly managementScopeService: ManagementScopeService,
   ) {}
 
   async create(
-    ownerId: string,
     dto: CreateCommonAreaDto,
+    managedLandlordIds: string[],
   ): Promise<CommonArea> {
+    // Act-on-behalf: created for the landlord named in the payload.
+    assertLandlordInScope(managedLandlordIds, dto.landlord_id);
     const entity = this.commonAreaRepository.create({
-      owner_id: ownerId,
+      owner_id: dto.landlord_id,
       name: dto.name.trim(),
       address: dto.address.trim(),
     });
@@ -61,8 +69,10 @@ export class CommonAreasService {
   }
 
   async findAllForLandlord(
-    ownerId: string,
+    ownerId: string | string[],
   ): Promise<LandlordCommonAreaRow[]> {
+    const ownerIds = Array.isArray(ownerId) ? ownerId : [ownerId];
+    if (!ownerIds.length) return [];
     const rows = await this.commonAreaRepository
       .createQueryBuilder('ca')
       .leftJoin(
@@ -79,7 +89,7 @@ export class CommonAreasService {
         `COUNT(sr.id) FILTER (WHERE sr.status = :openStatus)::int`,
         'open_requests',
       )
-      .where('ca.owner_id = :ownerId', { ownerId })
+      .where('ca.owner_id IN (:...ownerIds)', { ownerIds })
       .andWhere('ca.deleted_at IS NULL')
       .setParameter('openStatus', MaintenanceRequestStatusEnum.NOT_APPROVED)
       .groupBy('ca.id')
@@ -97,35 +107,46 @@ export class CommonAreasService {
   }
 
   async findAllForFm(fmAccountId: string): Promise<FmCommonAreaRow[]> {
-    // Resolve the set of landlord (account) ids the FM is teamed with.
-    // common_areas.owner_id is the landlord's Account.id, so we key everything
-    // off team.creator (the landlord's Account) directly.
-    const teamMemberships = await this.teamMemberRepository
+    // Resolve the set of landlord (account) ids the FM is teamed with. After
+    // the re-parent, team.creator is the managing ADMIN (not the landlord), so
+    // we expand each team creator to the landlords it covers (admin → managed
+    // landlords; legacy self-owned landlord team → the landlord itself).
+    // common_areas.owner_id is the landlord's Account.id.
+    const memberships = await this.teamMemberRepository
       .createQueryBuilder('tm')
-      .innerJoinAndSelect('tm.team', 'team')
-      .innerJoinAndSelect('team.creator', 'creatorAccount')
-      .leftJoinAndSelect('creatorAccount.user', 'landlordUser')
+      .innerJoin('tm.team', 'team')
+      .select('team.creatorId', 'creatorId')
       .where('tm.accountId = :fmAccountId', { fmAccountId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .getMany();
+      .getRawMany<{ creatorId: string }>();
 
-    if (teamMemberships.length === 0) return [];
+    const teamCreatorIds = Array.from(
+      new Set(memberships.map((m) => m.creatorId).filter(Boolean)),
+    );
+    if (teamCreatorIds.length === 0) return [];
 
-    const landlordAccountIdToName = new Map<string, string>();
-    for (const tm of teamMemberships) {
-      const creatorAccount = tm.team?.creator;
-      if (creatorAccount?.id) {
-        const user = creatorAccount.user;
-        const name =
-          creatorAccount.profile_name?.trim() ||
-          [user?.first_name, user?.last_name].filter(Boolean).join(' ').trim() ||
-          user?.email ||
-          'Landlord';
-        landlordAccountIdToName.set(creatorAccount.id, name);
-      }
-    }
-    const landlordAccountIds = Array.from(landlordAccountIdToName.keys());
+    const landlordAccountIds =
+      await this.managementScopeService.resolveLandlordsForTeamCreators(
+        teamCreatorIds,
+      );
     if (landlordAccountIds.length === 0) return [];
+
+    // Display names come from the actual landlord accounts, not the team owner
+    // (which is the admin after the re-parent).
+    const landlordAccounts = await this.accountRepository.find({
+      where: { id: In(landlordAccountIds) },
+      relations: ['user'],
+    });
+    const landlordAccountIdToName = new Map<string, string>();
+    for (const acct of landlordAccounts) {
+      const user = acct.user;
+      const name =
+        acct.profile_name?.trim() ||
+        [user?.first_name, user?.last_name].filter(Boolean).join(' ').trim() ||
+        user?.email ||
+        'Landlord';
+      landlordAccountIdToName.set(acct.id, name);
+    }
 
     const rows = await this.commonAreaRepository
       .createQueryBuilder('ca')
@@ -163,7 +184,10 @@ export class CommonAreasService {
     }));
   }
 
-  async findOne(id: string, requesterAccountId: string): Promise<CommonArea> {
+  async findOne(
+    id: string,
+    managedLandlordIds: string[],
+  ): Promise<CommonArea> {
     const area = await this.commonAreaRepository.findOne({
       where: { id },
       relations: ['owner'],
@@ -171,69 +195,36 @@ export class CommonAreasService {
     if (!area) {
       throw new NotFoundException(`Common area with id ${id} not found`);
     }
-    await this.assertCanAccess(area, requesterAccountId);
+    assertLandlordInScope(managedLandlordIds, area.owner_id);
     return area;
   }
 
   async update(
     id: string,
-    ownerId: string,
     dto: UpdateCommonAreaDto,
+    managedLandlordIds: string[],
   ): Promise<CommonArea> {
     const area = await this.commonAreaRepository.findOne({ where: { id } });
     if (!area) {
       throw new NotFoundException(`Common area with id ${id} not found`);
     }
-    if (area.owner_id !== ownerId) {
-      throw new HttpException(
-        'You do not have permission to update this common area',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, area.owner_id);
     if (dto.name !== undefined) area.name = dto.name.trim();
     if (dto.address !== undefined) area.address = dto.address.trim();
     return this.commonAreaRepository.save(area);
   }
 
-  async softDelete(id: string, ownerId: string): Promise<{ deleted: true }> {
+  async softDelete(
+    id: string,
+    managedLandlordIds: string[],
+  ): Promise<{ deleted: true }> {
     const area = await this.commonAreaRepository.findOne({ where: { id } });
     if (!area) {
       throw new NotFoundException(`Common area with id ${id} not found`);
     }
-    if (area.owner_id !== ownerId) {
-      throw new HttpException(
-        'You do not have permission to delete this common area',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, area.owner_id);
     await this.commonAreaRepository.softDelete(id);
     return { deleted: true };
-  }
-
-  /**
-   * Checks that `accountId` is either the owner of `area` (owner_id is the
-   * landlord's Account.id) or a facility manager teamed with that owner.
-   * Throws 403 otherwise.
-   */
-  private async assertCanAccess(
-    area: CommonArea,
-    accountId: string,
-  ): Promise<void> {
-    if (area.owner_id === accountId) return;
-    const isTeamedWithOwner = await this.teamMemberRepository
-      .createQueryBuilder('tm')
-      .innerJoin('tm.team', 'team')
-      .innerJoin('team.creator', 'creatorAccount')
-      .where('tm.accountId = :accountId', { accountId })
-      .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('creatorAccount.id = :ownerId', { ownerId: area.owner_id })
-      .getOne();
-    if (!isTeamedWithOwner) {
-      throw new HttpException(
-        'You do not have permission to view this common area',
-        HttpStatus.FORBIDDEN,
-      );
-    }
   }
 
   /**
@@ -245,13 +236,21 @@ export class CommonAreasService {
     fmAccountId: string,
     ownerAccountId: string,
   ): Promise<boolean> {
+    // Accept the landlord's own team (legacy) or the managing admin's team
+    // (post-reparent) as the owning team — see resolveTeamOwnersForLandlord.
+    const acceptableTeamOwners =
+      await this.managementScopeService.resolveTeamOwnersForLandlord(
+        ownerAccountId,
+      );
+    if (!acceptableTeamOwners.length) return false;
     const match = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
-      .innerJoin('team.creator', 'creatorAccount')
       .where('tm.accountId = :fmAccountId', { fmAccountId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
-      .andWhere('creatorAccount.id = :ownerId', { ownerId: ownerAccountId })
+      .andWhere('team.creatorId IN (:...teamOwnerIds)', {
+        teamOwnerIds: acceptableTeamOwners,
+      })
       .getOne();
     return !!match;
   }

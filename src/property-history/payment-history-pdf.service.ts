@@ -12,6 +12,7 @@ import type { Browser } from 'puppeteer';
 
 import { launchBrowser } from '../common/puppeteer-launch';
 import { renderUnifiedReceiptHTML } from '../common/html/unified-receipt-template';
+import { resolveBrandingUser } from '../common/branding/branding.util';
 import { PropertyHistory } from './entities/property-history.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender';
@@ -179,6 +180,8 @@ export class PaymentHistoryPdfService {
         'property',
         'property.owner',
         'property.owner.user',
+        'property.owner.creator',
+        'property.owner.creator.user',
         'tenant',
         'tenant.user',
       ],
@@ -299,7 +302,7 @@ export class PaymentHistoryPdfService {
   ): PaymentReceiptView['landlordBranding'] {
     const property = row.property as any;
     const account = property?.owner;
-    const landlordUser = account?.user;
+    const landlordUser = resolveBrandingUser(account);
     const branding = landlordUser?.branding || null;
     const logoUrl =
       landlordUser?.logo_urls?.[0] || branding?.letterhead || null;

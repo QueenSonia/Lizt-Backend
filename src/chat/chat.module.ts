@@ -13,6 +13,7 @@ import { FileUploadService } from 'src/utils/cloudinary';
 import { Account } from 'src/users/entities/account.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { AuthModule } from 'src/auth/auth.module';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { AuthModule } from 'src/auth/auth.module';
     UtilsModule,
     // Gives the gateway AuthService (for verifyWsTicket on every handshake).
     AuthModule,
+    ScopeModule,
   ],
   providers: [
     ChatGateway,

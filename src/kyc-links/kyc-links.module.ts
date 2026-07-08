@@ -29,6 +29,8 @@ import { NotificationModule } from '../notifications/notification.module';
 import { ReceiptsModule } from '../receipts/receipts.module';
 import { TenantBalancesModule } from '../tenant-balances/tenant-balances.module';
 import { PropertyHistoryModule } from '../property-history/property-history.module';
+import { ScopeModule } from 'src/common/scope/scope.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
 
 @Module({
   imports: [
@@ -63,6 +65,8 @@ import { PropertyHistoryModule } from '../property-history/property-history.modu
     forwardRef(() => ReceiptsModule),
     TenantBalancesModule,
     PropertyHistoryModule,
+    ScopeModule,
+    NotifyModule,
   ],
   controllers: [KYCApplicationController, KYCLinksController],
   providers: [

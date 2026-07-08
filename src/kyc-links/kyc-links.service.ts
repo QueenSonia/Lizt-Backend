@@ -7,11 +7,12 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { JwtService } from '@nestjs/jwt';
-import { KYCLink } from './entities/kyc-link.entity';
+import { KYCLink, KycLinkScope } from './entities/kyc-link.entity';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
 import { KYCOtp } from './entities/kyc-otp.entity';
 import { ApplicationStatus } from './entities/kyc-application.entity';
 import { Property } from '../properties/entities/property.entity';
@@ -68,6 +69,7 @@ export class KYCLinksService {
     @Inject(forwardRef(() => WhatsAppNotificationLogService))
     private readonly whatsappNotificationLogService: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
+    private readonly scopeService: ManagementScopeService,
   ) {}
 
   /**
@@ -75,8 +77,9 @@ export class KYCLinksService {
    * Links remain active permanently and never expire
    */
   async generateKYCLink(
-    landlordId: string,
+    ownerId: string,
     formType?: 'property_addition',
+    scopeType: KycLinkScope = KycLinkScope.LANDLORD,
   ): Promise<KYCLinkResponse> {
     const baseUrl = this.configService.get<string>('FRONTEND_URL');
     if (!baseUrl) {
@@ -86,10 +89,15 @@ export class KYCLinksService {
       );
     }
 
-    // Check if there's already an active KYC link for this landlord
+    // One active link per owner. `ownerId` is the link owner's Account.id: for
+    // an admin-scoped link that's the admin account (and admin_creator_id is the
+    // same id, used by validateKYCToken to fan out across managed landlords);
+    // for a landlord-scoped link it's the landlord. The lookup key is identical
+    // for both shapes, so an admin's existing link (created here or by the
+    // re-parent migration) is reused rather than duplicated.
     const existingLink = await this.kycLinkRepository.findOne({
       where: {
-        landlord_id: landlordId,
+        landlord_id: ownerId,
         is_active: true,
       },
     });
@@ -103,8 +111,11 @@ export class KYCLinksService {
 
       const kycLink = this.kycLinkRepository.create({
         token,
-        landlord_id: landlordId,
+        landlord_id: ownerId,
         is_active: true,
+        scope_type: scopeType,
+        admin_creator_id:
+          scopeType === KycLinkScope.ADMIN ? ownerId : undefined,
       });
 
       await this.kycLinkRepository.save(kycLink);
@@ -179,12 +190,35 @@ export class KYCLinksService {
         };
       }
 
-      // Get properties for this landlord:
+      // Resolve which owners' vacancies this link surfaces. An admin-scoped
+      // link spans every landlord the admin manages; a landlord-scoped link is
+      // the single owner. The tenant's chosen property still attributes to its
+      // own real owner at application time — this only widens what's listed.
+      let ownerIds: string[];
+      if (
+        kycLink.scope_type === KycLinkScope.ADMIN &&
+        kycLink.admin_creator_id
+      ) {
+        ownerIds = await this.scopeService.resolveManagedLandlordIds(
+          kycLink.admin_creator_id,
+        );
+        if (ownerIds.length === 0) {
+          return {
+            valid: false,
+            error:
+              'No properties available. Please contact the property manager.',
+          };
+        }
+      } else {
+        ownerIds = [kycLink.landlord_id];
+      }
+
+      // Get properties for these owners:
       // 1. Properties marked as marketing ready (independent boolean)
       // 2. Properties with pending KYC applications (for existing tenants)
       const marketingReadyProperties = await this.propertyRepository.find({
         where: {
-          owner_id: kycLink.landlord_id,
+          owner_id: In(ownerIds),
           is_marketing_ready: true,
         },
         order: {
@@ -197,8 +231,8 @@ export class KYCLinksService {
       const propertiesWithPendingKYC = await this.propertyRepository
         .createQueryBuilder('property')
         .leftJoin('property.kyc_applications', 'kyc')
-        .where('property.owner_id = :landlordId', {
-          landlordId: kycLink.landlord_id,
+        .where('property.owner_id IN (:...ownerIds)', {
+          ownerIds,
         })
         .andWhere('kyc.status = :status', {
           status: ApplicationStatus.PENDING_COMPLETION,

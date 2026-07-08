@@ -57,6 +57,9 @@ import { Fee, FeeKind } from '../common/billing/fees';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../utils/utility-service';
 import { PaymentPlanRequestsService } from './payment-plan-requests.service';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 export interface PlanPaymentInitializationResult {
   accessCode: string;
@@ -97,9 +100,24 @@ export class PaymentPlansService {
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
     private readonly requestsService: PaymentPlanRequestsService,
+    private readonly scopeService: ManagementScopeService,
+    private readonly notificationRecipients: NotificationRecipientsService,
     @Inject(forwardRef(() => AdHocInvoicesService))
     private readonly adHocInvoicesService: AdHocInvoicesService,
   ) {}
+
+  /**
+   * True when `userId` may act on a plan owned by `ownerId`: either they ARE
+   * that landlord, or they are an admin (property manager) who manages them.
+   */
+  private async canManageOwner(
+    ownerId: string | null | undefined,
+    userId: string,
+  ): Promise<boolean> {
+    if (!ownerId) return false;
+    if (ownerId === userId) return true;
+    return this.scopeService.managesLandlord(userId, ownerId);
+  }
 
   /**
    * Is this a charge-scope plan that targets a *current-period invoice fee*
@@ -135,7 +153,7 @@ export class PaymentPlansService {
 
   async createPlan(
     dto: CreatePaymentPlanDto,
-    createdByUserId?: string,
+    createdByUserId: string,
   ): Promise<PaymentPlan> {
     const propertyTenant = await this.propertyTenantRepository.findOne({
       where: { id: dto.propertyTenantId },
@@ -143,6 +161,20 @@ export class PaymentPlansService {
     });
     if (!propertyTenant) {
       throw new NotFoundException('Tenancy not found');
+    }
+
+    // Authorization: the caller must own — or, as an admin/FM, manage — the
+    // landlord whose tenancy this plan settles. Runs before either plan path
+    // (ad-hoc-invoice or renewal-fee) below.
+    if (
+      !(await this.canManageOwner(
+        propertyTenant.property?.owner_id,
+        createdByUserId,
+      ))
+    ) {
+      throw new ForbiddenException(
+        'You do not manage the landlord that owns this tenancy',
+      );
     }
 
     if (dto.installments.length < 1) {
@@ -433,9 +465,7 @@ export class PaymentPlansService {
       throw new BadRequestException('Charge name is required');
     }
     if (!(amount > 0)) {
-      throw new BadRequestException(
-        'Charge amount must be greater than zero',
-      );
+      throw new BadRequestException('Charge amount must be greater than zero');
     }
     // Installments must sum to the new charge's full amount (same ±1 naira
     // rounding tolerance as the other plan paths).
@@ -445,10 +475,15 @@ export class PaymentPlansService {
       );
     }
     // Same guard as standalone invoice creation — a new charge debits the
-    // tenant wallet, so only the property's landlord may create one.
+    // tenant wallet, so only the owning landlord or an admin/FM who manages
+    // them may create one. (createPlan already ran this; kept as
+    // defence-in-depth for a money-affecting path.)
     if (
       createdByUserId &&
-      propertyTenant.property?.owner_id !== createdByUserId
+      !(await this.canManageOwner(
+        propertyTenant.property?.owner_id,
+        createdByUserId,
+      ))
     ) {
       throw new ForbiddenException(
         'Only the property landlord can create charges',
@@ -606,9 +641,7 @@ export class PaymentPlansService {
           tenant_name: tenantName,
           // Landlord-typed label, and the body wraps it in *…* — sanitize so
           // stray whitespace can't break the bold markers or trip Meta 132018.
-          charge_name: this.utilService.sanitizeTemplateParam(
-            plan.charge_name,
-          ),
+          charge_name: this.utilService.sanitizeTemplateParam(plan.charge_name),
           property_label: propertyLabel,
           total_amount: Number(plan.total_amount),
           installment_count: String(installments.length),
@@ -953,10 +986,11 @@ export class PaymentPlansService {
       .getRawMany<{ id: string }>();
     let ownPeriod = 0;
     for (const inv of pendingInvoices) {
-      ownPeriod += await this.renewalChargeService.getLetterAcceptedChargeAmount(
-        inv.id,
-        manager,
-      );
+      ownPeriod +=
+        await this.renewalChargeService.getLetterAcceptedChargeAmount(
+          inv.id,
+          manager,
+        );
     }
     // Net the own period before the plan-claim subtraction, matching the fold
     // (foldedDebt = wallet + ownLetterCharge, then minus claimed).
@@ -1235,16 +1269,26 @@ export class PaymentPlansService {
   // ───────────────────────────────────────────────────────────────────────
 
   async listPlans(
+    requesterUserId: string,
     propertyTenantId?: string,
     tenantId?: string,
     propertyId?: string,
   ): Promise<PaymentPlan[]> {
+    // Scope to the owners the requester may act for: themselves (legacy
+    // landlord path) plus, for an admin, the landlords they manage. Closes the
+    // read-side IDOR where any caller could list another landlord's plans.
+    const managed =
+      await this.scopeService.resolveManagedLandlordIds(requesterUserId);
+    const ownerScope = Array.from(new Set([requesterUserId, ...managed]));
+
     const qb = this.planRepository
       .createQueryBuilder('plan')
       .leftJoinAndSelect('plan.installments', 'installments')
+      .leftJoin('plan.property', 'scopeProperty')
       .where('plan.status != :cancelledStatus', {
         cancelledStatus: PaymentPlanStatus.CANCELLED,
       })
+      .andWhere('scopeProperty.owner_id IN (:...ownerScope)', { ownerScope })
       .orderBy('plan.created_at', 'DESC')
       .addOrderBy('installments.sequence', 'ASC');
 
@@ -1280,6 +1324,26 @@ export class PaymentPlansService {
     });
     if (!plan) {
       throw new NotFoundException('Payment plan not found');
+    }
+    return plan;
+  }
+
+  /**
+   * Scoped read of a single plan — the requester must own (or, as an admin/FM,
+   * manage) the landlord that owns the plan's property. Closes the by-id read
+   * IDOR on GET /payment-plans/:id. Internal callers keep using getPlan().
+   */
+  async getPlanForRequester(
+    id: string,
+    requesterUserId: string,
+  ): Promise<PaymentPlan> {
+    const plan = await this.getPlan(id);
+    if (
+      !(await this.canManageOwner(plan.property?.owner_id, requesterUserId))
+    ) {
+      throw new ForbiddenException(
+        'You do not have access to this payment plan',
+      );
     }
     return plan;
   }
@@ -1326,7 +1390,9 @@ export class PaymentPlansService {
 
     const plan = installment.plan;
     const property = plan.property;
-    const landlordUser = property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -1360,9 +1426,9 @@ export class PaymentPlansService {
         dueDate: formatDate(installment.due_date),
         status: installment.status,
         paidAt: installment.paid_at
-          ? (installment.paid_at instanceof Date
-              ? installment.paid_at.toISOString()
-              : installment.paid_at)
+          ? installment.paid_at instanceof Date
+            ? installment.paid_at.toISOString()
+            : installment.paid_at
           : null,
         amountPaid:
           installment.amount_paid != null
@@ -1400,9 +1466,9 @@ export class PaymentPlansService {
         dueDate: formatDate(s.due_date),
         status: s.status,
         paidAt: s.paid_at
-          ? (s.paid_at instanceof Date
-              ? s.paid_at.toISOString()
-              : s.paid_at)
+          ? s.paid_at instanceof Date
+            ? s.paid_at.toISOString()
+            : s.paid_at
           : null,
         amountPaid: s.amount_paid != null ? Number(s.amount_paid) : null,
         paymentMethod: s.payment_method,
@@ -1592,7 +1658,9 @@ export class PaymentPlansService {
 
     const plan = installment.plan;
     const property = plan.property;
-    const landlordUser = property.owner?.user;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      property?.owner_id,
+    );
     const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
       landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
@@ -1664,7 +1732,7 @@ export class PaymentPlansService {
 
   async cancelPlan(
     id: string,
-    cancelledByUserId?: string,
+    cancelledByUserId: string,
     opts?: {
       /**
        * Queue the tenant's public pay-link WhatsApp for every ad-hoc invoice
@@ -1676,6 +1744,15 @@ export class PaymentPlansService {
     },
   ): Promise<void> {
     const plan = await this.getPlan(id);
+
+    // Authorization: only the owning landlord, or an admin/FM who manages them.
+    if (
+      !(await this.canManageOwner(plan.property?.owner_id, cancelledByUserId))
+    ) {
+      throw new ForbiddenException(
+        'Only the property landlord can modify this plan',
+      );
+    }
 
     if (plan.status !== PaymentPlanStatus.ACTIVE) {
       throw new ConflictException('Plan is not active');
@@ -1887,9 +1964,18 @@ export class PaymentPlansService {
   async updatePlan(
     id: string,
     dto: UpdatePaymentPlanDto,
-    updatedByUserId?: string,
+    updatedByUserId: string,
   ): Promise<PaymentPlan> {
     const plan = await this.getPlan(id);
+
+    // Authorization: only the owning landlord, or an admin/FM who manages them.
+    if (
+      !(await this.canManageOwner(plan.property?.owner_id, updatedByUserId))
+    ) {
+      throw new ForbiddenException(
+        'Only the property landlord can modify this plan',
+      );
+    }
 
     if (plan.status !== PaymentPlanStatus.ACTIVE) {
       throw new ConflictException('Plan is not active');
@@ -2087,13 +2173,12 @@ export class PaymentPlansService {
       .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
 
     const property = plan.property;
-    const landlordUser = property?.owner?.user;
-    const landlordBranding =
-      (landlordUser?.branding as Record<string, unknown> | undefined) || null;
+    const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
+      property?.owner_id,
+    );
+    const landlordBranding = landlordUser?.branding || null;
     const landlordLogoUrl =
-      landlordUser?.logo_urls?.[0] ||
-      (landlordBranding?.letterhead as string | undefined) ||
-      null;
+      landlordUser?.logo_urls?.[0] || landlordBranding?.letterhead || null;
     const tenantUser = plan.tenant?.user;
     const tenantName = tenantUser
       ? `${tenantUser.first_name ?? ''} ${tenantUser.last_name ?? ''}`.trim()
@@ -2380,23 +2465,14 @@ export class PaymentPlansService {
     try {
       const property = plan.property;
       const propertyName = property?.name ?? 'your property';
-      const landlordAccount = property?.owner;
-      const landlordUser = landlordAccount?.user;
       const tenantUser = plan.tenant?.user;
 
       const tenantName =
         `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
         'there';
-      const landlordName =
-        landlordAccount?.profile_name ||
-        `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`.trim() ||
-        'there';
 
       const tenantPhone = tenantUser?.phone_number
         ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
-        : null;
-      const landlordPhone = landlordUser?.phone_number
-        ? this.utilService.normalizePhoneNumber(landlordUser.phone_number)
         : null;
 
       const totalAmount = Number(plan.total_amount);
@@ -2417,20 +2493,26 @@ export class PaymentPlansService {
           plan.id,
         );
       }
-      if (landlordPhone) {
+
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        property?.owner_id,
+        NotificationCategory.PAYMENTS,
+      );
+      for (const [index, recipient] of recipients.entries()) {
+        if (!recipient.phone) continue;
         await this.whatsappNotificationLog.queue(
           'sendPaymentPlanCompletedLandlord',
           {
-            phone_number: landlordPhone,
+            phone_number: recipient.phone,
             tenant_name: tenantName,
             charge_name: plan.charge_name,
             property_name: propertyName,
             total_amount: totalAmount,
             landlord_id: property?.owner_id,
             property_id: property?.id,
-            recipient_name: landlordName,
+            recipient_name: recipient.name,
           },
-          plan.id,
+          index === 0 ? plan.id : `${plan.id}:${recipient.accountId}`,
         );
       }
     } catch (err) {
@@ -2510,7 +2592,7 @@ export class PaymentPlansService {
     if (!property) {
       throw new NotFoundException('Property not found');
     }
-    if (property.owner_id !== markedByUserId) {
+    if (!(await this.canManageOwner(property.owner_id, markedByUserId))) {
       throw new ForbiddenException(
         'Only the property landlord can mark installments paid',
       );
@@ -2526,7 +2608,7 @@ export class PaymentPlansService {
     const amount = dto.amount ?? Number(installment.amount);
     await this.markInstallmentPaid(installment, {
       amount,
-      method: dto.method as InstallmentPaymentMethod,
+      method: dto.method,
       paidAt: dto.paidAt ? new Date(dto.paidAt) : undefined,
       note: dto.note,
       markedByUserId,
@@ -2600,7 +2682,8 @@ export class PaymentPlansService {
           // For Paystack payments, persist the actual channel
           // (card / bank_transfer / ussd / ...) so receipts can show it.
           // For manual payments, fall through to the category enum.
-          payment_method: (args.channel ?? args.method) as InstallmentPaymentMethod,
+          payment_method: (args.channel ??
+            args.method) as InstallmentPaymentMethod,
           paystack_reference: args.paystackRef ?? null,
           manual_payment_note: args.note ?? null,
           marked_paid_by_user_id: args.markedByUserId ?? null,
@@ -2694,18 +2777,14 @@ export class PaymentPlansService {
     //    Only when the plan completes do we call markInvoiceAsPaid with the
     //    full invoice total to trigger renewal rent-advance and notifications.
     //    skipLedger=true prevents the duplicate OB_PAYMENT credit.
-    if (
-      plan.scope === PaymentPlanScope.TENANCY &&
-      plan.renewal_invoice_id
-    ) {
+    if (plan.scope === PaymentPlanScope.TENANCY && plan.renewal_invoice_id) {
       try {
         const invoice = await this.renewalInvoiceRepository.findOne({
           where: { id: plan.renewal_invoice_id },
         });
         if (invoice && invoice.payment_status !== RenewalPaymentStatus.PAID) {
           const ref =
-            args.paystackRef ??
-            `PLAN_MANUAL_${installment.id}_${Date.now()}`;
+            args.paystackRef ?? `PLAN_MANUAL_${installment.id}_${Date.now()}`;
 
           // Don't ripple up to a superseded invoice: the landlord revised the
           // letter, the new invoice carries the canonical terms, and writing
@@ -2976,9 +3055,7 @@ export class PaymentPlansService {
       Number(invoice.amount_paid ?? 0) + appliedThisInstallment,
     );
     await manager.update(AdHocInvoice, invoice.id, {
-      status: fullyPaid
-        ? AdHocInvoiceStatus.PAID
-        : AdHocInvoiceStatus.PARTIAL,
+      status: fullyPaid ? AdHocInvoiceStatus.PAID : AdHocInvoiceStatus.PARTIAL,
       amount_paid: fullyPaid ? total : accumulated,
       ...(fullyPaid
         ? {
@@ -3000,24 +3077,20 @@ export class PaymentPlansService {
     try {
       const property = plan.property;
       const propertyName = property?.name ?? 'your property';
-      const landlordAccount = property?.owner;
-      const landlordUser = landlordAccount?.user;
       const tenantUser = plan.tenant?.user;
 
       const tenantName =
         `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
         'there';
-      const landlordName =
-        landlordAccount?.profile_name ||
-        `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`.trim() ||
-        'there';
 
       const tenantPhone = tenantUser?.phone_number
         ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
         : null;
-      const landlordPhone = landlordUser?.phone_number
-        ? this.utilService.normalizePhoneNumber(landlordUser.phone_number)
-        : null;
+
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        property?.owner_id,
+        NotificationCategory.PAYMENTS,
+      );
 
       // Tenant-facing label: tenancy-scope plans read as "Tenancy", not the
       // stored "Entire Tenancy" sentinel. Landlord-facing messages below
@@ -3043,11 +3116,12 @@ export class PaymentPlansService {
         );
       }
 
-      if (landlordPhone) {
+      for (const [index, recipient] of recipients.entries()) {
+        if (!recipient.phone) continue;
         await this.whatsappNotificationLog.queue(
           'sendInstallmentPaidLandlord',
           {
-            phone_number: landlordPhone,
+            phone_number: recipient.phone,
             tenant_name: tenantName,
             installment_label: installmentLabel,
             charge_name: plan.charge_name,
@@ -3055,9 +3129,11 @@ export class PaymentPlansService {
             amount,
             landlord_id: property?.owner_id,
             property_id: property?.id,
-            recipient_name: landlordName,
+            recipient_name: recipient.name,
           },
-          installmentId,
+          index === 0
+            ? installmentId
+            : `${installmentId}:${recipient.accountId}`,
         );
       }
 
@@ -3084,20 +3160,21 @@ export class PaymentPlansService {
             plan.id,
           );
         }
-        if (landlordPhone) {
+        for (const [index, recipient] of recipients.entries()) {
+          if (!recipient.phone) continue;
           await this.whatsappNotificationLog.queue(
             'sendPaymentPlanCompletedLandlord',
             {
-              phone_number: landlordPhone,
+              phone_number: recipient.phone,
               tenant_name: tenantName,
               charge_name: plan.charge_name,
               property_name: propertyName,
               total_amount: totalAmount,
               landlord_id: property?.owner_id,
               property_id: property?.id,
-              recipient_name: landlordName,
+              recipient_name: recipient.name,
             },
-            plan.id,
+            index === 0 ? plan.id : `${plan.id}:${recipient.accountId}`,
           );
         }
       }
@@ -3164,10 +3241,7 @@ export class PaymentPlansService {
     const updates: Partial<RenewalInvoice> = {
       fee_breakdown: breakdown,
       other_fees: otherFees,
-      total_amount: Math.max(
-        0,
-        Number(invoice.total_amount) - chargeAmount,
-      ),
+      total_amount: Math.max(0, Number(invoice.total_amount) - chargeAmount),
       outstanding_balance: Math.max(
         0,
         Number(invoice.outstanding_balance) - chargeAmount,
@@ -3233,8 +3307,7 @@ export class PaymentPlansService {
     const updates: Partial<RenewalInvoice> = {
       fee_breakdown: breakdown,
       total_amount: Number(invoice.total_amount) + chargeAmount,
-      outstanding_balance:
-        Number(invoice.outstanding_balance) + chargeAmount,
+      outstanding_balance: Number(invoice.outstanding_balance) + chargeAmount,
     };
     switch (feeKind) {
       case 'rent':

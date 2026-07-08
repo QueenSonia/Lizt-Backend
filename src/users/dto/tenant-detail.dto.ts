@@ -182,6 +182,11 @@ interface PaymentPlanRequestSummary {
 export class TenantDetailDto {
   id: string; // Account ID
 
+  // When returned inside a per-landlord group (admin/PM tenant view), identifies
+  // which managed landlord this section belongs to.
+  landlordId?: string;
+  landlordName?: string;
+
   // Personal Information
   firstName: string;
   lastName: string;

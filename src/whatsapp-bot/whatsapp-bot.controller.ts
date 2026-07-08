@@ -462,25 +462,45 @@ export class WhatsappBotController {
         userAgent: req.headers['user-agent'] || 'unknown',
       };
 
-      // The landlordId is actually the Account ID, not the User ID
-      const landlordAccount = await this.accountRepository.findOne({
-        where: { id: landlordId, roles: ArrayContains([RolesEnum.LANDLORD]) },
-        relations: [
-          'user',
-          'properties',
-          'properties.property_tenants',
-          'properties.property_tenants.tenant',
-          'properties.property_tenants.tenant.user',
-        ],
+      // The landlordId is actually the requesting Account ID (a landlord —
+      // or, on the property-manager dashboard, an ADMIN spanning every
+      // landlord they manage).
+      const IDENTITY_RELATIONS = [
+        'user',
+        'properties',
+        'properties.property_tenants',
+        'properties.property_tenants.tenant',
+        'properties.property_tenants.tenant.user',
+      ];
+
+      const requestedAccount = await this.accountRepository.findOne({
+        where: { id: landlordId },
+        relations: ['user'],
       });
+      const isAdminRequester = !!requestedAccount?.roles?.includes(
+        RolesEnum.ADMIN,
+      );
 
-      if (!landlordAccount) {
-        // Let's try to find any account with this ID to see what role it has
-        const anyAccount = await this.accountRepository.findOne({
-          where: { id: landlordId },
-          relations: ['user'],
+      // The landlord accounts whose tenants/properties populate the contact
+      // list: the requester itself, or every landlord the admin manages.
+      let landlordAccounts: Account[] = [];
+      if (isAdminRequester) {
+        landlordAccounts = await this.accountRepository.find({
+          where: {
+            creator_id: landlordId,
+            roles: ArrayContains([RolesEnum.LANDLORD]),
+          },
+          relations: IDENTITY_RELATIONS,
         });
+      } else if (requestedAccount?.roles?.includes(RolesEnum.LANDLORD)) {
+        const fullLandlord = await this.accountRepository.findOne({
+          where: { id: landlordId },
+          relations: IDENTITY_RELATIONS,
+        });
+        if (fullLandlord) landlordAccounts = [fullLandlord];
+      }
 
+      if (!isAdminRequester && !landlordAccounts.length) {
         // Enhanced error response with consistent format
         // Validates: Requirements 8.1, 8.3
         const errorResponse = {
@@ -489,8 +509,8 @@ export class WhatsappBotController {
           users: [],
           context: {
             ...requestContext,
-            accountExists: !!anyAccount,
-            actualRoles: anyAccount?.roles,
+            accountExists: !!requestedAccount,
+            actualRoles: requestedAccount?.roles,
             searchedRole: RolesEnum.LANDLORD,
           },
           timestamp: new Date().toISOString(),
@@ -505,28 +525,45 @@ export class WhatsappBotController {
 
       const usersMap = new Map(); // Use Map to avoid duplicates
 
-      // Add the landlord themselves for chat simulation
-      // User Account.profile_name as primary source for name, with fallbacks
-      const rawLandlordName =
-        landlordAccount.profile_name ||
-        `${landlordAccount.user.first_name || ''} ${landlordAccount.user.last_name || ''}`.trim() ||
-        'Landlord';
+      const accountDisplayName = (account: Account, fallback: string) =>
+        account.profile_name ||
+        `${account.user?.first_name || ''} ${account.user?.last_name || ''}`.trim() ||
+        fallback;
 
-      const landlordUser = {
-        id: landlordAccount.id,
-        name: rawLandlordName,
-        phone: this.utilService.normalizePhoneNumber(
-          landlordAccount.user.phone_number,
-        ),
-        userType: 'landlord',
-        properties: landlordAccount.properties?.map((p) => p.name) || [],
-      };
+      // Add the requester themselves for chat simulation. An admin chats as
+      // the property manager (this is where redirected landlord notifications
+      // now land); a landlord keeps the existing landlord identity.
+      if (isAdminRequester && requestedAccount) {
+        usersMap.set(requestedAccount.id, {
+          id: requestedAccount.id,
+          name: accountDisplayName(requestedAccount, 'Property Manager'),
+          phone: this.utilService.normalizePhoneNumber(
+            requestedAccount.user.phone_number,
+          ),
+          userType: 'admin',
+          properties: landlordAccounts.flatMap(
+            (l) => l.properties?.map((p) => p.name) || [],
+          ),
+        });
+      }
 
-      usersMap.set(landlordUser.id, landlordUser);
+      for (const landlordAccount of landlordAccounts) {
+        // Add the landlord themselves for chat simulation
+        // Use Account.profile_name as primary source for name, with fallbacks
+        if (!usersMap.has(landlordAccount.id)) {
+          usersMap.set(landlordAccount.id, {
+            id: landlordAccount.id,
+            name: accountDisplayName(landlordAccount, 'Landlord'),
+            phone: this.utilService.normalizePhoneNumber(
+              landlordAccount.user.phone_number,
+            ),
+            userType: 'landlord',
+            properties: landlordAccount.properties?.map((p) => p.name) || [],
+          });
+        }
 
-      // Get all tenants from the landlord's properties
-      if (landlordAccount.properties) {
-        for (const property of landlordAccount.properties) {
+        // Get all tenants from the landlord's properties
+        for (const property of landlordAccount.properties ?? []) {
           if (property.property_tenants) {
             for (const propertyTenant of property.property_tenants) {
               const tenantAccount = propertyTenant.tenant;
@@ -560,20 +597,35 @@ export class WhatsappBotController {
         }
       }
 
+      const allPropertyNames = landlordAccounts.flatMap(
+        (l) => l.properties?.map((p) => p.name) || [],
+      );
+
       // Get facility managers from team members with enhanced error handling
       try {
-        const team = await this.teamRepository.findOne({
-          where: { creatorId: landlordId },
+        // Post-reparent the FMs sit on the managing admin's team, not the
+        // landlord's own; accept either as the team owner so the simulator's
+        // contact list still includes the relevant facility managers. For an
+        // admin requester the team is keyed on the admin id directly.
+        const teamOwnerIds = Array.from(
+          new Set(
+            [landlordId, ...landlordAccounts.map((l) => l.creator_id)].filter(
+              (v): v is string => !!v,
+            ),
+          ),
+        );
+        const teams = await this.teamRepository.find({
+          where: { creatorId: In(teamOwnerIds) },
         });
 
-        if (team) {
+        if (teams.length) {
           const members = await this.teamMemberRepository.find({
-            where: { teamId: team.id },
+            where: { teamId: In(teams.map((t) => t.id)) },
             relations: ['account', 'account.user'],
           });
 
           this.logger.log(
-            `🤝 Found ${members.length} team members for team ${team.id}.`,
+            `🤝 Found ${members.length} team members across ${teams.length} team(s).`,
           );
 
           for (const teamMember of members) {
@@ -594,8 +646,7 @@ export class WhatsappBotController {
                   memberUser.phone_number,
                 ),
                 userType: 'facility_manager',
-                properties:
-                  landlordAccount.properties?.map((p) => p.name) || [],
+                properties: allPropertyNames,
               };
 
               usersMap.set(memberAccount.id, facilityManagerData);
@@ -625,12 +676,13 @@ export class WhatsappBotController {
 
       // Get KYC applicants who haven't been converted to tenants yet
       try {
-        if (landlordAccount.properties) {
-          const propertyIds = landlordAccount.properties.map((p) => p.id);
-
+        const propertyIds = landlordAccounts.flatMap(
+          (l) => l.properties?.map((p) => p.id) || [],
+        );
+        if (propertyIds.length > 0) {
           const kycApplications = await this.kycApplicationRepository.find({
             where: {
-              property_id: propertyIds.length > 0 ? In(propertyIds) : undefined,
+              property_id: In(propertyIds),
               tenant_id: IsNull(), // Only get applicants not yet converted to tenants
             },
             relations: ['property'],

@@ -30,7 +30,7 @@ import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { Public } from 'src/auth/public.decorator';
-import { ADMIN_ROLES, RolesEnum } from 'src/base.entity';
+import { RolesEnum } from 'src/base.entity';
 import { RenewTenancyDto } from './dto/renew-tenancy.dto';
 import { InitiateRenewalDto } from './dto/initiate-renewal.dto';
 import { UpdateRenewalInvoiceDto } from './dto/update-renewal-invoice.dto';
@@ -61,7 +61,7 @@ export class TenanciesController {
   @ApiBadRequestResponse({ description: 'Invalid input data' })
   @ApiNotFoundResponse({ description: 'Tenancy not found' })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Put(':id/renew')
   async renewTenancy(
     @Param('id', new ParseUUIDPipe()) id: string,
@@ -89,7 +89,7 @@ export class TenanciesController {
   })
   @ApiNotFoundResponse({ description: 'Tenancy or active rent not found' })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Post(':propertyTenantId/renew-from-credit')
   async renewFromWalletCredit(
     @Param('propertyTenantId', new ParseUUIDPipe()) propertyTenantId: string,
@@ -110,7 +110,7 @@ export class TenanciesController {
   @ApiOkResponse({ description: 'Active rent updated successfully' })
   @ApiNotFoundResponse({ description: 'Tenancy or active rent not found' })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @ApiBody({ type: UpdateRenewalInvoiceDto })
   @Patch(':propertyTenantId/active-rent')
   async updateActiveTenancy(
@@ -137,7 +137,7 @@ export class TenanciesController {
   @ApiOkResponse({ description: 'Impact computed', type: RentChangeImpactDto })
   @ApiNotFoundResponse({ description: 'Tenancy or active rent not found' })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @ApiBody({ type: UpdateRenewalInvoiceDto })
   @Post(':propertyTenantId/active-rent/preview-update')
   async previewActiveRentUpdate(
@@ -166,7 +166,7 @@ export class TenanciesController {
   @ApiOkResponse({ description: 'Impact computed', type: RentChangeImpactDto })
   @ApiNotFoundResponse({ description: 'Tenancy not found' })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @ApiBody({ type: InitiateRenewalDto })
   @Post(':propertyTenantId/renewal/preview')
   async previewRenewal(
@@ -195,7 +195,7 @@ export class TenanciesController {
   @ApiOkResponse({ description: 'Impact computed', type: RentChangeImpactDto })
   @ApiNotFoundResponse({ description: 'Invoice not found' })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @ApiBody({ type: UpdateRenewalInvoiceDto })
   @Post('renewal-invoice/by-id/:id/preview')
   async previewRenewalInvoiceUpdate(
@@ -246,7 +246,7 @@ export class TenanciesController {
     description: 'Property tenant relationship not found',
   })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @ApiBody({ type: InitiateRenewalDto })
   @Post(':propertyTenantId/initiate-renewal')
   async initiateRenewal(
@@ -317,7 +317,7 @@ export class TenanciesController {
   @ApiBadRequestResponse({ description: 'Invoice already paid or invalid data' })
   @ApiNotFoundResponse({ description: 'Invoice not found' })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @ApiBody({ type: UpdateRenewalInvoiceDto })
   @Patch('renewal-invoice/by-id/:id')
   async updateRenewalInvoice(
@@ -355,7 +355,7 @@ export class TenanciesController {
     description: 'Invoice or active rent not found',
   })
   @ApiSecurity('access_token')
-  @Roles(ADMIN_ROLES.ADMIN, RolesEnum.LANDLORD)
+  @Roles(RolesEnum.ADMIN)
   @Post('renewal-invoice/by-id/:id/realign-period')
   async realignRenewalInvoicePeriod(
     @Param('id', new ParseUUIDPipe()) id: string,

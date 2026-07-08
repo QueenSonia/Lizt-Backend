@@ -6,14 +6,18 @@ import {
   UseGuards,
   ParseIntPipe,
   DefaultValuePipe,
+  UseInterceptors,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
+import { RolesEnum } from 'src/base.entity';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Account } from '../users/entities/account.entity';
 import { PaymentService } from './payment.service';
 import { Public } from '../auth/public.decorator';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 /**
  * PaymentsController
@@ -30,16 +34,17 @@ export class PaymentsController {
    * Requirements: US-8, TR-4
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
+  @UseInterceptors(ManagedScopeInterceptor)
   @Get('landlord')
   async getLandlordPayments(
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
     @Query('status') status?: string,
     @Query('search') search?: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page?: number,
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit?: number,
   ): Promise<any> {
-    return this.paymentService.getLandlordPayments(user.id, {
+    return this.paymentService.getLandlordPayments(landlordIds, {
       status,
       search,
       page,

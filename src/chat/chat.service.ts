@@ -26,6 +26,7 @@ import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 import { Account } from 'src/users/entities/account.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { RolesEnum } from 'src/base.entity';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 
 // Statuses where the unified thread is locked. Three flavours:
 //   - pre-approval (not_approved / pending_tenant_confirmation) — no thread
@@ -91,6 +92,7 @@ export class ChatService {
     private readonly teamMemberRepo: Repository<TeamMember>,
     private readonly eventEmitter: EventEmitter2,
     private readonly fileUploadService: FileUploadService,
+    private readonly managementScopeService: ManagementScopeService,
   ) {}
 
   async sendMessage(
@@ -256,11 +258,23 @@ export class ChatService {
   ): Promise<boolean> {
     if (!landlordAccountId) return false;
     if (viewerAccountId === landlordAccountId) return true;
+    // The admin managing this landlord may also read the thread (acting on
+    // their behalf): viewerAccountId is among the landlord's team owners.
+    const acceptableTeamOwners =
+      await this.managementScopeService.resolveTeamOwnersForLandlord(
+        landlordAccountId,
+      );
+    if (acceptableTeamOwners.includes(viewerAccountId)) return true;
 
+    // Otherwise the viewer must be a FACILITY_MANAGER on the team serving this
+    // landlord — the landlord's own team (legacy) or the managing admin's team
+    // (post-reparent), per resolveTeamOwnersForLandlord.
     const teamMember = await this.teamMemberRepo
       .createQueryBuilder('tm')
       .innerJoin('tm.team', 'team')
-      .where('team."creatorId" = :landlordId', { landlordId: landlordAccountId })
+      .where('team."creatorId" IN (:...teamOwnerIds)', {
+        teamOwnerIds: acceptableTeamOwners,
+      })
       .andWhere('tm."accountId" = :viewerId', { viewerId: viewerAccountId })
       .andWhere('tm.role = :role', { role: RolesEnum.FACILITY_MANAGER })
       .getOne();
@@ -280,6 +294,17 @@ export class ChatService {
   ): Promise<MessageSender.LANDLORD | MessageSender.FACILITY_MANAGER | null> {
     if (!landlordAccountId) return null;
     if (viewerAccountId === landlordAccountId) return MessageSender.LANDLORD;
+    // The admin managing this landlord posts on their behalf, stamped as the
+    // LANDLORD side of the thread (audit still records the admin's account as
+    // the message author elsewhere).
+    if (
+      await this.managementScopeService.managesLandlord(
+        viewerAccountId,
+        landlordAccountId,
+      )
+    ) {
+      return MessageSender.LANDLORD;
+    }
 
     if (!assignedTeamMemberId) return null;
     const assignedTm = await this.teamMemberRepo.findOne({

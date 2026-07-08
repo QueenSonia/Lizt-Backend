@@ -21,6 +21,7 @@ import {
 } from '../../tenant-kyc/entities/tenant-kyc.entity';
 import { NormalizePhoneNumber } from '../../utils/phone-number.transformer';
 import { IsValidPhoneNumber } from '../../common/validation/is-valid-phone.decorator';
+import { LandlordType } from '../entities/account.entity';
 
 export class CreateTenantDto {
   @IsString()
@@ -726,6 +727,138 @@ export class CreateLandlordDto {
     },
   )
   password: string;
+}
+
+/**
+ * Property-manager (admin) creates a MANAGED landlord. The landlord never signs
+ * in — the admin operates on their behalf — so there is NO password here; the
+ * account is created login-disabled and parented to the admin via creator_id.
+ *
+ * Naming follows the corporate/individual split: corporate landlords carry the
+ * company name in `business_name` (→ accounts.profile_name); individuals use
+ * `first_name`/`last_name`. Email + phone are both required and unique (DB has
+ * NOT NULL + unique indexes on each; phone is normalized to 234XXXXXXXXXX).
+ */
+export class CreateManagedLandlordDto {
+  @ApiProperty({
+    enum: LandlordType,
+    example: LandlordType.INDIVIDUAL,
+    description:
+      'individual → display name from first/last; corporate → display name from business_name.',
+  })
+  @IsEnum(LandlordType)
+  @IsNotEmpty()
+  landlord_type: LandlordType;
+
+  @ApiProperty({
+    example: 'John',
+    required: false,
+    description:
+      "Individual: the landlord's first name (required). Corporate: the primary contact's first name (optional).",
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  first_name?: string;
+
+  @ApiProperty({
+    example: 'Doe',
+    required: false,
+    description: 'Last name / primary-contact surname.',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  last_name?: string;
+
+  @ApiProperty({
+    example: 'Adeyemi Holdings Ltd',
+    required: false,
+    description:
+      'Business / corporate name. Required for corporate landlords; becomes the display name (profile_name).',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  business_name?: string;
+
+  @ApiProperty({
+    example: 'landlord@example.com',
+    description: 'Unique email — used for identity and tenant-facing documents.',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toLowerCase().trim() : value,
+  )
+  @IsNotEmpty()
+  @IsEmail()
+  email: string;
+
+  @ApiProperty({
+    example: '+2348104467932',
+    description: 'Unique phone number (normalized to 234XXXXXXXXXX).',
+  })
+  @IsNotEmpty()
+  @IsString()
+  @IsValidPhoneNumber()
+  @NormalizePhoneNumber()
+  phone_number: string;
+}
+
+/**
+ * Edit an existing managed landlord. Every field is optional — only the ones
+ * present are changed. Mirrors {@link CreateManagedLandlordDto}'s shape and
+ * transforms so the service can reuse the same name/type resolution logic.
+ */
+export class UpdateManagedLandlordDto {
+  @ApiProperty({ enum: LandlordType, required: false })
+  @IsOptional()
+  @IsEnum(LandlordType)
+  landlord_type?: LandlordType;
+
+  @ApiProperty({ example: 'John', required: false })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  first_name?: string;
+
+  @ApiProperty({ example: 'Doe', required: false })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  last_name?: string;
+
+  @ApiProperty({ example: 'Adeyemi Holdings Ltd', required: false })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsOptional()
+  @IsString()
+  business_name?: string;
+
+  @ApiProperty({ example: 'landlord@example.com', required: false })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toLowerCase().trim() : value,
+  )
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @ApiProperty({ example: '+2348104467932', required: false })
+  @IsOptional()
+  @IsString()
+  @IsValidPhoneNumber()
+  @NormalizePhoneNumber()
+  phone_number?: string;
 }
 
 export class CreateCustomerRepDto {

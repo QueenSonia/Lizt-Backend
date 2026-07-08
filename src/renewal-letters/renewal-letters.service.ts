@@ -11,6 +11,7 @@ import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
+import { resolveBrandingUser } from '../common/branding/branding.util';
 import { Rent } from '../rents/entities/rent.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import {
@@ -27,6 +28,8 @@ import {
   RenewalLetterPublicDto,
   InitiateOtpResponseDto,
 } from './dto/renewal-letter-public.dto';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 @Injectable()
 export class RenewalLettersService {
@@ -49,6 +52,7 @@ export class RenewalLettersService {
     private readonly eventEmitter: EventEmitter2,
     private readonly renewalLetterPdfService: RenewalLetterPdfService,
     private readonly renewalChargeService: RenewalChargeService,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   /**
@@ -102,7 +106,9 @@ export class RenewalLettersService {
       (fullName ?? '')
         .split(/\s+/)
         .filter(Boolean)
-        .find((t) => !HONORIFIC.test(t)) || (fullName?.trim() || 'there')
+        .find((t) => !HONORIFIC.test(t)) ||
+      fullName?.trim() ||
+      'there'
     );
   }
 
@@ -135,7 +141,8 @@ export class RenewalLettersService {
     });
 
     const tenantUser = propertyTenant.tenant.user;
-    const tenantName = `${tenantUser.first_name ?? ''} ${tenantUser.last_name ?? ''}`.trim();
+    const tenantName =
+      `${tenantUser.first_name ?? ''} ${tenantUser.last_name ?? ''}`.trim();
     const tenantWhatsApp = tenantUser.phone_number ?? null;
     const tenantEmail = tenantUser.email ?? null;
 
@@ -169,7 +176,8 @@ export class RenewalLettersService {
           ? Number(invoice.agency_fee)
           : null,
       cautionDeposit:
-        invoice.caution_deposit !== null && invoice.caution_deposit !== undefined
+        invoice.caution_deposit !== null &&
+        invoice.caution_deposit !== undefined
           ? Number(invoice.caution_deposit)
           : null,
       otherFees: Array.isArray(invoice.other_fees)
@@ -198,7 +206,9 @@ export class RenewalLettersService {
         invoice.letter_status === RenewalLetterStatus.ACCEPTED
           ? invoice.acceptance_otp
           : null,
-      acceptedAt: invoice.accepted_at ? invoice.accepted_at.toISOString() : null,
+      acceptedAt: invoice.accepted_at
+        ? invoice.accepted_at.toISOString()
+        : null,
       acceptedByPhone:
         invoice.letter_status === RenewalLetterStatus.ACCEPTED
           ? invoice.accepted_by_phone
@@ -206,7 +216,9 @@ export class RenewalLettersService {
       autoRenewedAt: invoice.auto_renewed_at
         ? invoice.auto_renewed_at.toISOString()
         : null,
-      declinedAt: invoice.declined_at ? invoice.declined_at.toISOString() : null,
+      declinedAt: invoice.declined_at
+        ? invoice.declined_at.toISOString()
+        : null,
       declineOtp:
         invoice.letter_status === RenewalLetterStatus.DECLINED
           ? invoice.decline_otp
@@ -309,8 +321,7 @@ export class RenewalLettersService {
     // Consume the Redis OTP (throws on wrong/expired/locked).
     const verifiedOtp = await this.otpService.verifyOTP(token, 'accept', otp);
 
-    const { property, propertyTenant, landlordName } =
-      await this.loadLetterContext(invoice);
+    const { property, propertyTenant } = await this.loadLetterContext(invoice);
     const tenantPhone = this.utilService.normalizePhoneNumber(
       propertyTenant.tenant.user.phone_number,
     );
@@ -466,25 +477,29 @@ export class RenewalLettersService {
       }
     }
 
-    // Notify the landlord via WhatsApp. Mirrors the decline path — fire-
-    // and-forget so a Meta outage doesn't break the acceptance write.
-    const landlordPhoneRaw =
-      propertyTenant.property.owner?.user?.phone_number ?? null;
-    if (landlordPhoneRaw) {
-      try {
+    // Notify the owner-side recipients via WhatsApp. Mirrors the decline
+    // path — fire-and-forget so a Meta outage doesn't break the acceptance
+    // write.
+    try {
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        propertyTenant.property.owner_id,
+        NotificationCategory.RENEWALS,
+      );
+      for (const recipient of recipients) {
+        if (!recipient.phone) continue;
         await this.templateSenderService.sendRenewalLetterAcceptedNotice({
-          phone_number: this.utilService.normalizePhoneNumber(landlordPhoneRaw),
-          landlord_name: landlordName,
+          phone_number: recipient.phone,
+          landlord_name: recipient.name,
           tenant_name: tenantName,
           property_name: property.name,
         });
-      } catch (err) {
-        const e = err as { message?: string; stack?: string };
-        this.logger.error(
-          `Failed to send landlord accept notice: ${e.message}`,
-          e.stack,
-        );
       }
+    } catch (err) {
+      const e = err as { message?: string; stack?: string };
+      this.logger.error(
+        `Failed to send landlord accept notice: ${e.message}`,
+        e.stack,
+      );
     }
 
     return this.getPublicLetter(token);
@@ -525,8 +540,7 @@ export class RenewalLettersService {
     // Consume the Redis OTP (throws on wrong/expired/locked).
     const verifiedOtp = await this.otpService.verifyOTP(token, 'reject', otp);
 
-    const { property, propertyTenant, landlordName } =
-      await this.loadLetterContext(invoice);
+    const { property, propertyTenant } = await this.loadLetterContext(invoice);
     const tenantPhone = this.utilService.normalizePhoneNumber(
       propertyTenant.tenant.user.phone_number,
     );
@@ -575,25 +589,28 @@ export class RenewalLettersService {
       reason: trimmedReason ?? undefined,
     });
 
-    // Notify the landlord via WhatsApp. Required notification — still
-    // wrapped so a Meta outage doesn't break the decline write.
-    const landlordPhoneRaw =
-      propertyTenant.property.owner?.user?.phone_number ?? null;
-    if (landlordPhoneRaw) {
-      try {
+    // Notify the owner-side recipients via WhatsApp. Required notification —
+    // still wrapped so a Meta outage doesn't break the decline write.
+    try {
+      const recipients = await this.notificationRecipients.resolveRecipients(
+        propertyTenant.property.owner_id,
+        NotificationCategory.RENEWALS,
+      );
+      for (const recipient of recipients) {
+        if (!recipient.phone) continue;
         await this.templateSenderService.sendRenewalLetterDeclinedNotice({
-          phone_number: this.utilService.normalizePhoneNumber(landlordPhoneRaw),
-          landlord_name: landlordName,
+          phone_number: recipient.phone,
+          landlord_name: recipient.name,
           tenant_name: tenantName,
           property_name: property.name,
         });
-      } catch (err) {
-        const e = err as { message?: string; stack?: string };
-        this.logger.error(
-          `Failed to send landlord decline notice: ${e.message}`,
-          e.stack,
-        );
       }
+    } catch (err) {
+      const e = err as { message?: string; stack?: string };
+      this.logger.error(
+        `Failed to send landlord decline notice: ${e.message}`,
+        e.stack,
+      );
     }
 
     // Render and dispatch the signed-letter PDF to the tenant — same
@@ -653,6 +670,8 @@ export class RenewalLettersService {
         'property',
         'property.owner',
         'property.owner.user',
+        'property.owner.creator',
+        'property.owner.creator.user',
         'tenant',
         'tenant.user',
       ],
@@ -670,40 +689,42 @@ export class RenewalLettersService {
 
     const landlordAccount = propertyTenant.property.owner;
     const landlordUser = landlordAccount?.user;
+    // Identity (name) stays the real landlord; BRANDING resolves through the
+    // managing admin (Property Kraft) — see resolveBrandingUser — falling back
+    // to the landlord's own branding pre-reparent.
+    const brandingUser = resolveBrandingUser(landlordAccount);
     const landlordName =
       landlordAccount?.profile_name ||
-      `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`
-        .trim() ||
+      `${landlordUser?.first_name ?? ''} ${landlordUser?.last_name ?? ''}`.trim() ||
       'Your Landlord';
     const landlordCompany: string | null =
-      landlordUser?.branding?.businessName ||
-      landlordUser?.business_name ||
+      brandingUser?.branding?.businessName ||
+      brandingUser?.business_name ||
       null;
-    // Prefer the admin-settings branding letterhead (where landlords now
-    // configure their logo) over the legacy logo_urls slot. This is the same
-    // source the landlord-side RenewTenancyScreen reads via useLandlordBranding,
-    // so the tenant sees the same logo the landlord saw at save time.
+    // Prefer the admin-settings branding letterhead (where branding is now
+    // configured) over the legacy logo_urls slot. This is the same source the
+    // dashboard reads via useLandlordBranding, so the tenant sees the same logo.
     const landlordLogoUrl: string | null =
-      landlordUser?.branding?.letterhead ||
-      (landlordUser?.logo_urls && landlordUser.logo_urls[0]) ||
+      brandingUser?.branding?.letterhead ||
+      (brandingUser?.logo_urls && brandingUser.logo_urls[0]) ||
       null;
 
     // Branding footer fields — surfaced on the tenant page so the structural
-    // letter render can show the landlord's business address / contacts /
-    // website at the bottom of the document, matching the App.tsx design
-    // reference. All optional.
+    // letter render can show the business address / contacts / website at the
+    // bottom of the document, matching the App.tsx design reference. All
+    // optional. Sourced from the managing admin's branding.
     const landlordSignatureUrl: string | null =
-      landlordUser?.branding?.signature ?? null;
+      brandingUser?.branding?.signature ?? null;
     const landlordBusinessAddress: string | null =
-      landlordUser?.branding?.businessAddress ?? null;
+      brandingUser?.branding?.businessAddress ?? null;
     const landlordContactEmail: string | null =
-      landlordUser?.branding?.contactEmail ?? null;
+      brandingUser?.branding?.contactEmail ?? null;
     const landlordContactPhone: string | null =
-      landlordUser?.branding?.contactPhone ?? null;
+      brandingUser?.branding?.contactPhone ?? null;
     const landlordWebsite: string | null =
-      landlordUser?.branding?.websiteLink ?? null;
+      brandingUser?.branding?.websiteLink ?? null;
     const landlordBodyFont: string | null =
-      landlordUser?.branding?.bodyFont ?? null;
+      brandingUser?.branding?.bodyFont ?? null;
 
     return {
       property,

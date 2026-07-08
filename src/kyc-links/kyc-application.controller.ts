@@ -9,6 +9,7 @@ import {
   Req,
   Res,
   UseGuards,
+  UseInterceptors,
   ValidationPipe,
   ParseUUIDPipe,
 } from '@nestjs/common';
@@ -16,6 +17,7 @@ import { Request, Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
+import { RolesEnum } from 'src/base.entity';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SkipAuth } from '../auth/auth.decorator';
 import { Public } from '../auth/public.decorator';
@@ -31,8 +33,11 @@ import { Account } from '../users/entities/account.entity';
 import { CompleteKYCDto } from './dto/complete-kyc.dto';
 import { PropertyAdditionKYCDto } from './dto/property-addition-kyc.dto';
 import { ListKycApplicationsDto } from './dto/list-kyc-applications.dto';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 @Controller('api')
+@UseInterceptors(ManagedScopeInterceptor)
 export class KYCApplicationController {
   constructor(
     private readonly kycApplicationService: KYCApplicationService,
@@ -47,16 +52,19 @@ export class KYCApplicationController {
    * GET /api/kyc-applications/:applicationId/pdf
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('kyc-applications/:applicationId/pdf')
   async downloadKycApplicationPdf(
     @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
     @Res() res: Response,
   ): Promise<void> {
-    // Authorize via the existing service path (validates landlord owns
-    // the property linked to the application; throws on mismatch).
-    await this.kycApplicationService.getApplicationById(applicationId, user.id);
+    // Authorize via the existing service path (validates the requester manages
+    // the landlord that owns the linked property; throws on mismatch).
+    await this.kycApplicationService.getApplicationById(
+      applicationId,
+      landlordIds,
+    );
 
     const { buffer, filename } =
       await this.kycPdfService.generatePdfForLandlord(applicationId);
@@ -105,11 +113,11 @@ export class KYCApplicationController {
    * Requirements: 4.1, 4.2, 4.3
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('properties/:propertyId/kyc-applications')
   async getApplicationsByProperty(
     @Param('propertyId', ParseUUIDPipe) propertyId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
     @Query('status') status?: ApplicationStatus,
     @Query('sortBy') sortBy?: 'created_at' | 'first_name' | 'status',
     @Query('sortOrder') sortOrder?: 'ASC' | 'DESC',
@@ -132,10 +140,13 @@ export class KYCApplicationController {
     const [applications, statistics] = await Promise.all([
       this.kycApplicationService.getApplicationsByPropertyWithFilters(
         propertyId,
-        user.id,
+        landlordIds,
         filters,
       ),
-      this.kycApplicationService.getApplicationStatistics(propertyId, user.id),
+      this.kycApplicationService.getApplicationStatistics(
+        propertyId,
+        landlordIds,
+      ),
     ]);
 
     return {
@@ -151,18 +162,18 @@ export class KYCApplicationController {
    * Requirements: 4.1, 4.2, 4.3
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('kyc-applications/:applicationId')
   async getApplicationById(
     @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     application: any;
   }> {
     const application = await this.kycApplicationService.getApplicationById(
       applicationId,
-      user.id,
+      landlordIds,
     );
 
     return {
@@ -176,11 +187,11 @@ export class KYCApplicationController {
    * GET /api/kyc-applications/:applicationId/history
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('kyc-applications/:applicationId/history')
   async getKYCApplicationHistory(
     @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     history: Array<{
@@ -193,7 +204,7 @@ export class KYCApplicationController {
     const history =
       await this.kycApplicationService.getKYCApplicationHistory(
         applicationId,
-        user.id,
+        landlordIds,
       );
 
     return {
@@ -208,11 +219,11 @@ export class KYCApplicationController {
    * Requirements: 4.1, 4.2
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('properties/:propertyId/kyc-applications/statistics')
   async getApplicationStatistics(
     @Param('propertyId', ParseUUIDPipe) propertyId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     statistics: {
@@ -225,7 +236,7 @@ export class KYCApplicationController {
     const statistics =
       await this.kycApplicationService.getApplicationStatistics(
         propertyId,
-        user.id,
+        landlordIds,
       );
 
     return {
@@ -239,10 +250,10 @@ export class KYCApplicationController {
    * GET /api/kyc-applications?page=&size=
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('kyc-applications')
   async getAllApplications(
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
     @Query(new ValidationPipe({ transform: true, whitelist: true }))
     query: ListKycApplicationsDto,
   ): Promise<{
@@ -257,7 +268,7 @@ export class KYCApplicationController {
     };
   }> {
     const { applications, pagination } =
-      await this.kycApplicationService.getAllApplications(user.id, query);
+      await this.kycApplicationService.getAllApplications(landlordIds, query);
 
     return {
       success: true,
@@ -272,11 +283,11 @@ export class KYCApplicationController {
    * Requirements: 4.5, 6.4
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('tenants/:tenantId/kyc-applications')
   async getApplicationsByTenant(
     @Param('tenantId', ParseUUIDPipe) tenantId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     applications: any[];
@@ -284,7 +295,7 @@ export class KYCApplicationController {
     const applications =
       await this.kycApplicationService.getApplicationsByTenant(
         tenantId,
-        user.id,
+        landlordIds,
       );
 
     return {
@@ -389,18 +400,18 @@ export class KYCApplicationController {
    * Used for resending KYC completion links
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('kyc-applications/:applicationId/kyc-token')
   async getKYCTokenForApplication(
     @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     token: string;
   }> {
     const token = await this.kycApplicationService.getKYCTokenForApplication(
       applicationId,
-      user.id,
+      landlordIds,
     );
 
     return {
@@ -415,18 +426,18 @@ export class KYCApplicationController {
    * Uses the same template as initial KYC completion links
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Post('kyc-applications/:applicationId/resend-kyc')
   async resendKYCCompletionLink(
     @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     message: string;
   }> {
     await this.kycApplicationService.resendKYCCompletionLink(
       applicationId,
-      user.id,
+      landlordIds,
     );
 
     return {
@@ -444,11 +455,11 @@ export class KYCApplicationController {
    * and the transition between the two is seamlessly continuous.
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('kyc-applications/:applicationId/timeline')
   async getApplicationTimeline(
     @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     timeline: Awaited<
@@ -457,7 +468,7 @@ export class KYCApplicationController {
   }> {
     const timeline = await this.kycApplicationService.getApplicationTimeline(
       applicationId,
-      user.id,
+      landlordIds,
     );
 
     return {

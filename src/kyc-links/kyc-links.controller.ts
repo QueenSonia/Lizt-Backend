@@ -6,12 +6,14 @@ import {
   Param,
   Query,
   UseGuards,
+  UseInterceptors,
   ValidationPipe,
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
+import { RolesEnum } from 'src/base.entity';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SkipAuth } from '../auth/auth.decorator';
 import { Public } from '../auth/public.decorator';
@@ -20,14 +22,18 @@ import {
   KYCLinkResponse,
   PropertyKYCData,
 } from './kyc-links.service';
+import { KycLinkScope } from './entities/kyc-link.entity';
 import { TenantAttachmentService } from './tenant-attachment.service';
 import { CreateKYCApplicationDto } from './dto/create-kyc-application.dto';
 import { SendOTPDto } from './dto/send-otp.dto';
 import { KycVerifyOTPDto } from './dto/verify-otp.dto';
 import { Account } from '../users/entities/account.entity';
 import { KYCApplicationService } from './kyc-application.service';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
+import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
 
 @Controller('api')
+@UseInterceptors(ManagedScopeInterceptor)
 export class KYCLinksController {
   constructor(
     private readonly kycLinksService: KYCLinksService,
@@ -40,15 +46,22 @@ export class KYCLinksController {
    * POST /api/kyc-links/generate
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Post('kyc-links/generate')
   async generateKYCLink(@CurrentUser() account: Account): Promise<{
     success: boolean;
     message: string;
     data: KYCLinkResponse;
   }> {
+    // A property-manager admin gets an admin-scoped link (surfaces vacancies
+    // across every managed landlord); anyone else gets a single-owner link.
+    const scopeType = account.roles?.includes(RolesEnum.ADMIN)
+      ? KycLinkScope.ADMIN
+      : KycLinkScope.LANDLORD;
     const kycLinkResponse = await this.kycLinksService.generateKYCLink(
       account.id,
+      undefined,
+      scopeType,
     );
 
     return {
@@ -231,11 +244,11 @@ export class KYCLinksController {
    * Requirements: 4.1, 4.2, 4.3
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('properties/:propertyId/kyc-applications')
   async getKYCApplicationsByProperty(
     @Param('propertyId', ParseUUIDPipe) propertyId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     message: string;
@@ -244,7 +257,7 @@ export class KYCLinksController {
     const applications =
       await this.kycApplicationService.getApplicationsByProperty(
         propertyId,
-        user.id,
+        landlordIds,
       );
 
     return {
@@ -260,11 +273,11 @@ export class KYCLinksController {
    * Requirements: 4.1, 4.2
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('properties/:propertyId/kyc-applications/statistics')
   async getKYCApplicationStatistics(
     @Param('propertyId', ParseUUIDPipe) propertyId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     message: string;
@@ -278,7 +291,7 @@ export class KYCLinksController {
     const statistics =
       await this.kycApplicationService.getApplicationStatistics(
         propertyId,
-        user.id,
+        landlordIds,
       );
 
     return {
@@ -294,11 +307,11 @@ export class KYCLinksController {
    * Requirements: 4.1, 4.2, 4.3
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('kyc-applications/:applicationId')
   async getKYCApplicationById(
     @Param('applicationId', ParseUUIDPipe) applicationId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     message: string;
@@ -306,7 +319,7 @@ export class KYCLinksController {
   }> {
     const application = await this.kycApplicationService.getApplicationById(
       applicationId,
-      user.id,
+      landlordIds,
     );
 
     return {
@@ -322,11 +335,11 @@ export class KYCLinksController {
    * Requirements: 4.5, 6.4
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord')
+  @Roles(RolesEnum.ADMIN)
   @Get('tenants/:tenantId/kyc-applications')
   async getKYCApplicationsByTenant(
     @Param('tenantId', ParseUUIDPipe) tenantId: string,
-    @CurrentUser() user: Account,
+    @ManagedLandlordIds() landlordIds: string[],
   ): Promise<{
     success: boolean;
     message: string;
@@ -335,7 +348,7 @@ export class KYCLinksController {
     const applications =
       await this.kycApplicationService.getApplicationsByTenant(
         tenantId,
-        user.id,
+        landlordIds,
       );
 
     return {
@@ -350,7 +363,7 @@ export class KYCLinksController {
    * This should be called once to clean up existing data issues
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('admin', 'landlord')
+  @Roles(RolesEnum.ADMIN)
   @Post('fix-data-inconsistencies')
   async fixDataInconsistencies(@CurrentUser() user: Account): Promise<{
     success: boolean;

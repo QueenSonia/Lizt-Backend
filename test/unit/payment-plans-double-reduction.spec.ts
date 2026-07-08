@@ -28,6 +28,10 @@ import { TenantBalancesService } from '../../src/tenant-balances/tenant-balances
 import { WhatsAppNotificationLogService } from '../../src/whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../../src/utils/utility-service';
 import { PaymentPlanRequestsService } from '../../src/payment-plans/payment-plan-requests.service';
+import { RenewalChargeService } from '../../src/renewal-letters/renewal-charge.service';
+import { ManagementScopeService } from '../../src/common/scope/management-scope.service';
+import { NotificationRecipientsService } from '../../src/common/notify/notification-recipients.service';
+import { AdHocInvoicesService } from '../../src/ad-hoc-invoices/ad-hoc-invoices.service';
 
 /**
  * Regression cover for the verified "phantom wallet credit" double-reduction:
@@ -92,6 +96,19 @@ describe('PaymentPlansService — double-reduction fix', () => {
         { provide: WhatsAppNotificationLogService, useValue: { queue: jest.fn(), cancelPendingByReferenceIds: jest.fn().mockResolvedValue(undefined) } },
         { provide: UtilService, useValue: { normalizePhoneNumber: jest.fn() } },
         { provide: PaymentPlanRequestsService, useValue: { markApproved: jest.fn() } },
+        { provide: RenewalChargeService, useValue: {} },
+        {
+          provide: ManagementScopeService,
+          useValue: { managesLandlord: jest.fn().mockResolvedValue(false) },
+        },
+        {
+          provide: NotificationRecipientsService,
+          useValue: { resolveRecipients: jest.fn().mockResolvedValue([]) },
+        },
+        {
+          provide: AdHocInvoicesService,
+          useValue: { sendInvoiceLinkNotification: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -229,6 +246,8 @@ describe('PaymentPlansService — double-reduction fix', () => {
         status: PaymentPlanStatus.ACTIVE,
         renewal_invoice_id: 'inv-1',
         total_amount: 500,
+        // cancelPlan authorizes against the owning landlord (canManageOwner).
+        property: { owner_id: 'L' },
         installments: [
           { id: 'i1', status: InstallmentStatus.PAID, amount: 250, amount_paid: 250 },
           { id: 'i2', status: InstallmentStatus.PENDING, amount: 250, amount_paid: null },
@@ -236,7 +255,7 @@ describe('PaymentPlansService — double-reduction fix', () => {
       } as unknown as PaymentPlan;
       const restoreSpy = setupCancel(plan);
 
-      await service.cancelPlan('plan-svc');
+      await service.cancelPlan('plan-svc', 'L');
 
       // total 500 − paid 250 = 250 restored (not the full 500).
       expect(restoreSpy).toHaveBeenCalledWith(
@@ -255,6 +274,7 @@ describe('PaymentPlansService — double-reduction fix', () => {
         status: PaymentPlanStatus.ACTIVE,
         renewal_invoice_id: 'inv-1',
         total_amount: 500,
+        property: { owner_id: 'L' },
         installments: [
           { id: 'i1', status: InstallmentStatus.PAID, amount: 250, amount_paid: 250 },
           { id: 'i2', status: InstallmentStatus.PENDING, amount: 250, amount_paid: null },
@@ -262,7 +282,7 @@ describe('PaymentPlansService — double-reduction fix', () => {
       } as unknown as PaymentPlan;
       const restoreSpy = setupCancel(plan);
 
-      await service.cancelPlan('plan-ob');
+      await service.cancelPlan('plan-ob', 'L');
 
       expect(restoreSpy).toHaveBeenCalledWith(
         expect.anything(),

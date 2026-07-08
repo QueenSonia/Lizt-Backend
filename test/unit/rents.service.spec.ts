@@ -27,6 +27,11 @@ describe('RentsService', () => {
   let rentIncreaseRepository: MockRepository;
   let utilService: Partial<UtilService>;
 
+  // Landlord scope: services now receive the requester's managed-landlord
+  // Account.id set and assert the entity's property.owner_id is in scope.
+  const OWNER_ID = 'owner-123';
+  const SCOPE = [OWNER_ID];
+
   const mockRent = {
     id: 'rent-123',
     tenant_id: 'tenant-123',
@@ -127,7 +132,7 @@ describe('RentsService', () => {
         totalCount,
       ]);
 
-      const result = await service.getAllRents({ page: 1, size: 10 });
+      const result = await service.getAllRents({ page: 1, size: 10 }, SCOPE);
 
       expect(result.rents).toEqual(mockRents);
       expect(result.pagination).toEqual({
@@ -142,7 +147,7 @@ describe('RentsService', () => {
     it('should use default pagination values', async () => {
       (rentRepository.findAndCount as jest.Mock).mockResolvedValue([[], 0]);
 
-      await service.getAllRents({});
+      await service.getAllRents({}, SCOPE);
 
       expect(rentRepository.findAndCount).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -151,6 +156,14 @@ describe('RentsService', () => {
         }),
       );
     });
+
+    it('should return empty page without querying when requester manages no landlords', async () => {
+      const result = await service.getAllRents({ page: 1, size: 10 }, []);
+
+      expect(result.rents).toEqual([]);
+      expect(result.pagination.totalRows).toBe(0);
+      expect(rentRepository.findAndCount).not.toHaveBeenCalled();
+    });
   });
 
   describe('getRentByTenantId', () => {
@@ -158,14 +171,18 @@ describe('RentsService', () => {
       const mockRentWithRelations = {
         ...mockRent,
         tenant: { id: 'tenant-123', email: 'tenant@example.com' },
-        property: { id: 'property-123', name: 'Test Property' },
+        property: {
+          id: 'property-123',
+          name: 'Test Property',
+          owner_id: OWNER_ID,
+        },
       };
 
       (rentRepository.findOne as jest.Mock).mockResolvedValue(
         mockRentWithRelations,
       );
 
-      const result = await service.getRentByTenantId('tenant-123');
+      const result = await service.getRentByTenantId('tenant-123', SCOPE);
 
       expect(result).toEqual(mockRentWithRelations);
       expect(rentRepository.findOne).toHaveBeenCalledWith({
@@ -177,12 +194,12 @@ describe('RentsService', () => {
     it('should throw NotFoundException when tenant has no rent', async () => {
       (rentRepository.findOne as jest.Mock).mockResolvedValue(null);
 
-      await expect(service.getRentByTenantId('tenant-123')).rejects.toThrow(
-        HttpException,
-      );
-      await expect(service.getRentByTenantId('tenant-123')).rejects.toThrow(
-        'Tenant has never paid rent',
-      );
+      await expect(
+        service.getRentByTenantId('tenant-123', SCOPE),
+      ).rejects.toThrow(HttpException);
+      await expect(
+        service.getRentByTenantId('tenant-123', SCOPE),
+      ).rejects.toThrow('Tenant has never paid rent');
     });
   });
 
@@ -195,10 +212,10 @@ describe('RentsService', () => {
         1,
       ]);
 
-      const result = await service.getDueRentsWithinSevenDays({
-        page: 1,
-        size: 10,
-      });
+      const result = await service.getDueRentsWithinSevenDays(
+        { page: 1, size: 10 },
+        SCOPE,
+      );
 
       expect(result.rents).toEqual(mockDueRents);
       expect(rentRepository.findAndCount).toHaveBeenCalledWith(
@@ -221,7 +238,10 @@ describe('RentsService', () => {
         1,
       ]);
 
-      const result = await service.getOverdueRents({ page: 1, size: 10 });
+      const result = await service.getOverdueRents(
+        { page: 1, size: 10 },
+        SCOPE,
+      );
 
       expect(result.rents).toEqual(mockOverdueRents);
       expect(result.pagination.totalRows).toBe(1);
@@ -241,6 +261,7 @@ describe('RentsService', () => {
           id: 'property-123',
           name: 'Test Property',
           rental_price: 50000,
+          owner_id: OWNER_ID,
         },
       };
 
@@ -248,7 +269,7 @@ describe('RentsService', () => {
         mockRentWithDetails,
       );
 
-      const result = await service.sendRentReminder('rent-123');
+      const result = await service.sendRentReminder('rent-123', SCOPE);
 
       expect(result.message).toBe('Reminder sent successfully');
       expect(utilService.sendEmail).toHaveBeenCalledWith(
@@ -261,12 +282,12 @@ describe('RentsService', () => {
     it('should throw NotFoundException when rent not found', async () => {
       (rentRepository.findOne as jest.Mock).mockResolvedValue(null);
 
-      await expect(service.sendRentReminder('invalid-id')).rejects.toThrow(
-        HttpException,
-      );
-      await expect(service.sendRentReminder('invalid-id')).rejects.toThrow(
-        'Rent not found',
-      );
+      await expect(
+        service.sendRentReminder('invalid-id', SCOPE),
+      ).rejects.toThrow(HttpException);
+      await expect(
+        service.sendRentReminder('invalid-id', SCOPE),
+      ).rejects.toThrow('Rent not found');
     });
   });
 
@@ -275,14 +296,14 @@ describe('RentsService', () => {
       const mockRentWithRelations = {
         ...mockRent,
         tenant: { id: 'tenant-123' },
-        property: { id: 'property-123' },
+        property: { id: 'property-123', owner_id: OWNER_ID },
       };
 
       (rentRepository.findOne as jest.Mock).mockResolvedValue(
         mockRentWithRelations,
       );
 
-      const result = await service.getRentById('rent-123');
+      const result = await service.getRentById('rent-123', SCOPE);
 
       expect(result).toEqual(mockRentWithRelations);
       expect(rentRepository.findOne).toHaveBeenCalledWith({
@@ -294,7 +315,7 @@ describe('RentsService', () => {
     it('should throw NotFoundException when rent not found', async () => {
       (rentRepository.findOne as jest.Mock).mockResolvedValue(null);
 
-      await expect(service.getRentById('invalid-id')).rejects.toThrow(
+      await expect(service.getRentById('invalid-id', SCOPE)).rejects.toThrow(
         HttpException,
       );
     });
@@ -303,22 +324,43 @@ describe('RentsService', () => {
   describe('updateRentById', () => {
     it('should update rent successfully', async () => {
       const updateData = { rental_price: 60000 };
+      (rentRepository.findOne as jest.Mock).mockResolvedValue({
+        ...mockRent,
+        property: { id: 'property-123', owner_id: OWNER_ID },
+      });
       (rentRepository.update as jest.Mock).mockResolvedValue({ affected: 1 });
 
-      await service.updateRentById('rent-123', updateData);
+      await service.updateRentById('rent-123', updateData, SCOPE);
 
+      expect(rentRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 'rent-123' },
+        relations: ['property'],
+      });
       expect(rentRepository.update).toHaveBeenCalledWith(
         'rent-123',
         updateData,
       );
     });
+
+    it('should throw when rent does not exist', async () => {
+      (rentRepository.findOne as jest.Mock).mockResolvedValue(null);
+
+      await expect(
+        service.updateRentById('rent-123', { rental_price: 60000 }, SCOPE),
+      ).rejects.toThrow('Rent not found');
+      expect(rentRepository.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('deleteRentById', () => {
     it('should delete rent successfully', async () => {
+      (rentRepository.findOne as jest.Mock).mockResolvedValue({
+        ...mockRent,
+        property: { id: 'property-123', owner_id: OWNER_ID },
+      });
       (rentRepository.delete as jest.Mock).mockResolvedValue({ affected: 1 });
 
-      await service.deleteRentById('rent-123');
+      await service.deleteRentById('rent-123', SCOPE);
 
       expect(rentRepository.delete).toHaveBeenCalledWith('rent-123');
     });
@@ -349,7 +391,7 @@ describe('RentsService', () => {
         affected: 1,
       });
 
-      await service.saveOrUpdateRentIncrease(rentIncreaseDto, 'user-123');
+      await service.saveOrUpdateRentIncrease(rentIncreaseDto, ['user-123']);
 
       expect(propertyRepository.update).toHaveBeenCalledWith('property-123', {
         rental_price: 60000,
@@ -385,7 +427,7 @@ describe('RentsService', () => {
         affected: 1,
       });
 
-      await service.saveOrUpdateRentIncrease(rentIncreaseDto, 'user-123');
+      await service.saveOrUpdateRentIncrease(rentIncreaseDto, ['user-123']);
 
       expect(rentIncreaseRepository.update).toHaveBeenCalledWith(
         'increase-123',
@@ -396,15 +438,30 @@ describe('RentsService', () => {
       );
     });
 
-    it('should throw error if user does not own property', async () => {
+    it('should throw when the property is not found', async () => {
       (propertyRepository.findOne as jest.Mock).mockResolvedValue(null);
 
       await expect(
-        service.saveOrUpdateRentIncrease(rentIncreaseDto, 'wrong-user'),
+        service.saveOrUpdateRentIncrease(rentIncreaseDto, ['wrong-user']),
       ).rejects.toThrow(HttpException);
       await expect(
-        service.saveOrUpdateRentIncrease(rentIncreaseDto, 'wrong-user'),
-      ).rejects.toThrow('You do not own this Property');
+        service.saveOrUpdateRentIncrease(rentIncreaseDto, ['wrong-user']),
+      ).rejects.toThrow('Property not found');
+    });
+
+    it('should throw when the property owner is outside the managed scope', async () => {
+      (propertyRepository.findOne as jest.Mock).mockResolvedValue({
+        id: 'property-123',
+        owner_id: 'user-123',
+      });
+
+      await expect(
+        service.saveOrUpdateRentIncrease(rentIncreaseDto, ['wrong-user']),
+      ).rejects.toThrow(
+        'You do not have permission to act on behalf of this landlord.',
+      );
+      expect(propertyRepository.update).not.toHaveBeenCalled();
+      expect(rentIncreaseRepository.save).not.toHaveBeenCalled();
     });
   });
 

@@ -13,6 +13,8 @@ import {
 } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
 import { TemplateSenderService } from './template-sender';
 import { UtilService } from 'src/utils/utility-service';
+import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 interface MrChatMessageCreatedEvent {
   message: ChatMessage;
@@ -59,6 +61,7 @@ export class MrChatNotificationService {
     private readonly templateSender: TemplateSenderService,
     private readonly utilService: UtilService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly notificationRecipients: NotificationRecipientsService,
   ) {}
 
   @OnEvent('mr-chat.message.created')
@@ -119,8 +122,8 @@ export class MrChatNotificationService {
 
     const propertyOrArea =
       mr.scope === MaintenanceRequestScopeEnum.COMMON_AREA
-        ? mr.common_area?.name ?? mr.property_name ?? 'Common area'
-        : mr.property?.name ?? mr.property_name ?? 'Property';
+        ? (mr.common_area?.name ?? mr.property_name ?? 'Common area')
+        : (mr.property?.name ?? mr.property_name ?? 'Property');
 
     for (const plan of recipients) {
       // 1. In-app toast — fires for every recipient. The frontend dedupes
@@ -168,11 +171,12 @@ export class MrChatNotificationService {
     }
   }
 
-  // Recipient set: landlord + assigned FM, minus the author. The thread is
-  // private to those two for write access — no other team FMs can post
-  // (see ChatService.resolveWriteRole), so there are no other recipients to
-  // fan out to. The author is excluded so they don't get a toast or
-  // WhatsApp echo of their own message.
+  // Recipient set: owner-side recipients (the managing admin — and, once
+  // subscribed, the landlord) + assigned FM, minus the author. The thread is
+  // private to the owner side + assigned FM for write access — no other team
+  // FMs can post (see ChatService.resolveWriteRole), so there are no other
+  // recipients to fan out to. The author is excluded so they don't get a
+  // toast or WhatsApp echo of their own message.
   private async resolveRecipients(
     mr: MaintenanceRequest,
     payload: MrChatMessageCreatedEvent,
@@ -180,10 +184,20 @@ export class MrChatNotificationService {
     const byId = new Map<string, RecipientPlan>();
 
     const landlordId =
-      payload.landlord_account_id ?? (await this.resolveLandlordId(mr));
-    if (landlordId && landlordId !== payload.author_account_id) {
-      const account = await this.loadAccount(landlordId);
-      if (account) byId.set(landlordId, { account, reason: 'landlord' });
+      payload.landlord_account_id ?? this.resolveLandlordId(mr);
+    if (landlordId) {
+      const ownerSide = await this.notificationRecipients.resolveRecipients(
+        landlordId,
+        NotificationCategory.MAINTENANCE_CHAT,
+      );
+      for (const recipient of ownerSide) {
+        if (recipient.accountId === payload.author_account_id) continue;
+        if (byId.has(recipient.accountId)) continue;
+        const account = await this.loadAccount(recipient.accountId);
+        if (account) {
+          byId.set(recipient.accountId, { account, reason: 'landlord' });
+        }
+      }
     }
 
     if (mr.assigned_to) {
@@ -238,10 +252,7 @@ export class MrChatNotificationService {
     if (account) {
       const profile = account.profile_name?.trim();
       if (profile) return profile;
-      const composed = [
-        account.user?.first_name,
-        account.user?.last_name,
-      ]
+      const composed = [account.user?.first_name, account.user?.last_name]
         .filter(Boolean)
         .join(' ')
         .trim();

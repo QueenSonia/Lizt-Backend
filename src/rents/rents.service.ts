@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, LessThanOrEqual, Repository } from 'typeorm';
+import { Between, In, LessThanOrEqual, Repository } from 'typeorm';
 import {
   CreateRentDto,
   RentFilter,
@@ -21,6 +21,7 @@ import {
   TenantStatusEnum,
 } from 'src/properties/dto/create-property.dto';
 import { PropertyTenant } from 'src/properties/entities/property-tenants.entity';
+import { assertLandlordInScope } from 'src/common/scope/scope.util';
 
 @Injectable()
 export class RentsService {
@@ -42,7 +43,11 @@ export class RentsService {
     return this.rentRepository.save(data);
   }
 
-  async getAllRents(queryParams: RentFilter) {
+  async getAllRents(
+    queryParams: RentFilter,
+    ownerIds: string | string[] = [],
+  ) {
+    const ids = Array.isArray(ownerIds) ? ownerIds : ownerIds ? [ownerIds] : [];
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -50,7 +55,25 @@ export class RentsService {
       ? Number(queryParams.size)
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
-    const query = await buildRentFilter(queryParams);
+
+    if (ids.length === 0) {
+      return {
+        rents: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
+
+    const query: Record<string, any> = await buildRentFilter(queryParams);
+    // Always scope to the managed landlord set — a client-supplied owner_id
+    // must never widen the result beyond what this requester manages.
+    query.property = { ...(query.property || {}), owner_id: In(ids) };
+
     const [rents, count] = await this.rentRepository.findAndCount({
       where: query,
       skip,
@@ -71,7 +94,7 @@ export class RentsService {
     };
   }
 
-  async getRentByTenantId(tenant_id: string, userId: string) {
+  async getRentByTenantId(tenant_id: string, managedLandlordIds: string[]) {
     const rent = await this.rentRepository.findOne({
       where: { tenant_id },
       relations: ['tenant', 'property'],
@@ -82,17 +105,16 @@ export class RentsService {
         HttpStatus.NOT_FOUND,
       );
     }
-    // Allow if user is the tenant OR the landlord (owner of the property)
-    if (rent.tenant_id !== userId && rent.property.owner_id !== userId) {
-      throw new HttpException(
-        'You do not have permission to view this rent',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    // The requester must manage the landlord that owns this rent's property.
+    assertLandlordInScope(managedLandlordIds, rent.property.owner_id);
     return rent;
   }
 
-  async getDueRentsWithinSevenDays(queryParams: RentFilter) {
+  async getDueRentsWithinSevenDays(
+    queryParams: RentFilter,
+    ownerIds: string | string[] = [],
+  ) {
+    const ids = Array.isArray(ownerIds) ? ownerIds : ownerIds ? [ownerIds] : [];
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -100,6 +122,19 @@ export class RentsService {
       ? Number(queryParams.size)
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
+
+    if (ids.length === 0) {
+      return {
+        rents: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
 
     const query = await buildRentFilter(queryParams);
     const startDate = DateService.getStartOfTheDay(new Date());
@@ -110,6 +145,7 @@ export class RentsService {
     const [rents, count] = await this.rentRepository.findAndCount({
       where: {
         ...query,
+        property: { owner_id: In(ids) },
         expiry_date: Between(startDate, endDate),
         rent_status: RentStatusEnum.ACTIVE,
       },
@@ -132,7 +168,11 @@ export class RentsService {
     };
   }
 
-  async getOverdueRents(queryParams: RentFilter) {
+  async getOverdueRents(
+    queryParams: RentFilter,
+    ownerIds: string | string[] = [],
+  ) {
+    const ids = Array.isArray(ownerIds) ? ownerIds : ownerIds ? [ownerIds] : [];
     const page = queryParams?.page
       ? Number(queryParams?.page)
       : config.DEFAULT_PAGE_NO;
@@ -141,12 +181,26 @@ export class RentsService {
       : config.DEFAULT_PER_PAGE;
     const skip = (page - 1) * size;
 
+    if (ids.length === 0) {
+      return {
+        rents: [],
+        pagination: {
+          totalRows: 0,
+          perPage: size,
+          currentPage: page,
+          totalPages: 0,
+          hasNextPage: false,
+        },
+      };
+    }
+
     const query = await buildRentFilter(queryParams);
     const currentDate = new Date();
 
     const [rents, count] = await this.rentRepository.findAndCount({
       where: {
         ...query,
+        property: { owner_id: In(ids) },
         expiry_date: LessThanOrEqual(currentDate),
         rent_status: RentStatusEnum.ACTIVE,
       },
@@ -169,7 +223,7 @@ export class RentsService {
     };
   }
 
-  async sendRentReminder(id: string, userId: string) {
+  async sendRentReminder(id: string, managedLandlordIds: string[]) {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['tenant', 'tenant.user', 'property'],
@@ -179,12 +233,7 @@ export class RentsService {
       throw new HttpException('Rent not found', HttpStatus.NOT_FOUND);
     }
 
-    if (rent.property.owner_id !== userId) {
-      throw new HttpException(
-        'You do not have permission to send reminders for this rent',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, rent.property.owner_id);
 
     // Calculate total amount including service charge
     const totalAmount =
@@ -206,7 +255,7 @@ export class RentsService {
     return { message: 'Reminder sent successfully' };
   }
 
-  async getRentById(id: string, userId: string) {
+  async getRentById(id: string, managedLandlordIds: string[]) {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['tenant', 'property'],
@@ -214,17 +263,11 @@ export class RentsService {
     if (!rent?.id) {
       throw new HttpException(`Rent not found`, HttpStatus.NOT_FOUND);
     }
-    // Allow if user is the tenant OR the landlord
-    if (rent.tenant_id !== userId && rent.property.owner_id !== userId) {
-      throw new HttpException(
-        'You do not have permission to view this rent',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, rent.property.owner_id);
     return rent;
   }
 
-  async updateRentById(id: string, data: any, userId: string) {
+  async updateRentById(id: string, data: any, managedLandlordIds: string[]) {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['property'],
@@ -232,16 +275,11 @@ export class RentsService {
     if (!rent) {
       throw new HttpException('Rent not found', HttpStatus.NOT_FOUND);
     }
-    if (rent.property.owner_id !== userId) {
-      throw new HttpException(
-        'You do not have permission to update this rent',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, rent.property.owner_id);
     return this.rentRepository.update(id, data);
   }
 
-  async deleteRentById(id: string, userId: string) {
+  async deleteRentById(id: string, managedLandlordIds: string[]) {
     const rent = await this.rentRepository.findOne({
       where: { id },
       relations: ['property'],
@@ -249,25 +287,21 @@ export class RentsService {
     if (!rent) {
       throw new HttpException('Rent not found', HttpStatus.NOT_FOUND);
     }
-    if (rent.property.owner_id !== userId) {
-      throw new HttpException(
-        'You do not have permission to delete this rent',
-        HttpStatus.FORBIDDEN,
-      );
-    }
+    assertLandlordInScope(managedLandlordIds, rent.property.owner_id);
     return this.rentRepository.delete(id);
   }
 
-  async saveOrUpdateRentIncrease(data: CreateRentIncreaseDto, userId: string) {
+  async saveOrUpdateRentIncrease(
+    data: CreateRentIncreaseDto,
+    managedLandlordIds: string[],
+  ) {
     const property = await this.propertyRepository.findOne({
-      where: { id: data.property_id, owner_id: userId },
+      where: { id: data.property_id },
     });
     if (!property) {
-      throw new HttpException(
-        'You do not own this Property',
-        HttpStatus.NOT_FOUND,
-      );
+      throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
     }
+    assertLandlordInScope(managedLandlordIds, property.owner_id);
 
     const existingRentIncrease = await this.rentIncreaseRepository.findOne({
       where: { property_id: data.property_id },

@@ -30,6 +30,10 @@ import { TenantBalancesService } from '../../src/tenant-balances/tenant-balances
 import { WhatsAppNotificationLogService } from '../../src/whatsapp-bot/whatsapp-notification-log.service';
 import { UtilService } from '../../src/utils/utility-service';
 import { PaymentPlanRequestsService } from '../../src/payment-plans/payment-plan-requests.service';
+import { RenewalChargeService } from '../../src/renewal-letters/renewal-charge.service';
+import { ManagementScopeService } from '../../src/common/scope/management-scope.service';
+import { NotificationRecipientsService } from '../../src/common/notify/notification-recipients.service';
+import { AdHocInvoicesService } from '../../src/ad-hoc-invoices/ad-hoc-invoices.service';
 
 /**
  * Cover for the ad-hoc-invoice (Type B) settlement path:
@@ -73,6 +77,19 @@ describe('PaymentPlansService — ad-hoc settlement', () => {
         { provide: WhatsAppNotificationLogService, useValue: { cancelPendingByReferenceIds: jest.fn() } },
         { provide: UtilService, useValue: {} },
         { provide: PaymentPlanRequestsService, useValue: { markApproved: jest.fn() } },
+        { provide: RenewalChargeService, useValue: {} },
+        {
+          provide: ManagementScopeService,
+          useValue: { managesLandlord: jest.fn().mockResolvedValue(false) },
+        },
+        {
+          provide: NotificationRecipientsService,
+          useValue: { resolveRecipients: jest.fn().mockResolvedValue([]) },
+        },
+        {
+          provide: AdHocInvoicesService,
+          useValue: { sendInvoiceLinkNotification: jest.fn() },
+        },
       ],
     }).compile();
 

@@ -12,6 +12,7 @@ import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
+import { RolesEnum } from 'src/base.entity';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SkipAuth } from '../auth/auth.decorator';
 import { Account } from '../users/entities/account.entity';
@@ -72,7 +73,7 @@ export class ReceiptsController {
    * Requirements: 7.1
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   @Get('by-offer/:offerLetterId')
   async findByOfferLetterId(
     @CurrentUser() user: Account,
@@ -94,7 +95,7 @@ export class ReceiptsController {
    * Requirements: 7.2
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   @Get('by-property/:propertyId')
   async findByPropertyId(
     @CurrentUser() user: Account,
@@ -116,7 +117,7 @@ export class ReceiptsController {
    * Requirements: 7.3
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   @Get(':id')
   async findById(@CurrentUser() user: Account, @Param('id') id: string) {
     return this.receiptsService.findById(id, user.id);
@@ -128,7 +129,7 @@ export class ReceiptsController {
    * Requirements: 7.4, 7.5
    */
   @UseGuards(JwtAuthGuard, RoleGuard)
-  @Roles('landlord', 'admin')
+  @Roles(RolesEnum.ADMIN)
   @Get(':id/download')
   async downloadPDF(
     @CurrentUser() user: Account,

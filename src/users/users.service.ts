@@ -14,11 +14,13 @@ import {
   CreateAdminDto,
   CreateCustomerRepDto,
   CreateLandlordDto,
+  CreateManagedLandlordDto,
   CreateTenantDto,
   CreateTenantKycDto,
   CreateUserDto,
   IUser,
   LoginDto,
+  UpdateManagedLandlordDto,
   UserFilter,
 } from './dto/create-user.dto';
 import {
@@ -32,6 +34,7 @@ import { Users } from './entities/user.entity';
 import {
   ArrayContains,
   DataSource,
+  In,
   Not,
   QueryRunner,
   Repository,
@@ -69,7 +72,7 @@ import { CreateKycDto } from './dto/create-kyc.dto';
 import { UpdateKycDto } from './dto/update-kyc.dto';
 import bcrypt from 'bcryptjs/umd/types';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Account } from './entities/account.entity';
+import { Account, LandlordType } from './entities/account.entity';
 import { AnyAaaaRecord } from 'node:dns';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Team } from './entities/team.entity';
@@ -80,7 +83,10 @@ import { Waitlist } from './entities/waitlist.entity';
 import { TenantDetailDto } from 'src/users/dto/tenant-detail.dto';
 import { time } from 'node:console';
 import { TeamMemberDto } from 'src/users/dto/team-member.dto';
-import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
+import {
+  KYCApplication,
+  ApplicationStatus,
+} from 'src/kyc-links/entities/kyc-application.entity';
 import { AccountCacheService } from 'src/auth/account-cache.service';
 import { TenantManagementService } from './tenant-management';
 import { TeamService, TeamMemberInput } from './team';
@@ -756,15 +762,19 @@ export class UsersService {
     // Clear rate limit on successful login
     await this.cache.delete(rateLimitKey);
 
-    // Filter to roles the multi-role sign-in supports today (landlord + FM only).
+    // Only admins (property managers) and facility managers may access the
+    // dashboard. Landlords no longer sign in — their property manager operates
+    // on their behalf — and tenants use WhatsApp, not the dashboard.
     const allowedRoles = (account.roles ?? []).filter(
-      (r) =>
-        r === RolesEnum.LANDLORD || r === RolesEnum.FACILITY_MANAGER,
+      (r) => r === RolesEnum.ADMIN || r === RolesEnum.FACILITY_MANAGER,
     );
 
     if (allowedRoles.length === 0) {
+      const isLandlord = (account.roles ?? []).includes(RolesEnum.LANDLORD);
       throw new ForbiddenException(
-        'This account does not have access to a sign-in surface yet.',
+        isLandlord
+          ? 'Landlord accounts no longer sign in here — your property manager now manages your properties on your behalf.'
+          : 'This account does not have access to the dashboard.',
       );
     }
 
@@ -1092,9 +1102,9 @@ export class UsersService {
    * Get tenants of a specific admin/landlord
    * Delegates to TenantManagementService
    */
-  async getTenantsOfAnAdmin(creator_id: string, queryParams: UserFilter) {
-    return this.tenantManagementService.getTenantsOfAnAdmin(
-      creator_id,
+  async getManagedTenants(landlordIds: string[], queryParams: UserFilter) {
+    return this.tenantManagementService.getManagedTenants(
+      landlordIds,
       queryParams,
     );
   }
@@ -1103,18 +1113,37 @@ export class UsersService {
    * Get a single tenant of an admin with full details
    * Delegates to TenantManagementService
    */
-  async getSingleTenantOfAnAdmin(
-    tenantId: string,
-    adminId: string,
-  ): Promise<TenantDetailDto> {
-    return this.tenantManagementService.getSingleTenantOfAnAdmin(
+  async getManagedTenant(tenantId: string, landlordIds: string[]) {
+    return this.tenantManagementService.getManagedTenant(
       tenantId,
-      adminId,
+      landlordIds,
     );
   }
 
-  async getTenantBalance(tenantId: string, adminId: string) {
-    return this.tenantManagementService.getTenantBalance(tenantId, adminId);
+  async getTenantBalance(tenantId: string, landlordIds: string[]) {
+    return this.tenantManagementService.getTenantBalance(
+      tenantId,
+      landlordIds,
+    );
+  }
+
+  /**
+   * Flat active-tenancy list for the admin Tenancies screen.
+   * Delegates to TenantManagementService
+   */
+  async getManagedTenancies(landlordIds: string[]) {
+    return this.tenantManagementService.getManagedTenancies(landlordIds);
+  }
+
+  /**
+   * All invoices + payment plans for one active tenancy (admin Invoices
+   * page). Delegates to TenantManagementService.
+   */
+  async getTenancyInvoices(propertyTenantId: string, landlordIds: string[]) {
+    return this.tenantManagementService.getTenancyInvoices(
+      propertyTenantId,
+      landlordIds,
+    );
   }
 
   async uploadLogos(
@@ -1653,6 +1682,593 @@ export class UsersService {
         accounts: { roles: ArrayContains([RolesEnum.LANDLORD]) },
       },
       relations: ['accounts'],
+    });
+  }
+
+  /**
+   * Property-manager (admin) creates a MANAGED landlord — login-disabled (no
+   * password), parented to the admin via `creator_id`. The landlord never signs
+   * in; the admin operates on their behalf and all tenant-facing docs carry the
+   * Property Kraft brand.
+   *
+   * Accounts can be entangled (a person may already be a tenant/FM) and
+   * email/phone are unique — so we find-or-append the LANDLORD role to an
+   * existing identity instead of failing on the unique indexes. Mirrors the
+   * reconciliation in createLandlord / assignCollaboratorToTeam.
+   */
+  async createManagedLandlord(
+    adminId: string,
+    data: CreateManagedLandlordDto,
+  ): Promise<Account> {
+    const landlordAccount = await this.dataSource.transaction(
+      async (manager) => {
+      const admin = await manager.getRepository(Account).findOne({
+        where: { id: adminId },
+        select: { id: true, roles: true },
+      });
+      if (!admin?.roles?.includes(RolesEnum.ADMIN)) {
+        throw new ForbiddenException('Only administrators can add landlords');
+      }
+
+      const email = (data.email ?? '').trim().toLowerCase();
+      const phone = data.phone_number; // normalized by the DTO transformer
+      const isCorporate = data.landlord_type === LandlordType.CORPORATE;
+      const firstName = (data.first_name ?? '').trim();
+      const lastName = (data.last_name ?? '').trim();
+      const businessName = (data.business_name ?? '').trim();
+
+      if (isCorporate && !businessName) {
+        throw new BadRequestException(
+          'A business name is required for corporate landlords',
+        );
+      }
+      if (!isCorporate && !firstName) {
+        throw new BadRequestException(
+          "An individual landlord's first name is required",
+        );
+      }
+
+      // Display name: corporate → business name; individual → first + last.
+      const profileName = isCorporate
+        ? businessName
+        : `${firstName} ${lastName}`.trim();
+      // users.first_name is NOT NULL — a corporate landlord with no contact name
+      // falls back to the business name.
+      const userFirstName = firstName || businessName;
+
+      // A "new" landlord may already exist (tenant/FM). Look up by email, then
+      // by phone via the linked user.
+      let account = await manager.getRepository(Account).findOne({
+        where: { email },
+        relations: ['user'],
+      });
+      if (!account && phone) {
+        account = await manager.getRepository(Account).findOne({
+          where: { user: { phone_number: phone } },
+          relations: ['user'],
+        });
+      }
+
+      if (account?.roles?.includes(RolesEnum.LANDLORD)) {
+        throw new ConflictException(
+          'A landlord account with this email or phone already exists',
+        );
+      }
+      // Same phone bound to a different REAL email → real-data conflict.
+      if (
+        account &&
+        account.email !== email &&
+        !isPlaceholderEmail(account.email) &&
+        !isPlaceholderEmail(email)
+      ) {
+        throw new ConflictException(
+          `Phone ${phone} is already linked to a different account (${account.email}).`,
+        );
+      }
+
+      // Find-or-create the underlying user row (dedup by phone, then email).
+      let user =
+        account?.user ??
+        (await manager.getRepository(Users).findOne({
+          where: { phone_number: phone },
+        }));
+      if (!user) {
+        user = await manager
+          .getRepository(Users)
+          .findOne({ where: { email } });
+      }
+      if (!user) {
+        user = await manager.getRepository(Users).save({
+          email,
+          phone_number: phone,
+          first_name: userFirstName,
+          last_name: lastName,
+          is_verified: true,
+        });
+      }
+
+      if (account) {
+        // Existing identity → make them a managed landlord: append the role,
+        // parent to this admin, set the type. Their password (for any other
+        // role) is left untouched — landlords just get no dashboard.
+        if (
+          account.email !== email &&
+          isPlaceholderEmail(account.email) &&
+          !isPlaceholderEmail(email)
+        ) {
+          account.email = email; // self-heal placeholder → real email
+        }
+        account.roles = Array.from(
+          new Set([...(account.roles ?? []), RolesEnum.LANDLORD]),
+        );
+        account.creator_id = admin.id;
+        account.landlord_type = data.landlord_type;
+        // Corporate display name must be the business name; for an individual
+        // keep any existing display name, else set first+last.
+        account.profile_name = isCorporate
+          ? profileName
+          : account.profile_name ?? profileName;
+        account.is_verified = true;
+        await manager.getRepository(Account).save(account);
+        await this.accountCacheService.invalidate(account.id);
+        return account;
+      }
+
+      // Brand-new identity → login-disabled managed landlord (no password).
+      const landlord = manager.getRepository(Account).create({
+        user,
+        email,
+        roles: [RolesEnum.LANDLORD],
+        creator_id: admin.id,
+        landlord_type: data.landlord_type,
+        profile_name: profileName,
+        is_verified: true,
+      });
+      await manager.getRepository(Account).save(landlord);
+      return landlord;
+      },
+    );
+
+    // Live-feed event, emitted only after the transaction commits (mirrors the
+    // 'user.added' emit) so it never fires on rollback. Covers both entry
+    // points — the standalone Add Landlord modal and the inline "add new
+    // landlord" during property creation both funnel through here.
+    this.eventEmitter.emit('landlord.added', {
+      user_id: landlordAccount.id,
+      profile_name: landlordAccount.profile_name,
+      date: new Date().toISOString(),
+    });
+
+    return landlordAccount;
+  }
+
+  /**
+   * Clean, admin-scoped list of the landlords a property manager manages — one
+   * row per landlord ACCOUNT (id = the owner_id used across the system), with a
+   * resolved display name + type. Backs the landlord picker (act-on-behalf) and
+   * the Landlords management screen. Scoped by creator_id so it is multi-PM
+   * correct — unlike the legacy getLandlords(), which returns every landlord
+   * globally and is keyed on the User row.
+   */
+  async getManagedLandlords(adminId: string): Promise<
+    Array<{
+      id: string;
+      name: string;
+      landlord_type: LandlordType | null;
+      email: string;
+      phone: string | null;
+      first_name: string;
+      last_name: string;
+      properties: number;
+      active_tenancies: number;
+    }>
+  > {
+    const accounts = await this.accountRepository.find({
+      where: {
+        creator_id: adminId,
+        roles: ArrayContains([RolesEnum.LANDLORD]),
+      },
+      relations: ['user'],
+      order: { profile_name: 'ASC' },
+    });
+
+    const landlordIds = accounts.map((a) => a.id);
+
+    // Property + active-tenancy counts per landlord, computed in two grouped
+    // queries (not N+1). `properties.owner_id` is the landlord Account.id.
+    const [propertyCounts, tenancyCounts] = landlordIds.length
+      ? await Promise.all([
+          this.propertyTenantRepository.manager
+            .createQueryBuilder(Property, 'p')
+            .select('p.owner_id', 'ownerId')
+            .addSelect('COUNT(*)', 'count')
+            .where('p.owner_id IN (:...ids)', { ids: landlordIds })
+            .groupBy('p.owner_id')
+            .getRawMany<{ ownerId: string; count: string }>(),
+          this.propertyTenantRepository
+            .createQueryBuilder('pt')
+            .innerJoin('pt.property', 'p')
+            .select('p.owner_id', 'ownerId')
+            .addSelect('COUNT(*)', 'count')
+            .where('p.owner_id IN (:...ids)', { ids: landlordIds })
+            .andWhere('pt.status = :status', {
+              status: TenantStatusEnum.ACTIVE,
+            })
+            .groupBy('p.owner_id')
+            .getRawMany<{ ownerId: string; count: string }>(),
+        ])
+      : [[], []];
+
+    const propertyCountByOwner = new Map(
+      propertyCounts.map((r) => [r.ownerId, Number(r.count)]),
+    );
+    const tenancyCountByOwner = new Map(
+      tenancyCounts.map((r) => [r.ownerId, Number(r.count)]),
+    );
+
+    return accounts.map((a) => {
+      const first = a.user?.first_name ?? '';
+      const last = a.user?.last_name ?? '';
+      const name =
+        a.profile_name?.trim() || `${first} ${last}`.trim() || a.email;
+      return {
+        id: a.id,
+        name,
+        landlord_type: a.landlord_type ?? null,
+        email: a.email,
+        phone: a.user?.phone_number ?? null,
+        first_name: first,
+        last_name: last,
+        properties: propertyCountByOwner.get(a.id) ?? 0,
+        active_tenancies: tenancyCountByOwner.get(a.id) ?? 0,
+      };
+    });
+  }
+
+  /**
+   * Full detail aggregate for ONE managed landlord, for the admin's landlord
+   * detail page. Authorized here by the same rule as {@link getManagedLandlords}
+   * (the landlord's `creator_id` must be this admin) so a client-supplied
+   * landlordId can never reach another admin's landlord.
+   *
+   * Returns, in one payload:
+   *  - profile: name (+ corporate contact name), email, phone, and counts
+   *  - properties: EVERY property the landlord owns (all statuses); occupied
+   *    ones carry their active tenancy + rent details, vacant ones don't
+   *  - tenants: everyone who has ever been a tenant on those properties
+   *    (current + previous) plus KYC applicants who applied to them (an
+   *    applicant who is already a tenant is folded into the tenant entry)
+   */
+  async getManagedLandlordDetail(adminId: string, landlordId: string) {
+    const account = await this.accountRepository.findOne({
+      where: {
+        id: landlordId,
+        creator_id: adminId,
+        roles: ArrayContains([RolesEnum.LANDLORD]),
+      },
+      relations: ['user'],
+    });
+    if (!account) {
+      throw new NotFoundException(
+        'Landlord not found or not managed by you.',
+      );
+    }
+
+    const em = this.propertyTenantRepository.manager;
+    const first = account.user?.first_name ?? '';
+    const last = account.user?.last_name ?? '';
+    const contactName = `${first} ${last}`.trim();
+
+    // ── Properties (all statuses) with their active tenancy + rent ──────────
+    const properties = await em.find(Property, {
+      where: { owner_id: landlordId },
+      relations: ['rents', 'rents.tenant', 'rents.tenant.user'],
+      order: { created_at: 'DESC' },
+    });
+
+    const propertyPayload = properties.map((p) => {
+      const activeRent = (p.rents ?? []).find(
+        (r) => r.rent_status === RentStatusEnum.ACTIVE,
+      );
+      const tenantUser = activeRent?.tenant?.user;
+      const tenancy = activeRent
+        ? {
+            tenantId: activeRent.tenant_id,
+            tenantName:
+              `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+              activeRent.tenant?.profile_name ||
+              activeRent.tenant?.email ||
+              'Tenant',
+            tenantPhone: tenantUser?.phone_number ?? null,
+            rentAmount: activeRent.rental_price ?? null,
+            frequency: activeRent.payment_frequency ?? null,
+            serviceCharge: activeRent.service_charge ?? null,
+            startDate: activeRent.rent_start_date ?? null,
+            expiryDate: activeRent.expiry_date ?? null,
+          }
+        : null;
+
+      return {
+        id: p.id,
+        name: p.name,
+        location: p.location,
+        status: p.property_status,
+        isMarketingReady: p.is_marketing_ready,
+        rentalPrice: p.rental_price ?? null,
+        tenancy,
+      };
+    });
+
+    const propertyIds = properties.map((p) => p.id);
+
+    // ── Tenants ever on those properties (current + previous) ───────────────
+    const propertyTenants = propertyIds.length
+      ? await em.find(PropertyTenant, {
+          where: { property_id: In(propertyIds) },
+          relations: ['tenant', 'tenant.user', 'property'],
+          order: { created_at: 'DESC' },
+        })
+      : [];
+
+    // Collapse to one entry per tenant: current (any active row) wins over
+    // previous, and we surface the property that row belongs to.
+    const tenantsById = new Map<
+      string,
+      {
+        id: string;
+        kind: 'current' | 'previous';
+        name: string;
+        phone: string | null;
+        email: string | null;
+        propertyName: string | null;
+      }
+    >();
+    for (const pt of propertyTenants) {
+      const u = pt.tenant?.user;
+      const isActive = pt.status === TenantStatusEnum.ACTIVE;
+      const existing = tenantsById.get(pt.tenant_id);
+      // Skip if we already have a current row and this one isn't a better match.
+      if (existing && (existing.kind === 'current' || !isActive)) continue;
+      tenantsById.set(pt.tenant_id, {
+        id: pt.tenant_id,
+        kind: isActive ? 'current' : 'previous',
+        name:
+          `${u?.first_name ?? ''} ${u?.last_name ?? ''}`.trim() ||
+          pt.tenant?.profile_name ||
+          pt.tenant?.email ||
+          'Tenant',
+        phone: u?.phone_number ?? null,
+        email: pt.tenant?.email ?? u?.email ?? null,
+        propertyName: pt.property?.name ?? null,
+      });
+    }
+
+    // ── KYC applicants for those properties (excluding ones already tenants) ─
+    const applications = propertyIds.length
+      ? await this.kycApplicationRepository.find({
+          where: { property_id: In(propertyIds) },
+          relations: ['property'],
+          order: { created_at: 'DESC' },
+        })
+      : [];
+
+    const applicantPayload = applications
+      .filter((a) => !(a.tenant_id && tenantsById.has(a.tenant_id)))
+      .map((a) => ({
+        id: `app-${a.id}`,
+        kind: 'applicant' as const,
+        name: `${a.first_name ?? ''} ${a.last_name ?? ''}`.trim() || 'Applicant',
+        phone: a.phone_number ?? null,
+        email: a.email ?? null,
+        propertyName: a.property?.name ?? null,
+        status: a.status as ApplicationStatus,
+      }));
+
+    const currentTenants = [...tenantsById.values()].filter(
+      (t) => t.kind === 'current',
+    );
+    const previousTenants = [...tenantsById.values()].filter(
+      (t) => t.kind === 'previous',
+    );
+
+    return {
+      profile: {
+        id: account.id,
+        name:
+          account.profile_name?.trim() ||
+          contactName ||
+          account.email,
+        contactName:
+          account.landlord_type === LandlordType.CORPORATE
+            ? contactName || null
+            : null,
+        landlordType: account.landlord_type ?? null,
+        email: account.email,
+        phone: account.user?.phone_number ?? null,
+        propertiesCount: properties.length,
+        tenantsCount: tenantsById.size,
+      },
+      properties: propertyPayload,
+      tenants: [
+        ...currentTenants,
+        ...previousTenants,
+        ...applicantPayload,
+      ],
+    };
+  }
+
+  /**
+   * Edit a managed landlord's profile (type / name / business name / email /
+   * phone). Authorized by the same rule as {@link getManagedLandlordDetail} —
+   * the landlord's `creator_id` must be this admin — so a client-supplied
+   * landlordId can never reach another admin's landlord. Only the fields that
+   * are present in `data` change. Returns the refreshed managed-landlord row
+   * (same shape as {@link getManagedLandlords}).
+   */
+  async updateManagedLandlord(
+    adminId: string,
+    landlordId: string,
+    data: UpdateManagedLandlordDto,
+  ) {
+    await this.dataSource.transaction(async (manager) => {
+      const account = await manager.getRepository(Account).findOne({
+        where: {
+          id: landlordId,
+          creator_id: adminId,
+          roles: ArrayContains([RolesEnum.LANDLORD]),
+        },
+        relations: ['user'],
+      });
+      if (!account) {
+        throw new NotFoundException(
+          'Landlord not found or not managed by you.',
+        );
+      }
+
+      const nextType =
+        data.landlord_type ?? account.landlord_type ?? LandlordType.INDIVIDUAL;
+      const isCorporate = nextType === LandlordType.CORPORATE;
+
+      // Resolve each name piece, falling back to what's already stored when the
+      // caller left it out. For corporate the business name lives in
+      // profile_name; for individual the display name is first+last.
+      const firstName =
+        data.first_name !== undefined
+          ? data.first_name.trim()
+          : account.user?.first_name ?? '';
+      const lastName =
+        data.last_name !== undefined
+          ? data.last_name.trim()
+          : account.user?.last_name ?? '';
+      const businessName =
+        data.business_name !== undefined
+          ? data.business_name.trim()
+          : isCorporate
+            ? account.profile_name ?? ''
+            : '';
+
+      if (isCorporate && !businessName) {
+        throw new BadRequestException(
+          'A business name is required for corporate landlords',
+        );
+      }
+      if (!isCorporate && !firstName) {
+        throw new BadRequestException(
+          "An individual landlord's first name is required",
+        );
+      }
+
+      // ── Email (on the account) ──────────────────────────────────────────────
+      if (data.email !== undefined) {
+        const email = data.email.trim().toLowerCase();
+        if (email && email !== account.email) {
+          const clash = await manager
+            .getRepository(Account)
+            .findOne({ where: { email } });
+          if (clash && clash.id !== account.id) {
+            throw new ConflictException(
+              'Another account already uses this email address.',
+            );
+          }
+          account.email = email;
+        }
+      }
+
+      // ── Phone (on the shared user row) ──────────────────────────────────────
+      if (data.phone_number !== undefined && account.user) {
+        const phone = data.phone_number; // normalized (digits-only) by the DTO
+        if (phone && phone !== account.user.phone_number) {
+          const clash = await manager
+            .getRepository(Users)
+            .findOne({ where: { phone_number: phone } });
+          if (clash && clash.id !== account.user.id) {
+            throw new ConflictException(
+              `Phone ${phone} is already linked to a different account.`,
+            );
+          }
+          account.user.phone_number = phone;
+        }
+      }
+
+      // ── Names on the user row ───────────────────────────────────────────────
+      if (account.user) {
+        // users.first_name is NOT NULL — a corporate landlord with no contact
+        // name falls back to the business name.
+        account.user.first_name =
+          (isCorporate ? firstName || businessName : firstName) ||
+          account.user.first_name;
+        account.user.last_name = lastName;
+        await manager.getRepository(Users).save(account.user);
+      }
+
+      account.landlord_type = nextType;
+      account.profile_name = isCorporate
+        ? businessName
+        : `${firstName} ${lastName}`.trim();
+
+      await manager.getRepository(Account).save(account);
+      await this.accountCacheService.invalidate(account.id);
+    });
+
+    // Return the refreshed row so the client can update in place.
+    const rows = await this.getManagedLandlords(adminId);
+    return rows.find((r) => r.id === landlordId) ?? { id: landlordId };
+  }
+
+  /**
+   * Remove a managed landlord. Refuses while the landlord still owns properties
+   * (their Account.id is the `owner_id` referenced across properties / rents /
+   * tenancies) so we never orphan that data. When the landlord shares its
+   * identity with another role (tenant / FM), only the landlord side is
+   * detached (role + management link removed); a landlord-only account is
+   * soft-deleted. Scoped to this admin's landlords.
+   */
+  async deleteManagedLandlord(adminId: string, landlordId: string) {
+    return await this.dataSource.transaction(async (manager) => {
+      const account = await manager.getRepository(Account).findOne({
+        where: {
+          id: landlordId,
+          creator_id: adminId,
+          roles: ArrayContains([RolesEnum.LANDLORD]),
+        },
+      });
+      if (!account) {
+        throw new NotFoundException(
+          'Landlord not found or not managed by you.',
+        );
+      }
+
+      const propertyCount = await manager
+        .getRepository(Property)
+        .count({ where: { owner_id: landlordId } });
+      if (propertyCount > 0) {
+        throw new BadRequestException(
+          `This landlord still has ${propertyCount} propert${
+            propertyCount === 1 ? 'y' : 'ies'
+          }. Remove or reassign them before deleting the landlord.`,
+        );
+      }
+
+      const remainingRoles = (account.roles ?? []).filter(
+        (r) => r !== RolesEnum.LANDLORD,
+      );
+
+      if (remainingRoles.length > 0) {
+        // Shared identity — detach the landlord side, keep the account.
+        // creator_id / landlord_type are nullable columns typed as non-null on
+        // the entity, so the null-clear needs a cast.
+        await manager.getRepository(Account).update(account.id, {
+          roles: remainingRoles,
+          creator_id: null,
+          landlord_type: null,
+        } as unknown as Partial<Account>);
+      } else {
+        // Landlord-only account → soft-delete it.
+        await manager.getRepository(Account).softDelete(account.id);
+      }
+
+      await this.accountCacheService.invalidate(account.id);
+      return { message: 'Landlord removed successfully' };
     });
   }
 }

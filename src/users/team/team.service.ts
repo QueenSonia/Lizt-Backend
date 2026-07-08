@@ -9,7 +9,7 @@
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { RolesEnum } from 'src/base.entity';
 import { Account } from '../entities/account.entity';
@@ -22,6 +22,7 @@ import { UtilService } from 'src/utils/utility-service';
 import { WhatsappBotService } from 'src/whatsapp-bot/whatsapp-bot.service';
 import { AccountCacheService } from 'src/auth/account-cache.service';
 import { isPlaceholderEmail } from 'src/utils/placeholder-email';
+import { ManagementScopeService } from 'src/common/scope/management-scope.service';
 
 /**
  * Input type for creating a new team member
@@ -63,16 +64,20 @@ export class TeamService {
     @Inject(forwardRef(() => WhatsappBotService))
     private readonly whatsappBotService: WhatsappBotService,
     private readonly accountCacheService: AccountCacheService,
+    private readonly managementScopeService: ManagementScopeService,
   ) {}
 
   /**
-   * Validates that the requester has the LANDLORD role.
-   * Throws ForbiddenException if not a landlord.
+   * Validates that the requester may manage the property-manager team. After
+   * the property-manager transition the single team belongs to the ADMIN
+   * (Property Kraft) — `team.creatorId` is the admin's account id — so team
+   * management is an admin capability. Landlords no longer own teams or reach
+   * these endpoints (the login gate blocks them).
    * @param requester The account making the request
    */
-  private validateLandlordRole(requester: Account): void {
-    if (!requester.roles?.includes(RolesEnum.LANDLORD)) {
-      throw new ForbiddenException('Only landlords can manage teams');
+  private validateTeamManagerRole(requester: Account): void {
+    if (!requester.roles?.includes(RolesEnum.ADMIN)) {
+      throw new ForbiddenException('Only administrators can manage teams');
     }
   }
 
@@ -89,16 +94,18 @@ export class TeamService {
   ): Promise<TeamMember> {
     return await this.dataSource.transaction(async (manager) => {
       try {
-        // Ensure only LANDLORD can add to team — check roles[] array, since
-        // multi-role accounts may have a non-landlord value in singular `role`
-        // while still legitimately holding the landlord role in `roles[]`.
+        // Only an ADMIN (property manager) may add to a team. After the
+        // property-manager transition the single team belongs to the admin
+        // (Property Kraft) — `team.creatorId` is the admin's account id — and
+        // landlords no longer manage teams. Check roles[] (the sole role truth)
+        // rather than the singular session role, which carries the active role.
         const account = await manager
           .getRepository(Account)
           .findOne({ where: { id: userId } });
 
-        if (!account || !account.roles?.includes(RolesEnum.LANDLORD)) {
+        if (!account || !account.roles?.includes(RolesEnum.ADMIN)) {
           throw new HttpException(
-            'Only landlords can add to team',
+            'Only administrators can add to team',
             HttpStatus.FORBIDDEN,
           );
         }
@@ -292,20 +299,21 @@ export class TeamService {
         await manager.getRepository(TeamMember).save(newTeamMember);
 
         // 9. Send WhatsApp notification to the new team member.
-        // The FM templates' `team` variable is the landlord's display name
-        // (accounts.profile_name with a first/last-name fallback), NOT
-        // `team.name` — team.name already carries a " Team" suffix
-        // (see step 1), which would render as "X Team team" in the body.
-        const teamAdminForNotice = await manager
+        // The FM templates' `team` variable is the team owner's display name —
+        // the admin (Property Kraft) post-transition — resolved from
+        // accounts.profile_name with a first/last-name fallback, NOT
+        // `team.name`, which already carries a " Team" suffix (see step 1) and
+        // would render as "X Team team" in the body.
+        const teamOwnerForNotice = await manager
           .getRepository(Account)
           .findOne({
             where: { id: team.creatorId },
             relations: ['user'],
           });
-        const landlordDisplayName =
-          teamAdminForNotice?.profile_name?.trim() ||
-          `${teamAdminForNotice?.user?.first_name ?? ''} ${teamAdminForNotice?.user?.last_name ?? ''}`.trim() ||
-          'Your landlord';
+        const teamOwnerDisplayName =
+          teamOwnerForNotice?.profile_name?.trim() ||
+          `${teamOwnerForNotice?.user?.first_name ?? ''} ${teamOwnerForNotice?.user?.last_name ?? ''}`.trim() ||
+          'Your property manager';
 
         // When a Flow token was minted (new account or tenant→FM elevation),
         // send the Flow-based password-setup template. Otherwise (landlord
@@ -315,7 +323,7 @@ export class TeamService {
           await this.whatsappBotService.sendToFacilityManagerSetPasswordFlow({
             phone_number: normalizedPhoneNumber,
             name: this.utilService.toSentenceCase(teamMember.first_name),
-            team: landlordDisplayName,
+            team: teamOwnerDisplayName,
             role: 'Facility Manager',
             flow_token: flowTokenToSend,
           });
@@ -323,7 +331,7 @@ export class TeamService {
           await this.whatsappBotService.sendToFacilityManagerWithTemplate({
             phone_number: normalizedPhoneNumber,
             name: this.utilService.toSentenceCase(teamMember.first_name),
-            team: landlordDisplayName,
+            team: teamOwnerDisplayName,
             role: 'Facility Manager',
             temporary_password: undefined,
           });
@@ -358,14 +366,13 @@ export class TeamService {
       openRequestCount: number;
     }[]
   > {
-    // 1. Every team_member row for this user where role=FACILITY_MANAGER.
-    //    Pull team.creator (Account) and team.creator.user (Users) so we can
-    //    build the landlord summary directly from the row.
+    // 1. Every team_member row for this user where role=FACILITY_MANAGER. We
+    //    need the TeamMember ids (the `assigned_to` FK on maintenance_requests)
+    //    and each team's creatorId — which, after the re-parent, is the ADMIN
+    //    that manages the landlords, not a landlord directly.
     const memberships = await this.teamMemberRepository
       .createQueryBuilder('tm')
       .innerJoinAndSelect('tm.team', 'team')
-      .innerJoinAndSelect('team.creator', 'creator')
-      .innerJoinAndSelect('creator.user', 'creatorUser')
       .innerJoin('tm.account', 'fmAccount')
       .innerJoin('fmAccount.user', 'fmUser')
       .where('fmUser.id = :userId', { userId: requesterUserId })
@@ -376,56 +383,76 @@ export class TeamService {
       return [];
     }
 
-    const tmIds = memberships.map((m) => m.id);
+    const fmTeamMemberIds = memberships.map((m) => m.id);
+    const teamCreatorIds = memberships
+      .map((m) => m.team?.creatorId)
+      .filter((id): id is string => Boolean(id));
 
-    // 2. Count open SRs assigned to any of those TeamMember ids, keyed by
-    //    the FK so we can re-attach to the landlord.
-    const rawCounts = await this.dataSource
-      .createQueryBuilder()
-      .select('sr.assigned_to', 'assigned_to')
-      .addSelect('COUNT(*)::int', 'open_count')
-      .from('maintenance_requests', 'sr')
-      .where('sr.assigned_to IN (:...tmIds)', { tmIds })
-      .andWhere('sr.deleted_at IS NULL')
-      .andWhere("sr.status NOT IN ('resolved', 'closed')")
-      .groupBy('sr.assigned_to')
-      .getRawMany<{ assigned_to: string; open_count: number }>();
-
-    const openCountByTm = new Map<string, number>();
-    for (const row of rawCounts) {
-      openCountByTm.set(row.assigned_to, Number(row.open_count) || 0);
+    // 2. Expand the team creators to the landlord set this FM serves: an admin
+    //    creator → the landlords they manage; a legacy self-owned landlord team
+    //    → the landlord itself. Both topologies coexist during the migration.
+    const landlordIds =
+      await this.managementScopeService.resolveLandlordsForTeamCreators(
+        teamCreatorIds,
+      );
+    if (landlordIds.length === 0) {
+      return [];
     }
 
-    // 3. Reduce memberships to one row per landlord, summing the open counts
-    //    across all TeamMember rows belonging to that landlord (an FM rarely
-    //    has more than one TM row per team, but be defensive).
-    const byLandlord = new Map<
-      string,
-      { accountId: string; userId: string; displayName: string; openRequestCount: number }
-    >();
-    for (const m of memberships) {
-      const account = m.team?.creator;
-      const user = account?.user;
-      if (!account || !user) continue;
+    // 3. Load each landlord's account (+user) for the display name / userId the
+    //    consumers expect.
+    const landlordAccounts = await this.accountRepository.find({
+      where: { id: In(landlordIds) },
+      relations: ['user'],
+    });
+
+    // 4. Count open SRs assigned to this FM, grouped by the landlord that owns
+    //    the request's property or common area. After the re-parent the FM has
+    //    a single team_member row spanning many landlords, so we attribute by
+    //    owner_id (both owner columns hold Account.ids), NOT by team_member id.
+    const rawCounts = await this.dataSource
+      .createQueryBuilder()
+      .select('COALESCE(p.owner_id, ca.owner_id)', 'owner_id')
+      .addSelect('COUNT(*)::int', 'open_count')
+      .from('maintenance_requests', 'sr')
+      .leftJoin('properties', 'p', 'p.id = sr.property_id')
+      .leftJoin('common_areas', 'ca', 'ca.id = sr.common_area_id')
+      .where('sr.assigned_to IN (:...tmIds)', { tmIds: fmTeamMemberIds })
+      .andWhere('sr.deleted_at IS NULL')
+      .andWhere("sr.status NOT IN ('resolved', 'closed')")
+      .groupBy('COALESCE(p.owner_id, ca.owner_id)')
+      .getRawMany<{ owner_id: string | null; open_count: number }>();
+
+    const openCountByLandlord = new Map<string, number>();
+    for (const row of rawCounts) {
+      if (row.owner_id) {
+        openCountByLandlord.set(row.owner_id, Number(row.open_count) || 0);
+      }
+    }
+
+    // 5. One row per landlord, preserving the shape consumers expect.
+    const result: {
+      accountId: string;
+      userId: string;
+      displayName: string;
+      openRequestCount: number;
+    }[] = [];
+    for (const account of landlordAccounts) {
+      const user = account.user;
+      if (!user) continue;
       const displayName =
         account.profile_name?.trim() ||
         `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() ||
         'Landlord';
-      const prev = byLandlord.get(account.id);
-      const openForThisTm = openCountByTm.get(m.id) ?? 0;
-      if (prev) {
-        prev.openRequestCount += openForThisTm;
-      } else {
-        byLandlord.set(account.id, {
-          accountId: account.id,
-          userId: user.id,
-          displayName,
-          openRequestCount: openForThisTm,
-        });
-      }
+      result.push({
+        accountId: account.id,
+        userId: user.id,
+        displayName,
+        openRequestCount: openCountByLandlord.get(account.id) ?? 0,
+      });
     }
 
-    return Array.from(byLandlord.values());
+    return result;
   }
 
   /**
@@ -435,8 +462,8 @@ export class TeamService {
    * @returns Array of team member DTOs
    */
   async getTeamMembers(requester: Account): Promise<TeamMemberDto[]> {
-    // 1. Ensure requester is a LANDLORD
-    this.validateLandlordRole(requester);
+    // 1. Ensure requester may manage the team (admin)
+    this.validateTeamManagerRole(requester);
 
     // 2. Get or create team with requester as creator
     let team = await this.teamRepository.findOne({
@@ -490,8 +517,8 @@ export class TeamService {
     data: UpdateTeamMemberInput,
     requester: Account,
   ): Promise<{ success: boolean; message: string }> {
-    // 1. Ensure requester is a LANDLORD
-    this.validateLandlordRole(requester);
+    // 1. Ensure requester may manage the team (admin)
+    this.validateTeamManagerRole(requester);
 
     // 2. Find the team member
     const teamMember = await this.teamMemberRepository.findOne({
@@ -543,8 +570,8 @@ export class TeamService {
     id: string,
     requester: Account,
   ): Promise<{ success: boolean; message: string }> {
-    // 1. Ensure requester is a LANDLORD
-    this.validateLandlordRole(requester);
+    // 1. Ensure requester may manage the team (admin)
+    this.validateTeamManagerRole(requester);
 
     // 2. Find the team member
     const teamMember = await this.teamMemberRepository.findOne({

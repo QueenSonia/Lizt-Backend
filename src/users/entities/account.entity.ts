@@ -3,6 +3,7 @@ import {
   Column,
   Entity,
   Index,
+  JoinColumn,
   ManyToOne,
   OneToMany,
   OneToOne,
@@ -20,6 +21,16 @@ import { Notification } from 'src/notifications/entities/notification.entity';
 import { Team } from './team.entity';
 import { TeamMember } from './team-member.entity';
 import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
+
+/**
+ * Distinguishes a corporate landlord (whose `profile_name` holds the company
+ * name) from an individual (whose display name comes from first+last name).
+ * Only meaningful on accounts carrying the `landlord` role.
+ */
+export enum LandlordType {
+  CORPORATE = 'corporate',
+  INDIVIDUAL = 'individual',
+}
 
 @Entity('accounts')
 export class Account extends BaseEntity {
@@ -44,8 +55,19 @@ export class Account extends BaseEntity {
   })
   roles: RolesEnum[];
 
-  @Column({ nullable: true })
+  @Column({ type: 'uuid', nullable: true })
   creator_id: string;
+
+  // Self-relation to the managing admin (Property Kraft) that created this
+  // account — maps to the existing `creator_id` column. Read-only convenience
+  // for resolving e.g. branding through `account.creator.user`; writes still
+  // go through the `creator_id` scalar.
+  @ManyToOne(() => Account, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'creator_id' })
+  creator?: Account;
+
+  @Column({ type: 'enum', enum: LandlordType, nullable: true })
+  landlord_type: LandlordType;
 
   @Column({ nullable: false, type: 'uuid' })
   userId: string;

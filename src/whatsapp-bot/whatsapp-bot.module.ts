@@ -49,6 +49,8 @@ import { UnknownsAiService } from './unknowns-ai.service';
 import { ApplicantAiService } from './applicant-ai.service';
 import { TenantAiService } from './tenant-ai.service';
 import { NotificationModule } from 'src/notifications/notification.module';
+import { NotifyModule } from 'src/common/notify/notify.module';
+import { ScopeModule } from 'src/common/scope/scope.module';
 
 @Module({
   imports: [
@@ -80,6 +82,8 @@ import { NotificationModule } from 'src/notifications/notification.module';
     ChatModule,
     AiModule,
     forwardRef(() => NotificationModule),
+    NotifyModule,
+    ScopeModule,
   ],
   controllers: [WhatsappBotController],
   providers: [

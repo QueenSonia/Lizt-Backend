@@ -52,4 +52,6 @@
   APPLICANT_HANDOFF = 'Applicant Handoff',
   TENANT_HANDOFF = 'Tenant Handoff',
   LANDLORD_ADDED = 'Landlord Added',
+  MAINTENANCE_CONFIRMATION_REMINDER = 'Maintenance Confirmation Reminder',
+  MAINTENANCE_AUTO_CLOSED = 'Maintenance Auto Closed',
 }

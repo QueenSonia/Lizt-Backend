@@ -1720,6 +1720,50 @@ export class MaintenanceRequestsService {
   }
 
   /**
+   * Auto-close a unit-scoped RESOLVED request whose tenant never responded to
+   * the resolved-confirmation prompt after the capped number of reminders
+   * (see MaintenanceReminderService). Distinct from the common-area auto-close:
+   * here the tenant exists but stayed silent, so the outcome is EXPIRED (a
+   * no-response timeout), NOT CONFIRMED.
+   *
+   * Idempotent + cross-instance safe: the status flip is a single conditional
+   * UPDATE gated on the row still being RESOLVED. Both daily-cron instances can
+   * reach this at the same 8 AM tick; Postgres serialises the UPDATE so only
+   * one affects a row. The winner returns true and the caller then sends the
+   * tenant closure template + writes the live-feed row exactly once; the loser
+   * gets affected=0 and returns false.
+   *
+   * Sets `auto_closed` so the frontend can tag it, and marks the latest
+   * resolution attempt EXPIRED. No status-history row is written — the actor is
+   * the system with no users.id FK to satisfy the NOT-NULL changed_by_user_id,
+   * mirroring autoCloseResolvedCommonArea's best-effort skip. Returns true only
+   * when THIS call performed the close.
+   */
+  async autoCloseUnitForNoResponse(requestId: string): Promise<boolean> {
+    const result = await this.maintenanceRequestRepository
+      .createQueryBuilder()
+      .update(MaintenanceRequest)
+      .set({
+        status: MaintenanceRequestStatusEnum.CLOSED,
+        auto_closed: true,
+      })
+      .where('id = :id', { id: requestId })
+      .andWhere('status = :resolved', {
+        resolved: MaintenanceRequestStatusEnum.RESOLVED,
+      })
+      .execute();
+
+    if (!result.affected) return false;
+
+    await this.patchLatestAttemptOutcome(
+      requestId,
+      ResolutionAttemptOutcomeEnum.EXPIRED,
+    );
+
+    return true;
+  }
+
+  /**
    * Patches just the tenant_denial_reason on the latest attempt row — used
    * by the optional WhatsApp follow-up after a tenant deny / reopen. Does
    * NOT change outcome (the deny / reopen already set it). Verifies the

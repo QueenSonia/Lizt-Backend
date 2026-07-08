@@ -138,6 +138,10 @@ export class NotificationService {
         return 'Payment Transfer Rejected';
       case NotificationType.RENT_REMINDER_FAILED:
         return 'Rent Reminder Failed';
+      case NotificationType.MAINTENANCE_CONFIRMATION_REMINDER:
+        return 'Maintenance Reminder';
+      case NotificationType.MAINTENANCE_AUTO_CLOSED:
+        return 'Maintenance Request Closed';
       default:
         return 'Panda Homes';
     }

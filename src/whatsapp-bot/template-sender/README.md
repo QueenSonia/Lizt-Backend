@@ -301,6 +301,61 @@ Tap "Open chat" to view the full thread, or "Quick reply" to respond from here.
 
 **Usage**: Sole caller is `MrChatNotificationService` (lizt-backend/src/whatsapp-bot/mr-chat-notification.service.ts), which subscribes to `mr-chat.message.created` and ALWAYS sends the template to the landlord and assigned FM (minus the author). Presence on the chat gateway is not consulted — the two parties of the assignment always get a durable WhatsApp ping. An in-app `mr-chat.toast` event is emitted in parallel for live dashboard awareness; the frontend dedupes that toast against the currently-focused MR. Write access to the thread is itself private to these two parties — see `ChatService.resolveWriteRole`.
 
+## Maintenance Confirmation & Auto-Close Templates
+
+When an FM marks a unit-scoped request RESOLVED, the tenant is asked to confirm
+the fix (`maintenance_request_confirmation`, sent once, event-driven). If they
+stay silent, `MaintenanceReminderService` (cron, 8 AM Africa/Lagos) re-prompts
+on a weekly cadence — capped at **2 reminders** — then auto-closes the request
+and sends the tenant `tenant_maintenance_auto_closed`. Each reminder and the
+auto-close are also written to the landlord Live Feed (the `notifications`
+table) as `Maintenance Confirmation Reminder` / `Maintenance Auto Closed` rows.
+
+Timeline for a silent tenant: day 0 resolved (+ initial confirm prompt) → day 7
+reminder 1 → day 14 reminder 2 → day 21 auto-close (a full 7-day grace after
+reminder 2). Reminders are counted from `whatsapp_notification_log`
+(`WhatsAppNotificationLogService.countByReference`), keyed on the send type — the
+initial confirm prompt is a direct send that never hits the queue, so it is
+correctly excluded from the cap.
+
+### 1. tenant_maintenance_auto_closed
+
+**Purpose**: Tell the tenant their resolved request was auto-closed because they
+never responded to the confirmation reminders, and that they can open a new one.
+
+**Template Name**: `tenant_maintenance_auto_closed`
+
+**Parameters**:
+
+- `{{1}}` - Tenant first name (server-generated — no sanitization)
+- `{{2}}` - Maintenance request title / description excerpt. Free-text from the
+  MR creator — MUST be sanitized via `UtilService.sanitizeTemplateParam(value)`
+  at the caller.
+
+**Buttons**: None (informational).
+
+**Message**:
+
+```
+Hi {{1}},
+
+Your maintenance request, *"{{2}}"*, has now been automatically marked as closed.
+
+This is because we did not receive a response after our follow-up reminders.
+
+If the issue is still unresolved or happens again, you can submit a new maintenance request at any time, and we'll be happy to assist you.
+```
+
+**Usage**: Queued (durable + retried) as
+`whatsAppNotificationLogService.queue('sendTenantMaintenanceAutoClosedTemplate', ...)`
+by `MaintenanceReminderService.autoCloseForNoResponse` (steady state) and by the
+one-off `scripts/backfill-maintenance-auto-close.ts` (immediate catch-up for the
+pre-existing 2+-reminder backlog). Both call
+`MaintenanceRequestsService.autoCloseUnitForNoResponse` first — an idempotent,
+cross-instance-safe conditional close (RESOLVED → CLOSED, attempt outcome
+`expired`, `auto_closed=true`) — and only send this template when their call
+actually performed the close.
+
 ## End-Tenancy Templates (landlord-only, no tenant confirmation)
 
 These power the simplified End Tenancy modal. "Deactivate renewal" and "End on a

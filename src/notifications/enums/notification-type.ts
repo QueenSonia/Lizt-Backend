@@ -51,4 +51,6 @@
   SCHEDULED_END_CANCELLED = 'Scheduled End Cancelled',
   APPLICANT_HANDOFF = 'Applicant Handoff',
   TENANT_HANDOFF = 'Tenant Handoff',
+  MAINTENANCE_CONFIRMATION_REMINDER = 'Maintenance Confirmation Reminder',
+  MAINTENANCE_AUTO_CLOSED = 'Maintenance Auto Closed',
 }

@@ -291,6 +291,29 @@ export class WhatsAppNotificationLogService {
   }
 
   /**
+   * Count how many notifications of a given type were queued for a reference
+   * (PENDING or SENT — i.e. everything that reached the send path, excluding
+   * CANCELLED and FAILED). Used to cap the maintenance resolved-confirmation
+   * reminders at a fixed number: each cron reminder queues one row with the
+   * same (reference_id, type), so the row count is the reminders-sent count.
+   * The initial event-driven confirmation send does NOT go through the queue,
+   * so it is correctly excluded from this count.
+   */
+  async countByReference(referenceId: string, type: string): Promise<number> {
+    return this.logRepository
+      .createQueryBuilder('log')
+      .where('log.reference_id = :referenceId', { referenceId })
+      .andWhere('log.type = :type', { type })
+      .andWhere('log.status IN (:...statuses)', {
+        statuses: [
+          WhatsAppNotificationStatus.PENDING,
+          WhatsAppNotificationStatus.SENT,
+        ],
+      })
+      .getCount();
+  }
+
+  /**
    * Check if a specific reminder type was already sent for a given reference (rent ID) today (for overdue reminders).
    */
   async existsToday(referenceId: string, type: string): Promise<boolean> {

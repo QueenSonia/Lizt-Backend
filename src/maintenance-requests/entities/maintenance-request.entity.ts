@@ -112,6 +112,14 @@ export class MaintenanceRequest extends BaseEntity {
   })
   status: MaintenanceRequestStatusEnum;
 
+  // Set true only when the confirmation-reminder cron auto-closes a
+  // unit-scoped request because the tenant never responded after the capped
+  // number of reminders. Lets the frontend surface a small "Auto-closed" tag
+  // on Closed requests without an extra resolution-attempts fetch. Normal
+  // tenant-confirmed / FM / landlord closes leave this false.
+  @Column({ nullable: false, type: 'boolean', default: false })
+  auto_closed: boolean;
+
   @Column({ nullable: false, type: 'boolean', default: false })
   is_urgent: boolean;
 

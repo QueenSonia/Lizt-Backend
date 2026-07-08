@@ -17,6 +17,12 @@ export enum ResolutionAttemptOutcomeEnum {
   CONFIRMED = 'confirmed',
   DENIED = 'denied',
   REOPENED = 'reopened',
+  // Auto-closed by the confirmation-reminder cron: the tenant never responded
+  // to the resolved-confirmation prompt after the capped number of reminders,
+  // so the request was closed without an explicit confirm/deny. Distinct from
+  // CONFIRMED (tenant said "fixed") so reporting can tell a genuine
+  // confirmation apart from a no-response timeout.
+  EXPIRED = 'expired',
 }
 
 @Entity({ name: 'maintenance_resolution_attempts' })

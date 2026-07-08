@@ -29,6 +29,7 @@ import { KYCLink } from 'src/kyc-links/entities/kyc-link.entity';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
 import { DatabaseErrorHandlerService } from 'src/database/database-error-handler.service';
 import { NotificationModule } from 'src/notifications/notification.module';
+import { MaintenanceRequestsModule } from 'src/maintenance-requests/maintenance-requests.module';
 import { RenewalInvoice } from 'src/tenancies/entities/renewal-invoice.entity';
 import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module';
 import { RenewalChargeModule } from 'src/renewal-letters/renewal-charge.module';
@@ -68,6 +69,7 @@ import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoic
     NotificationModule,
     TenantBalancesModule,
     RenewalChargeModule,
+    MaintenanceRequestsModule,
   ],
   controllers: [PropertiesController],
   providers: [

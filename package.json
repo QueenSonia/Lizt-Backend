@@ -32,7 +32,8 @@
     "diagnose-kyc": "ts-node -r tsconfig-paths/register scripts/diagnose-missing-kyc.ts",
     "security-monitor": "ts-node -r tsconfig-paths/register scripts/security-monitor.ts",
     "script:reissue-fm-passwords": "ts-node -r tsconfig-paths/register scripts/reissue-fm-passwords.ts",
-    "script:resend-mr-approval": "ts-node -r tsconfig-paths/register scripts/resend-landlord-mr-approval.ts"
+    "script:resend-mr-approval": "ts-node -r tsconfig-paths/register scripts/resend-landlord-mr-approval.ts",
+    "script:backfill-maintenance-auto-close": "ts-node -r tsconfig-paths/register scripts/backfill-maintenance-auto-close.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",

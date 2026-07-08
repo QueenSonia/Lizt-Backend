@@ -188,6 +188,18 @@ export interface TenantConfirmationParams {
 }
 
 /**
+ * Parameters for the tenant maintenance auto-closed notification. Sent when the
+ * confirmation-reminder cron closes a resolved request the tenant never
+ * responded to. `maintenance_title` is free text (the request description) and
+ * MUST be sanitized by the caller via UtilService.sanitizeTemplateParam.
+ */
+export interface TenantMaintenanceAutoClosedParams {
+  phone_number: string;
+  tenant_name: string;
+  maintenance_title: string;
+}
+
+/**
  * Parameters for tenant attachment notification
  */
 export interface TenantAttachmentParams {
@@ -1650,6 +1662,47 @@ export class TemplateSenderService {
               {
                 type: 'payload',
                 payload: `confirm_resolution_no:${request_id}`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Send the tenant maintenance auto-closed template. Informational, no
+   * buttons. Triggered by MaintenanceReminderService when a resolved request
+   * is closed after the tenant ignored the capped confirmation reminders.
+   * `maintenance_title` must already be sanitized by the caller.
+   */
+  async sendTenantMaintenanceAutoClosedTemplate({
+    phone_number,
+    tenant_name,
+    maintenance_title,
+  }: TenantMaintenanceAutoClosedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'tenant_maintenance_auto_closed',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              {
+                type: 'text',
+                text: tenant_name,
+              },
+              {
+                type: 'text',
+                text: maintenance_title,
               },
             ],
           },
@@ -5924,6 +5977,8 @@ export class TemplateSenderService {
       'Hi {{1}},\n\n{{2}} has added you as a tenant for {{3}} on Lizt.\n\nPlease confirm your tenancy details to continue setup.',
     maintenance_request_confirmation:
       'Hi {{1}} 👋🏽\n\nYour maintenance request about "{{2}}" has been marked as resolved.\n\nCan you confirm if everything is fixed?',
+    tenant_maintenance_auto_closed:
+      'Hi {{1}},\n\nYour maintenance request, *"{{2}}"*, has now been automatically marked as closed.\n\nThis is because we did not receive a response after our follow-up reminders.\n\nIf the issue is still unresolved or happens again, you can submit a new maintenance request at any time, and we\'ll be happy to assist you.',
     tenant_application_notification:
       'A KYC application was submitted by {{2}} for the property {{3}}, assigned to {{1}}.\n\nUse the links below to view or download the application.',
     kyc_application_attachment_landlord:

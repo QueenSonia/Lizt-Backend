@@ -378,9 +378,15 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
     }
   }
 
-  // Newest-first, stable.
+  // Newest-first, stable. Compare at second granularity (slice to
+  // YYYY-MM-DDTHH:MM:SS) so events at the same displayed time — e.g. a request
+  // approval and the plan it creates, logged milliseconds apart in one txn —
+  // fall through to TYPE_PRIORITY (which keeps approved above created) instead
+  // of being ordered by sub-second jitter. Seconds, not minutes, so a genuine
+  // created→edited gap (always seconds+ later) still orders correctly.
+  const secondKey = (iso: string): string => iso.slice(0, 19);
   events.sort((a, b) => {
-    const t = b.occurredAt.localeCompare(a.occurredAt);
+    const t = secondKey(b.occurredAt).localeCompare(secondKey(a.occurredAt));
     if (t !== 0) return t;
     const p = TYPE_PRIORITY[a.type] - TYPE_PRIORITY[b.type];
     if (p !== 0) return p;

@@ -46,18 +46,20 @@ export interface AssembleResult {
 
 const REMINDER_EVENTS = new Set([REMINDER_UPCOMING_EVENT, REMINDER_OVERDUE_EVENT]);
 
-// Secondary sort key so events sharing a timestamp order deterministically.
+// Tiebreak for events sharing a timestamp: show the LATER lifecycle stage on top
+// (newest-first). Lower number = higher on screen. So a plan sits above the
+// approval that created it, which sits above the request that prompted it.
 const TYPE_PRIORITY: Record<TimelineEventType, number> = {
-  request_submitted: 0,
-  request_approved: 1,
-  request_declined: 1,
-  plan_created: 2,
-  plan_edited: 3,
+  plan_cancelled: 0,
+  plan_completed: 1,
+  installment_paid: 2,
+  reminders: 3,
   installment_overdue: 4,
-  reminders: 5,
-  installment_paid: 6,
-  plan_completed: 7,
-  plan_cancelled: 8,
+  plan_edited: 5,
+  plan_created: 6,
+  request_approved: 7,
+  request_declined: 7,
+  request_submitted: 8,
 };
 
 function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
@@ -378,11 +380,10 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
     }
   }
 
-  // A request approval and the plan it creates are one logical moment, but the
-  // plan's created_at can be a beat after decided_at — which would sort the
-  // "Created" card above "Approved". Pin each approval's SORT time to its plan's
-  // creation instant so they tie and TYPE_PRIORITY (approved < created) always
-  // renders Approved directly above Created. Displayed "Approved on" is untouched.
+  // A request approval and the plan it creates are one logical moment, but their
+  // timestamps can differ by a beat. Pin each approval's SORT time to its plan's
+  // creation instant so they tie and TYPE_PRIORITY (created < approved) always
+  // renders Created directly above Approved. Displayed "Approved on" is untouched.
   const createdAtByPlanId = new Map<string, string>();
   for (const h of lifecycle) {
     if (h.event_type === 'payment_plan_created' && h.related_entity_id) {

@@ -40,6 +40,7 @@ import { TeamMember } from 'src/users/entities/team-member.entity';
 import { KYCApplication } from 'src/kyc-links/entities/kyc-application.entity';
 import { UtilService } from 'src/utils/utility-service';
 import { RolesEnum } from 'src/base.entity';
+import { TenantStatusEnum } from 'src/properties/dto/create-property.dto';
 
 @Controller('whatsapp')
 export class WhatsappBotController {
@@ -566,6 +567,12 @@ export class WhatsappBotController {
         for (const property of landlordAccount.properties ?? []) {
           if (property.property_tenants) {
             for (const propertyTenant of property.property_tenants) {
+              // Only surface tenants with an ACTIVE tenancy — the bot runtime
+              // gate (whatsapp-bot.service) rejects inactive tenancies with
+              // "No active tenancy found", so listing them here just produces
+              // dead contacts that can't use the bot.
+              if (propertyTenant.status !== TenantStatusEnum.ACTIVE) continue;
+
               const tenantAccount = propertyTenant.tenant;
               const tenantUser = tenantAccount?.user;
 

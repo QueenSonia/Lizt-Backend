@@ -274,6 +274,17 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
         req.total_amount,
       ).toLocaleString()}`,
       tenancyPeriod: period,
+      request: {
+        totalAmount: Number(req.total_amount),
+        installmentAmount:
+          req.installment_amount != null ? Number(req.installment_amount) : null,
+        preferredSchedule: req.preferred_schedule || null,
+        tenantNote: req.tenant_note ?? null,
+        charges: (req.fee_breakdown ?? []).map((f) => ({
+          label: f.label,
+          amount: Number(f.amount),
+        })),
+      },
     });
     if (req.status === PaymentPlanRequestStatus.APPROVED && req.decided_at) {
       events.push({
@@ -309,7 +320,7 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
       latestPlan ??
       undefined;
     const period = plan ? periodForPlan(plan) : null;
-    const dot = lifecycleDot(h, period, installmentById);
+    const dot = lifecycleDot(h, period, installmentById, plan);
     if (dot) events.push(dot);
   }
 
@@ -375,10 +386,30 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
   };
 }
 
+function snapshotFromPlan(
+  plan: PaymentPlan | undefined,
+): ScheduleSnapshotDto | undefined {
+  if (!plan) return undefined;
+  const installments = (plan.installments ?? [])
+    .slice()
+    .sort((a, b) => a.sequence - b.sequence);
+  if (installments.length === 0) return undefined;
+  return {
+    totalAmount: Number(plan.total_amount),
+    installments: installments.map((i) => ({
+      sequence: i.sequence,
+      amount: Number(i.amount),
+      dueDate: dbDateKey(i.due_date) as string,
+      status: i.status,
+    })),
+  };
+}
+
 function lifecycleDot(
   h: PropertyHistory,
   period: TenancyPeriodDto | null,
   installmentById: Map<string, PaymentPlanInstallment>,
+  plan: PaymentPlan | undefined,
 ): TimelineEventDto | null {
   const base = {
     occurredAt: toIso(h.created_at),
@@ -408,18 +439,24 @@ function lifecycleDot(
             ? { before: meta.before, after: meta.after }
             : undefined,
       };
-    case 'payment_plan_cancelled':
+    case 'payment_plan_cancelled': {
+      const after = meta.after ?? snapshotFromPlan(plan);
       return {
         ...base,
         id: `plan_cancelled:${h.id}`,
         type: 'plan_cancelled',
+        snapshot: after ? { after } : undefined,
       };
-    case 'payment_plan_completed':
+    }
+    case 'payment_plan_completed': {
+      const after = meta.after ?? snapshotFromPlan(plan);
       return {
         ...base,
         id: `plan_completed:${h.id}`,
         type: 'plan_completed',
+        snapshot: after ? { after } : undefined,
       };
+    }
     case 'payment_plan_installment_paid': {
       const inst =
         h.related_entity_type === 'payment_plan_installment' && h.related_entity_id

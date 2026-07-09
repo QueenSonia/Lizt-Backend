@@ -72,6 +72,20 @@ export interface InstallmentRefDto {
   dueDate: string | null;
 }
 
+export interface ChargeLineDto {
+  label: string;
+  amount: number;
+}
+
+/** The tenant's original request, as submitted — powers the rich request card. */
+export interface RequestDetailsDto {
+  totalAmount: number;
+  installmentAmount: number | null;
+  preferredSchedule: string | null;
+  tenantNote: string | null;
+  charges: ChargeLineDto[];
+}
+
 export interface TimelineEventDto {
   id: string;
   type: TimelineEventType;
@@ -79,8 +93,12 @@ export interface TimelineEventDto {
   occurredAt: string;
   description: string;
   tenancyPeriod?: TenancyPeriodDto | null;
-  /** plan_created carries `after`; plan_edited carries `before` + `after`. */
+  /**
+   * plan_created carries `after`; plan_edited carries `before` + `after`;
+   * plan_cancelled / plan_completed carry the plan's final `after` snapshot.
+   */
   snapshot?: { before?: ScheduleSnapshotDto; after?: ScheduleSnapshotDto };
+  request?: RequestDetailsDto | null; // request_submitted
   receiptToken?: string | null; // installment_paid
   installment?: InstallmentRefDto | null; // installment_paid / installment_overdue
   reminders?: CollapsedRemindersDto; // reminders

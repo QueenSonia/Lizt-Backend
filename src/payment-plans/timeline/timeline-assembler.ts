@@ -257,14 +257,19 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
   const scope = latestPlan?.scope ?? (category === 'ob' ? 'ob' : category === 'entire_tenancy' ? 'tenancy' : null);
   const status = resolveStatus(latestPlan, requestsForKey);
 
-  // Tenancy period this row refers to — surfaced for the tenancy-spanning
-  // aggregates (Entire Tenancy / Outstanding Balance).
-  const period =
-    category === 'entire_tenancy' || category === 'ob'
-      ? (latestPlan
-          ? periodForPlan(latestPlan)
-          : periodFromInvoice(latestRequest?.renewal_invoice_id))
-      : null;
+  // Tenancy term this row refers to — surfaced for per-term obligations
+  // (Entire Tenancy + specific charges like Service Charge / Rent) and for OB
+  // (the term whose balance it rolled up from). Ad-hoc charges are one-off and
+  // don't belong to a tenancy term, so no term is surfaced for them.
+  const showPeriod =
+    category === 'entire_tenancy' ||
+    category === 'specific_charge' ||
+    category === 'ob';
+  const period = showPeriod
+    ? latestPlan
+      ? periodForPlan(latestPlan)
+      : periodFromInvoice(latestRequest?.renewal_invoice_id)
+    : null;
 
   // ── Events ─────────────────────────────────────────────────────────────
   const events: TimelineEventDto[] = [];
@@ -392,7 +397,11 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
     amount,
     status,
     activePlan: activePlanEntity ? toActivePlanDto(activePlanEntity) : null,
-    events,
+    // Detail cards read the term off each event; suppress it for the categories
+    // that shouldn't carry one, so no per-card chip renders either.
+    events: showPeriod
+      ? events
+      : events.map((e) => ({ ...e, tenancyPeriod: null })),
   };
 }
 

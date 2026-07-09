@@ -378,15 +378,37 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
     }
   }
 
+  // A request approval and the plan it creates are one logical moment, but the
+  // plan's created_at can be a beat after decided_at — which would sort the
+  // "Created" card above "Approved". Pin each approval's SORT time to its plan's
+  // creation instant so they tie and TYPE_PRIORITY (approved < created) always
+  // renders Approved directly above Created. Displayed "Approved on" is untouched.
+  const createdAtByPlanId = new Map<string, string>();
+  for (const h of lifecycle) {
+    if (h.event_type === 'payment_plan_created' && h.related_entity_id) {
+      createdAtByPlanId.set(h.related_entity_id, toIso(h.created_at));
+    }
+  }
+  const requestById = new Map(requestsForKey.map((r) => [r.id, r]));
+  const sortTimeOverride = new Map<string, string>();
+  for (const ev of events) {
+    if (ev.type !== 'request_approved') continue;
+    const reqId = ev.id.slice('request_approved:'.length);
+    const planId = requestById.get(reqId)?.created_payment_plan_id ?? null;
+    const createdAt = planId ? createdAtByPlanId.get(planId) : undefined;
+    if (createdAt) sortTimeOverride.set(ev.id, createdAt);
+  }
+  const sortKey = (ev: TimelineEventDto): string =>
+    sortTimeOverride.get(ev.id) ?? ev.occurredAt;
+
   // Newest-first, stable. Compare at second granularity (slice to
-  // YYYY-MM-DDTHH:MM:SS) so events at the same displayed time — e.g. a request
-  // approval and the plan it creates, logged milliseconds apart in one txn —
-  // fall through to TYPE_PRIORITY (which keeps approved above created) instead
-  // of being ordered by sub-second jitter. Seconds, not minutes, so a genuine
-  // created→edited gap (always seconds+ later) still orders correctly.
+  // YYYY-MM-DDTHH:MM:SS) so events at the same displayed time fall through to
+  // TYPE_PRIORITY rather than being ordered by sub-second jitter. Seconds, not
+  // minutes, so a genuine created→edited gap (always seconds+ later) still orders
+  // by time.
   const secondKey = (iso: string): string => iso.slice(0, 19);
   events.sort((a, b) => {
-    const t = secondKey(b.occurredAt).localeCompare(secondKey(a.occurredAt));
+    const t = secondKey(sortKey(b)).localeCompare(secondKey(sortKey(a)));
     if (t !== 0) return t;
     const p = TYPE_PRIORITY[a.type] - TYPE_PRIORITY[b.type];
     if (p !== 0) return p;

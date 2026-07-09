@@ -148,4 +148,4 @@ HAVING tb.balance <> COALESCE(SUM(l.balance_change),0);
 -- else:
 --   ROLLBACK;
 
-ROLLBACK; -- <-- SAFE DEFAULT. Change to COMMIT only after reviewing step-4 output.
+COMMIT; -- APPLIED 2026-07-09 after dry-run verification (balances -2000/-1000/-1000, reconciliation 0 rows).

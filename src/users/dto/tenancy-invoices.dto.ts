@@ -39,9 +39,13 @@ export interface TenancyInvoiceRow {
   totalAmount: number;
   amountPaid: number;
   lines: TenancyInvoiceLine[];
-  /** Renewal-letter/invoice token (renewal rows only). */
+  /**
+   * Public "view invoice" token. Renewal rows: renewal-invoice token
+   * (/renewal-invoice/:token). New-tenancy rows: offer-letter token
+   * (/offer-letters/invoice/:token). Ad-hoc rows use `publicToken` instead.
+   */
   token: string | null;
-  /** Ad-hoc public pay-page token. */
+  /** Ad-hoc public pay-page token (/pay-invoice/:token). */
   publicToken: string | null;
   receiptToken: string | null;
   paidAt: string | null;

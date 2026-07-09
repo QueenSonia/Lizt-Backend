@@ -2161,7 +2161,9 @@ export class TenantManagementService {
         // backfilled (null) can't be attributed to a tenancy — skipped.
         this.dataSource.getRepository(Invoice).find({
           where: { tenant_id: pt.tenant_id, property_id: pt.property_id },
-          relations: { line_items: true },
+          // offer_letter carries the public token for the new-tenancy invoice
+          // page (/offer-letters/invoice/:token).
+          relations: { line_items: true, offer_letter: true },
           order: { invoice_date: 'DESC' },
         }),
         this.dataSource.getRepository(PaymentPlan).find({
@@ -2355,7 +2357,8 @@ export class TenantManagementService {
           name: li.description,
           amount: num(li.amount),
         })),
-        token: null,
+        // Offer-letter token → new-tenancy invoice page (/offer-letters/invoice/:token).
+        token: inv.offer_letter?.token ?? null,
         publicToken: null,
         receiptToken: null,
         paidAt: null,

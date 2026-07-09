@@ -414,6 +414,9 @@ export class PaymentPlansService {
       `Payment plan created — ${chargeName} — ₦${totalAmount.toLocaleString()} across ${dto.installments.length} installments`,
       saved,
       NotificationType.PAYMENT_PLAN_CREATED,
+      undefined,
+      undefined,
+      { after: this.scheduleSnapshot(saved) },
     );
 
     // If this plan came from a tenant-submitted request, atomically flip the
@@ -593,6 +596,9 @@ export class PaymentPlansService {
       `Payment plan created — ${savedPlan.charge_name} — ₦${totalAmount.toLocaleString()} across ${dto.installments.length} installments`,
       savedPlan,
       NotificationType.PAYMENT_PLAN_CREATED,
+      undefined,
+      undefined,
+      { after: this.scheduleSnapshot(savedPlan) },
     );
 
     const fullPlan = await this.getPlan(savedPlan.id);
@@ -811,6 +817,9 @@ export class PaymentPlansService {
       `Payment plan created — ${saved.charge_name} — ₦${totalAmount.toLocaleString()} across ${dto.installments.length} installments`,
       saved,
       NotificationType.PAYMENT_PLAN_CREATED,
+      undefined,
+      undefined,
+      { after: this.scheduleSnapshot(saved) },
     );
 
     if (dto.fromRequestId && createdByUserId) {
@@ -1243,6 +1252,9 @@ export class PaymentPlansService {
       `Payment plan created — Outstanding Balance — ₦${totalAmount.toLocaleString()} across ${dto.installments.length} installments`,
       saved,
       NotificationType.PAYMENT_PLAN_CREATED,
+      undefined,
+      undefined,
+      { after: this.scheduleSnapshot(saved) },
     );
 
     if (dto.fromRequestId && createdByUserId) {
@@ -1984,6 +1996,10 @@ export class PaymentPlansService {
       throw new BadRequestException('Plan must have at least one installment');
     }
 
+    // Snapshot the pre-edit schedule NOW, before the transaction below mutates
+    // installment rows in place — the timeline's edited dot diffs before/after.
+    const beforeSnapshot = this.scheduleSnapshot(plan);
+
     const paid = plan.installments.filter(
       (i) => i.status === InstallmentStatus.PAID,
     );
@@ -2085,6 +2101,9 @@ export class PaymentPlansService {
       `Payment plan updated — ${plan.charge_name}. ${paid.length} paid + ${dto.installments.length} rescheduled installment(s).`,
       fresh,
       NotificationType.PAYMENT_PLAN_UPDATED,
+      undefined,
+      undefined,
+      { before: beforeSnapshot, after: this.scheduleSnapshot(fresh) },
     );
 
     // Tell the tenant their schedule changed, with a live link to pay.
@@ -3349,6 +3368,38 @@ export class PaymentPlansService {
   // ───────────────────────────────────────────────────────────────────────
   // Logging — property history + landlord livefeed + WebSocket push
   // ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * A plain, self-contained snapshot of a plan's schedule at a point in time,
+   * stashed in the `payment_plan_created` / `payment_plan_updated` history
+   * row's `metadata` so the payment-plan timeline can render the plan exactly
+   * as it looked then (and diff an edit's before/after) without re-deriving it.
+   * Must be built from a fully-loaded plan (`installments` present).
+   */
+  private scheduleSnapshot(plan: PaymentPlan): {
+    totalAmount: number;
+    installments: {
+      sequence: number;
+      amount: number;
+      dueDate: string;
+      status: string;
+    }[];
+  } {
+    const toIsoDate = (d: Date | string): string =>
+      d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
+    return {
+      totalAmount: Number(plan.total_amount),
+      installments: (plan.installments ?? [])
+        .slice()
+        .sort((a, b) => a.sequence - b.sequence)
+        .map((i) => ({
+          sequence: i.sequence,
+          amount: Number(i.amount),
+          dueDate: toIsoDate(i.due_date),
+          status: i.status,
+        })),
+    };
+  }
 
   private async logPlanEvent(
     eventType: string,

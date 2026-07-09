@@ -88,7 +88,10 @@ import {
   ApplicationStatus,
 } from 'src/kyc-links/entities/kyc-application.entity';
 import { AccountCacheService } from 'src/auth/account-cache.service';
-import { TenantManagementService } from './tenant-management';
+import {
+  TenantManagementService,
+  ManagedTenancySortColumn,
+} from './tenant-management';
 import { TeamService, TeamMemberInput } from './team';
 import { PasswordService } from './password';
 import { isPlaceholderEmail } from 'src/utils/placeholder-email';
@@ -1131,8 +1134,16 @@ export class UsersService {
    * Flat active-tenancy list for the admin Tenancies screen.
    * Delegates to TenantManagementService
    */
-  async getManagedTenancies(landlordIds: string[]) {
-    return this.tenantManagementService.getManagedTenancies(landlordIds);
+  async getManagedTenancies(
+    landlordIds: string[],
+    opts: {
+      page?: number;
+      size?: number;
+      sortCol?: ManagedTenancySortColumn;
+      sortDir?: 'asc' | 'desc';
+    } = {},
+  ) {
+    return this.tenantManagementService.getManagedTenancies(landlordIds, opts);
   }
 
   /**

@@ -114,6 +114,44 @@ import {
 import { sumOverdueInvoiceFeeInstallments } from 'src/common/billing/plan-classification';
 import { PaymentPlanRequest } from 'src/payment-plans/entities/payment-plan-request.entity';
 
+// ── Managed tenancies (admin Tenancies screen) ─────────────────────────────
+export type ManagedTenancySortColumn =
+  | 'tenant'
+  | 'property'
+  | 'rent'
+  | 'outstanding'
+  | 'endDate'
+  | 'daysLeft';
+
+export interface ManagedTenancyRow {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  tenantPhone: string | null;
+  propertyId: string;
+  propertyName: string;
+  propertyAddress: string;
+  landlordId: string;
+  landlordName: string;
+  rentAmount: number | null;
+  paymentFrequency: string | null;
+  startDate: Date | null;
+  endDate: Date | null;
+  outstandingBalance: number;
+  creditBalance: number;
+}
+
+export interface ManagedTenanciesPage {
+  tenancies: ManagedTenancyRow[];
+  pagination: {
+    totalRows: number;
+    perPage: number;
+    currentPage: number;
+    totalPages: number;
+    hasNextPage: boolean;
+  };
+}
+
 /**
  * Internal interface for tenant KYC record
  */
@@ -1955,26 +1993,32 @@ export class TenantManagementService {
    * repeats on each of those rows — same compromise the per-tenant screens
    * make; there is no per-property attribution of wallet debt.
    */
-  async getManagedTenancies(landlordIds: string[]): Promise<
-    Array<{
-      id: string;
-      tenantId: string;
-      tenantName: string;
-      tenantPhone: string | null;
-      propertyId: string;
-      propertyName: string;
-      propertyAddress: string;
-      landlordId: string;
-      landlordName: string;
-      rentAmount: number | null;
-      paymentFrequency: string | null;
-      startDate: Date | null;
-      endDate: Date | null;
-      outstandingBalance: number;
-      creditBalance: number;
-    }>
-  > {
-    if (!landlordIds.length) return [];
+  async getManagedTenancies(
+    landlordIds: string[],
+    opts: {
+      page?: number;
+      size?: number;
+      sortCol?: ManagedTenancySortColumn;
+      sortDir?: 'asc' | 'desc';
+    } = {},
+  ): Promise<ManagedTenanciesPage> {
+    const page = Math.max(1, opts.page ?? 1);
+    const size = Math.max(1, opts.size ?? 10);
+    // Default order mirrors the Tenancies screen: soonest expiry first.
+    const sortCol: ManagedTenancySortColumn = opts.sortCol ?? 'daysLeft';
+    const sortDir: 'asc' | 'desc' = opts.sortDir ?? 'asc';
+
+    const emptyPage: ManagedTenanciesPage = {
+      tenancies: [],
+      pagination: {
+        totalRows: 0,
+        perPage: size,
+        currentPage: page,
+        totalPages: 0,
+        hasNextPage: false,
+      },
+    };
+    if (!landlordIds.length) return emptyPage;
 
     const links = await this.propertyTenantRepository
       .createQueryBuilder('pt')
@@ -2018,7 +2062,7 @@ export class TenantManagementService {
       .andWhere('property.owner_id IN (:...landlordIds)', { landlordIds })
       .getMany();
 
-    if (!links.length) return [];
+    if (!links.length) return emptyPage;
 
     const tenantIds = Array.from(new Set(links.map((l) => l.tenant_id)));
     const ownerIds = Array.from(
@@ -2066,7 +2110,7 @@ export class TenantManagementService {
       return byProperty;
     };
 
-    return links.map((pt) => {
+    const rows: ManagedTenancyRow[] = links.map((pt) => {
       const ownerId = pt.property.owner_id;
       // Defensive: multiple active rent rows for the pair is a data edge —
       // surface the one ending last.
@@ -2110,6 +2154,54 @@ export class TenantManagementService {
         creditBalance: wallet > 0 ? wallet : 0,
       };
     });
+
+    // Sort on the server so streamed pages carry a single global order — the
+    // client appends pages without ever re-sorting (no visible reshuffle).
+    // Sorting must run in-memory: outstandingBalance/creditBalance are derived
+    // from wallet + overdue plan installments, not columns we can ORDER BY.
+    // endDate nulls sink last regardless of direction (tenancies without a
+    // live rent have no expiry to rank by).
+    const NULL_TIME = Number.MAX_SAFE_INTEGER;
+    const time = (d: Date | null) => (d ? new Date(d).getTime() : NULL_TIME);
+    rows.sort((a, b) => {
+      let diff = 0;
+      switch (sortCol) {
+        case 'tenant':
+          diff = a.tenantName.localeCompare(b.tenantName);
+          break;
+        case 'property':
+          diff = a.propertyName.localeCompare(b.propertyName);
+          break;
+        case 'rent':
+          diff = (a.rentAmount ?? 0) - (b.rentAmount ?? 0);
+          break;
+        case 'outstanding':
+          diff = a.outstandingBalance - b.outstandingBalance;
+          break;
+        case 'endDate':
+        case 'daysLeft':
+          // daysLeft is monotonic with endDate; both rank by expiry.
+          diff = time(a.endDate) - time(b.endDate);
+          break;
+      }
+      if (diff !== 0) return sortDir === 'asc' ? diff : -diff;
+      // Stable tiebreak so equal keys keep a deterministic cross-page order.
+      return a.id.localeCompare(b.id);
+    });
+
+    const totalRows = rows.length;
+    const totalPages = Math.ceil(totalRows / size);
+    const start = (page - 1) * size;
+    return {
+      tenancies: rows.slice(start, start + size),
+      pagination: {
+        totalRows,
+        perPage: size,
+        currentPage: page,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
+    };
   }
 
   /**

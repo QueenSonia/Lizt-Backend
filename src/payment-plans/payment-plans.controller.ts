@@ -26,6 +26,7 @@ import {
 } from '@nestjs/swagger';
 
 import { PaymentPlansService } from './payment-plans.service';
+import { PaymentPlanTimelineService } from './timeline/payment-plan-timeline.service';
 import { InstallmentPDFService } from './installment-pdf.service';
 import { CreatePaymentPlanDto } from './dto/create-payment-plan.dto';
 import { UpdatePaymentPlanDto } from './dto/update-payment-plan.dto';
@@ -39,6 +40,7 @@ import { Public } from '../auth/public.decorator';
 export class PaymentPlansController {
   constructor(
     private readonly paymentPlansService: PaymentPlansService,
+    private readonly paymentPlanTimelineService: PaymentPlanTimelineService,
     private readonly installmentPdfService: InstallmentPDFService,
   ) {}
 
@@ -70,6 +72,25 @@ export class PaymentPlansController {
       propertyTenantId,
       tenantId,
       propertyId,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Category-grouped payment-plan timeline for a tenancy',
+    description:
+      'Returns one row per payment-plan category (OB, Entire Tenancy, Ad-hoc per invoice, Specific Charge per fee), each with a newest-first activity timeline assembled from plans, requests and property history.',
+  })
+  @ApiQuery({ name: 'propertyTenantId', required: true, type: String })
+  @ApiOkResponse({ description: 'Payment-plan timeline rows' })
+  @ApiSecurity('access_token')
+  @Get('timeline')
+  getTimeline(
+    @Req() req: any,
+    @Query('propertyTenantId') propertyTenantId: string,
+  ) {
+    return this.paymentPlanTimelineService.getTimeline(
+      req?.user?.id,
+      propertyTenantId,
     );
   }
 

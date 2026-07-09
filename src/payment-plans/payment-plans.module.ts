@@ -11,12 +11,14 @@ import { PaymentPlansService } from './payment-plans.service';
 import { PaymentPlansController } from './payment-plans.controller';
 import { PaymentPlanRequestsService } from './payment-plan-requests.service';
 import { PaymentPlanRequestsController } from './payment-plan-requests.controller';
+import { PaymentPlanTimelineService } from './timeline/payment-plan-timeline.service';
 import { InstallmentPDFService } from './installment-pdf.service';
 
 import { RenewalInvoice } from '../tenancies/entities/renewal-invoice.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import { Rent } from '../rents/entities/rent.entity';
 
 import { AdHocInvoicesModule } from '../ad-hoc-invoices/ad-hoc-invoices.module';
 import { NotificationModule } from '../notifications/notification.module';
@@ -43,6 +45,7 @@ import { NotifyModule } from 'src/common/notify/notify.module';
       PropertyTenant,
       Property,
       PropertyHistory,
+      Rent,
     ]),
     NotificationModule,
     EventsModule,
@@ -60,6 +63,7 @@ import { NotifyModule } from 'src/common/notify/notify.module';
   providers: [
     PaymentPlansService,
     PaymentPlanRequestsService,
+    PaymentPlanTimelineService,
     InstallmentPDFService,
     UtilService,
   ],

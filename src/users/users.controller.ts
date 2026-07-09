@@ -18,6 +18,7 @@ import {
   HttpException,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
+import { ManagedTenancySortColumn } from './tenant-management';
 import { SyncTenantDataService } from './sync-tenant-data.service';
 import {
   CreateAdminDto,
@@ -375,14 +376,43 @@ export class UsersController {
   @ApiOperation({
     summary: 'Get all active tenancies across the managed landlords',
   })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'size', required: false, type: Number })
+  @ApiQuery({
+    name: 'sort',
+    required: false,
+    enum: ['tenant', 'property', 'rent', 'outstanding', 'endDate', 'daysLeft'],
+  })
+  @ApiQuery({ name: 'dir', required: false, enum: ['asc', 'desc'] })
   @ApiSecurity('access_token')
   @Get('tenancies')
   @UseGuards(RoleGuard)
   @Roles(RolesEnum.ADMIN)
   @UseInterceptors(ManagedScopeInterceptor)
-  getManagedTenancies(@ManagedLandlordIds() landlordIds: string[]) {
+  getManagedTenancies(
+    @ManagedLandlordIds() landlordIds: string[],
+    @Query('page') page: string | undefined,
+    @Query('size') size: string | undefined,
+    @Query('sort') sort: string | undefined,
+    @Query('dir') dir: string | undefined,
+  ) {
     try {
-      return this.usersService.getManagedTenancies(landlordIds);
+      const allowedSort = [
+        'tenant',
+        'property',
+        'rent',
+        'outstanding',
+        'endDate',
+        'daysLeft',
+      ] as const;
+      return this.usersService.getManagedTenancies(landlordIds, {
+        page: page ? Number(page) : undefined,
+        size: size ? Number(size) : undefined,
+        sortCol: (allowedSort as readonly string[]).includes(sort ?? '')
+          ? (sort as ManagedTenancySortColumn)
+          : undefined,
+        sortDir: dir === 'desc' ? 'desc' : dir === 'asc' ? 'asc' : undefined,
+      });
     } catch (error) {
       throw error;
     }

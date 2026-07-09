@@ -129,6 +129,8 @@ export interface CategoryRowDto {
   scope: string | null;
   title: string;
   subtitle?: string | null;
+  /** The tenancy period this row refers to (tenancy / OB aggregates). */
+  period?: TenancyPeriodDto | null;
   amount: number;
   status: CategoryRowStatus;
   /** Latest ACTIVE plan for this category, if any (null once completed/cancelled). */

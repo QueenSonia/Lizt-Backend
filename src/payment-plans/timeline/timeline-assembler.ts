@@ -257,6 +257,15 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
   const scope = latestPlan?.scope ?? (category === 'ob' ? 'ob' : category === 'entire_tenancy' ? 'tenancy' : null);
   const status = resolveStatus(latestPlan, requestsForKey);
 
+  // Tenancy period this row refers to — surfaced for the tenancy-spanning
+  // aggregates (Entire Tenancy / Outstanding Balance).
+  const period =
+    category === 'entire_tenancy' || category === 'ob'
+      ? (latestPlan
+          ? periodForPlan(latestPlan)
+          : periodFromInvoice(latestRequest?.renewal_invoice_id))
+      : null;
+
   // ── Events ─────────────────────────────────────────────────────────────
   const events: TimelineEventDto[] = [];
   const planForHistory = new Map<string, PaymentPlan>(
@@ -379,6 +388,7 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
     scope,
     title,
     subtitle: null,
+    period,
     amount,
     status,
     activePlan: activePlanEntity ? toActivePlanDto(activePlanEntity) : null,
@@ -422,23 +432,27 @@ function lifecycleDot(
     receiptToken?: string;
   };
   switch (h.event_type) {
-    case 'payment_plan_created':
+    case 'payment_plan_created': {
+      // Fall back to the plan's own installments for plans created before the
+      // snapshot metadata was logged (legacy rows have no metadata.after).
+      const after = meta.after ?? snapshotFromPlan(plan);
       return {
         ...base,
         id: `plan_created:${h.id}`,
         type: 'plan_created',
-        snapshot: meta.after ? { after: meta.after } : undefined,
+        snapshot: after ? { after } : undefined,
       };
-    case 'payment_plan_updated':
+    }
+    case 'payment_plan_updated': {
+      const after = meta.after ?? snapshotFromPlan(plan);
       return {
         ...base,
         id: `plan_edited:${h.id}`,
         type: 'plan_edited',
         snapshot:
-          meta.before || meta.after
-            ? { before: meta.before, after: meta.after }
-            : undefined,
+          meta.before || after ? { before: meta.before, after } : undefined,
       };
+    }
     case 'payment_plan_cancelled': {
       const after = meta.after ?? snapshotFromPlan(plan);
       return {

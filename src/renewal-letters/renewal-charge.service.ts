@@ -32,6 +32,8 @@ import { advanceRentPeriod } from '../common/utils/rent-date.util';
 export type ChargeSkipReason =
   | 'expiry_in_future'
   | 'already_charged'
+  | 'already_paid'
+  | 'period_already_charged'
   | 'superseded'
   | 'not_accepted'
   | 'no_fees';
@@ -122,6 +124,16 @@ export class RenewalChargeService {
     const alreadyCharged = await this.hasExistingCharge(letter.id);
     if (alreadyCharged) return { posted: 0, skipped: 'already_charged' };
 
+    // Never OB-charge a letter the tenant has already settled. A letter paid
+    // through the normal float→accept→pay flow posts an OB_PAYMENT but no
+    // letter_accepted_charge marker, so the `alreadyCharged` guard above does
+    // not catch it — without this check the expiry sweep re-bills every
+    // previously-paid letter, manufacturing phantom debt (prod incident
+    // 2026-06-30). Only genuinely UNPAID accepted letters should be charged.
+    if (letter.payment_status !== RenewalPaymentStatus.UNPAID) {
+      return { posted: 0, skipped: 'already_paid' };
+    }
+
     // Bill every fee on the letter — one-time fees the landlord set in "Edit
     // next period" are part of this period's charge, not just recurring ones.
     const letterFees = renewalInvoiceToFees(letter);
@@ -139,6 +151,29 @@ export class RenewalChargeService {
 
     const startStr = isoDate(letter.start_date);
     const endStr = isoDate(letter.end_date);
+
+    // Even for an unpaid letter, skip if this exact period was already billed
+    // to the wallet by the monthly auto-renewal roll-forward (a `new_period`
+    // AUTO_RENEWAL charge). Otherwise the same period is charged twice — once
+    // by the roll-forward and once here — because the two paths key idempotency
+    // on different entity ids (rent.id vs letter.id) and never reconcile on the
+    // period. Guards the unpaid half of the 2026-06-30 double-charge incident.
+    const autoRenewalEntries = await this.ledgerRepo.find({
+      where: {
+        property_id: rent.property_id,
+        type: TenantBalanceLedgerType.AUTO_RENEWAL,
+      },
+    });
+    const periodAlreadyCharged = autoRenewalEntries.some(
+      (e) =>
+        Number(e.balance_change) < 0 &&
+        !e.metadata?.reversed &&
+        e.metadata?.period_start === startStr &&
+        e.metadata?.period_end === endStr,
+    );
+    if (periodAlreadyCharged) {
+      return { posted: 0, skipped: 'period_already_charged' };
+    }
 
     let posted = 0;
     for (const fee of letterFees) {
@@ -263,6 +298,15 @@ export class RenewalChargeService {
       })
       .andWhere('ri.superseded_by_id IS NULL')
       .andWhere('ri.deleted_at IS NULL')
+      // Only letters the tenant has NOT settled. The join below matches every
+      // accepted letter for the property against its single active rent with no
+      // period correlation, so without this filter a paid historical letter is
+      // swept up and re-charged the moment the active rent expires — the root
+      // of the 2026-06-30 phantom double-charge. A paid/partial/pending letter's
+      // money already flowed through OB_PAYMENT; it must never be OB-charged.
+      .andWhere('ri.payment_status = :unpaid', {
+        unpaid: RenewalPaymentStatus.UNPAID,
+      })
       .andWhere('DATE(r.expiry_date) <= :today', { today: todayStr })
       .andWhere(
         `NOT EXISTS (

@@ -148,6 +148,41 @@ describe('RenewalChargeService — one-time fee billing', () => {
       expect(tenantBalances.applyChange).toHaveBeenCalledTimes(1);
     });
 
+    it('skips an already-PAID letter — never re-charges a settled renewal (2026-06-30 phantom-debt guard)', async () => {
+      const result = await service.chargeAcceptedRenewalAtExpiry(
+        buildLetter({ payment_status: 'paid' } as Partial<RenewalInvoice>),
+        buildRent(),
+      );
+
+      expect(result.skipped).toBe('already_paid');
+      expect(result.posted).toBe(0);
+      expect(tenantBalances.applyChange).not.toHaveBeenCalled();
+    });
+
+    it('skips when this exact period was already billed by a new_period auto-renewal charge', async () => {
+      // A monthly roll-forward already debited the wallet for this period.
+      ledgerRepo.find.mockResolvedValue([
+        {
+          type: 'auto_renewal',
+          balance_change: -RENT,
+          metadata: {
+            kind: 'new_period',
+            period_start: '2026-02-01',
+            period_end: '2027-01-31',
+          },
+        },
+      ]);
+
+      const result = await service.chargeAcceptedRenewalAtExpiry(
+        buildLetter(), // unpaid, same period as the auto_renewal above
+        buildRent(),
+      );
+
+      expect(result.skipped).toBe('period_already_charged');
+      expect(result.posted).toBe(0);
+      expect(tenantBalances.applyChange).not.toHaveBeenCalled();
+    });
+
     it('skips with no_fees when the letter has no fees at all', async () => {
       const letter = buildLetter({
         rent_amount: 0,

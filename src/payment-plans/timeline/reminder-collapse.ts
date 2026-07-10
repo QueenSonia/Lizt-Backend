@@ -21,16 +21,34 @@ function kindOf(row: PropertyHistory): ReminderKind {
 }
 
 /**
+ * Due date the send was actually computed against. Editing a plan can move
+ * an installment's due_date after reminders have gone out, so a label read
+ * off the CURRENT due date drifts (a D-1 send re-reads as D-25). Newer rows
+ * stamp metadata.due_date_at_send; older rows carry it only inside the human
+ * description ("… due 07/07/2026", en-GB dd/mm/yyyy) — parse that instead.
+ */
+function dueKeyAtSend(row: PropertyHistory): string | null {
+  const stamped = row.metadata?.due_date_at_send;
+  if (typeof stamped === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(stamped)) {
+    return stamped;
+  }
+  const m = row.event_description?.match(/ due (\d{2})\/(\d{2})\/(\d{4})$/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+
+/**
  * A human D-label for a single send, derived at read time (the reminder row
  * doesn't persist which cadence step it was). Overdue sends read 'overdue';
- * pre-due sends read 'D-<n>' where n is days-until-due (7 / 1 / 0).
+ * pre-due sends read 'D-<n>' where n is days-until-due (7 / 1 / 0), measured
+ * against the due date in effect when the send happened.
  */
 function labelFor(
   row: PropertyHistory,
   installment: PaymentPlanInstallment | undefined,
 ): string {
   if (kindOf(row) === 'overdue') return 'overdue';
-  const dueKey = installment ? dbDateKey(installment.due_date) : null;
+  const dueKey =
+    dueKeyAtSend(row) ?? (installment ? dbDateKey(installment.due_date) : null);
   if (!dueKey || !row.created_at) return 'reminder';
   const sentKey = businessDateKey(row.created_at);
   const daysUntilDue = daysBetweenKeys(dueKey, sentKey);

@@ -478,6 +478,10 @@ export class RentReminderService {
         } sent for installment ${installmentLabel} of ${plan.charge_name} — ${amount} due ${dueDateStr}`,
         related_entity_id: installment.id,
         related_entity_type: 'payment_plan_installment',
+        // Editing a plan can move due_date after sends went out; stamp the
+        // due date this send was computed against so timeline D-labels stay
+        // true to what the tenant was actually told.
+        metadata: { due_date_at_send: dueDate.toISOString().slice(0, 10) },
       }),
     );
 

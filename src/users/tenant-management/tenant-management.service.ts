@@ -102,10 +102,7 @@ import {
   AdHocInvoice,
   AdHocInvoiceStatus,
 } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice.entity';
-import {
-  Invoice,
-  InvoiceStatus,
-} from 'src/invoices/entities/invoice.entity';
+import { Invoice, InvoiceStatus } from 'src/invoices/entities/invoice.entity';
 import {
   PaymentPlan,
   PaymentPlanScope,
@@ -432,6 +429,38 @@ export class TenantManagementService {
           throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
         }
 
+        // The caller must own or manage the property. The wallet ledger is
+        // keyed on the property's OWNER (landlord views group balances by
+        // property.owner_id), so charge to the owner — not the caller — or
+        // the opening balance lands in a scope no view ever reads.
+        if (
+          property.owner_id !== user_id &&
+          !(await this.scopeService.managesLandlord(user_id, property.owner_id))
+        ) {
+          throw new ForbiddenException(
+            'You are not authorized to add tenants to this property',
+          );
+        }
+        const ledgerLandlordId = property.owner_id;
+
+        // Tenant-facing messages must show the PROPERTY OWNER's name (e.g.
+        // "Panda Homes"), not the caller's — a managing admin is branded
+        // "Property Kraft" and must never leak into the tenant's welcome.
+        const ownerAccount =
+          ledgerLandlordId === user_id
+            ? admin
+            : await manager.getRepository(Account).findOne({
+                where: { id: ledgerLandlordId },
+                relations: ['user'],
+              });
+        const ownerDisplayName =
+          ownerAccount?.profile_name ||
+          this.utilService.formatPersonName(
+            ownerAccount?.user?.first_name,
+            ownerAccount?.user?.last_name,
+          ) ||
+          'Your landlord';
+
         const hasActiveRent = await manager.getRepository(Rent).findOne({
           where: {
             property_id: property_id,
@@ -511,7 +540,7 @@ export class TenantManagementService {
           if (charge.amount && charge.amount > 0) {
             await this.tenantBalancesService.applyChange(
               userAccount.id,
-              user_id,
+              ledgerLandlordId,
               -charge.amount,
               {
                 type: TenantBalanceLedgerType.INITIAL_BALANCE,
@@ -546,8 +575,8 @@ export class TenantManagementService {
 
         await this.whatsappBotService.sendTenantWelcomeTemplate({
           phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
-          landlord_name: admin.profile_name,
+          tenant_name: this.utilService.formatPersonName(first_name, last_name),
+          landlord_name: ownerDisplayName,
           property_name: property?.name,
           property_id: property_id,
         });
@@ -560,8 +589,17 @@ export class TenantManagementService {
 
           await this.whatsappBotService.sendUserAddedTemplate({
             phone_number: admin_phone_number,
-            name: 'Admin',
-            user: `${tenantUser.first_name} ${tenantUser.last_name}`,
+            name:
+              admin.profile_name ||
+              this.utilService.formatPersonName(
+                admin.user?.first_name,
+                admin.user?.last_name,
+              ) ||
+              'Admin',
+            user: this.utilService.formatPersonName(
+              tenantUser.first_name,
+              tenantUser.last_name,
+            ),
             property_name: property?.name,
           });
         }
@@ -850,7 +888,10 @@ export class TenantManagementService {
               ? `${this.utilService.toSentenceCase(landlord.user.first_name)} ${this.utilService.toSentenceCase(landlord.user.last_name)}`
               : 'Your Landlord';
 
-          const tenantName = `${this.utilService.toSentenceCase(tenantAccount.user.first_name)} ${this.utilService.toSentenceCase(tenantAccount.user.last_name)}`;
+          const tenantName = this.utilService.formatPersonName(
+            tenantAccount.user.first_name,
+            tenantAccount.user.last_name,
+          );
 
           await this.whatsappBotService.sendTenantAttachmentNotification({
             phone_number: this.utilService.normalizePhoneNumber(
@@ -874,7 +915,10 @@ export class TenantManagementService {
           console.error('Failed to send WhatsApp notification:', whatsappError);
 
           // Still emit the event even if WhatsApp fails
-          const fallbackTenantName = `${this.utilService.toSentenceCase(tenantAccount.user.first_name)} ${this.utilService.toSentenceCase(tenantAccount.user.last_name)}`;
+          const fallbackTenantName = this.utilService.formatPersonName(
+            tenantAccount.user.first_name,
+            tenantAccount.user.last_name,
+          );
           this.eventEmitter.emit('tenant.attached', {
             property_id: propertyId,
             property_name: property.name,
@@ -988,6 +1032,37 @@ export class TenantManagementService {
           throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
         }
 
+        // The caller must own or manage the property. Charge the opening
+        // balance to the property's OWNER — landlord views group balances by
+        // property.owner_id, so a charge keyed to the caller is invisible.
+        if (
+          property.owner_id !== user_id &&
+          !(await this.scopeService.managesLandlord(user_id, property.owner_id))
+        ) {
+          throw new ForbiddenException(
+            'You are not authorized to add tenants to this property',
+          );
+        }
+        const ledgerLandlordId = property.owner_id;
+
+        // Tenant-facing messages must show the PROPERTY OWNER's name (e.g.
+        // "Panda Homes"), not the caller's — a managing admin is branded
+        // "Property Kraft" and must never leak into the tenant's welcome.
+        const ownerAccount =
+          ledgerLandlordId === user_id
+            ? admin
+            : await manager.getRepository(Account).findOne({
+                where: { id: ledgerLandlordId },
+                relations: ['user'],
+              });
+        const ownerDisplayName =
+          ownerAccount?.profile_name ||
+          this.utilService.formatPersonName(
+            ownerAccount?.user?.first_name,
+            ownerAccount?.user?.last_name,
+          ) ||
+          'Your landlord';
+
         const hasActiveRent = await manager.getRepository(Rent).findOne({
           where: {
             property_id: property_id,
@@ -1078,7 +1153,7 @@ export class TenantManagementService {
         if (rent_amount > 0) {
           await this.tenantBalancesService.applyChange(
             userAccount.id,
-            user_id,
+            ledgerLandlordId,
             -rent_amount,
             {
               type: TenantBalanceLedgerType.INITIAL_BALANCE,
@@ -1093,7 +1168,7 @@ export class TenantManagementService {
         if (serviceCharge > 0) {
           await this.tenantBalancesService.applyChange(
             userAccount.id,
-            user_id,
+            ledgerLandlordId,
             -serviceCharge,
             {
               type: TenantBalanceLedgerType.INITIAL_BALANCE,
@@ -1117,7 +1192,10 @@ export class TenantManagementService {
         // 6. Notify tenant
         await this.whatsappBotService.sendToUserWithTemplate(
           this.utilService.normalizePhoneNumber(tenantUser.phone_number),
-          `${tenantUser.first_name} ${tenantUser.last_name}`,
+          this.utilService.formatPersonName(
+            tenantUser.first_name,
+            tenantUser.last_name,
+          ),
         );
 
         this.eventEmitter.emit('user.added', {
@@ -1130,8 +1208,8 @@ export class TenantManagementService {
 
         await this.whatsappBotService.sendTenantWelcomeTemplate({
           phone_number: this.utilService.normalizePhoneNumber(phone_number),
-          tenant_name: `${this.utilService.toSentenceCase(first_name)} ${this.utilService.toSentenceCase(last_name)}`,
-          landlord_name: admin.profile_name,
+          tenant_name: this.utilService.formatPersonName(first_name, last_name),
+          landlord_name: ownerDisplayName,
           property_name: property?.name,
           property_id: property_id,
         });
@@ -1144,8 +1222,17 @@ export class TenantManagementService {
 
           await this.whatsappBotService.sendUserAddedTemplate({
             phone_number: admin_phone_number,
-            name: 'Admin',
-            user: `${tenantUser.first_name} ${tenantUser.last_name}`,
+            name:
+              admin.profile_name ||
+              this.utilService.formatPersonName(
+                admin.user?.first_name,
+                admin.user?.last_name,
+              ) ||
+              'Admin',
+            user: this.utilService.formatPersonName(
+              tenantUser.first_name,
+              tenantUser.last_name,
+            ),
             property_name: property?.name,
           });
         }
@@ -1511,6 +1598,27 @@ export class TenantManagementService {
         throw new HttpException('Property not found', HttpStatus.NOT_FOUND);
       }
 
+      // 3b. The requester may be a managing admin acting for the landlord.
+      // Verify they own or manage the property, then re-anchor on the
+      // property's owner so every downstream write keyed on landlordId
+      // (tenant_kyc snapshot, wallet ledger, staged-history replay) lands
+      // under the LANDLORD — mirrors attachTenantToProperty. Without this,
+      // an admin-performed attach files the opening charge under the admin
+      // account, a scope no landlord view ever reads, so the tenant shows
+      // ₦0 outstanding.
+      if (
+        property.owner_id !== landlordId &&
+        !(await this.scopeService.managesLandlord(
+          landlordId,
+          property.owner_id,
+        ))
+      ) {
+        throw new ForbiddenException(
+          'You are not authorized to attach tenants to this property',
+        );
+      }
+      landlordId = property.owner_id;
+
       // 4. Check if property already has active rent
       const hasActiveRent = await manager.getRepository(Rent).findOne({
         where: {
@@ -1767,7 +1875,10 @@ export class TenantManagementService {
             ? `${this.utilService.toSentenceCase(landlord.user.first_name)} ${this.utilService.toSentenceCase(landlord.user.last_name)}`
             : 'Your Landlord';
 
-        const tenantName = `${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}`;
+        const tenantName = this.utilService.formatPersonName(
+          tenantUser.first_name,
+          tenantUser.last_name,
+        );
 
         await this.whatsappBotService.sendTenantAttachmentNotification({
           phone_number: this.utilService.normalizePhoneNumber(
@@ -1791,7 +1902,10 @@ export class TenantManagementService {
         console.error('Failed to send WhatsApp notification:', whatsappError);
 
         // Still emit the event even if WhatsApp fails
-        const fallbackTenantName = `${this.utilService.toSentenceCase(tenantUser.first_name)} ${this.utilService.toSentenceCase(tenantUser.last_name)}`;
+        const fallbackTenantName = this.utilService.formatPersonName(
+          tenantUser.first_name,
+          tenantUser.last_name,
+        );
         this.eventEmitter.emit('tenant.attached', {
           property_id: property_id,
           property_name: property.name,
@@ -2065,9 +2179,7 @@ export class TenantManagementService {
     if (!links.length) return emptyPage;
 
     const tenantIds = Array.from(new Set(links.map((l) => l.tenant_id)));
-    const ownerIds = Array.from(
-      new Set(links.map((l) => l.property.owner_id)),
-    );
+    const ownerIds = Array.from(new Set(links.map((l) => l.property.owner_id)));
 
     const [nameMap, balances, activePlans] = await Promise.all([
       this.resolveLandlordNames(ownerIds),
@@ -2147,8 +2259,7 @@ export class TenantManagementService {
         paymentFrequency: rent?.payment_frequency ?? null,
         startDate: rent?.rent_start_date ?? null,
         endDate: rent?.expiry_date ?? null,
-        outstandingBalance:
-          (wallet < 0 ? -wallet : 0) + overdueOnProperty,
+        outstandingBalance: (wallet < 0 ? -wallet : 0) + overdueOnProperty,
         // Positive wallet = credit (mirrors computeTenantBalance's
         // totalCreditBalance). Same per-pair caveat as the wallet OB above.
         creditBalance: wallet > 0 ? wallet : 0,
@@ -2385,8 +2496,7 @@ export class TenantManagementService {
       else if (inv.status === AdHocInvoiceStatus.PARTIAL) status = 'partial';
       // Mirrors AdHocInvoicesService.computeStatus: OVERDUE is derived at
       // read time and suppressed while a plan owns the debt.
-      else if (isPast(inv.due_date) && !coveredByActivePlan)
-        status = 'overdue';
+      else if (isPast(inv.due_date) && !coveredByActivePlan) status = 'overdue';
       else status = 'upcoming';
 
       const items = (inv.line_items ?? [])
@@ -2427,8 +2537,7 @@ export class TenantManagementService {
 
       let status: TenancyInvoiceRow['status'];
       if (inv.status === InvoiceStatus.PAID) status = 'paid';
-      else if (inv.status === InvoiceStatus.PARTIALLY_PAID)
-        status = 'partial';
+      else if (inv.status === InvoiceStatus.PARTIALLY_PAID) status = 'partial';
       // No due-date column here; trust the stored status rather than
       // deriving OVERDUE from invoice_date (that's the creation date).
       else if (inv.status === InvoiceStatus.OVERDUE) status = 'overdue';
@@ -2471,8 +2580,7 @@ export class TenantManagementService {
       // Which unified row does this plan fund? OB/wallet-backed plans fund
       // ledger debt, not a listed invoice — they get no link.
       let linkedInvoiceId: string | null = null;
-      let linkedInvoiceSource: TenancyPaymentPlan['linkedInvoiceSource'] =
-        null;
+      let linkedInvoiceSource: TenancyPaymentPlan['linkedInvoiceSource'] = null;
       if (plan.renewal_invoice_id && renewalIds.has(plan.renewal_invoice_id)) {
         linkedInvoiceId = plan.renewal_invoice_id;
         linkedInvoiceSource = 'renewal';
@@ -2639,7 +2747,6 @@ export class TenantManagementService {
     tenantId: string,
     landlordId: string,
   ): Promise<TenantDetailDto> {
-
     // The tenant's latest KYC application and the id/property_id list of all
     // their KYC applications don't depend on the account query — fire them now
     // so they run concurrently with (and hide under) the heavy account query
@@ -2818,7 +2925,8 @@ export class TenantManagementService {
       found: !!tenantAccount?.id,
       propertyHistoriesCount: tenantAccount?.property_histories?.length || 0,
       rentsCount: tenantAccount?.rents?.length || 0,
-      maintenanceRequestsCount: tenantAccount?.maintenance_requests?.length || 0,
+      maintenanceRequestsCount:
+        tenantAccount?.maintenance_requests?.length || 0,
     });
 
     if (!tenantAccount?.id) {

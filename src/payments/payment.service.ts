@@ -28,6 +28,7 @@ import { TenantAttachmentService } from '../kyc-links/tenant-attachment.service'
 import { PropertyHistoryService } from '../property-history/property-history.service';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender/template-sender.service';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
+import { UtilService } from '../utils/utility-service';
 import { InitiatePaymentDto, InitiatePaymentResponseDto } from './dto';
 import { InvoicesService } from '../invoices/invoices.service';
 import { NotificationService } from '../notifications/notification.service';
@@ -73,6 +74,7 @@ export class PaymentService {
     private readonly receiptGeneratorService: ReceiptGeneratorService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly notificationRecipients: NotificationRecipientsService,
+    private readonly utilService: UtilService,
   ) {}
 
   /**
@@ -704,11 +706,17 @@ export class PaymentService {
             'sendTenantPaymentRefund',
             {
               phone_number: kycApplication.phone_number,
-              tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+              tenant_name: this.utilService.formatPersonName(
+                kycApplication.first_name,
+                kycApplication.last_name,
+              ),
               property_name: property.name,
               amount_paid: Number(losingOffer.amount_paid),
               landlord_id: property.owner_id,
-              recipient_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+              recipient_name: this.utilService.formatPersonName(
+                kycApplication.first_name,
+                kycApplication.last_name,
+              ),
             },
             losingOffer.id,
           );
@@ -763,7 +771,10 @@ export class PaymentService {
             {
               phone_number: recipient.phone,
               landlord_name: recipient.name,
-              tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+              tenant_name: this.utilService.formatPersonName(
+                kycApplication.first_name,
+                kycApplication.last_name,
+              ),
               property_name: offerLetter.property.name,
               amount: Number(offerLetter.amount_paid),
               landlord_id: offerLetter.property.owner_id,
@@ -781,11 +792,17 @@ export class PaymentService {
           'sendTenantRaceCondition',
           {
             phone_number: kycApplication.phone_number,
-            tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            tenant_name: this.utilService.formatPersonName(
+              kycApplication.first_name,
+              kycApplication.last_name,
+            ),
             property_name: offerLetter.property.name,
             amount: Number(offerLetter.amount_paid),
             landlord_id: offerLetter.property.owner_id,
-            recipient_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            recipient_name: this.utilService.formatPersonName(
+              kycApplication.first_name,
+              kycApplication.last_name,
+            ),
           },
           offerLetter.id,
         );
@@ -1462,7 +1479,10 @@ export class PaymentService {
           await this.templateSenderService.sendLandlordPaymentComplete({
             phone_number: recipient.phone,
             landlord_name: recipient.name,
-            tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            tenant_name: this.utilService.formatPersonName(
+              kycApplication.first_name,
+              kycApplication.last_name,
+            ),
             property_name: offerLetter.property.name,
             total_amount: Number(offerLetter.total_amount),
             property_id: offerLetter.property.id,
@@ -1471,7 +1491,10 @@ export class PaymentService {
           await this.templateSenderService.sendLandlordPaymentReceived({
             phone_number: recipient.phone,
             landlord_name: recipient.name,
-            tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+            tenant_name: this.utilService.formatPersonName(
+              kycApplication.first_name,
+              kycApplication.last_name,
+            ),
             property_name: offerLetter.property.name,
             amount: Number(payment.amount),
             outstanding_balance: newOutstandingBalance,
@@ -1529,7 +1552,10 @@ export class PaymentService {
 
       await this.templateSenderService.sendTenantPaymentSuccess({
         phone_number: kycApplication.phone_number,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+        tenant_name: this.utilService.formatPersonName(
+          kycApplication.first_name,
+          kycApplication.last_name,
+        ),
         property_name: property.name,
         total_amount: Number(offerLetter.total_amount),
         landlord_name: landlordName,
@@ -1571,7 +1597,10 @@ export class PaymentService {
 
       await this.templateSenderService.sendTenantRaceCondition({
         phone_number: kycApplication.phone_number,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+        tenant_name: this.utilService.formatPersonName(
+          kycApplication.first_name,
+          kycApplication.last_name,
+        ),
         property_name: property.name,
         amount: Number(offerLetter.amount_paid),
       });

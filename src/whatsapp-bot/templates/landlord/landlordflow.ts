@@ -633,8 +633,9 @@ export class LandlordFlow {
     const tenantPhone = this.utilService.normalizePhoneNumber(
       invoice.tenant.user.phone_number,
     );
-    const tenantFirstName = this.utilService.toSentenceCase(
+    const tenantFirstName = this.utilService.formatPersonName(
       invoice.tenant.user.first_name,
+      invoice.tenant.user.last_name,
     );
 
     if (invoice.letter_status === RenewalLetterStatus.ACCEPTED) {
@@ -742,8 +743,9 @@ export class LandlordFlow {
     const tenantPhone = this.utilService.normalizePhoneNumber(
       invoice.tenant.user.phone_number,
     );
-    const tenantFirstName = this.utilService.toSentenceCase(
+    const tenantFirstName = this.utilService.formatPersonName(
       invoice.tenant.user.first_name,
+      invoice.tenant.user.last_name,
     );
 
     await this.notificationLogService.queue('sendRenewalRequestDeclined', {

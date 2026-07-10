@@ -95,10 +95,7 @@ import { InstallmentStatus } from 'src/payment-plans/entities/payment-plan-insta
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { RenewalChargeService } from 'src/renewal-letters/renewal-charge.service';
-import {
-  rentToFees,
-  Fee,
-} from 'src/common/billing/fees';
+import { rentToFees, Fee } from 'src/common/billing/fees';
 import { sumOverdueInvoiceFeeInstallments } from 'src/common/billing/plan-classification';
 import { randomUUID } from 'crypto';
 @Injectable()
@@ -724,7 +721,10 @@ export class PropertiesService {
           ? `Your landlord, ${this.utilService.toSentenceCase(rawLandlordName)}`
           : 'Your landlord';
 
-        const tenantName = this.utilService.toSentenceCase(firstName);
+        const tenantName = this.utilService.formatPersonName(
+          firstName,
+          lastName,
+        );
 
         await this.whatsappBotService.sendTenantWelcomeTemplate({
           phone_number: normalizedPhone,
@@ -872,10 +872,7 @@ export class PropertiesService {
     }
   }
 
-  async getAllProperties(
-    queryParams: PropertyFilter,
-    ownerIds: string[] = [],
-  ) {
+  async getAllProperties(queryParams: PropertyFilter, ownerIds: string[] = []) {
     const page = queryParams.page
       ? Number(queryParams.page)
       : config.DEFAULT_PAGE_NO;
@@ -965,10 +962,9 @@ export class PropertiesService {
       .andWhere('property.owner_id IN (:...ownerIds)', { ownerIds });
 
     if (searchKeyword) {
-      qb.andWhere(
-        '(property.name ILIKE :kw OR property.location ILIKE :kw)',
-        { kw: `%${searchKeyword}%` },
-      );
+      qb.andWhere('(property.name ILIKE :kw OR property.location ILIKE :kw)', {
+        kw: `%${searchKeyword}%`,
+      });
     }
 
     // Apply sorting (rent requires custom logic)
@@ -989,8 +985,10 @@ export class PropertiesService {
       );
     } else {
       // Default: soonest expiring rents first, NULL expiries last, then by name
-      qb.orderBy('rents.expiry_date', 'ASC', 'NULLS LAST')
-        .addOrderBy('property.name', 'ASC');
+      qb.orderBy('rents.expiry_date', 'ASC', 'NULLS LAST').addOrderBy(
+        'property.name',
+        'ASC',
+      );
     }
     // Always tiebreak by id so pagination order is stable across pages
     qb.addOrderBy('property.id', 'ASC');
@@ -1024,9 +1022,7 @@ export class PropertiesService {
   //   });
   // }
 
-  async getVacantProperties(
-    ownerId: string | string[],
-  ): Promise<Property[]> {
+  async getVacantProperties(ownerId: string | string[]): Promise<Property[]> {
     const ownerIds = Array.isArray(ownerId) ? ownerId : [ownerId];
     if (!ownerIds.length) return [];
     return this.propertyRepository
@@ -1105,7 +1101,7 @@ export class PropertiesService {
       }
       if (!authorized) {
         throw new HttpException(
-          'You are not authorized to view this landlord\'s properties',
+          "You are not authorized to view this landlord's properties",
           HttpStatus.FORBIDDEN,
         );
       }
@@ -1342,11 +1338,12 @@ export class PropertiesService {
       const tenantUser = sr.tenant?.user ?? null;
       const tenantKyc = tenantUser?.tenant_kycs?.[0]; // Filtered by admin_id in query
 
-      const firstName =
-        tenantKyc?.first_name ?? tenantUser?.first_name ?? '';
+      const firstName = tenantKyc?.first_name ?? tenantUser?.first_name ?? '';
       const lastName = tenantKyc?.last_name ?? tenantUser?.last_name ?? '';
       const tenantName =
-        `${firstName} ${lastName}`.trim() || sr.tenant_name || 'Facility Manager';
+        `${firstName} ${lastName}`.trim() ||
+        sr.tenant_name ||
+        'Facility Manager';
 
       return {
         id: sr.id,
@@ -1580,40 +1577,42 @@ export class PropertiesService {
       // dropped and derived in memory instead (see use-sites): the plan-eligible
       // ad-hocs are a subset of pendingAdHocInvoices, and the wallet-backed plans
       // are a subset of allActivePlans.
-      const latestRenewalInvoicePromise = this.renewalInvoiceRepository.findOne({
-        where: {
-          property_id: property.id,
-          tenant_id: activeTenantRelation.tenant.id,
-          token_type: In(['landlord', 'draft']),
-          superseded_by_id: IsNull(),
+      const latestRenewalInvoicePromise = this.renewalInvoiceRepository.findOne(
+        {
+          where: {
+            property_id: property.id,
+            tenant_id: activeTenantRelation.tenant.id,
+            token_type: In(['landlord', 'draft']),
+            superseded_by_id: IsNull(),
+          },
+          order: { created_at: 'DESC' },
+          select: [
+            'id',
+            'token',
+            'payment_status',
+            'token_type',
+            'total_amount',
+            'amount_paid',
+            'rent_amount',
+            'service_charge',
+            'caution_deposit',
+            'legal_fee',
+            'agency_fee',
+            'other_fees',
+            'payment_frequency',
+            'start_date',
+            'end_date',
+            'fee_breakdown',
+            'letter_status',
+            'letter_body_html',
+            'letter_body_fields',
+            'letter_body_json',
+            'letter_sent_at',
+            'supersedes_id',
+            'accepted_at',
+          ],
         },
-        order: { created_at: 'DESC' },
-        select: [
-          'id',
-          'token',
-          'payment_status',
-          'token_type',
-          'total_amount',
-          'amount_paid',
-          'rent_amount',
-          'service_charge',
-          'caution_deposit',
-          'legal_fee',
-          'agency_fee',
-          'other_fees',
-          'payment_frequency',
-          'start_date',
-          'end_date',
-          'fee_breakdown',
-          'letter_status',
-          'letter_body_html',
-          'letter_body_fields',
-          'letter_body_json',
-          'letter_sent_at',
-          'supersedes_id',
-          'accepted_at',
-        ],
-      });
+      );
       // Mirrors PaymentPlansService.createPlan's invoice lookup exactly so the
       // payment-plan picker builds its options from the invoice the server
       // will validate installments against (unsent drafts excluded).
@@ -1715,7 +1714,9 @@ export class PropertiesService {
       // Pending landlord invoice (unpaid) — the amount the tenant is expected to pay.
       // Also carries the letter lifecycle + last saved body so the renew screen
       // can hydrate without a second round-trip.
-      const toIsoOrNull = (v: Date | string | null | undefined): string | null => {
+      const toIsoOrNull = (
+        v: Date | string | null | undefined,
+      ): string | null => {
         if (!v) return null;
         if (v instanceof Date) return v.toISOString().split('T')[0];
         return String(v).includes('T') ? String(v).split('T')[0] : String(v);
@@ -1735,18 +1736,26 @@ export class PropertiesService {
                 (latestRenewalInvoice.service_charge || 0).toString(),
               ),
               cautionDeposit: parseFloat(
-                ((latestRenewalInvoice as unknown as { caution_deposit?: number })
-                  .caution_deposit || 0).toString(),
+                (
+                  (
+                    latestRenewalInvoice as unknown as {
+                      caution_deposit?: number;
+                    }
+                  ).caution_deposit || 0
+                ).toString(),
               ),
               legalFee: parseFloat(
                 (latestRenewalInvoice.legal_fee || 0).toString(),
               ),
               agencyFee: parseFloat(
-                ((latestRenewalInvoice as unknown as { agency_fee?: number })
-                  .agency_fee || 0).toString(),
+                (
+                  (latestRenewalInvoice as unknown as { agency_fee?: number })
+                    .agency_fee || 0
+                ).toString(),
               ),
-              otherFees: (latestRenewalInvoice as unknown as { other_fees?: unknown })
-                .other_fees ?? [],
+              otherFees:
+                (latestRenewalInvoice as unknown as { other_fees?: unknown })
+                  .other_fees ?? [],
               totalAmount: parseFloat(
                 latestRenewalInvoice.total_amount.toString(),
               ),
@@ -1757,13 +1766,17 @@ export class PropertiesService {
               letterStatus: latestRenewalInvoice.letter_status ?? 'draft',
               letterBodyHtml: latestRenewalInvoice.letter_body_html ?? null,
               letterBodyFields:
-                (latestRenewalInvoice as unknown as {
-                  letter_body_fields?: Record<string, unknown> | null;
-                }).letter_body_fields ?? null,
+                (
+                  latestRenewalInvoice as unknown as {
+                    letter_body_fields?: Record<string, unknown> | null;
+                  }
+                ).letter_body_fields ?? null,
               letterBodyJson:
-                (latestRenewalInvoice as unknown as {
-                  letter_body_json?: Record<string, unknown> | null;
-                }).letter_body_json ?? null,
+                (
+                  latestRenewalInvoice as unknown as {
+                    letter_body_json?: Record<string, unknown> | null;
+                  }
+                ).letter_body_json ?? null,
               letterSentAt: latestRenewalInvoice.letter_sent_at
                 ? latestRenewalInvoice.letter_sent_at.toISOString()
                 : null,
@@ -2125,14 +2138,12 @@ export class PropertiesService {
               } catch {
                 const parts = hist.event_description.split('|||');
                 status = parts[0] || 'updated';
-                issueDescription =
-                  parts[1] || 'Maintenance request updated';
+                issueDescription = parts[1] || 'Maintenance request updated';
                 resolver = parts.length > 2 ? parts[2] : null;
               }
             }
 
-            const statusChanged =
-              !!previousStatus && previousStatus !== status;
+            const statusChanged = !!previousStatus && previousStatus !== status;
 
             let title = 'Maintenance Request Updated';
             let eventType = 'maintenance_request_updated';
@@ -2825,8 +2836,10 @@ export class PropertiesService {
       // pre-fill with the exact current fee configuration instead of losing
       // legal/agency/otherFees on every edit.
       cautionDeposit: activeRent?.security_deposit ?? null,
-      legalFee: activeRent?.legal_fee != null ? Number(activeRent.legal_fee) : null,
-      agencyFee: activeRent?.agency_fee != null ? Number(activeRent.agency_fee) : null,
+      legalFee:
+        activeRent?.legal_fee != null ? Number(activeRent.legal_fee) : null,
+      agencyFee:
+        activeRent?.agency_fee != null ? Number(activeRent.agency_fee) : null,
       otherFees: activeRent?.other_fees ?? [],
       serviceChargeRecurring: activeRent?.service_charge_recurring ?? true,
       cautionDepositRecurring: activeRent?.security_deposit_recurring ?? false,
@@ -3129,13 +3142,21 @@ export class PropertiesService {
     // PropertyHistory is intentionally excluded — every property has a
     // `property_created` row from creation, and other events like edits /
     // status changes are internal-only and don't leak public links.
-    const [tenantCount, offerLetterCount, renewalInvoiceCount, adHocInvoiceCount] =
-      await Promise.all([
-        this.propertyTenantRepository.count({ where: { property_id: propertyId } }),
-        this.offerLetterRepository.count({ where: { property_id: propertyId } }),
-        this.renewalInvoiceRepository.count({ where: { property_id: propertyId } }),
-        this.adHocInvoiceRepository.count({ where: { property_id: propertyId } }),
-      ]);
+    const [
+      tenantCount,
+      offerLetterCount,
+      renewalInvoiceCount,
+      adHocInvoiceCount,
+    ] = await Promise.all([
+      this.propertyTenantRepository.count({
+        where: { property_id: propertyId },
+      }),
+      this.offerLetterRepository.count({ where: { property_id: propertyId } }),
+      this.renewalInvoiceRepository.count({
+        where: { property_id: propertyId },
+      }),
+      this.adHocInvoiceRepository.count({ where: { property_id: propertyId } }),
+    ]);
 
     if (tenantCount > 0) blockers.push('past or current tenants');
     if (offerLetterCount > 0) blockers.push('offer letters');
@@ -3671,7 +3692,9 @@ export class PropertiesService {
     }
 
     // Timeline + live-feed entry (best-effort).
-    const property = await this.propertyRepository.findOneBy({ id: property_id });
+    const property = await this.propertyRepository.findOneBy({
+      id: property_id,
+    });
     if (property) {
       const tenantName = await this.resolveTenantName(tenant_id);
       const endDateLong = this.formatLongDate(move_out_date);
@@ -4187,7 +4210,8 @@ export class PropertiesService {
     // Timeline + live-feed entry (best-effort). A lapse being undone reads as a
     // renewal reactivation; a forced removal reads as a cancellation.
     if (property) {
-      const isLapse = scheduled.move_out_reason === MoveOutReasonEnum.LEASE_ENDED;
+      const isLapse =
+        scheduled.move_out_reason === MoveOutReasonEnum.LEASE_ENDED;
       const tenantName = await this.resolveTenantName(scheduled.tenant_id);
       await this.logEndTenancyTimelineEvent({
         property,

@@ -208,8 +208,10 @@ export class PaymentPlanRequestsService {
     const tenantUser = invoice.tenant?.user;
 
     const tenantName =
-      `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-      'there';
+      this.utilService.formatPersonName(
+        tenantUser?.first_name,
+        tenantUser?.last_name,
+      ) || 'there';
     const tenantPhone = tenantUser?.phone_number
       ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
       : null;
@@ -354,8 +356,10 @@ export class PaymentPlanRequestsService {
       : null;
     const tenantUser = invoice?.tenant?.user;
     const tenantName =
-      `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-      'there';
+      this.utilService.formatPersonName(
+        tenantUser?.first_name,
+        tenantUser?.last_name,
+      ) || 'there';
     const tenantPhone = tenantUser?.phone_number
       ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
       : null;

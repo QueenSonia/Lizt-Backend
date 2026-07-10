@@ -21,6 +21,7 @@ import { NotificationType } from '../notifications/enums/notification-type';
 import { Logger } from '@nestjs/common';
 import { offerLetterToFees, Fee } from '../common/billing/fees';
 import { assertLandlordInScope } from '../common/scope/scope.util';
+import { UtilService } from '../utils/utility-service';
 
 @Injectable()
 export class InvoicesService {
@@ -42,6 +43,7 @@ export class InvoicesService {
     @InjectRepository(Account)
     private readonly accountRepository: Repository<Account>,
     private readonly templateSenderService: TemplateSenderService,
+    private readonly utilService: UtilService,
     private readonly dataSource: DataSource,
     private readonly propertyHistoryService: PropertyHistoryService,
     private readonly notificationService: NotificationService,
@@ -507,7 +509,11 @@ export class InvoicesService {
   /**
    * Update invoice (only before any payment)
    */
-  async update(id: string, managedLandlordIds: string[], dto: UpdateInvoiceDto) {
+  async update(
+    id: string,
+    managedLandlordIds: string[],
+    dto: UpdateInvoiceDto,
+  ) {
     const ids = managedLandlordIds ?? [];
     if (!ids.length) {
       throw new NotFoundException('Invoice not found');
@@ -691,11 +697,16 @@ export class InvoicesService {
       throw new BadRequestException('Tenant phone number not available');
     }
 
-    const tenantName = invoice.kyc_application
-      ? `${invoice.kyc_application.first_name} ${invoice.kyc_application.last_name}`
-      : invoice.tenant?.user
-        ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
-        : 'Tenant';
+    const tenantName =
+      (invoice.kyc_application
+        ? this.utilService.formatPersonName(
+            invoice.kyc_application.first_name,
+            invoice.kyc_application.last_name,
+          )
+        : this.utilService.formatPersonName(
+            invoice.tenant?.user?.first_name,
+            invoice.tenant?.user?.last_name,
+          )) || 'Tenant';
 
     const landlordName =
       invoice.landlord?.profile_name ||

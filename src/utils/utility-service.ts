@@ -112,17 +112,32 @@ export class UtilService {
     return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
   }
 
+  // Canonical person-name formatter for WhatsApp template params: joins the
+  // given parts (a part may itself contain several words, e.g. a stored
+  // "first last" snapshot), sentence-cases every word, and returns '' when
+  // nothing usable so callers can append their own `|| fallback`.
+  formatPersonName(...parts: Array<string | null | undefined>): string {
+    return parts
+      .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+      .flatMap((p) => p.trim().split(/\s+/))
+      .map((word) => this.toSentenceCase(word))
+      .join(' ');
+  }
+
   // Meta rejects template body params containing newlines, tabs, runs of 4+
   // spaces, or zero-width / invisible Unicode (error 132018). Each value also
   // can't exceed 1024 chars and must stay within ~4x the static body length.
-  sanitizeTemplateParam(input: string | null | undefined, maxLen = 500): string {
+  sanitizeTemplateParam(
+    input: string | null | undefined,
+    maxLen = 500,
+  ): string {
     if (!input) return '';
     const INVISIBLE = new RegExp(
       '[' +
         '\\u200B-\\u200F' + // zero-width space, ZWNJ, ZWJ, LRM, RLM
-        '\\u2028\\u2029' +  // line/paragraph separator
-        '\\u2060' +         // word joiner
-        '\\uFEFF' +         // BOM / zero-width no-break space
+        '\\u2028\\u2029' + // line/paragraph separator
+        '\\u2060' + // word joiner
+        '\\uFEFF' + // BOM / zero-width no-break space
         ']',
       'g',
     );

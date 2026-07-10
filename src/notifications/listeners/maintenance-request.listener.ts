@@ -260,7 +260,9 @@ ${description}`;
           event.description ?? '',
         ),
         tenant_name:
-          event.tenant_name ?? event.creator_name ?? 'Facility manager',
+          this.utilService.formatPersonName(
+            event.tenant_name ?? event.creator_name,
+          ) || 'Facility manager',
         tenant_phone_number: this.formatTenantPhoneLocal(
           event.tenant_phone_number,
         ),
@@ -355,9 +357,8 @@ ${event.description ?? ''}`,
             this.utilService.normalizePhoneNumber(tenantPhoneRaw);
           await this.templateSenderService.sendTenantConfirmFiledRequest({
             phone_number: tenantPhone,
-            tenant_name: this.utilService.toSentenceCase(
-              (event.tenant_name ?? '').split(' ')[0] ?? 'there',
-            ),
+            tenant_name:
+              this.utilService.formatPersonName(event.tenant_name) || 'there',
             filer_label: `Your facility manager ${event.creator_name ?? 'team'}`,
             property_or_area_name:
               event.property_name ?? event.common_area_name ?? 'your residence',
@@ -428,9 +429,8 @@ ${event.description ?? ''}`,
             this.utilService.normalizePhoneNumber(tenantPhoneRaw);
           await this.templateSenderService.sendTenantConfirmFiledRequest({
             phone_number: tenantPhone,
-            tenant_name: this.utilService.toSentenceCase(
-              (event.tenant_name ?? '').split(' ')[0] ?? 'there',
-            ),
+            tenant_name:
+              this.utilService.formatPersonName(event.tenant_name) || 'there',
             filer_label: `Your landlord ${event.creator_name ?? 'team'}`,
             property_or_area_name:
               event.property_name ?? event.common_area_name ?? 'your residence',
@@ -520,7 +520,9 @@ ${event.description ?? ''}`,
             {
               phone_number: recipient.phone,
               landlord_name: recipient.name,
-              tenant_name: event.tenant_name || 'Your tenant',
+              tenant_name:
+                this.utilService.formatPersonName(event.tenant_name) ||
+                'Your tenant',
               property_name: event.property_name || 'your property',
               maintenance_request: this.utilService.sanitizeTemplateParam(
                 event.description ?? '',
@@ -561,7 +563,8 @@ ${event.description ?? ''}`,
           maintenance_request: this.utilService.sanitizeTemplateParam(
             sr.description ?? '',
           ),
-          tenant_name: sr.tenant_name ?? 'The tenant',
+          tenant_name:
+            this.utilService.formatPersonName(sr.tenant_name) || 'The tenant',
           tenant_phone_number: this.formatTenantPhoneLocal(
             sr.tenant?.user?.phone_number ?? null,
           ),
@@ -649,7 +652,9 @@ ${event.description ?? ''}`,
         await this.templateSenderService.sendLandlordRequestDeniedByTenant({
           phone_number: recipient.phone,
           landlord_name: recipient.name,
-          tenant_name: event.tenant_name ?? 'The tenant',
+          tenant_name:
+            this.utilService.formatPersonName(event.tenant_name) ||
+            'The tenant',
           filed_by_label: filedByLabel,
           maintenance_request: this.utilService.sanitizeTemplateParam(
             event.description ?? '',
@@ -710,7 +715,8 @@ ${event.description ?? ''}`,
           : null) ??
         sr.property_name ??
         '';
-      const tenantName = sr.tenant_name ?? '—';
+      const tenantName =
+        this.utilService.formatPersonName(sr.tenant_name) || '—';
       const description = this.utilService.sanitizeTemplateParam(
         sr.description ?? '',
       );
@@ -891,7 +897,8 @@ ${event.description ?? ''}`,
         maintenance_request: this.utilService.sanitizeTemplateParam(
           event.description ?? '',
         ),
-        tenant_name: event.tenant_name,
+        tenant_name:
+          this.utilService.formatPersonName(event.tenant_name) || 'The tenant',
         tenant_phone_number: tenantPhone,
         date_created: (event.updated_at instanceof Date
           ? event.updated_at
@@ -939,8 +946,9 @@ ${event.description ?? ''}`,
       const phone = this.utilService.normalizePhoneNumber(
         tenantUser.phone_number,
       );
-      const tenantFirstName = this.utilService.toSentenceCase(
-        tenantUser.first_name ?? '',
+      const tenantFirstName = this.utilService.formatPersonName(
+        tenantUser.first_name,
+        tenantUser.last_name,
       );
 
       await this.templateSenderService.sendTenantConfirmationTemplate({

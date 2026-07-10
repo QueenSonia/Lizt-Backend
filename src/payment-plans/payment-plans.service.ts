@@ -637,8 +637,10 @@ export class PaymentPlansService {
         [property?.name, property?.location].filter(Boolean).join(', ') ||
         'your property';
       const tenantName =
-        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-        'there';
+        this.utilService.formatPersonName(
+          tenantUser?.first_name,
+          tenantUser?.last_name,
+        ) || 'there';
 
       await this.whatsappNotificationLog.queue(
         'sendAdhocInvoiceWithPlanTenant',
@@ -854,8 +856,10 @@ export class PaymentPlansService {
       const property = plan.property;
       const propertyName = property?.name ?? 'your property';
       const tenantName =
-        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-        'there';
+        this.utilService.formatPersonName(
+          tenantUser?.first_name,
+          tenantUser?.last_name,
+        ) || 'there';
 
       const installments = [...(plan.installments ?? [])].sort(
         (a, b) => a.sequence - b.sequence,
@@ -908,8 +912,10 @@ export class PaymentPlansService {
         [property?.name, property?.location].filter(Boolean).join(', ') ||
         'your property';
       const tenantName =
-        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-        'there';
+        this.utilService.formatPersonName(
+          tenantUser?.first_name,
+          tenantUser?.last_name,
+        ) || 'there';
 
       // Scope-aware label: "Tenancy" reads better than the stored
       // "Entire Tenancy" sentinel; charge/OB plans use the charge name.
@@ -2487,8 +2493,10 @@ export class PaymentPlansService {
       const tenantUser = plan.tenant?.user;
 
       const tenantName =
-        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-        'there';
+        this.utilService.formatPersonName(
+          tenantUser?.first_name,
+          tenantUser?.last_name,
+        ) || 'there';
 
       const tenantPhone = tenantUser?.phone_number
         ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
@@ -3099,8 +3107,10 @@ export class PaymentPlansService {
       const tenantUser = plan.tenant?.user;
 
       const tenantName =
-        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-        'there';
+        this.utilService.formatPersonName(
+          tenantUser?.first_name,
+          tenantUser?.last_name,
+        ) || 'there';
 
       const tenantPhone = tenantUser?.phone_number
         ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)

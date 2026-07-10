@@ -885,6 +885,7 @@ export class TenantFlowService {
     // Handle button IDs with payloads (e.g., "confirm_resolution_yes:request_id")
     let cleanButtonId = buttonId;
     let propertyId: string | null = null;
+    let maintenanceRequestId: string | null = null;
 
     if (buttonId?.includes(':')) {
       const [action, payload] = buttonId.split(':');
@@ -893,6 +894,7 @@ export class TenantFlowService {
         action === 'confirm_resolution_no'
       ) {
         cleanButtonId = action;
+        maintenanceRequestId = payload; // The MR the card was sent for
       }
       if (action === 'confirm_pay_ob') {
         await this.handleConfirmPayOB(from, payload);
@@ -916,6 +918,13 @@ export class TenantFlowService {
       if (action === 'confirm_tenancy_details') {
         cleanButtonId = action;
         propertyId = payload; // Extract the property ID
+      }
+      if (
+        action === 'tenancy_details_correct' ||
+        action === 'tenancy_details_incorrect'
+      ) {
+        cleanButtonId = action;
+        propertyId = payload; // Property under review, embedded at send time
       }
       if (action === 'tenant_confirm_mr') {
         await this.handleTenantConfirmMaintenanceRequest(from, payload);
@@ -961,11 +970,11 @@ export class TenantFlowService {
         break;
 
       case 'confirm_resolution_yes':
-        await this.handleConfirmResolutionYes(from);
+        await this.handleConfirmResolutionYes(from, maintenanceRequestId);
         break;
 
       case 'confirm_resolution_no':
-        await this.handleConfirmResolutionNo(from);
+        await this.handleConfirmResolutionNo(from, maintenanceRequestId);
         break;
 
       case 'create_mr_yes':
@@ -1011,11 +1020,11 @@ export class TenantFlowService {
         break;
 
       case 'tenancy_details_correct':
-        await this.handleTenancyDetailsCorrect(from);
+        await this.handleTenancyDetailsCorrect(from, propertyId);
         break;
 
       case 'tenancy_details_incorrect':
-        await this.handleTenancyDetailsIncorrect(from);
+        await this.handleTenancyDetailsIncorrect(from, propertyId);
         break;
 
       default:
@@ -1355,7 +1364,9 @@ export class TenantFlowService {
     try {
       await this.templateSenderService.sendTenantMaintenanceRequestFlow({
         phone_number: from,
-        name: this.utilService.toSentenceCase(user.first_name ?? 'there'),
+        name:
+          this.utilService.formatPersonName(user.first_name, user.last_name) ||
+          'there',
         flow_token: flowToken,
         // Seed the REPORT_ISSUE screen inline (navigate-mode launch) so the
         // property dropdown is populated without an endpoint INIT round-trip.
@@ -2123,19 +2134,68 @@ export class TenantFlowService {
   }
 
   /**
-   * Handle confirm resolution yes button
+   * Resolve which maintenance request a resolution-confirmation tap refers
+   * to. The card's button IDs carry the request id (`:request_id` payload);
+   * the lookup is still scoped to the tapping tenant's phone so a payload can
+   * only ever act on that tenant's own request. Falls back to the latest
+   * RESOLVED request when no payload is present (legacy shapes/simulator) —
+   * the pre-payload behavior.
    */
-  private async handleConfirmResolutionYes(from: string): Promise<void> {
+  private async findResolutionRequest(
+    from: string,
+    requestId?: string | null,
+  ): Promise<MaintenanceRequest | null> {
     const normalizedPhone = this.utilService.normalizePhoneNumber(from);
-
-    const latestResolvedRequest = await this.maintenanceRequestRepo.findOne({
+    return this.maintenanceRequestRepo.findOne({
       where: {
+        ...(requestId
+          ? { id: requestId }
+          : { status: MaintenanceRequestStatusEnum.RESOLVED }),
         tenant: { user: { phone_number: normalizedPhone } },
-        status: MaintenanceRequestStatusEnum.RESOLVED,
       },
       relations: ['tenant', 'tenant.user', 'property'],
       order: { resolution_date: 'DESC' },
     });
+  }
+
+  /**
+   * A late tap can land on a request that has since moved on (already
+   * CLOSED by an earlier tap, REOPENED, auto-closed…). Say so honestly
+   * instead of mutating a request that is no longer awaiting confirmation.
+   */
+  private async sendResolutionRequestMovedOn(
+    from: string,
+    status: MaintenanceRequestStatusEnum,
+  ): Promise<void> {
+    const message =
+      status === MaintenanceRequestStatusEnum.CLOSED
+        ? 'This request has already been closed. If the issue has come back, please create a new maintenance request from the menu.'
+        : "This request is back with the team and no longer awaiting your confirmation — we'll check in again once it's marked resolved.";
+    await this.templateSenderService.sendText(from, message);
+  }
+
+  /**
+   * Handle confirm resolution yes button
+   */
+  private async handleConfirmResolutionYes(
+    from: string,
+    requestId?: string | null,
+  ): Promise<void> {
+    const latestResolvedRequest = await this.findResolutionRequest(
+      from,
+      requestId,
+    );
+
+    if (
+      latestResolvedRequest &&
+      latestResolvedRequest.status !== MaintenanceRequestStatusEnum.RESOLVED
+    ) {
+      await this.sendResolutionRequestMovedOn(
+        from,
+        latestResolvedRequest.status,
+      );
+      return;
+    }
 
     if (latestResolvedRequest) {
       // The query filters by tenant.user.phone_number, so for matched rows
@@ -2183,17 +2243,25 @@ export class TenantFlowService {
   /**
    * Handle confirm resolution no button
    */
-  private async handleConfirmResolutionNo(from: string): Promise<void> {
-    const normalizedPhone = this.utilService.normalizePhoneNumber(from);
+  private async handleConfirmResolutionNo(
+    from: string,
+    requestId?: string | null,
+  ): Promise<void> {
+    const latestResolvedRequest = await this.findResolutionRequest(
+      from,
+      requestId,
+    );
 
-    const latestResolvedRequest = await this.maintenanceRequestRepo.findOne({
-      where: {
-        tenant: { user: { phone_number: normalizedPhone } },
-        status: MaintenanceRequestStatusEnum.RESOLVED,
-      },
-      relations: ['tenant', 'tenant.user', 'property'],
-      order: { resolution_date: 'DESC' },
-    });
+    if (
+      latestResolvedRequest &&
+      latestResolvedRequest.status !== MaintenanceRequestStatusEnum.RESOLVED
+    ) {
+      await this.sendResolutionRequestMovedOn(
+        from,
+        latestResolvedRequest.status,
+      );
+      return;
+    }
 
     if (latestResolvedRequest) {
       const tenantUser = latestResolvedRequest.tenant?.user;
@@ -2230,9 +2298,11 @@ export class TenantFlowService {
         });
         await this.templateSenderService.sendTenantMaintenanceRequestFlow({
           phone_number: from,
-          name: this.utilService.toSentenceCase(
-            tenantUser.first_name ?? 'there',
-          ),
+          name:
+            this.utilService.formatPersonName(
+              tenantUser.first_name,
+              tenantUser.last_name,
+            ) || 'there',
           flow_token: flowToken,
           // Reopen: property is fixed (hide the dropdown); reword for context.
           flow_action_data: {
@@ -2744,7 +2814,9 @@ export class TenantFlowService {
     }
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const tenantName = `${this.utilService.toSentenceCase(user.first_name)}`;
+    const tenantName =
+      this.utilService.formatPersonName(user.first_name, user.last_name) ||
+      'there';
 
     await this.templateSenderService.sendOutstandingBalanceLink({
       phone_number: from,
@@ -3103,7 +3175,9 @@ export class TenantFlowService {
     const user = await this.findTenantByPhone(from);
     if (!user?.accounts?.length) return;
 
-    const tenantName = this.utilService.toSentenceCase(user.first_name);
+    const tenantName =
+      this.utilService.formatPersonName(user.first_name, user.last_name) ||
+      'there';
     const totalInstallments = state.plan.installments?.length ?? 0;
     const installmentLabel = `${state.nextInstallment.sequence} of ${totalInstallments}`;
     const amount = Number(state.nextInstallment.amount).toLocaleString(
@@ -3175,7 +3249,9 @@ export class TenantFlowService {
 
     await this.notificationLogService.queue('sendRenewalLink', {
       phone_number: from,
-      tenant_name: this.utilService.toSentenceCase(user.first_name),
+      tenant_name:
+        this.utilService.formatPersonName(user.first_name, user.last_name) ||
+        'there',
       property_name: rent.property.name,
       start_date: fmtDate(invoice.start_date),
       end_date: fmtDate(invoice.end_date),
@@ -3524,8 +3600,10 @@ export class TenantFlowService {
       return;
     }
 
-    // Stash the property the tenant is reviewing so the Yes/No handlers can
-    // resolve which landlord to notify. Button reply IDs carry no payload.
+    // The property under review rides in the button reply IDs (same
+    // `action:payload` convention as confirm_tenancy_details), so the tap
+    // still resolves no matter how long the tenant takes to answer. The cache
+    // key stays only as a fallback for cards sent before IDs carried a payload.
     await this.cache.set(
       `tenancy_confirmation_pending_${from}`,
       property.id,
@@ -3536,29 +3614,75 @@ export class TenantFlowService {
       from,
       `${detailsMessage}\n\nAre these details correct?`,
       [
-        { id: 'tenancy_details_correct', title: 'Yes, correct' },
-        { id: 'tenancy_details_incorrect', title: 'No, not correct' },
+        {
+          id: `tenancy_details_correct:${property.id}`,
+          title: 'Yes, correct',
+        },
+        {
+          id: `tenancy_details_incorrect:${property.id}`,
+          title: 'No, not correct',
+        },
       ],
     );
+  }
+
+  /**
+   * Resolve which property a Yes/No confirmation tap refers to.
+   * Priority: id embedded in the button reply ID (durable — survives any
+   * delay between card and tap) → legacy pending-confirmation cache key
+   * (cards sent before the IDs carried a payload; 5-minute TTL) → the
+   * tenant's oldest ACTIVE unconfirmed tenancy (the same row the bot gate
+   * would surface, so a stale pre-payload card still lands somewhere sane).
+   */
+  private async resolveTenancyUnderReview(
+    from: string,
+    buttonPropertyId?: string | null,
+  ): Promise<string | null> {
+    const cached = await this.cache.get<string>(
+      `tenancy_confirmation_pending_${from}`,
+    );
+    await this.cache.delete(`tenancy_confirmation_pending_${from}`);
+
+    if (buttonPropertyId) return buttonPropertyId;
+    if (cached) return cached;
+
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return null;
+    const oldestUnconfirmed = await this.propertyTenantRepo.findOne({
+      where: {
+        tenant_id: In(user.accounts.map((a) => a.id)),
+        status: TenantStatusEnum.ACTIVE,
+        details_confirmed_at: IsNull(),
+      },
+      order: { created_at: 'ASC' },
+    });
+    return oldestUnconfirmed?.property_id ?? null;
   }
 
   /**
    * Handle "Yes, correct" response — tenant confirmed their tenancy details.
    * Also notifies the landlord with status "Confirmed correct".
    */
-  private async handleTenancyDetailsCorrect(from: string): Promise<void> {
-    const propertyId = await this.cache.get(
-      `tenancy_confirmation_pending_${from}`,
+  private async handleTenancyDetailsCorrect(
+    from: string,
+    buttonPropertyId?: string | null,
+  ): Promise<void> {
+    const propertyId = await this.resolveTenancyUnderReview(
+      from,
+      buttonPropertyId,
     );
-    await this.cache.delete(`tenancy_confirmation_pending_${from}`);
 
     if (propertyId) {
       // Persist the confirmation so the bot gate (gateUnconfirmedTenant) lets
       // this tenant through. Clearing the per-session throttle key means that,
       // for a multi-property tenant, the next unconfirmed property's card shows
       // straight away on their next message.
+      let newlyConfirmed = false;
       try {
-        await this.markTenancyDetailsConfirmed(from, propertyId);
+        newlyConfirmed = await this.markTenancyDetailsConfirmed(
+          from,
+          propertyId,
+        );
         await this.cache.delete(`tenancy_gate_card_shown_${from}`);
       } catch (err) {
         this.logger.error(
@@ -3567,17 +3691,22 @@ export class TenantFlowService {
         );
       }
 
-      try {
-        await this.queueTenancyReviewLandlordNotification(
-          from,
-          propertyId,
-          'Confirmed correct',
-        );
-      } catch (err) {
-        this.logger.error(
-          'Failed to queue landlord tenancy-review notification:',
-          err,
-        );
+      // Only notify on the NULL→confirmed transition — button payloads make
+      // re-taps on the same card resolvable forever, and the landlord should
+      // hear about a confirmation exactly once.
+      if (newlyConfirmed) {
+        try {
+          await this.queueTenancyReviewLandlordNotification(
+            from,
+            propertyId,
+            'Confirmed correct',
+          );
+        } catch (err) {
+          this.logger.error(
+            'Failed to queue landlord tenancy-review notification:',
+            err,
+          );
+        }
       }
     }
 
@@ -3597,17 +3726,22 @@ export class TenantFlowService {
   private async markTenancyDetailsConfirmed(
     from: string,
     propertyId: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const user = await this.findTenantByPhone(from);
-    if (!user?.accounts?.length) return;
-    await this.propertyTenantRepo.update(
+    if (!user?.accounts?.length) return false;
+    // details_confirmed_at IS NULL keeps a re-tap on an old card from
+    // overwriting the original confirmation time; the affected count tells
+    // the caller whether this tap was the NULL→confirmed transition.
+    const result = await this.propertyTenantRepo.update(
       {
         tenant_id: In(user.accounts.map((a) => a.id)),
         property_id: propertyId,
         status: TenantStatusEnum.ACTIVE,
+        details_confirmed_at: IsNull(),
       },
       { details_confirmed_at: new Date() },
     );
+    return (result.affected ?? 0) > 0;
   }
 
   /**
@@ -3616,11 +3750,14 @@ export class TenantFlowService {
    * tenant for a free-text description of what's wrong. The reply is routed
    * by `cachedResponse` via the `awaiting_tenancy_dispute_reason:<id>` state.
    */
-  private async handleTenancyDetailsIncorrect(from: string): Promise<void> {
-    const propertyId = await this.cache.get(
-      `tenancy_confirmation_pending_${from}`,
+  private async handleTenancyDetailsIncorrect(
+    from: string,
+    buttonPropertyId?: string | null,
+  ): Promise<void> {
+    const propertyId = await this.resolveTenancyUnderReview(
+      from,
+      buttonPropertyId,
     );
-    await this.cache.delete(`tenancy_confirmation_pending_${from}`);
 
     if (propertyId) {
       try {

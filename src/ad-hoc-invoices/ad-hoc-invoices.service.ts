@@ -1014,8 +1014,10 @@ export class AdHocInvoicesService {
       const property = invoice.property;
       const tenantUser = invoice.tenant?.user;
       const tenantName =
-        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-        'there';
+        this.utilService.formatPersonName(
+          tenantUser?.first_name,
+          tenantUser?.last_name,
+        ) || 'there';
       const tenantPhone = tenantUser?.phone_number
         ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
         : null;
@@ -1051,8 +1053,10 @@ export class AdHocInvoicesService {
       const property = invoice.property;
       const tenantUser = invoice.tenant?.user;
       const tenantName =
-        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-        'there';
+        this.utilService.formatPersonName(
+          tenantUser?.first_name,
+          tenantUser?.last_name,
+        ) || 'there';
       const tenantPhone = tenantUser?.phone_number
         ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)
         : null;
@@ -1090,8 +1094,10 @@ export class AdHocInvoicesService {
       const tenantUser = invoice.tenant?.user;
 
       const tenantName =
-        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-        'there';
+        this.utilService.formatPersonName(
+          tenantUser?.first_name,
+          tenantUser?.last_name,
+        ) || 'there';
 
       const tenantPhone = tenantUser?.phone_number
         ? this.utilService.normalizePhoneNumber(tenantUser.phone_number)

@@ -7,11 +7,9 @@ import { pdf, DocumentProps } from '@react-pdf/renderer';
 import * as React from 'react';
 
 import { KYCApplication } from './entities/kyc-application.entity';
-import {
-  KYCDocumentPDF,
-  IKycApplication,
-} from './pdf/kyc-document-pdf';
+import { KYCDocumentPDF, IKycApplication } from './pdf/kyc-document-pdf';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender';
+import { UtilService } from '../utils/utility-service';
 
 /**
  * Generates the landlord-facing KYC application PDF and ships it via
@@ -35,6 +33,7 @@ export class KycPdfService {
     private readonly kycApplicationRepository: Repository<KYCApplication>,
     private readonly templateSenderService: TemplateSenderService,
     private readonly configService: ConfigService,
+    private readonly utilService: UtilService,
   ) {}
 
   @OnEvent('whatsapp.button.kyc_application_download')
@@ -63,8 +62,7 @@ export class KycPdfService {
     const pdfBuffer = await this.generatePdfBuffer(application, propertyName);
     const pdfFilename = this.buildFilename(tenantName);
     const frontendUrl =
-      this.configService.get<string>('FRONTEND_URL') ||
-      'http://localhost:3000';
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
 
     await this.templateSenderService.sendKYCApplicationAttachmentLandlord({
       phone_number: landlordPhone,
@@ -108,8 +106,10 @@ export class KycPdfService {
 
   private buildTenantName(application: KYCApplication): string {
     return (
-      `${application.first_name || ''} ${application.last_name || ''}`.trim() ||
-      'Applicant'
+      this.utilService.formatPersonName(
+        application.first_name,
+        application.last_name,
+      ) || 'Applicant'
     );
   }
 
@@ -155,7 +155,8 @@ export class KycPdfService {
     const bizProof = realUrl(app.business_proof_url);
 
     const documents: Array<{ name: string; url: string }> = [];
-    if (passport) documents.push({ name: 'Passport Photograph', url: passport });
+    if (passport)
+      documents.push({ name: 'Passport Photograph', url: passport });
     if (idDoc) documents.push({ name: 'Means of Identification', url: idDoc });
     if (app.employment_status?.toLowerCase() === 'employed' && empProof) {
       documents.push({ name: 'Proof of Employment', url: empProof });
@@ -242,7 +243,8 @@ export class KycPdfService {
       workPhone: app.work_phone_number || undefined,
       monthlyIncome: app.monthly_net_income || undefined,
       officeAddress: app.work_address || undefined,
-      yearsAtEmployer: app.length_of_employment || app.business_duration || undefined,
+      yearsAtEmployer:
+        app.length_of_employment || app.business_duration || undefined,
 
       natureOfBusiness: app.nature_of_business || undefined,
       businessName: app.business_name || undefined,
@@ -266,9 +268,7 @@ export class KycPdfService {
   }
 }
 
-async function streamToBuffer(
-  stream: NodeJS.ReadableStream,
-): Promise<Buffer> {
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));

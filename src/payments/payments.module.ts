@@ -28,6 +28,7 @@ import { PaymentPlansModule } from '../payment-plans/payment-plans.module';
 import { AdHocInvoicesModule } from '../ad-hoc-invoices/ad-hoc-invoices.module';
 import { ScopeModule } from 'src/common/scope/scope.module';
 import { NotifyModule } from 'src/common/notify/notify.module';
+import { UtilsModule } from '../utils/utils.module';
 
 @Module({
   imports: [
@@ -59,6 +60,7 @@ import { NotifyModule } from 'src/common/notify/notify.module';
     forwardRef(() => AdHocInvoicesModule),
     ScopeModule,
     NotifyModule,
+    UtilsModule,
   ],
   controllers: [WebhooksController, PaymentsController],
   providers: [PaystackService, PaystackLogger, PaymentService],

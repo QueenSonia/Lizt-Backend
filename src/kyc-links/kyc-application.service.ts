@@ -459,7 +459,10 @@ export class KYCApplicationService {
             {
               phone_number: recipient.phone,
               landlord_name: recipient.name,
-              tenant_name: `${kycData.first_name} ${kycData.last_name}`,
+              tenant_name: this.utilService.formatPersonName(
+                kycData.first_name,
+                kycData.last_name,
+              ),
               property_name: property.name,
               application_id: savedApplication.id,
               frontend_url: frontendUrl,
@@ -483,9 +486,15 @@ export class KYCApplicationService {
             phone_number: this.utilService.normalizePhoneNumber(
               kycData.phone_number,
             ),
-            tenant_name: `${kycData.first_name} ${kycData.last_name}`,
+            tenant_name: this.utilService.formatPersonName(
+              kycData.first_name,
+              kycData.last_name,
+            ),
             landlord_id: property.owner_id,
-            recipient_name: `${kycData.first_name} ${kycData.last_name}`,
+            recipient_name: this.utilService.formatPersonName(
+              kycData.first_name,
+              kycData.last_name,
+            ),
           },
           savedApplication.id,
         );
@@ -503,7 +512,10 @@ export class KYCApplicationService {
               kycData.referral_agent_phone_number,
             ),
             agent_name: kycData.referral_agent_full_name,
-            tenant_name: `${kycData.first_name} ${kycData.last_name}`,
+            tenant_name: this.utilService.formatPersonName(
+              kycData.first_name,
+              kycData.last_name,
+            ),
             property_name: property.name,
             landlord_id: property.owner_id,
             recipient_name: kycData.referral_agent_full_name,
@@ -654,7 +666,10 @@ export class KYCApplicationService {
             {
               phone_number: recipient.phone,
               landlord_name: recipient.name,
-              tenant_name: `${updated.first_name} ${updated.last_name}`,
+              tenant_name: this.utilService.formatPersonName(
+                updated.first_name,
+                updated.last_name,
+              ),
               property_name: property.name,
               application_id: updated.id,
               frontend_url: frontendUrl,
@@ -1748,8 +1763,9 @@ export class KYCApplicationService {
                 property.owner_id,
                 NotificationCategory.KYC,
               );
-            const tenantName = this.utilService.toSentenceCase(
+            const tenantName = this.utilService.formatPersonName(
               updatedKyc.first_name,
+              updatedKyc.last_name,
             );
 
             for (const recipient of recipients) {
@@ -1784,7 +1800,10 @@ export class KYCApplicationService {
           const tenantPhone = this.utilService.normalizePhoneNumber(
             updatedKyc.phone_number,
           );
-          const tenantName = `${updatedKyc.first_name} ${updatedKyc.last_name}`;
+          const tenantName = this.utilService.formatPersonName(
+            updatedKyc.first_name,
+            updatedKyc.last_name,
+          );
 
           await this.whatsappBotService.sendKYCSubmissionConfirmation({
             phone_number: tenantPhone,
@@ -1820,7 +1839,10 @@ export class KYCApplicationService {
             updatedKyc.referral_agent_phone_number,
           );
           const agentName = updatedKyc.referral_agent_full_name;
-          const tenantName = `${updatedKyc.first_name} ${updatedKyc.last_name}`;
+          const tenantName = this.utilService.formatPersonName(
+            updatedKyc.first_name,
+            updatedKyc.last_name,
+          );
 
           await this.whatsappNotificationLog.queue(
             'sendAgentKYCNotification',
@@ -1980,8 +2002,9 @@ export class KYCApplicationService {
       const normalizedPhone = this.utilService.normalizePhoneNumber(
         application.phone_number,
       );
-      const tenantName = this.utilService.toSentenceCase(
+      const tenantName = this.utilService.formatPersonName(
         application.first_name,
+        application.last_name,
       );
       const landlordName = application.property?.owner?.profile_name
         ? application.property.owner.profile_name
@@ -2374,8 +2397,9 @@ export class KYCApplicationService {
               property.owner_id,
               NotificationCategory.KYC,
             );
-          const tenantName = this.utilService.toSentenceCase(
+          const tenantName = this.utilService.formatPersonName(
             savedApplication.first_name,
+            savedApplication.last_name,
           );
 
           for (const recipient of recipients) {
@@ -2403,7 +2427,10 @@ export class KYCApplicationService {
         const tenantPhone = this.utilService.normalizePhoneNumber(
           savedApplication.phone_number,
         );
-        const tenantName = `${savedApplication.first_name} ${savedApplication.last_name}`;
+        const tenantName = this.utilService.formatPersonName(
+          savedApplication.first_name,
+          savedApplication.last_name,
+        );
 
         await this.whatsappBotService.sendKYCSubmissionConfirmation({
           phone_number: tenantPhone,

@@ -17,6 +17,7 @@ import {
   RentStatusEnum,
 } from '../rents/dto/create-rent.dto';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import { UtilService } from '../utils/utility-service';
 import type { TenancyRenewedFromCreditParams } from '../whatsapp-bot/template-sender';
 import {
   Fee,
@@ -96,6 +97,7 @@ export class RenewalChargeService {
     @InjectRepository(PropertyHistory)
     private readonly propertyHistoryRepo: Repository<PropertyHistory>,
     private readonly tenantBalancesService: TenantBalancesService,
+    private readonly utilService: UtilService,
   ) {}
 
   /**
@@ -116,7 +118,9 @@ export class RenewalChargeService {
       return { posted: 0, skipped: 'not_accepted' };
     }
 
-    const expiry = rent.expiry_date ? startOfUtcDay(new Date(rent.expiry_date)) : null;
+    const expiry = rent.expiry_date
+      ? startOfUtcDay(new Date(rent.expiry_date))
+      : null;
     if (!expiry || expiry > startOfUtcDay(now)) {
       return { posted: 0, skipped: 'expiry_in_future' };
     }
@@ -233,7 +237,7 @@ export class RenewalChargeService {
     const toReverse = entries.filter(
       (e) =>
         (e.metadata as Record<string, unknown> | null)?.kind ===
-        LETTER_CHARGE_KIND &&
+          LETTER_CHARGE_KIND &&
         !(e.metadata as Record<string, unknown> | null)?.reversed,
     );
 
@@ -740,10 +744,13 @@ export class RenewalChargeService {
     periodEnd: Date,
   ): TenancyRenewedFromCreditParams | null {
     const phone = oldRent.tenant?.user?.phone_number;
-    const name = oldRent.tenant?.user?.first_name;
+    const name = this.utilService.formatPersonName(
+      oldRent.tenant?.user?.first_name,
+      oldRent.tenant?.user?.last_name,
+    );
     if (!phone || !name) {
       this.logger.warn(
-        `Skipping tenancy-renewed message for rent ${newRent.id}: missing tenant phone or first name.`,
+        `Skipping tenancy-renewed message for rent ${newRent.id}: missing tenant phone or name.`,
       );
       return null;
     }

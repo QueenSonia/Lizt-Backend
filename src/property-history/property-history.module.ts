@@ -12,6 +12,7 @@ import { TenantBalancesModule } from 'src/tenant-balances/tenant-balances.module
 import { TenantBalanceLedger } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
+import { UtilsModule } from '../utils/utils.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
     EventsModule,
     TenantBalancesModule,
     forwardRef(() => WhatsappBotModule),
+    UtilsModule,
   ],
   controllers: [PropertyHistoryController],
   providers: [PropertyHistoryService, PaymentHistoryPdfService],

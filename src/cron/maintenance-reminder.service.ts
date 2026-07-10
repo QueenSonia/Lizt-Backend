@@ -163,7 +163,8 @@ export class MaintenanceReminderService {
       lagosDayNumber(now) - lagosDayNumber(new Date(sr.resolution_date));
 
     // Don't act until the request has gone a full week unconfirmed.
-    if (daysSinceResolved < CONFIRMATION_REMINDER_INTERVAL_DAYS) return 'skipped';
+    if (daysSinceResolved < CONFIRMATION_REMINDER_INTERVAL_DAYS)
+      return 'skipped';
 
     const tenantUser = sr.tenant?.user;
     if (!tenantUser?.phone_number) return 'skipped';
@@ -207,8 +208,9 @@ export class MaintenanceReminderService {
     const phone = this.utilService.normalizePhoneNumber(
       tenantUser.phone_number,
     );
-    const tenantFirstName = this.utilService.toSentenceCase(
-      tenantUser.first_name ?? '',
+    const tenantFirstName = this.utilService.formatPersonName(
+      tenantUser.first_name,
+      tenantUser.last_name,
     );
     const sanitizedDescription = this.utilService.sanitizeTemplateParam(
       sr.description ?? '',
@@ -254,8 +256,9 @@ export class MaintenanceReminderService {
     const phone = this.utilService.normalizePhoneNumber(
       tenantUser.phone_number,
     );
-    const tenantFirstName = this.utilService.toSentenceCase(
-      tenantUser.first_name ?? '',
+    const tenantFirstName = this.utilService.formatPersonName(
+      tenantUser.first_name,
+      tenantUser.last_name,
     );
     const sanitizedTitle = this.utilService.sanitizeTemplateParam(
       sr.description ?? '',
@@ -274,9 +277,7 @@ export class MaintenanceReminderService {
     await this.logToLiveFeed(
       sr,
       NotificationType.MAINTENANCE_AUTO_CLOSED,
-      `Maintenance request "${this.issueSnippet(
-        sr,
-      )}" at ${this.propertyLabel(
+      `Maintenance request "${this.issueSnippet(sr)}" at ${this.propertyLabel(
         sr,
       )} was automatically closed after ${this.tenantDisplayName(
         tenantUser,

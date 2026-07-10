@@ -16,6 +16,7 @@ import { resolveBrandingUser } from '../common/branding/branding.util';
 import { PropertyHistory } from './entities/property-history.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
 import { TemplateSenderService } from '../whatsapp-bot/template-sender';
+import { UtilService } from '../utils/utility-service';
 
 export interface PaymentReceiptView {
   receiptNumber: string;
@@ -60,6 +61,7 @@ export class PaymentHistoryPdfService {
     private readonly kycApplicationRepository: Repository<KYCApplication>,
     private readonly templateSenderService: TemplateSenderService,
     private readonly configService: ConfigService,
+    private readonly utilService: UtilService,
   ) {}
 
   /**
@@ -80,11 +82,12 @@ export class PaymentHistoryPdfService {
       );
     }
 
-    const firstName = view.tenant.name.split(/\s+/)[0] || 'there';
+    const tenantName =
+      this.utilService.formatPersonName(view.tenant.name) || 'there';
 
     await this.templateSenderService.sendPaymentReceiptTenant({
       phone_number: view.tenant.phone,
-      tenant_first_name: firstName,
+      tenant_first_name: tenantName,
       amount: view.paymentAmount,
       description: view.paymentDescription || 'Payment received',
       receipt_token: receiptToken,
@@ -111,8 +114,7 @@ export class PaymentHistoryPdfService {
       view.receiptDate ? new Date(view.receiptDate) : new Date(),
     );
     const frontendUrl =
-      this.configService.get<string>('FRONTEND_URL') ||
-      'http://localhost:3000';
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
 
     await this.templateSenderService.sendPaymentReceiptAttachmentTenant({
       phone_number: phone,
@@ -192,9 +194,7 @@ export class PaymentHistoryPdfService {
     return row;
   }
 
-  private async buildView(
-    row: PropertyHistory,
-  ): Promise<PaymentReceiptView> {
+  private async buildView(row: PropertyHistory): Promise<PaymentReceiptView> {
     const parsed = this.parseDescription(row.event_description);
     const paymentAmount = Number(parsed.paymentAmount) || 0;
     const paymentDate = row.move_in_date ?? row.created_at ?? null;
@@ -205,9 +205,7 @@ export class PaymentHistoryPdfService {
     // receipt's "Property" field is misleading — show `-` instead of the
     // property the applicant was being staged against.
     const isStagedApplicant = !row.tenant_id && !!kycApp;
-    const propertyName = isStagedApplicant
-      ? '-'
-      : property?.name || 'Property';
+    const propertyName = isStagedApplicant ? '-' : property?.name || 'Property';
     const propertyAddress = isStagedApplicant ? '' : property?.location || '';
 
     const tenantName = this.resolveTenantName(row, parsed, kycApp);
@@ -216,9 +214,7 @@ export class PaymentHistoryPdfService {
 
     return {
       receiptNumber: row.receipt_number || 'N/A',
-      receiptDate: paymentDate
-        ? new Date(paymentDate).toISOString()
-        : null,
+      receiptDate: paymentDate ? new Date(paymentDate).toISOString() : null,
       paymentAmount,
       paymentDescription: parsed.paymentDescription || null,
       paymentMethod: 'Manual',
@@ -384,5 +380,4 @@ export class PaymentHistoryPdfService {
       amountPaid: view.paymentAmount,
     });
   }
-
 }

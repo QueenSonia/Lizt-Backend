@@ -36,6 +36,7 @@ import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { InvoicesService } from '../invoices/invoices.service';
 import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { UtilService } from '../utils/utility-service';
 import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 /**
@@ -68,6 +69,7 @@ export class OfferLettersService {
     private readonly invoicesService: InvoicesService,
     private readonly configService: ConfigService,
     private readonly notificationRecipients: NotificationRecipientsService,
+    private readonly utilService: UtilService,
   ) {}
 
   /**
@@ -355,7 +357,10 @@ export class OfferLettersService {
     token: string,
   ): Promise<void> {
     try {
-      const applicantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+      const applicantName = this.utilService.formatPersonName(
+        kycApplication.first_name,
+        kycApplication.last_name,
+      );
       const phoneNumber = kycApplication.phone_number;
       const frontendUrl =
         this.configService.get<string>('FRONTEND_URL') || 'https://lizt.co';
@@ -755,7 +760,10 @@ export class OfferLettersService {
     try {
       await this.templateSenderService.sendPaymentInvoiceLink({
         phone_number: kycApplication.phone_number,
-        tenant_name: `${kycApplication.first_name} ${kycApplication.last_name}`,
+        tenant_name: this.utilService.formatPersonName(
+          kycApplication.first_name,
+          kycApplication.last_name,
+        ),
         property_name: property.name,
         invoice_url: offerLetter.token,
       });
@@ -865,7 +873,10 @@ export class OfferLettersService {
         return;
       }
 
-      const tenantName = `${kycApplication.first_name} ${kycApplication.last_name}`;
+      const tenantName = this.utilService.formatPersonName(
+        kycApplication.first_name,
+        kycApplication.last_name,
+      );
 
       for (const recipient of recipients) {
         if (!recipient.phone) continue;

@@ -170,7 +170,12 @@ export class TenantAttachmentListener {
       await this.templateSenderService.sendTenantTenancyTerminated({
         phone_number: this.utilService.normalizePhoneNumber(tenantPhoneRaw),
         tenant_name:
-          tenant?.user?.first_name || event.tenant_name || 'there',
+          this.utilService.formatPersonName(
+            tenant?.user?.first_name,
+            tenant?.user?.last_name,
+          ) ||
+          this.utilService.formatPersonName(event.tenant_name) ||
+          'there',
         property_name: event.property_name,
         termination_reason: event.termination_reason || 'Other',
       });

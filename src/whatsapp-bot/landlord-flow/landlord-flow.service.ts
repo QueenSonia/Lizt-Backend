@@ -338,7 +338,8 @@ export class LandlordFlowService {
           maintenanceRequest.tenant.user.phone_number,
         ),
         `Your maintenance request with ID: ${text} is being processed by ${this.utilService.toSentenceCase(
-          maintenanceRequest.facilityManager?.account?.profile_name || 'your facility manager',
+          maintenanceRequest.facilityManager?.account?.profile_name ||
+            'your facility manager',
         )}.`,
       );
     }
@@ -495,8 +496,9 @@ export class LandlordFlowService {
         phone_number: this.utilService.normalizePhoneNumber(
           maintenanceRequest.tenant.user.phone_number,
         ),
-        tenant_name: this.utilService.toSentenceCase(
+        tenant_name: this.utilService.formatPersonName(
           maintenanceRequest.tenant.user.first_name,
+          maintenanceRequest.tenant.user.last_name,
         ),
         request_description: maintenanceRequest.description,
         request_id: maintenanceRequest.request_id,
@@ -643,7 +645,9 @@ export class LandlordFlowService {
    * Handle view all maintenance requests button
    */
   private async handleViewAllMaintenanceRequests(from: string): Promise<void> {
-    this.logger.log('✅ Matched view_all_maintenance_requests or maintenance_request');
+    this.logger.log(
+      '✅ Matched view_all_maintenance_requests or maintenance_request',
+    );
 
     const teamMemberInfo = await this.findTeamMemberByPhone(from);
 
@@ -796,8 +800,9 @@ export class LandlordFlowService {
           phone_number: this.utilService.normalizePhoneNumber(
             maintenanceRequest.tenant.user.phone_number,
           ),
-          tenant_name: this.utilService.toSentenceCase(
+          tenant_name: this.utilService.formatPersonName(
             maintenanceRequest.tenant.user.first_name,
+            maintenanceRequest.tenant.user.last_name,
           ),
           request_description: maintenanceRequest.description,
           request_id: maintenanceRequest.request_id,

@@ -179,7 +179,10 @@ export class TenanciesService {
           phone_number: this.utilService.normalizePhoneNumber(
             tenantUser.phone_number,
           ),
-          tenant_name: `${tenantUser.first_name} ${tenantUser.last_name}`,
+          tenant_name: this.utilService.formatPersonName(
+            tenantUser.first_name,
+            tenantUser.last_name,
+          ),
           landlord_name: landlordName,
           property_name: property.name,
           property_id: property_id,
@@ -772,7 +775,10 @@ export class TenanciesService {
 
     const isSilent = body?.silent === true;
 
-    const tenantName = `${propertyTenant.tenant.user.first_name} ${propertyTenant.tenant.user.last_name}`;
+    const tenantName = this.utilService.formatPersonName(
+      propertyTenant.tenant.user.first_name,
+      propertyTenant.tenant.user.last_name,
+    );
 
     const sanitizedLetterHtml = sanitizeLetterHtml(body?.letterBodyHtml);
     const letterBodyFields = body?.letterBodyFields ?? null;
@@ -1525,7 +1531,10 @@ export class TenanciesService {
         phone_number: this.utilService.normalizePhoneNumber(
           tenantUser.phone_number,
         ),
-        tenant_name: this.utilService.toSentenceCase(tenantUser.first_name),
+        tenant_name: this.utilService.formatPersonName(
+          tenantUser.first_name,
+          tenantUser.last_name,
+        ),
         property_name: propertyTenant.property.name,
         property_id: propertyTenant.property_id,
       };
@@ -1555,8 +1564,10 @@ export class TenanciesService {
   ): void {
     const tenantUser = propertyTenant.tenant?.user;
     const tenantName =
-      `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
-      'Tenant';
+      this.utilService.formatPersonName(
+        tenantUser?.first_name,
+        tenantUser?.last_name,
+      ) || 'Tenant';
     const summary = rentPeriodAmendedDescription(
       before,
       after,
@@ -3293,7 +3304,10 @@ export class TenanciesService {
     const newOutstandingBalance = newWalletBalance < 0 ? -newWalletBalance : 0;
 
     // Common data for notifications
-    const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+    const tenantName = this.utilService.formatPersonName(
+      invoice.tenant.user.first_name,
+      invoice.tenant.user.last_name,
+    );
     const propertyName = invoice.property.name;
 
     // Send WhatsApp notifications (non-blocking). Three states:
@@ -3535,7 +3549,10 @@ export class TenanciesService {
       throw new NotFoundException('Renewal invoice not found');
     }
 
-    const tenantName = `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`;
+    const tenantName = this.utilService.formatPersonName(
+      invoice.tenant.user.first_name,
+      invoice.tenant.user.last_name,
+    );
     const propertyName = invoice.property.name;
 
     const entry = this.propertyHistoryRepository.create({

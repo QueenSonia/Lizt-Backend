@@ -109,15 +109,23 @@ export class ChatService {
         throw new Error('Tenant not found');
       }
 
-      const isMaintenanceRequestExists = await this.maintenanceRequestRepo.findOne({
-        where: { request_id: sendMessageDto.requestId },
-      });
+      const isMaintenanceRequestExists =
+        await this.maintenanceRequestRepo.findOne({
+          where: { request_id: sendMessageDto.requestId },
+        });
+
+      // Snapshot the tenant's real name (matching the write sites in
+      // maintenance-requests.service.ts) — profile_name only as a fallback.
+      const tenantUser = propertyTenant.tenant.user;
+      const tenantDisplayName =
+        `${tenantUser?.first_name ?? ''} ${tenantUser?.last_name ?? ''}`.trim() ||
+        propertyTenant.tenant.profile_name;
 
       if (!isMaintenanceRequestExists) {
         const maintenanceRequest = this.maintenanceRequestRepo.create({
           tenant_id: userId,
           property_id: propertyTenant.property_id,
-          tenant_name: propertyTenant.tenant.profile_name,
+          tenant_name: tenantDisplayName,
           property_name: propertyTenant.property.name,
           issue_category: 'service',
           date_reported: new Date(),
@@ -133,7 +141,7 @@ export class ChatService {
           user_id: userId,
           property_id: propertyTenant.property_id,
           landlord_id: propertyTenant.property?.owner_id,
-          tenant_name: propertyTenant.tenant.profile_name,
+          tenant_name: tenantDisplayName,
           property_name: propertyTenant.property.name,
           maintenance_request_id: maintenanceRequest.id,
           description: sendMessageDto.content,
@@ -155,34 +163,32 @@ export class ChatService {
   ): Promise<any[]> {
     const normalizedUser = currentUser === 'rep' ? 'admin' : currentUser;
 
-    return (
-      this.chatMessageRepository
-        .createQueryBuilder('message')
-        .select('message.maintenance_request_id', 'requestId')
-        .addSelect('MAX(message.created_at)', 'lastMessageAt')
-        .addSelect('COUNT(*)', 'messageCount')
-        .addSelect(
-          `COUNT(CASE
+    return this.chatMessageRepository
+      .createQueryBuilder('message')
+      .select('message.maintenance_request_id', 'requestId')
+      .addSelect('MAX(message.created_at)', 'lastMessageAt')
+      .addSelect('COUNT(*)', 'messageCount')
+      .addSelect(
+        `COUNT(CASE
          WHEN message.isRead = false
          AND message.sender != :normalizedUser
          THEN 1
        END)`,
-          'unread',
-        )
-        .leftJoin('message.maintenanceRequest', 'maintenanceRequest')
-        .addSelect('maintenanceRequest.tenant_name', 'tenant_name')
-        .addSelect('maintenanceRequest.issue_category', 'issue_category')
-        .addSelect('maintenanceRequest.description', 'description')
-        .addSelect('maintenanceRequest.status', 'status')
-        .groupBy('message.maintenance_request_id')
-        .addGroupBy('maintenanceRequest.tenant_name')
-        .addGroupBy('maintenanceRequest.issue_category')
-        .addGroupBy('maintenanceRequest.description')
-        .addGroupBy('maintenanceRequest.status')
-        .orderBy('MAX(message.created_at)', 'DESC')
-        .setParameter('normalizedUser', normalizedUser)
-        .getRawMany()
-    );
+        'unread',
+      )
+      .leftJoin('message.maintenanceRequest', 'maintenanceRequest')
+      .addSelect('maintenanceRequest.tenant_name', 'tenant_name')
+      .addSelect('maintenanceRequest.issue_category', 'issue_category')
+      .addSelect('maintenanceRequest.description', 'description')
+      .addSelect('maintenanceRequest.status', 'status')
+      .groupBy('message.maintenance_request_id')
+      .addGroupBy('maintenanceRequest.tenant_name')
+      .addGroupBy('maintenanceRequest.issue_category')
+      .addGroupBy('maintenanceRequest.description')
+      .addGroupBy('maintenanceRequest.status')
+      .orderBy('MAX(message.created_at)', 'DESC')
+      .setParameter('normalizedUser', normalizedUser)
+      .getRawMany();
   }
 
   async getMessagesByRequestId(requestId: string): Promise<ChatMessage[]> {

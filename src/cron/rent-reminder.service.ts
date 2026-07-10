@@ -33,6 +33,7 @@ import {
 } from '../properties/dto/create-property.dto';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { RenewalChargeService } from '../renewal-letters/renewal-charge.service';
+import { UtilService } from '../utils/utility-service';
 import {
   rentToFees,
   renewalInvoiceToFees,
@@ -97,6 +98,7 @@ export class RentReminderService {
     private readonly renewalChargeService: RenewalChargeService,
     private readonly propertiesService: PropertiesService,
     private readonly notificationRecipients: NotificationRecipientsService,
+    private readonly utilService: UtilService,
   ) {}
 
   /**
@@ -361,7 +363,10 @@ export class RentReminderService {
     if (!plan) return;
 
     const phone = plan.tenant?.user?.phone_number;
-    const tenantName = plan.tenant?.user?.first_name;
+    const tenantName = this.utilService.formatPersonName(
+      plan.tenant?.user?.first_name,
+      plan.tenant?.user?.last_name,
+    );
     const propertyName = plan.property?.name;
     const landlordId = plan.property?.owner_id;
 
@@ -1092,8 +1097,10 @@ export class RentReminderService {
       NotificationCategory.RENEWALS,
     );
     const tenantName =
-      `${rent.tenant?.user?.first_name ?? ''} ${rent.tenant?.user?.last_name ?? ''}`.trim() ||
-      'your tenant';
+      this.utilService.formatPersonName(
+        rent.tenant?.user?.first_name,
+        rent.tenant?.user?.last_name,
+      ) || 'your tenant';
     const propertyName = rent.property?.name ?? 'your property';
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
@@ -1662,7 +1669,11 @@ export class RentReminderService {
         'sendRenewalLetterLink',
         {
           phone_number: rent.tenant.user.phone_number,
-          tenant_name: rent.tenant.user.first_name,
+          tenant_name:
+            this.utilService.formatPersonName(
+              rent.tenant.user.first_name,
+              rent.tenant.user.last_name,
+            ) || 'there',
           property_name: rent.property.name,
           expiry_date: bodyExpiryDateStr,
           renewal_token: renewalInvoice.token,
@@ -1683,7 +1694,11 @@ export class RentReminderService {
         'sendRentReminderWithRenewalTemplate',
         {
           phone_number: rent.tenant.user.phone_number,
-          tenant_name: rent.tenant.user.first_name,
+          tenant_name:
+            this.utilService.formatPersonName(
+              rent.tenant.user.first_name,
+              rent.tenant.user.last_name,
+            ) || 'there',
           property_name: rent.property.name,
           rent_amount: formattedAmount,
           expiry_date: bodyDueDateStr,
@@ -1747,7 +1762,11 @@ export class RentReminderService {
       'sendTenantVacateReminder',
       {
         phone_number: rent.tenant.user.phone_number,
-        tenant_name: rent.tenant.user.first_name,
+        tenant_name:
+          this.utilService.formatPersonName(
+            rent.tenant.user.first_name,
+            rent.tenant.user.last_name,
+          ) || 'there',
         property_name: rent.property.name,
         property_address: rent.property.location,
         expiry_date: expiryDateStr,
@@ -1870,7 +1889,11 @@ export class RentReminderService {
       'sendLandlordNotRenewing',
       {
         phone_number: tenantPhone,
-        tenant_name: rent.tenant.user.first_name,
+        tenant_name:
+          this.utilService.formatPersonName(
+            rent.tenant.user.first_name,
+            rent.tenant.user.last_name,
+          ) || 'there',
         property_name: rent.property.name,
         property_address: rent.property.location,
         end_date: endDateStr,
@@ -1896,7 +1919,11 @@ export class RentReminderService {
       'sendRentReminderTemplate',
       {
         phone_number: rent.tenant.user.phone_number,
-        tenant_name: rent.tenant.user.first_name,
+        tenant_name:
+          this.utilService.formatPersonName(
+            rent.tenant.user.first_name,
+            rent.tenant.user.last_name,
+          ) || 'there',
         property_name: rent.property.name,
         rent_amount: formattedAmount,
         expiry_date: expiryDateStr,
@@ -2013,7 +2040,11 @@ export class RentReminderService {
       templateName,
       {
         phone_number: rent.tenant.user.phone_number,
-        tenant_name: rent.tenant.user.first_name,
+        tenant_name:
+          this.utilService.formatPersonName(
+            rent.tenant.user.first_name,
+            rent.tenant.user.last_name,
+          ) || 'there',
         rent_amount: formattedAmount,
         period,
         property_name: rent.property.name,

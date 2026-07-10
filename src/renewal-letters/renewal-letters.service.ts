@@ -69,7 +69,7 @@ export class RenewalLettersService {
     invoice: RenewalInvoice,
     propertyName: string,
     tenantPhone: string,
-    tenantFirstName: string,
+    tenantName: string,
     outcome: 'accepted' | 'declined',
     decisionAt: Date,
   ): Promise<void> {
@@ -88,7 +88,7 @@ export class RenewalLettersService {
 
     await this.templateSenderService.sendRenewalLetterSigned({
       phone_number: tenantPhone,
-      tenant_first_name: tenantFirstName,
+      tenant_first_name: tenantName,
       // Trim so the body's *{{2}}* renders bold — WhatsApp won't bold a
       // span whose marker is adjacent to whitespace (e.g. "*Foo *").
       property_name: propertyName.trim(),
@@ -97,19 +97,6 @@ export class RenewalLettersService {
       pdf_url: pdfUrl,
       pdf_filename: filename,
     });
-  }
-
-  private firstName(fullName: string): string {
-    const HONORIFIC =
-      /^(mr|mrs|miss|ms|mx|dr|prof|sir|madam|chief|engr|hon|rev)\.?$/i;
-    return (
-      (fullName ?? '')
-        .split(/\s+/)
-        .filter(Boolean)
-        .find((t) => !HONORIFIC.test(t)) ||
-      fullName?.trim() ||
-      'there'
-    );
   }
 
   /**
@@ -325,9 +312,10 @@ export class RenewalLettersService {
     const tenantPhone = this.utilService.normalizePhoneNumber(
       propertyTenant.tenant.user.phone_number,
     );
-    const tenantName = `${propertyTenant.tenant.user.first_name ?? ''} ${
-      propertyTenant.tenant.user.last_name ?? ''
-    }`.trim();
+    const tenantName = this.utilService.formatPersonName(
+      propertyTenant.tenant.user.first_name,
+      propertyTenant.tenant.user.last_name,
+    );
 
     await this.renewalInvoiceRepository.update(invoice.id, {
       letter_status: RenewalLetterStatus.ACCEPTED,
@@ -411,7 +399,7 @@ export class RenewalLettersService {
           refreshed,
           property.name,
           tenantPhone,
-          this.firstName(tenantName),
+          tenantName || 'there',
           'accepted',
           refreshed.accepted_at ?? new Date(),
         );
@@ -544,9 +532,10 @@ export class RenewalLettersService {
     const tenantPhone = this.utilService.normalizePhoneNumber(
       propertyTenant.tenant.user.phone_number,
     );
-    const tenantName = `${propertyTenant.tenant.user.first_name ?? ''} ${
-      propertyTenant.tenant.user.last_name ?? ''
-    }`.trim();
+    const tenantName = this.utilService.formatPersonName(
+      propertyTenant.tenant.user.first_name,
+      propertyTenant.tenant.user.last_name,
+    );
 
     await this.renewalInvoiceRepository.update(invoice.id, {
       letter_status: RenewalLetterStatus.DECLINED,
@@ -625,7 +614,7 @@ export class RenewalLettersService {
           refreshed,
           property.name,
           tenantPhone,
-          this.firstName(tenantName),
+          tenantName || 'there',
           'declined',
           refreshed.declined_at ?? new Date(),
         );

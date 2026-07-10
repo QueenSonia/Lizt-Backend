@@ -461,7 +461,9 @@ export class PropertyHistoryService {
           ? 'Tenancy started'
           : data.event_type === 'user_added_payment'
             ? 'Payment received'
-            : parsedData.displayType || 'Custom Event';
+            : data.event_type === 'user_added_fee'
+              ? 'Fee added'
+              : parsedData.displayType || 'Custom Event';
       const tenantName = parsedData.tenantName || '';
       const propertyName = property?.name || parsedData.propertyName || '';
       const landlordId = property?.owner_id;
@@ -469,11 +471,15 @@ export class PropertyHistoryService {
       const amount =
         parsedData.totalAmount ||
         parsedData.paymentAmount ||
+        parsedData.feeAmount ||
         parsedData.amount ||
         null;
       const description = amount
         ? `₦${Number(amount).toLocaleString()}`
-        : parsedData.description || '';
+        : parsedData.description ||
+          parsedData.paymentDescription ||
+          parsedData.feeDescription ||
+          '';
 
       if (landlordId) {
         await this.notificationService.create({

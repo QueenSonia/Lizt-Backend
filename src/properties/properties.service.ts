@@ -1658,6 +1658,42 @@ export class PropertiesService {
           return dateB - dateA;
         })[0];
 
+      // Passport photo for the tenancy avatar. `kycApplications` above is scoped
+      // to THIS property, so an attached tenant whose photo lives on a KYC
+      // application filed against another of the landlord's properties would
+      // show no avatar. Mirror the tenant-detail resolution: pick the tenant's
+      // most-recent KYC application under this landlord that carries a real
+      // photo (KYC stubs store '-'), falling back to the property-scoped match.
+      const isRealPhoto = (url?: string | null): url is string =>
+        !!url && url.trim() !== '' && url.trim() !== '-';
+      let tenantPassportPhoto: string | null = isRealPhoto(
+        tenantKycApplication?.passport_photo_url,
+      )
+        ? tenantKycApplication!.passport_photo_url
+        : null;
+      if (!tenantPassportPhoto) {
+        const photoApp = await this.dataSource
+          .getRepository(KYCApplication)
+          .createQueryBuilder('app')
+          .innerJoin('app.property', 'property')
+          .select(['app.id', 'app.passport_photo_url', 'app.created_at'])
+          .where('app.tenant_id = :tenantId', {
+            tenantId: activeTenantRelation.tenant.id,
+          })
+          .andWhere('property.owner_id = :landlordId', {
+            landlordId: property.owner_id,
+          })
+          .andWhere('app.deleted_at IS NULL')
+          .andWhere("app.passport_photo_url IS NOT NULL")
+          .andWhere("app.passport_photo_url <> ''")
+          .andWhere("app.passport_photo_url <> '-'")
+          .orderBy('app.created_at', 'DESC')
+          .getOne();
+        if (isRealPhoto(photoApp?.passport_photo_url)) {
+          tenantPassportPhoto = photoApp!.passport_photo_url;
+        }
+      }
+
       // Check for latest renewal invoice for this property+tenant.
       // Scope to landlord/draft invoices (tenant-initiated "Pay OB" invoices
       // must not hide the real renewal) AND exclude superseded rows — those
@@ -1919,7 +1955,7 @@ export class PropertiesService {
           ? activeRent.payment_frequency.charAt(0).toUpperCase() +
             activeRent.payment_frequency.slice(1)
           : 'Monthly',
-        passportPhoto: tenantKycApplication?.passport_photo_url || null,
+        passportPhoto: tenantPassportPhoto,
         renewalStatus,
         isRevisionPendingSend,
         previousAcceptanceAt: previousAcceptanceAt

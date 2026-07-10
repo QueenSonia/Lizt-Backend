@@ -90,6 +90,28 @@ export class KYCApplicationService {
   ) {}
 
   /**
+   * Display name of the property's OWNER landlord, for template slots that
+   * describe the landlord (e.g. tenant_application_notification's
+   * "assigned to {{1}}"). profile_name first ("Panda Homes"), then the
+   * owner user's name, then a neutral fallback.
+   */
+  private async resolveOwnerDisplayName(propertyId: string): Promise<string> {
+    const property = await this.propertyRepository.findOne({
+      where: { id: propertyId },
+      relations: ['owner', 'owner.user'],
+    });
+    const owner = property?.owner;
+    return (
+      owner?.profile_name ||
+      this.utilService.formatPersonName(
+        owner?.user?.first_name,
+        owner?.user?.last_name,
+      ) ||
+      'the landlord'
+    );
+  }
+
+  /**
    * Build one `kyc_form_viewed` PropertyHistory entity per view_event.
    *
    * The frontend captures every form-page mount in sessionStorage and ships
@@ -451,6 +473,12 @@ export class KYCApplicationService {
         );
         const frontendUrl =
           this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
+        // The template body reads "…assigned to {{landlord_name}}" — that's
+        // the property OWNER, not the recipient (a managing admin would
+        // otherwise see their own brand, e.g. "assigned to Property Kraft").
+        const ownerDisplayName = await this.resolveOwnerDisplayName(
+          property.id,
+        );
 
         for (const [index, recipient] of recipients.entries()) {
           if (!recipient.phone) continue;
@@ -458,7 +486,7 @@ export class KYCApplicationService {
             'sendKYCApplicationNotification',
             {
               phone_number: recipient.phone,
-              landlord_name: recipient.name,
+              landlord_name: ownerDisplayName,
               tenant_name: this.utilService.formatPersonName(
                 kycData.first_name,
                 kycData.last_name,
@@ -658,6 +686,11 @@ export class KYCApplicationService {
         );
         const frontendUrl =
           this.configService.get('FRONTEND_URL') || 'https://www.lizt.co';
+        // "assigned to {{landlord_name}}" = the property OWNER, not the
+        // recipient — see the submission path above.
+        const ownerDisplayName = await this.resolveOwnerDisplayName(
+          property.id,
+        );
 
         for (const [index, recipient] of recipients.entries()) {
           if (!recipient.phone) continue;
@@ -665,7 +698,7 @@ export class KYCApplicationService {
             'sendKYCApplicationNotification',
             {
               phone_number: recipient.phone,
-              landlord_name: recipient.name,
+              landlord_name: ownerDisplayName,
               tenant_name: this.utilService.formatPersonName(
                 updated.first_name,
                 updated.last_name,

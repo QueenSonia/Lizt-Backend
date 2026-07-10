@@ -378,6 +378,11 @@ export class WebhookHandler {
         case 'button':
           content = message.button?.text || '';
           break;
+        case 'reaction':
+          // The emoji itself; empty when the user removed their reaction. The
+          // target message's wamid stays in metadata.raw_message.reaction.
+          content = message.reaction?.emoji || '';
+          break;
         default:
           content = `${messageType} message`;
       }

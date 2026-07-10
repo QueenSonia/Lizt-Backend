@@ -811,6 +811,7 @@ export class KYCApplicationService {
       next_of_kin_email: dto.next_of_kin_email,
       // Tenancy Info
       intended_use_of_property: dto.intended_use_of_property,
+      is_first_time_tenant: dto.is_first_time_tenant,
       number_of_occupants: dto.number_of_occupants,
       proposed_rent_amount: dto.proposed_rent_amount,
       rent_payment_frequency: dto.rent_payment_frequency,
@@ -846,6 +847,8 @@ export class KYCApplicationService {
     if (dto.referral_agent_phone_number !== undefined)
       data.referral_agent_phone_number = dto.referral_agent_phone_number;
     if (dto.parking_needs !== undefined) data.parking_needs = dto.parking_needs;
+    if (dto.number_of_previous_residences !== undefined)
+      data.number_of_previous_residences = dto.number_of_previous_residences;
     if (dto.additional_notes !== undefined)
       data.additional_notes = dto.additional_notes;
     if (dto.employment_proof_url !== undefined)
@@ -1618,6 +1621,7 @@ export class KYCApplicationService {
       // Service-level validation: verify all required fields are present before approving
       const tenancyFields = [
         'intended_use_of_property',
+        'is_first_time_tenant',
         'number_of_occupants',
         'proposed_rent_amount',
         'rent_payment_frequency',
@@ -2271,6 +2275,8 @@ export class KYCApplicationService {
     // Tenancy fields are not part of this form — strip them so we don't overwrite
     // existing values on previously-approved applications
     delete updateData.intended_use_of_property;
+    delete updateData.is_first_time_tenant;
+    delete updateData.number_of_previous_residences;
     delete updateData.number_of_occupants;
     delete updateData.proposed_rent_amount;
     delete updateData.rent_payment_frequency;

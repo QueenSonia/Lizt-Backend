@@ -190,6 +190,8 @@ export class KycPdfService {
         | 'Bi-annually'
         | 'Annually',
       intendedUse: app.intended_use_of_property || undefined,
+      isFirstTimeTenant: app.is_first_time_tenant || undefined,
+      numberOfPreviousResidences: app.number_of_previous_residences || undefined,
       numberOfOccupants: app.number_of_occupants || undefined,
       numberOfCarsOwned: app.parking_needs || undefined,
       additionalNotes: app.additional_notes || undefined,

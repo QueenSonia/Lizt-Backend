@@ -34,6 +34,14 @@ export class PropertyAdditionKYCDto extends BaseKYCApplicationFieldsDto {
   intended_use_of_property?: string;
 
   @IsOptional()
+  @IsString()
+  is_first_time_tenant?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  number_of_previous_residences?: string;
+
+  @IsOptional()
   @IsNumberString()
   number_of_occupants?: string;
 

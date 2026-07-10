@@ -83,6 +83,8 @@ export interface IKycApplication {
     proposedRentAmount: number;
     rentPaymentFrequency: 'Monthly' | 'Quarterly' | 'Bi-annually' | 'Annually';
     intendedUse?: string;
+    isFirstTimeTenant?: string;
+    numberOfPreviousResidences?: string;
     numberOfOccupants?: string;
     numberOfCarsOwned?: string;
     additionalNotes?: string;
@@ -580,6 +582,23 @@ export const KYCDocumentPDF = ({
                 label="Number of Cars Owned"
                 value={application.tenantOffer?.numberOfCarsOwned}
               />
+              <Field
+                label="First Time Tenant?"
+                value={
+                  application.tenantOffer?.isFirstTimeTenant
+                    ? application.tenantOffer.isFirstTimeTenant
+                        .charAt(0)
+                        .toUpperCase() +
+                      application.tenantOffer.isFirstTimeTenant.slice(1)
+                    : undefined
+                }
+              />
+              {application.tenantOffer?.isFirstTimeTenant === 'no' && (
+                <Field
+                  label="Number of Places Lived In Before"
+                  value={application.tenantOffer?.numberOfPreviousResidences}
+                />
+              )}
             </View>
           </View>
 

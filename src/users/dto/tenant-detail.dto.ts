@@ -243,6 +243,8 @@ export class TenantDetailDto {
 
   // Tenancy Proposal Information (from KYC Application)
   intendedUseOfProperty: string | null;
+  isFirstTimeTenant: string | null;
+  numberOfPreviousResidences: string | null;
   numberOfOccupants: string | null;
   numberOfCarsOwned: string | null;
   proposedRentAmount: string | null;

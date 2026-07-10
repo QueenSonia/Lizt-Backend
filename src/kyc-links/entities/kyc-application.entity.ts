@@ -162,6 +162,14 @@ export class KYCApplication extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   parking_needs?: string;
 
+  // 'yes' | 'no' — whether this is the applicant's first tenancy
+  @Column({ type: 'varchar', nullable: true })
+  is_first_time_tenant?: string;
+
+  // Only populated when is_first_time_tenant === 'no'
+  @Column({ type: 'varchar', nullable: true })
+  number_of_previous_residences?: string;
+
   @Column({ type: 'varchar', nullable: true })
   proposed_rent_amount?: string;
 

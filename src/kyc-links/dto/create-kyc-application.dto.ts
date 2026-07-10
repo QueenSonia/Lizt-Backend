@@ -35,6 +35,10 @@ export class CreateKYCApplicationDto extends BaseKYCApplicationFieldsDto {
   @IsNotEmpty()
   intended_use_of_property: string;
 
+  @IsString()
+  @IsNotEmpty()
+  is_first_time_tenant: string;
+
   @IsNumberString()
   @IsNotEmpty()
   number_of_occupants: string;

@@ -68,6 +68,8 @@ export function transformApplicationForFrontend(application: KYCApplication) {
 
     // Tenancy Info
     intendedUseOfProperty: application.intended_use_of_property,
+    isFirstTimeTenant: application.is_first_time_tenant,
+    numberOfPreviousResidences: application.number_of_previous_residences,
     numberOfOccupants: application.number_of_occupants,
     parkingNeeds: application.parking_needs,
     proposedRentAmount: application.proposed_rent_amount,

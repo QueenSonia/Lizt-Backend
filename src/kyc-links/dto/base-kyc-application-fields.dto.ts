@@ -193,6 +193,14 @@ export class BaseKYCApplicationFieldsDto {
   parking_needs?: string;
 
   @IsOptional()
+  @IsString()
+  is_first_time_tenant?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  number_of_previous_residences?: string;
+
+  @IsOptional()
   @IsNumberString()
   proposed_rent_amount?: string;
 

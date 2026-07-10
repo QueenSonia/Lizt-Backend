@@ -2286,9 +2286,17 @@ export class TenantManagementService {
         case 'rent':
           diff = (a.rentAmount ?? 0) - (b.rentAmount ?? 0);
           break;
-        case 'outstanding':
-          diff = a.outstandingBalance - b.outstandingBalance;
+        case 'outstanding': {
+          // The column renders one signed figure: owed (positive) or credit
+          // (shown as "… Credit"). A tenant is only ever in one state, so a
+          // signed net ranks credit below zero and orders each side by
+          // magnitude — otherwise every credit row ties at 0 (outstanding is 0
+          // whenever the wallet is positive) and credit never sorts.
+          const net = (r: (typeof rows)[number]) =>
+            r.outstandingBalance - r.creditBalance;
+          diff = net(a) - net(b);
           break;
+        }
         case 'endDate':
         case 'daysLeft':
           // daysLeft is monotonic with endDate; both rank by expiry.
@@ -4061,6 +4069,9 @@ export class TenantManagementService {
 
       // Tenancy Proposal Information
       intendedUseOfProperty: kycApplication?.intended_use_of_property ?? null,
+      isFirstTimeTenant: kycApplication?.is_first_time_tenant ?? null,
+      numberOfPreviousResidences:
+        kycApplication?.number_of_previous_residences ?? null,
       numberOfOccupants: kycApplication?.number_of_occupants ?? null,
       numberOfCarsOwned: kycApplication?.parking_needs ?? null,
       proposedRentAmount: kycApplication?.proposed_rent_amount ?? null,

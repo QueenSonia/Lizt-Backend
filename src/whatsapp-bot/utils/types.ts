@@ -44,6 +44,14 @@ export type IncomingMessage = {
     link?: string;
   };
 
+  // Emoji reaction to a previous message. `message_id` is the wamid of the
+  // message being reacted to; `emoji` is absent/empty when the user removes
+  // their reaction.
+  reaction?: {
+    message_id?: string;
+    emoji?: string;
+  };
+
   context?: {
     from: string;
     id: string;

@@ -131,6 +131,8 @@ describe('KYC Application Service - New Fields', () => {
 
         // NEW: Tenancy information
         intended_use_of_property: 'Residential',
+        is_first_time_tenant: 'no',
+        number_of_previous_residences: '2',
         number_of_occupants: '3',
         proposed_rent_amount: '1000000',
         rent_payment_frequency: 'Annually',
@@ -178,6 +180,8 @@ describe('KYC Application Service - New Fields', () => {
           employer_phone_number: '+2348087654321',
           length_of_employment: '3 years',
           intended_use_of_property: 'Residential',
+          is_first_time_tenant: 'no',
+          number_of_previous_residences: '2',
           number_of_occupants: '3',
           proposed_rent_amount: '1000000',
           rent_payment_frequency: 'Annually',

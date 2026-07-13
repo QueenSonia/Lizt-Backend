@@ -24,6 +24,13 @@ export class Notification extends BaseEntity {
   @Column()
   description: string;
 
+  // Denormalized, normalized (lower + accent-stripped) bag of words assembled
+  // at write time in NotificationService.create() from this row's fields plus
+  // its related property/tenants/landlord/maintenance request. Powers the Live
+  // Feed search (pg_trgm GIN index; see migration 1929). Snapshot semantics.
+  @Column({ type: 'text', nullable: true })
+  search_text: string | null;
+
   @Column({ default: 'Pending' })
   status: 'Pending' | 'Completed';
 

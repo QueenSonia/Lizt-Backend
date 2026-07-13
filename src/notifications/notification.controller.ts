@@ -26,8 +26,8 @@ export class NotificationController {
     @Query() paginationQuery: PaginationQueryDto,
   ): Promise<{ notifications: Notification[]; total: number }> {
     const user_id = req?.user?.id;
-    const { page = 1, limit = 20 } = paginationQuery;
-    return this.service.findByUserId(user_id, { page, limit });
+    const { page = 1, limit = 20, search } = paginationQuery;
+    return this.service.findByUserId(user_id, { page, limit, search });
   }
 
   @Post()

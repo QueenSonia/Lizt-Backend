@@ -112,6 +112,21 @@ export class UtilService {
     return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
   }
 
+  // Canonical text normalizer for search: NFD-decompose + strip combining
+  // diacritics, lowercase, collapse whitespace. Used both to bake the
+  // notification `search_text` column and to normalize an incoming search term
+  // before the LIKE query, so the two always agree. Mirrors the frontend
+  // HighlightMatch normalization and the migration's SQL `lower(unaccent(...))`.
+  normalizeSearchText(input: string | null | undefined): string {
+    if (!input) return '';
+    return input
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   // Canonical person-name formatter for WhatsApp template params: joins the
   // given parts (a part may itself contain several words, e.g. a stored
   // "first last" snapshot), sentence-cases every word, and returns '' when

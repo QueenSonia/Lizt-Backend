@@ -8,6 +8,9 @@ import { NotificationType } from './enums/notification-type';
 import { ManagementScopeService } from '../common/scope/management-scope.service';
 import { Account, accountHasRole } from '../users/entities/account.entity';
 import { RolesEnum } from '../base.entity';
+import { Property } from 'src/properties/entities/property.entity';
+import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
+import { UtilService } from 'src/utils/utility-service';
 
 @Injectable()
 export class NotificationService {
@@ -16,8 +19,13 @@ export class NotificationService {
     private readonly notificationRepository: Repository<Notification>,
     @InjectRepository(Account)
     private readonly accountRepository: Repository<Account>,
+    @InjectRepository(Property)
+    private readonly propertyRepo: Repository<Property>,
+    @InjectRepository(MaintenanceRequest)
+    private readonly mrRepo: Repository<MaintenanceRequest>,
     private readonly pushNotificationService: PushNotificationService,
     private readonly scopeService: ManagementScopeService,
+    private readonly util: UtilService,
   ) {}
 
   /**
@@ -36,8 +44,57 @@ export class NotificationService {
     return Array.from(new Set([requesterId, ...managed]));
   }
 
+  /**
+   * Assemble the denormalized `search_text` that powers the Live Feed search.
+   * Type-agnostic: pulls whatever the row's own ids resolve to (property +
+   * its live tenants, owning landlord, maintenance request) and folds them in
+   * with the always-present description + type label. Each absent id simply
+   * contributes nothing. Snapshot semantics — baked once, at create time.
+   */
+  private async buildSearchText(dto: CreateNotificationDto): Promise<string> {
+    const [property, landlord, mr] = await Promise.all([
+      dto.property_id
+        ? this.propertyRepo.findOne({
+            where: { id: dto.property_id },
+            relations: ['property_tenants', 'property_tenants.tenant'],
+          })
+        : null,
+      dto.user_id
+        ? this.accountRepository.findOne({
+            where: { id: dto.user_id },
+            relations: ['user'],
+          })
+        : null,
+      dto.maintenance_request_id
+        ? this.mrRepo.findOne({ where: { id: dto.maintenance_request_id } })
+        : null,
+    ]);
+
+    const parts: Array<string | null | undefined> = [
+      dto.description,
+      dto.type,
+      property?.name,
+      property?.location,
+      ...(property?.property_tenants ?? []).map((pt) => pt.tenant?.profile_name),
+      landlord?.profile_name,
+      [landlord?.user?.first_name, landlord?.user?.last_name]
+        .filter(Boolean)
+        .join(' '),
+      mr?.issue_category,
+      mr?.description,
+      mr?.request_id,
+      mr?.artisan_name_snapshot,
+    ];
+
+    return this.util.normalizeSearchText(parts.filter(Boolean).join(' '));
+  }
+
   async create(dto: CreateNotificationDto): Promise<Notification> {
-    const notification = this.notificationRepository.create(dto);
+    const search_text = await this.buildSearchText(dto);
+    const notification = this.notificationRepository.create({
+      ...dto,
+      search_text,
+    });
     const saved = await this.notificationRepository.save(notification);
 
     // Trigger push notification to the operator's subscribed devices
@@ -203,7 +260,7 @@ export class NotificationService {
   // Returns the full list as a Promise.
   async findByUserId(
     user_id: string,
-    options: { page: number; limit: number },
+    options: { page: number; limit: number; search?: string },
   ): Promise<{
     notifications: (Notification & { landlord_name: string | null })[];
     total: number;
@@ -241,10 +298,20 @@ export class NotificationService {
         'ownerUser.first_name',
         'ownerUser.last_name',
       ])
-      .where('notification.user_id IN (:...ownerIds)', { ownerIds })
-      .orderBy('notification.date', 'DESC')
-      .skip(skip)
-      .take(limit);
+      .where('notification.user_id IN (:...ownerIds)', { ownerIds });
+
+    // Server-side Live Feed search: match the normalized, denormalized
+    // search_text (pg_trgm GIN-indexed). Normalize the term the same way it was
+    // baked so accents/case agree. Escape LIKE wildcards in user input.
+    const term = this.util.normalizeSearchText(options.search);
+    if (term) {
+      const escaped = term.replace(/[\\%_]/g, (m) => '\\' + m);
+      query.andWhere('notification.search_text LIKE :term', {
+        term: `%${escaped}%`,
+      });
+    }
+
+    query.orderBy('notification.date', 'DESC').skip(skip).take(limit);
 
     const [rows, total] = await query.getManyAndCount();
 

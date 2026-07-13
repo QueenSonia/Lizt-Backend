@@ -24,25 +24,33 @@ export class AddNotificationSearchText1929000000000
         ADD COLUMN IF NOT EXISTS "search_text" text
     `);
 
-    // Backfill existing rows. UPDATE ... FROM self-join lets us attach the
-    // related tables (concat_ws skips NULLs, so absent relations contribute
-    // nothing). Only live tenant links are aggregated.
+    // Backfill existing rows. Tenant names are aggregated ONCE per property in
+    // a CTE (not a correlated per-row subquery) so this stays a set-based join
+    // and doesn't blow the CLI statement_timeout on a large table. concat_ws
+    // skips NULLs, so absent relations contribute nothing. Only live tenant
+    // links are aggregated. The self-join (FROM "notification" n2) is what lets
+    // us attach the related tables back onto each row by id.
     await queryRunner.query(`
+      WITH tenant_names AS (
+        SELECT pt.property_id, string_agg(a.profile_name, ' ') AS names
+          FROM property_tenants pt
+          JOIN accounts a ON a.id = pt.tenant_id AND a.deleted_at IS NULL
+         WHERE pt.deleted_at IS NULL
+         GROUP BY pt.property_id
+      )
       UPDATE "notification" n
       SET "search_text" = lower(unaccent(
         concat_ws(' ',
           n.description, n.type,
           p.name, p.location,
-          (SELECT string_agg(a.profile_name, ' ')
-             FROM property_tenants pt
-             JOIN accounts a ON a.id = pt.tenant_id AND a.deleted_at IS NULL
-            WHERE pt.property_id = p.id AND pt.deleted_at IS NULL),
+          tn.names,
           owner.profile_name,
           ou.first_name, ou.last_name,
           mr.issue_category, mr.description, mr.request_id, mr.artisan_name_snapshot
         )))
       FROM "notification" n2
         LEFT JOIN properties p            ON p.id  = n2.property_id
+        LEFT JOIN tenant_names tn         ON tn.property_id = p.id
         LEFT JOIN accounts owner          ON owner.id = n2.user_id
         LEFT JOIN users ou                ON ou.id = owner."userId"
         LEFT JOIN maintenance_requests mr ON mr.id = n2.maintenance_request_id

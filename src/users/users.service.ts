@@ -50,6 +50,10 @@ import { MessageDirection } from 'src/whatsapp-bot/entities/message-direction.en
 import { MessageStatus } from 'src/whatsapp-bot/entities/message-status.enum';
 import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import {
+  RenewalInvoice,
+  RenewalLetterStatus,
+} from 'src/tenancies/entities/renewal-invoice.entity';
+import {
   clientSignUpEmailTemplate,
   clientSignUpWhatsappTemplate,
   EmailSubject,
@@ -2455,10 +2459,56 @@ export class UsersService {
         await kycAppRepo.save(row);
       }
 
-      // Invalidate the account cache for EVERY account of this user.
+      // Every account belonging to this person (used for both the renewal-letter
+      // scope below and cache invalidation).
       const accounts = await manager
         .getRepository(Account)
         .find({ where: { userId: user.id } });
+      const accountIds = accounts.map((a) => a.id);
+
+      // Refresh the tenant contact baked into PENDING renewal letters. Accepted/
+      // declined letters are the frozen legal record and are left untouched; a
+      // draft/sent letter is still "current", so its Service-of-Notices contact
+      // should track the new number. The number lives verbatim in the saved
+      // letter_body_html/json snapshot (e.g. inside the data-field anchor), so we
+      // do a literal swap of both the E.164 and display forms.
+      let renewalLettersRefreshed = 0;
+      if (accountIds.length) {
+        const oldDisplay = formatPhoneForDisplay(oldPhone);
+        const newDisplay = formatPhoneForDisplay(newPhone);
+        const swap = (s: string): string =>
+          s.split(oldPhone).join(newPhone).split(oldDisplay).join(newDisplay);
+        const riRepo = manager.getRepository(RenewalInvoice);
+        const pendingLetters = await riRepo.find({
+          where: {
+            tenant_id: In(accountIds),
+            letter_status: In([
+              RenewalLetterStatus.DRAFT,
+              RenewalLetterStatus.SENT,
+            ]),
+          },
+        });
+        for (const letter of pendingLetters) {
+          let touched = false;
+          if (letter.letter_body_html && letter.letter_body_html.includes(oldPhone)) {
+            letter.letter_body_html = swap(letter.letter_body_html);
+            touched = true;
+          }
+          if (letter.letter_body_json) {
+            const json = JSON.stringify(letter.letter_body_json);
+            if (json.includes(oldPhone)) {
+              letter.letter_body_json = JSON.parse(swap(json));
+              touched = true;
+            }
+          }
+          if (touched) {
+            await riRepo.save(letter);
+            renewalLettersRefreshed += 1;
+          }
+        }
+      }
+
+      // Invalidate the account cache for EVERY account of this user.
       for (const acc of accounts) {
         await this.accountCacheService.invalidate(acc.id);
       }
@@ -2469,6 +2519,7 @@ export class UsersService {
         old_phone: oldPhone,
         new_phone: newPhone,
         chat_rows_migrated: chatRowsMigrated,
+        renewal_letters_refreshed: renewalLettersRefreshed,
         skipped_kyc: skippedKyc,
       };
     });

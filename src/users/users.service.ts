@@ -2323,15 +2323,24 @@ export class UsersService {
     const newPhone = dto.phone_number; // normalized (digits-only) by the DTO
 
     const result = await this.dataSource.transaction(async (manager) => {
-      // Resolve the target account → its underlying (shared) user row.
+      // Resolve the target person. Accept EITHER an Account id OR a Users id:
+      // admin list endpoints (GET /users, /users/tenants) surface USER ids,
+      // while JWT / req.user carry ACCOUNT ids — callers legitimately hold
+      // either. Phone lives on the shared users row regardless, and every
+      // account is cache-invalidated below.
       const account = await manager.getRepository(Account).findOne({
         where: { id: accountId },
         relations: ['user'],
       });
-      if (!account || !account.user) {
+      let user = account?.user ?? null;
+      if (!user) {
+        user = await manager
+          .getRepository(Users)
+          .findOne({ where: { id: accountId } });
+      }
+      if (!user) {
         throw new NotFoundException('User not found.');
       }
-      const user = account.user;
       const oldPhone = user.phone_number;
 
       if (!oldPhone) {
@@ -2456,7 +2465,7 @@ export class UsersService {
 
       return {
         user_id: user.id,
-        account_id: account.id,
+        account_id: account?.id ?? null,
         old_phone: oldPhone,
         new_phone: newPhone,
         chat_rows_migrated: chatRowsMigrated,

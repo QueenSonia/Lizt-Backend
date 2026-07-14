@@ -168,18 +168,24 @@ export class UsersController {
   @ApiOperation({
     summary:
       "Admin changes a user's phone number (cascades across identity, chat history and KYC)",
+    description:
+      'The :id path param accepts EITHER an Account id OR a Users id — admin list endpoints surface user ids while JWT carries account ids.',
   })
   @ApiOkResponse({ description: 'Phone number changed' })
   @ApiBadRequestResponse()
-  @UseGuards(JwtAuthGuard, RoleGuard)
+  // NOTE: JwtAuthGuard + RoleGuard are already registered as global APP_GUARDs
+  // (auth.module.ts). Adding a route-level JwtAuthGuard runs passport twice in
+  // one request and 401s, so we only declare RoleGuard here (matches the other
+  // working admin routes, e.g. getAllUsers / getAllTenants).
+  @UseGuards(RoleGuard)
   @Roles(RolesEnum.ADMIN)
-  @Patch(':accountId/phone-number')
+  @Patch(':id/phone-number')
   async changePhoneNumber(
     @CurrentUser() admin: Account,
-    @Param('accountId', new ParseUUIDPipe()) accountId: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: ChangePhoneNumberDto,
   ) {
-    return this.usersService.changePhoneNumber(admin, accountId, body);
+    return this.usersService.changePhoneNumber(admin, id, body);
   }
 
   @UseGuards(JwtAuthGuard)

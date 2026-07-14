@@ -29,6 +29,7 @@ import {
 } from './dto/attach-tenant-to-property.dto';
 import { AttachTenantFromKycDto } from './dto/attach-tenant-from-kyc.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { ChangePhoneNumberDto } from './dto/change-phone-number.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from './entities/user.entity';
 import {
@@ -43,6 +44,11 @@ import { ConfigService } from '@nestjs/config';
 import { AuthService } from 'src/auth/auth.service';
 import { RolesEnum } from 'src/base.entity';
 import { UtilService } from 'src/utils/utility-service';
+import { formatPhoneForDisplay } from 'src/utils/phone-number.transformer';
+import { ChatLog } from 'src/whatsapp-bot/entities/chat-log.entity';
+import { MessageDirection } from 'src/whatsapp-bot/entities/message-direction.enum';
+import { MessageStatus } from 'src/whatsapp-bot/entities/message-status.enum';
+import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
 import {
   clientSignUpEmailTemplate,
   clientSignUpWhatsappTemplate,
@@ -2281,5 +2287,187 @@ export class UsersService {
       await this.accountCacheService.invalidate(account.id);
       return { message: 'Landlord removed successfully' };
     });
+  }
+
+  /**
+   * Change a user's identity phone number (admin action).
+   *
+   * A phone number is this system's person-key: it lives once on `users` and is
+   * shared by every role/account of that person, so a single write here follows
+   * them everywhere (login, WhatsApp routing, notifications). This method also
+   * repoints the denormalized copies that must stay in sync:
+   *   - `chat_logs`  — every message row is moved to the new number so the
+   *     WhatsApp thread stays unified, and a visible `system_event` note is
+   *     dropped in to mark the change on the (staff-facing) chat history.
+   *   - `tenant_kyc` / `kyc_applications` — updated GLOBALLY (all landlords).
+   *
+   * Deliberately NOT touched: frozen audit snapshots (receipts, offer/renewal
+   * accepted/declined phones, maintenance artisan snapshots), other parties'
+   * numbers (spouse / next-of-kin / work / referral / guarantor), and transient
+   * data (kyc_otp, waitlist).
+   *
+   * Failure rules:
+   *   - if the new number already belongs to a DIFFERENT users row → reject,
+   *     change nothing.
+   *   - if a KYC row can't be moved because a leftover record already holds the
+   *     new number under the same landlord/property (composite-unique clash),
+   *     that single row is skipped and reported; everything else still commits.
+   *
+   * `users` + `chat_logs` + the event note are all-or-nothing in one txn.
+   */
+  async changePhoneNumber(
+    admin: Account,
+    accountId: string,
+    dto: ChangePhoneNumberDto,
+  ) {
+    const newPhone = dto.phone_number; // normalized (digits-only) by the DTO
+
+    const result = await this.dataSource.transaction(async (manager) => {
+      // Resolve the target account → its underlying (shared) user row.
+      const account = await manager.getRepository(Account).findOne({
+        where: { id: accountId },
+        relations: ['user'],
+      });
+      if (!account || !account.user) {
+        throw new NotFoundException('User not found.');
+      }
+      const user = account.user;
+      const oldPhone = user.phone_number;
+
+      if (!oldPhone) {
+        throw new BadRequestException(
+          'This user has no phone number on record.',
+        );
+      }
+      if (newPhone === oldPhone) {
+        throw new BadRequestException(
+          'The new phone number is the same as the current one.',
+        );
+      }
+
+      // Reject if the new number is already a real account for someone else.
+      const clash = await manager
+        .getRepository(Users)
+        .findOne({ where: { phone_number: newPhone } });
+      if (clash && clash.id !== user.id) {
+        throw new ConflictException(
+          `Phone ${formatPhoneForDisplay(newPhone)} is already linked to a different account.`,
+        );
+      }
+
+      // 1) Identity record — source of truth (cascades to every role).
+      user.phone_number = newPhone;
+      await manager.getRepository(Users).save(user);
+
+      // 2) Chat history — repoint every message so the thread stays unified.
+      const chatUpdate = await manager
+        .getRepository(ChatLog)
+        .update({ phone_number: oldPhone }, { phone_number: newPhone });
+      const chatRowsMigrated = chatUpdate.affected ?? 0;
+
+      // 3) Visible marker in the (staff-facing) chat history.
+      const changedAt = new Date();
+      const actorName = admin.profile_name || 'An admin';
+      const noteText =
+        `📱 Phone number changed from ${formatPhoneForDisplay(oldPhone)} ` +
+        `to ${formatPhoneForDisplay(newPhone)} by ${actorName} (admin) ` +
+        `on ${moment(changedAt).format('D MMM YYYY')}`;
+      const chatRepo = manager.getRepository(ChatLog);
+      await chatRepo.save(
+        chatRepo.create({
+          phone_number: newPhone,
+          direction: MessageDirection.OUTBOUND,
+          message_type: 'system_event',
+          content: noteText,
+          metadata: {
+            system_event: {
+              kind: 'phone_number_changed',
+              old_number: oldPhone,
+              new_number: newPhone,
+              old_number_display: formatPhoneForDisplay(oldPhone),
+              new_number_display: formatPhoneForDisplay(newPhone),
+              changed_by_account_id: admin.id,
+              changed_by_name: actorName,
+              changed_at: changedAt.toISOString(),
+            },
+          },
+          // whatsapp_message_id left unset (null) — this is a synthetic row, not
+          // a Meta message; the partial unique index only covers NOT NULL values.
+          status: MessageStatus.DELIVERED,
+          user_id: user.id,
+        }),
+      );
+
+      // 4) KYC copies — update globally, skipping composite-unique clashes.
+      const skippedKyc: Array<{ table: string; id: string; reason: string }> =
+        [];
+
+      // tenant_kyc — unique on (admin_id, phone_number).
+      const tenantKycRepo = manager.getRepository(TenantKyc);
+      const tenantKycRows = await tenantKycRepo.find({
+        where: { phone_number: oldPhone },
+      });
+      for (const row of tenantKycRows) {
+        const conflict = await tenantKycRepo.findOne({
+          where: { admin_id: row.admin_id, phone_number: newPhone },
+        });
+        if (conflict) {
+          skippedKyc.push({
+            table: 'tenant_kyc',
+            id: row.id,
+            reason:
+              'A KYC record on the new number already exists under the same landlord.',
+          });
+          continue;
+        }
+        row.phone_number = newPhone;
+        await tenantKycRepo.save(row);
+      }
+
+      // kyc_applications — partial unique on (phone_number, property_id).
+      const kycAppRepo = manager.getRepository(KYCApplication);
+      const kycAppRows = await kycAppRepo.find({
+        where: { phone_number: oldPhone },
+      });
+      for (const row of kycAppRows) {
+        const conflict = await kycAppRepo.findOne({
+          where: { property_id: row.property_id, phone_number: newPhone },
+        });
+        if (conflict) {
+          skippedKyc.push({
+            table: 'kyc_applications',
+            id: row.id,
+            reason:
+              'An application on the new number already exists for the same property.',
+          });
+          continue;
+        }
+        row.phone_number = newPhone;
+        await kycAppRepo.save(row);
+      }
+
+      // Invalidate the account cache for EVERY account of this user.
+      const accounts = await manager
+        .getRepository(Account)
+        .find({ where: { userId: user.id } });
+      for (const acc of accounts) {
+        await this.accountCacheService.invalidate(acc.id);
+      }
+
+      return {
+        user_id: user.id,
+        account_id: account.id,
+        old_phone: oldPhone,
+        new_phone: newPhone,
+        chat_rows_migrated: chatRowsMigrated,
+        skipped_kyc: skippedKyc,
+      };
+    });
+
+    return {
+      success: true,
+      message: `Phone number updated to ${formatPhoneForDisplay(result.new_phone)}.`,
+      ...result,
+    };
   }
 }

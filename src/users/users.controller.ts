@@ -37,6 +37,7 @@ import { SelectRoleDto } from './dto/select-role.dto';
 import { AttachTenantFromKycDto } from './dto/attach-tenant-from-kyc.dto';
 import { AttachTenantToPropertyDto } from './dto/attach-tenant-to-property.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { ChangePhoneNumberDto } from './dto/change-phone-number.dto';
 import { RoleGuard } from 'src/auth/role.guard';
 import { Roles } from 'src/auth/role.decorator';
 import { RolesEnum } from 'src/base.entity';
@@ -162,6 +163,23 @@ export class UsersController {
     @Param('landlordId') landlordId: string,
   ) {
     return this.usersService.deleteManagedLandlord(admin.id, landlordId);
+  }
+
+  @ApiOperation({
+    summary:
+      "Admin changes a user's phone number (cascades across identity, chat history and KYC)",
+  })
+  @ApiOkResponse({ description: 'Phone number changed' })
+  @ApiBadRequestResponse()
+  @UseGuards(JwtAuthGuard, RoleGuard)
+  @Roles(RolesEnum.ADMIN)
+  @Patch(':accountId/phone-number')
+  async changePhoneNumber(
+    @CurrentUser() admin: Account,
+    @Param('accountId', new ParseUUIDPipe()) accountId: string,
+    @Body() body: ChangePhoneNumberDto,
+  ) {
+    return this.usersService.changePhoneNumber(admin, accountId, body);
   }
 
   @UseGuards(JwtAuthGuard)

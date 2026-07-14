@@ -167,14 +167,19 @@ export class BaseKYCApplicationFieldsDto {
   @IsEmail()
   next_of_kin_email: string;
 
-  // Referral Agent Information — required for new_tenant, optional for property_addition.
-  // Subclasses (CreateKYCApplicationDto, PropertyAdditionKYCDto) re-declare with the
-  // appropriate @IsNotEmpty()/@IsOptional() decorators for their flow.
-  @IsOptional()
+  // Referral Agent Information — REQUIRED by default (new_tenant + full-completion flows).
+  // Kept required on the BASE so an API caller that OMITS the field can't bypass the check:
+  // if the base were @IsOptional(), that condition would be inherited by CreateKYCApplicationDto
+  // and skip its @IsNotEmpty() whenever the value is undefined. PropertyAdditionKYCDto re-declares
+  // these with @IsOptional() because its Tenancy step is hidden, so the applicant can't fill them.
+  // NOTE: the `?` is TYPE-level only so PropertyAdditionKYCDto can re-type these as optional;
+  // @IsNotEmpty() is what enforces required at RUNTIME (rejects undefined/null/'') for the
+  // new_tenant + completion flows. PropertyAddition relaxes it back with @IsOptional().
   @IsString()
+  @IsNotEmpty()
   referral_agent_full_name?: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsValidPhoneNumber()
   @NormalizePhoneNumber()
   referral_agent_phone_number?: string;

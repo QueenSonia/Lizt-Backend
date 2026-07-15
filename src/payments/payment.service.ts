@@ -1000,6 +1000,7 @@ export class PaymentService {
         status: 'success',
         verified: true,
         alreadyProcessed: true,
+        moneyReceived: true,
         payment: {
           id: payment.id,
           amount: Number(payment.amount),
@@ -1046,6 +1047,8 @@ export class PaymentService {
           status: 'success',
           verified: true,
           alreadyProcessed: false,
+          moneyReceived: true,
+          rawStatus: verification.rawStatus,
           payment: {
             id: payment.id,
             amount: verification.amountNaira,
@@ -1087,6 +1090,12 @@ export class PaymentService {
         status: verification.status,
         verified: true,
         alreadyProcessed: false,
+        // `pending` alone is ambiguous to a caller: it covers both "the tenant
+        // left checkout without paying" (nothing received) and "a transfer is
+        // still settling" (money in flight). Surfacing moneyReceived lets the
+        // UI tell a payer from an abandoner instead of guessing.
+        moneyReceived: verification.moneyReceived,
+        rawStatus: verification.rawStatus,
         message: `Payment status: ${verification.status}`,
       };
     } catch (error) {

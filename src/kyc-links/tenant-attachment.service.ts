@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, ArrayContains } from 'typeorm';
 import {
   KYCApplication,
   ApplicationStatus,
@@ -484,7 +484,12 @@ export class TenantAttachmentService {
     // IMPORTANT: We specifically look for TENANT role since users can have multiple accounts with different roles
     if (application.email && application.email.trim() !== '') {
       tenantAccount = await manager.findOne(Account, {
-        where: { email: application.email, role: RolesEnum.TENANT },
+        // `roles[]` is the sole source of truth — the scalar `account.role`
+        // was removed, and filtering on it throws EntityPropertyNotFoundError.
+        where: {
+          email: application.email,
+          roles: ArrayContains([RolesEnum.TENANT]),
+        },
         relations: ['user'],
       });
 
@@ -510,7 +515,10 @@ export class TenantAttachmentService {
         // CRITICAL: Find or create TENANT account for this user
         // A user can have multiple accounts with different roles (landlord, tenant, etc.)
         tenantAccount = await manager.findOne(Account, {
-          where: { userId: existingUser.id, role: RolesEnum.TENANT },
+          where: {
+            userId: existingUser.id,
+            roles: ArrayContains([RolesEnum.TENANT]),
+          },
           relations: ['user'],
         });
 
@@ -529,7 +537,6 @@ export class TenantAttachmentService {
             email: emailToUse,
             userId: existingUser.id,
             roles: [RolesEnum.TENANT],
-            role: RolesEnum.TENANT,
             is_verified: false,
             password: null,
           });
@@ -643,7 +650,6 @@ export class TenantAttachmentService {
       state_of_origin: application.state_of_origin,
       lga: '', // LGA not collected in new KYC form
       marital_status: application.marital_status,
-      role: RolesEnum.TENANT,
       is_verified: false,
     });
 
@@ -663,7 +669,6 @@ export class TenantAttachmentService {
       email: emailToUse,
       userId: savedUser.id,
       roles: [RolesEnum.TENANT],
-      role: RolesEnum.TENANT,
       is_verified: false,
       password: null, // Tenant will set password when they first log in
     });

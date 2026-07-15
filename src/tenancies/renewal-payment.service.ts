@@ -24,6 +24,7 @@ import {
   PaymentGateway,
 } from '../payments/gateway/payment-gateway.interface';
 import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
+import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
 import { TenanciesService } from './tenancies.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
@@ -184,8 +185,7 @@ export class RenewalPaymentService {
     // OB invoices (tenant token, rent=0) must be paid in full — there's
     // no renewal-period structure to scaffold a partial payment around.
     const isOutstandingBalanceInvoice =
-      invoice.token_type === 'tenant' &&
-      Number(invoice.rent_amount || 0) === 0;
+      invoice.token_type === 'tenant' && Number(invoice.rent_amount || 0) === 0;
 
     if (paymentOption === 'custom') {
       if (isOutstandingBalanceInvoice) {
@@ -365,10 +365,25 @@ export class RenewalPaymentService {
       }
 
       // Money-safety: a pending verdict that carries money (Monnify
-      // PARTIALLY_PAID / OVERPAID) must be ops-visible, never silent.
+      // PARTIALLY_PAID / OVERPAID) is REAL money sitting at the gateway that
+      // we deliberately do not credit — write a durable, landlord-visible ops
+      // artifact rather than only logging. This is the highest-value lane
+      // (a partial on a multi-million-naira renewal), so a log line someone
+      // has to happen to read is not an acceptable signal.
       if (verification.moneyReceived) {
-        this.logger.warn(
-          `Renewal verify ${reference}: gateway reports ${verification.rawStatus} with ₦${verification.amountNaira} received — surfacing as pending for ops reconciliation`,
+        await recordAmountMismatchArtifact(
+          this.propertyHistoryRepository,
+          this.logger,
+          {
+            reference: verification.reference,
+            amountNaira: verification.amountNaira,
+            rawStatus: verification.rawStatus,
+            gateway: verification.gateway,
+            metadata: verification.metadata,
+            lane: 'renewal verify',
+            relatedEntityId: verification.metadata?.renewal_invoice_id ?? null,
+            relatedEntityType: 'renewal_invoice',
+          },
         );
       }
 
@@ -672,6 +687,34 @@ export class RenewalPaymentService {
       return;
     }
 
+    // Idempotency. A redelivered rejection webhook must not duplicate the
+    // tenant-visible history rows, the Live Feed notification and the
+    // WebSocket event. Unlike the success lanes there is no status to
+    // compare-and-swap against — a rejected invoice legitimately stays UNPAID
+    // — so we dedupe on the reference stamped into the history row's
+    // metadata below.
+    //
+    // NOTE: do NOT record rejections in invoice.payment_history. That array is
+    // summed to derive amount_paid (see TenanciesService.markInvoiceAsPaid);
+    // an entry there would corrupt the tenant's balance.
+    const priorRejections = await this.propertyHistoryRepository.find({
+      where: {
+        related_entity_id: invoice.id,
+        event_type: 'bank_transfer_rejected',
+      },
+    });
+    if (
+      priorRejections.some(
+        (h) => (h.metadata as { reference?: string })?.reference === reference,
+      )
+    ) {
+      this.logger.log(
+        'Renewal transfer rejection already recorded for this reference; skipping (idempotent)',
+        { renewalInvoiceId, reference },
+      );
+      return;
+    }
+
     const propertyId = invoice.property_id;
     const propertyName = invoice.property?.name || 'Property';
     const landlordId = invoice.property?.owner_id;
@@ -680,6 +723,12 @@ export class RenewalPaymentService {
       ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
       : 'Tenant';
     const description = `Bank transfer of ₦${amountInNaira.toLocaleString()} from ${tenantName} for renewal of ${propertyName} was rejected`;
+    // Carries the dedupe key for the guard above.
+    const rejectionMetadata = {
+      reference,
+      amount: amountInNaira,
+      gateway: event.gateway,
+    };
 
     // Property history — shows in landlord property details history tab
     try {
@@ -689,6 +738,7 @@ export class RenewalPaymentService {
         event_description: description,
         related_entity_id: invoice.id,
         related_entity_type: 'renewal_invoice',
+        metadata: rejectionMetadata,
       });
       await this.propertyHistoryRepository.save(propertyEntry);
     } catch (error) {
@@ -707,6 +757,7 @@ export class RenewalPaymentService {
         event_description: description,
         related_entity_id: invoice.id,
         related_entity_type: 'renewal_invoice',
+        metadata: rejectionMetadata,
       });
       await this.propertyHistoryRepository.save(tenantEntry);
     } catch (error) {

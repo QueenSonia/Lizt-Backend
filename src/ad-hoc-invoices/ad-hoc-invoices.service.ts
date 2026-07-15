@@ -31,6 +31,7 @@ import {
   PaymentGateway,
 } from '../payments/gateway/payment-gateway.interface';
 import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
+import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
@@ -648,10 +649,25 @@ export class AdHocInvoicesService {
 
     if (verification.status !== 'success') {
       if (verification.moneyReceived) {
-        // Monnify PARTIALLY_PAID/OVERPAID — money at the gateway without a
-        // clean success. Ops-visible, never silent.
-        this.logger.error(
-          `Ad-hoc invoice verify ${reference}: gateway reports ${verification.rawStatus} with ₦${verification.amountNaira} received — needs ops reconciliation`,
+        // Monnify PARTIALLY_PAID/OVERPAID — real money at the gateway that we
+        // deliberately do not credit. Durable ops artifact, not just a log.
+        await recordAmountMismatchArtifact(
+          this.propertyHistoryRepository,
+          this.logger,
+          {
+            reference: verification.reference,
+            amountNaira: verification.amountNaira,
+            rawStatus: verification.rawStatus,
+            gateway: verification.gateway,
+            metadata: verification.metadata,
+            lane: 'ad-hoc invoice verify',
+            relatedEntityId: invoice.id,
+            relatedEntityType: 'ad_hoc_invoice',
+            expectedNaira: Math.max(
+              0,
+              Number(invoice.total_amount) - Number(invoice.amount_paid ?? 0),
+            ),
+          },
         );
       }
       return {

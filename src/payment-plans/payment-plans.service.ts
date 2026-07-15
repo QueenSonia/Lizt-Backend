@@ -54,6 +54,7 @@ import {
   PaymentGateway,
 } from '../payments/gateway/payment-gateway.interface';
 import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
+import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
 import { TenanciesService } from '../tenancies/tenancies.service';
 import { RenewalChargeService } from '../renewal-letters/renewal-charge.service';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
@@ -1544,10 +1545,22 @@ export class PaymentPlansService {
 
     if (verification.status !== 'success') {
       if (verification.moneyReceived) {
-        // Monnify PARTIALLY_PAID/OVERPAID — money at the gateway without a
-        // clean success. Ops-visible, never silent.
-        this.logger.error(
-          `Installment verify ${reference}: gateway reports ${verification.rawStatus} with ₦${verification.amountNaira} received — needs ops reconciliation`,
+        // Monnify PARTIALLY_PAID/OVERPAID — real money at the gateway that we
+        // deliberately do not credit. Durable ops artifact, not just a log.
+        await recordAmountMismatchArtifact(
+          this.propertyHistoryRepository,
+          this.logger,
+          {
+            reference: verification.reference,
+            amountNaira: verification.amountNaira,
+            rawStatus: verification.rawStatus,
+            gateway: verification.gateway,
+            metadata: verification.metadata,
+            lane: 'plan installment verify',
+            relatedEntityId: installmentId,
+            relatedEntityType: 'payment_plan_installment',
+            expectedNaira: Number(installment.amount),
+          },
         );
       }
       return {
@@ -2334,8 +2347,19 @@ export class PaymentPlansService {
 
     if (verification.status !== 'success') {
       if (verification.moneyReceived) {
-        this.logger.error(
-          `Plan payoff verify ${reference}: gateway reports ${verification.rawStatus} with ₦${verification.amountNaira} received — needs ops reconciliation`,
+        await recordAmountMismatchArtifact(
+          this.propertyHistoryRepository,
+          this.logger,
+          {
+            reference: verification.reference,
+            amountNaira: verification.amountNaira,
+            rawStatus: verification.rawStatus,
+            gateway: verification.gateway,
+            metadata: verification.metadata,
+            lane: 'plan payoff verify',
+            relatedEntityId: planId,
+            relatedEntityType: 'payment_plan',
+          },
         );
       }
       const plan = await this.getPlan(planId);
@@ -2372,7 +2396,9 @@ export class PaymentPlansService {
    * Webhook/verify entry for a plan payoff. Idempotent: a plan that is no
    * longer ACTIVE (already paid off / completed / cancelled) is a no-op.
    */
-  async markPlanPaidOffFromWebhook(event: NormalizedPaymentEvent): Promise<void> {
+  async markPlanPaidOffFromWebhook(
+    event: NormalizedPaymentEvent,
+  ): Promise<void> {
     const planId = event.metadata?.payment_plan_payoff_id;
     if (!planId) {
       this.logger.error('Plan-payoff webhook missing payment_plan_payoff_id', {

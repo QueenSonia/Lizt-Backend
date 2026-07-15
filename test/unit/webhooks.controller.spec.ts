@@ -6,6 +6,8 @@ import { PaystackLogger } from '../../src/payments/paystack-logger.service';
 import { PaymentPlansService } from '../../src/payment-plans/payment-plans.service';
 import { AdHocInvoicesService } from '../../src/ad-hoc-invoices/ad-hoc-invoices.service';
 import { PropertyHistoryService } from '../../src/property-history/property-history.service';
+import { PropertyHistory } from '../../src/property-history/entities/property-history.entity';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { PaystackGateway } from '../../src/payments/gateway/paystack.gateway';
 import { MonnifyGateway } from '../../src/payments/gateway/monnify.gateway';
 import { GatewayRegistryService } from '../../src/payments/gateway/gateway-registry.service';
@@ -41,6 +43,13 @@ describe('WebhooksController', () => {
 
   const mockPropertyHistoryService = {
     createPropertyHistory: jest.fn().mockResolvedValue(undefined),
+  };
+
+  // Used by the deduped amount-mismatch artifact helper.
+  const mockPropertyHistoryRepository = {
+    find: jest.fn().mockResolvedValue([]),
+    create: jest.fn((row: unknown) => row),
+    save: jest.fn().mockResolvedValue(undefined),
   };
 
   const mockPaystackLogger = {
@@ -88,6 +97,10 @@ describe('WebhooksController', () => {
         {
           provide: PropertyHistoryService,
           useValue: mockPropertyHistoryService,
+        },
+        {
+          provide: getRepositoryToken(PropertyHistory),
+          useValue: mockPropertyHistoryRepository,
         },
       ],
     }).compile();
@@ -250,40 +263,46 @@ describe('WebhooksController', () => {
       ).not.toHaveBeenCalled();
     });
 
-    it('rejects webhook with invalid signature', async () => {
+    // A 401 (rather than 200-and-discard) is deliberate: a forged webhook is
+    // not sent by the gateway so nothing retries it, but a MISCONFIGURED
+    // SECRET makes the real gateway retry and report delivery failures —
+    // instead of us silently eating every payment webhook.
+    it('rejects webhook with invalid signature via 401 (not a silent 200)', async () => {
       const req = {
         rawBody: JSON.stringify(mockWebhookBody),
         headers: {},
       } as any;
 
-      const result = await controller.handlePaystackWebhook(
-        req,
-        'invalid_signature',
-        mockWebhookBody,
-        '127.0.0.1',
-      );
+      await expect(
+        controller.handlePaystackWebhook(
+          req,
+          'invalid_signature',
+          mockWebhookBody,
+          '127.0.0.1',
+        ),
+      ).rejects.toMatchObject({ status: 401 });
 
-      expect(result.status).toBe('error');
       await flushSetImmediate();
       expect(
         mockPaymentService.processSuccessfulPayment,
       ).not.toHaveBeenCalled();
     });
 
-    it('rejects webhook with missing signature', async () => {
+    it('rejects webhook with missing signature via 401', async () => {
       const req = {
         rawBody: JSON.stringify(mockWebhookBody),
         headers: {},
       } as any;
 
-      const result = await controller.handlePaystackWebhook(
-        req,
-        undefined as any,
-        mockWebhookBody,
-        '127.0.0.1',
-      );
+      await expect(
+        controller.handlePaystackWebhook(
+          req,
+          undefined as any,
+          mockWebhookBody,
+          '127.0.0.1',
+        ),
+      ).rejects.toMatchObject({ status: 401 });
 
-      expect(result.status).toBe('error');
       await flushSetImmediate();
       expect(
         mockPaymentService.processSuccessfulPayment,
@@ -334,18 +353,19 @@ describe('WebhooksController', () => {
   });
 
   describe('handleMonnifyWebhook', () => {
-    it('rejects a Monnify webhook whose signature does not verify (no MONNIFY_SECRET_KEY configured) and processes nothing', async () => {
+    it('rejects a Monnify webhook whose signature does not verify (no MONNIFY_SECRET_KEY configured) via 401, processing nothing', async () => {
       const body = { eventType: 'SUCCESSFUL_TRANSACTION', eventData: {} };
       const req = { rawBody: JSON.stringify(body), headers: {} } as any;
 
-      const result = await controller.handleMonnifyWebhook(
-        req,
-        'not-a-valid-signature',
-        body,
-        '127.0.0.1',
-      );
+      await expect(
+        controller.handleMonnifyWebhook(
+          req,
+          'not-a-valid-signature',
+          body,
+          '127.0.0.1',
+        ),
+      ).rejects.toMatchObject({ status: 401 });
 
-      expect(result.status).toBe('error');
       await flushSetImmediate();
       expect(
         mockPaymentService.processSuccessfulPayment,

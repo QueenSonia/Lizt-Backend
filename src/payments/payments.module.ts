@@ -18,6 +18,7 @@ import { Property } from '../properties/entities/property.entity';
 import { Users } from '../users/entities/user.entity';
 import { Account } from '../users/entities/account.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
+import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import { KYCLinksModule } from '../kyc-links/kyc-links.module';
 import { PropertyHistoryModule } from '../property-history/property-history.module';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
@@ -48,6 +49,9 @@ import { UtilsModule } from '../utils/utils.module';
       Users,
       Account,
       KYCApplication,
+      // WebhooksController writes deduped amount-mismatch reconciliation rows
+      // directly (see gateway/amount-mismatch-artifact.ts).
+      PropertyHistory,
     ]),
     ConfigModule,
     AuthModule,

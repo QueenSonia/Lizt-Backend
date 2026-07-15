@@ -330,16 +330,12 @@ export class PaymentService {
           received: event.amountNaira,
         },
       );
-      void this.logPaymentEvent(
-        existingPayment.id,
-        PaymentLogEventType.ERROR,
-        {
-          reason: 'amount_mismatch_overpaid',
-          expected: expectedNaira,
-          received: event.amountNaira,
-          gateway: event.gateway,
-        },
-      ).catch(() => undefined);
+      void this.logPaymentEvent(existingPayment.id, PaymentLogEventType.ERROR, {
+        reason: 'amount_mismatch_overpaid',
+        expected: expectedNaira,
+        received: event.amountNaira,
+        gateway: event.gateway,
+      }).catch(() => undefined);
     }
 
     // 2. In-memory lock to prevent concurrent processing of the same reference
@@ -424,10 +420,9 @@ export class PaymentService {
         // Update payment status
         await manager.update(Payment, payment.id, {
           status: PaymentStatus.COMPLETED,
-          payment_method: (event.channel ||
-            null) as Payment['payment_method'],
+          payment_method: (event.channel || null) as Payment['payment_method'],
           paid_at: event.paidAt ?? new Date(),
-          metadata: (event.raw ?? event) as Record<string, any>,
+          metadata: event.raw ?? event,
         });
         this.paystackLogger.debug('Payment status updated to COMPLETED', {
           payment_id: payment.id,
@@ -1414,13 +1409,38 @@ export class PaymentService {
       return;
     }
 
-    await this.paymentRepository.update(payment.id, {
-      status: PaymentStatus.FAILED,
-      metadata: {
-        ...(payment.metadata ?? {}),
-        rejection_data: event.raw as Record<string, any>,
-      },
-    });
+    // Claim the row with a compare-and-swap on status — the pre-read above is
+    // only a fast path. Two things this protects against:
+    //  1. A redelivered rejection webhook duplicating the notification /
+    //     history / WebSocket event below (affected=0 ⇒ we return early).
+    //  2. A success landing between the pre-read and this write: without the
+    //     status guard we would flip a COMPLETED payment to FAILED.
+    // metadata is merged in SQL (jsonb ||) rather than spread from the stale
+    // entity, so a concurrent writer's keys are never clobbered.
+    const claim = await this.paymentRepository
+      .createQueryBuilder()
+      .update(Payment)
+      .set({
+        status: PaymentStatus.FAILED,
+        metadata: () => `COALESCE(metadata, '{}'::jsonb) || :rejection::jsonb`,
+      })
+      .where('id = :id AND status = :pending', {
+        id: payment.id,
+        pending: PaymentStatus.PENDING,
+      })
+      .setParameter(
+        'rejection',
+        JSON.stringify({ rejection_data: event.raw ?? null }),
+      )
+      .execute();
+
+    if (!claim.affected) {
+      this.paystackLogger.info(
+        'Payment no longer pending (concurrent success/rejection); skipping bank transfer rejection',
+        { reference },
+      );
+      return;
+    }
 
     await this.logPaymentEvent(payment.id, PaymentLogEventType.ERROR, {
       reason: 'Bank transfer rejected by gateway',
@@ -1859,13 +1879,10 @@ export class PaymentService {
               raw_status: verification.rawStatus,
             },
           });
-          this.paystackLogger.info(
-            'Payment force-failed by 24h long-stop',
-            {
-              payment_id: payment.id,
-              reference: payment.gateway_reference,
-            },
-          );
+          this.paystackLogger.info('Payment force-failed by 24h long-stop', {
+            payment_id: payment.id,
+            reference: payment.gateway_reference,
+          });
         }
       } catch (error) {
         if (error instanceof GatewayReferenceNotFoundError) {

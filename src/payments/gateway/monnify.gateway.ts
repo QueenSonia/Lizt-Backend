@@ -1,10 +1,5 @@
 import { HttpService } from '@nestjs/axios';
-import {
-  HttpException,
-  HttpStatus,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AxiosError, AxiosRequestConfig } from 'axios';
 import * as crypto from 'crypto';
@@ -282,25 +277,32 @@ export class MonnifyGateway implements PaymentGateway {
       checkoutUrl: string;
     }>;
     try {
-      body = await this.request('POST', '/api/v1/merchant/transactions/init-transaction', {
-        amount: params.amountNaira, // Monnify takes NAIRA (major units)
-        customerName: params.customerName?.trim() || params.email,
-        customerEmail: params.email,
-        paymentReference: params.reference,
-        paymentDescription: params.description ?? 'Property Kraft payment',
-        currencyCode: 'NGN',
-        contractCode: this.getContractCode(),
-        redirectUrl: params.callbackUrl,
-        paymentMethods,
-        metaData: params.metadata,
-      });
+      body = await this.request(
+        'POST',
+        '/api/v1/merchant/transactions/init-transaction',
+        {
+          amount: params.amountNaira, // Monnify takes NAIRA (major units)
+          customerName: params.customerName?.trim() || params.email,
+          customerEmail: params.email,
+          paymentReference: params.reference,
+          paymentDescription: params.description ?? 'Property Kraft payment',
+          currencyCode: 'NGN',
+          contractCode: this.getContractCode(),
+          redirectUrl: params.callbackUrl,
+          paymentMethods,
+          metaData: params.metadata,
+        },
+      );
     } catch (error) {
       throw this.toTypedInitError(error, params.reference);
     }
 
     if (!body.requestSuccessful || !body.responseBody?.checkoutUrl) {
       if (/duplicate/i.test(body.responseMessage ?? '')) {
-        throw new DuplicateReferenceError(params.reference, body.responseMessage);
+        throw new DuplicateReferenceError(
+          params.reference,
+          body.responseMessage,
+        );
       }
       throw new HttpException(
         {
@@ -336,7 +338,10 @@ export class MonnifyGateway implements PaymentGateway {
 
     if (!body.requestSuccessful || !body.responseBody) {
       if (this.looksLikeNotFound(body.responseMessage)) {
-        throw new GatewayReferenceNotFoundError(reference, body.responseMessage);
+        throw new GatewayReferenceNotFoundError(
+          reference,
+          body.responseMessage,
+        );
       }
       throw new HttpException(
         {
@@ -522,10 +527,18 @@ export class MonnifyGateway implements PaymentGateway {
   /** Monnify amounts are naira but may arrive as strings. NaN → 0 (the
    *  downstream amount guards then quarantine instead of mis-crediting). */
   private toNaira(value: unknown): number {
-    const n = Number(value);
+    // Only strings/numbers are plausible amounts; anything else (object,
+    // boolean) is malformed and must not be coerced into a silent 0 without a
+    // trace. JSON.stringify keeps objects legible in the log.
+    const n =
+      typeof value === 'number' || typeof value === 'string'
+        ? Number(value)
+        : NaN;
     if (!Number.isFinite(n)) {
       if (value != null) {
-        this.logger.warn(`Monnify amount not numeric: ${String(value)}`);
+        this.logger.warn(
+          `Monnify amount not numeric: ${JSON.stringify(value)}`,
+        );
       }
       return 0;
     }
@@ -533,14 +546,14 @@ export class MonnifyGateway implements PaymentGateway {
   }
 
   private toChannel(paymentMethod: unknown): string {
-    if (!paymentMethod) return '';
-    const key = String(paymentMethod).toUpperCase();
-    return CHANNEL_MAP[key] ?? String(paymentMethod).toLowerCase();
+    if (typeof paymentMethod !== 'string' || !paymentMethod) return '';
+    const key = paymentMethod.toUpperCase();
+    return CHANNEL_MAP[key] ?? paymentMethod.toLowerCase();
   }
 
   private toMetadata(metaData: unknown): Record<string, any> | null {
     if (!metaData) return null;
-    if (typeof metaData === 'object') return metaData as Record<string, any>;
+    if (typeof metaData === 'object') return metaData;
     if (typeof metaData === 'string') {
       try {
         const parsed = JSON.parse(metaData);

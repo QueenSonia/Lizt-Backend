@@ -7,7 +7,11 @@ import {
   HttpCode,
   HttpStatus,
   Ip,
+  UnauthorizedException,
+  InternalServerErrorException,
 } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { Public } from '../auth/public.decorator';
 import { PaymentService } from './payment.service';
 import { RenewalPaymentService } from '../tenancies/renewal-payment.service';
@@ -15,7 +19,9 @@ import { PaystackLogger } from './paystack-logger.service';
 import { PaymentPlansService } from '../payment-plans/payment-plans.service';
 import { AdHocInvoicesService } from '../ad-hoc-invoices/ad-hoc-invoices.service';
 import { PropertyHistoryService } from '../property-history/property-history.service';
+import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import { GatewayRegistryService } from './gateway/gateway-registry.service';
+import { recordAmountMismatchArtifact } from './gateway/amount-mismatch-artifact';
 import {
   GatewayWebhookEvent,
   PaymentGateway,
@@ -47,6 +53,8 @@ export class WebhooksController {
     private readonly paymentPlansService: PaymentPlansService,
     private readonly adHocInvoicesService: AdHocInvoicesService,
     private readonly propertyHistoryService: PropertyHistoryService,
+    @InjectRepository(PropertyHistory)
+    private readonly propertyHistoryRepository: Repository<PropertyHistory>,
   ) {}
 
   @Public()
@@ -90,68 +98,79 @@ export class WebhooksController {
     ip: string,
     explicitHeaders: Record<string, string | undefined>,
   ): Promise<{ status: string; message?: string }> {
+    let adapter: PaymentGateway;
     try {
-      let adapter: PaymentGateway;
-      try {
-        adapter = this.gatewayRegistry.get(gatewayName);
-      } catch {
-        this.paystackLogger.error('Webhook for unregistered gateway', {
-          gateway: gatewayName,
-        });
-        return { status: 'error', message: 'Unknown gateway' };
-      }
+      adapter = this.gatewayRegistry.get(gatewayName);
+    } catch {
+      this.paystackLogger.error('Webhook for unregistered gateway', {
+        gateway: gatewayName,
+      });
+      // 500 (not 200): this is our misconfiguration. A retry gives us a
+      // window to fix it instead of silently discarding the event.
+      throw new InternalServerErrorException('Unknown gateway');
+    }
 
-      // 1. IP whitelist — LOGGING ONLY. It must NOT drop the event: req.ip is
-      //    derived from a client-controllable X-Forwarded-For (main.ts sets
-      //    trust proxy), so the check has no security value, and gateway
-      //    egress IPs drift (Monnify publishes a single /32 that can change) —
-      //    dropping on mismatch would silently lose a real payment webhook,
-      //    the sole confirmation path for async bank transfers. The HMAC
-      //    signature below is the real guard.
-      const allowedIps = adapter.allowedSourceIps();
-      if (allowedIps.length > 0 && !allowedIps.includes(ip)) {
-        this.paystackLogger.warn('Webhook from unlisted source IP (allowed)', {
-          gateway: gatewayName,
-          detected_ip: ip,
-          event: body?.event ?? body?.eventType,
-        });
-      }
+    // 1. IP whitelist — LOGGING ONLY. It must NOT drop the event: req.ip is
+    //    derived from a client-controllable X-Forwarded-For (main.ts sets
+    //    trust proxy), so the check has no security value, and gateway
+    //    egress IPs drift (Monnify publishes a single /32 that can change) —
+    //    dropping on mismatch would silently lose a real payment webhook,
+    //    the sole confirmation path for async bank transfers. The HMAC
+    //    signature below is the real guard.
+    const allowedIps = adapter.allowedSourceIps();
+    if (allowedIps.length > 0 && !allowedIps.includes(ip)) {
+      this.paystackLogger.warn('Webhook from unlisted source IP (allowed)', {
+        gateway: gatewayName,
+        detected_ip: ip,
+        event: body?.event ?? body?.eventType,
+      });
+    }
 
-      // 2. Signature validation over the RAW body (rawBody: true in main.ts).
-      //    Header params are merged over req.headers so unit tests that pass
-      //    the signature separately behave like real requests.
-      const rawBody = req.rawBody
-        ? req.rawBody.toString('utf8')
-        : body
-          ? JSON.stringify(body)
-          : '';
-      const headers = { ...(req.headers ?? {}), ...explicitHeaders };
+    // 2. Signature validation over the RAW body (rawBody: true in main.ts).
+    //    Header params are merged over req.headers so unit tests that pass
+    //    the signature separately behave like real requests.
+    const rawBody = req.rawBody
+      ? req.rawBody.toString('utf8')
+      : body
+        ? JSON.stringify(body)
+        : '';
+    const headers = { ...(req.headers ?? {}), ...explicitHeaders };
 
-      if (!adapter.verifyWebhookSignature(rawBody, headers)) {
-        this.paystackLogger.error('Invalid webhook signature detected', {
-          gateway: gatewayName,
-          event: body?.event ?? body?.eventType,
-          reference: body?.data?.reference ?? body?.eventData?.paymentReference,
-        });
-        return { status: 'error', message: 'Invalid signature' };
-      }
+    if (!adapter.verifyWebhookSignature(rawBody, headers)) {
+      this.paystackLogger.error('Invalid webhook signature detected', {
+        gateway: gatewayName,
+        event: body?.event ?? body?.eventType,
+        reference: body?.data?.reference ?? body?.eventData?.paymentReference,
+      });
+      // 401 — NOT a 200-and-discard. A forged webhook does not come from the
+      // gateway, so nothing retries it and this response tells the forger
+      // nothing. But a MISCONFIGURED SECRET makes the real gateway retry and
+      // surface delivery failures on its dashboard — a loud signal instead of
+      // silently eating every payment webhook (the sole confirmation path for
+      // async bank transfers) while the dashboard reports 100% success.
+      throw new UnauthorizedException('Invalid signature');
+    }
 
-      // 3. Normalize (shape-only, fast) + route. All heavy work — including
-      //    any metadata hydration network call — is deferred past the 200 so
-      //    the ack is never delayed and the gateway doesn't retry on our
-      //    processing latency.
+    // 3. Normalize (shape-only, fast) + route. All heavy work — including
+    //    any metadata hydration network call — is deferred past the 200 so
+    //    the ack is never delayed and the gateway doesn't retry on our
+    //    processing latency.
+    try {
       const event = adapter.parseWebhookEvent(body);
       this.deferAndRoute(adapter, event);
-
-      return { status: 'success' };
     } catch (error) {
       this.paystackLogger.error('Webhook endpoint error', {
         gateway: gatewayName,
         error: error.message,
         stack: error.stack,
       });
-      return { status: 'error', message: error.message };
+      // 500 → the gateway retries. Only PRE-dispatch failures reach here
+      // (processing errors are caught inside the deferred path and can't
+      // affect this response), so a retry is exactly what we want.
+      throw new InternalServerErrorException('Webhook processing error');
     }
+
+    return { status: 'success' };
   }
 
   /**
@@ -163,17 +182,19 @@ export class WebhooksController {
     adapter: PaymentGateway,
     event: GatewayWebhookEvent,
   ): void {
-    setImmediate(async () => {
-      let hydrated = event;
-      try {
-        hydrated = await adapter.hydrateWebhookMetadata(event);
-      } catch (error) {
-        this.paystackLogger.error('Webhook metadata hydration failed', {
-          reference: event.reference,
-          error: (error as Error).message,
-        });
-      }
-      this.routeEvent(hydrated);
+    setImmediate(() => {
+      void (async () => {
+        let hydrated = event;
+        try {
+          hydrated = await adapter.hydrateWebhookMetadata(event);
+        } catch (error) {
+          this.paystackLogger.error('Webhook metadata hydration failed', {
+            reference: event.reference,
+            error: (error as Error).message,
+          });
+        }
+        this.routeEvent(hydrated);
+      })();
     });
   }
 
@@ -309,10 +330,10 @@ export class WebhooksController {
         },
       );
       this.recordAmountMismatchOpsEvent(event).catch((error) => {
-        this.paystackLogger.error('Failed to record amount-mismatch ops event', {
-          reference,
-          error: error.message,
-        });
+        this.paystackLogger.error(
+          'Failed to record amount-mismatch ops event',
+          { reference, error: error.message },
+        );
       });
     } else {
       this.paystackLogger.info('Webhook event received', {
@@ -360,29 +381,35 @@ export class WebhooksController {
     });
   }
 
-  /** Ops artifact for money-received-but-mismatched webhooks. */
+  /**
+   * Ops artifact for money-received-but-mismatched webhooks. Routes through
+   * the SAME deduped helper the verify lanes use, so the webhook and the
+   * tenant's redirect-return verify — which both observe this event — produce
+   * one reconciliation row, not two.
+   */
   private async recordAmountMismatchOpsEvent(
     event: GatewayWebhookEvent,
   ): Promise<void> {
     const metadata = event.metadata ?? {};
-    const propertyId = metadata.property_id;
-    if (!propertyId) {
-      // Still ops-visible via the error log above; nothing to attach it to.
-      return;
-    }
-    await this.propertyHistoryService.createPropertyHistory({
-      property_id: propertyId,
-      tenant_id: metadata.tenant_id ?? null,
-      event_type: 'payment_amount_mismatch',
-      event_description: `Gateway reports ₦${event.amountNaira.toLocaleString()} received on reference ${event.reference} (${event.gatewayResponse || event.rawEventType}) — does not match the requested charge. Funds are at the gateway; verify on the dashboard and reconcile manually.`,
-      related_entity_id:
-        metadata.renewal_invoice_id ??
-        metadata.payment_plan_installment_id ??
-        metadata.payment_plan_payoff_id ??
-        metadata.ad_hoc_invoice_id ??
-        metadata.offer_letter_id ??
-        null,
-      related_entity_type: 'payment_reference',
-    });
+    await recordAmountMismatchArtifact(
+      this.propertyHistoryRepository,
+      this.paystackLogger,
+      {
+        reference: event.reference,
+        amountNaira: event.amountNaira,
+        rawStatus: event.gatewayResponse || event.rawEventType,
+        gateway: event.gateway,
+        metadata: event.metadata,
+        lane: 'webhook',
+        relatedEntityId:
+          metadata.renewal_invoice_id ??
+          metadata.payment_plan_installment_id ??
+          metadata.payment_plan_payoff_id ??
+          metadata.ad_hoc_invoice_id ??
+          metadata.offer_letter_id ??
+          null,
+        relatedEntityType: 'payment_reference',
+      },
+    );
   }
 }

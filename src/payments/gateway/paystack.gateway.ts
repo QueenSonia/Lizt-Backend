@@ -178,7 +178,7 @@ export class PaystackGateway implements PaymentGateway {
   private toTypedError(error: any, reference: string): any {
     const message: string =
       (typeof error?.getResponse === 'function'
-        ? (error.getResponse() as any)?.message
+        ? error.getResponse()?.message
         : undefined) ??
       error?.response?.data?.message ??
       error?.message ??

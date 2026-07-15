@@ -504,16 +504,28 @@ export class RenewalPaymentService {
       // (setImmediate) and the redirect-return verify race, and a stale
       // entity save would clobber a payment_history entry the other caller
       // just committed inside markInvoiceAsPaid's locked transaction.
-      const receiptColumns: Partial<RenewalInvoice> = {};
+      //
+      // receipt_token/receipt_number are written NO-CLOBBER (COALESCE): the
+      // race-losing caller must not overwrite a token the winner already
+      // minted and embedded in a WhatsApp receipt link, or that delivered
+      // link would resolve to nothing. payment_method (channel) is free to
+      // set — it's not link-bearing.
       if (receiptToken) {
-        receiptColumns.receipt_token = receiptToken;
-        receiptColumns.receipt_number = `RR-${Date.now()}`;
-      }
-      if (channel) {
-        receiptColumns.payment_method = channel;
-      }
-      if (Object.keys(receiptColumns).length > 0) {
-        await this.renewalInvoiceRepository.update(invoice.id, receiptColumns);
+        await this.renewalInvoiceRepository
+          .createQueryBuilder()
+          .update(RenewalInvoice)
+          .set({
+            receipt_token: () => 'COALESCE(receipt_token, :rt)',
+            receipt_number: () => 'COALESCE(receipt_number, :rn)',
+            ...(channel ? { payment_method: channel } : {}),
+          })
+          .where('id = :id', { id: invoice.id })
+          .setParameters({ rt: receiptToken, rn: `RR-${Date.now()}` })
+          .execute();
+      } else if (channel) {
+        await this.renewalInvoiceRepository.update(invoice.id, {
+          payment_method: channel,
+        });
       }
       paymentOption = invoice.payment_option;
     }

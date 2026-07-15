@@ -225,6 +225,15 @@ export class MonnifyGateway implements PaymentGateway {
         return response.data as MonnifyEnvelope<T>;
       } catch (error) {
         lastError = error;
+
+        // Deterministic non-transport errors (e.g. the 503 thrown by
+        // getCredentials/getContractCode when Monnify isn't configured, or a
+        // GatewayNotConfigured on login) are not Axios errors and will never
+        // succeed on retry — fail fast instead of burning 3× backoff.
+        if (!(error as AxiosError)?.isAxiosError) {
+          throw error;
+        }
+
         const status = (error as AxiosError)?.response?.status;
 
         // Expired/invalid token: drop the cache, re-login, retry once.
@@ -421,7 +430,9 @@ export class MonnifyGateway implements PaymentGateway {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
 
-  async parseWebhookEvent(body: any): Promise<GatewayWebhookEvent> {
+  parseWebhookEvent(body: any): GatewayWebhookEvent {
+    // SHAPE ONLY — no network. Metadata that Monnify omits is filled later by
+    // hydrateWebhookMetadata() in the deferred path so the 200 ack is fast.
     const rawEventType: string = String(body?.eventType ?? '')
       .trim()
       .toUpperCase();
@@ -443,27 +454,6 @@ export class MonnifyGateway implements PaymentGateway {
       rawEventType === 'REJECTED_PAYMENTS' // defensive: docs heading is plural
     ) {
       type = 'transfer.rejected';
-    }
-
-    let metadata = this.toMetadata(d.metaData);
-
-    // The renewal rejected processor hard-requires metadata ids and the
-    // reference prefixes encode no row id — hydrate missing metadata from
-    // the query API before dispatch. Best-effort: a failure must not drop
-    // the event (prefix routing still works for the other lanes).
-    if (
-      type !== 'other' &&
-      (!metadata || Object.keys(metadata).length === 0) &&
-      d.paymentReference
-    ) {
-      try {
-        const verification = await this.verifyPayment(d.paymentReference);
-        metadata = verification.metadata;
-      } catch (error) {
-        this.logger.warn(
-          `Could not hydrate metadata for Monnify webhook ${d.paymentReference}: ${(error as Error).message}`,
-        );
-      }
     }
 
     const rejectionReason =
@@ -491,10 +481,36 @@ export class MonnifyGateway implements PaymentGateway {
           : type === 'payment.amount_mismatch'
             ? `Monnify status: ${rawStatus}`
             : undefined,
-      metadata,
+      metadata: this.toMetadata(d.metaData),
       gateway: this.name,
       raw: body,
     };
+  }
+
+  async hydrateWebhookMetadata(
+    event: GatewayWebhookEvent,
+  ): Promise<GatewayWebhookEvent> {
+    // The renewal rejected processor hard-requires metadata ids and the
+    // reference prefixes encode no row id — hydrate missing metadata from the
+    // query API. Runs post-200 (deferred), so it never delays the ack.
+    // Best-effort: on failure, keep the un-hydrated event (prefix routing
+    // still works for the other lanes).
+    if (
+      event.type === 'other' ||
+      (event.metadata && Object.keys(event.metadata).length > 0) ||
+      !event.reference
+    ) {
+      return event;
+    }
+    try {
+      const verification = await this.verifyPayment(event.reference);
+      return { ...event, metadata: verification.metadata };
+    } catch (error) {
+      this.logger.warn(
+        `Could not hydrate metadata for Monnify webhook ${event.reference}: ${(error as Error).message}`,
+      );
+      return event;
+    }
   }
 
   allowedSourceIps(): string[] {
@@ -607,20 +623,25 @@ export class MonnifyGateway implements PaymentGateway {
   }
 
   /** 4xx verify failures: definitive not-found → typed error; transients and
-   *  auth failures pass through untouched (never fake a not-found). */
+   *  auth failures pass through untouched (never fake a not-found). Keying on
+   *  HTTP 404 (a real signal on query-by-reference) makes the legacy-Paystack
+   *  fallback fire reliably during cutover without depending solely on the
+   *  responseMessage wording — capture the exact sandbox responseCode and add
+   *  it here to harden further (see MONNIFY_ROLLOUT.md). */
   private toTypedVerifyError(error: any, reference: string): any {
     const responseData = (error as AxiosError)?.response?.data as
       | MonnifyEnvelope<unknown>
       | undefined;
     const status = (error as AxiosError)?.response?.status;
-    if (
-      status &&
-      status >= 400 &&
-      status < 500 &&
-      status !== 401 &&
-      status !== 403 &&
-      this.looksLikeNotFound(responseData?.responseMessage)
-    ) {
+    const isNotFound =
+      status === 404 ||
+      (!!status &&
+        status >= 400 &&
+        status < 500 &&
+        status !== 401 &&
+        status !== 403 &&
+        this.looksLikeNotFound(responseData?.responseMessage));
+    if (isNotFound) {
       return new GatewayReferenceNotFoundError(
         reference,
         responseData?.responseMessage,

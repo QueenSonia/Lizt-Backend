@@ -101,21 +101,20 @@ export class WebhooksController {
         return { status: 'error', message: 'Unknown gateway' };
       }
 
-      // 1. IP whitelist (logging-only defense in depth — see class docblock).
-      //    Preserves the original behavior: prod-only, drop-with-200.
+      // 1. IP whitelist — LOGGING ONLY. It must NOT drop the event: req.ip is
+      //    derived from a client-controllable X-Forwarded-For (main.ts sets
+      //    trust proxy), so the check has no security value, and gateway
+      //    egress IPs drift (Monnify publishes a single /32 that can change) —
+      //    dropping on mismatch would silently lose a real payment webhook,
+      //    the sole confirmation path for async bank transfers. The HMAC
+      //    signature below is the real guard.
       const allowedIps = adapter.allowedSourceIps();
-      if (
-        process.env.NODE_ENV === 'production' &&
-        allowedIps.length > 0 &&
-        !allowedIps.includes(ip)
-      ) {
-        this.paystackLogger.error('Unauthorized webhook IP blocked', {
+      if (allowedIps.length > 0 && !allowedIps.includes(ip)) {
+        this.paystackLogger.warn('Webhook from unlisted source IP (allowed)', {
           gateway: gatewayName,
           detected_ip: ip,
-          all_headers: req.headers,
           event: body?.event ?? body?.eventType,
         });
-        return { status: 'success', message: 'IP check failed (logged)' };
       }
 
       // 2. Signature validation over the RAW body (rawBody: true in main.ts).
@@ -137,10 +136,12 @@ export class WebhooksController {
         return { status: 'error', message: 'Invalid signature' };
       }
 
-      // 3. Normalize + route. (May be async — Monnify hydrates missing
-      // metadata via its query API for rejected-payment events.)
-      const event = await adapter.parseWebhookEvent(body);
-      this.routeEvent(event);
+      // 3. Normalize (shape-only, fast) + route. All heavy work — including
+      //    any metadata hydration network call — is deferred past the 200 so
+      //    the ack is never delayed and the gateway doesn't retry on our
+      //    processing latency.
+      const event = adapter.parseWebhookEvent(body);
+      this.deferAndRoute(adapter, event);
 
       return { status: 'success' };
     } catch (error) {
@@ -154,9 +155,33 @@ export class WebhooksController {
   }
 
   /**
+   * Defer everything past the 200: hydrate missing metadata (network call for
+   * Monnify rejected events), then route. A single setImmediate wraps the
+   * whole thing so the ack returns immediately and hydration never blocks it.
+   */
+  private deferAndRoute(
+    adapter: PaymentGateway,
+    event: GatewayWebhookEvent,
+  ): void {
+    setImmediate(async () => {
+      let hydrated = event;
+      try {
+        hydrated = await adapter.hydrateWebhookMetadata(event);
+      } catch (error) {
+        this.paystackLogger.error('Webhook metadata hydration failed', {
+          reference: event.reference,
+          error: (error as Error).message,
+        });
+      }
+      this.routeEvent(hydrated);
+    });
+  }
+
+  /**
    * Prefix/metadata routing — the priority chain of the original controller,
-   * consuming normalized events. Dispatch is deferred via setImmediate after
-   * the 200 has been returned.
+   * consuming normalized events. Already runs in the deferred path (see
+   * deferAndRoute); each processor is invoked directly (fire-and-forget with
+   * .then/.catch), no further setImmediate needed.
    */
   private routeEvent(event: GatewayWebhookEvent): void {
     const reference = event.reference;
@@ -197,30 +222,28 @@ export class WebhooksController {
         type: paymentType,
       });
 
-      setImmediate(() => {
-        const processor = isPlanPayoff
-          ? this.paymentPlansService.markPlanPaidOffFromWebhook(event)
-          : isPaymentPlan
-            ? this.paymentPlansService.markInstallmentPaidFromWebhook(event)
-            : isAdHocInvoice
-              ? this.adHocInvoicesService.markInvoicePaidFromWebhook(event)
-              : isRenewalPayment
-                ? this.renewalPaymentService.processWebhookPayment(event)
-                : this.paymentService.processSuccessfulPayment(event);
+      const processor = isPlanPayoff
+        ? this.paymentPlansService.markPlanPaidOffFromWebhook(event)
+        : isPaymentPlan
+          ? this.paymentPlansService.markInstallmentPaidFromWebhook(event)
+          : isAdHocInvoice
+            ? this.adHocInvoicesService.markInvoicePaidFromWebhook(event)
+            : isRenewalPayment
+              ? this.renewalPaymentService.processWebhookPayment(event)
+              : this.paymentService.processSuccessfulPayment(event);
 
-        processor
-          .then(() => {
-            this.paystackLogger.info('Webhook processed successfully', {
-              reference,
-            });
-          })
-          .catch((error) => {
-            this.paystackLogger.error('Error processing webhook', {
-              reference,
-              error: error.message,
-            });
+      processor
+        .then(() => {
+          this.paystackLogger.info('Webhook processed successfully', {
+            reference,
           });
-      });
+        })
+        .catch((error) => {
+          this.paystackLogger.error('Error processing webhook', {
+            reference,
+            error: error.message,
+          });
+        });
     } else if (event.type === 'transfer.rejected') {
       const isRenewalPayment =
         reference?.startsWith('RENEWAL_') || metadata.renewal_invoice_id;
@@ -246,33 +269,31 @@ export class WebhooksController {
               : 'offer_letter',
       });
 
-      setImmediate(() => {
-        const processor = isRenewalPayment
-          ? this.renewalPaymentService.processWebhookTransferRejected(event)
-          : isPlanLane || isAdHocLane
-            ? // These lanes have no bespoke rejected processor — record an
-              // ops-visible artifact instead of dead-ending in the
-              // offer-letter processor's "Payment not found" log.
-              this.recordRejectedPaymentOpsEvent(
-                event,
-                isPlanLane ? 'payment_plan' : 'ad_hoc_invoice',
-              )
-            : this.paymentService.processBankTransferRejected(event);
+      const processor = isRenewalPayment
+        ? this.renewalPaymentService.processWebhookTransferRejected(event)
+        : isPlanLane || isAdHocLane
+          ? // These lanes have no bespoke rejected processor — record an
+            // ops-visible artifact instead of dead-ending in the
+            // offer-letter processor's "Payment not found" log.
+            this.recordRejectedPaymentOpsEvent(
+              event,
+              isPlanLane ? 'payment_plan' : 'ad_hoc_invoice',
+            )
+          : this.paymentService.processBankTransferRejected(event);
 
-        processor
-          .then(() => {
-            this.paystackLogger.info(
-              'Transfer rejection webhook processed successfully',
-              { reference },
-            );
-          })
-          .catch((error) => {
-            this.paystackLogger.error(
-              'Error processing transfer rejection webhook',
-              { reference, error: error.message },
-            );
-          });
-      });
+      processor
+        .then(() => {
+          this.paystackLogger.info(
+            'Transfer rejection webhook processed successfully',
+            { reference },
+          );
+        })
+        .catch((error) => {
+          this.paystackLogger.error(
+            'Error processing transfer rejection webhook',
+            { reference, error: error.message },
+          );
+        });
     } else if (event.type === 'payment.amount_mismatch') {
       // Money REACHED the gateway but not as a clean success (Monnify
       // PARTIALLY_PAID / OVERPAID). Never the silent log-only branch: write
@@ -287,12 +308,10 @@ export class WebhooksController {
           gateway_response: event.gatewayResponse,
         },
       );
-      setImmediate(() => {
-        this.recordAmountMismatchOpsEvent(event).catch((error) => {
-          this.paystackLogger.error(
-            'Failed to record amount-mismatch ops event',
-            { reference, error: error.message },
-          );
+      this.recordAmountMismatchOpsEvent(event).catch((error) => {
+        this.paystackLogger.error('Failed to record amount-mismatch ops event', {
+          reference,
+          error: error.message,
         });
       });
     } else {
@@ -303,7 +322,11 @@ export class WebhooksController {
     }
   }
 
-  /** Ops artifact for rejected payments on lanes without a bespoke handler. */
+  /** Ops artifact for rejected payments on lanes without a bespoke handler.
+   *  property_id normally arrives on the webhook (or is filled by
+   *  hydrateWebhookMetadata in deferAndRoute); the no-property_id branch is a
+   *  rare fallback and still emits a full-detail, retained ERROR log so the
+   *  rejection is never silently lost. */
   private async recordRejectedPaymentOpsEvent(
     event: GatewayWebhookEvent,
     lane: 'payment_plan' | 'ad_hoc_invoice',
@@ -312,8 +335,14 @@ export class WebhooksController {
     const propertyId = metadata.property_id;
     if (!propertyId) {
       this.paystackLogger.error(
-        'Rejected payment on lane without property_id metadata — log-only',
-        { reference: event.reference, lane },
+        'RECONCILE: gateway payment rejected but no property_id to attach an ops row — recorded in logs only',
+        {
+          reference: event.reference,
+          lane,
+          gateway: event.gateway,
+          amount_naira: event.amountNaira,
+          gateway_response: event.gatewayResponse,
+        },
       );
       return;
     }

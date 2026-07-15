@@ -405,7 +405,26 @@ describe('MonnifyGateway', () => {
       },
     );
 
-    it('hydrates missing metadata via the query API for rejected events', async () => {
+    it('parseWebhookEvent is shape-only — does NOT hydrate (no network call before the 200)', async () => {
+      mockHttpService.post.mockReturnValue(loginResponse());
+      mockHttpService.get.mockReturnValue(
+        axiosOk(envelope({ paymentStatus: 'FAILED' })),
+      );
+
+      const event = gateway.parseWebhookEvent({
+        eventType: 'REJECTED_PAYMENT',
+        eventData: {
+          paymentReference: 'RENEWAL_1_abc',
+          amountPaid: 3000,
+          // no metaData in the webhook payload
+        },
+      });
+
+      expect(event.metadata).toBeNull();
+      expect(mockHttpService.get).not.toHaveBeenCalled();
+    });
+
+    it('hydrateWebhookMetadata fills missing metadata via the query API (deferred path)', async () => {
       mockHttpService.post.mockReturnValue(loginResponse());
       mockHttpService.get.mockReturnValue(
         axiosOk(
@@ -420,21 +439,34 @@ describe('MonnifyGateway', () => {
         ),
       );
 
-      const event = await gateway.parseWebhookEvent({
+      const parsed = gateway.parseWebhookEvent({
         eventType: 'REJECTED_PAYMENT',
-        eventData: {
-          paymentReference: 'RENEWAL_1_abc',
-          amountPaid: 3000,
-          // no metaData in the webhook payload
-        },
+        eventData: { paymentReference: 'RENEWAL_1_abc', amountPaid: 3000 },
       });
+      const hydrated = await gateway.hydrateWebhookMetadata(parsed);
 
-      expect(event.metadata).toEqual({ renewal_invoice_id: 'r1' });
+      expect(hydrated.metadata).toEqual({ renewal_invoice_id: 'r1' });
       expect(mockHttpService.get).toHaveBeenCalled();
     });
 
-    it('parses JSON-string metaData', async () => {
-      const event = await gateway.parseWebhookEvent({
+    it('hydrateWebhookMetadata is a no-op when metadata is already present', async () => {
+      const parsed = gateway.parseWebhookEvent({
+        eventType: 'SUCCESSFUL_TRANSACTION',
+        eventData: {
+          paymentReference: 'RENEWAL_1_abc',
+          amountPaid: 1000,
+          paymentStatus: 'PAID',
+          metaData: { renewal_invoice_id: 'r1' },
+        },
+      });
+      const hydrated = await gateway.hydrateWebhookMetadata(parsed);
+
+      expect(hydrated).toBe(parsed);
+      expect(mockHttpService.get).not.toHaveBeenCalled();
+    });
+
+    it('parses JSON-string metaData', () => {
+      const event = gateway.parseWebhookEvent({
         eventType: 'SUCCESSFUL_TRANSACTION',
         eventData: {
           paymentReference: 'INV_1_abc',
@@ -446,8 +478,8 @@ describe('MonnifyGateway', () => {
       expect(event.metadata).toEqual({ ad_hoc_invoice_id: 'a1' });
     });
 
-    it('maps unknown events to other without throwing', async () => {
-      const event = await gateway.parseWebhookEvent({
+    it('maps unknown events to other without throwing', () => {
+      const event = gateway.parseWebhookEvent({
         eventType: 'SETTLEMENT_COMPLETION',
         eventData: { paymentReference: 'X', amountPaid: 1 },
       });

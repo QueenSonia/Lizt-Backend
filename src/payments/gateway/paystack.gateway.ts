@@ -157,6 +157,14 @@ export class PaystackGateway implements PaymentGateway {
     };
   }
 
+  async hydrateWebhookMetadata(
+    event: GatewayWebhookEvent,
+  ): Promise<GatewayWebhookEvent> {
+    // Paystack webhooks always carry the metadata we set at init — nothing to
+    // hydrate.
+    return event;
+  }
+
   allowedSourceIps(): string[] {
     return [...PAYSTACK_IPS];
   }

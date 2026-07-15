@@ -155,14 +155,21 @@ export interface PaymentGateway {
     headers: Record<string, string | string[] | undefined>,
   ): boolean;
 
-  /** Map the provider envelope to a normalized event. Never throws on shape
-   *  surprises — unknown events come back as type 'other'. May be async:
-   *  some adapters hydrate missing metadata via their query API (Monnify's
-   *  REJECTED_PAYMENT events can omit metaData, and the renewal rejected
-   *  processor hard-requires metadata.renewal_invoice_id). */
-  parseWebhookEvent(
-    body: any,
-  ): GatewayWebhookEvent | Promise<GatewayWebhookEvent>;
+  /** Map the provider envelope to a normalized event. SHAPE-ONLY and fast —
+   *  MUST NOT make network calls: it runs before the webhook 200 is returned.
+   *  Never throws on shape surprises — unknown events come back as 'other'. */
+  parseWebhookEvent(body: any): GatewayWebhookEvent;
+
+  /**
+   * Fill in metadata the webhook envelope omitted, via the gateway's query
+   * API. Runs in the DEFERRED (post-200) path so it never delays the ack.
+   * Default adapters return the event unchanged; Monnify's REJECTED_PAYMENT
+   * events can omit metaData that the renewal rejected processor requires.
+   * Best-effort: on failure, return the event as-is.
+   */
+  hydrateWebhookMetadata(
+    event: GatewayWebhookEvent,
+  ): Promise<GatewayWebhookEvent>;
 
   /** Documented webhook source IPs. Logging-only defense-in-depth — the app
    *  sits behind a proxy with `trust proxy`, so req.ip is spoofable; the

@@ -3732,7 +3732,11 @@ export class TenanciesService {
                  paid_at = $1,
                  payment_method = COALESCE(payment_method, 'other'),
                  manual_payment_note = COALESCE(manual_payment_note, $2),
-                 gateway_reference = COALESCE(gateway_reference, $3)
+                 gateway_reference = COALESCE(gateway_reference, $3),
+                 -- Keep the migration-1930 invariant (gateway_reference set ⇒
+                 -- gateway set). This is a lump-sum settlement via the renewal
+                 -- invoice, not a fresh gateway charge, so tag it 'renewal'.
+                 gateway = COALESCE(gateway, 'renewal')
              WHERE plan_id = $4 AND status = 'pending'`,
           [now, note, paymentReference, plan.id],
         );

@@ -69,6 +69,7 @@ interface MonnifyEnvelope<T> {
 @Injectable()
 export class MonnifyGateway implements PaymentGateway {
   readonly name = 'monnify';
+  readonly displayName = 'Monnify';
   /** Monnify checkoutUrls stay payable for ~40 minutes. */
   readonly checkoutExpiryMinutes = 40;
 

@@ -30,6 +30,7 @@ const PAYSTACK_IPS = ['52.31.139.75', '52.49.173.169', '52.214.14.220'];
 @Injectable()
 export class PaystackGateway implements PaymentGateway {
   readonly name = 'paystack';
+  readonly displayName = 'Paystack';
   /** Paystack access codes expire ~30 minutes after initialization. */
   readonly checkoutExpiryMinutes = 30;
 

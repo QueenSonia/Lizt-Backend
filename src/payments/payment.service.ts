@@ -917,13 +917,17 @@ export class PaymentService {
       order: { created_at: 'DESC' },
     });
 
-    // Get receipts for these payments
+    // Get receipts for these payments. Guard the empty case: TypeORM expands
+    // an empty array into `IN ()`, which Postgres rejects — a letter with no
+    // payments yet would 500 the whole endpoint.
     const paymentIds = payments.map((p) => p.id);
-    const receipts = await this.dataSource
-      .getRepository('receipts')
-      .createQueryBuilder('receipt')
-      .where('receipt.payment_id IN (:...paymentIds)', { paymentIds })
-      .getMany();
+    const receipts = paymentIds.length
+      ? await this.dataSource
+          .getRepository('receipts')
+          .createQueryBuilder('receipt')
+          .where('receipt.payment_id IN (:...paymentIds)', { paymentIds })
+          .getMany()
+      : [];
 
     const receiptsByPaymentId = new Map(
       receipts.map((r: any) => [r.payment_id, r.token]),

@@ -15,6 +15,7 @@ import { RolesEnum } from 'src/base.entity';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Account } from '../users/entities/account.entity';
 import { PaymentService } from './payment.service';
+import { GatewayRegistryService } from './gateway/gateway-registry.service';
 import { Public } from '../auth/public.decorator';
 import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
 import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decorator';
@@ -26,7 +27,10 @@ import { ManagedLandlordIds } from 'src/common/scope/managed-landlord-ids.decora
  */
 @Controller('payments')
 export class PaymentsController {
-  constructor(private readonly paymentService: PaymentService) {}
+  constructor(
+    private readonly paymentService: PaymentService,
+    private readonly gatewayRegistry: GatewayRegistryService,
+  ) {}
 
   /**
    * Get all payments for landlord's properties
@@ -50,6 +54,26 @@ export class PaymentsController {
       page,
       limit,
     });
+  }
+
+  /**
+   * The gateway new payments will be initialized through, for tenant-facing
+   * "Secured by …" notes on invoice / checkout screens.
+   * GET /payments/gateway
+   *
+   * Public: every caller is an unauthenticated tenant on a token-scoped
+   * invoice page. Exposes only the provider's public brand — no keys, no
+   * contract code, nothing a payer can't already see on the checkout page.
+   *
+   * MUST stay declared above `@Get(':offerId')` — Nest matches routes in
+   * declaration order, so that param route would otherwise swallow
+   * `/payments/gateway` and try to look it up as an offer id.
+   */
+  @Public()
+  @Get('gateway')
+  getActiveGateway(): { name: string; displayName: string } {
+    const gateway = this.gatewayRegistry.active();
+    return { name: gateway.name, displayName: gateway.displayName };
   }
 
   /**

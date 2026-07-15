@@ -133,6 +133,11 @@ export interface PaymentGateway {
   /** Stable adapter name ('paystack' | 'monnify' | …). Stored on DB rows. */
   readonly name: string;
 
+  /** Provider name as customers should see it ('Paystack', 'Monnify'). Shown
+   *  on the tenant-facing "Secured by …" note; never persisted — `name` is the
+   *  stored identity. */
+  readonly displayName: string;
+
   /** How long this gateway's checkout stays payable, in minutes
    *  (Paystack access codes ~30, Monnify checkoutUrl 40). */
   readonly checkoutExpiryMinutes: number;

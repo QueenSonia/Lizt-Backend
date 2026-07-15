@@ -1180,7 +1180,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         propertyId: payment.offerLetter?.property_id,
         amountPaid: Number(payment.amount),
         paymentMethod: payment.payment_method,
-        reference: payment.paystack_reference,
+        reference: payment.gateway_reference,
         paidAt: payment.paid_at?.toISOString(),
         isPartPayment,
       },

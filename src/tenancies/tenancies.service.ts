@@ -2895,41 +2895,131 @@ export class TenanciesService {
       );
     }
 
-    // Per-reference idempotency. Status alone is insufficient now that
-    // PARTIAL invoices accept further payments — replays of the same Paystack
-    // reference (e.g. webhook + frontend-verify race) must be no-ops, while a
-    // genuinely new reference on a PARTIAL invoice must go through.
-    const existingHistory = invoice.payment_history ?? [];
-    if (existingHistory.some((p) => p.reference === paymentReference)) {
+    // ── Locked claim section ────────────────────────────────────────────
+    // The gateway webhook (dispatched via setImmediate) and the tenant's
+    // redirect-return verify race here with the SAME reference within
+    // seconds. The per-reference payment_history dedupe is check-then-act,
+    // so it MUST run under a row lock — otherwise both callers pass the scan
+    // and the exactly-once money side effects (rent advance, plan
+    // auto-complete, receipts, WhatsApp) fire twice. Only the history append
+    // + status math is locked; the side effects below stay outside the
+    // transaction, gated on flags computed while the row was held.
+    const totalInvoiceAmount = parseFloat(invoice.total_amount.toString());
+    const claim = await this.dataSource.transaction(async (manager) => {
+      const locked = await manager.findOne(RenewalInvoice, {
+        where: { id: invoice.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked) {
+        throw new NotFoundException('Renewal invoice not found');
+      }
+      // Re-check under the lock — a supersede can land between the unlocked
+      // pre-read above and acquiring the row.
+      if (locked.superseded_by_id) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.CONFLICT,
+            code: 'INVOICE_SUPERSEDED',
+            message:
+              'This renewal invoice was replaced by a revised letter and can no longer be paid; the funds should be credited to the tenant wallet.',
+            supersededByInvoiceId: locked.superseded_by_id,
+            invoiceId: locked.id,
+          },
+          HttpStatus.CONFLICT,
+        );
+      }
+
+      // Per-reference idempotency. Status alone is insufficient now that
+      // PARTIAL invoices accept further payments — replays of the same
+      // gateway reference must be no-ops, while a genuinely new reference on
+      // a PARTIAL invoice must go through.
+      const existingHistory = locked.payment_history ?? [];
+      if (existingHistory.some((p) => p.reference === paymentReference)) {
+        return { alreadyApplied: true as const };
+      }
+
+      // Cumulative state. `amount_paid` is the running sum across all
+      // gateway-confirmed payments. The completing payment is the one whose
+      // arrival flips status UNPAID/PARTIAL → PAID and is the only payment
+      // that triggers rent-advance + plan-complete + renewal receipts.
+      const newPaymentEntry = {
+        reference: paymentReference,
+        amount,
+        paid_at: new Date().toISOString(),
+        ...(paymentOption ? { channel: paymentOption } : {}),
+      };
+      const updatedHistory = [...existingHistory, newPaymentEntry];
+      const cumulativeAmountPaid = updatedHistory.reduce(
+        (sum, p) => sum + Number(p.amount),
+        0,
+      );
+      const wasFullyPaidBefore =
+        locked.payment_status === RenewalPaymentStatus.PAID;
+      const isFullyPaid =
+        paymentOption === 'full' ||
+        cumulativeAmountPaid >= totalInvoiceAmount ||
+        !paymentOption; // backwards compat: no option = old flow = full payment
+      const isCompletingPayment = !wasFullyPaidBefore && isFullyPaid;
+
+      // Persist payment record. paid_at stamps only on the completing
+      // payment; partial top-ups leave it null until the renewal closes.
+      locked.payment_history = updatedHistory;
+      locked.amount_paid = cumulativeAmountPaid;
+      locked.payment_reference = paymentReference;
+      locked.payment_status = isFullyPaid
+        ? RenewalPaymentStatus.PAID
+        : RenewalPaymentStatus.PARTIAL;
+      if (isCompletingPayment) {
+        locked.paid_at = new Date();
+      }
+      // The gateway verify/webhook path stamps receipt_token before calling
+      // here, but the payment-plan ripple-up (markInstallmentPaid →
+      // markInvoiceAsPaid) doesn't — leaving the completing payment without a
+      // receipt, which makes sendRenewalPaymentTenant's receipt-PDF lookup
+      // fail permanently. Stamp one for any completing payment that lacks
+      // it; never overwrite an existing token (WhatsApp links to it may
+      // already be out).
+      if (isCompletingPayment && !locked.receipt_token) {
+        locked.receipt_token = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
+        locked.receipt_number = `RR-${Date.now()}`;
+      }
+
+      await manager.save(locked);
+
+      return {
+        alreadyApplied: false as const,
+        updatedHistory,
+        cumulativeAmountPaid,
+        isFullyPaid,
+        isCompletingPayment,
+        receiptToken: locked.receipt_token,
+        receiptNumber: locked.receipt_number,
+        paidAt: locked.paid_at,
+      };
+    });
+
+    if (claim.alreadyApplied) {
       console.log(
         `Renewal invoice ${invoice.id} already has payment ${paymentReference}; skipping (idempotent)`,
       );
       return;
     }
 
-    // Cumulative state. `amount_paid` is the running sum across all
-    // Paystack-confirmed payments. The completing payment is the one whose
-    // arrival flips status UNPAID/PARTIAL → PAID and is the only payment
-    // that triggers rent-advance + plan-complete + renewal receipts.
-    const totalInvoiceAmount = parseFloat(invoice.total_amount.toString());
-    const newPaymentEntry = {
-      reference: paymentReference,
-      amount,
-      paid_at: new Date().toISOString(),
-      ...(paymentOption ? { channel: paymentOption } : {}),
-    };
-    const updatedHistory = [...existingHistory, newPaymentEntry];
-    const cumulativeAmountPaid = updatedHistory.reduce(
-      (sum, p) => sum + Number(p.amount),
-      0,
-    );
-    const wasFullyPaidBefore =
-      invoice.payment_status === RenewalPaymentStatus.PAID;
-    const isFullyPaid =
-      paymentOption === 'full' ||
-      cumulativeAmountPaid >= totalInvoiceAmount ||
-      !paymentOption; // backwards compat: no option = old flow = full payment
-    const isCompletingPayment = !wasFullyPaidBefore && isFullyPaid;
+    // Mirror the committed values onto the relation-loaded entity the
+    // side-effect code below reads from.
+    invoice.payment_history = claim.updatedHistory;
+    invoice.amount_paid = claim.cumulativeAmountPaid;
+    invoice.payment_reference = paymentReference;
+    invoice.payment_status = claim.isFullyPaid
+      ? RenewalPaymentStatus.PAID
+      : RenewalPaymentStatus.PARTIAL;
+    invoice.paid_at = claim.paidAt;
+    invoice.receipt_token = claim.receiptToken;
+    invoice.receipt_number = claim.receiptNumber;
+
+    const cumulativeAmountPaid = claim.cumulativeAmountPaid;
+    const isFullyPaid = claim.isFullyPaid;
+    const isCompletingPayment = claim.isCompletingPayment;
 
     // Tenant-generated invoices never trigger renewal — only landlords control
     // tenancy renewal. shouldRenew gates the renewal-shaped notifications/copy;
@@ -2938,30 +3028,6 @@ export class TenanciesService {
     const shouldRenew = invoice.token_type !== 'tenant' && isFullyPaid;
     const willCompleteRenewal = shouldRenew && isCompletingPayment;
     const remaining = Math.max(0, totalInvoiceAmount - cumulativeAmountPaid);
-
-    // Persist payment record. paid_at stamps only on the completing payment;
-    // partial top-ups leave it null until the renewal actually closes.
-    invoice.payment_history = updatedHistory;
-    invoice.amount_paid = cumulativeAmountPaid;
-    invoice.payment_reference = paymentReference;
-    invoice.payment_status = isFullyPaid
-      ? RenewalPaymentStatus.PAID
-      : RenewalPaymentStatus.PARTIAL;
-    if (isCompletingPayment) {
-      invoice.paid_at = new Date();
-    }
-    // The Paystack verify/webhook path stamps receipt_token before calling
-    // here, but the payment-plan ripple-up (markInstallmentPaid →
-    // markInvoiceAsPaid) doesn't — leaving the completing payment without a
-    // receipt, which makes sendRenewalPaymentTenant's receipt-PDF lookup fail
-    // permanently. Stamp one for any completing payment that lacks it; never
-    // overwrite an existing token (WhatsApp links to it may already be out).
-    if (isCompletingPayment && !invoice.receipt_token) {
-      invoice.receipt_token = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
-      invoice.receipt_number = `RR-${Date.now()}`;
-    }
-
-    await this.renewalInvoiceRepository.save(invoice);
 
     // Auto-complete any active tenancy-scope payment plans on this invoice
     // when it's paid in full via a lump-sum (not via the plan ripple-up
@@ -3666,7 +3732,7 @@ export class TenanciesService {
                  paid_at = $1,
                  payment_method = COALESCE(payment_method, 'other'),
                  manual_payment_note = COALESCE(manual_payment_note, $2),
-                 paystack_reference = COALESCE(paystack_reference, $3)
+                 gateway_reference = COALESCE(gateway_reference, $3)
              WHERE plan_id = $4 AND status = 'pending'`,
           [now, note, paymentReference, plan.id],
         );
@@ -3688,9 +3754,13 @@ export class TenanciesService {
         await this.propertyHistoryRepository.save(histEntry);
       }
     } catch (err) {
-      // Non-blocking: a failure here shouldn't fail the renewal payment.
+      // Non-blocking: a failure here shouldn't fail the renewal payment — but
+      // it MUST be loud: if this swallows, a fully-paid tenancy keeps an
+      // ACTIVE plan with pending installments and reminders keep firing at a
+      // tenant who already paid (money-visible bug, not cosmetic).
       console.error(
-        '[autoCompletePaymentPlansForInvoice] failed',
+        '[autoCompletePaymentPlansForInvoice] FAILED — covered payment plans were NOT auto-completed; ' +
+          `invoice=${invoiceId} ref=${paymentReference}. Installment reminders will keep firing until fixed.`,
         (err as Error)?.message,
       );
     }

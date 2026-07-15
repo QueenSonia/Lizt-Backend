@@ -21,8 +21,17 @@ export class PaymentResponseDto {
 
 export class InitiatePaymentResponseDto {
   paymentId: string;
-  paystackReference: string;
-  accessCode: string;
-  authorizationUrl: string;
+  /** Our merchant reference (LIZT_...). */
+  reference: string;
+  /** Hosted-checkout URL — the canonical field the frontend redirects to. */
+  checkoutUrl: string;
   expiresAt: string;
+  /**
+   * @deprecated Legacy popup fields, populated only while the active gateway
+   * is Paystack. Dropped in the legacy-retire pass.
+   */
+  paystackReference?: string;
+  accessCode?: string;
+  /** @deprecated Alias of checkoutUrl. */
+  authorizationUrl?: string;
 }

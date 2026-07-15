@@ -64,21 +64,19 @@ export class PaymentsController {
   }
 
   /**
-   * Verify payment directly with Paystack
+   * Verify payment directly with the payment gateway
    * GET /payments/verify/:reference
    *
    * This endpoint provides a hybrid verification approach:
    * 1. Checks database first (fast)
-   * 2. If still pending, verifies with Paystack directly
-   * 3. Processes payment if Paystack confirms success
+   * 2. If still pending, verifies with the issuing gateway directly
+   * 3. Processes payment if the gateway confirms success
    *
    * Requirements: US-5, TR-4
    */
   @Public()
   @Get('verify/:reference')
-  async verifyPaymentWithPaystack(
-    @Param('reference') reference: string,
-  ): Promise<any> {
-    return this.paymentService.verifyPaymentWithPaystack(reference);
+  async verifyPayment(@Param('reference') reference: string): Promise<any> {
+    return this.paymentService.verifyPayment(reference);
   }
 }

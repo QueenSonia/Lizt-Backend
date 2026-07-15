@@ -22,7 +22,15 @@ import { Property } from '../properties/entities/property.entity';
 import { Users } from '../users/entities/user.entity';
 import { Account } from '../users/entities/account.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
-import { PaystackService } from './paystack.service';
+import {
+  ACTIVE_PAYMENT_GATEWAY,
+  DuplicateReferenceError,
+  GatewayReferenceNotFoundError,
+  NormalizedPaymentEvent,
+  PaymentGateway,
+  VerifyPaymentResult,
+} from './gateway/payment-gateway.interface';
+import { GatewayRegistryService } from './gateway/gateway-registry.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { TenantAttachmentService } from '../kyc-links/tenant-attachment.service';
 import { PropertyHistoryService } from '../property-history/property-history.service';
@@ -60,7 +68,9 @@ export class PaymentService {
     private readonly accountRepository: Repository<Account>,
     @InjectRepository(KYCApplication)
     private readonly kycApplicationRepository: Repository<KYCApplication>,
-    private readonly paystackService: PaystackService,
+    @Inject(ACTIVE_PAYMENT_GATEWAY)
+    private readonly gateway: PaymentGateway,
+    private readonly gatewayRegistry: GatewayRegistryService,
     private readonly paystackLogger: PaystackLogger,
     private readonly tenantAttachmentService: TenantAttachmentService,
     private readonly propertyHistoryService: PropertyHistoryService,
@@ -119,22 +129,27 @@ export class PaymentService {
       throw new BadRequestException('Amount must be greater than zero');
     }
 
-    // Generate unique reference with retry logic for collision handling
+    // Generate unique reference with retry logic for collision handling.
+    // Two duplicate sources exist here: the DB unique constraint on
+    // payments.gateway_reference (23505) and the gateway's own duplicate-
+    // reference rejection (typed DuplicateReferenceError from the adapter).
     const maxRetries = 3;
     let reference = '';
     let payment: Payment | null = null;
-    let paystackResponse: any = null;
+    let initResult: Awaited<
+      ReturnType<PaymentGateway['initializePayment']>
+    > | null = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       reference = `LIZT_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
       try {
-        // Initialize Paystack transaction
-        paystackResponse = await this.paystackService.initializeTransaction({
+        initResult = await this.gateway.initializePayment({
+          amountNaira: dto.amount,
           email: dto.email,
-          amount: Math.round(dto.amount * 100), // Convert to kobo
+          customerName: `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`,
           reference,
-          callback_url: dto.callbackUrl,
+          callbackUrl: dto.callbackUrl,
           metadata: {
             offer_letter_id: offerLetter.id,
             property_id: offerLetter.property_id,
@@ -152,16 +167,21 @@ export class PaymentService {
               ? PaymentType.FULL
               : PaymentType.PARTIAL,
           status: PaymentStatus.PENDING,
-          paystack_reference: reference,
-          paystack_access_code: paystackResponse.data.access_code,
-          paystack_authorization_url: paystackResponse.data.authorization_url,
+          gateway_reference: reference,
+          gateway_transaction_id: initResult.gatewayTransactionId,
+          gateway_checkout_url: initResult.checkoutUrl,
+          // Stamp the adapter that ISSUED the reference — never the env
+          // default — so row-first verification always asks the right
+          // gateway, even across a cutover deploy.
+          gateway: initResult.gateway,
         });
 
         // Success - break out of retry loop
         break;
       } catch (error) {
-        // Check if it's a duplicate key error (PostgreSQL error code 23505)
+        // DB duplicate (PostgreSQL 23505) or gateway-side duplicate reference
         const isDuplicateError =
+          error instanceof DuplicateReferenceError ||
           error.code === '23505' ||
           error.message?.includes('duplicate key') ||
           error.message?.includes('unique constraint');
@@ -180,7 +200,7 @@ export class PaymentService {
     }
 
     // This should never happen due to the throw in the catch block, but TypeScript needs assurance
-    if (!payment || !paystackResponse) {
+    if (!payment || !initResult) {
       throw new BadRequestException('Failed to create payment after retries');
     }
 
@@ -190,11 +210,15 @@ export class PaymentService {
       property_id: offerLetter.property_id,
       amount: dto.amount,
       reference,
-      paystack_response: paystackResponse,
+      gateway: initResult.gateway,
+      gateway_init_response: initResult,
     });
 
-    // Calculate expiry (Paystack access codes expire after 30 minutes)
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    // Calculate expiry from the gateway's checkout validity window
+    // (Paystack access codes ~30 min, Monnify checkoutUrl 40 min).
+    const expiresAt = new Date(
+      Date.now() + this.gateway.checkoutExpiryMinutes * 60 * 1000,
+    ).toISOString();
 
     // Create property history event for payment initiation (non-blocking)
     const tenantName = `${offerLetter.kyc_application.first_name} ${offerLetter.kyc_application.last_name}`;
@@ -217,10 +241,20 @@ export class PaymentService {
 
     return {
       paymentId: payment.id,
-      paystackReference: reference,
-      accessCode: paystackResponse.data.access_code,
-      authorizationUrl: paystackResponse.data.authorization_url,
+      reference,
+      checkoutUrl: initResult.checkoutUrl,
       expiresAt,
+      // Deprecated legacy popup fields — populated only while the active
+      // gateway is Paystack, dropped in the legacy-retire pass. Keeps
+      // long-lived open tenant tabs (old frontend bundle) working across
+      // the deploy boundary.
+      ...(initResult.gateway === 'paystack'
+        ? {
+            paystackReference: reference,
+            accessCode: initResult.gatewayTransactionId ?? undefined,
+            authorizationUrl: initResult.checkoutUrl,
+          }
+        : {}),
     };
   }
 
@@ -229,15 +263,16 @@ export class PaymentService {
    * Uses in-memory locking + database locks to prevent double processing
    * and avoid deadlocks from concurrent webhook/polling calls
    */
-  async processSuccessfulPayment(data: any): Promise<void> {
-    const reference = data.reference;
+  async processSuccessfulPayment(event: NormalizedPaymentEvent): Promise<void> {
+    const reference = event.reference;
     this.paystackLogger.info('Starting processSuccessfulPayment', {
       reference,
+      gateway: event.gateway,
     });
 
     // 1. Early idempotency check BEFORE acquiring any locks
     const existingPayment = await this.paymentRepository.findOne({
-      where: { paystack_reference: reference },
+      where: { gateway_reference: reference },
     });
 
     if (!existingPayment) {
@@ -254,6 +289,57 @@ export class PaymentService {
         },
       );
       return;
+    }
+
+    // Amount sanity guard (100x unit-bug detector). This processor credits
+    // the ROW amount (payment.amount) — the amount the tenant agreed to pay
+    // at init — so the gateway-reported amount must match it. Receiving LESS
+    // than the row amount must never grant full credit: quarantine for ops
+    // instead of processing. Receiving more is logged and still credits only
+    // the row amount.
+    const expectedNaira = Number(existingPayment.amount);
+    if (event.amountNaira + 1 < expectedNaira) {
+      this.paystackLogger.error(
+        'Amount mismatch — gateway reports LESS than the initialized amount; NOT crediting',
+        {
+          reference,
+          gateway: event.gateway,
+          expected: expectedNaira,
+          received: event.amountNaira,
+        },
+      );
+      await this.logPaymentEvent(
+        existingPayment.id,
+        PaymentLogEventType.ERROR,
+        {
+          reason: 'amount_mismatch_underpaid',
+          expected: expectedNaira,
+          received: event.amountNaira,
+          gateway: event.gateway,
+        },
+      );
+      return;
+    }
+    if (event.amountNaira > expectedNaira + 1) {
+      this.paystackLogger.warn(
+        'Amount mismatch — gateway reports MORE than the initialized amount; crediting the initialized amount, surplus needs ops reconciliation',
+        {
+          reference,
+          gateway: event.gateway,
+          expected: expectedNaira,
+          received: event.amountNaira,
+        },
+      );
+      void this.logPaymentEvent(
+        existingPayment.id,
+        PaymentLogEventType.ERROR,
+        {
+          reason: 'amount_mismatch_overpaid',
+          expected: expectedNaira,
+          received: event.amountNaira,
+          gateway: event.gateway,
+        },
+      ).catch(() => undefined);
     }
 
     // 2. In-memory lock to prevent concurrent processing of the same reference
@@ -292,7 +378,7 @@ export class PaymentService {
         const payment = await manager
           .getRepository(Payment)
           .createQueryBuilder('payment')
-          .where('payment.paystack_reference = :reference', { reference })
+          .where('payment.gateway_reference = :reference', { reference })
           .setLock('pessimistic_write_or_fail')
           .getOne();
 
@@ -338,9 +424,10 @@ export class PaymentService {
         // Update payment status
         await manager.update(Payment, payment.id, {
           status: PaymentStatus.COMPLETED,
-          payment_method: data.channel,
-          paid_at: new Date(data.paid_at || data.paidAt || Date.now()),
-          metadata: data,
+          payment_method: (event.channel ||
+            null) as Payment['payment_method'],
+          paid_at: event.paidAt ?? new Date(),
+          metadata: (event.raw ?? event) as Record<string, any>,
         });
         this.paystackLogger.debug('Payment status updated to COMPLETED', {
           payment_id: payment.id,
@@ -427,7 +514,7 @@ export class PaymentService {
       });
 
       this.paystackLogger.info('Transaction committed successfully', {
-        reference: data.reference,
+        reference,
       });
 
       // POST-TRANSACTION: Non-critical operations (notifications, history, etc.)
@@ -519,8 +606,8 @@ export class PaymentService {
           .recordPaymentFromOfferLetter(
             processedOfferLetterId!,
             processedAmount!,
-            data.reference,
-            data.channel || 'card',
+            reference,
+            event.channel || 'card',
             processedPaymentId,
           )
           .catch((err) => {
@@ -535,9 +622,9 @@ export class PaymentService {
             paymentId: processedPaymentId,
             offerLetterId: processedOfferLetterId!,
             amount: processedAmount!,
-            paymentMethod: data.channel || 'card',
-            paymentReference: data.reference,
-            paidAt: new Date(data.paid_at || data.paidAt || Date.now()),
+            paymentMethod: event.channel || 'card',
+            paymentReference: reference,
+            paidAt: event.paidAt ?? new Date(),
           })
           .then(async (savedReceipt) => {
             // After receipt is generated and shareable link is available, create receipt_sent event
@@ -605,7 +692,8 @@ export class PaymentService {
           processedPaymentId,
           PaymentLogEventType.VERIFICATION,
           {
-            event: 'charge.success',
+            event: 'payment.success',
+            gateway: event.gateway,
             processed: true,
             amount: processedAmount,
           },
@@ -625,7 +713,7 @@ export class PaymentService {
         this.paystackLogger.info(
           'Could not acquire lock, another transaction is processing this payment',
           {
-            reference: data.reference,
+            reference,
             error: error.message,
           },
         );
@@ -634,14 +722,14 @@ export class PaymentService {
       }
 
       this.paystackLogger.error('processSuccessfulPayment failed', {
-        reference: data.reference,
+        reference,
         error: error.message,
         stack: error.stack,
       });
       throw error; // Rethrow to allow proper error handling
     } finally {
       // Always release the in-memory lock
-      processingLocks.delete(data.reference);
+      processingLocks.delete(reference);
     }
   }
 
@@ -852,7 +940,7 @@ export class PaymentService {
       status: payment.status,
       paymentMethod: payment.payment_method,
       paidAt: payment.paid_at,
-      reference: payment.paystack_reference,
+      reference: payment.gateway_reference,
       receiptToken: receiptsByPaymentId.get(payment.id) || undefined,
       date: payment.paid_at
         ? payment.paid_at.toISOString().split('T')[0]
@@ -881,12 +969,12 @@ export class PaymentService {
    * This eliminates the need to wait for cron job and provides
    * immediate confirmation even if webhook failed.
    */
-  async verifyPaymentWithPaystack(reference: string): Promise<any> {
+  async verifyPayment(reference: string): Promise<any> {
     this.paystackLogger.info('Hybrid verification started', { reference });
 
     // Step 1: Find payment in database
     const payment = await this.paymentRepository.findOne({
-      where: { paystack_reference: reference },
+      where: { gateway_reference: reference },
       relations: ['offerLetter', 'offerLetter.property'],
     });
 
@@ -923,26 +1011,29 @@ export class PaymentService {
       };
     }
 
-    // Step 3: Payment still pending - verify with Paystack directly
-    this.paystackLogger.info('Payment pending, verifying with Paystack', {
+    // Step 3: Payment still pending - verify with the gateway that issued
+    // the reference (row-first selection via the row's `gateway` column).
+    this.paystackLogger.info('Payment pending, verifying with gateway', {
       payment_id: payment.id,
       reference,
+      gateway: payment.gateway,
     });
 
     try {
-      const verification =
-        await this.paystackService.verifyTransaction(reference);
+      const verification = await this.verifyRowWithGateway(payment);
 
-      this.paystackLogger.info('Paystack verification response', {
+      this.paystackLogger.info('Gateway verification response', {
         reference,
-        status: verification.data.status,
-        amount: verification.data.amount,
+        gateway: verification.gateway,
+        status: verification.status,
+        raw_status: verification.rawStatus,
+        amount_naira: verification.amountNaira,
       });
 
-      // Step 4: If Paystack says success, process it now
-      if (verification.data.status === 'success') {
+      // Step 4: If the gateway says success, process it now
+      if (verification.status === 'success') {
         this.paystackLogger.info(
-          'Payment successful on Paystack, processing now',
+          'Payment successful on gateway, processing now',
           {
             payment_id: payment.id,
             reference,
@@ -950,7 +1041,7 @@ export class PaymentService {
         );
 
         // Process the payment (this updates database, generates receipt, etc.)
-        await this.processSuccessfulPayment(verification.data);
+        await this.processSuccessfulPayment(verification);
 
         return {
           status: 'success',
@@ -958,29 +1049,49 @@ export class PaymentService {
           alreadyProcessed: false,
           payment: {
             id: payment.id,
-            amount: verification.data.amount / 100, // Convert from kobo
-            paidAt: verification.data.paid_at,
-            paymentMethod: verification.data.channel,
+            amount: verification.amountNaira,
+            paidAt: verification.paidAt,
+            paymentMethod: verification.channel,
           },
           message: 'Payment verified and processed successfully',
         };
       }
 
+      // Money-safety: pending-with-money (e.g. Monnify PARTIALLY_PAID /
+      // OVERPAID) must be ops-visible, never silently reported as pending.
+      if (verification.moneyReceived) {
+        this.paystackLogger.error(
+          'Gateway reports money received but not a clean success — needs ops reconciliation',
+          {
+            payment_id: payment.id,
+            reference,
+            raw_status: verification.rawStatus,
+            amount_naira: verification.amountNaira,
+          },
+        );
+        void this.logPaymentEvent(payment.id, PaymentLogEventType.ERROR, {
+          reason: 'amount_mismatch_gateway_status',
+          raw_status: verification.rawStatus,
+          received: verification.amountNaira,
+          gateway: verification.gateway,
+        }).catch(() => undefined);
+      }
+
       // Step 5: Payment not successful yet
-      this.paystackLogger.info('Payment not yet successful on Paystack', {
+      this.paystackLogger.info('Payment not yet successful on gateway', {
         payment_id: payment.id,
         reference,
-        paystack_status: verification.data.status,
+        gateway_status: verification.rawStatus,
       });
 
       return {
-        status: verification.data.status,
+        status: verification.status,
         verified: true,
         alreadyProcessed: false,
-        message: `Payment status: ${verification.data.status}`,
+        message: `Payment status: ${verification.status}`,
       };
     } catch (error) {
-      this.paystackLogger.error('Error verifying with Paystack', {
+      this.paystackLogger.error('Error verifying with gateway', {
         reference,
         error: error.message,
         stack: error.stack,
@@ -990,9 +1101,48 @@ export class PaymentService {
       return {
         status: 'error',
         verified: false,
-        message: 'Failed to verify with Paystack',
+        message: 'Failed to verify payment with gateway',
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Verify a payment row against the gateway recorded on it. If that gateway
+   * definitively does not know the reference, probe the other registered
+   * adapters once and log the mislabel — a wrong `gateway` value must not
+   * fail a genuinely-paid payment. Transient errors propagate.
+   */
+  private async verifyRowWithGateway(
+    payment: Payment,
+  ): Promise<VerifyPaymentResult> {
+    const rowGateway = this.gatewayRegistry.get(payment.gateway);
+    try {
+      return await rowGateway.verifyPayment(payment.gateway_reference);
+    } catch (error) {
+      if (!(error instanceof GatewayReferenceNotFoundError)) throw error;
+
+      for (const name of this.gatewayRegistry.names()) {
+        if (name === payment.gateway) continue;
+        try {
+          const result = await this.gatewayRegistry
+            .get(name)
+            .verifyPayment(payment.gateway_reference);
+          this.paystackLogger.error(
+            'Payment row gateway mislabeled — reference resolved on another gateway',
+            {
+              payment_id: payment.id,
+              reference: payment.gateway_reference,
+              labeled: payment.gateway,
+              actual: name,
+            },
+          );
+          return result;
+        } catch (inner) {
+          if (!(inner instanceof GatewayReferenceNotFoundError)) throw inner;
+        }
+      }
+      throw error;
     }
   }
 
@@ -1115,7 +1265,7 @@ export class PaymentService {
           status: p.status,
           paymentMethod: p.payment_method,
           paidAt: p.paid_at,
-          reference: p.paystack_reference,
+          reference: p.gateway_reference,
           date: p.paid_at
             ? p.paid_at.toISOString().split('T')[0]
             : p.created_at.toISOString().split('T')[0],
@@ -1172,7 +1322,7 @@ export class PaymentService {
    */
   async findByReference(reference: string): Promise<Payment | null> {
     return this.paymentRepository.findOne({
-      where: { paystack_reference: reference },
+      where: { gateway_reference: reference },
     });
   }
 
@@ -1197,7 +1347,7 @@ export class PaymentService {
 
     await this.logPaymentEvent(paymentId, PaymentLogEventType.ERROR, {
       reason: 'Payment failed',
-      paystack_data: data,
+      gateway_data: data,
     });
 
     // Create property history event for failed payment
@@ -1222,19 +1372,22 @@ export class PaymentService {
    * Marks the payment as failed, writes to property history (livefeed + history tab),
    * creates a landlord notification, and emits a real-time WebSocket event.
    */
-  async processBankTransferRejected(data: any): Promise<void> {
-    const reference = data.reference;
-    const amountInNaira = data.amount / 100;
-    const gatewayResponse = data.gateway_response || 'Rejected';
+  async processBankTransferRejected(
+    event: NormalizedPaymentEvent,
+  ): Promise<void> {
+    const reference = event.reference;
+    const amountInNaira = event.amountNaira;
+    const gatewayResponse = event.gatewayResponse || 'Rejected';
 
-    this.paystackLogger.info('Processing bank.transfer.rejected webhook', {
+    this.paystackLogger.info('Processing transfer.rejected webhook', {
       reference,
-      amount: data.amount,
+      gateway: event.gateway,
+      amount_naira: amountInNaira,
       gateway_response: gatewayResponse,
     });
 
     const payment = await this.paymentRepository.findOne({
-      where: { paystack_reference: reference },
+      where: { gateway_reference: reference },
       relations: [
         'offerLetter',
         'offerLetter.property',
@@ -1263,13 +1416,17 @@ export class PaymentService {
 
     await this.paymentRepository.update(payment.id, {
       status: PaymentStatus.FAILED,
-      metadata: { ...(payment.metadata ?? {}), rejection_data: data },
+      metadata: {
+        ...(payment.metadata ?? {}),
+        rejection_data: event.raw as Record<string, any>,
+      },
     });
 
     await this.logPaymentEvent(payment.id, PaymentLogEventType.ERROR, {
-      reason: 'Bank transfer rejected by Paystack',
+      reason: 'Bank transfer rejected by gateway',
+      gateway: event.gateway,
       gateway_response: gatewayResponse,
-      paystack_data: data,
+      gateway_data: event.raw,
     });
 
     const offerLetter = payment.offerLetter;
@@ -1626,7 +1783,11 @@ export class PaymentService {
    */
   @Cron('*/30 * * * *')
   async checkExpiredPayments(): Promise<void> {
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    const now = Date.now();
+    const thirtyMinutesAgo = new Date(now - 30 * 60 * 1000);
+    // Long-stop: no gateway may strand a PENDING row forever. Past this age
+    // a still-not-successful payment is failed regardless of gateway status.
+    const LONG_STOP_MS = 24 * 60 * 60 * 1000;
 
     const expiredPayments = await this.paymentRepository.find({
       where: {
@@ -1637,52 +1798,99 @@ export class PaymentService {
 
     for (const payment of expiredPayments) {
       try {
-        // Verify with Paystack one last time
-        const verification = await this.paystackService.verifyTransaction(
-          payment.paystack_reference,
-        );
+        // Ask the gateway recorded on the row (with mislabel fallback).
+        const verification = await this.verifyRowWithGateway(payment);
+        const ageMs = now - payment.created_at.getTime();
 
-        if (verification.data.status !== 'success') {
+        if (verification.status === 'success') {
+          // Payment was successful, process it
+          await this.processSuccessfulPayment(verification);
+          continue;
+        }
+
+        // Money received but not a clean success (Monnify PARTIALLY_PAID /
+        // OVERPAID): NEVER auto-fail a row with real money at the gateway.
+        // Leave it PENDING and surface for ops reconciliation.
+        if (verification.moneyReceived) {
+          this.paystackLogger.error(
+            'Expired payment holds money at the gateway without clean success — leaving PENDING for ops',
+            {
+              payment_id: payment.id,
+              reference: payment.gateway_reference,
+              raw_status: verification.rawStatus,
+              amount_naira: verification.amountNaira,
+            },
+          );
+          void this.logPaymentEvent(payment.id, PaymentLogEventType.ERROR, {
+            reason: 'amount_mismatch_gateway_status',
+            raw_status: verification.rawStatus,
+            received: verification.amountNaira,
+            gateway: verification.gateway,
+          }).catch(() => undefined);
+          continue;
+        }
+
+        if (verification.status === 'failed') {
           await this.markAsFailed(payment.id, {
             reason: 'timeout',
-            last_check: verification.data,
+            last_check: {
+              gateway: verification.gateway,
+              raw_status: verification.rawStatus,
+            },
           });
-
           this.paystackLogger.info('Payment marked as failed due to timeout', {
             payment_id: payment.id,
-            reference: payment.paystack_reference,
+            reference: payment.gateway_reference,
           });
-        } else {
-          // Payment was successful, process it
-          await this.processSuccessfulPayment(verification.data);
+          continue;
+        }
+
+        // Still genuinely pending. A live checkout can outlast our age gate
+        // (Monnify checkoutUrls stay payable for 40 min) — failing it now
+        // would stamp a failure on a checkout that can still take money.
+        // Skip and let the next pass converge (Monnify PENDING becomes
+        // EXPIRED after its window)… unless the long-stop has passed.
+        if (ageMs >= LONG_STOP_MS) {
+          await this.markAsFailed(payment.id, {
+            reason: 'timeout_longstop',
+            note: 'Still pending after 24h — force-failed by long-stop',
+            last_check: {
+              gateway: verification.gateway,
+              raw_status: verification.rawStatus,
+            },
+          });
+          this.paystackLogger.info(
+            'Payment force-failed by 24h long-stop',
+            {
+              payment_id: payment.id,
+              reference: payment.gateway_reference,
+            },
+          );
         }
       } catch (error) {
-        // Handle "transaction not found" errors gracefully
-        const isTransactionNotFound =
-          error.message?.includes('Transaction reference not found') ||
-          error.message?.includes('transaction_not_found');
-
-        if (isTransactionNotFound) {
-          // Payment was created in DB but never initiated on Paystack
-          // Mark as failed with specific reason
+        if (error instanceof GatewayReferenceNotFoundError) {
+          // Payment was created in DB but never initiated on the gateway
+          // (checkout page never opened). Paystack-era behavior; Monnify
+          // creates the transaction at init so this is effectively
+          // legacy-only.
           await this.markAsFailed(payment.id, {
             reason: 'never_initiated',
-            error: 'Transaction not found on Paystack',
-            note: 'Payment record exists in database but was never initiated on Paystack checkout',
+            error: 'Transaction not found on gateway',
+            note: 'Payment record exists in database but was never initiated on the gateway checkout',
           });
 
           this.paystackLogger.info(
-            'Payment marked as failed - never initiated on Paystack',
+            'Payment marked as failed - never initiated on gateway',
             {
               payment_id: payment.id,
-              reference: payment.paystack_reference,
+              reference: payment.gateway_reference,
             },
           );
         } else {
           // Other errors (network issues, etc.) - log but don't mark as failed yet
           this.paystackLogger.error('Error checking expired payment', {
             payment_id: payment.id,
-            reference: payment.paystack_reference,
+            reference: payment.gateway_reference,
             error: error.message,
           });
         }

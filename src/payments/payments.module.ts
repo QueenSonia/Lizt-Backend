@@ -5,6 +5,10 @@ import { ConfigModule } from '@nestjs/config';
 import { PaystackService } from './paystack.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { PaymentService } from './payment.service';
+import { PaystackGateway } from './gateway/paystack.gateway';
+import { MonnifyGateway } from './gateway/monnify.gateway';
+import { GatewayRegistryService } from './gateway/gateway-registry.service';
+import { ACTIVE_PAYMENT_GATEWAY } from './gateway/payment-gateway.interface';
 import { WebhooksController } from './webhooks.controller';
 import { PaymentsController } from './payments.controller';
 import { Payment } from './entities/payment.entity';
@@ -63,7 +67,29 @@ import { UtilsModule } from '../utils/utils.module';
     UtilsModule,
   ],
   controllers: [WebhooksController, PaymentsController],
-  providers: [PaystackService, PaystackLogger, PaymentService],
-  exports: [PaystackService, PaystackLogger, PaymentService],
+  providers: [
+    PaystackService,
+    PaystackLogger,
+    PaymentService,
+    // Gateway abstraction — business services depend on these, never on a
+    // concrete provider service.
+    PaystackGateway,
+    MonnifyGateway,
+    GatewayRegistryService,
+    {
+      provide: ACTIVE_PAYMENT_GATEWAY,
+      useFactory: (registry: GatewayRegistryService) => registry.active(),
+      inject: [GatewayRegistryService],
+    },
+  ],
+  exports: [
+    PaystackService,
+    PaystackLogger,
+    PaymentService,
+    PaystackGateway,
+    MonnifyGateway,
+    GatewayRegistryService,
+    ACTIVE_PAYMENT_GATEWAY,
+  ],
 })
 export class PaymentsModule {}

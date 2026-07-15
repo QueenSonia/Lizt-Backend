@@ -92,13 +92,17 @@ export class AdHocInvoice extends BaseEntity {
   @Column({ type: 'timestamp', nullable: true })
   paid_at: Date | null;
 
-  /** Paystack reference if paid via Paystack. */
+  /** Gateway payment reference if paid online. */
   @Column({ type: 'varchar', length: 100, nullable: true })
   payment_reference: string | null;
 
-  /** Paystack channel from verify response (card, bank_transfer, ussd, etc.). */
+  /** Normalized channel from the gateway (card, bank_transfer, ussd, etc.). */
   @Column({ type: 'varchar', length: 50, nullable: true })
   payment_method: string | null;
+
+  /** Which gateway took the online payment ('paystack' | 'monnify'), null for manual. */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  payment_gateway: string | null;
 
   /** Set on successful payment — used for the public receipt page. */
   @Column({ type: 'varchar', length: 64, nullable: true })

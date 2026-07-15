@@ -8,25 +8,34 @@ import {
   HttpStatus,
   Ip,
 } from '@nestjs/common';
-import * as crypto from 'crypto';
 import { Public } from '../auth/public.decorator';
 import { PaymentService } from './payment.service';
 import { RenewalPaymentService } from '../tenancies/renewal-payment.service';
 import { PaystackLogger } from './paystack-logger.service';
-import { ConfigService } from '@nestjs/config';
 import { PaymentPlansService } from '../payment-plans/payment-plans.service';
 import { AdHocInvoicesService } from '../ad-hoc-invoices/ad-hoc-invoices.service';
-
-// Paystack's official webhook source IP addresses
-const PAYSTACK_IPS = ['52.31.139.75', '52.49.173.169', '52.214.14.220'];
+import { PropertyHistoryService } from '../property-history/property-history.service';
+import { GatewayRegistryService } from './gateway/gateway-registry.service';
+import {
+  GatewayWebhookEvent,
+  PaymentGateway,
+} from './gateway/payment-gateway.interface';
 
 /**
- * Webhook controller for handling Paystack payment notifications
+ * Webhook controller for payment-gateway notifications.
  *
- * Requirements:
- * - TR-4: POST /api/webhooks/paystack endpoint
- * - US-5: System Processes Paystack Payments
- * - NFR-1: Payment Security (webhook signature validation & IP whitelisting)
+ * One shared pipeline (IP note → HMAC signature → parse → route) serves every
+ * gateway; each route is a one-liner binding a gateway name. Adding a new
+ * gateway = registering its adapter + adding one route below.
+ *
+ * Routing is keyed on OUR reference prefixes (echoed back verbatim by every
+ * gateway) with metadata ids as fallback — identical priority order to the
+ * original Paystack-only controller:
+ *   PLANPAYOFF_ → PLAN_ → INV_ → RENEWAL_ → offer-letter (fallback)
+ *
+ * Security note: the IP whitelist is logging-only defense-in-depth. main.ts
+ * sets `trust proxy`, so req.ip derives from client-controllable
+ * X-Forwarded-For — the HMAC signature check is the real guard.
  */
 @Controller('webhooks')
 export class WebhooksController {
@@ -34,15 +43,12 @@ export class WebhooksController {
     private readonly paymentService: PaymentService,
     private readonly renewalPaymentService: RenewalPaymentService,
     private readonly paystackLogger: PaystackLogger,
-    private readonly configService: ConfigService,
+    private readonly gatewayRegistry: GatewayRegistryService,
     private readonly paymentPlansService: PaymentPlansService,
     private readonly adHocInvoicesService: AdHocInvoicesService,
+    private readonly propertyHistoryService: PropertyHistoryService,
   ) {}
 
-  /**
-   * Handle Paystack webhook events
-   * Processes webhooks synchronously (no queue)
-   */
   @Public()
   @Post('paystack')
   @HttpCode(HttpStatus.OK)
@@ -52,189 +58,302 @@ export class WebhooksController {
     @Body() body: any,
     @Ip() ip: string,
   ): Promise<{ status: string; message?: string }> {
-    try {
-      // 1. IP Whitelisting (Defense in Depth)
-      const clientIp = ip;
+    return this.handle('paystack', req, body, ip, {
+      'x-paystack-signature': signature,
+    });
+  }
 
+  @Public()
+  @Post('monnify')
+  @HttpCode(HttpStatus.OK)
+  async handleMonnifyWebhook(
+    @Req() req: any,
+    @Headers('monnify-signature') signature: string,
+    @Body() body: any,
+    @Ip() ip: string,
+  ): Promise<{ status: string; message?: string }> {
+    return this.handle('monnify', req, body, ip, {
+      'monnify-signature': signature,
+    });
+  }
+
+  /**
+   * Shared gateway-neutral webhook pipeline. Responds 200 fast and defers all
+   * heavy work via setImmediate so gateways never retry on our processing
+   * latency; idempotency lives in the processors (CAS / payment_history /
+   * row locks).
+   */
+  private async handle(
+    gatewayName: string,
+    req: any,
+    body: any,
+    ip: string,
+    explicitHeaders: Record<string, string | undefined>,
+  ): Promise<{ status: string; message?: string }> {
+    try {
+      let adapter: PaymentGateway;
+      try {
+        adapter = this.gatewayRegistry.get(gatewayName);
+      } catch {
+        this.paystackLogger.error('Webhook for unregistered gateway', {
+          gateway: gatewayName,
+        });
+        return { status: 'error', message: 'Unknown gateway' };
+      }
+
+      // 1. IP whitelist (logging-only defense in depth — see class docblock).
+      //    Preserves the original behavior: prod-only, drop-with-200.
+      const allowedIps = adapter.allowedSourceIps();
       if (
-        !PAYSTACK_IPS.includes(clientIp) &&
-        process.env.NODE_ENV === 'production'
+        process.env.NODE_ENV === 'production' &&
+        allowedIps.length > 0 &&
+        !allowedIps.includes(ip)
       ) {
         this.paystackLogger.error('Unauthorized webhook IP blocked', {
-          detected_ip: clientIp,
+          gateway: gatewayName,
+          detected_ip: ip,
           all_headers: req.headers,
-          event: body?.event,
+          event: body?.event ?? body?.eventType,
         });
         return { status: 'success', message: 'IP check failed (logged)' };
       }
 
-      // 2. Signature Validation
-      if (!signature) {
-        this.paystackLogger.error('Webhook signature missing', {
-          event: body?.event,
-        });
-        return { status: 'error', message: 'Signature missing' };
-      }
-
+      // 2. Signature validation over the RAW body (rawBody: true in main.ts).
+      //    Header params are merged over req.headers so unit tests that pass
+      //    the signature separately behave like real requests.
       const rawBody = req.rawBody
         ? req.rawBody.toString('utf8')
         : body
           ? JSON.stringify(body)
           : '';
+      const headers = { ...(req.headers ?? {}), ...explicitHeaders };
 
-      const secretKey =
-        this.configService.get<string>('PAYSTACK_SECRET_KEY');
-
-      if (!secretKey) {
-        this.paystackLogger.error(
-          'Paystack secret key not configured in environment',
-          {
-            available_keys: Object.keys(process.env).filter((k) =>
-              k.includes('PAYSTACK'),
-            ),
-          },
-        );
-        throw new Error('Paystack secret key not configured');
-      }
-
-      const hash = crypto
-        .createHmac('sha512', secretKey)
-        .update(rawBody)
-        .digest('hex');
-
-      if (hash !== signature) {
+      if (!adapter.verifyWebhookSignature(rawBody, headers)) {
         this.paystackLogger.error('Invalid webhook signature detected', {
-          event: body?.event,
-          reference: body?.data?.reference,
-          received_sig_prefix: signature?.substring(0, 8),
-          calculated_hash_prefix: hash?.substring(0, 8),
+          gateway: gatewayName,
+          event: body?.event ?? body?.eventType,
+          reference: body?.data?.reference ?? body?.eventData?.paymentReference,
         });
         return { status: 'error', message: 'Invalid signature' };
       }
 
-      // 3. Process webhook asynchronously — respond 200 immediately so Paystack
-      //    doesn't retry, then do the heavy DB/notification work in the background.
-      if (body.event === 'charge.success') {
-        const reference = body.data.reference;
-        const isPlanPayoff =
-          reference?.startsWith('PLANPAYOFF_') ||
-          !!body.data.metadata?.payment_plan_payoff_id;
-        const isPaymentPlan =
-          !isPlanPayoff &&
-          (reference?.startsWith('PLAN_') ||
-            !!body.data.metadata?.payment_plan_installment_id);
-        const isAdHocInvoice =
-          !isPlanPayoff &&
-          !isPaymentPlan &&
-          (reference?.startsWith('INV_') ||
-            !!body.data.metadata?.ad_hoc_invoice_id);
-        const isRenewalPayment =
-          !isPlanPayoff &&
-          !isPaymentPlan &&
-          !isAdHocInvoice &&
-          (reference?.startsWith('RENEWAL_') ||
-            body.data.metadata?.renewal_invoice_id);
-
-        const paymentType = isPlanPayoff
-          ? 'payment_plan_payoff'
-          : isPaymentPlan
-            ? 'payment_plan_installment'
-            : isAdHocInvoice
-              ? 'ad_hoc_invoice'
-              : isRenewalPayment
-                ? 'renewal'
-                : 'offer_letter';
-
-        this.paystackLogger.info('Processing charge.success webhook', {
-          reference,
-          amount: body.data.amount,
-          type: paymentType,
-        });
-
-        setImmediate(() => {
-          const processor = isPlanPayoff
-            ? this.paymentPlansService.markPlanPaidOffFromWebhook({
-                reference: body.data.reference,
-                amount: body.data.amount,
-                channel: body.data.channel,
-                metadata: body.data.metadata,
-              })
-            : isPaymentPlan
-            ? this.paymentPlansService.markInstallmentPaidFromWebhook({
-                reference: body.data.reference,
-                amount: body.data.amount,
-                channel: body.data.channel,
-                metadata: body.data.metadata,
-              })
-            : isAdHocInvoice
-              ? this.adHocInvoicesService.markInvoicePaidFromWebhook({
-                  reference: body.data.reference,
-                  amount: body.data.amount,
-                  channel: body.data.channel,
-                  metadata: body.data.metadata,
-                })
-              : isRenewalPayment
-                ? this.renewalPaymentService.processWebhookPayment(body.data)
-                : this.paymentService.processSuccessfulPayment(body.data);
-
-          processor
-            .then(() => {
-              this.paystackLogger.info('Webhook processed successfully', {
-                reference,
-              });
-            })
-            .catch((error) => {
-              this.paystackLogger.error('Error processing webhook', {
-                reference,
-                error: error.message,
-              });
-            });
-        });
-      } else if (body.event === 'bank.transfer.rejected') {
-        const reference = body.data.reference;
-        const isRenewalPayment =
-          reference?.startsWith('RENEWAL_') ||
-          body.data.metadata?.renewal_invoice_id;
-
-        this.paystackLogger.info('Processing bank.transfer.rejected webhook', {
-          reference,
-          amount: body.data.amount,
-          gateway_response: body.data.gateway_response,
-          type: isRenewalPayment ? 'renewal' : 'offer_letter',
-        });
-
-        setImmediate(() => {
-          const processor = isRenewalPayment
-            ? this.renewalPaymentService.processWebhookTransferRejected(body.data)
-            : this.paymentService.processBankTransferRejected(body.data);
-
-          processor
-            .then(() => {
-              this.paystackLogger.info(
-                'Bank transfer rejection webhook processed successfully',
-                { reference },
-              );
-            })
-            .catch((error) => {
-              this.paystackLogger.error(
-                'Error processing bank transfer rejection webhook',
-                { reference, error: error.message },
-              );
-            });
-        });
-      } else {
-        this.paystackLogger.info('Webhook event received', {
-          event: body.event,
-        });
-      }
+      // 3. Normalize + route. (May be async — Monnify hydrates missing
+      // metadata via its query API for rejected-payment events.)
+      const event = await adapter.parseWebhookEvent(body);
+      this.routeEvent(event);
 
       return { status: 'success' };
     } catch (error) {
       this.paystackLogger.error('Webhook endpoint error', {
+        gateway: gatewayName,
         error: error.message,
         stack: error.stack,
       });
       return { status: 'error', message: error.message };
     }
+  }
+
+  /**
+   * Prefix/metadata routing — the priority chain of the original controller,
+   * consuming normalized events. Dispatch is deferred via setImmediate after
+   * the 200 has been returned.
+   */
+  private routeEvent(event: GatewayWebhookEvent): void {
+    const reference = event.reference;
+    const metadata = event.metadata ?? {};
+
+    if (event.type === 'payment.success') {
+      const isPlanPayoff =
+        reference?.startsWith('PLANPAYOFF_') ||
+        !!metadata.payment_plan_payoff_id;
+      const isPaymentPlan =
+        !isPlanPayoff &&
+        (reference?.startsWith('PLAN_') ||
+          !!metadata.payment_plan_installment_id);
+      const isAdHocInvoice =
+        !isPlanPayoff &&
+        !isPaymentPlan &&
+        (reference?.startsWith('INV_') || !!metadata.ad_hoc_invoice_id);
+      const isRenewalPayment =
+        !isPlanPayoff &&
+        !isPaymentPlan &&
+        !isAdHocInvoice &&
+        (reference?.startsWith('RENEWAL_') || metadata.renewal_invoice_id);
+
+      const paymentType = isPlanPayoff
+        ? 'payment_plan_payoff'
+        : isPaymentPlan
+          ? 'payment_plan_installment'
+          : isAdHocInvoice
+            ? 'ad_hoc_invoice'
+            : isRenewalPayment
+              ? 'renewal'
+              : 'offer_letter';
+
+      this.paystackLogger.info('Processing payment.success webhook', {
+        reference,
+        gateway: event.gateway,
+        amount_naira: event.amountNaira,
+        type: paymentType,
+      });
+
+      setImmediate(() => {
+        const processor = isPlanPayoff
+          ? this.paymentPlansService.markPlanPaidOffFromWebhook(event)
+          : isPaymentPlan
+            ? this.paymentPlansService.markInstallmentPaidFromWebhook(event)
+            : isAdHocInvoice
+              ? this.adHocInvoicesService.markInvoicePaidFromWebhook(event)
+              : isRenewalPayment
+                ? this.renewalPaymentService.processWebhookPayment(event)
+                : this.paymentService.processSuccessfulPayment(event);
+
+        processor
+          .then(() => {
+            this.paystackLogger.info('Webhook processed successfully', {
+              reference,
+            });
+          })
+          .catch((error) => {
+            this.paystackLogger.error('Error processing webhook', {
+              reference,
+              error: error.message,
+            });
+          });
+      });
+    } else if (event.type === 'transfer.rejected') {
+      const isRenewalPayment =
+        reference?.startsWith('RENEWAL_') || metadata.renewal_invoice_id;
+      const isPlanLane =
+        reference?.startsWith('PLANPAYOFF_') ||
+        reference?.startsWith('PLAN_') ||
+        !!metadata.payment_plan_payoff_id ||
+        !!metadata.payment_plan_installment_id;
+      const isAdHocLane =
+        reference?.startsWith('INV_') || !!metadata.ad_hoc_invoice_id;
+
+      this.paystackLogger.info('Processing transfer.rejected webhook', {
+        reference,
+        gateway: event.gateway,
+        amount_naira: event.amountNaira,
+        gateway_response: event.gatewayResponse,
+        type: isRenewalPayment
+          ? 'renewal'
+          : isPlanLane
+            ? 'payment_plan'
+            : isAdHocLane
+              ? 'ad_hoc_invoice'
+              : 'offer_letter',
+      });
+
+      setImmediate(() => {
+        const processor = isRenewalPayment
+          ? this.renewalPaymentService.processWebhookTransferRejected(event)
+          : isPlanLane || isAdHocLane
+            ? // These lanes have no bespoke rejected processor — record an
+              // ops-visible artifact instead of dead-ending in the
+              // offer-letter processor's "Payment not found" log.
+              this.recordRejectedPaymentOpsEvent(
+                event,
+                isPlanLane ? 'payment_plan' : 'ad_hoc_invoice',
+              )
+            : this.paymentService.processBankTransferRejected(event);
+
+        processor
+          .then(() => {
+            this.paystackLogger.info(
+              'Transfer rejection webhook processed successfully',
+              { reference },
+            );
+          })
+          .catch((error) => {
+            this.paystackLogger.error(
+              'Error processing transfer rejection webhook',
+              { reference, error: error.message },
+            );
+          });
+      });
+    } else if (event.type === 'payment.amount_mismatch') {
+      // Money REACHED the gateway but not as a clean success (Monnify
+      // PARTIALLY_PAID / OVERPAID). Never the silent log-only branch: write
+      // an ops artifact so someone reconciles the funds.
+      this.paystackLogger.error(
+        'Amount-mismatch payment webhook — money received without clean success',
+        {
+          reference,
+          gateway: event.gateway,
+          raw_event: event.rawEventType,
+          amount_naira: event.amountNaira,
+          gateway_response: event.gatewayResponse,
+        },
+      );
+      setImmediate(() => {
+        this.recordAmountMismatchOpsEvent(event).catch((error) => {
+          this.paystackLogger.error(
+            'Failed to record amount-mismatch ops event',
+            { reference, error: error.message },
+          );
+        });
+      });
+    } else {
+      this.paystackLogger.info('Webhook event received', {
+        gateway: event.gateway,
+        event: event.rawEventType,
+      });
+    }
+  }
+
+  /** Ops artifact for rejected payments on lanes without a bespoke handler. */
+  private async recordRejectedPaymentOpsEvent(
+    event: GatewayWebhookEvent,
+    lane: 'payment_plan' | 'ad_hoc_invoice',
+  ): Promise<void> {
+    const metadata = event.metadata ?? {};
+    const propertyId = metadata.property_id;
+    if (!propertyId) {
+      this.paystackLogger.error(
+        'Rejected payment on lane without property_id metadata — log-only',
+        { reference: event.reference, lane },
+      );
+      return;
+    }
+    await this.propertyHistoryService.createPropertyHistory({
+      property_id: propertyId,
+      tenant_id: metadata.tenant_id ?? null,
+      event_type: 'bank_transfer_rejected',
+      event_description: `Bank transfer of ₦${event.amountNaira.toLocaleString()} (ref ${event.reference}) was rejected by the payment gateway${event.gatewayResponse ? ` — ${event.gatewayResponse}` : ''}. No money was applied.`,
+      related_entity_id:
+        metadata.payment_plan_installment_id ??
+        metadata.payment_plan_payoff_id ??
+        metadata.ad_hoc_invoice_id ??
+        null,
+      related_entity_type: lane,
+    });
+  }
+
+  /** Ops artifact for money-received-but-mismatched webhooks. */
+  private async recordAmountMismatchOpsEvent(
+    event: GatewayWebhookEvent,
+  ): Promise<void> {
+    const metadata = event.metadata ?? {};
+    const propertyId = metadata.property_id;
+    if (!propertyId) {
+      // Still ops-visible via the error log above; nothing to attach it to.
+      return;
+    }
+    await this.propertyHistoryService.createPropertyHistory({
+      property_id: propertyId,
+      tenant_id: metadata.tenant_id ?? null,
+      event_type: 'payment_amount_mismatch',
+      event_description: `Gateway reports ₦${event.amountNaira.toLocaleString()} received on reference ${event.reference} (${event.gatewayResponse || event.rawEventType}) — does not match the requested charge. Funds are at the gateway; verify on the dashboard and reconcile manually.`,
+      related_entity_id:
+        metadata.renewal_invoice_id ??
+        metadata.payment_plan_installment_id ??
+        metadata.payment_plan_payoff_id ??
+        metadata.ad_hoc_invoice_id ??
+        metadata.offer_letter_id ??
+        null,
+      related_entity_type: 'payment_reference',
+    });
   }
 }

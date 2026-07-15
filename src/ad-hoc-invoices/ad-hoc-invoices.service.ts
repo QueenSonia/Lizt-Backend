@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -24,7 +25,12 @@ import { PropertyHistory } from '../property-history/entities/property-history.e
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
-import { PaystackService } from '../payments/paystack.service';
+import {
+  ACTIVE_PAYMENT_GATEWAY,
+  NormalizedPaymentEvent,
+  PaymentGateway,
+} from '../payments/gateway/payment-gateway.interface';
+import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
@@ -34,9 +40,16 @@ import { NotificationRecipientsService } from 'src/common/notify/notification-re
 import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 export interface AdHocInvoiceInitializationResult {
-  accessCode: string;
   reference: string;
-  authorizationUrl: string;
+  /** Hosted-checkout URL — the canonical field the frontend redirects to. */
+  checkoutUrl: string;
+  /**
+   * @deprecated Legacy popup fields, populated only while the active gateway
+   * is Paystack. Dropped in the legacy-retire pass.
+   */
+  accessCode?: string;
+  /** @deprecated Alias of checkoutUrl. */
+  authorizationUrl?: string;
 }
 
 @Injectable()
@@ -57,7 +70,9 @@ export class AdHocInvoicesService {
     private readonly dataSource: DataSource,
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
-    private readonly paystackService: PaystackService,
+    @Inject(ACTIVE_PAYMENT_GATEWAY)
+    private readonly gateway: PaymentGateway,
+    private readonly gatewayRegistry: GatewayRegistryService,
     private readonly tenantBalancesService: TenantBalancesService,
     private readonly whatsappNotificationLog: WhatsAppNotificationLogService,
     private readonly utilService: UtilService,
@@ -569,11 +584,14 @@ export class AdHocInvoicesService {
     }
     const reference = `INV_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
-    const paystackResponse = await this.paystackService.initializeTransaction({
+    const initResult = await this.gateway.initializePayment({
+      amountNaira: amount,
       email,
-      amount: Math.round(amount * 100),
       reference,
-      callback_url: `${process.env.FRONTEND_URL}/pay-invoice/${invoice.public_token}/success`,
+      // Redirect back to the PAY page (not /success): the pay page runs the
+      // return-verify hook, and the success page's data endpoint is
+      // paid-only — it 404s until the verify lands.
+      callbackUrl: `${process.env.FRONTEND_URL}/pay-invoice/${invoice.public_token}`,
       metadata: {
         ad_hoc_invoice_id: invoice.id,
         invoice_number: invoice.invoice_number,
@@ -585,13 +603,18 @@ export class AdHocInvoicesService {
     });
 
     this.logger.log(
-      `Paystack initialized for invoice ${invoice.id}, reference: ${reference}`,
+      `Gateway (${initResult.gateway}) initialized for invoice ${invoice.id}, reference: ${reference}`,
     );
 
     return {
-      accessCode: paystackResponse.data.access_code,
-      reference,
-      authorizationUrl: paystackResponse.data.authorization_url,
+      reference: initResult.reference,
+      checkoutUrl: initResult.checkoutUrl,
+      ...(initResult.gateway === 'paystack'
+        ? {
+            accessCode: initResult.gatewayTransactionId ?? undefined,
+            authorizationUrl: initResult.checkoutUrl,
+          }
+        : {}),
     };
   }
 
@@ -620,15 +643,21 @@ export class AdHocInvoicesService {
       );
     }
 
-    const paystackResponse =
-      await this.paystackService.verifyTransaction(reference);
-    const data = paystackResponse.data;
+    const verification =
+      await this.gatewayRegistry.verifyByReference(reference);
 
-    if (data.status !== 'success') {
+    if (verification.status !== 'success') {
+      if (verification.moneyReceived) {
+        // Monnify PARTIALLY_PAID/OVERPAID — money at the gateway without a
+        // clean success. Ops-visible, never silent.
+        this.logger.error(
+          `Ad-hoc invoice verify ${reference}: gateway reports ${verification.rawStatus} with ₦${verification.amountNaira} received — needs ops reconciliation`,
+        );
+      }
       return {
-        status: data.status === 'failed' ? 'failed' : 'pending',
-        reference: data.reference,
-        amount: data.amount / 100,
+        status: verification.status,
+        reference: verification.reference,
+        amount: verification.amountNaira,
         paidAt: null,
         receiptToken: null,
       };
@@ -637,9 +666,7 @@ export class AdHocInvoicesService {
     if (invoice.status !== AdHocInvoiceStatus.PAID) {
       try {
         await this.markInvoicePaidFromWebhook({
-          reference: data.reference,
-          amount: data.amount,
-          channel: data.channel,
+          ...verification,
           metadata: {
             ad_hoc_invoice_id: invoice.id,
             public_token: invoice.public_token,
@@ -656,7 +683,7 @@ export class AdHocInvoicesService {
     const fresh = await this.getInvoiceInternal(invoice.id);
     return {
       status: 'success',
-      reference: data.reference,
+      reference: verification.reference,
       amount: Number(fresh.total_amount),
       paidAt: fresh.paid_at
         ? fresh.paid_at instanceof Date
@@ -796,14 +823,11 @@ export class AdHocInvoicesService {
   // Webhook entry point
   // ───────────────────────────────────────────────────────────────────────
 
-  async markInvoicePaidFromWebhook(data: {
-    reference: string;
-    amount: number;
-    channel?: string;
-    metadata?: { ad_hoc_invoice_id?: string; public_token?: string };
-  }): Promise<void> {
-    const invoiceId = data.metadata?.ad_hoc_invoice_id;
-    const publicToken = data.metadata?.public_token;
+  async markInvoicePaidFromWebhook(
+    event: NormalizedPaymentEvent,
+  ): Promise<void> {
+    const invoiceId = event.metadata?.ad_hoc_invoice_id;
+    const publicToken = event.metadata?.public_token;
 
     let invoice: AdHocInvoice | null = null;
     if (invoiceId) {
@@ -818,7 +842,7 @@ export class AdHocInvoicesService {
 
     if (!invoice) {
       this.logger.error('Webhook missing ad_hoc_invoice_id / public_token', {
-        reference: data.reference,
+        reference: event.reference,
       });
       throw new Error('Missing ad_hoc_invoice_id in metadata');
     }
@@ -829,19 +853,19 @@ export class AdHocInvoicesService {
     // so ops can find the tenant and reconcile; do NOT credit or flip status.
     if (invoice.covered_by_plan_id) {
       this.logger.warn(
-        `Paystack payment received for plan-covered invoice ${invoice.id} (ref: ${data.reference}) — not credited`,
+        `Online payment received for plan-covered invoice ${invoice.id} (ref: ${event.reference}) — not credited`,
       );
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
           property_id: invoice.property_id,
           tenant_id: invoice.tenant_id,
           event_type: 'ad_hoc_invoice_payment_on_covered',
-          event_description: `Payment received on the public link for invoice ${invoice.invoice_number}, which is being settled by a payment plan — reference ${data.reference}. Funds NOT applied to the invoice; reconcile/refund manually.`,
+          event_description: `Payment received on the public link for invoice ${invoice.invoice_number}, which is being settled by a payment plan — reference ${event.reference}. Funds NOT applied to the invoice; reconcile/refund manually.`,
           related_entity_id: invoice.id,
           related_entity_type: 'ad_hoc_invoice',
           metadata: {
-            reference: data.reference,
-            amount: data.amount / 100,
+            reference: event.reference,
+            amount: event.amountNaira,
             covered_by_plan_id: invoice.covered_by_plan_id,
           },
         }),
@@ -853,21 +877,21 @@ export class AdHocInvoicesService {
       // Same reference = the charge that paid this invoice being confirmed
       // again (webhook + redirect-verify race). Only one charge exists, so
       // there is nothing to refund — don't raise an alarm on the timeline.
-      if (invoice.payment_reference === data.reference) {
+      if (invoice.payment_reference === event.reference) {
         this.logger.log(
-          `Invoice ${invoice.id} already paid by reference ${data.reference} — same charge confirmed twice, ignoring`,
+          `Invoice ${invoice.id} already paid by reference ${event.reference} — same charge confirmed twice, ignoring`,
         );
         return;
       }
       this.logger.warn(
-        `Duplicate Paystack payment for already-paid invoice ${invoice.id} (ref: ${data.reference})`,
+        `Duplicate online payment for already-paid invoice ${invoice.id} (ref: ${event.reference})`,
       );
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
           property_id: invoice.property_id,
           tenant_id: invoice.tenant_id,
           event_type: 'ad_hoc_invoice_duplicate_payment',
-          event_description: `Duplicate Paystack payment received for invoice ${invoice.invoice_number} — reference ${data.reference} — refund investigation required`,
+          event_description: `Duplicate online payment received for invoice ${invoice.invoice_number} — reference ${event.reference} — refund investigation required`,
           related_entity_id: invoice.id,
           related_entity_type: 'ad_hoc_invoice',
         }),
@@ -877,14 +901,14 @@ export class AdHocInvoicesService {
 
     if (invoice.status === AdHocInvoiceStatus.CANCELLED) {
       this.logger.warn(
-        `Paystack payment received for cancelled invoice ${invoice.id} (ref: ${data.reference})`,
+        `Online payment received for cancelled invoice ${invoice.id} (ref: ${event.reference})`,
       );
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
           property_id: invoice.property_id,
           tenant_id: invoice.tenant_id,
           event_type: 'ad_hoc_invoice_payment_on_cancelled',
-          event_description: `Paystack payment received for cancelled invoice ${invoice.invoice_number} — reference ${data.reference} — refund investigation required`,
+          event_description: `Online payment received for cancelled invoice ${invoice.invoice_number} — reference ${event.reference} — refund investigation required`,
           related_entity_id: invoice.id,
           related_entity_type: 'ad_hoc_invoice',
         }),
@@ -892,11 +916,45 @@ export class AdHocInvoicesService {
       return;
     }
 
-    const amountInNaira = data.amount / 100;
+    // Amount sanity guard (100x unit-bug detector): the charge was
+    // initialized for exactly the invoice's remaining balance. Underpayment
+    // must never mark the invoice PAID — quarantine for ops instead.
+    const remaining = Math.max(
+      0,
+      Number(invoice.total_amount) - Number(invoice.amount_paid ?? 0),
+    );
+    if (event.amountNaira + 1 < remaining) {
+      this.logger.error(
+        `Ad-hoc payment ${event.reference}: gateway reports ₦${event.amountNaira.toLocaleString()} but invoice ${invoice.id} expects ₦${remaining.toLocaleString()} — NOT crediting`,
+      );
+      await this.propertyHistoryRepository.save(
+        this.propertyHistoryRepository.create({
+          property_id: invoice.property_id,
+          tenant_id: invoice.tenant_id,
+          event_type: 'ad_hoc_invoice_amount_mismatch',
+          event_description: `Payment of ₦${event.amountNaira.toLocaleString()} (ref ${event.reference}) is LESS than the ₦${remaining.toLocaleString()} due on invoice ${invoice.invoice_number} — not applied; verify on the gateway dashboard and reconcile manually.`,
+          related_entity_id: invoice.id,
+          related_entity_type: 'ad_hoc_invoice',
+          metadata: {
+            reference: event.reference,
+            received: event.amountNaira,
+            expected: remaining,
+          },
+        }),
+      );
+      return;
+    }
+    if (event.amountNaira > remaining + 1) {
+      this.logger.warn(
+        `Ad-hoc payment ${event.reference}: gateway reports ₦${event.amountNaira.toLocaleString()} — MORE than the ₦${remaining.toLocaleString()} due; crediting the amount due, surplus needs ops reconciliation`,
+      );
+    }
+
     await this.markInvoicePaid(invoice, {
-      amount: amountInNaira,
-      paystackRef: data.reference,
-      channel: data.channel ?? undefined,
+      amount: Math.min(event.amountNaira, remaining),
+      gatewayRef: event.reference,
+      gateway: event.gateway,
+      channel: event.channel || undefined,
     });
   }
 
@@ -908,7 +966,9 @@ export class AdHocInvoicesService {
     invoice: AdHocInvoice,
     args: {
       amount: number;
-      paystackRef: string;
+      gatewayRef: string;
+      /** Adapter name that took the money. */
+      gateway?: string;
       channel?: string;
       paidAt?: Date;
     },
@@ -948,8 +1008,10 @@ export class AdHocInvoicesService {
           status: AdHocInvoiceStatus.PAID,
           amount_paid: Number(invoice.total_amount),
           paid_at: paidAt,
-          payment_reference: args.paystackRef,
+          payment_reference: args.gatewayRef,
           payment_method: args.channel ?? null,
+          // Which gateway took the money (online-only path).
+          payment_gateway: args.gateway ?? 'paystack',
           receipt_token: receiptToken,
           receipt_number: receiptNumber,
         },
@@ -966,7 +1028,9 @@ export class AdHocInvoicesService {
         args.amount,
         {
           type: TenantBalanceLedgerType.OB_PAYMENT,
-          description: `Invoice ${invoice.invoice_number} paid — ₦${args.amount.toLocaleString()} (paystack)`,
+          // Channel-first (card / bank_transfer) — this description is a
+          // DURABLE wallet-ledger record; never bake a gateway brand into it.
+          description: `Invoice ${invoice.invoice_number} paid — ₦${args.amount.toLocaleString()} (${args.channel ?? 'online'})`,
           propertyId: invoice.property_id,
           relatedEntityType: 'ad_hoc_invoice',
           relatedEntityId: invoice.id,
@@ -987,7 +1051,7 @@ export class AdHocInvoicesService {
 
     await this.logInvoiceEvent(
       'ad_hoc_invoice_paid',
-      `Invoice ${invoice.invoice_number} paid — ₦${args.amount.toLocaleString()} (paystack)`,
+      `Invoice ${invoice.invoice_number} paid — ₦${args.amount.toLocaleString()} (${args.channel ?? 'online'})`,
       refreshed,
       NotificationType.AD_HOC_INVOICE_PAID,
     );

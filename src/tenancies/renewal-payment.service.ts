@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -16,7 +17,13 @@ import {
 } from './entities/renewal-invoice.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import { Property } from '../properties/entities/property.entity';
-import { PaystackService } from '../payments/paystack.service';
+import {
+  ACTIVE_PAYMENT_GATEWAY,
+  DuplicateReferenceError,
+  NormalizedPaymentEvent,
+  PaymentGateway,
+} from '../payments/gateway/payment-gateway.interface';
+import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
 import { TenanciesService } from './tenancies.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
@@ -26,9 +33,17 @@ import { TenantBalancesService } from '../tenant-balances/tenant-balances.servic
 import { v4 as uuidv4 } from 'uuid';
 
 export interface PaymentInitializationResult {
-  accessCode: string;
   reference: string;
-  authorizationUrl: string;
+  /** Hosted-checkout URL — the canonical field the frontend redirects to. */
+  checkoutUrl: string;
+  /**
+   * @deprecated Legacy popup fields, populated only while the active gateway
+   * is Paystack. Dropped in the legacy-retire pass once no open tenant tab
+   * still runs the popup flow.
+   */
+  accessCode?: string;
+  /** @deprecated Alias of checkoutUrl for not-yet-redeployed frontends. */
+  authorizationUrl?: string;
 }
 
 export interface PaymentVerificationResult {
@@ -56,7 +71,9 @@ export class RenewalPaymentService {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
-    private readonly paystackService: PaystackService,
+    @Inject(ACTIVE_PAYMENT_GATEWAY)
+    private readonly gateway: PaymentGateway,
+    private readonly gatewayRegistry: GatewayRegistryService,
     private readonly tenanciesService: TenanciesService,
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
@@ -198,21 +215,28 @@ export class RenewalPaymentService {
       await this.renewalInvoiceRepository.save(invoice);
     }
 
-    // Generate unique reference with retry logic for collision handling
+    // Generate unique reference with retry logic for collision handling.
+    // Nothing is persisted at init for renewals, so the only duplicate that
+    // can occur is on the GATEWAY side — adapters surface it as the typed
+    // DuplicateReferenceError.
     const maxRetries = 3;
     let reference = '';
-    let paystackResponse: any = null;
+    let initResult: Awaited<
+      ReturnType<PaymentGateway['initializePayment']>
+    > | null = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       reference = `RENEWAL_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
       try {
-        // Initialize Paystack transaction
-        paystackResponse = await this.paystackService.initializeTransaction({
+        initResult = await this.gateway.initializePayment({
+          amountNaira: amount,
           email,
-          amount: Math.round(amount * 100), // Convert to kobo
+          customerName:
+            `${invoice.tenant?.user?.first_name ?? ''} ${invoice.tenant?.user?.last_name ?? ''}`.trim() ||
+            undefined,
           reference,
-          callback_url: `${process.env.FRONTEND_URL}/renewal-invoice/${token}`,
+          callbackUrl: `${process.env.FRONTEND_URL}/renewal-invoice/${token}`,
           metadata: {
             renewal_invoice_id: invoice.id,
             property_id: invoice.property_id,
@@ -231,13 +255,10 @@ export class RenewalPaymentService {
         // Success - break out of retry loop
         break;
       } catch (error) {
-        // Check if it's a duplicate key error
-        const isDuplicateError =
-          error.code === '23505' ||
-          error.message?.includes('duplicate key') ||
-          error.message?.includes('unique constraint');
-
-        if (isDuplicateError && attempt < maxRetries - 1) {
+        if (
+          error instanceof DuplicateReferenceError &&
+          attempt < maxRetries - 1
+        ) {
           this.logger.warn('Reference collision, retrying', {
             reference,
             attempt: attempt + 1,
@@ -254,7 +275,7 @@ export class RenewalPaymentService {
       }
     }
 
-    if (!paystackResponse) {
+    if (!initResult) {
       throw new BadRequestException(
         'Failed to initialize payment after retries',
       );
@@ -275,9 +296,16 @@ export class RenewalPaymentService {
     }
 
     return {
-      accessCode: paystackResponse.data.access_code,
-      reference,
-      authorizationUrl: paystackResponse.data.authorization_url,
+      reference: initResult.reference,
+      checkoutUrl: initResult.checkoutUrl,
+      // Legacy popup fields — only meaningful for Paystack; the redirect
+      // frontend ignores them.
+      ...(initResult.gateway === 'paystack'
+        ? {
+            accessCode: initResult.gatewayTransactionId ?? undefined,
+            authorizationUrl: initResult.checkoutUrl,
+          }
+        : {}),
     };
   }
 
@@ -306,7 +334,9 @@ export class RenewalPaymentService {
   }
 
   /**
-   * Verify payment with Paystack
+   * Verify payment with the gateway that issued the reference. Renewals
+   * persist nothing at init, so the registry probes the active gateway first
+   * and falls back through legacy adapters on a definitive not-found.
    * Requirements: 5.3
    */
   async verifyPayment(reference: string): Promise<PaymentVerificationResult> {
@@ -314,34 +344,42 @@ export class RenewalPaymentService {
 
     try {
       const verification =
-        await this.paystackService.verifyTransaction(reference);
+        await this.gatewayRegistry.verifyByReference(reference);
 
       this.logger.log(
-        `Paystack verification response for ${reference}: ${verification.data.status}`,
+        `Gateway (${verification.gateway}) verification for ${reference}: ${verification.rawStatus} → ${verification.status}`,
       );
 
-      if (verification.data.status === 'success') {
+      if (verification.status === 'success') {
         // Generate receipt token for successful payments
         const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
         return {
           status: 'success',
-          reference: verification.data.reference,
-          amount: verification.data.amount / 100, // Convert from kobo
-          paidAt: verification.data.paid_at,
-          channel: verification.data.channel,
+          reference: verification.reference,
+          amount: verification.amountNaira,
+          paidAt: verification.paidAt?.toISOString(),
+          channel: verification.channel,
           receiptToken,
         };
       }
 
+      // Money-safety: a pending verdict that carries money (Monnify
+      // PARTIALLY_PAID / OVERPAID) must be ops-visible, never silent.
+      if (verification.moneyReceived) {
+        this.logger.warn(
+          `Renewal verify ${reference}: gateway reports ${verification.rawStatus} with ₦${verification.amountNaira} received — surfacing as pending for ops reconciliation`,
+        );
+      }
+
       return {
-        status: verification.data.status as 'failed' | 'pending',
-        reference: verification.data.reference,
-        amount: verification.data.amount / 100,
+        status: verification.status,
+        reference: verification.reference,
+        amount: verification.amountNaira,
       };
     } catch (error) {
       this.logger.error(
-        `Error verifying payment with Paystack: ${reference}`,
+        `Error verifying payment with gateway: ${reference}`,
         error.stack,
       );
       throw new BadRequestException(
@@ -428,18 +466,56 @@ export class RenewalPaymentService {
         }
       }
 
-      if (receiptToken) {
-        invoice.receipt_token = receiptToken;
-        invoice.receipt_number = `RR-${Date.now()}`;
+      // Amount sanity guard (100x unit-bug detector): a single payment lane
+      // must never land dramatically above what the invoice can still absorb.
+      // Legit flows: partial payments are ≤ remaining; full payments equal
+      // remaining. Anything above remaining+1 is either a unit bug in the
+      // gateway adapter or a genuinely odd overpayment — both need ops eyes.
+      const invoiceTotal = Number(invoice.total_amount);
+      const remaining = Math.max(
+        0,
+        invoiceTotal - Number(invoice.amount_paid ?? 0),
+      );
+      if (amount > remaining + 1) {
+        this.logger.warn(
+          `Renewal payment ${reference}: ₦${amount.toLocaleString()} exceeds the remaining invoice balance ₦${remaining.toLocaleString()} (invoice ${invoice.id}) — surfacing for ops review before crediting`,
+        );
+        try {
+          await this.propertyHistoryRepository.save(
+            this.propertyHistoryRepository.create({
+              property_id: invoice.property_id,
+              tenant_id: invoice.tenant_id,
+              event_type: 'renewal_payment_amount_mismatch',
+              event_description: `Payment of ₦${amount.toLocaleString()} (ref ${reference}) exceeds the remaining balance of ₦${remaining.toLocaleString()} on this renewal invoice. Verify the charge on the gateway dashboard and reconcile the surplus.`,
+              related_entity_id: invoice.id,
+              related_entity_type: 'renewal_invoice',
+              metadata: { reference, amount, remaining },
+            }),
+          );
+        } catch (guardErr) {
+          this.logger.error(
+            'Failed to write amount-mismatch history entry',
+            (guardErr as Error)?.message,
+          );
+        }
       }
-      // Note: do NOT write amount_paid here — markInvoiceAsPaid recomputes it
-      // as the cumulative sum of payment_history. Overwriting with the single
-      // payment amount would erase prior partials.
+
+      // Column-scoped update — never a whole-entity save here: the webhook
+      // (setImmediate) and the redirect-return verify race, and a stale
+      // entity save would clobber a payment_history entry the other caller
+      // just committed inside markInvoiceAsPaid's locked transaction.
+      const receiptColumns: Partial<RenewalInvoice> = {};
+      if (receiptToken) {
+        receiptColumns.receipt_token = receiptToken;
+        receiptColumns.receipt_number = `RR-${Date.now()}`;
+      }
       if (channel) {
-        invoice.payment_method = channel;
+        receiptColumns.payment_method = channel;
+      }
+      if (Object.keys(receiptColumns).length > 0) {
+        await this.renewalInvoiceRepository.update(invoice.id, receiptColumns);
       }
       paymentOption = invoice.payment_option;
-      await this.renewalInvoiceRepository.save(invoice);
     }
 
     // Delegate to TenanciesService to handle invoice update, notifications, and history updates.
@@ -479,15 +555,12 @@ export class RenewalPaymentService {
   }
 
   /**
-   * Process a successful renewal payment from Paystack webhook
-   * Looks up the renewal invoice from webhook metadata and processes payment
+   * Process a successful renewal payment from a gateway webhook.
+   * Consumes the normalized event (naira — adapters own unit conversion) and
+   * looks up the renewal invoice from the round-tripped metadata.
    */
-  async processWebhookPayment(data: {
-    reference: string;
-    amount: number;
-    metadata?: { renewal_invoice_id?: string };
-  }): Promise<void> {
-    const { reference, amount, metadata } = data;
+  async processWebhookPayment(event: NormalizedPaymentEvent): Promise<void> {
+    const { reference, amountNaira, metadata } = event;
     const renewalInvoiceId = metadata?.renewal_invoice_id;
 
     if (!renewalInvoiceId) {
@@ -527,13 +600,13 @@ export class RenewalPaymentService {
       return;
     }
 
-    const amountInNaira = amount / 100; // Convert from kobo
     const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
     await this.processSuccessfulPayment(
       invoice.token,
       reference,
-      amountInNaira,
+      amountNaira,
       receiptToken,
+      event.channel || undefined,
     );
   }
 
@@ -542,11 +615,13 @@ export class RenewalPaymentService {
    * Writes to property history, tenant history, landlord livefeed notification,
    * and emits a real-time WebSocket event. Invoice stays UNPAID (no status change needed).
    */
-  async processWebhookTransferRejected(data: any): Promise<void> {
-    const reference = data.reference;
-    const amountInNaira = data.amount / 100;
-    const gatewayResponse = data.gateway_response || 'Rejected';
-    const renewalInvoiceId = data.metadata?.renewal_invoice_id;
+  async processWebhookTransferRejected(
+    event: NormalizedPaymentEvent,
+  ): Promise<void> {
+    const reference = event.reference;
+    const amountInNaira = event.amountNaira;
+    const gatewayResponse = event.gatewayResponse || 'Rejected';
+    const renewalInvoiceId = event.metadata?.renewal_invoice_id;
 
     this.logger.log(
       `Processing bank.transfer.rejected for renewal invoice: ${renewalInvoiceId}, reference: ${reference}`,
@@ -676,10 +751,11 @@ export class RenewalPaymentService {
         return invoice;
       }
 
-      // If not found, get the transaction details from Paystack to find the invoice ID
+      // If not found, ask the gateway for the transaction's metadata to find
+      // the invoice ID.
       const verification =
-        await this.paystackService.verifyTransaction(reference);
-      const renewalInvoiceId = verification.data.metadata?.renewal_invoice_id;
+        await this.gatewayRegistry.verifyByReference(reference);
+      const renewalInvoiceId = verification.metadata?.renewal_invoice_id;
 
       if (renewalInvoiceId) {
         invoice = await this.renewalInvoiceRepository.findOne({

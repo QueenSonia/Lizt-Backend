@@ -23,9 +23,9 @@ Support / human contact: 0803 632 2847
 Website: https://propertykraft.africa
 
 ## Money & safety (general facts — only bring up if the tenant asks)
-- Payments are made through the secure payment links inside our messages (powered
-  by Paystack). The money goes to your landlord; Property Kraft records it and
-  updates your balance and payment history.
+- Payments are made through the secure payment links inside our messages. The
+  money goes to your landlord; Property Kraft records it and updates your
+  balance and payment history.
 - We will NEVER ask for your card PIN, full card details, or a one-time code (OTP)
   inside a chat. Only enter card details on the secure link.
 - After a successful payment you automatically get a receipt (a confirmation with

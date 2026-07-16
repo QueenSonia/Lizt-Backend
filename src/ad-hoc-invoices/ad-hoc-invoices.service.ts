@@ -27,11 +27,21 @@ import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
 import {
   ACTIVE_PAYMENT_GATEWAY,
+  DuplicateReferenceError,
   NormalizedPaymentEvent,
   PaymentGateway,
 } from '../payments/gateway/payment-gateway.interface';
 import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
 import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
+import {
+  attachIntentCheckout,
+  discardPaymentIntent,
+  recordPaymentIntent,
+} from '../payments/gateway/payment-intent.helper';
+import {
+  PaymentIntent,
+  PaymentIntentLane,
+} from '../payments/entities/payment-intent.entity';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from '../tenant-balances/entities/tenant-balance-ledger.entity';
 import { WhatsAppNotificationLogService } from '../whatsapp-bot/whatsapp-notification-log.service';
@@ -68,6 +78,8 @@ export class AdHocInvoicesService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyHistory)
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
+    @InjectRepository(PaymentIntent)
+    private readonly paymentIntentRepository: Repository<PaymentIntent>,
     private readonly dataSource: DataSource,
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
@@ -585,26 +597,65 @@ export class AdHocInvoicesService {
     }
     const reference = `INV_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
-    const initResult = await this.gateway.initializePayment({
-      amountNaira: amount,
-      email,
+    // Built once and shared with the intent below: the sweep falls back to the
+    // stored copy when a gateway echoes metadata back empty, so the two must
+    // not be allowed to drift.
+    const gatewayMetadata = {
+      ad_hoc_invoice_id: invoice.id,
+      invoice_number: invoice.invoice_number,
+      public_token: invoice.public_token,
+      property_id: invoice.property_id,
+      tenant_id: invoice.tenant_id,
+    };
+
+    // Durable record BEFORE the gateway call — without it, a payment whose
+    // webhook and browser-return both fail is never reconciled.
+    const intent = await recordPaymentIntent(this.paymentIntentRepository, {
       reference,
-      // Redirect back to the PAY page (not /success): the pay page runs the
-      // return-verify hook, and the success page's data endpoint is
-      // paid-only — it 404s until the verify lands.
-      callbackUrl: `${process.env.FRONTEND_URL}/pay-invoice/${invoice.public_token}`,
-      metadata: {
-        ad_hoc_invoice_id: invoice.id,
-        invoice_number: invoice.invoice_number,
-        public_token: invoice.public_token,
-        property_id: invoice.property_id,
-        tenant_id: invoice.tenant_id,
-      },
-      channels: ['card', 'bank_transfer'],
+      gateway: this.gateway.name,
+      lane: PaymentIntentLane.AD_HOC_INVOICE,
+      amountNaira: amount,
+      relatedEntityId: invoice.id,
+      metadata: gatewayMetadata,
     });
+
+    let initResult: Awaited<ReturnType<PaymentGateway['initializePayment']>>;
+    try {
+      initResult = await this.gateway.initializePayment({
+        amountNaira: amount,
+        email,
+        reference,
+        // Redirect back to the PAY page (not /success): the pay page runs the
+        // return-verify hook, and the success page's data endpoint is
+        // paid-only — it 404s until the verify lands.
+        callbackUrl: `${process.env.FRONTEND_URL}/pay-invoice/${invoice.public_token}`,
+        metadata: gatewayMetadata,
+        channels: ['card', 'bank_transfer'],
+      });
+    } catch (error) {
+      // A duplicate means the reference already exists AT THE GATEWAY, so
+      // verifying it would resolve a DIFFERENT transaction and the sweep could
+      // credit that money here. Any other failure (timeout especially) may have
+      // left a live transaction — keep the intent so the sweep can find it.
+      if (error instanceof DuplicateReferenceError) {
+        await discardPaymentIntent(
+          this.paymentIntentRepository,
+          this.logger,
+          intent.id,
+        );
+      }
+      throw error;
+    }
 
     this.logger.log(
       `Gateway (${initResult.gateway}) initialized for invoice ${invoice.id}, reference: ${reference}`,
+    );
+
+    await attachIntentCheckout(
+      this.paymentIntentRepository,
+      this.logger,
+      intent.id,
+      initResult,
     );
 
     return {

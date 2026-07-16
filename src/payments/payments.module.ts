@@ -13,6 +13,8 @@ import { WebhooksController } from './webhooks.controller';
 import { PaymentsController } from './payments.controller';
 import { Payment } from './entities/payment.entity';
 import { PaymentLog } from './entities/payment-log.entity';
+import { PaymentIntent } from './entities/payment-intent.entity';
+import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { Property } from '../properties/entities/property.entity';
 import { Users } from '../users/entities/user.entity';
@@ -52,6 +54,9 @@ import { UtilsModule } from '../utils/utils.module';
       // WebhooksController writes deduped amount-mismatch reconciliation rows
       // directly (see gateway/amount-mismatch-artifact.ts).
       PropertyHistory,
+      // Swept by PaymentReconciliationService. The lanes that WRITE intents
+      // register the repo in their own modules.
+      PaymentIntent,
     ]),
     ConfigModule,
     AuthModule,
@@ -75,6 +80,10 @@ import { UtilsModule } from '../utils/utils.module';
     PaystackService,
     PaystackLogger,
     PaymentService,
+    // Lives here, alongside WebhooksController, because it needs the same four
+    // lane processors the webhook router dispatches to — this module is the one
+    // place they are all in scope.
+    PaymentReconciliationService,
     // Gateway abstraction — business services depend on these, never on a
     // concrete provider service.
     PaystackGateway,
@@ -90,6 +99,7 @@ import { UtilsModule } from '../utils/utils.module';
     PaystackService,
     PaystackLogger,
     PaymentService,
+    PaymentReconciliationService,
     PaystackGateway,
     MonnifyGateway,
     GatewayRegistryService,

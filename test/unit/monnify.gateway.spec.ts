@@ -280,13 +280,41 @@ describe('MonnifyGateway', () => {
       expect(result.paidAt).toBeNull();
     });
 
+    // VERBATIM sandbox response for an unknown reference (captured 2026-07-15):
+    // HTTP 404 + responseCode "99" + this exact wording. Do not "tidy" this
+    // string — an invented message like 'Transaction not found' is what let a
+    // looksLikeNotFound regex that never matched Monnify ship unnoticed.
+    const REAL_NOT_FOUND_MESSAGE =
+      'Could not find transaction with payment reference NOPE for merchant';
+
     it('maps a definitive not-found to GatewayReferenceNotFoundError', async () => {
       mockHttpService.get.mockReturnValue(
         axios4xx(
           404,
           envelope(null, {
             requestSuccessful: false,
-            responseMessage: 'Transaction not found',
+            responseCode: '99',
+            responseMessage: REAL_NOT_FOUND_MESSAGE,
+          }),
+        ),
+      );
+      await expect(gateway.verifyPayment('NOPE')).rejects.toBeInstanceOf(
+        GatewayReferenceNotFoundError,
+      );
+    });
+
+    // The 404 above is the primary signal; this pins the wording fallback on
+    // its own. Monnify says "could not FIND", so /not\s*found/ never matched —
+    // without /could\s*not\s*find/ the legacy-Paystack cutover fallback would
+    // rest entirely on the status check.
+    it('recognizes the real not-found wording on a non-404 4xx (regex fallback)', async () => {
+      mockHttpService.get.mockReturnValue(
+        axios4xx(
+          400,
+          envelope(null, {
+            requestSuccessful: false,
+            responseCode: '99',
+            responseMessage: REAL_NOT_FOUND_MESSAGE,
           }),
         ),
       );

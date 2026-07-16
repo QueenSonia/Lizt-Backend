@@ -58,13 +58,22 @@ interface MonnifyEnvelope<T> {
  *  - transactionReference contains pipes ("MNFY|12|…") → we verify by OUR
  *    paymentReference instead and encodeURIComponent everything;
  *  - PARTIALLY_PAID / OVERPAID mean money WAS received → moneyReceived=true,
- *    normalized 'pending' (verify) / 'payment.amount_mismatch' (webhook);
+ *    normalized 'pending' (verify) / 'payment.amount_mismatch' (webhook).
+ *    NOTE: these only ever occur if the CONTRACT is configured to accept
+ *    over/under payment (dashboard → Settings → Contracts Setup). On the
+ *    default contract Monnify rejects and refunds instead, so these branches
+ *    stay dormant — keep them, the setting is a dashboard toggle away;
  *  - the rejected-payment eventType is REJECTED_PAYMENT (singular — the docs
  *    heading is plural); such events can omit metaData, which the renewal
  *    rejected processor requires → hydrate via the query API;
- *  - no documented duplicate-reference responseCode → detect 4xx +
- *    requestSuccessful=false + /duplicate/i (capture the real code during
- *    sandbox smoke and tighten).
+ *  - a REJECTED payment leaves NO trace on any read API: the transaction stays
+ *    PENDING with amountPaid 0.00 and accountPayments [], there is no
+ *    paymentRejectionInformation on the query response, and no rejected-payments
+ *    endpoint exists (verified against sandbox 2026-07-15). The REJECTED_PAYMENT
+ *    webhook is the ONLY signal — verify() can never discover a rejection;
+ *  - responseCode is USELESS as a discriminator: it is "99" for every error,
+ *    including both not-found and duplicate (verified against sandbox
+ *    2026-07-15). HTTP status is the real signal — 404 not-found, 422 duplicate.
  */
 @Injectable()
 export class MonnifyGateway implements PaymentGateway {
@@ -609,8 +618,13 @@ export class MonnifyGateway implements PaymentGateway {
     return null;
   }
 
+  /** Monnify's real not-found wording is "Could not find transaction with
+   *  payment reference X for merchant" (sandbox, 2026-07-15) — note "not
+   *  find", which /not\s*found/ does NOT match. Kept alongside the other
+   *  variants so this isn't a single-wording bet; the 404 check in
+   *  toTypedVerifyError remains the primary signal. */
   private looksLikeNotFound(message: string | undefined): boolean {
-    return /not\s*found|does\s*not\s*exist|invalid\s*transaction\s*reference/i.test(
+    return /could\s*not\s*find|not\s*found|does\s*not\s*exist|invalid\s*transaction\s*reference/i.test(
       message ?? '',
     );
   }
@@ -638,10 +652,11 @@ export class MonnifyGateway implements PaymentGateway {
 
   /** 4xx verify failures: definitive not-found → typed error; transients and
    *  auth failures pass through untouched (never fake a not-found). Keying on
-   *  HTTP 404 (a real signal on query-by-reference) makes the legacy-Paystack
-   *  fallback fire reliably during cutover without depending solely on the
-   *  responseMessage wording — capture the exact sandbox responseCode and add
-   *  it here to harden further (see MONNIFY_ROLLOUT.md). */
+   *  HTTP 404 is what makes the legacy-Paystack fallback fire reliably during
+   *  cutover: an unknown reference returns 404 + responseCode "99" + "Could
+   *  not find transaction…" (verified against sandbox 2026-07-15). Do NOT try
+   *  to key on responseCode — it is "99" for every error, duplicate included,
+   *  so it cannot discriminate. The wording check is defence in depth only. */
   private toTypedVerifyError(error: any, reference: string): any {
     const responseData = (error as AxiosError)?.response?.data as
       | MonnifyEnvelope<unknown>

@@ -555,6 +555,9 @@ export class TenanciesController {
           result.amount,
           result.receiptToken,
           result.channel,
+          // Credit under the option THIS reference was initialized with, not
+          // whatever the tenant most recently started (the column is mutable).
+          result.paymentOption,
         );
       } catch (error) {
         // If already paid (409 Conflict), that's fine — idempotent

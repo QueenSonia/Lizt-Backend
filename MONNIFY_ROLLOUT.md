@@ -76,13 +76,33 @@ Keep `PAYSTACK_SECRET_KEY` in place (see step 7).
 ## 4. Monnify dashboard — webhook + settings
 
 - **Transaction Completion webhook URL** → `https://<api-host>/webhooks/monnify`
-- **Verify the reject-over/under-payments setting** is on (it is Monnify's
-  default). This is defense-in-depth only — the app already treats
-  `PARTIALLY_PAID`/`OVERPAID` as an ops-visible `payment.amount_mismatch` and
-  never silently credits or fails such rows.
-- The webhook HMAC signature (`monnify-signature`, SHA-512) is verified in all
-  environments. If sandbox genuinely delivers unsigned webhooks, set
-  `MONNIFY_ALLOW_UNSIGNED_WEBHOOKS=true` **in sandbox only** — never in prod.
+- **Verify the reject-over/under-payments setting** is on (Monnify's default).
+  This is NOT merely defense-in-depth — it decides which code path can ever run
+  (confirmed against sandbox 2026-07-15):
+  - **Reject (default):** Monnify bounces the transfer and refunds the payer.
+    The transaction stays `PENDING` with `amountPaid 0.00` — **`verifyPayment`
+    can never see the rejection.** The `REJECTED_PAYMENT` webhook is the ONLY
+    signal in existence, so webhook delivery is load-bearing, not a backup.
+    `PARTIALLY_PAID`/`OVERPAID` never occur, so the `payment.amount_mismatch`
+    path stays dormant.
+  - **Accept over/under payment** (dashboard → Settings → Contracts Setup):
+    `PARTIALLY_PAID`/`OVERPAID` become real statuses that verify CAN see, and
+    the `payment.amount_mismatch` artifact fires. Money then sits unmatched in
+    our books awaiting manual reconciliation — which is why we keep the default.
+- **Sandbox delivers webhooks UNSIGNED** — confirmed 2026-07-15; the docs state
+  the `monnify-signature` header is production-only. Set
+  `MONNIFY_ALLOW_UNSIGNED_WEBHOOKS=true` in sandbox or every sandbox webhook is
+  401'd and silently discarded. **Never in prod.**
+- ⚠️ **UNRESOLVED — the production signature algorithm is a coin-flip.** Monnify's
+  webhook docs contradict themselves: the formula says
+  `SHA-512(client secret key + object of request body)` (a plain hash of a
+  concatenation) while the security note on the same page says HMAC-SHA512 of
+  the body keyed with the secret. We implement HMAC. Sandbox **cannot** test
+  this — it sends no signature at all — so this path first executes in
+  production, where being wrong 401s every payment webhook. Before the flip,
+  make `verifyWebhookSignature` accept EITHER digest (both require the secret,
+  so accepting either costs nothing in security), and/or get written
+  confirmation from Monnify support.
 
 ## 5. Deploy order (backend and frontend deploy separately)
 
@@ -109,12 +129,18 @@ Offer letter · renewal · installment · payoff · ad-hoc. For each, confirm:
   (existing CAS / payment_history / row-lock dedupe covers Monnify's retries);
 - an abandoned checkout is handled by the 30-min expiry cron without failing a
   still-live checkout (Monnify PENDING → EXPIRED after ~40 min);
-- **capture Monnify's actual duplicate-reference `responseCode`** on a repeated
-  `paymentReference` and tighten `MonnifyGateway.toTypedInitError` if it is more
-  specific than the `/duplicate/i` message match currently used;
-- if the dashboard allows it, force an underpayment and confirm the
-  `payment_amount_mismatch` property-history artifact appears (money is NOT
-  auto-credited).
+- ~~capture Monnify's actual duplicate-reference `responseCode`~~ **DONE
+  2026-07-15 — `responseCode` cannot discriminate: it is `"99"` for every
+  error.** The real signal is HTTP status, which the adapter already keys on:
+  | case | HTTP | responseCode | responseMessage |
+  |---|---|---|---|
+  | not found | `404` | `99` | `Could not find transaction with payment reference X for merchant` |
+  | duplicate init | `422` | `99` | `Duplicate payment reference` |
+  Do not spend time hunting for a specific code — there isn't one.
+- force an underpayment and confirm the **`bank_transfer_rejected`** artifact
+  appears (NOT `payment_amount_mismatch` — on the default reject contract the
+  money is refunded by Monnify and never reaches us; see §4). Requires the
+  unsigned-webhook flag in sandbox, or the rejection is 401'd and lost.
 
 ## 7. Grace period, then retire Paystack (later PR)
 

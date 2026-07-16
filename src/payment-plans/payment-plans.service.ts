@@ -50,11 +50,21 @@ import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
 import {
   ACTIVE_PAYMENT_GATEWAY,
+  DuplicateReferenceError,
   NormalizedPaymentEvent,
   PaymentGateway,
 } from '../payments/gateway/payment-gateway.interface';
 import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
 import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
+import {
+  attachIntentCheckout,
+  discardPaymentIntent,
+  recordPaymentIntent,
+} from '../payments/gateway/payment-intent.helper';
+import {
+  PaymentIntent,
+  PaymentIntentLane,
+} from '../payments/entities/payment-intent.entity';
 import { TenanciesService } from '../tenancies/tenancies.service';
 import { RenewalChargeService } from '../renewal-letters/renewal-charge.service';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
@@ -103,6 +113,8 @@ export class PaymentPlansService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyHistory)
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
+    @InjectRepository(PaymentIntent)
+    private readonly paymentIntentRepository: Repository<PaymentIntent>,
     private readonly dataSource: DataSource,
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
@@ -2173,27 +2185,65 @@ export class PaymentPlansService {
     const amount = Number(installment.amount);
     const reference = `PLAN_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
-    const initResult = await this.gateway.initializePayment({
-      amountNaira: amount,
-      email,
+    // Built once and shared with the intent: the sweep falls back to the stored
+    // copy when a gateway echoes metadata back empty, so they must not drift.
+    const gatewayMetadata = {
+      payment_plan_installment_id: installment.id,
+      payment_plan_id: installment.plan_id,
+      property_id: installment.plan.property_id,
+      tenant_id: installment.plan.tenant_id,
+      charge_name: installment.plan.charge_name,
+      installment_sequence: installment.sequence,
+    };
+
+    // Durable record BEFORE the gateway call — without it, a payment whose
+    // webhook and browser-return both fail is never reconciled.
+    const intent = await recordPaymentIntent(this.paymentIntentRepository, {
       reference,
-      // Redirect back to the page the tenant paid FROM — it runs the
-      // return-verify hook (the /success page is paid-only and 404s until
-      // the verify lands).
-      callbackUrl: `${process.env.FRONTEND_URL}/pay-installment/${installment.id}`,
-      metadata: {
-        payment_plan_installment_id: installment.id,
-        payment_plan_id: installment.plan_id,
-        property_id: installment.plan.property_id,
-        tenant_id: installment.plan.tenant_id,
-        charge_name: installment.plan.charge_name,
-        installment_sequence: installment.sequence,
-      },
-      channels: ['card', 'bank_transfer'],
+      gateway: this.gateway.name,
+      lane: PaymentIntentLane.PAYMENT_PLAN_INSTALLMENT,
+      amountNaira: amount,
+      relatedEntityId: installment.id,
+      metadata: gatewayMetadata,
     });
+
+    let initResult: Awaited<ReturnType<PaymentGateway['initializePayment']>>;
+    try {
+      initResult = await this.gateway.initializePayment({
+        amountNaira: amount,
+        email,
+        reference,
+        // Redirect back to the page the tenant paid FROM — it runs the
+        // return-verify hook (the /success page is paid-only and 404s until
+        // the verify lands).
+        callbackUrl: `${process.env.FRONTEND_URL}/pay-installment/${installment.id}`,
+        metadata: gatewayMetadata,
+        channels: ['card', 'bank_transfer'],
+      });
+    } catch (error) {
+      // Duplicate = the reference already exists AT THE GATEWAY, so verifying
+      // it would resolve a DIFFERENT transaction and the sweep could credit
+      // that money here. Other failures may have left a live transaction —
+      // keep the intent so the sweep can find it.
+      if (error instanceof DuplicateReferenceError) {
+        await discardPaymentIntent(
+          this.paymentIntentRepository,
+          this.logger,
+          intent.id,
+        );
+      }
+      throw error;
+    }
 
     this.logger.log(
       `Gateway (${initResult.gateway}) initialized for installment ${installment.id}, reference: ${reference}`,
+    );
+
+    await attachIntentCheckout(
+      this.paymentIntentRepository,
+      this.logger,
+      intent.id,
+      initResult,
     );
 
     return {
@@ -2299,23 +2349,63 @@ export class PaymentPlansService {
     }
 
     const reference = `PLANPAYOFF_${Date.now()}_${uuidv4().substring(0, 8)}`;
-    const initResult = await this.gateway.initializePayment({
-      amountNaira: remaining,
-      email,
+
+    // Built once and shared with the intent: the sweep falls back to the stored
+    // copy when a gateway echoes metadata back empty, so they must not drift.
+    const gatewayMetadata = {
+      payment_plan_payoff_id: plan.id,
+      payment_plan_id: plan.id,
+      property_id: plan.property_id,
+      tenant_id: plan.tenant_id,
+      charge_name: plan.charge_name,
+    };
+
+    // Durable record BEFORE the gateway call — without it, a payment whose
+    // webhook and browser-return both fail is never reconciled. A payoff is the
+    // largest single charge in this lane, so it is the worst one to lose.
+    const intent = await recordPaymentIntent(this.paymentIntentRepository, {
       reference,
-      callbackUrl: `${process.env.FRONTEND_URL}/payment-plan/${plan.id}/payoff`,
-      metadata: {
-        payment_plan_payoff_id: plan.id,
-        payment_plan_id: plan.id,
-        property_id: plan.property_id,
-        tenant_id: plan.tenant_id,
-        charge_name: plan.charge_name,
-      },
-      channels: ['card', 'bank_transfer'],
+      gateway: this.gateway.name,
+      lane: PaymentIntentLane.PAYMENT_PLAN_PAYOFF,
+      amountNaira: remaining,
+      relatedEntityId: plan.id,
+      metadata: gatewayMetadata,
     });
+
+    let initResult: Awaited<ReturnType<PaymentGateway['initializePayment']>>;
+    try {
+      initResult = await this.gateway.initializePayment({
+        amountNaira: remaining,
+        email,
+        reference,
+        callbackUrl: `${process.env.FRONTEND_URL}/payment-plan/${plan.id}/payoff`,
+        metadata: gatewayMetadata,
+        channels: ['card', 'bank_transfer'],
+      });
+    } catch (error) {
+      // Duplicate = the reference already exists AT THE GATEWAY, so verifying
+      // it would resolve a DIFFERENT transaction and the sweep could credit
+      // that money here. Other failures may have left a live transaction —
+      // keep the intent so the sweep can find it.
+      if (error instanceof DuplicateReferenceError) {
+        await discardPaymentIntent(
+          this.paymentIntentRepository,
+          this.logger,
+          intent.id,
+        );
+      }
+      throw error;
+    }
 
     this.logger.log(
       `Gateway (${initResult.gateway}) initialized for plan payoff ${plan.id}, reference: ${reference}`,
+    );
+
+    await attachIntentCheckout(
+      this.paymentIntentRepository,
+      this.logger,
+      intent.id,
+      initResult,
     );
 
     return {

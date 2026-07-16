@@ -25,6 +25,15 @@ import {
 } from '../payments/gateway/payment-gateway.interface';
 import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
 import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
+import {
+  attachIntentCheckout,
+  discardPaymentIntent,
+  recordPaymentIntent,
+} from '../payments/gateway/payment-intent.helper';
+import {
+  PaymentIntent,
+  PaymentIntentLane,
+} from '../payments/entities/payment-intent.entity';
 import { TenanciesService } from './tenancies.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
@@ -54,6 +63,13 @@ export interface PaymentVerificationResult {
   paidAt?: string;
   channel?: string;
   receiptToken?: string;
+  /**
+   * The payment option THIS reference was initialized with, read back from the
+   * gateway's round-tripped metadata. Callers MUST pass it to
+   * processSuccessfulPayment rather than letting it re-read the mutable
+   * `invoice.payment_option` column.
+   */
+  paymentOption?: string | null;
   whatsappDelivery?: {
     sent: boolean;
     messageId?: string;
@@ -72,6 +88,8 @@ export class RenewalPaymentService {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(PaymentIntent)
+    private readonly paymentIntentRepository: Repository<PaymentIntent>,
     @Inject(ACTIVE_PAYMENT_GATEWAY)
     private readonly gateway: PaymentGateway,
     private readonly gatewayRegistry: GatewayRegistryService,
@@ -216,9 +234,8 @@ export class RenewalPaymentService {
     }
 
     // Generate unique reference with retry logic for collision handling.
-    // Nothing is persisted at init for renewals, so the only duplicate that
-    // can occur is on the GATEWAY side — adapters surface it as the typed
-    // DuplicateReferenceError.
+    // A duplicate can now surface from two places: our own UNIQUE(reference)
+    // on payment_intents, and the GATEWAY (typed DuplicateReferenceError).
     const maxRetries = 3;
     let reference = '';
     let initResult: Awaited<
@@ -227,6 +244,30 @@ export class RenewalPaymentService {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       reference = `RENEWAL_${Date.now()}_${uuidv4().substring(0, 8)}`;
+
+      // Built once and shared: the intent's copy must be IDENTICAL to what the
+      // gateway echoes back, because the sweep falls back to it when a gateway
+      // returns metadata empty. Two hand-maintained copies would drift.
+      const gatewayMetadata = {
+        renewal_invoice_id: invoice.id,
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        tenant_name: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
+        property_name: invoice.property.name,
+        payment_option: paymentOption || null,
+      };
+
+      // Durable record BEFORE the gateway call — a network timeout here can
+      // leave a live transaction the tenant can pay, and without this row
+      // nothing would ever reconcile it. See recordPaymentIntent.
+      const intent = await recordPaymentIntent(this.paymentIntentRepository, {
+        reference,
+        gateway: this.gateway.name,
+        lane: PaymentIntentLane.RENEWAL,
+        amountNaira: amount,
+        relatedEntityId: invoice.id,
+        metadata: gatewayMetadata,
+      });
 
       try {
         initResult = await this.gateway.initializePayment({
@@ -237,19 +278,19 @@ export class RenewalPaymentService {
             undefined,
           reference,
           callbackUrl: `${process.env.FRONTEND_URL}/renewal-invoice/${token}`,
-          metadata: {
-            renewal_invoice_id: invoice.id,
-            property_id: invoice.property_id,
-            tenant_id: invoice.tenant_id,
-            tenant_name: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
-            property_name: invoice.property.name,
-            payment_option: paymentOption || null,
-          },
+          metadata: gatewayMetadata,
           channels: ['card', 'bank_transfer'],
         });
 
         this.logger.log(
           `Payment initialized successfully for renewal invoice: ${token}, reference: ${reference}`,
+        );
+
+        await attachIntentCheckout(
+          this.paymentIntentRepository,
+          this.logger,
+          intent.id,
+          initResult,
         );
 
         // Success - break out of retry loop
@@ -263,6 +304,15 @@ export class RenewalPaymentService {
             reference,
             attempt: attempt + 1,
           });
+          // The reference already exists AT THE GATEWAY, so verifying it would
+          // resolve someone else's transaction rather than 404. Leaving this
+          // orphan behind is the one case that could credit a stranger's money
+          // to this invoice.
+          await discardPaymentIntent(
+            this.paymentIntentRepository,
+            this.logger,
+            intent.id,
+          );
           continue;
         }
 
@@ -361,6 +411,8 @@ export class RenewalPaymentService {
           paidAt: verification.paidAt?.toISOString(),
           channel: verification.channel,
           receiptToken,
+          paymentOption:
+            (verification.metadata?.payment_option as string | null) ?? null,
         };
       }
 
@@ -406,6 +458,13 @@ export class RenewalPaymentService {
   /**
    * Process successful payment and send WhatsApp receipt
    * Requirements: 5.3, 3.1-3.6, 6.1-6.5, 7.1-7.4, 8.1-8.5
+   *
+   * @param paymentOptionOverride The payment option THIS reference was
+   *   initialized with. Pass it whenever the caller knows it (webhook/sweep
+   *   read it back from the gateway metadata). `invoice.payment_option` is a
+   *   mutable column that initializePayment overwrites on every attempt, so
+   *   reading it at credit time attributes the LATEST attempt's option to an
+   *   OLDER reference — see the warning on the fallback below.
    */
   async processSuccessfulPayment(
     token: string,
@@ -413,6 +472,7 @@ export class RenewalPaymentService {
     amount: number,
     receiptToken?: string,
     channel?: string,
+    paymentOptionOverride?: string | null,
   ): Promise<void> {
     this.logger.log(
       `Processing successful payment for renewal invoice: ${token}, reference: ${reference}`,
@@ -542,7 +602,15 @@ export class RenewalPaymentService {
           payment_method: channel,
         });
       }
-      paymentOption = invoice.payment_option;
+      // MONEY-SAFETY: prefer the option THIS reference was initialized with.
+      // `invoice.payment_option` is overwritten by every initializePayment
+      // call (see :213-216), so it reflects the tenant's LATEST attempt, not
+      // this payment's. Crediting an old `custom` partial while the column
+      // says `full` makes markInvoiceAsPaid's `paymentOption === 'full'`
+      // short-circuit fire — flipping the invoice PAID (plus rent advance,
+      // receipt and WhatsApp) for a fraction of its value. The column fallback
+      // remains only for references initialized before the override existed.
+      paymentOption = paymentOptionOverride ?? invoice.payment_option;
     }
 
     // Delegate to TenanciesService to handle invoice update, notifications, and history updates.
@@ -634,6 +702,11 @@ export class RenewalPaymentService {
       amountNaira,
       receiptToken,
       event.channel || undefined,
+      // The option THIS reference was initialized with, round-tripped through
+      // the gateway (stamped at :245). Without it, a late-settling payment is
+      // credited under whatever option the tenant most recently *started* —
+      // see processSuccessfulPayment's paymentOptionOverride.
+      (metadata?.payment_option as string | null) ?? null,
     );
   }
 

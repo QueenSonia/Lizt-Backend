@@ -13,6 +13,7 @@ import { RentIncrease } from 'src/rents/entities/rent-increase.entity';
 import { RenewalInvoice } from './entities/renewal-invoice.entity';
 import { AdHocInvoiceLineItem } from 'src/ad-hoc-invoices/entities/ad-hoc-invoice-line-item.entity';
 import { TenantKyc } from 'src/tenant-kyc/entities/tenant-kyc.entity';
+import { PaymentIntent } from 'src/payments/entities/payment-intent.entity';
 import { UsersModule } from 'src/users/users.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { WhatsappBotModule } from 'src/whatsapp-bot/whatsapp-bot.module';
@@ -39,6 +40,9 @@ import { NotifyModule } from 'src/common/notify/notify.module';
       RenewalInvoice,
       AdHocInvoiceLineItem,
       TenantKyc,
+      // Repository registration only — PaymentIntent is owned by PaymentsModule
+      // (which runs the sweep); this creates no module cycle.
+      PaymentIntent,
     ]),
     UsersModule,
     AuthModule,

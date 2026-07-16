@@ -20,6 +20,7 @@ import { RenewalInvoice } from '../../src/tenancies/entities/renewal-invoice.ent
 import { PropertyTenant } from '../../src/properties/entities/property-tenants.entity';
 import { Property } from '../../src/properties/entities/property.entity';
 import { PropertyHistory } from '../../src/property-history/entities/property-history.entity';
+import { PaymentIntent } from '../../src/payments/entities/payment-intent.entity';
 import { NotificationService } from '../../src/notifications/notification.service';
 import { EventsGateway } from '../../src/events/events.gateway';
 import { ACTIVE_PAYMENT_GATEWAY } from '../../src/payments/gateway/payment-gateway.interface';
@@ -88,6 +89,9 @@ describe('PaymentPlansService — double-reduction fix', () => {
         { provide: getRepositoryToken(PropertyTenant), useValue: repoMock() },
         { provide: getRepositoryToken(Property), useValue: repoMock() },
         { provide: getRepositoryToken(PropertyHistory), useValue: repoMock() },
+        // Written at checkout-init so the reconciliation sweep can rescue a
+        // payment whose webhook and browser-return both failed.
+        { provide: getRepositoryToken(PaymentIntent), useValue: repoMock() },
         { provide: DataSource, useValue: dataSourceMock },
         { provide: NotificationService, useValue: { create: jest.fn() } },
         { provide: EventsGateway, useValue: { emitHistoryAdded: jest.fn() } },

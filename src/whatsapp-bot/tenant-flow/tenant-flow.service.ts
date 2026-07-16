@@ -711,11 +711,10 @@ export class TenantFlowService {
     const tenantLocalPhone = this.toLocalPhone(user.phone_number);
 
     if (!maintenanceRequestId) {
-      // Without the request id we can't build the landlord template's
-      // Assign/Reject button payloads. Bail rather than send a broken
-      // template — this should never happen in the WhatsApp create path
-      // (the id is available before notifications fire) but the type
-      // signature still allows it.
+      // Without the uuid we can't build the landlord template's "View Request"
+      // URL button. Bail rather than send a broken template — this should
+      // never happen in the WhatsApp create path (the id is available before
+      // notifications fire) but the type signature still allows it.
       this.logger.warn(
         `Cannot notify landlord: missing maintenance_request_id for property ${propertyId}`,
       );

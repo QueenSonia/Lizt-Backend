@@ -270,8 +270,16 @@ export interface FacilityMaintenanceRequestParams {
   tenant_phone_number: string;
   date_created: string;
   is_landlord?: boolean;
-  // Required when is_landlord=true — populates the dynamic Assign/Reject
-  // button payloads on the landlord template.
+  // Required when is_landlord=true — fills {{1}} in the landlord template's
+  // "View Request" URL button (https://lizt.co/r/mr/{{1}}).
+  //
+  // Despite the name, this is the MR's UUID (maintenance_requests.id), NOT the
+  // varchar request_id — every caller passes the uuid and the /r/mr/[id] smart
+  // router resolves by uuid. Note this is the inverse of MrNewChatMessageParams,
+  // where maintenance_request_id IS the varchar and the uuid is a separate
+  // field. Kept under the old name because WhatsAppNotificationLogService
+  // persists these params as JSON and replays them; renaming would break rows
+  // queued before the rename and sent after it.
   maintenance_request_id?: string;
 }
 
@@ -1963,8 +1971,8 @@ export class TemplateSenderService {
   }: FacilityMaintenanceRequestParams): Promise<void> {
     if (is_landlord) {
       if (!maintenance_request_id) {
-        // Without the request id we can't build the Assign/Reject button
-        // payloads, so the template wouldn't be actionable. Refuse rather
+        // Without the uuid the "View Request" URL button has nothing to fill
+        // {{1}} with, so the template wouldn't be actionable. Refuse rather
         // than send a button-less message that contradicts the registered
         // template definition.
         throw new Error(
@@ -1983,7 +1991,14 @@ export class TemplateSenderService {
           components: [
             {
               type: 'body',
+              // Landlord body reads Issue={{1}}, Tenant={{2}}, Property={{3}},
+              // Reported={{4}} — deliberately NOT the same order as the FM
+              // branch below, which is still tenant/property/issue/date.
               parameters: [
+                {
+                  type: 'text',
+                  text: maintenance_request,
+                },
                 {
                   type: 'text',
                   text: tenant_name,
@@ -1994,35 +2009,19 @@ export class TemplateSenderService {
                 },
                 {
                   type: 'text',
-                  text: maintenance_request,
-                },
-                {
-                  type: 'text',
                   text: date_created,
                 },
               ],
             },
             {
               type: 'button',
-              sub_type: 'quick_reply',
-              index: 0,
-              parameters: [
-                {
-                  type: 'payload',
-                  payload: `landlord_approve_mr:${maintenance_request_id}`,
-                },
-              ],
-            },
-            {
-              type: 'button',
-              sub_type: 'quick_reply',
-              index: 1,
-              parameters: [
-                {
-                  type: 'payload',
-                  payload: `landlord_reject_mr:${maintenance_request_id}`,
-                },
-              ],
+              sub_type: 'url',
+              index: '0',
+              // Fills {{1}} in https://lizt.co/r/mr/{{1}}. The smart router at
+              // /r/mr/[id] redirects the landlord to
+              // /landlord/facility?openMr=<uuid>, which opens the request modal
+              // where Approve (with FM assignment) and Reject live.
+              parameters: [{ type: 'text', text: maintenance_request_id }],
             },
           ],
         },
@@ -5988,7 +5987,7 @@ export class TemplateSenderService {
     agent_kyc_notification:
       'Hi {{1}},\n\n{{2}} has listed you as their agent and has just completed their KYC form for {{3}}\n\nThank you',
     landlord_maintenance_request_notification:
-      'A new maintenance request has been created.\n\nIssue: {{3}}\nTenant: {{1}}\nProperty: {{2}}\nReported: {{4}}\n\nPlease attend to this.',
+      'A new maintenance request has been created.\n\nIssue: {{1}}\nTenant: {{2}}\nProperty: {{3}}\nReported: {{4}}\n\nPlease attend to this.',
     fm_maintenance_request_notification:
       'A new service request has been created.\n\nIssue: {{1}}\nTenant: {{2}}\nPhone: {{3}}\nProperty: {{4}}\nReported: {{5}}\n\nPlease attend to this.',
     fm_maintenance_request_approved:

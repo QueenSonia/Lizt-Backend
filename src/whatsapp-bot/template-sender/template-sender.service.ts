@@ -1085,7 +1085,10 @@ export interface AdhocInvoiceWithPlanTenantParams {
  */
 export interface AdhocInvoicePaidTenantParams {
   phone_number: string;
+  tenant_name: string;
   amount: number;
+  /** Comma-separated line-item names, e.g. "Service Charge, Security Levy". */
+  charge_name: string;
   receipt_token: string;
 }
 
@@ -5592,7 +5595,9 @@ export class TemplateSenderService {
    */
   async sendAdhocInvoicePaidTenant({
     phone_number,
+    tenant_name,
     amount,
+    charge_name,
     receipt_token,
   }: AdhocInvoicePaidTenantParams): Promise<void> {
     const payload: WhatsAppPayload = {
@@ -5605,7 +5610,11 @@ export class TemplateSenderService {
         components: [
           {
             type: 'body',
-            parameters: [{ type: 'text', text: `₦${amount.toLocaleString()}` }],
+            parameters: [
+              { type: 'text', text: tenant_name },
+              { type: 'text', text: `₦${amount.toLocaleString()}` },
+              { type: 'text', text: charge_name },
+            ],
           },
           {
             type: 'button',
@@ -6105,7 +6114,7 @@ export class TemplateSenderService {
     adhoc_invoice_with_plan_tenant:
       'Hi {{1}},\n\nA new invoice has been issued to you, and your landlord has created a payment plan for it.\n\n*Invoice:* {{2}}\n*Property:* {{3}}\n\n*Total:* {{4}}\n*Number of installments:* {{5}}\n\nTap the button below to view your invoice, see your payment plan, and make your payment.',
     adhoc_invoice_paid_tenant:
-      'Your payment of {{1}} has been received. Thank you.\n\nClick the button to view your receipt.',
+      'Hi {{1}},\n\nYour payment of {{2}} for {{3}} has been received.\n\nTap the button below to view and download your receipt.\n\nThank you.',
     adhoc_invoice_paid_landlord:
       'Hi,\n\n{{1}} has made a payment of {{2}} for the invoice of {{3}}.\n\nPlease check your dashboard for the receipt.',
     adhoc_invoice_cancelled_tenant:

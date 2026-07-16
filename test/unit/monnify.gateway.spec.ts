@@ -231,6 +231,23 @@ describe('MonnifyGateway', () => {
       expect(result.gateway).toBe('monnify');
     });
 
+    // VERBATIM from a real sandbox webhook (captured 2026-07-16): Monnify sends
+    // EIGHT fractional-second digits, not milliseconds. The old `\d{1,3}` cap
+    // made the whole pattern fail, so every webhook-credited payment silently
+    // recorded paidAt=null — and the invented '.123' fixture above never caught
+    // it. Do not "tidy" this value.
+    it('parses the 8-fractional-digit timestamp a real webhook actually sends', async () => {
+      mockHttpService.get.mockReturnValue(
+        verifyResponse({ paidOn: '2026-07-16 14:25:16.89802504' }),
+      );
+
+      const result = await gateway.verifyPayment('INV_1_abc');
+
+      expect(result.paidAt).not.toBeNull();
+      // Sub-millisecond precision is dropped, not rounded.
+      expect(result.paidAt).toEqual(new Date('2026-07-16T14:25:16.898+01:00'));
+    });
+
     it('URL-encodes references', async () => {
       mockHttpService.get.mockReturnValue(verifyResponse({}));
       await gateway.verifyPayment('MNFY|12|weird ref');

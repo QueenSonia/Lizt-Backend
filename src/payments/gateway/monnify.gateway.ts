@@ -577,11 +577,17 @@ export class MonnifyGateway implements PaymentGateway {
 
   /**
    * Parse Monnify's two timestamp shapes as Africa/Lagos wall-clock (+01:00):
-   *   A: "2026-07-15 10:23:45.123" / "2026-07-15 10:23:45"   (v2 webhooks)
+   *   A: "2026-07-16 14:25:16.89802504" / "…45.123" / "…45"  (v2 webhooks)
    *   B: "15/7/2026 10:23:45 AM" (day-first, 12-hour, no leading zeros —
    *      query API + legacy webhooks)
    * Returns null (never Invalid Date) on null/unrecognized input — verify
    * responses legitimately carry paidOn:null for PENDING/FAILED.
+   *
+   * The fractional part is `\d+`, NOT `\d{1,3}`: a real webhook (captured
+   * 2026-07-16) sends EIGHT digits — "2026-07-16 14:25:16.89802504". Capping at
+   * milliseconds made the whole match fail, so every webhook-credited payment
+   * silently recorded paidAt=null. JS Date only honours 3 digits, so we take
+   * the first 3 and drop the rest.
    */
   private parseMonnifyDate(value: unknown): Date | null {
     if (!value || typeof value !== 'string') return null;
@@ -589,13 +595,12 @@ export class MonnifyGateway implements PaymentGateway {
 
     // Format A: ISO-ish with a space separator.
     const isoLike = input.match(
-      /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/,
+      /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/,
     );
     if (isoLike) {
-      const [, y, mo, da, h, mi, s, ms] = isoLike;
-      const date = new Date(
-        `${y}-${mo}-${da}T${h}:${mi}:${s}.${(ms ?? '0').padEnd(3, '0')}+01:00`,
-      );
+      const [, y, mo, da, h, mi, s, frac] = isoLike;
+      const ms = (frac ?? '0').slice(0, 3).padEnd(3, '0');
+      const date = new Date(`${y}-${mo}-${da}T${h}:${mi}:${s}.${ms}+01:00`);
       return Number.isNaN(date.getTime()) ? null : date;
     }
 

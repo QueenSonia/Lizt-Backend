@@ -1244,7 +1244,9 @@ export class AdHocInvoicesService {
           'sendAdhocInvoicePaidTenant',
           {
             phone_number: tenantPhone,
+            tenant_name: tenantName,
             amount,
+            charge_name: fees,
             receipt_token: receiptToken,
             landlord_id: property?.owner_id,
             property_id: property?.id,

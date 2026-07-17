@@ -58,12 +58,19 @@ export class HistoryEventListener {
     await this.createHistoryEntryWithRetry(payload);
   }
 
-  // Tenant-gated creations (FM- or landlord-filed pending tenant confirmation)
-  // emit a dedicated event INSTEAD of `maintenance.created` so the
-  // notifications listener can build a different in-app message ("waiting on
-  // confirmation"). The property_history row should still land, so we mirror
-  // the create handler here. Same payload shape — same retry path.
-  @OnEvent('maintenance.fm_filed_pending_tenant')
+  // Landlord-filed pending-tenant creations emit a dedicated event INSTEAD of
+  // `maintenance.created` so the notifications listener can build a different
+  // in-app message ("waiting on confirmation"). The property_history row should
+  // still land, so we mirror the create handler here. Same payload shape — same
+  // retry path.
+  //
+  // NB: FM-filed requests no longer use a create-time gated event — they emit
+  // plain `maintenance.created` (handled above) and the tenant gate now happens
+  // at approve time via `maintenance.landlord_approved_pending_tenant`, which is
+  // deliberately NOT subscribed here: that event fires an accompanying
+  // `maintenance.updated` (→ handleMaintenanceRequestUpdated) for the history
+  // row, so subscribing here too would write a second, wrongly-timed "Issue
+  // reported" entry.
   @OnEvent('maintenance.landlord_filed_pending_tenant')
   async handleMaintenanceRequestCreatedPendingTenant(
     payload: ServiceCreatedEvent,

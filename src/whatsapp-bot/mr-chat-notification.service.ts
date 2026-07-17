@@ -8,6 +8,7 @@ import { Account } from 'src/users/entities/account.entity';
 import { TeamMember } from 'src/users/entities/team-member.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import {
+  MaintenanceRequestCreatorTypeEnum,
   MaintenanceRequestScopeEnum,
   MaintenanceRequestStatusEnum,
 } from 'src/maintenance-requests/dto/create-maintenance-request.dto';
@@ -40,6 +41,23 @@ const NOTIFY_LOCKED_STATUSES = new Set<MaintenanceRequestStatusEnum>([
   MaintenanceRequestStatusEnum.DENIED_BY_TENANT,
   MaintenanceRequestStatusEnum.CLOSED,
 ]);
+
+// Mirror of ChatService.isThreadLocked: an FM-filed request in
+// PENDING_TENANT_CONFIRMATION is already landlord-approved + assigned, so its
+// thread is OPEN (landlord ⇄ assigned FM coordinate while the tenant confirms).
+// Landlord-filed PTC is still pre-approval and stays locked.
+function isThreadLocked(mr: {
+  status: MaintenanceRequestStatusEnum;
+  creator_type: MaintenanceRequestCreatorTypeEnum;
+}): boolean {
+  if (
+    mr.status === MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION &&
+    mr.creator_type === MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER
+  ) {
+    return false;
+  }
+  return NOTIFY_LOCKED_STATUSES.has(mr.status);
+}
 
 const PREVIEW_MAX_CHARS = 220;
 // Body slot {{3}} is a description excerpt — meaningful context for the
@@ -87,7 +105,7 @@ export class MrChatNotificationService {
       );
       return;
     }
-    if (NOTIFY_LOCKED_STATUSES.has(mr.status)) {
+    if (isThreadLocked(mr)) {
       // Defensive: we shouldn't get here because ChatService also blocks
       // these statuses, but if status flips between save and event delivery,
       // bail out rather than ping recipients about a dead thread.

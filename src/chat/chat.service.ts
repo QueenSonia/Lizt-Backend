@@ -46,6 +46,27 @@ const THREAD_LOCKED_STATUSES = new Set<MaintenanceRequestStatusEnum>([
   MaintenanceRequestStatusEnum.CLOSED,
 ]);
 
+/**
+ * Whether the coordination thread is locked for this request. PENDING_TENANT_
+ * CONFIRMATION is overloaded: for a landlord-filed request it means
+ * *pre-approval* (no thread yet), but for an FM-filed request it means the
+ * landlord has already approved + assigned and is only awaiting the tenant's
+ * confirmation — the landlord and assigned FM must be able to coordinate, so
+ * the thread stays OPEN in that case.
+ */
+function isThreadLocked(mr: {
+  status: MaintenanceRequestStatusEnum;
+  creator_type: MaintenanceRequestCreatorTypeEnum;
+}): boolean {
+  if (
+    mr.status === MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION &&
+    mr.creator_type === MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER
+  ) {
+    return false;
+  }
+  return THREAD_LOCKED_STATUSES.has(mr.status);
+}
+
 interface SendMaintenanceChatArgs {
   requestId: string;
   authorAccount: Account & { id: string };
@@ -398,7 +419,7 @@ export class ChatService {
       // status AND the viewer must have write authority (landlord or the
       // currently-assigned FM). Non-assigned team FMs see canPost=false
       // even on approved threads.
-      canPost: hasWriteAccess && !THREAD_LOCKED_STATUSES.has(mr.status),
+      canPost: hasWriteAccess && !isThreadLocked(mr),
       viewerAccountId: viewer.id,
     };
   }
@@ -426,7 +447,7 @@ export class ChatService {
     const mr = await this.findMrByEither(args.requestId);
     if (!mr) throw new NotFoundException('Maintenance request not found');
 
-    if (THREAD_LOCKED_STATUSES.has(mr.status)) {
+    if (isThreadLocked(mr)) {
       throw new ForbiddenException(
         'Thread is not available on this request yet',
       );

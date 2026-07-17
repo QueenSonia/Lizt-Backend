@@ -361,11 +361,11 @@ export class MaintenanceRequestsController {
   }
 
   @ApiOperation({
-    summary: 'Tenant confirms an FM-filed maintenance request',
+    summary: 'Tenant confirms a maintenance request awaiting their confirmation',
     description:
-      "Caller must be the tenant on the request (account.id === sr.tenant_id). Status must be PENDING_TENANT_CONFIRMATION; otherwise 409. Transitions to NOT_APPROVED so the landlord can take the existing approve/reject + FM-picker flow.",
+      "Caller must be the tenant on the request (account.id === sr.tenant_id). Status must be PENDING_TENANT_CONFIRMATION; otherwise 409. Reaching this state means the landlord already approved (FM-filed: approved + assigned first; landlord-filed: approval implicit in filing), so confirming transitions straight to APPROVED and opens the work.",
   })
-  @ApiOkResponse({ description: 'Request confirmed; moved to NOT_APPROVED' })
+  @ApiOkResponse({ description: 'Request confirmed; moved to APPROVED' })
   @ApiBadRequestResponse()
   @ApiNotFoundResponse({ description: 'Maintenance request not found' })
   @ApiSecurity('access_token')
@@ -409,9 +409,9 @@ export class MaintenanceRequestsController {
     summary:
       "Landlord force-confirms a maintenance request stuck on tenant confirmation",
     description:
-      "Landlord-only. Use when the tenant has no phone / isn't responding. Status must be PENDING_TENANT_CONFIRMATION; transitions to NOT_APPROVED and records the landlord-as-actor in status_history. Does not double-ping the landlord on WhatsApp.",
+      "Landlord-only. Use when the tenant has no phone / isn't responding. Status must be PENDING_TENANT_CONFIRMATION; transitions to APPROVED (the landlord already approved to reach this state) and records the landlord-as-actor in status_history. Does not double-ping the landlord on WhatsApp.",
   })
-  @ApiOkResponse({ description: 'Force-confirmed; moved to NOT_APPROVED' })
+  @ApiOkResponse({ description: 'Force-confirmed; moved to APPROVED' })
   @ApiBadRequestResponse()
   @ApiNotFoundResponse({ description: 'Maintenance request not found' })
   @ApiSecurity('access_token')
@@ -457,7 +457,7 @@ export class MaintenanceRequestsController {
   @ApiOperation({
     summary: 'Approve a maintenance request and assign a facility manager',
     description:
-      'Landlord-only. Combined transaction: flips status NOT_APPROVED → APPROVED and sets `assigned_to` in one call. Source status must be NOT_APPROVED (409 otherwise). Fans out fm_assignment_notification to the team; suppresses the standalone approval ping to the assignee.',
+      'Landlord-only. Combined transaction: sets `assigned_to` and approves in one call. Source status must be NOT_APPROVED (409 otherwise). Normally flips NOT_APPROVED → APPROVED and fans out fm_assignment_notification to the team. For an FM-filed unit request with an active tenant it instead flips NOT_APPROVED → PENDING_TENANT_CONFIRMATION and prompts the tenant to confirm — the assignment ping is deferred until the tenant confirms (→ APPROVED). Suppresses the standalone approval ping to the assignee.',
   })
   @ApiBody({ type: ApproveMaintenanceRequestDto })
   @ApiOkResponse({ description: 'Request approved and assigned' })

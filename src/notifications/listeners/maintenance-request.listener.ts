@@ -282,25 +282,30 @@ ${description}`;
   }
 
   /**
-   * FM filed a unit-scoped MR with an active tenant. Fires three things:
-   *   1. Landlord in-app: "FM X filed an issue at <property>. Waiting on
+   * Landlord approved + assigned an FM-filed unit MR that has an active tenant;
+   * now the tenant is asked to confirm the issue is real (which is what finally
+   * opens the work → APPROVED). Fires two things:
+   *   1. Landlord in-app: "You approved <FM>'s request at <property>. Waiting on
    *      <tenant>'s confirmation."
-   *   2. Landlord WhatsApp (informational, no buttons) — template
-   *      landlord_fm_filed_request_notification.
-   *   3. Tenant WhatsApp (Confirm / Deny buttons) — unified template
+   *   2. Tenant WhatsApp (Confirm / Deny buttons) — unified template
    *      tenant_confirm_filed_request (shared with the landlord-filed path
-   *      below; the filer-role discriminator is composed into the body
-   *      via the `filer_label` param).
+   *      below; the filer-role discriminator is composed into the body via the
+   *      `filer_label` param).
+   *
+   * No landlord WhatsApp here — the landlord is the actor who just approved.
+   * The FM is NOT pinged yet either; the assignment ping is deferred to
+   * confirmTenantMaintenanceRequest so the FM isn't told about work the tenant
+   * might still deny.
    */
-  @OnEvent('maintenance.fm_filed_pending_tenant')
-  async handleFmFiledPendingTenant(event: any): Promise<void> {
+  @OnEvent('maintenance.landlord_approved_pending_tenant')
+  async handleLandlordApprovedPendingTenant(event: any): Promise<void> {
     const requestId: string = event.maintenance_request_id;
 
     try {
       await this.notificationService.create({
         date: new Date().toISOString(),
         type: NotificationType.MAINTENANCE_REQUEST,
-        description: `Facility manager ${event.creator_name ?? 'unknown'} filed a maintenance request for ${event.property_name ?? event.common_area_name ?? 'their property'}. Waiting on ${event.tenant_name ?? 'tenant'}'s confirmation.
+        description: `You approved ${event.creator_name ?? 'your facility manager'}'s maintenance request for ${event.property_name ?? event.common_area_name ?? 'your property'}. Waiting on ${event.tenant_name ?? 'the tenant'}'s confirmation.
 ${event.description ?? ''}`,
         status: 'Pending',
         property_id: event.property_id,
@@ -309,42 +314,9 @@ ${event.description ?? ''}`,
       });
     } catch (error) {
       this.logger.error(
-        'Failed to create FM-filed pending-tenant in-app notification',
+        'Failed to create landlord-approved pending-tenant in-app notification',
         error,
       );
-    }
-
-    if (
-      this.dedup(
-        this.fmFiledLandlordSeen,
-        requestId,
-        this.FM_FILED_PING_DEDUP_MS,
-      )
-    ) {
-      try {
-        const recipients = await this.resolveLandlordRecipients(
-          event.landlord_id,
-        );
-        for (const recipient of recipients) {
-          if (!recipient.phone) continue;
-          await this.templateSenderService.sendLandlordFmFiledRequestNotification(
-            {
-              phone_number: recipient.phone,
-              landlord_name: recipient.name,
-              fm_name: event.creator_name ?? 'your facility manager',
-              property_name:
-                event.property_name ?? event.common_area_name ?? '',
-              maintenance_request: this.utilService.sanitizeTemplateParam(
-                event.description ?? '',
-              ),
-            },
-          );
-        }
-      } catch (err) {
-        this.logger.warn(
-          `Failed to send landlord_fm_filed_request_notification for ${requestId}: ${(err as Error)?.message ?? err}`,
-        );
-      }
     }
 
     if (
@@ -666,6 +638,28 @@ ${event.description ?? ''}`,
         `Failed to send landlord_request_denied_by_tenant for ${requestId}: ${(err as Error)?.message ?? err}`,
       );
     }
+
+    // Under the new gate order a denial can land after the landlord approved +
+    // assigned an FM. That FM already got an assignment ping, so tell them the
+    // job is cancelled. In-app only (no dedicated Meta template for this yet).
+    if (event.assigned_fm_account_id) {
+      try {
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.MAINTENANCE_REQUEST,
+          description: `${event.tenant_name ?? 'The tenant'} denied the maintenance request at ${event.property_name ?? event.common_area_name ?? 'their residence'}. It has been cancelled — no action needed.
+${event.description ?? ''}`,
+          status: 'Pending',
+          property_id: event.property_id,
+          user_id: event.assigned_fm_account_id,
+          maintenance_request_id: requestId,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Failed to notify assigned FM of tenant denial for ${requestId}: ${(err as Error)?.message ?? err}`,
+        );
+      }
+    }
   }
 
   @OnEvent('maintenance.assigned')
@@ -776,42 +770,43 @@ ${event.description ?? ''}`,
 
   @OnEvent('maintenance.updated')
   async handleUpdate(event: any) {
-    // Skip in-app notification creation when the emitter already wrote a
-    // more specific row (e.g. tenant_confirmed handler wrote "Miss Akpati
-    // confirmed the issue you filed"). The event still propagates for
-    // downstream listeners (WS gateway / cache invalidation).
-    if (event?.skip_in_app_notification) return;
-    try {
-      const headline = this.buildMaintenanceHeadline(
-        event.status,
-        event.previous_status,
-        event.property_name ?? event.common_area_name,
-      );
-      // Per-event subtitle: on RESOLVED show the FM's note; on REOPENED
-      // show whatever the actor said (tenant feedback for tenant-initiated
-      // reopens, FM/landlord reopen_message otherwise). Other transitions
-      // (approved / closed / not_approved) don't carry a free-text note —
-      // skip the subtitle so the feed stays clean.
-      const subtitleSnippet = this.buildUpdateSubtitle(event);
-      const subtitleLine = subtitleSnippet ? `\n${subtitleSnippet}` : '';
-      const assigneeLine = event.assigned_to_name
-        ? `\nAssigned to ${event.assigned_to_name}.`
-        : '';
+    // Skip only the in-app notification ROW when the emitter already wrote a
+    // more specific one (e.g. tenant_confirmed handler wrote "Miss Akpati
+    // confirmed the issue you filed"). The WhatsApp pings below must still run
+    // — the flag guards the row, not the whole handler.
+    if (!event?.skip_in_app_notification) {
+      try {
+        const headline = this.buildMaintenanceHeadline(
+          event.status,
+          event.previous_status,
+          event.property_name ?? event.common_area_name,
+        );
+        // Per-event subtitle: on RESOLVED show the FM's note; on REOPENED
+        // show whatever the actor said (tenant feedback for tenant-initiated
+        // reopens, FM/landlord reopen_message otherwise). Other transitions
+        // (approved / closed / not_approved) don't carry a free-text note —
+        // skip the subtitle so the feed stays clean.
+        const subtitleSnippet = this.buildUpdateSubtitle(event);
+        const subtitleLine = subtitleSnippet ? `\n${subtitleSnippet}` : '';
+        const assigneeLine = event.assigned_to_name
+          ? `\nAssigned to ${event.assigned_to_name}.`
+          : '';
 
-      await this.notificationService.create({
-        date: new Date().toISOString(),
-        type: NotificationType.MAINTENANCE_REQUEST,
-        description: `${headline}${subtitleLine}${assigneeLine}`,
-        status: 'Pending',
-        property_id: event.property_id,
-        user_id: event.landlord_id,
-        maintenance_request_id: event.request_id,
-      });
-    } catch (error) {
-      this.logger.error(
-        'Failed to create maintenance request update notification',
-        error,
-      );
+        await this.notificationService.create({
+          date: new Date().toISOString(),
+          type: NotificationType.MAINTENANCE_REQUEST,
+          description: `${headline}${subtitleLine}${assigneeLine}`,
+          status: 'Pending',
+          property_id: event.property_id,
+          user_id: event.landlord_id,
+          maintenance_request_id: event.request_id,
+        });
+      } catch (error) {
+        this.logger.error(
+          'Failed to create maintenance request update notification',
+          error,
+        );
+      }
     }
 
     // FM-targeted WhatsApp ping when the landlord approves a request.

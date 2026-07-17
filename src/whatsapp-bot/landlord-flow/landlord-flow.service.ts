@@ -270,6 +270,8 @@ export class LandlordFlowService {
     switch (status) {
       case MaintenanceRequestStatusEnum.NOT_APPROVED:
         return 'Pending Approval';
+      case MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION:
+        return 'Awaiting Tenant Confirmation';
       case MaintenanceRequestStatusEnum.APPROVED:
         return 'Approved';
       case MaintenanceRequestStatusEnum.RESOLVED:
@@ -278,6 +280,10 @@ export class LandlordFlowService {
         return 'Reopened';
       case MaintenanceRequestStatusEnum.CLOSED:
         return 'Closed';
+      case MaintenanceRequestStatusEnum.REJECTED:
+        return 'Rejected';
+      case MaintenanceRequestStatusEnum.DENIED_BY_TENANT:
+        return 'Denied by Tenant';
       default:
         return status;
     }
@@ -676,6 +682,11 @@ export class LandlordFlowService {
         // the render below already handles ("Common area").
         assigned_to: teamMemberInfo.id,
         status: In([
+          // PENDING_TENANT_CONFIRMATION is included because an FM-filed request
+          // that the landlord has approved + assigned sits here awaiting the
+          // tenant's confirmation — the FM already got an assignment ping, so
+          // it must appear in their list rather than vanish until confirm.
+          MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
           MaintenanceRequestStatusEnum.APPROVED,
           MaintenanceRequestStatusEnum.RESOLVED,
           MaintenanceRequestStatusEnum.REOPENED,

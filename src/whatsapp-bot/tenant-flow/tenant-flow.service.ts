@@ -141,6 +141,12 @@ export class TenantFlowService {
   // Session timeout in milliseconds (5 minutes)
   private readonly SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 
+  // How long a gate-interrupted button tap stays replayable. Longer than
+  // SESSION_TIMEOUT_MS because the tenant has to read a full tenancy-details
+  // card before confirming, but bounded so a long-abandoned tap can't fire
+  // against state that has since moved on.
+  private readonly GATE_REPLAY_TTL_MS = 30 * 60 * 1000;
+
   // Main menu buttons for tenant
   private readonly MAIN_MENU_BUTTONS: ButtonDefinition[] = [
     { id: 'maintenance_request', title: 'Maintenance request' },
@@ -1072,8 +1078,25 @@ export class TenantFlowService {
       });
       if (!unconfirmed.length) return false;
 
-      // 3. Blocked. Re-show the confirm card for the oldest unconfirmed
-      //    property once per session; a brief nudge on repeats avoids spamming.
+      // 3. Blocked — but stash a button tap first so the confirm flow can
+      //    resume it (see replayGatedAction). WhatsApp quick-reply buttons are
+      //    single-tap: without this, an intercepted action the tenant can never
+      //    re-tap is lost for good, stranding whatever it drove (e.g. a
+      //    maintenance request stuck in PENDING_TENANT_CONFIRMATION). Only
+      //    buttons are stashed — retyping text costs the tenant nothing, and
+      //    replaying stale free text would re-enter the menu/AI path with
+      //    intent that may no longer apply.
+      const pendingButtonId = this.extractButtonId(message);
+      if (pendingButtonId) {
+        await this.cache.set(
+          `tenancy_pending_action_${from}`,
+          JSON.stringify(message),
+          this.GATE_REPLAY_TTL_MS,
+        );
+      }
+
+      // Re-show the confirm card for the oldest unconfirmed property once per
+      // session; a brief nudge on repeats avoids spamming.
       const shownKey = `tenancy_gate_card_shown_${from}`;
       if (await this.cache.get(shownKey)) {
         await this.templateSenderService.sendText(
@@ -1118,7 +1141,24 @@ export class TenantFlowService {
       return true;
     }
 
-    // Confirm/dispute buttons (same extraction as handleInteractive).
+    // Confirm/dispute buttons.
+    const buttonId = this.extractButtonId(message);
+    if (!buttonId) return false;
+    const action = buttonId.includes(':') ? buttonId.split(':')[0] : buttonId;
+    return (
+      action === 'confirm_tenancy_details' ||
+      action === 'tenancy_details_correct' ||
+      action === 'tenancy_details_incorrect'
+    );
+  }
+
+  /**
+   * Pull the button id out of an inbound message, or null when it isn't a
+   * button tap. Same extraction handleInteractive uses — WhatsApp puts it under
+   * `interactive.button_reply` for interactive replies and `button` for
+   * template quick-replies.
+   */
+  private extractButtonId(message: IncomingMessage): string | null {
     const buttonReply =
       (
         message.interactive as {
@@ -1127,14 +1167,53 @@ export class TenantFlowService {
       )?.button_reply ||
       (message as unknown as { button?: { id?: string; payload?: string } })
         .button;
-    const buttonId = buttonReply?.id || buttonReply?.payload;
-    if (!buttonId) return false;
-    const action = buttonId.includes(':') ? buttonId.split(':')[0] : buttonId;
-    return (
-      action === 'confirm_tenancy_details' ||
-      action === 'tenancy_details_correct' ||
-      action === 'tenancy_details_incorrect'
-    );
+    return buttonReply?.id || buttonReply?.payload || null;
+  }
+
+  /**
+   * True when the tenant still has an ACTIVE tenancy with `details_confirmed_at`
+   * NULL — i.e. gateUnconfirmedTenant would still block them. Mirrors the gate's
+   * selection exactly so the two can't disagree about who is gated.
+   */
+  private async hasUnconfirmedTenancy(from: string): Promise<boolean> {
+    const user = await this.findTenantByPhone(from);
+    if (!user?.accounts?.length) return false;
+    const count = await this.propertyTenantRepo.count({
+      where: {
+        tenant_id: In(user.accounts.map((a) => a.id)),
+        status: TenantStatusEnum.ACTIVE,
+        details_confirmed_at: IsNull(),
+      },
+    });
+    return count > 0;
+  }
+
+  /**
+   * Resume the button tap the gate interrupted, if there is one. Returns true
+   * when an action was replayed (the caller then skips its own closing message,
+   * since the replayed handler sends its own).
+   *
+   * The cache entry is deleted BEFORE dispatch: a replay that throws, or that
+   * somehow re-enters the gate, must not leave a tap that fires again on the
+   * next confirm. Uses its own key rather than the role flow's
+   * `pending_action_${from}` so the two interception points can't clobber each
+   * other's stash.
+   */
+  private async replayGatedAction(from: string): Promise<boolean> {
+    try {
+      const key = `tenancy_pending_action_${from}`;
+      const raw = await this.cache.get<string>(key);
+      if (!raw) return false;
+      await this.cache.delete(key);
+
+      const pending = JSON.parse(raw) as IncomingMessage;
+      if (!this.extractButtonId(pending)) return false;
+      await this.handleInteractive(pending, from);
+      return true;
+    } catch (err) {
+      this.logger.error(`Failed to replay gated action for ${from}:`, err);
+      return false;
+    }
   }
 
   /**
@@ -3709,6 +3788,16 @@ export class TenantFlowService {
       }
     }
 
+    // Resume whatever the gate interrupted, rather than dead-ending the tenant
+    // at a menu whose original button they can no longer tap. Only once they're
+    // fully ungated: the gate blocks on ANY unconfirmed tenancy, so replaying
+    // while another is outstanding would run an action the gate would have
+    // stopped. The stash survives (its TTL still running), so confirming the
+    // last one chains through to the replay then.
+    if (!(await this.hasUnconfirmedTenancy(from))) {
+      if (await this.replayGatedAction(from)) return;
+    }
+
     await this.templateSenderService.sendButtons(
       from,
       `Great, you're all set.\n\nYou can now use Lizt to report issues, make payments and stay updated.\n\nSimply tap Hi to get started.`,
@@ -3778,6 +3867,12 @@ export class TenantFlowService {
         this.SESSION_TIMEOUT_MS,
       );
     }
+
+    // Dispute never stamps details_confirmed_at, so the tenant stays gated
+    // until a landlord edit + re-confirm. Drop any stashed tap now rather than
+    // leave it to fire on that later confirm — by then it would be acting on
+    // details the tenant has just told us are wrong.
+    await this.cache.delete(`tenancy_pending_action_${from}`);
 
     await this.templateSenderService.sendText(
       from,

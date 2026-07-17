@@ -1981,8 +1981,11 @@ export class TemplateSenderService {
             {
               type: 'body',
               // Landlord body reads Issue={{1}}, Tenant={{2}}, Property={{3}},
-              // Reported={{4}} — deliberately NOT the same order as the FM
-              // branch below, which is still tenant/property/issue/date.
+              // Reported={{4}} — same Issue-first convention as the FM branch
+              // below, but the arrays are NOT interchangeable: FM takes 5
+              // params ([issue, tenant, phone, property, date]) for a body with
+              // an extra Phone at {{3}}. Each branch builds its own components
+              // block; nothing is shared but the params interface.
               parameters: [
                 {
                   type: 'text',

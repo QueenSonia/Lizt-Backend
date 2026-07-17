@@ -5,15 +5,22 @@ import { ConfigModule } from '@nestjs/config';
 import { PaystackService } from './paystack.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { PaymentService } from './payment.service';
+import { PaystackGateway } from './gateway/paystack.gateway';
+import { MonnifyGateway } from './gateway/monnify.gateway';
+import { GatewayRegistryService } from './gateway/gateway-registry.service';
+import { ACTIVE_PAYMENT_GATEWAY } from './gateway/payment-gateway.interface';
 import { WebhooksController } from './webhooks.controller';
 import { PaymentsController } from './payments.controller';
 import { Payment } from './entities/payment.entity';
 import { PaymentLog } from './entities/payment-log.entity';
+import { PaymentIntent } from './entities/payment-intent.entity';
+import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { OfferLetter } from '../offer-letters/entities/offer-letter.entity';
 import { Property } from '../properties/entities/property.entity';
 import { Users } from '../users/entities/user.entity';
 import { Account } from '../users/entities/account.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
+import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import { KYCLinksModule } from '../kyc-links/kyc-links.module';
 import { PropertyHistoryModule } from '../property-history/property-history.module';
 import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
@@ -44,6 +51,12 @@ import { UtilsModule } from '../utils/utils.module';
       Users,
       Account,
       KYCApplication,
+      // WebhooksController writes deduped amount-mismatch reconciliation rows
+      // directly (see gateway/amount-mismatch-artifact.ts).
+      PropertyHistory,
+      // Swept by PaymentReconciliationService. The lanes that WRITE intents
+      // register the repo in their own modules.
+      PaymentIntent,
     ]),
     ConfigModule,
     AuthModule,
@@ -63,7 +76,34 @@ import { UtilsModule } from '../utils/utils.module';
     UtilsModule,
   ],
   controllers: [WebhooksController, PaymentsController],
-  providers: [PaystackService, PaystackLogger, PaymentService],
-  exports: [PaystackService, PaystackLogger, PaymentService],
+  providers: [
+    PaystackService,
+    PaystackLogger,
+    PaymentService,
+    // Lives here, alongside WebhooksController, because it needs the same four
+    // lane processors the webhook router dispatches to — this module is the one
+    // place they are all in scope.
+    PaymentReconciliationService,
+    // Gateway abstraction — business services depend on these, never on a
+    // concrete provider service.
+    PaystackGateway,
+    MonnifyGateway,
+    GatewayRegistryService,
+    {
+      provide: ACTIVE_PAYMENT_GATEWAY,
+      useFactory: (registry: GatewayRegistryService) => registry.active(),
+      inject: [GatewayRegistryService],
+    },
+  ],
+  exports: [
+    PaystackService,
+    PaystackLogger,
+    PaymentService,
+    PaymentReconciliationService,
+    PaystackGateway,
+    MonnifyGateway,
+    GatewayRegistryService,
+    ACTIVE_PAYMENT_GATEWAY,
+  ],
 })
 export class PaymentsModule {}

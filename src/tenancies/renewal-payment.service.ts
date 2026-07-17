@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -16,7 +17,23 @@ import {
 } from './entities/renewal-invoice.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import { Property } from '../properties/entities/property.entity';
-import { PaystackService } from '../payments/paystack.service';
+import {
+  ACTIVE_PAYMENT_GATEWAY,
+  DuplicateReferenceError,
+  NormalizedPaymentEvent,
+  PaymentGateway,
+} from '../payments/gateway/payment-gateway.interface';
+import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
+import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
+import {
+  attachIntentCheckout,
+  discardPaymentIntent,
+  recordPaymentIntent,
+} from '../payments/gateway/payment-intent.helper';
+import {
+  PaymentIntent,
+  PaymentIntentLane,
+} from '../payments/entities/payment-intent.entity';
 import { TenanciesService } from './tenancies.service';
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
@@ -26,9 +43,17 @@ import { TenantBalancesService } from '../tenant-balances/tenant-balances.servic
 import { v4 as uuidv4 } from 'uuid';
 
 export interface PaymentInitializationResult {
-  accessCode: string;
   reference: string;
-  authorizationUrl: string;
+  /** Hosted-checkout URL — the canonical field the frontend redirects to. */
+  checkoutUrl: string;
+  /**
+   * @deprecated Legacy popup fields, populated only while the active gateway
+   * is Paystack. Dropped in the legacy-retire pass once no open tenant tab
+   * still runs the popup flow.
+   */
+  accessCode?: string;
+  /** @deprecated Alias of checkoutUrl for not-yet-redeployed frontends. */
+  authorizationUrl?: string;
 }
 
 export interface PaymentVerificationResult {
@@ -38,6 +63,13 @@ export interface PaymentVerificationResult {
   paidAt?: string;
   channel?: string;
   receiptToken?: string;
+  /**
+   * The payment option THIS reference was initialized with, read back from the
+   * gateway's round-tripped metadata. Callers MUST pass it to
+   * processSuccessfulPayment rather than letting it re-read the mutable
+   * `invoice.payment_option` column.
+   */
+  paymentOption?: string | null;
   whatsappDelivery?: {
     sent: boolean;
     messageId?: string;
@@ -56,7 +88,11 @@ export class RenewalPaymentService {
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
-    private readonly paystackService: PaystackService,
+    @InjectRepository(PaymentIntent)
+    private readonly paymentIntentRepository: Repository<PaymentIntent>,
+    @Inject(ACTIVE_PAYMENT_GATEWAY)
+    private readonly gateway: PaymentGateway,
+    private readonly gatewayRegistry: GatewayRegistryService,
     private readonly tenanciesService: TenanciesService,
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
@@ -167,8 +203,7 @@ export class RenewalPaymentService {
     // OB invoices (tenant token, rent=0) must be paid in full — there's
     // no renewal-period structure to scaffold a partial payment around.
     const isOutstandingBalanceInvoice =
-      invoice.token_type === 'tenant' &&
-      Number(invoice.rent_amount || 0) === 0;
+      invoice.token_type === 'tenant' && Number(invoice.rent_amount || 0) === 0;
 
     if (paymentOption === 'custom') {
       if (isOutstandingBalanceInvoice) {
@@ -198,29 +233,52 @@ export class RenewalPaymentService {
       await this.renewalInvoiceRepository.save(invoice);
     }
 
-    // Generate unique reference with retry logic for collision handling
+    // Generate unique reference with retry logic for collision handling.
+    // A duplicate can now surface from two places: our own UNIQUE(reference)
+    // on payment_intents, and the GATEWAY (typed DuplicateReferenceError).
     const maxRetries = 3;
     let reference = '';
-    let paystackResponse: any = null;
+    let initResult: Awaited<
+      ReturnType<PaymentGateway['initializePayment']>
+    > | null = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       reference = `RENEWAL_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
+      // Built once and shared: the intent's copy must be IDENTICAL to what the
+      // gateway echoes back, because the sweep falls back to it when a gateway
+      // returns metadata empty. Two hand-maintained copies would drift.
+      const gatewayMetadata = {
+        renewal_invoice_id: invoice.id,
+        property_id: invoice.property_id,
+        tenant_id: invoice.tenant_id,
+        tenant_name: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
+        property_name: invoice.property.name,
+        payment_option: paymentOption || null,
+      };
+
+      // Durable record BEFORE the gateway call — a network timeout here can
+      // leave a live transaction the tenant can pay, and without this row
+      // nothing would ever reconcile it. See recordPaymentIntent.
+      const intent = await recordPaymentIntent(this.paymentIntentRepository, {
+        reference,
+        gateway: this.gateway.name,
+        lane: PaymentIntentLane.RENEWAL,
+        amountNaira: amount,
+        relatedEntityId: invoice.id,
+        metadata: gatewayMetadata,
+      });
+
       try {
-        // Initialize Paystack transaction
-        paystackResponse = await this.paystackService.initializeTransaction({
+        initResult = await this.gateway.initializePayment({
+          amountNaira: amount,
           email,
-          amount: Math.round(amount * 100), // Convert to kobo
+          customerName:
+            `${invoice.tenant?.user?.first_name ?? ''} ${invoice.tenant?.user?.last_name ?? ''}`.trim() ||
+            undefined,
           reference,
-          callback_url: `${process.env.FRONTEND_URL}/renewal-invoice/${token}`,
-          metadata: {
-            renewal_invoice_id: invoice.id,
-            property_id: invoice.property_id,
-            tenant_id: invoice.tenant_id,
-            tenant_name: `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`,
-            property_name: invoice.property.name,
-            payment_option: paymentOption || null,
-          },
+          callbackUrl: `${process.env.FRONTEND_URL}/renewal-invoice/${token}`,
+          metadata: gatewayMetadata,
           channels: ['card', 'bank_transfer'],
         });
 
@@ -228,20 +286,33 @@ export class RenewalPaymentService {
           `Payment initialized successfully for renewal invoice: ${token}, reference: ${reference}`,
         );
 
+        await attachIntentCheckout(
+          this.paymentIntentRepository,
+          this.logger,
+          intent.id,
+          initResult,
+        );
+
         // Success - break out of retry loop
         break;
       } catch (error) {
-        // Check if it's a duplicate key error
-        const isDuplicateError =
-          error.code === '23505' ||
-          error.message?.includes('duplicate key') ||
-          error.message?.includes('unique constraint');
-
-        if (isDuplicateError && attempt < maxRetries - 1) {
+        if (
+          error instanceof DuplicateReferenceError &&
+          attempt < maxRetries - 1
+        ) {
           this.logger.warn('Reference collision, retrying', {
             reference,
             attempt: attempt + 1,
           });
+          // The reference already exists AT THE GATEWAY, so verifying it would
+          // resolve someone else's transaction rather than 404. Leaving this
+          // orphan behind is the one case that could credit a stranger's money
+          // to this invoice.
+          await discardPaymentIntent(
+            this.paymentIntentRepository,
+            this.logger,
+            intent.id,
+          );
           continue;
         }
 
@@ -254,7 +325,7 @@ export class RenewalPaymentService {
       }
     }
 
-    if (!paystackResponse) {
+    if (!initResult) {
       throw new BadRequestException(
         'Failed to initialize payment after retries',
       );
@@ -275,9 +346,16 @@ export class RenewalPaymentService {
     }
 
     return {
-      accessCode: paystackResponse.data.access_code,
-      reference,
-      authorizationUrl: paystackResponse.data.authorization_url,
+      reference: initResult.reference,
+      checkoutUrl: initResult.checkoutUrl,
+      // Legacy popup fields — only meaningful for Paystack; the redirect
+      // frontend ignores them.
+      ...(initResult.gateway === 'paystack'
+        ? {
+            accessCode: initResult.gatewayTransactionId ?? undefined,
+            authorizationUrl: initResult.checkoutUrl,
+          }
+        : {}),
     };
   }
 
@@ -306,7 +384,9 @@ export class RenewalPaymentService {
   }
 
   /**
-   * Verify payment with Paystack
+   * Verify payment with the gateway that issued the reference. Renewals
+   * persist nothing at init, so the registry probes the active gateway first
+   * and falls back through legacy adapters on a definitive not-found.
    * Requirements: 5.3
    */
   async verifyPayment(reference: string): Promise<PaymentVerificationResult> {
@@ -314,34 +394,59 @@ export class RenewalPaymentService {
 
     try {
       const verification =
-        await this.paystackService.verifyTransaction(reference);
+        await this.gatewayRegistry.verifyByReference(reference);
 
       this.logger.log(
-        `Paystack verification response for ${reference}: ${verification.data.status}`,
+        `Gateway (${verification.gateway}) verification for ${reference}: ${verification.rawStatus} → ${verification.status}`,
       );
 
-      if (verification.data.status === 'success') {
+      if (verification.status === 'success') {
         // Generate receipt token for successful payments
         const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
         return {
           status: 'success',
-          reference: verification.data.reference,
-          amount: verification.data.amount / 100, // Convert from kobo
-          paidAt: verification.data.paid_at,
-          channel: verification.data.channel,
+          reference: verification.reference,
+          amount: verification.amountNaira,
+          paidAt: verification.paidAt?.toISOString(),
+          channel: verification.channel,
           receiptToken,
+          paymentOption:
+            (verification.metadata?.payment_option as string | null) ?? null,
         };
       }
 
+      // Money-safety: a pending verdict that carries money (Monnify
+      // PARTIALLY_PAID / OVERPAID) is REAL money sitting at the gateway that
+      // we deliberately do not credit — write a durable, landlord-visible ops
+      // artifact rather than only logging. This is the highest-value lane
+      // (a partial on a multi-million-naira renewal), so a log line someone
+      // has to happen to read is not an acceptable signal.
+      if (verification.moneyReceived) {
+        await recordAmountMismatchArtifact(
+          this.propertyHistoryRepository,
+          this.logger,
+          {
+            reference: verification.reference,
+            amountNaira: verification.amountNaira,
+            rawStatus: verification.rawStatus,
+            gateway: verification.gateway,
+            metadata: verification.metadata,
+            lane: 'renewal verify',
+            relatedEntityId: verification.metadata?.renewal_invoice_id ?? null,
+            relatedEntityType: 'renewal_invoice',
+          },
+        );
+      }
+
       return {
-        status: verification.data.status as 'failed' | 'pending',
-        reference: verification.data.reference,
-        amount: verification.data.amount / 100,
+        status: verification.status,
+        reference: verification.reference,
+        amount: verification.amountNaira,
       };
     } catch (error) {
       this.logger.error(
-        `Error verifying payment with Paystack: ${reference}`,
+        `Error verifying payment with gateway: ${reference}`,
         error.stack,
       );
       throw new BadRequestException(
@@ -353,6 +458,13 @@ export class RenewalPaymentService {
   /**
    * Process successful payment and send WhatsApp receipt
    * Requirements: 5.3, 3.1-3.6, 6.1-6.5, 7.1-7.4, 8.1-8.5
+   *
+   * @param paymentOptionOverride The payment option THIS reference was
+   *   initialized with. Pass it whenever the caller knows it (webhook/sweep
+   *   read it back from the gateway metadata). `invoice.payment_option` is a
+   *   mutable column that initializePayment overwrites on every attempt, so
+   *   reading it at credit time attributes the LATEST attempt's option to an
+   *   OLDER reference — see the warning on the fallback below.
    */
   async processSuccessfulPayment(
     token: string,
@@ -360,6 +472,7 @@ export class RenewalPaymentService {
     amount: number,
     receiptToken?: string,
     channel?: string,
+    paymentOptionOverride?: string | null,
   ): Promise<void> {
     this.logger.log(
       `Processing successful payment for renewal invoice: ${token}, reference: ${reference}`,
@@ -428,18 +541,76 @@ export class RenewalPaymentService {
         }
       }
 
+      // Amount sanity guard (100x unit-bug detector): a single payment lane
+      // must never land dramatically above what the invoice can still absorb.
+      // Legit flows: partial payments are ≤ remaining; full payments equal
+      // remaining. Anything above remaining+1 is either a unit bug in the
+      // gateway adapter or a genuinely odd overpayment — both need ops eyes.
+      const invoiceTotal = Number(invoice.total_amount);
+      const remaining = Math.max(
+        0,
+        invoiceTotal - Number(invoice.amount_paid ?? 0),
+      );
+      if (amount > remaining + 1) {
+        this.logger.warn(
+          `Renewal payment ${reference}: ₦${amount.toLocaleString()} exceeds the remaining invoice balance ₦${remaining.toLocaleString()} (invoice ${invoice.id}) — surfacing for ops review before crediting`,
+        );
+        try {
+          await this.propertyHistoryRepository.save(
+            this.propertyHistoryRepository.create({
+              property_id: invoice.property_id,
+              tenant_id: invoice.tenant_id,
+              event_type: 'renewal_payment_amount_mismatch',
+              event_description: `Payment of ₦${amount.toLocaleString()} (ref ${reference}) exceeds the remaining balance of ₦${remaining.toLocaleString()} on this renewal invoice. Verify the charge on the gateway dashboard and reconcile the surplus.`,
+              related_entity_id: invoice.id,
+              related_entity_type: 'renewal_invoice',
+              metadata: { reference, amount, remaining },
+            }),
+          );
+        } catch (guardErr) {
+          this.logger.error(
+            'Failed to write amount-mismatch history entry',
+            (guardErr as Error)?.message,
+          );
+        }
+      }
+
+      // Column-scoped update — never a whole-entity save here: the webhook
+      // (setImmediate) and the redirect-return verify race, and a stale
+      // entity save would clobber a payment_history entry the other caller
+      // just committed inside markInvoiceAsPaid's locked transaction.
+      //
+      // receipt_token/receipt_number are written NO-CLOBBER (COALESCE): the
+      // race-losing caller must not overwrite a token the winner already
+      // minted and embedded in a WhatsApp receipt link, or that delivered
+      // link would resolve to nothing. payment_method (channel) is free to
+      // set — it's not link-bearing.
       if (receiptToken) {
-        invoice.receipt_token = receiptToken;
-        invoice.receipt_number = `RR-${Date.now()}`;
+        await this.renewalInvoiceRepository
+          .createQueryBuilder()
+          .update(RenewalInvoice)
+          .set({
+            receipt_token: () => 'COALESCE(receipt_token, :rt)',
+            receipt_number: () => 'COALESCE(receipt_number, :rn)',
+            ...(channel ? { payment_method: channel } : {}),
+          })
+          .where('id = :id', { id: invoice.id })
+          .setParameters({ rt: receiptToken, rn: `RR-${Date.now()}` })
+          .execute();
+      } else if (channel) {
+        await this.renewalInvoiceRepository.update(invoice.id, {
+          payment_method: channel,
+        });
       }
-      // Note: do NOT write amount_paid here — markInvoiceAsPaid recomputes it
-      // as the cumulative sum of payment_history. Overwriting with the single
-      // payment amount would erase prior partials.
-      if (channel) {
-        invoice.payment_method = channel;
-      }
-      paymentOption = invoice.payment_option;
-      await this.renewalInvoiceRepository.save(invoice);
+      // MONEY-SAFETY: prefer the option THIS reference was initialized with.
+      // `invoice.payment_option` is overwritten by every initializePayment
+      // call (see :213-216), so it reflects the tenant's LATEST attempt, not
+      // this payment's. Crediting an old `custom` partial while the column
+      // says `full` makes markInvoiceAsPaid's `paymentOption === 'full'`
+      // short-circuit fire — flipping the invoice PAID (plus rent advance,
+      // receipt and WhatsApp) for a fraction of its value. The column fallback
+      // remains only for references initialized before the override existed.
+      paymentOption = paymentOptionOverride ?? invoice.payment_option;
     }
 
     // Delegate to TenanciesService to handle invoice update, notifications, and history updates.
@@ -479,15 +650,12 @@ export class RenewalPaymentService {
   }
 
   /**
-   * Process a successful renewal payment from Paystack webhook
-   * Looks up the renewal invoice from webhook metadata and processes payment
+   * Process a successful renewal payment from a gateway webhook.
+   * Consumes the normalized event (naira — adapters own unit conversion) and
+   * looks up the renewal invoice from the round-tripped metadata.
    */
-  async processWebhookPayment(data: {
-    reference: string;
-    amount: number;
-    metadata?: { renewal_invoice_id?: string };
-  }): Promise<void> {
-    const { reference, amount, metadata } = data;
+  async processWebhookPayment(event: NormalizedPaymentEvent): Promise<void> {
+    const { reference, amountNaira, metadata } = event;
     const renewalInvoiceId = metadata?.renewal_invoice_id;
 
     if (!renewalInvoiceId) {
@@ -527,13 +695,18 @@ export class RenewalPaymentService {
       return;
     }
 
-    const amountInNaira = amount / 100; // Convert from kobo
     const receiptToken = `receipt_${Date.now()}_${uuidv4().substring(0, 8)}`;
     await this.processSuccessfulPayment(
       invoice.token,
       reference,
-      amountInNaira,
+      amountNaira,
       receiptToken,
+      event.channel || undefined,
+      // The option THIS reference was initialized with, round-tripped through
+      // the gateway (stamped at :245). Without it, a late-settling payment is
+      // credited under whatever option the tenant most recently *started* —
+      // see processSuccessfulPayment's paymentOptionOverride.
+      (metadata?.payment_option as string | null) ?? null,
     );
   }
 
@@ -542,11 +715,13 @@ export class RenewalPaymentService {
    * Writes to property history, tenant history, landlord livefeed notification,
    * and emits a real-time WebSocket event. Invoice stays UNPAID (no status change needed).
    */
-  async processWebhookTransferRejected(data: any): Promise<void> {
-    const reference = data.reference;
-    const amountInNaira = data.amount / 100;
-    const gatewayResponse = data.gateway_response || 'Rejected';
-    const renewalInvoiceId = data.metadata?.renewal_invoice_id;
+  async processWebhookTransferRejected(
+    event: NormalizedPaymentEvent,
+  ): Promise<void> {
+    const reference = event.reference;
+    const amountInNaira = event.amountNaira;
+    const gatewayResponse = event.gatewayResponse || 'Rejected';
+    const renewalInvoiceId = event.metadata?.renewal_invoice_id;
 
     this.logger.log(
       `Processing bank.transfer.rejected for renewal invoice: ${renewalInvoiceId}, reference: ${reference}`,
@@ -585,6 +760,34 @@ export class RenewalPaymentService {
       return;
     }
 
+    // Idempotency. A redelivered rejection webhook must not duplicate the
+    // tenant-visible history rows, the Live Feed notification and the
+    // WebSocket event. Unlike the success lanes there is no status to
+    // compare-and-swap against — a rejected invoice legitimately stays UNPAID
+    // — so we dedupe on the reference stamped into the history row's
+    // metadata below.
+    //
+    // NOTE: do NOT record rejections in invoice.payment_history. That array is
+    // summed to derive amount_paid (see TenanciesService.markInvoiceAsPaid);
+    // an entry there would corrupt the tenant's balance.
+    const priorRejections = await this.propertyHistoryRepository.find({
+      where: {
+        related_entity_id: invoice.id,
+        event_type: 'bank_transfer_rejected',
+      },
+    });
+    if (
+      priorRejections.some(
+        (h) => (h.metadata as { reference?: string })?.reference === reference,
+      )
+    ) {
+      this.logger.log(
+        'Renewal transfer rejection already recorded for this reference; skipping (idempotent)',
+        { renewalInvoiceId, reference },
+      );
+      return;
+    }
+
     const propertyId = invoice.property_id;
     const propertyName = invoice.property?.name || 'Property';
     const landlordId = invoice.property?.owner_id;
@@ -593,6 +796,12 @@ export class RenewalPaymentService {
       ? `${invoice.tenant.user.first_name} ${invoice.tenant.user.last_name}`
       : 'Tenant';
     const description = `Bank transfer of ₦${amountInNaira.toLocaleString()} from ${tenantName} for renewal of ${propertyName} was rejected`;
+    // Carries the dedupe key for the guard above.
+    const rejectionMetadata = {
+      reference,
+      amount: amountInNaira,
+      gateway: event.gateway,
+    };
 
     // Property history — shows in landlord property details history tab
     try {
@@ -602,6 +811,7 @@ export class RenewalPaymentService {
         event_description: description,
         related_entity_id: invoice.id,
         related_entity_type: 'renewal_invoice',
+        metadata: rejectionMetadata,
       });
       await this.propertyHistoryRepository.save(propertyEntry);
     } catch (error) {
@@ -620,6 +830,7 @@ export class RenewalPaymentService {
         event_description: description,
         related_entity_id: invoice.id,
         related_entity_type: 'renewal_invoice',
+        metadata: rejectionMetadata,
       });
       await this.propertyHistoryRepository.save(tenantEntry);
     } catch (error) {
@@ -676,10 +887,11 @@ export class RenewalPaymentService {
         return invoice;
       }
 
-      // If not found, get the transaction details from Paystack to find the invoice ID
+      // If not found, ask the gateway for the transaction's metadata to find
+      // the invoice ID.
       const verification =
-        await this.paystackService.verifyTransaction(reference);
-      const renewalInvoiceId = verification.data.metadata?.renewal_invoice_id;
+        await this.gatewayRegistry.verifyByReference(reference);
+      const renewalInvoiceId = verification.metadata?.renewal_invoice_id;
 
       if (renewalInvoiceId) {
         invoice = await this.renewalInvoiceRepository.findOne({

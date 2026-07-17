@@ -83,19 +83,35 @@ export interface PaystackVerifyResponse {
 export class PaystackService {
   private readonly logger = new Logger(PaystackService.name);
   private readonly baseUrl = 'https://api.paystack.co';
-  private readonly secretKey: string;
+  private secretKey: string | null = null;
   private readonly maxRetries = 3;
   private readonly retryDelay = 1000; // 1 second
 
-  constructor(private readonly httpService: HttpService) {
-    const secretKey = process.env.PAYSTACK_SECRET_KEY;
+  constructor(private readonly httpService: HttpService) {}
 
+  /**
+   * Credentials are validated LAZILY, on first API call — not in the
+   * constructor. This service is an eagerly-instantiated provider, so a
+   * constructor throw would block the entire app from booting once
+   * PAYSTACK_SECRET_KEY is removed (the natural ops move after the Monnify
+   * cutover). Missing creds now degrade Paystack calls to a 503 instead.
+   */
+  private getSecretKey(): string {
+    if (this.secretKey) return this.secretKey;
+    const secretKey = process.env.PAYSTACK_SECRET_KEY;
     if (!secretKey) {
       this.logger.error('PAYSTACK_SECRET_KEY is not configured');
-      throw new Error('PAYSTACK_SECRET_KEY environment variable is required');
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+          message: 'Paystack gateway not configured',
+          error: 'GatewayNotConfigured',
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
     }
-
     this.secretKey = secretKey;
+    return secretKey;
   }
 
   /**
@@ -178,13 +194,16 @@ export class PaystackService {
     url: string,
     data?: any,
   ): Promise<T> {
+    // Resolve creds BEFORE the retry loop — a missing key is a config error
+    // (503 HttpException), not a transient failure worth retry/backoff.
+    const secretKey = this.getSecretKey();
     let lastError: any;
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         const config = {
           headers: {
-            Authorization: `Bearer ${this.secretKey}`,
+            Authorization: `Bearer ${secretKey}`,
             'Content-Type': 'application/json',
           },
         };
@@ -198,8 +217,16 @@ export class PaystackService {
       } catch (error) {
         lastError = error;
 
+        // Deterministic client errors (4xx) never succeed on retry — fail
+        // fast so not-found/duplicate-reference probes don't burn ~3s of
+        // backoff. 408/429 are the transient exceptions worth retrying.
+        const status = (error as AxiosError)?.response?.status;
+        if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) {
+          throw error;
+        }
+
         if (attempt < this.maxRetries) {
-          const delay = this.retryDelay * attempt; // Exponential backoff
+          const delay = this.retryDelay * attempt; // Linear backoff
           this.logger.warn(
             `Request failed (attempt ${attempt}/${this.maxRetries}), retrying in ${delay}ms...`,
           );
@@ -218,6 +245,13 @@ export class PaystackService {
    * @returns HttpException
    */
   private handlePaystackError(error: any, operation: string): HttpException {
+    // Our own exceptions (e.g. the 503 GatewayNotConfigured from
+    // getSecretKey) pass through untouched — they are not Axios errors even
+    // though they carry a `response` property.
+    if (error instanceof HttpException) {
+      return error;
+    }
+
     if (error.response) {
       const axiosError = error as AxiosError;
       const status =

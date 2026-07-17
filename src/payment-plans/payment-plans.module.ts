@@ -19,6 +19,7 @@ import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
 import { Rent } from '../rents/entities/rent.entity';
+import { PaymentIntent } from '../payments/entities/payment-intent.entity';
 
 import { AdHocInvoicesModule } from '../ad-hoc-invoices/ad-hoc-invoices.module';
 import { NotificationModule } from '../notifications/notification.module';
@@ -46,6 +47,9 @@ import { NotifyModule } from 'src/common/notify/notify.module';
       Property,
       PropertyHistory,
       Rent,
+      // Repository registration only — owned by PaymentsModule (which runs the
+      // sweep); creates no module cycle.
+      PaymentIntent,
     ]),
     NotificationModule,
     EventsModule,

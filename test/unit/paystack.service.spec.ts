@@ -156,12 +156,24 @@ describe('PaystackService', () => {
   });
 
   describe('error handling', () => {
-    it('should throw error when PAYSTACK_SECRET_KEY is not set', () => {
+    it('constructs without PAYSTACK_SECRET_KEY (lazy creds — boot must not depend on legacy gateway config)', () => {
       delete process.env.PAYSTACK_SECRET_KEY;
 
       expect(() => {
         new PaystackService(httpService);
-      }).toThrow('PAYSTACK_SECRET_KEY environment variable is required');
+      }).not.toThrow();
+    });
+
+    it('degrades to a 503 HttpException on first API call when PAYSTACK_SECRET_KEY is not set', async () => {
+      delete process.env.PAYSTACK_SECRET_KEY;
+      const keylessService = new PaystackService(httpService);
+
+      await expect(
+        keylessService.verifyTransaction('test_reference'),
+      ).rejects.toMatchObject({
+        status: 503,
+      });
+      expect(mockHttpService.get).not.toHaveBeenCalled();
     });
   });
 });

@@ -20,6 +20,8 @@ import {
   PaymentStatus,
 } from './entities/offer-letter.entity';
 import { KYCApplication } from '../kyc-links/entities/kyc-application.entity';
+import { KycLinkScope } from '../kyc-links/entities/kyc-link.entity';
+import { ManagementScopeService } from '../common/scope/management-scope.service';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyStatusEnum } from '../properties/dto/create-property.dto';
 import { CreateOfferLetterDto } from './dto/create-offer-letter.dto';
@@ -70,6 +72,7 @@ export class OfferLettersService {
     private readonly configService: ConfigService,
     private readonly notificationRecipients: NotificationRecipientsService,
     private readonly utilService: UtilService,
+    private readonly scopeService: ManagementScopeService,
   ) {}
 
   /**
@@ -107,8 +110,20 @@ export class OfferLettersService {
     assertLandlordInScope(managedLandlordIds, property.owner_id);
     const landlordId = property.owner_id;
 
-    // The KYC application's link must belong to the same landlord.
-    if (kycApplication.kyc_link?.landlord_id !== landlordId) {
+    // The KYC application's link must cover that same landlord. A
+    // landlord-scoped link covers its single owner; an admin-scoped link's
+    // landlord_id is the admin account itself (never a landlord), so it covers
+    // every landlord that admin manages. Comparing landlord_id to the owner
+    // directly rejects every admin-scoped application.
+    const kycLink = kycApplication.kyc_link;
+    const linkOwnerIds =
+      kycLink?.scope_type === KycLinkScope.ADMIN && kycLink.admin_creator_id
+        ? await this.scopeService.resolveManagedLandlordIds(
+            kycLink.admin_creator_id,
+          )
+        : [kycLink?.landlord_id];
+
+    if (!linkOwnerIds.includes(landlordId)) {
       throw new ForbiddenException(
         'Not authorized to create offer for this KYC application',
       );

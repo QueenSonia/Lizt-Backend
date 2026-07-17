@@ -10,6 +10,7 @@ import { AdHocInvoicePdfService } from './ad-hoc-invoice-pdf.service';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyHistory } from '../property-history/entities/property-history.entity';
+import { PaymentIntent } from '../payments/entities/payment-intent.entity';
 
 import { NotificationModule } from '../notifications/notification.module';
 import { EventsModule } from '../events/events.module';
@@ -28,6 +29,9 @@ import { NotifyModule } from 'src/common/notify/notify.module';
       PropertyTenant,
       Property,
       PropertyHistory,
+      // Repository registration only — owned by PaymentsModule (which runs the
+      // sweep); creates no module cycle.
+      PaymentIntent,
     ]),
     NotificationModule,
     EventsModule,

@@ -9,7 +9,10 @@ export enum InstallmentStatus {
 }
 
 export enum InstallmentPaymentMethod {
+  /** Legacy rows only — paid online via Paystack before the gateway swap. */
   PAYSTACK = 'paystack',
+  /** Paid online through the active payment gateway (channel unknown). */
+  ONLINE = 'online',
   CASH = 'cash',
   TRANSFER = 'transfer',
   OTHER = 'other',
@@ -19,7 +22,8 @@ export enum InstallmentPaymentMethod {
 @Index(['plan_id'])
 @Index(['status'])
 @Index(['due_date'])
-@Index(['paystack_reference'])
+// Explicit name (matching migration 1930) so synchronize() sees a no-op diff.
+@Index('IDX_installments_gateway_reference', ['gateway_reference'])
 export class PaymentPlanInstallment extends BaseEntity {
   @Column({ type: 'uuid' })
   plan_id: string;
@@ -52,9 +56,13 @@ export class PaymentPlanInstallment extends BaseEntity {
   @Column({ type: 'varchar', length: 20, nullable: true })
   payment_method: InstallmentPaymentMethod | null;
 
-  /** Paystack reference if paid via Paystack, null for manual payments. */
+  /** Gateway payment reference if paid online, null for manual payments. */
   @Column({ type: 'varchar', length: 255, nullable: true })
-  paystack_reference: string | null;
+  gateway_reference: string | null;
+
+  /** Which gateway took the online payment ('paystack' | 'monnify'), null for manual. */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  gateway: string | null;
 
   /** Free-form note for manual payments — e.g. "bank transfer from spouse". */
   @Column({ type: 'text', nullable: true })

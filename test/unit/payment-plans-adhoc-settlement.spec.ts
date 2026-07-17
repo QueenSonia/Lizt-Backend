@@ -22,9 +22,11 @@ import { RenewalInvoice } from '../../src/tenancies/entities/renewal-invoice.ent
 import { PropertyTenant } from '../../src/properties/entities/property-tenants.entity';
 import { Property } from '../../src/properties/entities/property.entity';
 import { PropertyHistory } from '../../src/property-history/entities/property-history.entity';
+import { PaymentIntent } from '../../src/payments/entities/payment-intent.entity';
 import { NotificationService } from '../../src/notifications/notification.service';
 import { EventsGateway } from '../../src/events/events.gateway';
-import { PaystackService } from '../../src/payments/paystack.service';
+import { ACTIVE_PAYMENT_GATEWAY } from '../../src/payments/gateway/payment-gateway.interface';
+import { GatewayRegistryService } from '../../src/payments/gateway/gateway-registry.service';
 import { TenanciesService } from '../../src/tenancies/tenancies.service';
 import { TenantBalancesService } from '../../src/tenant-balances/tenant-balances.service';
 import { WhatsAppNotificationLogService } from '../../src/whatsapp-bot/whatsapp-notification-log.service';
@@ -68,10 +70,14 @@ describe('PaymentPlansService — ad-hoc settlement', () => {
         { provide: getRepositoryToken(PropertyTenant), useValue: repoMock() },
         { provide: getRepositoryToken(Property), useValue: repoMock() },
         { provide: getRepositoryToken(PropertyHistory), useValue: repoMock() },
+        // Written at checkout-init so the reconciliation sweep can rescue a
+        // payment whose webhook and browser-return both failed.
+        { provide: getRepositoryToken(PaymentIntent), useValue: repoMock() },
         { provide: DataSource, useValue: { transaction: jest.fn(), getRepository: jest.fn() } },
         { provide: NotificationService, useValue: { create: jest.fn() } },
         { provide: EventsGateway, useValue: { emitHistoryAdded: jest.fn() } },
-        { provide: PaystackService, useValue: {} },
+        { provide: ACTIVE_PAYMENT_GATEWAY, useValue: {} },
+        { provide: GatewayRegistryService, useValue: {} },
         { provide: TenanciesService, useValue: { refreshInvoiceTotals: jest.fn(), markInvoiceAsPaid: jest.fn() } },
         { provide: TenantBalancesService, useValue: { applyChange: jest.fn() } },
         { provide: WhatsAppNotificationLogService, useValue: { cancelPendingByReferenceIds: jest.fn() } },

@@ -846,4 +846,201 @@ describe('MaintenanceRequestsService', () => {
       );
     });
   });
+
+  // Landlord-first gate order for FM-filed unit requests:
+  //   FM files → NOT_APPROVED → landlord approves + assigns →
+  //   PENDING_TENANT_CONFIRMATION → tenant confirms → APPROVED.
+  describe('FM-filed landlord-first tenant gate', () => {
+    const fmActor = { id: 'fm-acct', role: RolesEnum.FACILITY_MANAGER };
+    const fmDto = {
+      property_id: 'property-123',
+      text: 'Broken heater',
+      scope: 'unit',
+    } as CreateMaintenanceRequestDto;
+
+    const fmTeamMember = {
+      id: 'fm-tm-1',
+      role: RolesEnum.FACILITY_MANAGER,
+      account: {
+        id: 'fm-acct',
+        user: { id: 'fm-user', first_name: 'Fixit', last_name: 'Fred' },
+      },
+      team: { creatorId: 'owner-123' },
+    };
+
+    const activeTenancy = {
+      id: 'pt-1',
+      tenant_id: 'tenant-123',
+      property_id: 'property-123',
+      status: TenantStatusEnum.ACTIVE,
+      tenant: {
+        id: 'tenant-123',
+        user: {
+          id: 'tenant-user',
+          first_name: 'Tina',
+          last_name: 'Tenant',
+          phone_number: '+2340000000',
+        },
+      },
+    };
+
+    it('FM-filed unit request with an active tenant starts in NOT_APPROVED and emits maintenance.created (not the old fm_filed_pending_tenant)', async () => {
+      (teamMemberRepository.find as jest.Mock).mockResolvedValue([fmTeamMember]);
+      (propertyRepository.findOne as jest.Mock).mockResolvedValue({
+        id: 'property-123',
+        name: 'Test Property',
+        location: 'Test Location',
+        owner_id: 'owner-123',
+      });
+      scopeService.resolveTeamOwnersForLandlord.mockResolvedValue(['owner-123']);
+      (propertyTenantRepository.find as jest.Mock).mockResolvedValue([
+        activeTenancy,
+      ]);
+      (maintenanceRequestRepository.create as jest.Mock).mockImplementation(
+        (entity) => entity,
+      );
+      (maintenanceRequestRepository.save as jest.Mock).mockImplementation(
+        (entity) =>
+          Promise.resolve({
+            ...entity,
+            id: 'sr-fm-1',
+            request_id: 'SR-001',
+            created_at: new Date(),
+          }),
+      );
+
+      await service.createMaintenanceRequest(fmDto, fmActor);
+
+      // Always starts awaiting the landlord — no create-time tenant gate.
+      expect(maintenanceRequestRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: MaintenanceRequestStatusEnum.NOT_APPROVED,
+          creator_type: MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER,
+          tenant_id: 'tenant-123',
+          assigned_to: null,
+        }),
+      );
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'maintenance.created',
+        expect.objectContaining({ landlord_id: 'owner-123' }),
+      );
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        'maintenance.fm_filed_pending_tenant',
+        expect.anything(),
+      );
+    });
+
+    it('approving an FM-filed request with a tenant routes to PENDING_TENANT_CONFIRMATION, leaves approved_at unstamped, prompts the tenant, and defers the FM assignment ping', async () => {
+      const sr = {
+        id: 'sr-fm-1',
+        request_id: 'SR-001',
+        status: MaintenanceRequestStatusEnum.NOT_APPROVED,
+        creator_type: MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER,
+        scope: 'unit',
+        tenant_id: 'tenant-123',
+        assigned_to: null,
+        property: { id: 'property-123', owner_id: 'owner-123' },
+        common_area: null,
+      };
+      const reloaded = {
+        ...sr,
+        status: MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
+        tenant_name: 'Tina Tenant',
+        property_name: 'Test Property',
+        tenant: { user: { phone_number: '+2340000000' } },
+        creator: {
+          first_name: 'Fixit',
+          last_name: 'Fred',
+          accounts: [
+            { roles: [RolesEnum.FACILITY_MANAGER], profile_name: 'Fixit Co' },
+          ],
+        },
+        facilityManager: {
+          id: 'fm-tm-1',
+          account: { user: { first_name: 'Fixit', last_name: 'Fred' } },
+        },
+      };
+      (maintenanceRequestRepository.findOne as jest.Mock)
+        .mockResolvedValueOnce(sr)
+        .mockResolvedValueOnce(reloaded);
+      (teamMemberRepository.findOne as jest.Mock).mockResolvedValue({
+        id: 'fm-tm-1',
+        role: RolesEnum.FACILITY_MANAGER,
+        team: { creatorId: 'owner-123' },
+        account: { user: { first_name: 'Fixit', last_name: 'Fred' } },
+      });
+      (accountRepository.findOne as jest.Mock).mockResolvedValue({
+        user: { id: 'owner-user' },
+      });
+
+      await service.approveAndAssignMaintenanceRequest(
+        'sr-fm-1',
+        'fm-tm-1',
+        'owner-123',
+        'dashboard',
+      );
+
+      const updateArg = (entityManager.update as jest.Mock).mock.calls[0][2];
+      expect(updateArg.status).toBe(
+        MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
+      );
+      expect(updateArg.assigned_to).toBe('fm-tm-1');
+      // approved_at is only stamped when the work actually opens (APPROVED).
+      expect(updateArg.approved_at).toBeUndefined();
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'maintenance.landlord_approved_pending_tenant',
+        expect.objectContaining({ tenant_id: 'tenant-123' }),
+      );
+      // FM stays silent until the tenant confirms.
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        'maintenance.assigned',
+        expect.anything(),
+      );
+    });
+
+    it('tenant confirmation opens the work: APPROVED, approved_at stamped, and the deferred FM assignment ping fires', async () => {
+      const sr = {
+        id: 'sr-fm-1',
+        request_id: 'SR-001',
+        status: MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION,
+        creator_type: MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER,
+        tenant_id: 'tenant-123',
+        tenant: { user: { id: 'tenant-user' } },
+        property: { id: 'property-123', owner_id: 'owner-123' },
+        common_area: null,
+      };
+      const reloaded = {
+        ...sr,
+        status: MaintenanceRequestStatusEnum.APPROVED,
+        assigned_to: 'fm-tm-1',
+        property_name: 'Test Property',
+        facilityManager: {
+          id: 'fm-tm-1',
+          account: { user: { first_name: 'Fixit', last_name: 'Fred' } },
+        },
+      };
+      (maintenanceRequestRepository.findOne as jest.Mock)
+        .mockResolvedValueOnce(sr)
+        .mockResolvedValueOnce(reloaded);
+
+      await service.confirmTenantMaintenanceRequest(
+        'sr-fm-1',
+        'tenant-123',
+        'dashboard',
+      );
+
+      const updateArg = (entityManager.update as jest.Mock).mock.calls[0][2];
+      expect(updateArg.status).toBe(MaintenanceRequestStatusEnum.APPROVED);
+      expect(updateArg.approved_at).toBeInstanceOf(Date);
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'maintenance.tenant_confirmed',
+        expect.objectContaining({ maintenance_request_id: 'sr-fm-1' }),
+      );
+      // The assignment ping, withheld at approve time, fires now.
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'maintenance.assigned',
+        expect.objectContaining({ new_assignee: 'fm-tm-1' }),
+      );
+    });
+  });
 });

@@ -13,11 +13,11 @@ SELECT
     offer_letter_id,
     amount,
     status,
-    paystack_reference,
+    gateway_reference,
     created_at,
     paid_at
 FROM payments
-WHERE paystack_reference = 'LIZT_1771582415248_023b7a0f';
+WHERE gateway_reference = 'LIZT_1771582415248_023b7a0f';
 
 -- Step 2: Update payment status to completed
 -- UNCOMMENT THE LINES BELOW AFTER VERIFYING THE PAYMENT ON PAYSTACK
@@ -28,7 +28,7 @@ SET
     payment_method = 'card',  -- or 'bank_transfer' depending on payment method
     paid_at = NOW(),
     updated_at = NOW()
-WHERE paystack_reference = 'LIZT_1771582415248_023b7a0f'
+WHERE gateway_reference = 'LIZT_1771582415248_023b7a0f'
 AND status = 'pending';
 
 -- Step 3: Update offer letter amounts
@@ -38,7 +38,7 @@ WITH payment_info AS (
         p.offer_letter_id,
         p.amount as payment_amount
     FROM payments p
-    WHERE p.paystack_reference = 'LIZT_1771582415248_023b7a0f'
+    WHERE p.gateway_reference = 'LIZT_1771582415248_023b7a0f'
 )
 UPDATE offer_letters ol
 SET 
@@ -66,7 +66,7 @@ SELECT
     ol.payment_status as offer_payment_status
 FROM payments p
 JOIN offer_letters ol ON p.offer_letter_id = ol.id
-WHERE p.paystack_reference = 'LIZT_1771582415248_023b7a0f';
+WHERE p.gateway_reference = 'LIZT_1771582415248_023b7a0f';
 */
 
 -- NOTE: This SQL script only updates the database.

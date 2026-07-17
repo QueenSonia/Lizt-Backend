@@ -7,6 +7,7 @@ import {
   ManyToOne,
   JoinColumn,
   Index,
+  Unique,
 } from 'typeorm';
 import { OfferLetter } from '../../offer-letters/entities/offer-letter.entity';
 import { RenewalInvoice } from '../../tenancies/entities/renewal-invoice.entity';
@@ -31,7 +32,10 @@ export enum PaymentMethod {
 @Entity('payments')
 @Index(['offer_letter_id'])
 @Index(['renewal_invoice_id'])
-@Index(['paystack_reference'])
+// Explicit names (matching migration 1930) so dev-boot synchronize() sees a
+// no-op diff — auto-hash index names change when a column renames.
+@Index('IDX_payments_gateway_reference', ['gateway_reference'])
+@Unique('UQ_payments_gateway_reference', ['gateway_reference'])
 @Index(['status'])
 @Index(['created_at'])
 export class Payment {
@@ -78,14 +82,28 @@ export class Payment {
   })
   payment_method: PaymentMethod | null;
 
-  @Column({ type: 'varchar', length: 255, unique: true })
-  paystack_reference: string;
+  /** Our merchant-side payment reference (LIZT_/RENEWAL_ prefixed). Unique. */
+  @Column({ type: 'varchar', length: 255 })
+  gateway_reference: string;
 
+  /**
+   * Gateway-side transaction handle: Paystack access_code / Monnify
+   * transactionReference (contains pipes, e.g. "MNFY|12|...").
+   */
   @Column({ type: 'varchar', length: 255, nullable: true })
-  paystack_access_code: string | null;
+  gateway_transaction_id: string | null;
 
+  /** Hosted-checkout URL returned by the gateway at initialization. */
   @Column({ type: 'text', nullable: true })
-  paystack_authorization_url: string | null;
+  gateway_checkout_url: string | null;
+
+  /**
+   * Which gateway issued gateway_reference (adapter name, e.g. 'paystack' |
+   * 'monnify'). NOT NULL and deliberately without a default — insert paths
+   * must stamp it explicitly (see migration 1930).
+   */
+  @Column({ type: 'varchar', length: 20 })
+  gateway: string;
 
   @Column({ type: 'timestamp', nullable: true })
   paid_at: Date | null;

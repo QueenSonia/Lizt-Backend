@@ -172,8 +172,12 @@ export class InstallmentPDFService {
   private methodLabel(method: InstallmentPaymentMethod | null): string {
     if (!method) return '—';
     switch (method) {
+      // Legacy value — kept for historical channel-null rows that stored the
+      // enum ('paystack') instead of a channel string.
       case InstallmentPaymentMethod.PAYSTACK:
         return 'Paystack';
+      case InstallmentPaymentMethod.ONLINE:
+        return 'Online';
       case InstallmentPaymentMethod.CASH:
         return 'Cash';
       case InstallmentPaymentMethod.TRANSFER:
@@ -414,7 +418,7 @@ export class InstallmentPDFService {
             ? `
           <div class="detail-row"><span class="label">Paid On</span><span class="value">${paidDate ?? '—'}</span></div>
           <div class="detail-row"><span class="label">Method</span><span class="value">${this.methodLabel(installment.payment_method)}</span></div>
-          ${installment.paystack_reference ? `<div class="detail-row"><span class="label">Paystack Reference</span><span class="value">${this.escapeHtml(installment.paystack_reference)}</span></div>` : ''}
+          ${installment.gateway_reference ? `<div class="detail-row"><span class="label">Payment Reference</span><span class="value">${this.escapeHtml(installment.gateway_reference)}</span></div>` : ''}
           ${installment.receipt_number ? `<div class="detail-row"><span class="label">Receipt Number</span><span class="value">${this.escapeHtml(installment.receipt_number)}</span></div>` : ''}
           ${installment.manual_payment_note ? `<div class="detail-row"><span class="label">Note</span><span class="value">${this.escapeHtml(installment.manual_payment_note)}</span></div>` : ''}
           `

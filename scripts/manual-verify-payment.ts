@@ -1,13 +1,15 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../src/app.module';
-import { PaystackService } from '../src/payments/paystack.service';
+import { GatewayRegistryService } from '../src/payments/gateway/gateway-registry.service';
 import { PaymentService } from '../src/payments/payment.service';
 
 /**
  * Manual Payment Verification Script
  *
- * Use this to manually verify and process a stuck payment
- * that succeeded on Paystack but webhook never arrived.
+ * Use this to manually verify and process a stuck payment that succeeded on
+ * the payment gateway but whose webhook never arrived. Gateway-agnostic: the
+ * registry probes the active gateway first and falls back through legacy
+ * adapters (Paystack) on a definitive not-found — exactly the runtime rule.
  *
  * Usage:
  *   npm run ts-node scripts/manual-verify-payment.ts LIZT_1771582415248_023b7a0f
@@ -20,31 +22,41 @@ async function verifyAndProcessPayment(reference: string) {
   const app = await NestFactory.createApplicationContext(AppModule);
 
   try {
-    const paystackService = app.get(PaystackService);
+    const gatewayRegistry = app.get(GatewayRegistryService);
     const paymentService = app.get(PaymentService);
 
-    // Step 1: Verify with Paystack
-    console.log('📡 Verifying with Paystack API...');
-    const verification = await paystackService.verifyTransaction(reference);
+    // Step 1: Verify with the gateway
+    console.log('📡 Verifying with the payment gateway...');
+    const verification = await gatewayRegistry.verifyByReference(reference);
 
-    console.log('\n✅ Paystack Response:');
-    console.log(`   Status: ${verification.data.status}`);
-    console.log(`   Amount: ₦${verification.data.amount / 100}`);
-    console.log(`   Channel: ${verification.data.channel}`);
-    console.log(`   Paid At: ${verification.data.paid_at}`);
-    console.log(`   Gateway Response: ${verification.data.gateway_response}`);
+    console.log('\n✅ Gateway Response:');
+    console.log(`   Gateway: ${verification.gateway}`);
+    console.log(
+      `   Status: ${verification.status} (raw: ${verification.rawStatus})`,
+    );
+    console.log(`   Amount: ₦${verification.amountNaira}`);
+    console.log(`   Channel: ${verification.channel}`);
+    console.log(`   Paid At: ${verification.paidAt?.toISOString() ?? '—'}`);
+    console.log(`   Gateway Response: ${verification.gatewayResponse ?? '—'}`);
 
     // Step 2: Check if payment succeeded
-    if (verification.data.status !== 'success') {
-      console.log('\n❌ Payment not successful on Paystack');
-      console.log(`   Current status: ${verification.data.status}`);
+    if (verification.status !== 'success') {
+      console.log('\n❌ Payment not successful on the gateway');
+      console.log(
+        `   Current status: ${verification.status} (raw: ${verification.rawStatus})`,
+      );
+      if (verification.moneyReceived) {
+        console.log(
+          '   ⚠️ Money WAS received without a clean success (partial/over-payment) — reconcile on the gateway dashboard.',
+        );
+      }
       console.log('   No action taken.');
       return;
     }
 
-    // Step 3: Process the payment
+    // Step 3: Process the payment (offer-letter lane)
     console.log('\n⚙️  Processing payment...');
-    await paymentService.processSuccessfulPayment(verification.data);
+    await paymentService.processSuccessfulPayment(verification);
 
     console.log('\n✅ Payment processed successfully!');
     console.log('   - Payment status updated to COMPLETED');

@@ -388,9 +388,12 @@ export class MaintenanceRequestsService {
         null
       : null;
 
-    const initialStatus = tenancy
-      ? MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION
-      : MaintenanceRequestStatusEnum.NOT_APPROVED;
+    // FM-filed requests always start awaiting the LANDLORD, whether or not a
+    // tenant is present. The landlord approves + assigns first; only then does
+    // an active tenant get asked to confirm (gateOnTenant in
+    // approveAndAssignMaintenanceRequest). Vacant/common-area FM requests have
+    // no tenant to confirm and go straight to APPROVED on that approval.
+    const initialStatus = MaintenanceRequestStatusEnum.NOT_APPROVED;
 
     const request = this.maintenanceRequestRepository.create({
       request_id: this.utilService.generateMaintenanceRequestId(),
@@ -444,14 +447,12 @@ export class MaintenanceRequestsService {
     };
 
     try {
-      if (tenancy) {
-        this.eventEmitter.emit(
-          'maintenance.fm_filed_pending_tenant',
-          basePayload,
-        );
-      } else {
-        this.eventEmitter.emit('maintenance.created', basePayload);
-      }
+      // Always the landlord-approval event now — the tenant-confirmation prompt
+      // moved to approve time (maintenance.landlord_approved_pending_tenant,
+      // emitted from approveAndAssignMaintenanceRequest). The maintenance.created
+      // handler pings the landlord with the approve/reject template for
+      // creator_type === 'facility_manager'.
+      this.eventEmitter.emit('maintenance.created', basePayload);
     } catch (error) {
       this.logger.error('Failed to emit FM-create event:', error);
     }
@@ -577,11 +578,13 @@ export class MaintenanceRequestsService {
   /**
    * Landlord files a maintenance request on their own property or common area.
    * Differs from the FM-filed path:
-   *   - No approval step. Landlord-filed MRs never enter NOT_APPROVED. If
-   *     there's an active tenant, they pass through PENDING_TENANT_CONFIRMATION
-   *     and auto-flip to APPROVED on tenant confirm (see
-   *     confirmTenantMaintenanceRequest). Vacant / common-area / sub-leasing
-   *     cases go straight to APPROVED.
+   *   - No landlord-approval step. Landlord-filed MRs never enter NOT_APPROVED
+   *     (approval is implicit in filing) — whereas FM-filed requests start in
+   *     NOT_APPROVED and require the landlord to approve + assign first. If
+   *     there's an active tenant, landlord-filed requests pass through
+   *     PENDING_TENANT_CONFIRMATION and auto-flip to APPROVED on tenant confirm
+   *     (see confirmTenantMaintenanceRequest). Vacant / common-area /
+   *     sub-leasing cases go straight to APPROVED.
    *   - FM assignment is optional at submit time. With an FM picked, the request
    *     also fires maintenance.assigned right away (or post-confirm). Without
    *     one, the request lands in APPROVED + assigned_to=null and the landlord
@@ -1290,6 +1293,8 @@ export class MaintenanceRequestsService {
         data.reopen_message,
         maintenanceRequest.assigned_to,
         actorTeamMemberId,
+        maintenanceRequest.scope,
+        !!maintenanceRequest.tenant_id,
       );
     }
     const isReopenSelfLoop =
@@ -2167,7 +2172,7 @@ export class MaintenanceRequestsService {
       reopen_note: 'Additional reopen note',
       closed: 'Issue closed',
       not_approved: 'Issue reported',
-      pending_tenant_confirmation: 'Issue reported — awaiting tenant confirmation',
+      pending_tenant_confirmation: 'Awaiting tenant confirmation',
       tenant_confirmed: 'Tenant confirmed the issue',
       tenant_confirmed_auto_approved:
         'Tenant confirmed the issue — auto-approved',
@@ -2409,13 +2414,15 @@ export class MaintenanceRequestsService {
    *     not_approved → rejected (terminal)
    *
    * Role policy:
-   *   - landlord approves (NOT_APPROVED → APPROVED) and rejects via the
-   *     dedicated reject path. Landlord can also force-confirm
-   *     (PENDING_TENANT_CONFIRMATION → NOT_APPROVED) when the tenant is
-   *     unresponsive — same destination as a tenant-confirm but recorded as
-   *     a landlord-actor in status_history.
-   *   - tenant on the request confirms or denies the FM-filed gate
-   *     (PENDING_TENANT_CONFIRMATION → NOT_APPROVED | DENIED_BY_TENANT) and
+   *   - landlord approves and rejects via the dedicated paths. For most
+   *     requests approval is NOT_APPROVED → APPROVED; for an FM-filed
+   *     unit request with an active tenant it is NOT_APPROVED →
+   *     PENDING_TENANT_CONFIRMATION (the tenant confirms afterwards). Landlord
+   *     can also force-confirm (PENDING_TENANT_CONFIRMATION → APPROVED) when
+   *     the tenant is unresponsive — recorded as a landlord-actor in
+   *     status_history.
+   *   - tenant on the request confirms or denies the gate
+   *     (PENDING_TENANT_CONFIRMATION → APPROVED | DENIED_BY_TENANT) and
    *     can confirm-resolution (RESOLVED → CLOSED) or reject-resolution
    *     (RESOLVED → REOPENED) on requests they filed.
    *   - The assigned FM (the one whose TeamMember.id equals
@@ -2438,14 +2445,38 @@ export class MaintenanceRequestsService {
     reopenMessage?: string,
     assignedTo?: string | null,
     actorTeamMemberId?: string | null,
+    requestScope?: MaintenanceRequestScopeEnum,
+    hasTenant?: boolean,
   ): void {
     const transition = `${from}->${to}`;
     const tenantIsCreator =
       creatorType === MaintenanceRequestCreatorTypeEnum.TENANT;
     const fmIsCreator =
       creatorType === MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER;
+    // FM-filed unit request with an active tenant: the landlord's approval must
+    // route through the tenant-confirmation gate rather than straight to
+    // APPROVED. Mirrors gateOnTenant in approveAndAssignMaintenanceRequest.
+    const gateOnTenant =
+      fmIsCreator &&
+      !!hasTenant &&
+      requestScope === MaintenanceRequestScopeEnum.UNIT;
 
     switch (transition) {
+      case `${MaintenanceRequestStatusEnum.NOT_APPROVED}->${MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION}`:
+        if (actorRole !== 'landlord') {
+          throw new HttpException(
+            'Only the landlord can approve a maintenance request',
+            HttpStatus.FORBIDDEN,
+          );
+        }
+        if (!assignedTo) {
+          throw new HttpException(
+            'Assign a facility manager before approving',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        return;
+
       case `${MaintenanceRequestStatusEnum.NOT_APPROVED}->${MaintenanceRequestStatusEnum.APPROVED}`:
         if (actorRole !== 'landlord') {
           throw new HttpException(
@@ -2457,6 +2488,15 @@ export class MaintenanceRequestsService {
           throw new HttpException(
             'Assign a facility manager before approving',
             HttpStatus.BAD_REQUEST,
+          );
+        }
+        // FM-filed unit requests with an active tenant must not skip the tenant
+        // gate — the landlord's approval takes them to
+        // PENDING_TENANT_CONFIRMATION, not straight to APPROVED.
+        if (gateOnTenant) {
+          throw new HttpException(
+            'This request must go to tenant confirmation before approval; approve to PENDING_TENANT_CONFIRMATION instead',
+            HttpStatus.CONFLICT,
           );
         }
         return;
@@ -2509,37 +2549,13 @@ export class MaintenanceRequestsService {
         return;
       }
 
-      // FM-filed unit-scoped MRs sit in PENDING_TENANT_CONFIRMATION until the
-      // tenant responds. The dedicated endpoints (`/tenant-confirm`,
-      // `/tenant-deny`, `/landlord-force-confirm`) are the primary path —
-      // these cases let the generic PUT also reach the same transitions.
-      case `${MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION}->${MaintenanceRequestStatusEnum.NOT_APPROVED}`:
-        if (actorRole !== 'tenant' && actorRole !== 'landlord') {
-          throw new HttpException(
-            'Only the tenant on this request (or the landlord, force-confirming) can confirm it',
-            HttpStatus.FORBIDDEN,
-          );
-        }
-        // FM-filed and tenant-filed land in NOT_APPROVED on confirm. Landlord-
-        // filed MRs skip NOT_APPROVED (see the ->APPROVED case below).
-        if (creatorType === MaintenanceRequestCreatorTypeEnum.LANDLORD) {
-          throw new HttpException(
-            'Landlord-filed requests auto-approve on tenant confirmation; transition to APPROVED instead',
-            HttpStatus.CONFLICT,
-          );
-        }
-        return;
-
-      // Landlord-filed MRs auto-approve on tenant confirmation (no separate
-      // landlord-approval step). Only the tenant (confirm) or the landlord
-      // (force-confirm) can drive this.
+      // PENDING_TENANT_CONFIRMATION always resolves to APPROVED on confirm now:
+      // reaching this state means the landlord already approved (landlord-filed:
+      // implicit in filing; FM-filed: the landlord approved + assigned first).
+      // Only the tenant (confirm) or the landlord (force-confirm) can drive it.
+      // The dedicated endpoints (`/tenant-confirm`, `/landlord-force-confirm`)
+      // are the primary path; this case lets the generic PUT reach it too.
       case `${MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION}->${MaintenanceRequestStatusEnum.APPROVED}`:
-        if (creatorType !== MaintenanceRequestCreatorTypeEnum.LANDLORD) {
-          throw new HttpException(
-            'Only landlord-filed requests can transition straight from pending tenant confirmation to approved',
-            HttpStatus.CONFLICT,
-          );
-        }
         if (actorRole !== 'tenant' && actorRole !== 'landlord') {
           throw new HttpException(
             'Only the tenant on this request (or the landlord, force-confirming) can confirm it',
@@ -2979,20 +2995,17 @@ export class MaintenanceRequestsService {
       );
     }
 
-    // Landlord-filed MRs skip the NOT_APPROVED interstitial because there's
-    // no separate approval step — the landlord is the creator. Tenant-confirm
-    // auto-approves and (if an FM was picked at create time) fires the
-    // assignment notification right now.
-    const isLandlordFiled =
-      sr.creator_type === MaintenanceRequestCreatorTypeEnum.LANDLORD;
-    const newStatus = isLandlordFiled
-      ? MaintenanceRequestStatusEnum.APPROVED
-      : MaintenanceRequestStatusEnum.NOT_APPROVED;
+    // Reaching PENDING_TENANT_CONFIRMATION now always means the landlord has
+    // already approved (landlord-filed: approval is implicit in filing;
+    // FM-filed: the landlord approved + assigned first). So tenant-confirm
+    // always opens the work — APPROVED — and stamps approved_at, for both
+    // creator types.
+    const newStatus = MaintenanceRequestStatusEnum.APPROVED;
 
     await this.dataSource.transaction(async (manager) => {
       await manager.update(MaintenanceRequest, requestId, {
         status: newStatus,
-        ...(isLandlordFiled ? { approved_at: new Date() } : {}),
+        approved_at: new Date(),
       });
       await this.createStatusHistoryEntry(
         requestId,
@@ -3082,11 +3095,11 @@ export class MaintenanceRequestsService {
         );
       }
 
-      // Landlord-filed branch: if an FM was pre-assigned at creation, fan
-      // out the assignment ping now (the FM was kept silent during the
-      // tenant-confirmation gate to avoid pinging them about work that
-      // might get denied).
-      if (isLandlordFiled && updated.assigned_to && updated.facilityManager) {
+      // If an FM was assigned before this gate (landlord-filed: at creation;
+      // FM-filed: at the landlord's approve step), fan out the assignment ping
+      // now — the FM was kept silent during the tenant-confirmation gate to
+      // avoid pinging them about work that might get denied.
+      if (updated.assigned_to && updated.facilityManager) {
         const fmTm = updated.facilityManager;
         const fmName = this.formatTeamMemberLabel(fmTm);
         try {
@@ -3181,11 +3194,23 @@ export class MaintenanceRequestsService {
 
     const updated = await this.maintenanceRequestRepository.findOne({
       where: { id: requestId },
-      relations: ['property', 'common_area', 'tenant', 'tenant.user'],
+      relations: [
+        'property',
+        'common_area',
+        'tenant',
+        'tenant.user',
+        'facilityManager',
+        'facilityManager.account',
+        'facilityManager.account.user',
+      ],
     });
 
     if (updated) {
       try {
+        // Under the new gate order the tenant can deny AFTER the landlord has
+        // approved + assigned an FM, so a denial can now orphan an assigned FM.
+        // Carry the assignee so the listener can tell them the job is cancelled.
+        const assignedFm = updated.facilityManager ?? null;
         this.eventEmitter.emit('maintenance.tenant_denied', {
           request_id: updated.id,
           maintenance_request_id: updated.id,
@@ -3202,6 +3227,11 @@ export class MaintenanceRequestsService {
           creator_user_id: updated.creator_user_id,
           description: updated.description,
           denial_reason: trimmedReason,
+          assigned_to: updated.assigned_to,
+          assigned_fm_account_id: assignedFm?.account?.id ?? null,
+          assigned_fm_name: assignedFm
+            ? this.formatTeamMemberLabel(assignedFm)
+            : null,
           updated_at: new Date(),
         });
       } catch (error) {
@@ -3322,18 +3352,15 @@ export class MaintenanceRequestsService {
     const previousStatus = sr.status;
     const landlordUserId = await this.resolveActorUserId(landlordAccountId);
 
-    // Same auto-approve rule as confirmTenantMaintenanceRequest: landlord-filed
-    // MRs skip NOT_APPROVED entirely.
-    const isLandlordFiled =
-      sr.creator_type === MaintenanceRequestCreatorTypeEnum.LANDLORD;
-    const newStatus = isLandlordFiled
-      ? MaintenanceRequestStatusEnum.APPROVED
-      : MaintenanceRequestStatusEnum.NOT_APPROVED;
+    // Same rule as confirmTenantMaintenanceRequest: reaching
+    // PENDING_TENANT_CONFIRMATION always implies the landlord already approved,
+    // so confirming (here, on the tenant's behalf) always opens the work.
+    const newStatus = MaintenanceRequestStatusEnum.APPROVED;
 
     await this.dataSource.transaction(async (manager) => {
       await manager.update(MaintenanceRequest, requestId, {
         status: newStatus,
-        ...(isLandlordFiled ? { approved_at: new Date() } : {}),
+        approved_at: new Date(),
       });
       await this.createStatusHistoryEntry(
         requestId,
@@ -3387,7 +3414,7 @@ export class MaintenanceRequestsService {
         );
       }
 
-      if (isLandlordFiled && updated.assigned_to && updated.facilityManager) {
+      if (updated.assigned_to && updated.facilityManager) {
         const fmTm = updated.facilityManager;
         const fmName = this.formatTeamMemberLabel(fmTm);
         try {
@@ -3505,16 +3532,26 @@ export class MaintenanceRequestsService {
 
   /**
    * Landlord approves a maintenance request AND assigns an FM in a single
-   * transaction — the WhatsApp Approve flow couples the two because the
-   * FM "View all requests" surface hides NOT_APPROVED, so an assign
-   * without an approve would silently strand the request.
+   * transaction — the Approve flow couples the two because the FM "View all
+   * requests" surface keys off `assigned_to`, so an assign without an approve
+   * would silently strand the request.
    *
-   * Source status must be NOT_APPROVED (409 otherwise). Emits both
-   * `maintenance.updated` (status flip) and `maintenance.assigned`
-   * (assignee change → fans out fm_assignment_notification to the whole
-   * team). Sets `skip_approval_ping: true` on the updated event so the
-   * listener doesn't ALSO send fm_maintenance_request_approved to the
-   * assignee — the assignment notification already covers them.
+   * Source status must be NOT_APPROVED (409 otherwise). Two outcomes:
+   *   - Normal case (tenant-filed, or FM/landlord requests with no tenant to
+   *     confirm): flips to APPROVED, stamps approved_at, and emits
+   *     `maintenance.assigned` right away (fans out fm_assignment_notification).
+   *   - Gated case (FM-filed unit request WITH an active tenant, `gateOnTenant`):
+   *     flips to PENDING_TENANT_CONFIRMATION, leaves approved_at null, and emits
+   *     `maintenance.landlord_approved_pending_tenant` to prompt the tenant. The
+   *     assignment ping is DEFERRED to confirmTenantMaintenanceRequest so the FM
+   *     isn't pinged about work the tenant might still deny; approved_at stamps
+   *     and APPROVED is reached only on that confirm.
+   *
+   * Either way emits `maintenance.updated` and sets `skip_approval_ping: true`
+   * so the listener doesn't ALSO send fm_maintenance_request_approved to the
+   * assignee. On the gated path it additionally sets `skip_in_app_notification`
+   * so the specific "awaiting tenant confirmation" in-app row (written by the
+   * landlord_approved_pending_tenant handler) isn't duplicated by handleUpdate.
    */
   async approveAndAssignMaintenanceRequest(
     requestId: string,
@@ -3579,19 +3616,39 @@ export class MaintenanceRequestsService {
       : null;
     const landlordUserId = await this.resolveActorUserId(landlordAccountId);
 
+    // FM-filed unit requests with an active tenant get a tenant-confirmation
+    // gate AFTER the landlord approves: the landlord authorizes + assigns first,
+    // then the tenant confirms the issue is real, which is what finally opens
+    // the work (→ APPROVED). Tenant-filed and vacant/common-area FM requests
+    // have nothing left to confirm and approve straight to APPROVED.
+    const gateOnTenant =
+      sr.creator_type === MaintenanceRequestCreatorTypeEnum.FACILITY_MANAGER &&
+      !!sr.tenant_id &&
+      sr.scope === MaintenanceRequestScopeEnum.UNIT;
+    const targetStatus = gateOnTenant
+      ? MaintenanceRequestStatusEnum.PENDING_TENANT_CONFIRMATION
+      : MaintenanceRequestStatusEnum.APPROVED;
+    const actionLabel = `via ${source === 'whatsapp' ? 'WhatsApp' : 'dashboard'}`;
+
     await this.dataSource.transaction(async (manager) => {
       await manager.update(MaintenanceRequest, requestId, {
-        status: MaintenanceRequestStatusEnum.APPROVED,
+        status: targetStatus,
         assigned_to: teamMemberId as any,
-        approved_at: new Date(),
+        // approved_at marks when work actually opens (→ APPROVED). On the gated
+        // path it stays null until the tenant confirms, preserving the
+        // invariant approved_at set ⟺ reached APPROVED (its only consumer is
+        // the "actionable since" sort).
+        ...(gateOnTenant ? {} : { approved_at: new Date() }),
       });
       await this.createStatusHistoryEntry(
         requestId,
         previousStatus,
-        MaintenanceRequestStatusEnum.APPROVED,
+        targetStatus,
         landlordUserId,
         'landlord',
-        `Landlord approved & assigned to ${fmName} via ${source === 'whatsapp' ? 'WhatsApp' : 'dashboard'}`,
+        gateOnTenant
+          ? `Landlord approved & assigned to ${fmName} ${actionLabel}; awaiting tenant confirmation`
+          : `Landlord approved & assigned to ${fmName} ${actionLabel}`,
         undefined,
         manager,
       );
@@ -3602,6 +3659,10 @@ export class MaintenanceRequestsService {
       relations: [
         'property',
         'common_area',
+        'tenant',
+        'tenant.user',
+        'creator',
+        'creator.accounts',
         'facilityManager',
         'facilityManager.account',
         'facilityManager.account.user',
@@ -3628,8 +3689,13 @@ export class MaintenanceRequestsService {
           updated_at: new Date(),
           actor: { id: landlordUserId, role: 'landlord' },
           // Suppress the FM "request approved" template — the assignment
-          // fan-out below already covers the assignee.
+          // fan-out (or, on the gated path, the deferred assign on tenant
+          // confirm) already covers the assignee.
           skip_approval_ping: true,
+          // On the gated path the specific in-app row is written by the
+          // landlord_approved_pending_tenant handler; keep handleUpdate from
+          // also writing a generic one.
+          ...(gateOnTenant ? { skip_in_app_notification: true } : {}),
         });
       } catch (error) {
         this.logger.error(
@@ -3638,27 +3704,64 @@ export class MaintenanceRequestsService {
         );
       }
 
-      try {
-        this.eventEmitter.emit('maintenance.assigned', {
-          maintenance_request_id: requestId,
-          request_id: updated.request_id,
-          previous_assignee: previousAssignee,
-          previous_assignee_name:
-            this.formatTeamMemberLabel(previousAssigneeTm),
-          new_assignee: teamMemberId,
-          new_assignee_name: fmName,
-          landlord_id: landlordAccountId,
-          property_id: updated.property_id,
-          common_area_id: updated.common_area_id,
-          description: updated.description,
-          tenant_id: updated.tenant_id,
-          created_at: new Date(),
-        });
-      } catch (error) {
-        this.logger.error(
-          'Failed to emit maintenance.assigned after approve+assign:',
-          error,
-        );
+      if (gateOnTenant) {
+        // Landlord approved; now ask the tenant to confirm. Mirror the payload
+        // the (renamed) FM-filed prompt handler consumes — tenant WhatsApp +
+        // landlord in-app "awaiting <tenant>'s confirmation" row. The FM stays
+        // silent until the tenant confirms (assignment ping deferred to
+        // confirmTenantMaintenanceRequest, mirroring the landlord-filed gate).
+        try {
+          const tenantUser = updated.tenant?.user ?? null;
+          const filerName =
+            this.resolveCreatorDisplayName(
+              updated.creator,
+              updated.creator_type,
+            ) ?? fmName;
+          this.eventEmitter.emit('maintenance.landlord_approved_pending_tenant', {
+            user_id: landlordUserId,
+            maintenance_request_id: updated.id,
+            request_id: updated.request_id,
+            landlord_id: landlordAccountId,
+            tenant_id: updated.tenant_id,
+            tenant_name: updated.tenant_name,
+            tenant_phone_number: tenantUser?.phone_number ?? null,
+            property_id: updated.property_id,
+            property_name: updated.property_name,
+            common_area_name: updated.common_area?.name ?? null,
+            creator_type: updated.creator_type,
+            creator_name: filerName,
+            description: updated.description,
+            created_at: new Date(),
+          });
+        } catch (error) {
+          this.logger.error(
+            'Failed to emit maintenance.landlord_approved_pending_tenant:',
+            error,
+          );
+        }
+      } else {
+        try {
+          this.eventEmitter.emit('maintenance.assigned', {
+            maintenance_request_id: requestId,
+            request_id: updated.request_id,
+            previous_assignee: previousAssignee,
+            previous_assignee_name:
+              this.formatTeamMemberLabel(previousAssigneeTm),
+            new_assignee: teamMemberId,
+            new_assignee_name: fmName,
+            landlord_id: landlordAccountId,
+            property_id: updated.property_id,
+            common_area_id: updated.common_area_id,
+            description: updated.description,
+            tenant_id: updated.tenant_id,
+            created_at: new Date(),
+          });
+        } catch (error) {
+          this.logger.error(
+            'Failed to emit maintenance.assigned after approve+assign:',
+            error,
+          );
+        }
       }
     }
 

@@ -48,7 +48,23 @@ import { PropertyHistory } from '../property-history/entities/property-history.e
 import { NotificationService } from '../notifications/notification.service';
 import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
-import { PaystackService } from '../payments/paystack.service';
+import {
+  ACTIVE_PAYMENT_GATEWAY,
+  DuplicateReferenceError,
+  NormalizedPaymentEvent,
+  PaymentGateway,
+} from '../payments/gateway/payment-gateway.interface';
+import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
+import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
+import {
+  attachIntentCheckout,
+  discardPaymentIntent,
+  recordPaymentIntent,
+} from '../payments/gateway/payment-intent.helper';
+import {
+  PaymentIntent,
+  PaymentIntentLane,
+} from '../payments/entities/payment-intent.entity';
 import { TenanciesService } from '../tenancies/tenancies.service';
 import { RenewalChargeService } from '../renewal-letters/renewal-charge.service';
 import { TenantBalancesService } from '../tenant-balances/tenant-balances.service';
@@ -62,9 +78,16 @@ import { NotificationRecipientsService } from 'src/common/notify/notification-re
 import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 export interface PlanPaymentInitializationResult {
-  accessCode: string;
   reference: string;
-  authorizationUrl: string;
+  /** Hosted-checkout URL — the canonical field the frontend redirects to. */
+  checkoutUrl: string;
+  /**
+   * @deprecated Legacy popup fields, populated only while the active gateway
+   * is Paystack. Dropped in the legacy-retire pass.
+   */
+  accessCode?: string;
+  /** @deprecated Alias of checkoutUrl. */
+  authorizationUrl?: string;
 }
 
 @Injectable()
@@ -90,10 +113,14 @@ export class PaymentPlansService {
     private readonly propertyRepository: Repository<Property>,
     @InjectRepository(PropertyHistory)
     private readonly propertyHistoryRepository: Repository<PropertyHistory>,
+    @InjectRepository(PaymentIntent)
+    private readonly paymentIntentRepository: Repository<PaymentIntent>,
     private readonly dataSource: DataSource,
     private readonly notificationService: NotificationService,
     private readonly eventsGateway: EventsGateway,
-    private readonly paystackService: PaystackService,
+    @Inject(ACTIVE_PAYMENT_GATEWAY)
+    private readonly gateway: PaymentGateway,
+    private readonly gatewayRegistry: GatewayRegistryService,
     private readonly tenanciesService: TenanciesService,
     private readonly renewalChargeService: RenewalChargeService,
     private readonly tenantBalancesService: TenantBalancesService,
@@ -1453,7 +1480,10 @@ export class PaymentPlansService {
             ? Number(installment.amount_paid)
             : null,
         paymentMethod: installment.payment_method,
-        paystackReference: installment.paystack_reference,
+        // paymentReference is the canonical key; paystackReference is a
+        // deprecated alias kept until the legacy-retire pass (frontend reads it).
+        paymentReference: installment.gateway_reference,
+        paystackReference: installment.gateway_reference,
         manualPaymentNote: installment.manual_payment_note,
         receiptToken: installment.receipt_token,
         receiptNumber: installment.receipt_number,
@@ -1522,15 +1552,33 @@ export class PaymentPlansService {
   }> {
     const installment = await this.getInstallment(installmentId);
 
-    const paystackResponse =
-      await this.paystackService.verifyTransaction(reference);
-    const data = paystackResponse.data;
+    const verification =
+      await this.gatewayRegistry.verifyByReference(reference);
 
-    if (data.status !== 'success') {
+    if (verification.status !== 'success') {
+      if (verification.moneyReceived) {
+        // Monnify PARTIALLY_PAID/OVERPAID — real money at the gateway that we
+        // deliberately do not credit. Durable ops artifact, not just a log.
+        await recordAmountMismatchArtifact(
+          this.propertyHistoryRepository,
+          this.logger,
+          {
+            reference: verification.reference,
+            amountNaira: verification.amountNaira,
+            rawStatus: verification.rawStatus,
+            gateway: verification.gateway,
+            metadata: verification.metadata,
+            lane: 'plan installment verify',
+            relatedEntityId: installmentId,
+            relatedEntityType: 'payment_plan_installment',
+            expectedNaira: Number(installment.amount),
+          },
+        );
+      }
       return {
-        status: data.status === 'failed' ? 'failed' : 'pending',
-        reference: data.reference,
-        amount: data.amount / 100,
+        status: verification.status,
+        reference: verification.reference,
+        amount: verification.amountNaira,
         paidAt: null,
         receiptToken: null,
       };
@@ -1540,8 +1588,7 @@ export class PaymentPlansService {
     if (installment.status !== InstallmentStatus.PAID) {
       try {
         await this.markInstallmentPaidFromWebhook({
-          reference: data.reference,
-          amount: data.amount,
+          ...verification,
           metadata: {
             payment_plan_installment_id: installmentId,
           },
@@ -1557,7 +1604,7 @@ export class PaymentPlansService {
     const fresh = await this.getInstallment(installmentId);
     return {
       status: 'success',
-      reference: data.reference,
+      reference: verification.reference,
       amount: Number(fresh.amount_paid ?? fresh.amount),
       paidAt: fresh.paid_at
         ? fresh.paid_at instanceof Date
@@ -1626,7 +1673,7 @@ export class PaymentPlansService {
           ? installment.paid_at.toISOString()
           : installment.paid_at
         : null,
-      paymentReference: installment.paystack_reference ?? null,
+      paymentReference: installment.gateway_reference ?? null,
       installment: {
         sequence: installment.sequence,
         amount: Number(installment.amount),
@@ -1706,7 +1753,7 @@ export class PaymentPlansService {
           ? installment.paid_at.toISOString()
           : installment.paid_at
         : null,
-      paymentReference: installment.paystack_reference ?? null,
+      paymentReference: installment.gateway_reference ?? null,
       paymentMethod: installment.payment_method,
       manualPaymentNote: installment.manual_payment_note,
       amount: Number(installment.amount_paid ?? installment.amount),
@@ -2138,30 +2185,76 @@ export class PaymentPlansService {
     const amount = Number(installment.amount);
     const reference = `PLAN_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
-    const paystackResponse = await this.paystackService.initializeTransaction({
-      email,
-      amount: Math.round(amount * 100),
+    // Built once and shared with the intent: the sweep falls back to the stored
+    // copy when a gateway echoes metadata back empty, so they must not drift.
+    const gatewayMetadata = {
+      payment_plan_installment_id: installment.id,
+      payment_plan_id: installment.plan_id,
+      property_id: installment.plan.property_id,
+      tenant_id: installment.plan.tenant_id,
+      charge_name: installment.plan.charge_name,
+      installment_sequence: installment.sequence,
+    };
+
+    // Durable record BEFORE the gateway call — without it, a payment whose
+    // webhook and browser-return both fail is never reconciled.
+    const intent = await recordPaymentIntent(this.paymentIntentRepository, {
       reference,
-      callback_url: `${process.env.FRONTEND_URL}/payment-plan/installment/${installment.id}`,
-      metadata: {
-        payment_plan_installment_id: installment.id,
-        payment_plan_id: installment.plan_id,
-        property_id: installment.plan.property_id,
-        tenant_id: installment.plan.tenant_id,
-        charge_name: installment.plan.charge_name,
-        installment_sequence: installment.sequence,
-      },
-      channels: ['card', 'bank_transfer'],
+      gateway: this.gateway.name,
+      lane: PaymentIntentLane.PAYMENT_PLAN_INSTALLMENT,
+      amountNaira: amount,
+      relatedEntityId: installment.id,
+      metadata: gatewayMetadata,
     });
 
+    let initResult: Awaited<ReturnType<PaymentGateway['initializePayment']>>;
+    try {
+      initResult = await this.gateway.initializePayment({
+        amountNaira: amount,
+        email,
+        reference,
+        // Redirect back to the page the tenant paid FROM — it runs the
+        // return-verify hook (the /success page is paid-only and 404s until
+        // the verify lands).
+        callbackUrl: `${process.env.FRONTEND_URL}/pay-installment/${installment.id}`,
+        metadata: gatewayMetadata,
+        channels: ['card', 'bank_transfer'],
+      });
+    } catch (error) {
+      // Duplicate = the reference already exists AT THE GATEWAY, so verifying
+      // it would resolve a DIFFERENT transaction and the sweep could credit
+      // that money here. Other failures may have left a live transaction —
+      // keep the intent so the sweep can find it.
+      if (error instanceof DuplicateReferenceError) {
+        await discardPaymentIntent(
+          this.paymentIntentRepository,
+          this.logger,
+          intent.id,
+        );
+      }
+      throw error;
+    }
+
     this.logger.log(
-      `Paystack initialized for installment ${installment.id}, reference: ${reference}`,
+      `Gateway (${initResult.gateway}) initialized for installment ${installment.id}, reference: ${reference}`,
+    );
+
+    await attachIntentCheckout(
+      this.paymentIntentRepository,
+      this.logger,
+      intent.id,
+      initResult,
     );
 
     return {
-      accessCode: paystackResponse.data.access_code,
-      reference,
-      authorizationUrl: paystackResponse.data.authorization_url,
+      reference: initResult.reference,
+      checkoutUrl: initResult.checkoutUrl,
+      ...(initResult.gateway === 'paystack'
+        ? {
+            accessCode: initResult.gatewayTransactionId ?? undefined,
+            authorizationUrl: initResult.checkoutUrl,
+          }
+        : {}),
     };
   }
 
@@ -2256,29 +2349,74 @@ export class PaymentPlansService {
     }
 
     const reference = `PLANPAYOFF_${Date.now()}_${uuidv4().substring(0, 8)}`;
-    const paystackResponse = await this.paystackService.initializeTransaction({
-      email,
-      amount: Math.round(remaining * 100),
+
+    // Built once and shared with the intent: the sweep falls back to the stored
+    // copy when a gateway echoes metadata back empty, so they must not drift.
+    const gatewayMetadata = {
+      payment_plan_payoff_id: plan.id,
+      payment_plan_id: plan.id,
+      property_id: plan.property_id,
+      tenant_id: plan.tenant_id,
+      charge_name: plan.charge_name,
+    };
+
+    // Durable record BEFORE the gateway call — without it, a payment whose
+    // webhook and browser-return both fail is never reconciled. A payoff is the
+    // largest single charge in this lane, so it is the worst one to lose.
+    const intent = await recordPaymentIntent(this.paymentIntentRepository, {
       reference,
-      callback_url: `${process.env.FRONTEND_URL}/payment-plan/${plan.id}/payoff`,
-      metadata: {
-        payment_plan_payoff_id: plan.id,
-        payment_plan_id: plan.id,
-        property_id: plan.property_id,
-        tenant_id: plan.tenant_id,
-        charge_name: plan.charge_name,
-      },
-      channels: ['card', 'bank_transfer'],
+      gateway: this.gateway.name,
+      lane: PaymentIntentLane.PAYMENT_PLAN_PAYOFF,
+      amountNaira: remaining,
+      relatedEntityId: plan.id,
+      metadata: gatewayMetadata,
     });
 
+    let initResult: Awaited<ReturnType<PaymentGateway['initializePayment']>>;
+    try {
+      initResult = await this.gateway.initializePayment({
+        amountNaira: remaining,
+        email,
+        reference,
+        callbackUrl: `${process.env.FRONTEND_URL}/payment-plan/${plan.id}/payoff`,
+        metadata: gatewayMetadata,
+        channels: ['card', 'bank_transfer'],
+      });
+    } catch (error) {
+      // Duplicate = the reference already exists AT THE GATEWAY, so verifying
+      // it would resolve a DIFFERENT transaction and the sweep could credit
+      // that money here. Other failures may have left a live transaction —
+      // keep the intent so the sweep can find it.
+      if (error instanceof DuplicateReferenceError) {
+        await discardPaymentIntent(
+          this.paymentIntentRepository,
+          this.logger,
+          intent.id,
+        );
+      }
+      throw error;
+    }
+
     this.logger.log(
-      `Paystack initialized for plan payoff ${plan.id}, reference: ${reference}`,
+      `Gateway (${initResult.gateway}) initialized for plan payoff ${plan.id}, reference: ${reference}`,
+    );
+
+    await attachIntentCheckout(
+      this.paymentIntentRepository,
+      this.logger,
+      intent.id,
+      initResult,
     );
 
     return {
-      accessCode: paystackResponse.data.access_code,
-      reference,
-      authorizationUrl: paystackResponse.data.authorization_url,
+      reference: initResult.reference,
+      checkoutUrl: initResult.checkoutUrl,
+      ...(initResult.gateway === 'paystack'
+        ? {
+            accessCode: initResult.gatewayTransactionId ?? undefined,
+            authorizationUrl: initResult.checkoutUrl,
+          }
+        : {}),
     };
   }
 
@@ -2294,25 +2432,38 @@ export class PaymentPlansService {
     amount: number;
     planStatus: PaymentPlanStatus;
   }> {
-    const paystackResponse =
-      await this.paystackService.verifyTransaction(reference);
-    const data = paystackResponse.data;
+    const verification =
+      await this.gatewayRegistry.verifyByReference(reference);
 
-    if (data.status !== 'success') {
+    if (verification.status !== 'success') {
+      if (verification.moneyReceived) {
+        await recordAmountMismatchArtifact(
+          this.propertyHistoryRepository,
+          this.logger,
+          {
+            reference: verification.reference,
+            amountNaira: verification.amountNaira,
+            rawStatus: verification.rawStatus,
+            gateway: verification.gateway,
+            metadata: verification.metadata,
+            lane: 'plan payoff verify',
+            relatedEntityId: planId,
+            relatedEntityType: 'payment_plan',
+          },
+        );
+      }
       const plan = await this.getPlan(planId);
       return {
-        status: data.status === 'failed' ? 'failed' : 'pending',
-        reference: data.reference,
-        amount: data.amount / 100,
+        status: verification.status,
+        reference: verification.reference,
+        amount: verification.amountNaira,
         planStatus: plan.status,
       };
     }
 
     try {
       await this.markPlanPaidOffFromWebhook({
-        reference: data.reference,
-        amount: data.amount,
-        channel: data.channel,
+        ...verification,
         metadata: { payment_plan_payoff_id: planId },
       });
     } catch (err) {
@@ -2325,8 +2476,8 @@ export class PaymentPlansService {
     const fresh = await this.getPlan(planId);
     return {
       status: 'success',
-      reference: data.reference,
-      amount: data.amount / 100,
+      reference: verification.reference,
+      amount: verification.amountNaira,
       planStatus: fresh.status,
     };
   }
@@ -2335,16 +2486,13 @@ export class PaymentPlansService {
    * Webhook/verify entry for a plan payoff. Idempotent: a plan that is no
    * longer ACTIVE (already paid off / completed / cancelled) is a no-op.
    */
-  async markPlanPaidOffFromWebhook(data: {
-    reference: string;
-    amount: number;
-    channel?: string;
-    metadata?: { payment_plan_payoff_id?: string };
-  }): Promise<void> {
-    const planId = data.metadata?.payment_plan_payoff_id;
+  async markPlanPaidOffFromWebhook(
+    event: NormalizedPaymentEvent,
+  ): Promise<void> {
+    const planId = event.metadata?.payment_plan_payoff_id;
     if (!planId) {
       this.logger.error('Plan-payoff webhook missing payment_plan_payoff_id', {
-        reference: data.reference,
+        reference: event.reference,
       });
       throw new Error('Missing payment_plan_payoff_id in metadata');
     }
@@ -2354,25 +2502,25 @@ export class PaymentPlansService {
       // If this reference is the one that settled the plan (webhook +
       // redirect-verify race), only one charge exists — quiet no-op.
       const isKnownReference = (plan.installments ?? []).some(
-        (i) => i.paystack_reference === data.reference,
+        (i) => i.gateway_reference === event.reference,
       );
       if (isKnownReference) {
         this.logger.log(
-          `Plan ${planId} already settled by reference ${data.reference} — same charge confirmed twice, ignoring`,
+          `Plan ${planId} already settled by reference ${event.reference} — same charge confirmed twice, ignoring`,
         );
         return;
       }
       // Unknown reference on a non-active plan = a second real charge landed
       // (or money arrived for a cancelled plan). Flag it — don't credit.
       this.logger.warn(
-        `Paystack payoff payment for non-active plan ${planId} (status ${plan.status}, ref: ${data.reference})`,
+        `Online payoff payment for non-active plan ${planId} (status ${plan.status}, ref: ${event.reference})`,
       );
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
           property_id: plan.property_id,
           tenant_id: plan.tenant_id,
           event_type: 'payment_plan_duplicate_payment',
-          event_description: `Duplicate Paystack payoff payment received for plan "${plan.charge_name}" (status ${plan.status}) — reference ${data.reference} — refund investigation required`,
+          event_description: `Duplicate online payoff payment received for plan "${plan.charge_name}" (status ${plan.status}) — reference ${event.reference} — refund investigation required`,
           related_entity_id: plan.id,
           related_entity_type: 'payment_plan',
         }),
@@ -2381,10 +2529,11 @@ export class PaymentPlansService {
     }
 
     await this.payOffPlan(plan, {
-      paystackRef: data.reference,
-      channel: data.channel,
-      method: InstallmentPaymentMethod.PAYSTACK,
-      chargedAmount: data.amount / 100,
+      gatewayRef: event.reference,
+      gateway: event.gateway,
+      channel: event.channel || undefined,
+      method: InstallmentPaymentMethod.ONLINE,
+      chargedAmount: event.amountNaira,
     });
   }
 
@@ -2404,7 +2553,9 @@ export class PaymentPlansService {
   private async payOffPlan(
     plan: PaymentPlan,
     args: {
-      paystackRef: string;
+      gatewayRef: string;
+      /** Adapter name that took the money (online payoffs). */
+      gateway?: string;
       channel?: string;
       method: InstallmentPaymentMethod;
       chargedAmount: number;
@@ -2421,7 +2572,8 @@ export class PaymentPlansService {
         amount: Number(inst.amount),
         method: args.method,
         channel: args.channel,
-        paystackRef: args.paystackRef,
+        gatewayRef: args.gatewayRef,
+        gateway: args.gateway,
         suppressNotifications: true,
       });
     }
@@ -2434,7 +2586,7 @@ export class PaymentPlansService {
       .filter(
         (i) =>
           i.status === InstallmentStatus.PAID &&
-          i.paystack_reference === args.paystackRef,
+          i.gateway_reference === args.gatewayRef,
       )
       .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
 
@@ -2443,7 +2595,7 @@ export class PaymentPlansService {
     // for ops rather than auto-crediting (keeps the payoff idempotent).
     if (Math.abs(args.chargedAmount - appliedByPayoff) > 1) {
       this.logger.warn(
-        `Plan payoff ${args.paystackRef} on plan ${plan.id}: charged ₦${args.chargedAmount} but applied ₦${appliedByPayoff}.`,
+        `Plan payoff ${args.gatewayRef} on plan ${plan.id}: charged ₦${args.chargedAmount} but applied ₦${appliedByPayoff}.`,
       );
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
@@ -2454,7 +2606,7 @@ export class PaymentPlansService {
           related_entity_id: plan.id,
           related_entity_type: 'payment_plan',
           metadata: {
-            reference: args.paystackRef,
+            reference: args.gatewayRef,
             charged: args.chargedAmount,
             applied: appliedByPayoff,
           },
@@ -2553,16 +2705,13 @@ export class PaymentPlansService {
   // Mark an installment paid — from webhook or manual
   // ───────────────────────────────────────────────────────────────────────
 
-  async markInstallmentPaidFromWebhook(data: {
-    reference: string;
-    amount: number;
-    channel?: string;
-    metadata?: { payment_plan_installment_id?: string };
-  }): Promise<void> {
-    const installmentId = data.metadata?.payment_plan_installment_id;
+  async markInstallmentPaidFromWebhook(
+    event: NormalizedPaymentEvent,
+  ): Promise<void> {
+    const installmentId = event.metadata?.payment_plan_installment_id;
     if (!installmentId) {
       this.logger.error('Webhook missing payment_plan_installment_id', {
-        reference: data.reference,
+        reference: event.reference,
       });
       throw new Error('Missing payment_plan_installment_id in metadata');
     }
@@ -2574,21 +2723,21 @@ export class PaymentPlansService {
       // Same reference = the charge that paid this installment being confirmed
       // again (webhook + redirect-verify race). Only one charge exists, so
       // there is nothing to refund — don't raise an alarm on the timeline.
-      if (installment.paystack_reference === data.reference) {
+      if (installment.gateway_reference === event.reference) {
         this.logger.log(
-          `Installment ${installmentId} already paid by reference ${data.reference} — same charge confirmed twice, ignoring`,
+          `Installment ${installmentId} already paid by reference ${event.reference} — same charge confirmed twice, ignoring`,
         );
         return;
       }
       this.logger.warn(
-        `Duplicate Paystack payment for already-paid installment ${installmentId} (ref: ${data.reference})`,
+        `Duplicate online payment for already-paid installment ${installmentId} (ref: ${event.reference})`,
       );
       await this.propertyHistoryRepository.save(
         this.propertyHistoryRepository.create({
           property_id: installment.plan.property_id,
           tenant_id: installment.plan.tenant_id,
           event_type: 'payment_plan_duplicate_payment',
-          event_description: `Duplicate Paystack payment received for installment ${installment.sequence}/${installment.plan.installments?.length ?? '?'} — reference ${data.reference} — refund investigation required`,
+          event_description: `Duplicate online payment received for installment ${installment.sequence}/${installment.plan.installments?.length ?? '?'} — reference ${event.reference} — refund investigation required`,
           related_entity_id: installment.id,
           related_entity_type: 'payment_plan_installment',
         }),
@@ -2596,12 +2745,40 @@ export class PaymentPlansService {
       return;
     }
 
-    const amountInNaira = data.amount / 100;
+    // Amount sanity guard (100x unit-bug detector): the charge was
+    // initialized for exactly the installment amount.
+    const expectedNaira = Number(installment.amount);
+    if (Math.abs(event.amountNaira - expectedNaira) > 1) {
+      this.logger.warn(
+        `Installment payment ${event.reference}: gateway reports ₦${event.amountNaira.toLocaleString()} but installment ${installmentId} expects ₦${expectedNaira.toLocaleString()}`,
+      );
+      if (event.amountNaira + 1 < expectedNaira) {
+        // Underpaid — never grant full credit; quarantine for ops.
+        await this.propertyHistoryRepository.save(
+          this.propertyHistoryRepository.create({
+            property_id: installment.plan.property_id,
+            tenant_id: installment.plan.tenant_id,
+            event_type: 'payment_plan_amount_mismatch',
+            event_description: `Payment of ₦${event.amountNaira.toLocaleString()} (ref ${event.reference}) is LESS than installment ${installment.sequence}'s ₦${expectedNaira.toLocaleString()} — not applied; verify on the gateway dashboard and reconcile manually.`,
+            related_entity_id: installment.id,
+            related_entity_type: 'payment_plan_installment',
+            metadata: {
+              reference: event.reference,
+              received: event.amountNaira,
+              expected: expectedNaira,
+            },
+          }),
+        );
+        return;
+      }
+    }
+
     await this.markInstallmentPaid(installment, {
-      paystackRef: data.reference,
-      amount: amountInNaira,
-      method: InstallmentPaymentMethod.PAYSTACK,
-      channel: data.channel,
+      gatewayRef: event.reference,
+      gateway: event.gateway,
+      amount: expectedNaira,
+      method: InstallmentPaymentMethod.ONLINE,
+      channel: event.channel || undefined,
     });
   }
 
@@ -2650,7 +2827,9 @@ export class PaymentPlansService {
       amount: number;
       method: InstallmentPaymentMethod;
       channel?: string;
-      paystackRef?: string;
+      gatewayRef?: string;
+      /** Adapter name that took the money (online payments only). */
+      gateway?: string;
       paidAt?: Date;
       note?: string;
       markedByUserId?: string;
@@ -2706,12 +2885,14 @@ export class PaymentPlansService {
           status: InstallmentStatus.PAID,
           paid_at: paidAt,
           amount_paid: args.amount,
-          // For Paystack payments, persist the actual channel
+          // For online payments, persist the actual channel
           // (card / bank_transfer / ussd / ...) so receipts can show it.
           // For manual payments, fall through to the category enum.
           payment_method: (args.channel ??
             args.method) as InstallmentPaymentMethod,
-          paystack_reference: args.paystackRef ?? null,
+          gateway_reference: args.gatewayRef ?? null,
+          // Which gateway took the money; null for manual payments.
+          gateway: args.gatewayRef ? (args.gateway ?? 'paystack') : null,
           manual_payment_note: args.note ?? null,
           marked_paid_by_user_id: args.markedByUserId ?? null,
           receipt_token: receiptToken,
@@ -2811,7 +2992,7 @@ export class PaymentPlansService {
         });
         if (invoice && invoice.payment_status !== RenewalPaymentStatus.PAID) {
           const ref =
-            args.paystackRef ?? `PLAN_MANUAL_${installment.id}_${Date.now()}`;
+            args.gatewayRef ?? `PLAN_MANUAL_${installment.id}_${Date.now()}`;
 
           // Don't ripple up to a superseded invoice: the landlord revised the
           // letter, the new invoice carries the canonical terms, and writing
@@ -2910,10 +3091,14 @@ export class PaymentPlansService {
     //   for a bulk plan-payoff (suppressNotifications): payOffPlan emits one
     //   consolidated "paid off" event instead of one per installment.
     if (!args.suppressNotifications) {
+      // Channel-first (card / bank_transfer / ussd) — the persisted event
+      // description should show HOW the tenant paid, not which gateway.
       const methodLabel =
-        args.method === InstallmentPaymentMethod.PAYSTACK
-          ? 'paystack'
-          : args.method;
+        args.channel ??
+        (args.method === InstallmentPaymentMethod.PAYSTACK ||
+        args.method === InstallmentPaymentMethod.ONLINE
+          ? 'online'
+          : args.method);
       const totalInstallments = plan.installments?.length;
       const seqLabel = totalInstallments
         ? `${installment.sequence}/${totalInstallments}`

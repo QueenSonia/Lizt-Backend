@@ -27,7 +27,9 @@ export class PaystackLogger {
 
     // Configure daily rotate file transport
     const dailyRotateTransport = new DailyRotateFile({
-      filename: path.join(logsDir, 'paystack-payments-%DATE%.log'),
+      // Gateway-neutral name: this file records Monnify traffic too since the
+      // gateway abstraction landed. (Class rename rides the legacy-retire PR.)
+      filename: path.join(logsDir, 'payments-%DATE%.log'),
       datePattern: 'YYYY-MM-DD',
       maxSize: '20m',
       maxFiles: '90d',

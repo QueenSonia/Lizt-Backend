@@ -1549,6 +1549,8 @@ export class PaymentPlansService {
     amount: number;
     paidAt: string | null;
     receiptToken: string | null;
+    /** See PaymentVerificationResult.moneyReceived — abandoned vs. in-flight. */
+    moneyReceived?: boolean;
   }> {
     const installment = await this.getInstallment(installmentId);
 
@@ -1581,6 +1583,7 @@ export class PaymentPlansService {
         amount: verification.amountNaira,
         paidAt: null,
         receiptToken: null,
+        moneyReceived: verification.moneyReceived,
       };
     }
 
@@ -1606,6 +1609,7 @@ export class PaymentPlansService {
       status: 'success',
       reference: verification.reference,
       amount: Number(fresh.amount_paid ?? fresh.amount),
+      moneyReceived: true,
       paidAt: fresh.paid_at
         ? fresh.paid_at instanceof Date
           ? fresh.paid_at.toISOString()
@@ -2431,6 +2435,8 @@ export class PaymentPlansService {
     reference: string;
     amount: number;
     planStatus: PaymentPlanStatus;
+    /** See PaymentVerificationResult.moneyReceived — abandoned vs. in-flight. */
+    moneyReceived?: boolean;
   }> {
     const verification =
       await this.gatewayRegistry.verifyByReference(reference);
@@ -2458,6 +2464,7 @@ export class PaymentPlansService {
         reference: verification.reference,
         amount: verification.amountNaira,
         planStatus: plan.status,
+        moneyReceived: verification.moneyReceived,
       };
     }
 
@@ -2479,6 +2486,7 @@ export class PaymentPlansService {
       reference: verification.reference,
       amount: verification.amountNaira,
       planStatus: fresh.status,
+      moneyReceived: true,
     };
   }
 

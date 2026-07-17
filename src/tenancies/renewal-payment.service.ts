@@ -60,6 +60,14 @@ export interface PaymentVerificationResult {
   status: 'success' | 'failed' | 'pending';
   reference: string;
   amount: number;
+  /**
+   * Whether the gateway has actually received money for this reference.
+   * Distinguishes an abandoned/rejected checkout (pending, nothing received)
+   * from a transfer still settling or a mis-typed amount held at the gateway
+   * (pending, money in flight — Monnify PARTIALLY_PAID / OVERPAID). The tenant
+   * return flow keys off this to decide whether it may safely re-offer Pay.
+   */
+  moneyReceived?: boolean;
   paidAt?: string;
   channel?: string;
   receiptToken?: string;
@@ -408,6 +416,7 @@ export class RenewalPaymentService {
           status: 'success',
           reference: verification.reference,
           amount: verification.amountNaira,
+          moneyReceived: true,
           paidAt: verification.paidAt?.toISOString(),
           channel: verification.channel,
           receiptToken,
@@ -443,6 +452,7 @@ export class RenewalPaymentService {
         status: verification.status,
         reference: verification.reference,
         amount: verification.amountNaira,
+        moneyReceived: verification.moneyReceived,
       };
     } catch (error) {
       this.logger.error(

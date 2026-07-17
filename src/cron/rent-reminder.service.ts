@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, MoreThanOrEqual, Repository } from 'typeorm';
-import { v4 as uuidv4 } from 'uuid';
 import { Rent } from '../rents/entities/rent.entity';
 import {
   RentPaymentStatusEnum,
@@ -39,9 +38,7 @@ import {
   renewalInvoiceToFees,
   sumRecurring,
   sumAll,
-  Fee,
   carryForwardRentColumns,
-  CarriedRentColumns,
 } from '../common/billing/fees';
 import { computeRenewalFold } from '../common/billing/renewal-fold';
 import {
@@ -1201,7 +1198,7 @@ export class RentReminderService {
     });
     if (!propertyTenant) return null;
 
-    const { startDate } = this.getTargetPeriodRange(rent);
+    const { startDate } = this.renewalChargeService.getTargetPeriodRange(rent);
     return this.renewalInvoiceRepository.findOne({
       where: {
         property_tenant_id: propertyTenant.id,
@@ -1232,7 +1229,7 @@ export class RentReminderService {
       rent.payment_status === RentPaymentStatusEnum.OWING;
     const sourceRent = isCurrentOwingPeriod
       ? rent
-      : { ...rent, ...this.carryForwardFees(rent) };
+      : { ...rent, ...carryForwardRentColumns(rent) };
     const fees = rentToFees(sourceRent);
     const periodCharge = sumAll(fees);
     // Exclude plan-owned wallet OB so the reminder preview matches the actual
@@ -1246,7 +1243,8 @@ export class RentReminderService {
       sourceRent.rental_price ?? sourceRent.amount_paid ?? 0,
     );
     const serviceCharge = Number(sourceRent.service_charge ?? 0);
-    const { startDate, endDate } = this.getTargetPeriodRange(rent);
+    const { startDate, endDate } =
+      this.renewalChargeService.getTargetPeriodRange(rent);
     return { startDate, endDate, rentAmount, serviceCharge, totalAmount };
   }
 
@@ -1509,7 +1507,7 @@ export class RentReminderService {
     // until the tenant accepts, then invoice link until they pay. The
     // "standard rent reminder with no link" branch is gone: with the
     // letter+OTP feature, every reminder is renewal-related.
-    const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
+    const renewalInvoice = await this.renewalChargeService.findOrCreateRenewalInvoice(rent);
     if (!renewalInvoice) {
       // Fallback only when findOrCreate could not resolve the property
       // tenant — preserves a useful "your rent expires" ping rather than
@@ -1631,7 +1629,9 @@ export class RentReminderService {
     // accepted-invoice link) — no double-nudging for the same money. Withhold
     // without logging a "sent" event (like the credit gate below) so the
     // ordinary reminder resumes on the next tick if the plan is cancelled.
-    if (await this.isTargetPeriodCoveredByActiveTenancyPlan(renewalInvoice)) {
+    if (await this.renewalChargeService.isTargetPeriodCoveredByActiveTenancyPlan(
+        renewalInvoice,
+      )) {
       this.logger.log(
         `Suppressing renewal reminder for rent ${rent.id}: an active tenancy payment plan covers this period.`,
       );
@@ -1986,7 +1986,7 @@ export class RentReminderService {
       return;
     }
 
-    const renewalInvoice = await this.findOrCreateRenewalInvoice(rent);
+    const renewalInvoice = await this.renewalChargeService.findOrCreateRenewalInvoice(rent);
     if (!renewalInvoice) {
       this.logger.warn(
         `Skipping overdue reminder for rent ${rent.id}: no renewal invoice.`,
@@ -1997,7 +1997,9 @@ export class RentReminderService {
     // Plan-coverage gate: an active tenancy-scope plan covers this period via
     // its own installment reminders — suppress the ordinary overdue ping.
     // Withhold without logging so it resumes next tick if the plan is cancelled.
-    if (await this.isTargetPeriodCoveredByActiveTenancyPlan(renewalInvoice)) {
+    if (await this.renewalChargeService.isTargetPeriodCoveredByActiveTenancyPlan(
+        renewalInvoice,
+      )) {
       this.logger.log(
         `Suppressing overdue reminder for rent ${rent.id}: an active tenancy payment plan covers this period.`,
       );
@@ -2066,289 +2068,8 @@ export class RentReminderService {
   }
 
   // ---------------------------------------------------------------------------
-  // Renewal invoice helper
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Find or create an unpaid landlord renewal invoice for a rent.
-   *
-   * For an OWING rent (already auto-renewed):
-   *   invoice period = rent's own start/expiry dates (the current unpaid period)
-   * For a pre-expiry upcoming reminder:
-   *   invoice period = next period (expiry + 1 day … advance by frequency)
-   */
-  private async findOrCreateRenewalInvoice(
-    rent: Rent,
-  ): Promise<RenewalInvoice | null> {
-    try {
-      const propertyTenant = await this.propertyTenantRepository.findOne({
-        where: {
-          property_id: rent.property_id,
-          tenant_id: rent.tenant_id,
-          status: TenantStatusEnum.ACTIVE,
-        },
-      });
-
-      if (!propertyTenant) {
-        this.logger.warn(`No active PropertyTenant found for rent ${rent.id}`);
-        return null;
-      }
-
-      const landlordId = rent.property.owner_id;
-
-      // Billing v2: snapshot the Fee[] from the rent into `fee_breakdown`.
-      //
-      // Period-dependent rule: an OWING current-period invoice bills every
-      // fee on the rent (the tenant hasn't paid the original move-in yet).
-      // A next-period invoice strips one-time fees first — caution / legal /
-      // agency / one-time otherFees were collected at move-in and must not
-      // re-bill at every renewal. We mirror this through carryForwardFees
-      // so rentToFees and the legacy scalar columns below see the same
-      // adjusted values.
-      const isCurrentOwingPeriod =
-        rent.payment_status === RentPaymentStatusEnum.OWING;
-      const sourceRent = isCurrentOwingPeriod
-        ? rent
-        : { ...rent, ...this.carryForwardFees(rent) };
-
-      const fees: Fee[] = rentToFees(sourceRent);
-      const periodCharge = sumAll(fees);
-      const rentAmount = sourceRent.rental_price ?? sourceRent.amount_paid ?? 0;
-      const serviceCharge = sourceRent.service_charge || 0;
-      const legalFee = Number(sourceRent.legal_fee || 0);
-      const agencyFee = Number(sourceRent.agency_fee || 0);
-      const cautionDeposit = Number(sourceRent.security_deposit || 0);
-      const allOtherFees = sourceRent.other_fees ?? [];
-
-      const walletBalance = await this.tenantBalancesService.getBalance(
-        rent.tenant_id,
-        landlordId,
-      );
-      // Exclude wallet OB already owned by an active wallet-backed plan from the
-      // fold — it is collected by that plan's installments, so folding it onto
-      // the renewal invoice too would double-bill. Single source of truth:
-      // computeRenewalFold (same as TenanciesService.refreshInvoiceTotals).
-      const claimedByPlans =
-        await this.tenantBalancesService.sumActiveWalletBackedPlanClaims(
-          rent.tenant_id,
-          landlordId,
-        );
-      // For an OWING rent the invoice covers the rent's OWN period — and the
-      // wallet already carries that period's debit (AUTO_RENEWAL 'new_period'
-      // entries from the roll-forward, or INITIAL_BALANCE for a first
-      // tenancy). That debt is the same charge as the invoice's breakdown, so
-      // add it back before the fold — otherwise the invoice reads 2× the
-      // period the morning after every monthly auto-renewal. Mutually
-      // exclusive with the letter_accepted_charge add-back below:
-      // renewOneFromWalletCredit skips fresh AUTO_RENEWAL debits when the
-      // letter already holds an OB charge for the period.
-      const ownPeriodRentCharge = isCurrentOwingPeriod
-        ? await this.renewalChargeService.getRentOwnPeriodChargeAmount(rent.id)
-        : 0;
-      const { totalAmount, outstandingBalance } = computeRenewalFold({
-        periodCharge,
-        walletBalance,
-        claimedByPlans,
-        ownLetterCharge: ownPeriodRentCharge,
-      });
-      const paymentFrequency = rent.payment_frequency || 'monthly';
-
-      const { startDate, endDate } = this.getTargetPeriodRange(rent);
-
-      // Refresh existing unpaid/partial landlord/draft invoice if one exists.
-      // Exclude superseded rows — those are historical versions replaced
-      // by a newer letter and should never be touched by the refresh cron.
-      // We include token_type='draft' so the cron can promote a landlord-
-      // saved draft into a sent letter when reminders begin. PARTIAL is
-      // included so the partial-balance reminder fires on the same cadence
-      // as full reminders; the wallet-derived field refresh below is
-      // suppressed for partials because the tenant has already committed
-      // to the original total via real payments.
-      const existing = await this.renewalInvoiceRepository.findOne({
-        where: {
-          property_tenant_id: propertyTenant.id,
-          // Don't resurrect an invoice for a period that has already elapsed.
-          // Without this, a stale/orphaned unpaid invoice from a prior cycle
-          // (e.g. a duplicate same-period row left behind by another creation
-          // path) gets reminded on, pointing the tenant at the wrong period.
-          // We use >= the target start (not strict equality) so a landlord
-          // who deliberately set a gap before the next period — start_date
-          // later than expiry+1 — is still honored rather than triggering a
-          // duplicate auto-create. A DB-level unique index is NOT an option
-          // here: multiple live rows per period are allowed by design
-          // (tenant-token OB rows + landlord rows coexist) — see migration
-          // 1776000000000-DropRenewalInvoicesTenantPeriodUniqueIndex.
-          start_date: MoreThanOrEqual(startDate),
-          payment_status: In([
-            RenewalPaymentStatus.UNPAID,
-            RenewalPaymentStatus.PARTIAL,
-          ]),
-          token_type: In(['landlord', 'draft']),
-          superseded_by_id: IsNull(),
-        },
-        order: { created_at: 'DESC' },
-      });
-
-      if (existing) {
-        // Fee snapshot (rent_amount, service_charge, fee_breakdown, …) AND
-        // start/end dates are authoritative from the moment the landlord
-        // set them — either at auto-create below, via "Renew Tenancy", or
-        // via PATCH /renewal-invoice/by-id/:id ("Edit Next Period"). Don't
-        // re-snapshot from the Rent entity here: that path has no way to
-        // tell an intentional landlord override from stale invoice data,
-        // so it would silently clobber next-period edits. (Only the
-        // wallet-derived fields below should refresh on each cron tick.)
-        // Suppress the wallet-derived field refresh once the tenant has
-        // started paying (PARTIAL). amount_paid > 0 means real payments are
-        // recorded in payment_history; rewriting total_amount from the
-        // current wallet would zero out the bill mid-flow (the partial
-        // payments inflated the wallet) and lose the original commitment.
-        const hasPartialPayments =
-          Number(existing.amount_paid ?? 0) > 0 ||
-          existing.payment_status === RenewalPaymentStatus.PARTIAL;
-        if (!hasPartialPayments) {
-          const breakdown: Fee[] = Array.isArray(existing.fee_breakdown)
-            ? existing.fee_breakdown
-            : [];
-          const invoicePeriodCharge = sumAll(breakdown);
-          // The wallet may already carry a letter_accepted_charge posted for
-          // *this same invoice's period* (accept-after-expiry flow in
-          // RenewalChargeService, fired by processAcceptedLetterCharges
-          // once expiry is reached). That debit is already represented in the
-          // breakdown, so counting it again as wallet debt would inflate
-          // total_amount to 2× the period. Add the own-letter charge back
-          // before applying the formula so only *prior* arrears reduce credit.
-          // Mirrors TenanciesService.refreshInvoiceTotals.
-          const ownLetterCharge =
-            await this.renewalChargeService.getLetterAcceptedChargeAmount(
-              existing.id,
-            );
-          // Same-period rent-linked debits (AUTO_RENEWAL 'new_period' /
-          // INITIAL_BALANCE) are likewise already represented in the
-          // breakdown — add them back too, but only when this invoice
-          // actually covers the OWING rent's own period (the existing
-          // lookup is >= the target start, so it could match a later
-          // letter, in which case the rent debit IS prior arrears).
-          const coversRentOwnPeriod =
-            isCurrentOwingPeriod &&
-            new Date(existing.start_date).toISOString().split('T')[0] ===
-              new Date(rent.rent_start_date).toISOString().split('T')[0];
-          const ownPeriodCharge = coversRentOwnPeriod
-            ? await this.renewalChargeService.getRentOwnPeriodChargeAmount(
-                rent.id,
-              )
-            : 0;
-          const fold = computeRenewalFold({
-            periodCharge: invoicePeriodCharge,
-            walletBalance,
-            claimedByPlans,
-            ownLetterCharge: ownLetterCharge + ownPeriodCharge,
-          });
-          existing.wallet_balance = walletBalance;
-          existing.outstanding_balance = fold.outstandingBalance;
-          existing.total_amount = fold.totalAmount;
-        }
-
-        // Promote a landlord-saved draft to 'sent' on first reminder.
-        // The cron then dispatches the renewal-letter WhatsApp template
-        // (see sendRenewalReminder branching below). After this flip the
-        // tenant URL transitions from preview-only to Accept/Decline.
-        if (existing.letter_status === RenewalLetterStatus.DRAFT) {
-          existing.letter_status = RenewalLetterStatus.SENT;
-          existing.letter_sent_at = new Date();
-          existing.token_type = 'landlord';
-        }
-
-        await this.renewalInvoiceRepository.save(existing);
-        return existing;
-      }
-
-      // Auto-create. fee_breakdown is the authoritative source for the
-      // tenant-facing UI; legacy scalar columns are kept for back-compat
-      // with the existing renewal PDF + API consumers.
-      //
-      // letter_status='sent' on cron auto-create: every renewal now goes
-      // through the letter-then-invoice flow. letter_body_html stays NULL
-      // so the tenant page renders the standard fallback (page 1 + page 2
-      // boilerplate driven by the current structured fields). If the tenant
-      // never accepts, the tenancy simply floats (post-expiry reminders keep
-      // nudging) — we no longer auto-accept on their behalf at expiry.
-      const token = uuidv4();
-      const renewalInvoice = this.renewalInvoiceRepository.create({
-        token,
-        property_tenant_id: propertyTenant.id,
-        property_id: rent.property_id,
-        tenant_id: rent.tenant_id,
-        start_date: startDate,
-        end_date: endDate,
-        rent_amount: rentAmount,
-        service_charge: serviceCharge,
-        legal_fee: legalFee,
-        agency_fee: agencyFee,
-        caution_deposit: cautionDeposit,
-        other_charges: 0,
-        other_fees: allOtherFees,
-        fee_breakdown: fees,
-        outstanding_balance: outstandingBalance,
-        wallet_balance: walletBalance,
-        total_amount: totalAmount,
-        token_type: 'landlord',
-        payment_status: RenewalPaymentStatus.UNPAID,
-        payment_frequency: paymentFrequency,
-        letter_status: RenewalLetterStatus.SENT,
-        letter_sent_at: new Date(),
-      });
-
-      await this.renewalInvoiceRepository.save(renewalInvoice);
-      this.logger.log(
-        `Auto-created renewal invoice ${renewalInvoice.id} for rent ${rent.id}`,
-      );
-      return renewalInvoice;
-    } catch (error) {
-      this.logger.error(
-        `Failed to find/create renewal invoice for rent ${rent.id}`,
-        error,
-      );
-      return null;
-    }
-  }
-
-  /**
-   * Roll a rent's fee set forward into the next period:
-   *   - recurring fees survive unchanged (amount + flag)
-   *   - non-recurring fees (caution/legal/agency/one-time otherFees) zero out
-   *
-   * We can't just spread the old rent because the Rent entity uses flat
-   * columns; the helper produces a typed struct the caller can assign.
-   */
-  private carryForwardFees(rent: Rent): CarriedRentColumns {
-    return carryForwardRentColumns(rent);
-  }
-
-  // ---------------------------------------------------------------------------
   // Period range / paid-period guard
   // ---------------------------------------------------------------------------
-
-  /**
-   * Period the next renewal invoice for this rent should cover.
-   * OWING → current (unpaid) period; otherwise → next period after expiry.
-   * Mirrors the branch used by findOrCreateRenewalInvoice.
-   */
-  private getTargetPeriodRange(rent: Rent): {
-    startDate: Date;
-    endDate: Date;
-  } {
-    if (rent.payment_status === RentPaymentStatusEnum.OWING) {
-      return {
-        startDate: new Date(rent.rent_start_date),
-        endDate: new Date(rent.expiry_date),
-      };
-    }
-    const startDate = new Date(rent.expiry_date);
-    startDate.setDate(startDate.getDate() + 1);
-    const endDate = advanceRentPeriod(new Date(rent.expiry_date), rent);
-    return { startDate, endDate };
-  }
 
   /**
    * True if a PAID renewal invoice already exists for the period a
@@ -2365,7 +2086,7 @@ export class RentReminderService {
     });
     if (!propertyTenant) return false;
 
-    const { startDate } = this.getTargetPeriodRange(rent);
+    const { startDate } = this.renewalChargeService.getTargetPeriodRange(rent);
     const paid = await this.renewalInvoiceRepository.findOne({
       where: {
         property_tenant_id: propertyTenant.id,
@@ -2376,61 +2097,6 @@ export class RentReminderService {
     return !!paid;
   }
 
-  /**
-   * True when an ACTIVE, TENANCY-scope payment plan exists for this renewal
-   * invoice's tenancy. A tenancy plan is the agreed vehicle for the WHOLE
-   * period and emits its own installment reminders (checkInstallmentReminders),
-   * so the ordinary renewal/overdue reminders for the same period must be
-   * suppressed — otherwise the tenant gets two sets of reminders for the same
-   * money (the reported bug).
-   *
-   * Only scope=TENANCY suppresses. A CHARGE plan carves a single fee out of the
-   * invoice (the rest of the period is still owed and legitimately reminded,
-   * now at the reduced total); wallet-backed OB/ad-hoc plans settle prior
-   * arrears and are already netted out of total_amount by the renewal fold.
-   *
-   * Keyed on the DURABLE property_tenant_id, NOT renewal_invoice_id — that
-   * column is nullable and regenerated between plan creation and settlement
-   * (see payment-plan.entity.ts), so it can be stale/null for a live plan.
-   * Queried through installmentRepository's `plan` join to avoid injecting a
-   * second repo. Fail-open: a DB error sends the reminder rather than silencing
-   * a real debt, matching the wallet-claim helper's convention.
-   *
-   * Only suppress when the plan still FULLY COVERS the live invoice total
-   * (`plan.total_amount >= total - 1`, the same 1-naira rounding tolerance
-   * createPlan uses). If a landlord later revises the renewal letter into a
-   * LARGER invoice, the old plan is sized to the smaller amount and a tenancy
-   * plan's claim is never folded out of the new total — so without this guard
-   * the tenant would be silently under-reminded for the delta. Once the plan no
-   * longer covers the bill, the ordinary reminder is let through.
-   */
-  private async isTargetPeriodCoveredByActiveTenancyPlan(
-    renewalInvoice: RenewalInvoice,
-  ): Promise<boolean> {
-    try {
-      const count = await this.installmentRepository
-        .createQueryBuilder('inst')
-        .leftJoin('inst.plan', 'plan')
-        .where('plan.property_tenant_id = :pt', {
-          pt: renewalInvoice.property_tenant_id,
-        })
-        .andWhere('plan.scope = :scope', { scope: PaymentPlanScope.TENANCY })
-        .andWhere('plan.status = :status', {
-          status: PaymentPlanStatus.ACTIVE,
-        })
-        .andWhere('plan.total_amount >= :minCover', {
-          minCover: Number(renewalInvoice.total_amount || 0) - 1,
-        })
-        .getCount();
-      return count > 0;
-    } catch (error) {
-      this.logger.error(
-        `isTargetPeriodCoveredByActiveTenancyPlan failed for invoice ${renewalInvoice.id}`,
-        error as Error,
-      );
-      return false;
-    }
-  }
 
   // ---------------------------------------------------------------------------
   // Logging

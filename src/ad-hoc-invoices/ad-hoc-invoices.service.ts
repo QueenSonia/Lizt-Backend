@@ -679,6 +679,8 @@ export class AdHocInvoicesService {
     amount: number;
     paidAt: string | null;
     receiptToken: string | null;
+    /** See PaymentVerificationResult.moneyReceived — abandoned vs. in-flight. */
+    moneyReceived?: boolean;
   }> {
     const invoice = await this.invoiceRepository.findOne({
       where: { public_token: publicToken },
@@ -727,6 +729,7 @@ export class AdHocInvoicesService {
         amount: verification.amountNaira,
         paidAt: null,
         receiptToken: null,
+        moneyReceived: verification.moneyReceived,
       };
     }
 
@@ -752,6 +755,7 @@ export class AdHocInvoicesService {
       status: 'success',
       reference: verification.reference,
       amount: Number(fresh.total_amount),
+      moneyReceived: true,
       paidAt: fresh.paid_at
         ? fresh.paid_at instanceof Date
           ? fresh.paid_at.toISOString()

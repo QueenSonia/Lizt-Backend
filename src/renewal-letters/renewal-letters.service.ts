@@ -17,6 +17,7 @@ import { PropertyHistory } from '../property-history/entities/property-history.e
 import {
   RenewalInvoice,
   RenewalLetterStatus,
+  RenewalPaymentStatus,
 } from '../tenancies/entities/renewal-invoice.entity';
 import { RenewalLetterOtpService } from './renewal-letter-otp.service';
 import { RenewalChargeService } from './renewal-charge.service';
@@ -97,6 +98,109 @@ export class RenewalLettersService {
       pdf_url: pdfUrl,
       pdf_filename: filename,
     });
+  }
+
+  /**
+   * Accept-time wallet settlement (catch-up flow). Called when the tenant has
+   * just ACCEPTED a letter whose total is fully covered by wallet credit. If
+   * the active rent has already expired — the letter covers a period that is
+   * in progress or elapsed — roll the period forward from credit immediately:
+   * the tenant gets the "tenancy renewed" receipt instead of a ₦0 payment
+   * link, and if the resulting rent is still behind (born expired), the next
+   * period's letter is issued on the spot — so an overpaying tenant can walk
+   * the whole catch-up chain through accept taps alone. Pre-expiry accepts
+   * keep the old behavior: no link, and the daily cron settles at rollover.
+   * Caller wraps in try/catch — must never unwind the accept write.
+   */
+  private async settleAcceptedLetterFromCredit(
+    letter: RenewalInvoice,
+    propertyName: string,
+    tenantPhone: string,
+    tenantName: string,
+  ): Promise<void> {
+    if (letter.payment_status !== RenewalPaymentStatus.UNPAID) return;
+
+    const activeRent = await this.rentRepository.findOne({
+      where: {
+        property_id: letter.property_id,
+        tenant_id: letter.tenant_id,
+        rent_status: RentStatusEnum.ACTIVE,
+      },
+      relations: ['property', 'tenant', 'tenant.user'],
+      order: { created_at: 'DESC' },
+    });
+    if (!activeRent?.expiry_date) {
+      this.logger.log(
+        `Skipping accept-time settle for letter ${letter.id}: no active rent.`,
+      );
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const currentExpiry = new Date(activeRent.expiry_date);
+    currentExpiry.setHours(0, 0, 0, 0);
+    if (currentExpiry >= today) {
+      // Current period still running — keep the pre-existing deferral.
+      this.logger.log(
+        `Skipping renewal-link for letter ${letter.id}: period fully covered by wallet credit (cron settles at expiry).`,
+      );
+      return;
+    }
+
+    const result = await this.renewalChargeService.renewOneFromWalletCredit(
+      activeRent,
+      letter,
+      new Date(),
+      'manual',
+    );
+    if (result.outcome === 'skipped_already') return;
+
+    // Receipt instead of a payment link. Direct send, matching this service's
+    // fire-and-forget template pattern.
+    if (result.renewedConfirmation) {
+      try {
+        await this.templateSenderService.sendTenancyRenewedFromCredit(
+          result.renewedConfirmation,
+        );
+      } catch (err) {
+        this.logger.error(
+          `Failed to send renewed-from-credit receipt for letter ${letter.id}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // Chain: if the settled period was itself already elapsed, the tenancy is
+    // still behind — issue the next period's letter now.
+    const newRent = result.newRent;
+    if (!newRent?.expiry_date) return;
+    newRent.property = activeRent.property;
+    newRent.tenant = activeRent.tenant;
+    const newExpiry = new Date(newRent.expiry_date);
+    newExpiry.setHours(0, 0, 0, 0);
+    if (newExpiry >= today) return;
+
+    const nextLetter =
+      await this.renewalChargeService.prepareCatchUpLetter(newRent);
+    if (!nextLetter) return;
+
+    const expiryDateStr = newExpiry.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+    // Meta body: "…your tenancy for {{2}} {{3}}." — {{3}} carries the whole
+    // verb phrase, mirroring the reminder cron's bodyExpiryDateStr.
+    await this.templateSenderService.sendRenewalLetterLink({
+      phone_number: tenantPhone,
+      tenant_name: tenantName,
+      property_name: propertyName,
+      expiry_date: `expired on ${expiryDateStr}`,
+      renewal_token: nextLetter.token,
+    });
+    this.logger.log(
+      `Catch-up chain: settled letter ${letter.id} from credit and sent next letter ${nextLetter.id}.`,
+    );
   }
 
   /**
@@ -437,9 +541,30 @@ export class RenewalLettersService {
     // and the offer-letters page would 404 on it. Fire-and-forget: failure
     // here shouldn't block the acceptance write.
     if (coveredByCredit) {
-      this.logger.log(
-        `Skipping renewal-link for letter ${invoice.id}: period fully covered by wallet credit (will auto-renew from credit).`,
-      );
+      // Wallet credit fully covers this letter. If its period has already
+      // begun/elapsed (catch-up flow — the tenant is paying off periods
+      // late), settle it from credit RIGHT NOW instead of deferring to the
+      // 8AM cron: the tenant gets the "tenancy renewed" receipt in place of
+      // a ₦0 payment link, and the next period's letter is chained if the
+      // tenancy is still behind. Pre-expiry accepts keep the old behavior
+      // (no link; the cron settles at rollover) — settling early would
+      // advance the tenancy while the current period is still running.
+      // Fire-and-forget: a settle failure must never unwind the accept
+      // write; the cron remains the fallback.
+      try {
+        await this.settleAcceptedLetterFromCredit(
+          refreshed ?? invoice,
+          property.name,
+          tenantPhone,
+          tenantName || 'there',
+        );
+      } catch (err) {
+        const e = err as { message?: string; stack?: string };
+        this.logger.error(
+          `Accept-time credit settle failed for letter ${invoice.id} (cron will settle instead): ${e.message}`,
+          e.stack,
+        );
+      }
     } else {
       try {
         const fmtDate = (d: Date | string) =>

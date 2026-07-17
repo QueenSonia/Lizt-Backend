@@ -3053,6 +3053,10 @@ export class TenanciesService {
     const landlordId = invoice.property.owner_id;
     const tenantId = invoice.tenant_id;
 
+    // Rent row left ACTIVE for the settled period — captured by both branches
+    // below so the end-of-method catch-up hook can detect a born-expired settle.
+    let advancedRent: Rent | null = null;
+
     if (willCompleteRenewal && activeRent) {
       const isOwingRent =
         activeRent.payment_status === RentPaymentStatusEnum.OWING;
@@ -3146,6 +3150,7 @@ export class TenanciesService {
         if (invoice.end_date) activeRent.expiry_date = invoice.end_date;
         activeRent.updated_at = new Date();
         await this.rentRepository.save(activeRent);
+        advancedRent = activeRent;
 
         // Reconcile fee deltas against the ledger. Build a key → amount map
         // for both sides keyed by (kind, externalId) so otherFees are matched
@@ -3272,6 +3277,7 @@ export class TenanciesService {
           rent_status: RentStatusEnum.ACTIVE,
         });
         await this.rentRepository.save(newRent);
+        advancedRent = newRent;
 
         // Audit-log the new period on the tenant/property timeline. The cron
         // path emits the same event when it auto-creates a period; this is
@@ -3579,6 +3585,93 @@ export class TenanciesService {
         error,
       );
     }
+
+    // Catch-up nudge: if the settled period had ALREADY elapsed, the rent we
+    // just made ACTIVE is born expired and will never match any reminder cron
+    // window again (upcoming reminders match future dates only; post-expiry
+    // matches exactly D+1/D+7, both already missed at insert time). Chain the
+    // NEXT period's letter now, while the tenant is engaged. Runs after the
+    // OB_PAYMENT credit above so the new letter's fold sees this payment — an
+    // overpayment shrinks (or zeroes) the next letter's total. Fire-and-forget:
+    // a nudge failure must never fail the settle.
+    if (willCompleteRenewal) {
+      try {
+        await this.maybeSendCatchUpLetter(advancedRent);
+      } catch (error) {
+        console.error(
+          `Catch-up letter nudge failed after settling invoice ${invoice.id}:`,
+          error,
+        );
+      }
+    }
+  }
+
+  /**
+   * After a renewal settle leaves a born-expired ACTIVE rent (the tenant paid
+   * a letter whose period had already elapsed), immediately issue the NEXT
+   * period's letter link so the tenancy keeps catching up one accept-and-pay
+   * cycle at a time instead of stranding silently. Suppressors (confirmed
+   * move-out, declined letter, active tenancy plan) and letter creation live
+   * in RenewalChargeService.prepareCatchUpLetter.
+   */
+  private async maybeSendCatchUpLetter(rent: Rent | null): Promise<void> {
+    if (!rent?.expiry_date) return;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expiry = new Date(rent.expiry_date);
+    expiry.setHours(0, 0, 0, 0);
+    // Period still current or future — the normal reminder ladder owns it.
+    if (expiry >= today) return;
+
+    // The rent in hand came from create()/save() without relations; the
+    // letter builder needs property.owner_id and the send needs tenant.user.
+    const rentForLetter = await this.rentRepository.findOne({
+      where: { id: rent.id },
+      relations: ['property', 'tenant', 'tenant.user'],
+    });
+    if (!rentForLetter?.property) return;
+    const phone = rentForLetter.tenant?.user?.phone_number;
+    if (!phone) return;
+
+    const letter =
+      await this.renewalChargeService.prepareCatchUpLetter(rentForLetter);
+    if (!letter) return;
+
+    // Belt-and-braces against replayed settles and near-miss cron overlap —
+    // the payment_reference claim already makes each settle single-shot.
+    const alreadyNudged =
+      await this.whatsappNotificationLog.existsWithinLastDays(
+        rentForLetter.id,
+        'sendRenewalLetterLink',
+        7,
+      );
+    if (alreadyNudged) return;
+
+    const expiryDateStr = new Date(
+      rentForLetter.expiry_date,
+    ).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+    await this.whatsappNotificationLog.queue(
+      'sendRenewalLetterLink',
+      {
+        phone_number: phone,
+        tenant_name:
+          this.utilService.formatPersonName(
+            rentForLetter.tenant.user.first_name,
+            rentForLetter.tenant.user.last_name,
+          ) || 'there',
+        property_name: rentForLetter.property.name,
+        // Meta body: "…your tenancy for {{2}} {{3}}." — {{3}} carries the
+        // whole verb phrase, mirroring the cron's bodyExpiryDateStr.
+        expiry_date: `expired on ${expiryDateStr}`,
+        renewal_token: letter.token,
+      },
+      rentForLetter.id,
+    );
   }
 
   /**

@@ -528,4 +528,83 @@ describe('WhatsappBotService Integration', () => {
       expect(mockChatLogService.logOutboundMessage).toHaveBeenCalled();
     });
   });
+
+  describe('role-selection replay of a stashed button', () => {
+    const PHONE = '2348123456789';
+    let store: Map<string, string>;
+
+    // Stands in for CacheService with its REAL serialization contract: set()
+    // stringifies objects, get() JSON-parses on the way out. Load-bearing —
+    // a Map that hands back exactly what it was given cannot catch the
+    // round-trip mismatch that made this replay silently no-op in production
+    // (get returned an object, the caller JSON.parse'd it, threw, pending=null).
+    beforeEach(() => {
+      store = new Map();
+      mockCacheService.set.mockImplementation((k: string, v: any) => {
+        store.set(k, v && typeof v === 'object' ? JSON.stringify(v) : v);
+        return Promise.resolve();
+      });
+      mockCacheService.get.mockImplementation((k: string) => {
+        const v = store.get(k);
+        if (!v) return Promise.resolve(undefined);
+        try {
+          return Promise.resolve(JSON.parse(v));
+        } catch {
+          return Promise.resolve(v);
+        }
+      });
+      mockCacheService.delete.mockImplementation((k: string) => {
+        store.delete(k);
+        return Promise.resolve();
+      });
+      mockUtilService.normalizePhoneNumber.mockImplementation((p: string) => p);
+      // sendToWhatsappAPI chains .then() onto this, so it must be thenable.
+      mockChatLogService.logOutboundMessage.mockResolvedValue(undefined);
+      // The tenant gate is a separate concern here; let every turn through.
+      (mockTenantFlowService as any).gateUnconfirmedTenant = jest
+        .fn()
+        .mockResolvedValue(false);
+      mockRepository.findOne.mockResolvedValue({
+        id: 'user-1',
+        first_name: 'Chrome',
+        phone_number: PHONE,
+        accounts: [{ id: 'acc-1', roles: ['tenant'] }],
+      });
+      mockRepository.find.mockResolvedValue([]);
+    });
+
+    const buttonMessage = (id: string) => ({
+      from: PHONE,
+      type: 'interactive',
+      interactive: { type: 'button_reply', button_reply: { id, title: id } },
+    });
+
+    it('resumes the stashed action instead of dropping the user at a menu', async () => {
+      // A tenant-role action stashed by the multi-role prompt, written exactly
+      // the way the service writes it.
+      const pending = buttonMessage('view_tenancy');
+      await mockCacheService.set(`pending_action_${PHONE}`, pending, 600000);
+
+      await service.handleMessage([buttonMessage('select_role_tenant') as any]);
+      await flushAsync();
+
+      // The interrupted tap runs, and the stash is consumed.
+      expect(mockTenantFlowService.handleInteractive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          interactive: expect.objectContaining({
+            button_reply: expect.objectContaining({ id: 'view_tenancy' }),
+          }),
+        }),
+        PHONE,
+      );
+      expect(store.has(`pending_action_${PHONE}`)).toBe(false);
+    });
+
+    it('shows the menu when there is no stashed action', async () => {
+      await service.handleMessage([buttonMessage('select_role_tenant') as any]);
+      await flushAsync();
+
+      expect(mockTenantFlowService.handleInteractive).not.toHaveBeenCalled();
+    });
+  });
 });

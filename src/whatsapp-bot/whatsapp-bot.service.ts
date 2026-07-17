@@ -815,15 +815,12 @@ export class WhatsappBotService implements OnModuleInit {
         // If a button click triggered the role prompt, resume that action
         // instead of dumping the user back at the main menu (the original
         // WhatsApp button is single-tap and can't be re-tapped).
-        const pendingRaw = await this.cache.get(`pending_action_${from}`);
-        if (pendingRaw) {
-          let pending: IncomingMessage | null = null;
-          try {
-            pending = JSON.parse(pendingRaw as string) as IncomingMessage;
-          } catch {
-            pending = null;
-          }
-
+        // CacheService.get already JSON-parses, so this is the message object.
+        // Do NOT parse it again — that coerces to "[object Object]" and throws.
+        const pending = await this.cache.get<IncomingMessage>(
+          `pending_action_${from}`,
+        );
+        if (pending) {
           const pendingBtn =
             (
               pending?.interactive as {
@@ -839,7 +836,7 @@ export class WhatsappBotService implements OnModuleInit {
           const actionRoles = this.getActionRoles(pendingBtnId);
 
           // Replay when the action is role-agnostic, or the chosen role can do it.
-          if (pending && (!actionRoles || actionRoles.includes(selectedRole))) {
+          if (!actionRoles || actionRoles.includes(selectedRole)) {
             await this.cache.delete(`pending_action_${from}`);
             await this.cache.delete(`role_redirect_attempts_${from}`);
             await this.handleMessage([pending]);
@@ -850,7 +847,7 @@ export class WhatsappBotService implements OnModuleInit {
           // but offer ONLY the role(s) that can (plus Cancel) — so the next pick
           // is guaranteed valid and the prompt can't loop. A one-attempt counter
           // backstops it; Cancel lets the user keep the role they just picked.
-          if (pending && actionRoles && !actionRoles.includes(selectedRole)) {
+          if (actionRoles && !actionRoles.includes(selectedRole)) {
             const attempts = Number(
               (await this.cache.get(`role_redirect_attempts_${from}`)) || 0,
             );
@@ -1035,10 +1032,13 @@ export class WhatsappBotService implements OnModuleInit {
           // single-tap, so dropping the user at a fresh menu means the original
           // button can't be tapped again. Only buttons are worth replaying —
           // plain text falls through to the chosen role's menu as before.
+          // Hand CacheService the object, not a JSON string: set() stringifies
+          // objects itself and get() parses on the way out, so pre-stringifying
+          // round-trips to an object and desyncs the read side.
           if (buttonId) {
             await this.cache.set(
               `pending_action_${from}`,
-              JSON.stringify(message),
+              message,
               10 * 60 * 1000,
             );
           }

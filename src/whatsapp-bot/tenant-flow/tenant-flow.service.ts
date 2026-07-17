@@ -1088,9 +1088,12 @@ export class TenantFlowService {
       //    intent that may no longer apply.
       const pendingButtonId = this.extractButtonId(message);
       if (pendingButtonId) {
+        // Hand CacheService the object, not a JSON string: set() stringifies
+        // objects itself and get() parses on the way out, so pre-stringifying
+        // would round-trip to an object anyway and desync the two sides.
         await this.cache.set(
           `tenancy_pending_action_${from}`,
-          JSON.stringify(message),
+          message,
           this.GATE_REPLAY_TTL_MS,
         );
       }
@@ -1202,11 +1205,13 @@ export class TenantFlowService {
   private async replayGatedAction(from: string): Promise<boolean> {
     try {
       const key = `tenancy_pending_action_${from}`;
-      const raw = await this.cache.get<string>(key);
-      if (!raw) return false;
+      // CacheService.get already JSON-parses, so this is the message object —
+      // do NOT JSON.parse it again (that stringifies to "[object Object]" and
+      // throws, which silently drops the replay).
+      const pending = await this.cache.get<IncomingMessage>(key);
+      if (!pending) return false;
       await this.cache.delete(key);
 
-      const pending = JSON.parse(raw) as IncomingMessage;
       if (!this.extractButtonId(pending)) return false;
       await this.handleInteractive(pending, from);
       return true;

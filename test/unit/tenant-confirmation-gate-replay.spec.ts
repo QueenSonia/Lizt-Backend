@@ -72,13 +72,29 @@ describe('TenantFlowService — unconfirmed-tenancy gate replay', () => {
     cacheStore = new Map();
     unconfirmedRows = [{ property_id: PROPERTY_ID }];
 
-    // A real (in-memory) cache — the stash→replay handoff IS the behaviour
-    // under test, so a jest.fn() that never returns what it stored would make
-    // these tests vacuous.
+    // An in-memory stand-in that mirrors the REAL CacheService's serialization
+    // contract: set() stringifies objects, get() JSON-parses on the way out
+    // (see src/lib/cache/cache.service.ts stringifyIfNeeded/parseIfNeeded).
+    // This is load-bearing, not incidental detail — a naive Map that returns
+    // exactly what was stored hides the round-trip type mismatch that broke the
+    // replay in production (get() returned an object, the caller JSON.parse'd it
+    // again, threw, and the tap was silently dropped).
+    const stringifyIfNeeded = (v: any) =>
+      v && typeof v === 'object' ? JSON.stringify(v) : v;
+    const parseIfNeeded = (v: any) => {
+      try {
+        return JSON.parse(v);
+      } catch {
+        return v;
+      }
+    };
     const cache = {
-      get: jest.fn((k: string) => Promise.resolve(cacheStore.get(k) ?? null)),
-      set: jest.fn((k: string, v: string) => {
-        cacheStore.set(k, v);
+      get: jest.fn((k: string) => {
+        const v = cacheStore.get(k);
+        return Promise.resolve(v ? parseIfNeeded(v) : undefined);
+      }),
+      set: jest.fn((k: string, v: any) => {
+        cacheStore.set(k, stringifyIfNeeded(v));
         return Promise.resolve();
       }),
       delete: jest.fn((k: string) => {

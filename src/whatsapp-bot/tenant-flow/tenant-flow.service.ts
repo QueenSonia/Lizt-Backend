@@ -2232,7 +2232,7 @@ export class TenantFlowService {
     return this.maintenanceRequestRepo.findOne({
       where: {
         ...(requestId
-          ? { id: requestId }
+          ? { request_id: requestId }
           : { status: MaintenanceRequestStatusEnum.RESOLVED }),
         tenant: { user: { phone_number: normalizedPhone } },
       },

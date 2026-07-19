@@ -287,6 +287,12 @@ export class NotificationService {
         'notification.maintenanceRequest',
         'maintenanceRequest',
       )
+      // Common-area maintenance requests carry no property_id (a common area
+      // hangs off the landlord account, not a property), so the property join
+      // above yields null for them. Carry the common area through instead — the
+      // feed falls back to its name for the "Property:" line.
+      .leftJoin('maintenanceRequest.common_area', 'mrCommonArea')
+      .addSelect(['mrCommonArea.id', 'mrCommonArea.name'])
       // Owning landlord's account, name columns only (never leak the full
       // account row — it carries the password hash).
       .leftJoin('notification.user', 'owner')

@@ -3675,7 +3675,11 @@ export class TenanciesService {
   }
 
   /**
-   * Log renewal payment initiated event to property history
+   * Log renewal payment initiated event to property history.
+   *
+   * `amount` is what the tenant was sent to the gateway to pay. It goes in the
+   * description because property_histories has no amount column and the
+   * timeline surfaces the figure by reading it back out.
    */
   async logRenewalPaymentInitiated(
     invoiceId: string,
@@ -3683,12 +3687,15 @@ export class TenanciesService {
     tenantId: string,
     tenantName: string,
     propertyName: string,
+    amount?: number,
   ): Promise<void> {
+    const amountText = amount ? ` Amount: ₦${amount.toLocaleString()}` : '';
+
     const entry = this.propertyHistoryRepository.create({
       property_id: propertyId,
       tenant_id: tenantId,
       event_type: 'renewal_payment_initiated',
-      event_description: `Renewal payment initiated by ${tenantName} for property ${propertyName}.`,
+      event_description: `Renewal payment initiated by ${tenantName} for property ${propertyName}.${amountText}`,
       related_entity_id: invoiceId,
       related_entity_type: 'renewal_invoice',
     });
@@ -3714,11 +3721,17 @@ export class TenanciesService {
     );
     const propertyName = invoice.property.name;
 
+    // The abandoned figure is what was still owed at cancellation time.
+    const cancelledAmount = Number(invoice.outstanding_balance || 0);
+    const amountText = cancelledAmount
+      ? ` Amount: ₦${cancelledAmount.toLocaleString()}`
+      : '';
+
     const entry = this.propertyHistoryRepository.create({
       property_id: invoice.property_id,
       tenant_id: invoice.tenant_id,
       event_type: 'renewal_payment_cancelled',
-      event_description: `Renewal payment cancelled by ${tenantName} for property ${propertyName}.`,
+      event_description: `Renewal payment cancelled by ${tenantName} for property ${propertyName}.${amountText}`,
       related_entity_id: invoice.id,
       related_entity_type: 'renewal_invoice',
     });

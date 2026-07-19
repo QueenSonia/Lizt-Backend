@@ -6,6 +6,11 @@ import {
 import { Payment } from 'src/payments/entities/payment.entity';
 import { MaintenanceRequest } from 'src/maintenance-requests/entities/maintenance-request.entity';
 import { offerLetterToFees, sumAll } from 'src/common/billing/fees';
+import {
+  PAYMENT_HISTORY_EVENT_TYPES,
+  resolveHistoryAmount,
+  withAmountInTitle,
+} from './history-amount.util';
 
 export interface TimelineEvent {
   id: string;
@@ -110,7 +115,9 @@ const formatLongDate = (d: Date): string =>
  * timeline endpoint so the two views are visually identical and seamlessly
  * continuous across the applicant→tenant transition.
  */
-export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] {
+export function buildTimelineEvents(
+  ctx: BuildTimelineContext,
+): TimelineEvent[] {
   const {
     propertyHistories,
     maintenanceRequests = [],
@@ -121,8 +128,20 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
 
   const tenancyEvents: TimelineEvent[] = [];
 
+  // Payment-shaped history rows carry no amount column; the exact figure lives
+  // on the linked payments row where there is one. Index it once so every row
+  // below can resolve its amount without another pass over `payments`.
+  const paymentAmountsById = new Map<string, number>(
+    payments.map((p) => [p.id, Number(p.amount)]),
+  );
+
   if (propertyHistories && propertyHistories.length > 0) {
     propertyHistories.forEach((ph) => {
+      // Amount to append to this row's title, when it moved money at all.
+      const rowAmount = PAYMENT_HISTORY_EVENT_TYPES.has(ph.event_type)
+        ? resolveHistoryAmount(ph, paymentAmountsById)
+        : null;
+
       if (ph.event_type === 'tenancy_started') {
         const prop = ph.property;
         const moveInDate = ph.move_in_date
@@ -142,9 +161,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         const ownerComment = ph.owner_comment || '';
         const frequencyMatch = ownerComment.match(/Frequency:\s*([^,]+)/);
         const nextDueMatch = ownerComment.match(/Next due:\s*(.+)$/);
-        const rentFrequency = frequencyMatch
-          ? frequencyMatch[1].trim()
-          : null;
+        const rentFrequency = frequencyMatch ? frequencyMatch[1].trim() : null;
         const nextDueDate = nextDueMatch ? nextDueMatch[1].trim() : null;
         const tenancyDataSnapshot = {
           tenantName,
@@ -223,7 +240,11 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
             payment_frequency?: string | null;
             rental_price?: number | null;
           };
-          recurring_changes?: { label: string; before: boolean; after: boolean }[];
+          recurring_changes?: {
+            label: string;
+            before: boolean;
+            after: boolean;
+          }[];
           fee_changes?: {
             kind: string;
             externalId?: string;
@@ -244,7 +265,9 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           const fmt = (d: string | Date | null | undefined) =>
             d ? formatLongDate(new Date(d)) : '—';
           if (fmt(b.rent_start_date) !== fmt(a.rent_start_date)) {
-            parts.push(`start ${fmt(b.rent_start_date)} → ${fmt(a.rent_start_date)}`);
+            parts.push(
+              `start ${fmt(b.rent_start_date)} → ${fmt(a.rent_start_date)}`,
+            );
           }
           if (fmt(b.expiry_date) !== fmt(a.expiry_date)) {
             parts.push(`expiry ${fmt(b.expiry_date)} → ${fmt(a.expiry_date)}`);
@@ -275,7 +298,10 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
             }
           }
         }
-        if (Array.isArray(meta.recurring_changes) && meta.recurring_changes.length > 0) {
+        if (
+          Array.isArray(meta.recurring_changes) &&
+          meta.recurring_changes.length > 0
+        ) {
           const madeRecurring = meta.recurring_changes
             .filter((c) => c.after)
             .map((c) => c.label);
@@ -355,8 +381,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           type: 'general',
           title: 'Removal scheduled',
           description:
-            ph.event_description ||
-            `${who}'s tenancy is scheduled to end.`,
+            ph.event_description || `${who}'s tenancy is scheduled to end.`,
           details: ph.move_out_reason
             ? `Reason: ${ph.move_out_reason.replace(/_/g, ' ')}`
             : ph.metadata?.end_date
@@ -439,8 +464,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         }
 
         const prop = ph.property;
-        const statusChanged =
-          !!previousStatus && previousStatus !== status;
+        const statusChanged = !!previousStatus && previousStatus !== status;
 
         let title: string;
         let descriptionTail: string;
@@ -590,7 +614,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         tenancyEvents.push({
           id: `${ph.event_type}-${ph.id}`,
           type: ph.event_type === 'ad_hoc_invoice_paid' ? 'receipt' : 'invoice',
-          title: titleMap[ph.event_type],
+          title: withAmountInTitle(titleMap[ph.event_type], rowAmount),
           description:
             ph.event_description ||
             `${titleMap[ph.event_type]} for ${prop?.name || 'property'}.`,
@@ -650,7 +674,10 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         tenancyEvents.push({
           id: `${ph.event_type}-${ph.id}`,
           type: isPaymentInitiated ? 'invoice' : 'receipt',
-          title: titleMap[ph.event_type] || 'Payment',
+          title: withAmountInTitle(
+            titleMap[ph.event_type] || 'Payment',
+            rowAmount,
+          ),
           description:
             ph.event_description ||
             `${titleMap[ph.event_type]} for ${prop?.name || 'property'}.`,
@@ -851,7 +878,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         tenancyEvents.push({
           id: `renewal-payment-made-${ph.id}`,
           type: 'payment',
-          title: 'Renewal Payment Made',
+          title: withAmountInTitle('Renewal Payment Made', rowAmount),
           description:
             ph.event_description ||
             `Payment made for tenancy renewal for property ${prop?.name || 'property'}.`,
@@ -869,7 +896,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         tenancyEvents.push({
           id: `renewal-payment-initiated-${ph.id}`,
           type: 'payment',
-          title: 'Renewal Payment Initiated',
+          title: withAmountInTitle('Renewal Payment Initiated', rowAmount),
           description:
             ph.event_description ||
             `Renewal payment initiated for ${prop?.name || 'property'}.`,
@@ -887,7 +914,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
         tenancyEvents.push({
           id: `renewal-payment-cancelled-${ph.id}`,
           type: 'payment',
-          title: 'Renewal Payment Cancelled',
+          title: withAmountInTitle('Renewal Payment Cancelled', rowAmount),
           description:
             ph.event_description ||
             `Renewal payment cancelled for ${prop?.name || 'property'}.`,
@@ -967,7 +994,9 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
           }),
           date: eventDate.toISOString(),
           time: formatTime(eventDate),
-          amount: parsedData.totalAmount ? String(parsedData.totalAmount) : null,
+          amount: parsedData.totalAmount
+            ? String(parsedData.totalAmount)
+            : null,
         });
       }
 
@@ -1036,10 +1065,7 @@ export function buildTimelineEvents(ctx: BuildTimelineContext): TimelineEvent[] 
             ? new Date(ph.move_in_date).toLocaleDateString('en-GB')
             : '';
         const eventDate = new Date(
-          parsedData.feeDate ||
-            ph.move_in_date ||
-            ph.created_at ||
-            new Date(),
+          parsedData.feeDate || ph.move_in_date || ph.created_at || new Date(),
         );
         tenancyEvents.push({
           id: `user-added-fee-${ph.id}`,

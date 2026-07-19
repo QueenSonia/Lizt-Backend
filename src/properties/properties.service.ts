@@ -97,6 +97,12 @@ import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-bal
 import { RenewalChargeService } from 'src/renewal-letters/renewal-charge.service';
 import { rentToFees, Fee } from 'src/common/billing/fees';
 import { sumOverdueInvoiceFeeInstallments } from 'src/common/billing/plan-classification';
+import { Payment } from 'src/payments/entities/payment.entity';
+import {
+  PAYMENT_HISTORY_EVENT_TYPES,
+  resolveHistoryAmount,
+  withAmountInTitle,
+} from 'src/property-history/history-amount.util';
 import { randomUUID } from 'crypto';
 @Injectable()
 export class PropertiesService {
@@ -1684,7 +1690,7 @@ export class PropertiesService {
             landlordId: property.owner_id,
           })
           .andWhere('app.deleted_at IS NULL')
-          .andWhere("app.passport_photo_url IS NOT NULL")
+          .andWhere('app.passport_photo_url IS NOT NULL')
           .andWhere("app.passport_photo_url <> ''")
           .andWhere("app.passport_photo_url <> '-'")
           .orderBy('app.created_at', 'DESC')
@@ -1965,6 +1971,29 @@ export class PropertiesService {
         creditBalance: totalCreditBalance,
         plannableOutstandingBalance,
       };
+    }
+
+    // Payment-shaped history rows have no amount column. Where one points at a
+    // `payments` row, that amount is exact — load them in a single batch so the
+    // post-pass below can prefer it over parsing the description prose.
+    const linkedPaymentIds = propertyHistories
+      .filter((h) => h.related_entity_type === 'payment' && h.related_entity_id)
+      .map((h) => h.related_entity_id as string);
+
+    const paymentAmountsById = new Map<string, number>();
+    if (linkedPaymentIds.length > 0) {
+      const linkedPayments = await this.dataSource
+        .getRepository(Payment)
+        .createQueryBuilder('payment')
+        .select(['payment.id', 'payment.amount'])
+        .where('payment.id IN (:...ids)', {
+          ids: [...new Set(linkedPaymentIds)],
+        })
+        .getMany();
+
+      linkedPayments.forEach((p) =>
+        paymentAmountsById.set(p.id, Number(p.amount)),
+      );
     }
 
     // Property history formatting (reuse existing logic)
@@ -2503,12 +2532,11 @@ export class PropertiesService {
               details: tenantName !== 'Unknown' ? tenantName : null,
               amount: null,
             };
-          case 'payment_initiated': {
-            const paymentAmountMatch =
-              hist.event_description?.match(/₦([\d,]+)/);
-            const paymentAmount = paymentAmountMatch
-              ? paymentAmountMatch[1]
-              : null;
+          // `amount` on these three is filled by the payment-amount post-pass
+          // below, which prefers the linked payments row. Parsing the first ₦
+          // out of the description was wrong for partial payments — that figure
+          // is the *outstanding balance*, not what the tenant paid.
+          case 'payment_initiated':
             return {
               id: hist.id,
               date: hist.created_at,
@@ -2517,15 +2545,9 @@ export class PropertiesService {
               description:
                 hist.event_description || `${tenantName} initiated a payment`,
               details: tenantName,
-              amount: paymentAmount,
+              amount: null,
             };
-          }
-          case 'payment_completed_full': {
-            const fullPayAmountMatch =
-              hist.event_description?.match(/₦([\d,]+)/);
-            const fullPayAmount = fullPayAmountMatch
-              ? fullPayAmountMatch[1]
-              : null;
+          case 'payment_completed_full':
             return {
               id: hist.id,
               date: hist.created_at,
@@ -2535,15 +2557,9 @@ export class PropertiesService {
                 hist.event_description ||
                 `${tenantName} completed full payment`,
               details: tenantName,
-              amount: fullPayAmount,
+              amount: null,
             };
-          }
-          case 'payment_completed_partial': {
-            const partialAmountMatch =
-              hist.event_description?.match(/₦([\d,]+)/);
-            const partialAmount = partialAmountMatch
-              ? partialAmountMatch[1]
-              : null;
+          case 'payment_completed_partial':
             return {
               id: hist.id,
               date: hist.created_at,
@@ -2553,9 +2569,8 @@ export class PropertiesService {
                 hist.event_description ||
                 `${tenantName} made a partial payment`,
               details: tenantName,
-              amount: partialAmount,
+              amount: null,
             };
-          }
           case 'payment_cancelled':
             return {
               id: hist.id,
@@ -2574,7 +2589,6 @@ export class PropertiesService {
             // expose the receipt token (per-installment rows carry it in
             // metadata; bulk-payoff rows don't) so the row can deep-link to the
             // installment receipt page.
-            const instAmtMatch = hist.event_description?.match(/₦([\d,]+)/);
             return {
               id: hist.id,
               date: hist.created_at,
@@ -2582,7 +2596,9 @@ export class PropertiesService {
               title: hist.event_description || 'Installment paid',
               description: hist.event_description || 'Installment paid',
               details: tenantName,
-              amount: instAmtMatch ? instAmtMatch[1] : null,
+              // Filled by the payment-amount post-pass; the title already
+              // carries the figure, so it won't be appended twice.
+              amount: null,
               receiptToken:
                 (hist.metadata as { receiptToken?: string } | null)
                   ?.receiptToken ?? null,
@@ -2776,6 +2792,31 @@ export class PropertiesService {
         }
       })
       .filter(Boolean);
+
+    // Money on the timeline: every payment-shaped row shows what it moved, in
+    // the same "<title> — ₦X" shape payment-plan installment rows already use.
+    // Done as one pass rather than per-case so the amount is resolved from a
+    // single source of truth (linked payment first, then the description).
+    const historyRowsById = new Map(propertyHistories.map((h) => [h.id, h]));
+    (
+      history as Array<{
+        id: string;
+        eventType: string;
+        title: string;
+        amount?: number | null;
+      } | null>
+    ).forEach((event) => {
+      if (!event || !PAYMENT_HISTORY_EVENT_TYPES.has(event.eventType)) return;
+
+      const source = historyRowsById.get(event.id);
+      if (!source) return;
+
+      const amount = resolveHistoryAmount(source, paymentAmountsById);
+      if (amount == null) return;
+
+      event.amount = amount;
+      event.title = withAmountInTitle(event.title, amount);
+    });
 
     // Add property creation event if missing
     const hasCreationEvent = history.some(

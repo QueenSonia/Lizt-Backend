@@ -348,6 +348,7 @@ export class RenewalPaymentService {
         invoice.tenant_id,
         tenantName,
         invoice.property.name,
+        amount,
       );
     } catch (error) {
       this.logger.error('Failed to log payment initiated event:', error);

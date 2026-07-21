@@ -14,11 +14,18 @@ import { AppExceptionsFilter } from './filters/app-exceptions-filter';
 import express from 'express';
 import { corsOptions } from './utils/options.cors';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { TelegramLogger } from './common/alerting/telegram-logger';
 
 async function bootstrap(): Promise<NestExpressApplication> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
   });
+
+  // Mirror every Logger.error()/.warn() to Telegram (prod-only, gated on
+  // TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID). Extends ConsoleLogger, so console
+  // output is unchanged when Telegram is disabled.
+  const telegramLogger = new TelegramLogger();
+  app.useLogger(telegramLogger);
   const configService = app.get(ConfigService);
   const PORT = +(process.env.PORT ?? configService.get('PORT') ?? 3150);
 
@@ -77,6 +84,9 @@ async function bootstrap(): Promise<NestExpressApplication> {
 
   await app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port:: ${PORT}`);
+    if (telegramLogger.alertsEnabled) {
+      telegramLogger.notify(`🟢 Server started on port ${PORT}. Alerts are live.`);
+    }
   });
 
   return app;

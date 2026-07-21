@@ -30,6 +30,7 @@ import {
   PaymentGateway,
   VerifyPaymentResult,
 } from './gateway/payment-gateway.interface';
+import { fetchBankTransferDetails } from './gateway/bank-transfer.helper';
 import { GatewayRegistryService } from './gateway/gateway-registry.service';
 import { PaystackLogger } from './paystack-logger.service';
 import { TenantAttachmentService } from '../kyc-links/tenant-attachment.service';
@@ -239,11 +240,20 @@ export class PaymentService {
     // Payment verification is handled by Paystack webhooks
     // No polling needed - webhook will call processSuccessfulPayment when payment completes
 
+    // In-app transfer checkout: mint the one-time virtual account in the SAME
+    // request (never throws — transfer:null falls back to the hosted redirect).
+    const transfer = await fetchBankTransferDetails(
+      this.gateway,
+      initResult,
+      this.paystackLogger,
+    );
+
     return {
       paymentId: payment.id,
       reference,
       checkoutUrl: initResult.checkoutUrl,
       expiresAt,
+      transfer,
       // Deprecated legacy popup fields — populated only while the active
       // gateway is Paystack, dropped in the legacy-retire pass. Keeps
       // long-lived open tenant tabs (old frontend bundle) working across

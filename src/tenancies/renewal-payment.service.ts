@@ -19,10 +19,12 @@ import { PropertyHistory } from '../property-history/entities/property-history.e
 import { Property } from '../properties/entities/property.entity';
 import {
   ACTIVE_PAYMENT_GATEWAY,
+  BankTransferDetails,
   DuplicateReferenceError,
   NormalizedPaymentEvent,
   PaymentGateway,
 } from '../payments/gateway/payment-gateway.interface';
+import { fetchBankTransferDetails } from '../payments/gateway/bank-transfer.helper';
 import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
 import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
 import {
@@ -44,8 +46,13 @@ import { v4 as uuidv4 } from 'uuid';
 
 export interface PaymentInitializationResult {
   reference: string;
-  /** Hosted-checkout URL — the canonical field the frontend redirects to. */
+  /** Hosted-checkout URL — kept as the fallback when `transfer` is null. */
   checkoutUrl: string;
+  /**
+   * One-time virtual account for the in-app transfer checkout. Null when the
+   * gateway can't mint one — the frontend then redirects to checkoutUrl.
+   */
+  transfer?: BankTransferDetails | null;
   /**
    * @deprecated Legacy popup fields, populated only while the active gateway
    * is Paystack. Dropped in the legacy-retire pass once no open tenant tab
@@ -354,9 +361,18 @@ export class RenewalPaymentService {
       this.logger.error('Failed to log payment initiated event:', error);
     }
 
+    // In-app transfer checkout: mint the one-time virtual account in the SAME
+    // request (never throws — transfer:null falls back to the hosted redirect).
+    const transfer = await fetchBankTransferDetails(
+      this.gateway,
+      initResult,
+      this.logger,
+    );
+
     return {
       reference: initResult.reference,
       checkoutUrl: initResult.checkoutUrl,
+      transfer,
       // Legacy popup fields — only meaningful for Paystack; the redirect
       // frontend ignores them.
       ...(initResult.gateway === 'paystack'

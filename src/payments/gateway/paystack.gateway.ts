@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { PaystackService, PaystackVerifyResponse } from '../paystack.service';
 import {
+  BankTransferDetails,
   DuplicateReferenceError,
   GatewayReferenceNotFoundError,
   GatewayWebhookEvent,
@@ -62,6 +63,16 @@ export class PaystackGateway implements PaymentGateway {
     } catch (error) {
       throw this.toTypedError(error, params.reference);
     }
+  }
+
+  /**
+   * No in-app transfer capability — Paystack checkouts stay on the hosted
+   * page. Returning null (not throwing) is what makes PAYMENT_GATEWAY=paystack
+   * a rollback lever: every lane sees transfer:null and silently falls back
+   * to the checkoutUrl redirect.
+   */
+  async initializeBankTransfer(): Promise<BankTransferDetails | null> {
+    return null;
   }
 
   async verifyPayment(reference: string): Promise<VerifyPaymentResult> {

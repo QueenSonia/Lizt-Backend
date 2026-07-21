@@ -129,6 +129,25 @@ export class DuplicateReferenceError extends Error {
   }
 }
 
+/**
+ * One-time virtual account for the in-app "pay with transfer" checkout.
+ * Everything in NAIRA and normalized — adapters own provider quirks
+ * (Monnify: amounts may arrive as strings, accountDurationSeconds counts
+ * down on re-calls).
+ */
+export interface BankTransferDetails {
+  bankName: string;
+  bankCode: string | null;
+  accountNumber: string;
+  accountName: string;
+  /** Seconds the account stays payable (Monnify accountDurationSeconds). */
+  expiresInSeconds: number;
+  /** What the payer must actually send, in NAIRA (Monnify totalPayable). */
+  amountNaira: number;
+  /** Gateway fee portion, informational only — never shown to tenants. */
+  feeNaira: number;
+}
+
 export interface PaymentGateway {
   /** Stable adapter name ('paystack' | 'monnify' | …). Stored on DB rows. */
   readonly name: string;
@@ -149,6 +168,21 @@ export interface PaymentGateway {
 
   /** Throws GatewayReferenceNotFoundError when the gateway never saw it. */
   verifyPayment(reference: string): Promise<VerifyPaymentResult>;
+
+  /**
+   * Mint a one-time virtual account for an ALREADY-initialized transaction
+   * (the in-app transfer checkout). `gatewayTransactionId` is the provider's
+   * transaction handle from initializePayment — use it in the SAME request:
+   * its persistence on payment_intents is best-effort only.
+   *
+   * Returns null when this gateway has no in-app transfer capability
+   * (Paystack) — an EXPECTED outcome, not an error: callers fall back to the
+   * hosted checkoutUrl, which is also the env-rollback lever. Throws only
+   * when the gateway supports it and the call actually failed.
+   */
+  initializeBankTransfer(
+    gatewayTransactionId: string,
+  ): Promise<BankTransferDetails | null>;
 
   /**
    * Validate the webhook HMAC over the RAW request body. Must be

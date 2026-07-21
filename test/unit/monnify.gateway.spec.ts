@@ -194,6 +194,132 @@ describe('MonnifyGateway', () => {
     });
   });
 
+  describe('initializeBankTransfer', () => {
+    const TXN_REF = 'MNFY|12|20260721|000042';
+
+    const transferBody = (overrides: Record<string, any> = {}) => ({
+      accountNumber: '6912037290',
+      accountName: 'PROPERTY KRAFT-PRO',
+      bankName: 'Moniepoint Microfinance Bank',
+      bankCode: '50515',
+      accountDurationSeconds: 2400,
+      amount: 2000,
+      fee: 0,
+      totalPayable: 2000,
+      paymentReference: 'INV_1_abc',
+      ...overrides,
+    });
+
+    const mockTransferInit = (body: any) => {
+      mockHttpService.post.mockImplementation((url: string) => {
+        if (url.includes('/api/v1/auth/login')) return loginResponse();
+        if (url.includes('/bank-transfer/init-payment')) return body;
+        return axiosOk(envelope(null));
+      });
+    };
+
+    it('POSTs the piped transactionReference and normalizes the account details', async () => {
+      mockTransferInit(axiosOk(envelope(transferBody())));
+
+      const result = await gateway.initializeBankTransfer(TXN_REF);
+
+      const call = mockHttpService.post.mock.calls.find(([url]) =>
+        String(url).includes('/bank-transfer/init-payment'),
+      );
+      expect(call[1]).toEqual({ transactionReference: TXN_REF });
+      expect(result).toEqual({
+        bankName: 'Moniepoint Microfinance Bank',
+        bankCode: '50515',
+        accountNumber: '6912037290',
+        accountName: 'PROPERTY KRAFT-PRO',
+        expiresInSeconds: 2400,
+        amountNaira: 2000,
+        feeNaira: 0,
+      });
+    });
+
+    it('coerces string amounts/duration (Monnify sends strings) and prefers totalPayable', async () => {
+      mockTransferInit(
+        axiosOk(
+          envelope(
+            transferBody({
+              accountDurationSeconds: '1187',
+              amount: '2000.00',
+              fee: '10.75',
+              totalPayable: '2010.75',
+            }),
+          ),
+        ),
+      );
+
+      const result = await gateway.initializeBankTransfer(TXN_REF);
+      expect(result).toMatchObject({
+        expiresInSeconds: 1187,
+        amountNaira: 2010.75, // totalPayable wins — it's what the payer must send
+        feeNaira: 10.75,
+      });
+    });
+
+    it('falls back to the documented 2400s when accountDurationSeconds is malformed', async () => {
+      mockTransferInit(
+        axiosOk(envelope(transferBody({ accountDurationSeconds: 'soon' }))),
+      );
+      const result = await gateway.initializeBankTransfer(TXN_REF);
+      expect(result?.expiresInSeconds).toBe(2400);
+    });
+
+    it('falls back to amount when totalPayable is absent', async () => {
+      mockTransferInit(
+        axiosOk(envelope(transferBody({ totalPayable: undefined }))),
+      );
+      const result = await gateway.initializeBankTransfer(TXN_REF);
+      expect(result?.amountNaira).toBe(2000);
+    });
+
+    it('throws 502 GatewayTransferInitFailed on an unsuccessful envelope', async () => {
+      mockTransferInit(
+        axiosOk(
+          envelope(null, {
+            requestSuccessful: false,
+            responseMessage: 'Cannot generate account',
+          }),
+        ),
+      );
+      await expect(gateway.initializeBankTransfer(TXN_REF)).rejects.toMatchObject({
+        status: 502,
+      });
+    });
+
+    it('throws 502 when the envelope succeeds but carries no accountNumber', async () => {
+      mockTransferInit(
+        axiosOk(envelope(transferBody({ accountNumber: undefined }))),
+      );
+      await expect(gateway.initializeBankTransfer(TXN_REF)).rejects.toMatchObject({
+        status: 502,
+      });
+    });
+
+    it('passes deterministic 4xx failures straight through (no retry burn)', async () => {
+      mockTransferInit(
+        axios4xx(
+          422,
+          envelope(null, {
+            requestSuccessful: false,
+            responseMessage: 'Invalid transaction reference',
+          }),
+        ),
+      );
+      await expect(gateway.initializeBankTransfer(TXN_REF)).rejects.toMatchObject(
+        { response: { status: 422 } },
+      );
+      // one login + one transfer call — no retries on a deterministic 4xx
+      const transferCalls = mockHttpService.post.mock.calls.filter(([url]) =>
+        String(url).includes('/bank-transfer/init-payment'),
+      );
+      expect(transferCalls).toHaveLength(1);
+    });
+  });
+
   describe('verifyPayment', () => {
     const verifyResponse = (overrides: Record<string, any>) =>
       axiosOk(

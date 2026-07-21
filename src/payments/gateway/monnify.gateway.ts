@@ -5,6 +5,7 @@ import { AxiosError, AxiosRequestConfig } from 'axios';
 import * as crypto from 'crypto';
 import { firstValueFrom } from 'rxjs';
 import {
+  BankTransferDetails,
   DuplicateReferenceError,
   GatewayReferenceNotFoundError,
   GatewayWebhookEvent,
@@ -400,6 +401,71 @@ export class MonnifyGateway implements PaymentGateway {
       metadata: this.toMetadata(d.metaData),
       gateway: this.name,
       raw: body,
+    };
+  }
+
+  /**
+   * Mint the one-time virtual account for the in-app transfer checkout.
+   * Safe to retry (request() retries transients): while the account is
+   * valid, Monnify returns the SAME account with the remaining seconds —
+   * verified against docs; each call just reports a smaller
+   * accountDurationSeconds. No bankCode → dynamic all-banks account (we
+   * don't render USSD).
+   */
+  async initializeBankTransfer(
+    transactionReference: string,
+  ): Promise<BankTransferDetails | null> {
+    const body = await this.request<{
+      accountNumber: string;
+      accountName: string;
+      bankName: string;
+      bankCode: string;
+      accountDurationSeconds: number | string;
+      amount: number | string;
+      fee: number | string;
+      totalPayable: number | string;
+      paymentReference: string;
+    }>('POST', '/api/v1/merchant/bank-transfer/init-payment', {
+      // Piped "MNFY|…" — JSON body, no URL-encoding concerns here.
+      transactionReference,
+    });
+
+    if (!body.requestSuccessful || !body.responseBody?.accountNumber) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.BAD_GATEWAY,
+          message: `Monnify transfer-account init failed: ${body.responseMessage ?? 'no account in response'}`,
+          error: 'GatewayTransferInitFailed',
+        },
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+
+    const d = body.responseBody;
+    const amountNaira = this.toNaira(d.totalPayable ?? d.amount);
+    const requestedNaira = this.toNaira(d.amount);
+    if (d.totalPayable != null && amountNaira !== requestedNaira) {
+      // Contract passes fees to the payer — the checkout header shows the
+      // invoice amount, so a header-amount transfer would land
+      // PARTIALLY_PAID. Loud signal for ops; the S2 sandbox check guards
+      // this at rollout.
+      this.logger.warn(
+        `Monnify totalPayable ₦${amountNaira} ≠ amount ₦${requestedNaira} for ${transactionReference} — payer-borne fees are ON`,
+      );
+    }
+
+    const secs = Number(d.accountDurationSeconds);
+    return {
+      bankName: d.bankName,
+      bankCode: d.bankCode != null ? String(d.bankCode) : null,
+      accountNumber: d.accountNumber,
+      accountName: d.accountName,
+      // Docs say 2400s; fall back there rather than 0 so a malformed field
+      // doesn't render an instantly-expired countdown.
+      expiresInSeconds:
+        Number.isFinite(secs) && secs > 0 ? Math.floor(secs) : 2400,
+      amountNaira,
+      feeNaira: this.toNaira(d.fee),
     };
   }
 

@@ -27,10 +27,12 @@ import { NotificationType } from '../notifications/enums/notification-type';
 import { EventsGateway } from '../events/events.gateway';
 import {
   ACTIVE_PAYMENT_GATEWAY,
+  BankTransferDetails,
   DuplicateReferenceError,
   NormalizedPaymentEvent,
   PaymentGateway,
 } from '../payments/gateway/payment-gateway.interface';
+import { fetchBankTransferDetails } from '../payments/gateway/bank-transfer.helper';
 import { GatewayRegistryService } from '../payments/gateway/gateway-registry.service';
 import { recordAmountMismatchArtifact } from '../payments/gateway/amount-mismatch-artifact';
 import {
@@ -52,8 +54,13 @@ import { NotificationCategory } from 'src/common/notify/notification-category.en
 
 export interface AdHocInvoiceInitializationResult {
   reference: string;
-  /** Hosted-checkout URL — the canonical field the frontend redirects to. */
+  /** Hosted-checkout URL — kept as the fallback when `transfer` is null. */
   checkoutUrl: string;
+  /**
+   * One-time virtual account for the in-app transfer checkout. Null when the
+   * gateway can't mint one — the frontend then redirects to checkoutUrl.
+   */
+  transfer?: BankTransferDetails | null;
   /**
    * @deprecated Legacy popup fields, populated only while the active gateway
    * is Paystack. Dropped in the legacy-retire pass.
@@ -658,9 +665,18 @@ export class AdHocInvoicesService {
       initResult,
     );
 
+    // In-app transfer checkout: mint the one-time virtual account in the SAME
+    // request (never throws — transfer:null falls back to the hosted redirect).
+    const transfer = await fetchBankTransferDetails(
+      this.gateway,
+      initResult,
+      this.logger,
+    );
+
     return {
       reference: initResult.reference,
       checkoutUrl: initResult.checkoutUrl,
+      transfer,
       ...(initResult.gateway === 'paystack'
         ? {
             accessCode: initResult.gatewayTransactionId ?? undefined,

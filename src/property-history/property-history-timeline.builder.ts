@@ -940,10 +940,14 @@ export function buildTimelineEvents(
         const eventDate = new Date(
           ph.move_in_date || ph.created_at || new Date(),
         );
+        const customAmount = Number(parsedData.amount) || 0;
         tenancyEvents.push({
           id: `user-added-${ph.id}`,
           type: 'general',
-          title: `${parsedData.displayType || 'Custom Event'} — ${prop?.name || 'property'} — ${parsedData.description || ''}`,
+          title: withAmountInTitle(
+            `${parsedData.displayType || 'Custom Event'} — ${prop?.name || 'property'} — ${parsedData.description || ''}`,
+            customAmount || null,
+          ),
           description: parsedData.description || '',
           details: prop?.name || undefined,
           date: eventDate.toISOString(),
@@ -1019,10 +1023,17 @@ export function buildTimelineEvents(
             ph.created_at ||
             new Date(),
         );
+        // The amount lives in the JSON body, not labelled prose, so put it in
+        // the title here (the payment-amount post-pass only reads described
+        // rows). Matches the "<label> — ₦X" shape used everywhere else.
+        const paymentAmountNum = Number(parsedData.paymentAmount) || 0;
         tenancyEvents.push({
           id: `user-added-payment-${ph.id}`,
           type: 'general',
-          title: `Payment received`,
+          title: withAmountInTitle(
+            'Payment received',
+            paymentAmountNum || null,
+          ),
           description: `Payment of ₦${Number(parsedData.paymentAmount || 0).toLocaleString()}${parsedData.paymentDescription ? ` — ${parsedData.paymentDescription}` : ''} on ${paymentDate}`,
           details: prop?.name || undefined,
           metadata: JSON.stringify({

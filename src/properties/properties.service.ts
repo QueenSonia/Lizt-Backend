@@ -2669,11 +2669,14 @@ export class PropertiesService {
               };
             }
             const userAddedAmount = parsedData.amount || null;
+            const userAddedAmountText = userAddedAmount
+              ? ` — ₦${Number(userAddedAmount).toLocaleString()}`
+              : '';
             return {
               id: hist.id,
               date: hist.move_in_date || hist.created_at,
               eventType: 'user_added_history',
-              title: `${parsedData.displayType || 'Custom Event'} — ${tenantName} — ${parsedData.description || ''}`,
+              title: `${parsedData.displayType || 'Custom Event'} — ${tenantName} — ${parsedData.description || ''}${userAddedAmountText}`,
               description: parsedData.description || '',
               details: null,
               amount: userAddedAmount,
@@ -2737,7 +2740,10 @@ export class PropertiesService {
                 hist.move_in_date ||
                 hist.created_at,
               eventType: 'user_added_payment',
-              title: `Payment received${parsedPayment.paymentDescription ? ` — ${parsedPayment.paymentDescription}` : ''}`,
+              // Amount lives in the JSON body (not labelled prose), so it must
+              // go into the title directly — the payment-amount post-pass only
+              // reads described rows and skips user_added_* by design.
+              title: `Payment received${paymentAmount ? ` — ₦${Number(paymentAmount).toLocaleString()}` : ''}${parsedPayment.paymentDescription ? ` — ${parsedPayment.paymentDescription}` : ''}`,
               description: `Payment of ₦${Number(paymentAmount).toLocaleString()}${parsedPayment.paymentDescription ? ` — ${parsedPayment.paymentDescription}` : ''} on ${paymentDate}`,
               details: JSON.stringify({
                 paymentAmount,

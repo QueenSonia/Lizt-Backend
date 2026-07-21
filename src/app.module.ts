@@ -25,6 +25,7 @@ import { DatabaseErrorHandlerService } from './database/database-error-handler.s
 import { TenantKycModule } from './tenant-kyc/tenant-kyc.module';
 import { WhatsappBotModule } from './whatsapp-bot/whatsapp-bot.module';
 import { KYCLinksModule } from './kyc-links/kyc-links.module';
+import { LandlordOnboardingModule } from './landlord-onboarding/landlord-onboarding.module';
 import { AppCacheModule } from './lib/cache';
 import { TenanciesModule } from './tenancies/tenancies.module';
 import { EventsModule } from './events/events.module';
@@ -83,6 +84,7 @@ config({ default_node_env: 'production' });
     TenantKycModule,
     WhatsappBotModule,
     KYCLinksModule,
+    LandlordOnboardingModule,
     TenanciesModule,
     EventsModule,
     KycFeedbackModule,

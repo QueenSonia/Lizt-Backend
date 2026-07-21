@@ -336,6 +336,19 @@ export class LandlordOnboardingService {
       return submission.id;
     });
 
+    // Confirm receipt to the landlord on WhatsApp (queued → retried on failure).
+    await this.whatsappNotificationLogService.queue(
+      'sendLandlordOnboardingSubmitted',
+      {
+        phone_number: normalizedPhone,
+        landlord_name: this.utilService.sanitizeTemplateParam(
+          `${dto.first_name} ${dto.last_name}`.trim(),
+          60,
+        ),
+      },
+      submissionId,
+    );
+
     return { submissionId };
   }
 

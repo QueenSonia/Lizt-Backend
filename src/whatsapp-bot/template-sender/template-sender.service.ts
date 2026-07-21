@@ -483,6 +483,14 @@ export interface KYCOTPVerificationParams {
 }
 
 /**
+ * Parameters for landlord onboarding submission confirmation template
+ */
+export interface LandlordOnboardingSubmittedParams {
+  phone_number: string;
+  landlord_name: string;
+}
+
+/**
  * Parameters for offer letter status notification to landlord
  */
 export interface OfferLetterStatusNotificationParams {
@@ -2809,6 +2817,35 @@ export class TemplateSenderService {
       | { messages?: Array<{ id?: string }> }
       | undefined;
     return { wamid: response?.messages?.[0]?.id };
+  }
+
+  /**
+   * Confirm a landlord's public onboarding portfolio submission.
+   * Uses the `landlord_onboarding_submitted` utility template.
+   */
+  async sendLandlordOnboardingSubmitted({
+    phone_number,
+    landlord_name,
+  }: LandlordOnboardingSubmittedParams): Promise<void> {
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_onboarding_submitted',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [{ type: 'text', text: landlord_name }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
   }
 
   /**
@@ -5980,6 +6017,8 @@ export class TemplateSenderService {
       '{{1}} is your verification code.\nExpires in 10 minutes.',
     kyc_otp_verification:
       '{{1}} is your verification code. For your security, do not share this code.\nExpires in 10 minutes.',
+    landlord_onboarding_submitted:
+      'Hi {{1}},\n\nWe have received your submission and our team will begin reviewing the details shortly. If we need any additional information or clarification, we will reach out to you.\n\nThank you for choosing Property Kraft.\n\n— The Property Kraft Team',
     offer_letter_status_notification:
       'Hi {{1}}, {{2}} has {{4}} your offer letter for {{3}}.\n\nLog in to your dashboard to view details and take next steps.',
     payment_invoice_link:

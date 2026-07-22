@@ -8,8 +8,11 @@ import { TenantAttachmentService } from './tenant-attachment.service';
 import { KycPdfService } from './kyc-pdf.service';
 import { KYCApplicationController } from './kyc-application.controller';
 import { KYCLinksController } from './kyc-links.controller';
+import { ReferralAgentController } from './referral-agent.controller';
+import { ReferralAgentService } from './referral-agent.service';
 import { KYCLink } from './entities/kyc-link.entity';
 import { KYCApplication } from './entities/kyc-application.entity';
+import { ReferralAgent } from './entities/referral-agent.entity';
 import { KYCOtp } from './entities/kyc-otp.entity';
 import { Property } from '../properties/entities/property.entity';
 import { PropertyTenant } from '../properties/entities/property-tenants.entity';
@@ -37,6 +40,7 @@ import { NotifyModule } from 'src/common/notify/notify.module';
     TypeOrmModule.forFeature([
       KYCLink,
       KYCApplication,
+      ReferralAgent,
       KYCOtp,
       Property,
       PropertyTenant,
@@ -68,13 +72,23 @@ import { NotifyModule } from 'src/common/notify/notify.module';
     ScopeModule,
     NotifyModule,
   ],
-  controllers: [KYCApplicationController, KYCLinksController],
+  controllers: [
+    KYCApplicationController,
+    KYCLinksController,
+    ReferralAgentController,
+  ],
   providers: [
     KYCLinksService,
     KYCApplicationService,
     TenantAttachmentService,
     KycPdfService,
+    ReferralAgentService,
   ],
-  exports: [KYCLinksService, KYCApplicationService, TenantAttachmentService],
+  exports: [
+    KYCLinksService,
+    KYCApplicationService,
+    TenantAttachmentService,
+    ReferralAgentService,
+  ],
 })
 export class KYCLinksModule {}

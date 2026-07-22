@@ -48,6 +48,7 @@ import {
   TimelineEvent,
 } from '../property-history/property-history-timeline.builder';
 import { NotificationRecipientsService } from 'src/common/notify/notification-recipients.service';
+import { ReferralAgentService } from './referral-agent.service';
 import { NotificationCategory } from 'src/common/notify/notification-category.enum';
 
 @Injectable()
@@ -75,6 +76,7 @@ export class KYCApplicationService {
     private readonly configService: ConfigService,
     private readonly scopeService: ManagementScopeService,
     private readonly notificationRecipients: NotificationRecipientsService,
+    private readonly referralAgentService: ReferralAgentService,
     @Optional()
     @Inject(forwardRef(() => EventsGateway))
     private readonly eventsGateway?: EventsGateway,
@@ -369,6 +371,14 @@ export class KYCApplicationService {
       }
       throw error;
     }
+
+    // Register the referral agent the first time this number is seen. Write-once
+    // (ON CONFLICT DO NOTHING) so the first name typed for a number wins forever, and
+    // so calling it from several submission paths can't cause divergence. Never throws.
+    await this.referralAgentService.ensureAgent(
+      savedApplication.referral_agent_phone_number,
+      savedApplication.referral_agent_full_name,
+    );
 
     // Return the application with relations loaded
     const applicationWithRelations =
@@ -1709,6 +1719,12 @@ export class KYCApplicationService {
           'Failed to retrieve updated KYC application',
         );
       }
+
+      // Same write-once agent registration as the create path (see submitKYCApplication).
+      await this.referralAgentService.ensureAgent(
+        updatedKyc.referral_agent_phone_number,
+        updatedKyc.referral_agent_full_name,
+      );
 
       // Create property history events for tracking timeline
       try {

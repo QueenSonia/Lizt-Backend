@@ -23,6 +23,8 @@ export interface AgentRollup {
   lastReferralAt: string | null;
   /** True when an admin has overridden the name. */
   hasOfficialName: boolean;
+  /** Names of the applicants/tenants this agent referred (caller's scope) — for search. */
+  referredNames: string[];
 }
 
 /** A person linked to an agent, for the details modal. */
@@ -90,6 +92,7 @@ export class ReferralAgentService {
       referral_count: string;
       last_referral_at: Date;
       names: string[];
+      referred_names: string[];
     }> = await this.kycApplicationRepository
       .createQueryBuilder('application')
       .innerJoin('application.property', 'property')
@@ -99,6 +102,10 @@ export class ReferralAgentService {
       .addSelect(
         `ARRAY_AGG(btrim(application.referral_agent_full_name) ORDER BY application.created_at ASC)`,
         'names',
+      )
+      .addSelect(
+        `ARRAY_AGG(btrim(coalesce(application.first_name, '') || ' ' || coalesce(application.last_name, '')) ORDER BY application.created_at DESC)`,
+        'referred_names',
       )
       .where('property.owner_id IN (:...managedLandlordIds)', {
         managedLandlordIds,
@@ -136,6 +143,18 @@ export class ReferralAgentService {
           ordered[0] ||
           '';
 
+        // Dedupe referred-applicant names case-insensitively (same tenant can apply twice).
+        const referredSeen = new Set<string>();
+        const referredNames: string[] = [];
+        for (const raw of row.referred_names ?? []) {
+          const name = (raw ?? '').trim();
+          if (!name) continue;
+          const key = name.toLowerCase();
+          if (referredSeen.has(key)) continue;
+          referredSeen.add(key);
+          referredNames.push(name);
+        }
+
         return {
           id: row.phone,
           phone: row.phone,
@@ -148,6 +167,7 @@ export class ReferralAgentService {
             ? new Date(row.last_referral_at).toISOString()
             : null,
           hasOfficialName: Boolean(agent?.official_name),
+          referredNames,
         };
       })
       .filter((a) => a.primaryName)

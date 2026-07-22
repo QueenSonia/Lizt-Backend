@@ -449,7 +449,31 @@ function snapshotFromPlan(
       amount: Number(i.amount),
       dueDate: dbDateKey(i.due_date) as string,
       status: i.status,
+      paidAt: i.paid_at ? toIso(i.paid_at) : null,
     })),
+  };
+}
+
+/**
+ * Stored metadata snapshots predate the paidAt field. Backfill it from the
+ * plan's live installments, matched by sequence — paid_at never changes once
+ * set, so a row shown paid in a historical snapshot carries the same date.
+ */
+function withPaidDates(
+  snap: ScheduleSnapshotDto | undefined,
+  plan: PaymentPlan | undefined,
+): ScheduleSnapshotDto | undefined {
+  if (!snap || !plan) return snap;
+  const bySequence = new Map(
+    (plan.installments ?? []).map((i) => [i.sequence, i]),
+  );
+  return {
+    ...snap,
+    installments: snap.installments.map((si) => {
+      if (si.paidAt != null || si.status?.toLowerCase() !== 'paid') return si;
+      const live = bySequence.get(si.sequence);
+      return live?.paid_at ? { ...si, paidAt: toIso(live.paid_at) } : si;
+    }),
   };
 }
 
@@ -473,7 +497,7 @@ function lifecycleDot(
     case 'payment_plan_created': {
       // Fall back to the plan's own installments for plans created before the
       // snapshot metadata was logged (legacy rows have no metadata.after).
-      const after = meta.after ?? snapshotFromPlan(plan);
+      const after = withPaidDates(meta.after ?? snapshotFromPlan(plan), plan);
       return {
         ...base,
         id: `plan_created:${h.id}`,
@@ -482,17 +506,17 @@ function lifecycleDot(
       };
     }
     case 'payment_plan_updated': {
-      const after = meta.after ?? snapshotFromPlan(plan);
+      const after = withPaidDates(meta.after ?? snapshotFromPlan(plan), plan);
+      const before = withPaidDates(meta.before, plan);
       return {
         ...base,
         id: `plan_edited:${h.id}`,
         type: 'plan_edited',
-        snapshot:
-          meta.before || after ? { before: meta.before, after } : undefined,
+        snapshot: before || after ? { before, after } : undefined,
       };
     }
     case 'payment_plan_cancelled': {
-      const after = meta.after ?? snapshotFromPlan(plan);
+      const after = withPaidDates(meta.after ?? snapshotFromPlan(plan), plan);
       return {
         ...base,
         id: `plan_cancelled:${h.id}`,
@@ -501,7 +525,7 @@ function lifecycleDot(
       };
     }
     case 'payment_plan_completed': {
-      const after = meta.after ?? snapshotFromPlan(plan);
+      const after = withPaidDates(meta.after ?? snapshotFromPlan(plan), plan);
       return {
         ...base,
         id: `plan_completed:${h.id}`,
@@ -602,6 +626,7 @@ function toActivePlanDto(plan: PaymentPlan): ActivePlanDto {
         amount: Number(i.amount),
         dueDate: dbDateKey(i.due_date) as string,
         status: i.status,
+        paidAt: i.paid_at ? toIso(i.paid_at) : null,
       })),
   };
 }

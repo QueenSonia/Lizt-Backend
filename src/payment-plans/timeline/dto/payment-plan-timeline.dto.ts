@@ -37,6 +37,8 @@ export interface InstallmentSnapshotDto {
   amount: number;
   dueDate: string; // ISO date (YYYY-MM-DD)
   status: string;
+  /** ISO timestamp the installment was paid; null/absent while pending. */
+  paidAt?: string | null;
 }
 
 export interface ScheduleSnapshotDto {
@@ -120,6 +122,7 @@ export interface ActivePlanDto {
     amount: number;
     dueDate: string;
     status: string;
+    paidAt: string | null;
   }[];
 }
 

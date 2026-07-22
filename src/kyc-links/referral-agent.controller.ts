@@ -100,12 +100,25 @@ export class ReferralAgentController {
     success: boolean;
     agents: Array<{ phone: string; name: string }>;
   }> {
-    const validation = await this.kycLinksService.validateKYCToken(token);
-    if (!validation?.valid) {
+    // kyc_links.token is a uuid column — a malformed token would make Postgres raise
+    // 22P02 rather than simply failing validation, so reject non-UUIDs up front. This
+    // endpoint is public, so garbage tokens are expected traffic and must stay quiet.
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        token ?? '',
+      );
+    if (!isUuid) return { success: true, agents: [] };
+
+    try {
+      const validation = await this.kycLinksService.validateKYCToken(token);
+      if (!validation?.valid) {
+        return { success: true, agents: [] };
+      }
+      const agents = await this.referralAgentService.suggestByPhone(phone);
+      return { success: true, agents };
+    } catch {
+      // Autocomplete is a convenience — never surface an error to the KYC form.
       return { success: true, agents: [] };
     }
-
-    const agents = await this.referralAgentService.suggestByPhone(phone);
-    return { success: true, agents };
   }
 }

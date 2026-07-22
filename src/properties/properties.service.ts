@@ -91,7 +91,7 @@ import {
   PaymentPlanStatus,
   PaymentPlanSourceType,
 } from 'src/payment-plans/entities/payment-plan.entity';
-import { InstallmentStatus } from 'src/payment-plans/entities/payment-plan-installment.entity';
+import { sumInstallmentsPaid } from 'src/common/billing/installment-paid.util';
 import { TenantBalancesService } from 'src/tenant-balances/tenant-balances.service';
 import { TenantBalanceLedgerType } from 'src/tenant-balances/entities/tenant-balance-ledger.entity';
 import { RenewalChargeService } from 'src/renewal-letters/renewal-charge.service';
@@ -1683,7 +1683,7 @@ export class PropertiesService {
       let tenantPassportPhoto: string | null = isRealPhoto(
         tenantKycApplication?.passport_photo_url,
       )
-        ? tenantKycApplication!.passport_photo_url
+        ? tenantKycApplication.passport_photo_url
         : null;
       if (!tenantPassportPhoto) {
         const photoApp = await this.dataSource
@@ -1704,7 +1704,7 @@ export class PropertiesService {
           .orderBy('app.created_at', 'DESC')
           .getOne();
         if (isRealPhoto(photoApp?.passport_photo_url)) {
-          tenantPassportPhoto = photoApp!.passport_photo_url;
+          tenantPassportPhoto = photoApp.passport_photo_url;
         }
       }
 
@@ -1855,9 +1855,7 @@ export class PropertiesService {
       );
       const claimedByPlans = activeWalletPlans.reduce((sum, p) => {
         if (p.property?.owner_id !== property.owner_id) return sum;
-        const paid = (p.installments ?? [])
-          .filter((i) => i.status === InstallmentStatus.PAID)
-          .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
+        const paid = sumInstallmentsPaid(p.installments ?? []);
         return sum + Math.max(0, Number(p.total_amount) - paid);
       }, 0);
 
@@ -2852,9 +2850,7 @@ export class PropertiesService {
             };
           }
           case 'rent_period_amended': {
-            const parts = rentPeriodAmendedChangeParts(
-              (hist.metadata ?? {}) as RentPeriodAmendedMetadata,
-            );
+            const parts = rentPeriodAmendedChangeParts(hist.metadata ?? {});
             return {
               id: hist.id,
               date: hist.created_at,

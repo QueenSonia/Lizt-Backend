@@ -16,13 +16,18 @@ import {
   planCategoryKey,
   requestCategoryKey,
 } from './category-key';
-import { collapseReminders, REMINDER_OVERDUE_EVENT, REMINDER_UPCOMING_EVENT } from './reminder-collapse';
+import {
+  collapseReminders,
+  REMINDER_OVERDUE_EVENT,
+  REMINDER_UPCOMING_EVENT,
+} from './reminder-collapse';
 import { synthesizeOverdue } from './overdue-synthesis';
 import { dbDateKey, toIso, toMillis } from './date-util';
 import {
   ActivePlanDto,
   CategoryRowDto,
   CategoryRowStatus,
+  InstallmentPaymentDto,
   ScheduleSnapshotDto,
   TenancyPeriodDto,
   TimelineEventDto,
@@ -44,7 +49,10 @@ export interface AssembleResult {
   unresolvedCount: number;
 }
 
-const REMINDER_EVENTS = new Set([REMINDER_UPCOMING_EVENT, REMINDER_OVERDUE_EVENT]);
+const REMINDER_EVENTS = new Set([
+  REMINDER_UPCOMING_EVENT,
+  REMINDER_OVERDUE_EVENT,
+]);
 
 // Tiebreak for events sharing a timestamp: show the LATER lifecycle stage on top
 // (newest-first). Lower number = higher on screen. So a plan sits above the
@@ -53,6 +61,7 @@ const TYPE_PRIORITY: Record<TimelineEventType, number> = {
   plan_cancelled: 0,
   plan_completed: 1,
   installment_paid: 2,
+  installment_payment_recorded: 2,
   reminders: 3,
   installment_overdue: 4,
   plan_edited: 5,
@@ -152,7 +161,9 @@ export function assembleTimeline(input: AssembleInput): AssembleResult {
   }
 
   // ── Bucket history rows by category key (drop unresolvable ones) ────────
-  const resolvePlanForHistory = (h: PropertyHistory): PaymentPlan | undefined => {
+  const resolvePlanForHistory = (
+    h: PropertyHistory,
+  ): PaymentPlan | undefined => {
     if (!h.related_entity_id) return undefined;
     if (h.related_entity_type === 'payment_plan_installment') {
       return installmentToPlan.get(h.related_entity_id);
@@ -180,9 +191,7 @@ export function assembleTimeline(input: AssembleInput): AssembleResult {
     rows.push(
       buildRow({
         key,
-        plansForKey: (plansByKey.get(key) ?? [])
-          .slice()
-          .sort(byCreatedAtAsc),
+        plansForKey: (plansByKey.get(key) ?? []).slice().sort(byCreatedAtAsc),
         requestsForKey: (requestsByKey.get(key) ?? [])
           .slice()
           .sort(byCreatedAtAsc),
@@ -246,8 +255,7 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
   const activePlanEntity = [...plansForKey]
     .reverse()
     .find((p) => p.status === PaymentPlanStatus.ACTIVE);
-  const latestRequest =
-    requestsForKey[requestsForKey.length - 1] ?? null;
+  const latestRequest = requestsForKey[requestsForKey.length - 1] ?? null;
 
   // ── Title / amount / scope / status ────────────────────────────────────
   const title = resolveTitle(key, category, latestPlan, adHocInvoicesById);
@@ -256,7 +264,13 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
     : latestRequest
       ? Number(latestRequest.total_amount)
       : 0;
-  const scope = latestPlan?.scope ?? (category === 'ob' ? 'ob' : category === 'entire_tenancy' ? 'tenancy' : null);
+  const scope =
+    latestPlan?.scope ??
+    (category === 'ob'
+      ? 'ob'
+      : category === 'entire_tenancy'
+        ? 'tenancy'
+        : null);
   const status = resolveStatus(latestPlan, requestsForKey);
 
   // Tenancy term this row refers to — surfaced for per-term obligations
@@ -293,7 +307,9 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
       request: {
         totalAmount: Number(req.total_amount),
         installmentAmount:
-          req.installment_amount != null ? Number(req.installment_amount) : null,
+          req.installment_amount != null
+            ? Number(req.installment_amount)
+            : null,
         preferredSchedule: req.preferred_schedule || null,
         tenantNote: req.tenant_note ?? null,
         charges: (req.fee_breakdown ?? []).map((f) => ({
@@ -416,6 +432,31 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
     return a.id.localeCompare(b.id);
   });
 
+  // Per-installment payment history for the active plan's Paid-badge detail
+  // view — the same structured metadata the payment event dots read, grouped
+  // by installment in chronological order (lifecycle is ASC by created_at).
+  const paymentsByInstallment = new Map<string, InstallmentPaymentDto[]>();
+  for (const h of lifecycle) {
+    if (
+      h.event_type !== 'payment_plan_installment_paid' &&
+      h.event_type !== 'payment_plan_installment_payment_recorded'
+    ) {
+      continue;
+    }
+    if (
+      h.related_entity_type !== 'payment_plan_installment' ||
+      !h.related_entity_id
+    ) {
+      continue;
+    }
+    const payment = paymentFromMeta(h.metadata ?? {});
+    if (!payment) continue;
+    push(paymentsByInstallment, h.related_entity_id, {
+      ...payment,
+      paymentDate: payment.paymentDate ?? toIso(h.created_at).slice(0, 10),
+    });
+  }
+
   return {
     key,
     category,
@@ -425,7 +466,9 @@ function buildRow(args: BuildRowArgs): CategoryRowDto {
     period,
     amount,
     status,
-    activePlan: activePlanEntity ? toActivePlanDto(activePlanEntity) : null,
+    activePlan: activePlanEntity
+      ? toActivePlanDto(activePlanEntity, paymentsByInstallment)
+      : null,
     // Detail cards read the term off each event; suppress it for the categories
     // that shouldn't carry one, so no per-card chip renders either.
     events: showPeriod
@@ -492,6 +535,13 @@ function lifecycleDot(
     before?: ScheduleSnapshotDto;
     after?: ScheduleSnapshotDto;
     receiptToken?: string;
+    amount?: number;
+    totalPaid?: number;
+    remainingAfter?: number;
+    settledPartial?: boolean;
+    method?: string;
+    paymentDate?: string;
+    recordedBy?: string | null;
   };
   switch (h.event_type) {
     case 'payment_plan_created': {
@@ -535,7 +585,8 @@ function lifecycleDot(
     }
     case 'payment_plan_installment_paid': {
       const inst =
-        h.related_entity_type === 'payment_plan_installment' && h.related_entity_id
+        h.related_entity_type === 'payment_plan_installment' &&
+        h.related_entity_id
           ? installmentById.get(h.related_entity_id)
           : undefined;
       return {
@@ -551,11 +602,60 @@ function lifecycleDot(
               dueDate: dbDateKey(inst.due_date),
             }
           : null,
+        payment: paymentFromMeta(meta),
+      };
+    }
+    case 'payment_plan_installment_payment_recorded': {
+      const inst =
+        h.related_entity_type === 'payment_plan_installment' &&
+        h.related_entity_id
+          ? installmentById.get(h.related_entity_id)
+          : undefined;
+      return {
+        ...base,
+        id: `installment_payment_recorded:${h.id}`,
+        type: 'installment_payment_recorded',
+        installment: inst
+          ? {
+              id: inst.id,
+              sequence: inst.sequence,
+              amount: Number(inst.amount),
+              dueDate: dbDateKey(inst.due_date),
+            }
+          : null,
+        payment: paymentFromMeta(meta),
       };
     }
     default:
       return null;
   }
+}
+
+/**
+ * Structured payment context off an event's metadata. Events written before
+ * partial payments existed carry no `amount` — return null and let the card
+ * fall back to its description prose.
+ */
+function paymentFromMeta(meta: {
+  amount?: number;
+  totalPaid?: number;
+  remainingAfter?: number;
+  settledPartial?: boolean;
+  method?: string;
+  paymentDate?: string;
+  recordedBy?: string | null;
+}): InstallmentPaymentDto | null {
+  if (meta.amount == null) return null;
+  return {
+    amount: Number(meta.amount),
+    totalPaid: meta.totalPaid != null ? Number(meta.totalPaid) : null,
+    remainingAfter:
+      meta.remainingAfter != null ? Number(meta.remainingAfter) : null,
+    settledPartial: !!meta.settledPartial,
+    method: meta.method ?? null,
+    paymentDate: meta.paymentDate ?? null,
+    recordedBy: meta.recordedBy ?? null,
+  };
 }
 
 function resolveTitle(
@@ -598,7 +698,9 @@ function resolveStatus(
         return 'cancelled';
     }
   }
-  if (requestsForKey.some((r) => r.status === PaymentPlanRequestStatus.PENDING)) {
+  if (
+    requestsForKey.some((r) => r.status === PaymentPlanRequestStatus.PENDING)
+  ) {
     return 'awaiting_approval';
   }
   const latestRequest = requestsForKey[requestsForKey.length - 1];
@@ -608,7 +710,10 @@ function resolveStatus(
   return 'awaiting_approval';
 }
 
-function toActivePlanDto(plan: PaymentPlan): ActivePlanDto {
+function toActivePlanDto(
+  plan: PaymentPlan,
+  paymentsByInstallment: Map<string, InstallmentPaymentDto[]>,
+): ActivePlanDto {
   return {
     id: plan.id,
     scope: plan.scope,
@@ -620,13 +725,34 @@ function toActivePlanDto(plan: PaymentPlan): ActivePlanDto {
     installments: (plan.installments ?? [])
       .slice()
       .sort((a, b) => a.sequence - b.sequence)
-      .map((i) => ({
-        id: i.id,
-        sequence: i.sequence,
-        amount: Number(i.amount),
-        dueDate: dbDateKey(i.due_date) as string,
-        status: i.status,
-        paidAt: i.paid_at ? toIso(i.paid_at) : null,
-      })),
+      .map((i) => {
+        let payments = paymentsByInstallment.get(i.id) ?? [];
+        // Legacy fallback: a row settled before per-payment metadata existed
+        // still gets a single synthetic record built from its own columns, so
+        // the detail view is never empty for a paid installment.
+        if (payments.length === 0 && i.status === 'paid') {
+          payments = [
+            {
+              amount: Number(i.amount_paid ?? i.amount),
+              totalPaid: Number(i.amount_paid ?? i.amount),
+              remainingAfter: 0,
+              settledPartial: false,
+              method: i.payment_method ?? null,
+              paymentDate: i.paid_at ? toIso(i.paid_at).slice(0, 10) : null,
+              recordedBy: null,
+            },
+          ];
+        }
+        return {
+          id: i.id,
+          sequence: i.sequence,
+          amount: Number(i.amount),
+          amountPaid: i.amount_paid != null ? Number(i.amount_paid) : null,
+          dueDate: dbDateKey(i.due_date) as string,
+          status: i.status,
+          paidAt: i.paid_at ? toIso(i.paid_at) : null,
+          payments,
+        };
+      }),
   };
 }

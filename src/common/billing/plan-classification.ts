@@ -4,6 +4,7 @@ import {
   PaymentPlanSourceType,
 } from '../../payment-plans/entities/payment-plan.entity';
 import { InstallmentStatus } from '../../payment-plans/entities/payment-plan-installment.entity';
+import { installmentRemaining } from './installment-paid.util';
 
 /**
  * Is this a charge-scope plan that targets a *current-period invoice fee*
@@ -65,10 +66,11 @@ export function sumOverdueInvoiceFeeInstallments(
 
     let overdue = 0;
     for (const inst of plan.installments ?? []) {
-      if (inst.status !== InstallmentStatus.PENDING) continue;
+      // PARTIAL rows are still owed their remaining balance.
+      if (inst.status === InstallmentStatus.PAID) continue;
       const due = new Date(inst.due_date);
       due.setHours(0, 0, 0, 0);
-      if (due < cutoff) overdue += Number(inst.amount);
+      if (due < cutoff) overdue += installmentRemaining(inst);
     }
     if (overdue <= 0) continue;
 

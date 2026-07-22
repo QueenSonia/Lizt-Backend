@@ -19,6 +19,7 @@ export type TimelineEventType =
   | 'plan_edited'
   | 'plan_cancelled'
   | 'installment_paid'
+  | 'installment_payment_recorded'
   | 'plan_completed'
   | 'installment_overdue'
   | 'reminders';
@@ -74,6 +75,28 @@ export interface InstallmentRefDto {
   dueDate: string | null;
 }
 
+/**
+ * One payment applied to an installment — a landlord-recorded partial, or the
+ * payment that settled the row. Sourced from the structured metadata on
+ * `payment_plan_installment_payment_recorded` / `payment_plan_installment_paid`
+ * history events (with a legacy fallback built from the installment columns).
+ */
+export interface InstallmentPaymentDto {
+  /** The delta this payment applied — never the cumulative total. */
+  amount: number;
+  /** Cumulative amount_paid after this payment (absent on legacy rows). */
+  totalPaid?: number | null;
+  /** Remaining balance after this payment (0 for the settling payment). */
+  remainingAfter?: number | null;
+  /** True when this settled earlier partials rather than a whole installment. */
+  settledPartial?: boolean;
+  method: string | null;
+  /** The date the money changed hands (YYYY-MM-DD), as entered/observed. */
+  paymentDate: string | null;
+  /** Display name of who recorded a manual entry; null for online payments. */
+  recordedBy: string | null;
+}
+
 export interface ChargeLineDto {
   label: string;
   amount: number;
@@ -102,7 +125,9 @@ export interface TimelineEventDto {
   snapshot?: { before?: ScheduleSnapshotDto; after?: ScheduleSnapshotDto };
   request?: RequestDetailsDto | null; // request_submitted
   receiptToken?: string | null; // installment_paid
-  installment?: InstallmentRefDto | null; // installment_paid / installment_overdue
+  installment?: InstallmentRefDto | null; // installment_paid / installment_overdue / installment_payment_recorded
+  /** Payment context — installment_paid / installment_payment_recorded. */
+  payment?: InstallmentPaymentDto | null;
   reminders?: CollapsedRemindersDto; // reminders
   reason?: string | null; // request_declined / plan_cancelled context
 }
@@ -120,9 +145,13 @@ export interface ActivePlanDto {
     id: string;
     sequence: number;
     amount: number;
+    /** Cumulative recorded payments — drives the Paid / Balance columns. */
+    amountPaid: number | null;
     dueDate: string;
     status: string;
     paidAt: string | null;
+    /** Chronological payments against this row — the Paid-badge detail view. */
+    payments: InstallmentPaymentDto[];
   }[];
 }
 

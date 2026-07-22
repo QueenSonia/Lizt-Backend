@@ -3,6 +3,7 @@ import {
   PaymentPlanStatus,
 } from '../entities/payment-plan.entity';
 import { InstallmentStatus } from '../entities/payment-plan-installment.entity';
+import { installmentRemaining } from '../../common/billing/installment-paid.util';
 import { dbDateKey, toIso } from './date-util';
 
 export interface SyntheticOverdue {
@@ -35,14 +36,17 @@ export function synthesizeOverdue(
 
   const out: SyntheticOverdue[] = [];
   for (const inst of plan.installments ?? []) {
-    if (inst.status !== InstallmentStatus.PENDING) continue;
+    // PARTIAL is still unpaid — it stays overdue for its remaining balance.
+    if (inst.status === InstallmentStatus.PAID) continue;
     const dueKey = dbDateKey(inst.due_date);
     if (!dueKey || dueKey >= todayKey) continue; // ISO keys compare lexicographically
+    const remaining = installmentRemaining(inst);
+    if (remaining <= 0) continue;
     out.push({
       planId: plan.id,
       installmentId: inst.id,
       sequence: inst.sequence,
-      amount: Number(inst.amount),
+      amount: remaining,
       dueDate: dueKey,
       occurredAt: toIso(inst.due_date),
     });

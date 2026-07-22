@@ -14,6 +14,11 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { isInvoiceFeeChargePlan as classifyInvoiceFeeChargePlan } from '../common/billing/plan-classification';
 import {
+  installmentRemaining,
+  sumInstallmentsPaid,
+} from '../common/billing/installment-paid.util';
+import { Account } from '../users/entities/account.entity';
+import {
   PaymentPlan,
   PaymentPlanScope,
   PaymentPlanSourceType,
@@ -960,7 +965,7 @@ export class PaymentPlansService {
       // the reconcile-in-place edit, so any reminder link already in the
       // tenant's chat keeps resolving to this same (now-rescheduled) row.
       const firstPending = [...(plan.installments ?? [])]
-        .filter((i) => i.status === InstallmentStatus.PENDING)
+        .filter((i) => i.status !== InstallmentStatus.PAID)
         .sort((a, b) => a.sequence - b.sequence)[0];
       if (!firstPending) return;
 
@@ -1067,10 +1072,10 @@ export class PaymentPlansService {
     let claimed = 0;
     for (const p of activePlans) {
       if (p.property?.owner_id !== landlordId) continue;
-      const paid = (p.installments ?? [])
-        .filter((i) => i.status === InstallmentStatus.PAID)
-        .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
-      claimed += Math.max(0, Number(p.total_amount) - paid);
+      claimed += Math.max(
+        0,
+        Number(p.total_amount) - sumInstallmentsPaid(p.installments ?? []),
+      );
     }
     return Math.max(0, priorWalletOb - claimed);
   }
@@ -1465,10 +1470,8 @@ export class PaymentPlansService {
     const paidInstallments = siblings.filter(
       (s) => s.status === InstallmentStatus.PAID,
     );
-    const amountPaidToDate = paidInstallments.reduce(
-      (sum, s) => sum + Number(s.amount_paid ?? s.amount),
-      0,
-    );
+    // Includes PARTIAL rows' amount_paid, not just fully-paid installments.
+    const amountPaidToDate = sumInstallmentsPaid(siblings);
 
     // Where the tenant can actually pay next. Only meaningful while the plan
     // is ACTIVE — a completed/cancelled plan has nothing payable, so the page
@@ -1491,6 +1494,13 @@ export class PaymentPlansService {
             id: nextPayable.id,
             sequence: nextPayable.sequence,
             amount: Number(nextPayable.amount),
+            amountPaid:
+              nextPayable.amount_paid != null
+                ? Number(nextPayable.amount_paid)
+                : null,
+            // What the Pay button actually charges — face minus any
+            // landlord-recorded partial payments.
+            remaining: installmentRemaining(nextPayable),
             dueDate: formatDate(nextPayable.due_date),
             status: nextPayable.status,
           }
@@ -1604,7 +1614,7 @@ export class PaymentPlansService {
             lane: 'plan installment verify',
             relatedEntityId: installmentId,
             relatedEntityType: 'payment_plan_installment',
-            expectedNaira: Number(installment.amount),
+            expectedNaira: installmentRemaining(installment),
           },
         );
       }
@@ -2091,8 +2101,12 @@ export class PaymentPlansService {
     const paid = plan.installments.filter(
       (i) => i.status === InstallmentStatus.PAID,
     );
+    // Everything not fully paid gets rescheduled — including PARTIAL rows,
+    // whose already-collected amount_paid travels with the row (the money
+    // lives INSIDE the new face amount, so the budget below must not
+    // subtract it).
     const unpaid = plan.installments.filter(
-      (i) => i.status === InstallmentStatus.PENDING,
+      (i) => i.status !== InstallmentStatus.PAID,
     );
 
     const paidSum = paid.reduce(
@@ -2128,6 +2142,26 @@ export class PaymentPlansService {
     // Positional match: new installment[idx] reuses existing pending row[idx].
     const unpaidSorted = [...unpaid].sort((a, b) => a.sequence - b.sequence);
 
+    // Floor: a row with recorded partial payments can't be rescheduled below
+    // what it has already collected, and can't fall off a shortened schedule —
+    // both would orphan real money.
+    for (let idx = 0; idx < unpaidSorted.length; idx++) {
+      const existing = unpaidSorted[idx];
+      const collected = Number(existing.amount_paid ?? 0);
+      if (collected <= 0) continue;
+      const replacement = dto.installments[idx];
+      if (!replacement) {
+        throw new BadRequestException(
+          `Installment ${existing.sequence} has ₦${collected.toLocaleString()} in recorded payments and cannot be removed — keep at least ${idx + 1} installment${idx === 0 ? '' : 's'} or settle it first`,
+        );
+      }
+      if (Number(replacement.amount) < collected + 1) {
+        throw new BadRequestException(
+          `Installment ${idx + 1} already has ₦${collected.toLocaleString()} recorded against it — its new amount must be more than that`,
+        );
+      }
+    }
+
     await this.dataSource.transaction(async (manager) => {
       for (let idx = 0; idx < dto.installments.length; idx++) {
         const inst = dto.installments[idx];
@@ -2136,12 +2170,17 @@ export class PaymentPlansService {
         if (existing) {
           // Reschedule in place — id preserved so an in-the-wild pay link
           // keyed on this installment keeps working. Reset the reminder dedup
-          // so the new due date gets a fresh reminder cadence.
+          // so the new due date gets a fresh reminder cadence. Status derives
+          // from the row's recorded payments (the floor above guarantees a
+          // partial row stays partial, never silently paid).
           await manager.update(PaymentPlanInstallment, existing.id, {
             sequence,
             amount: Number(inst.amount),
             due_date: new Date(inst.dueDate),
-            status: InstallmentStatus.PENDING,
+            status:
+              Number(existing.amount_paid ?? 0) > 0
+                ? InstallmentStatus.PARTIAL
+                : InstallmentStatus.PENDING,
             last_reminder_sent_on: null,
           });
         } else {
@@ -2158,7 +2197,8 @@ export class PaymentPlansService {
         }
       }
 
-      // New schedule is shorter — delete the surplus tail of old pending rows.
+      // New schedule is shorter — delete the surplus tail of old pending rows
+      // (the floor pass above already rejected any tail row holding money).
       const surplus = unpaidSorted.slice(dto.installments.length);
       if (surplus.length > 0) {
         await manager.delete(
@@ -2217,7 +2257,12 @@ export class PaymentPlansService {
       throw new ConflictException('Plan is no longer active');
     }
 
-    const amount = Number(installment.amount);
+    // Charge the REMAINING balance — the tenant flow stays all-or-nothing,
+    // but landlord-recorded partial payments shrink what "all" means.
+    const amount = installmentRemaining(installment);
+    if (amount <= 0) {
+      throw new ConflictException('Installment has no remaining balance');
+    }
     const reference = `PLAN_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
     // Built once and shared with the intent: the sweep falls back to the stored
@@ -2330,9 +2375,9 @@ export class PaymentPlansService {
   }> {
     const plan = await this.getPlan(planId);
     const installments = plan.installments ?? [];
-    const paidAmount = installments
-      .filter((i) => i.status === InstallmentStatus.PAID)
-      .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
+    // Partial-aware: a half-paid installment's amount_paid must be subtracted
+    // or the payoff quote (and the charge built from it) overbills the tenant.
+    const paidAmount = sumInstallmentsPaid(installments);
 
     const property = plan.property;
     const landlordUser = await this.scopeService.resolveBrandingUserForOwner(
@@ -2358,7 +2403,7 @@ export class PaymentPlansService {
       remaining: Math.max(0, Number(plan.total_amount) - paidAmount),
       totalInstallments: installments.length,
       installmentsRemaining: installments.filter(
-        (i) => i.status === InstallmentStatus.PENDING,
+        (i) => i.status !== InstallmentStatus.PAID,
       ).length,
       property: {
         id: property?.id ?? '',
@@ -2384,9 +2429,7 @@ export class PaymentPlansService {
     if (plan.status !== PaymentPlanStatus.ACTIVE) {
       throw new ConflictException('This plan is no longer active');
     }
-    const paidAmount = (plan.installments ?? [])
-      .filter((i) => i.status === InstallmentStatus.PAID)
-      .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
+    const paidAmount = sumInstallmentsPaid(plan.installments ?? []);
     const remaining = Math.max(0, Number(plan.total_amount) - paidAmount);
     if (remaining <= 0) {
       throw new ConflictException('This plan is already fully paid');
@@ -2618,34 +2661,43 @@ export class PaymentPlansService {
       chargedAmount: number;
     },
   ): Promise<void> {
-    const pending = (plan.installments ?? [])
-      .filter((i) => i.status === InstallmentStatus.PENDING)
+    // Every not-fully-paid installment — a PARTIAL row is settled for its
+    // remaining balance, not its face amount (its earlier payments are
+    // already recorded and credited).
+    const open = (plan.installments ?? [])
+      .filter((i) => i.status !== InstallmentStatus.PAID)
       .sort((a, b) => a.sequence - b.sequence);
 
-    for (const row of pending) {
+    // Sum what THIS payoff hands to each installment as it goes — after the
+    // fact, a previously-partial row's amount_paid is cumulative (includes the
+    // earlier partials), so summing rows by reference would over-count.
+    let appliedByPayoff = 0;
+    for (const row of open) {
       const inst = await this.getInstallment(row.id);
-      if (inst.status !== InstallmentStatus.PENDING) continue;
+      if (inst.status === InstallmentStatus.PAID) continue;
+      const remaining = installmentRemaining(inst);
+      if (remaining <= 0) continue;
       await this.markInstallmentPaid(inst, {
-        amount: Number(inst.amount),
+        amount: remaining,
         method: args.method,
         channel: args.channel,
         gatewayRef: args.gatewayRef,
         gateway: args.gateway,
         suppressNotifications: true,
       });
+      // Confirm the accumulate actually landed (a racing payment may have
+      // claimed it) before counting it as applied by this payoff.
+      const settledRow = await this.installmentRepository.findOne({
+        where: { id: inst.id },
+        select: ['id', 'status', 'gateway_reference'],
+      });
+      if (
+        settledRow?.status === InstallmentStatus.PAID &&
+        settledRow.gateway_reference === args.gatewayRef
+      ) {
+        appliedByPayoff += remaining;
+      }
     }
-
-    // What this payoff actually settled (installments now PAID under its ref).
-    const after = await this.installmentRepository.find({
-      where: { plan_id: plan.id },
-    });
-    const appliedByPayoff = after
-      .filter(
-        (i) =>
-          i.status === InstallmentStatus.PAID &&
-          i.gateway_reference === args.gatewayRef,
-      )
-      .reduce((s, i) => s + Number(i.amount_paid ?? i.amount), 0);
 
     // Reconciliation guard: charged ≠ applied means an installment link cleared
     // one of these at the same moment as the payoff. The funds are real; flag
@@ -2803,31 +2855,33 @@ export class PaymentPlansService {
     }
 
     // Amount sanity guard (100x unit-bug detector): the charge was
-    // initialized for exactly the installment amount.
-    const expectedNaira = Number(installment.amount);
+    // initialized for exactly the installment's REMAINING balance at init
+    // time. A mismatch in EITHER direction is quarantined, never guessed at:
+    // under = the classic short payment; over = a stale checkout completed
+    // after a landlord recorded a partial in between (auto-crediting the
+    // smaller figure would silently eat the difference).
+    const expectedNaira = installmentRemaining(installment);
     if (Math.abs(event.amountNaira - expectedNaira) > 1) {
       this.logger.warn(
-        `Installment payment ${event.reference}: gateway reports ₦${event.amountNaira.toLocaleString()} but installment ${installmentId} expects ₦${expectedNaira.toLocaleString()}`,
+        `Installment payment ${event.reference}: gateway reports ₦${event.amountNaira.toLocaleString()} but installment ${installmentId} expects ₦${expectedNaira.toLocaleString()} remaining`,
       );
-      if (event.amountNaira + 1 < expectedNaira) {
-        // Underpaid — never grant full credit; quarantine for ops.
-        await this.propertyHistoryRepository.save(
-          this.propertyHistoryRepository.create({
-            property_id: installment.plan.property_id,
-            tenant_id: installment.plan.tenant_id,
-            event_type: 'payment_plan_amount_mismatch',
-            event_description: `Payment of ₦${event.amountNaira.toLocaleString()} (ref ${event.reference}) is LESS than installment ${installment.sequence}'s ₦${expectedNaira.toLocaleString()} — not applied; verify on the gateway dashboard and reconcile manually.`,
-            related_entity_id: installment.id,
-            related_entity_type: 'payment_plan_installment',
-            metadata: {
-              reference: event.reference,
-              received: event.amountNaira,
-              expected: expectedNaira,
-            },
-          }),
-        );
-        return;
-      }
+      const direction = event.amountNaira + 1 < expectedNaira ? 'LESS' : 'MORE';
+      await this.propertyHistoryRepository.save(
+        this.propertyHistoryRepository.create({
+          property_id: installment.plan.property_id,
+          tenant_id: installment.plan.tenant_id,
+          event_type: 'payment_plan_amount_mismatch',
+          event_description: `Payment of ₦${event.amountNaira.toLocaleString()} (ref ${event.reference}) is ${direction} than installment ${installment.sequence}'s remaining balance of ₦${expectedNaira.toLocaleString()} — not applied; verify on the gateway dashboard and reconcile manually.`,
+          related_entity_id: installment.id,
+          related_entity_type: 'payment_plan_installment',
+          metadata: {
+            reference: event.reference,
+            received: event.amountNaira,
+            expected: expectedNaira,
+          },
+        }),
+      );
+      return;
     }
 
     await this.markInstallmentPaid(installment, {
@@ -2866,21 +2920,69 @@ export class PaymentPlansService {
       throw new ConflictException('Plan is no longer active');
     }
 
-    const amount = dto.amount ?? Number(installment.amount);
+    // Everything is measured against the REMAINING balance, not the face
+    // amount — prior partial payments have already collected the difference.
+    const remaining = installmentRemaining(installment);
+    const amount = dto.amount ?? remaining;
+    if (amount > remaining + 1) {
+      throw new BadRequestException(
+        `Amount (₦${amount.toLocaleString()}) exceeds the remaining balance of ₦${remaining.toLocaleString()}`,
+      );
+    }
+    // A smaller amount is a PARTIAL payment — only accepted when the client
+    // says so explicitly, so a stale form or typo can't silently under-settle.
+    if (amount < remaining - 1 && !dto.partial) {
+      throw new BadRequestException(
+        `Amount (₦${amount.toLocaleString()}) is less than the remaining balance of ₦${remaining.toLocaleString()} — resend with partial: true to record a partial payment`,
+      );
+    }
+
     await this.markInstallmentPaid(installment, {
       amount,
       method: dto.method,
       paidAt: dto.paidAt ? new Date(dto.paidAt) : undefined,
       note: dto.note,
       markedByUserId,
+      recordedByName: await this.resolveActorName(markedByUserId),
     });
 
     return this.getInstallment(installmentId);
   }
 
+  /**
+   * Display name of the acting account for "Recorded by" audit lines — the
+   * person's name from the linked users row, falling back to the account's
+   * profile_name. Never throws; a resolution failure just omits the name.
+   */
+  private async resolveActorName(accountId: string): Promise<string | null> {
+    try {
+      const account = await this.dataSource.getRepository(Account).findOne({
+        where: { id: accountId },
+        relations: ['user'],
+      });
+      if (!account) return null;
+      const personName = this.utilService.formatPersonName(
+        account.user?.first_name,
+        account.user?.last_name,
+      );
+      return personName || account.profile_name || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Apply one payment of `args.amount` (the DELTA received now, never a
+   * cumulative figure) to an installment. `amount_paid` accumulates and the
+   * status derives from it — PARTIAL while short of the face amount, PAID once
+   * covered — so this one path settles full payments, landlord-recorded
+   * partials, and the payment that tops a partial off.
+   */
   private async markInstallmentPaid(
     installment: PaymentPlanInstallment,
     args: {
+      /** The delta being applied NOW — drives the wallet credit, FIFO
+       *  settlement and invoice ripple, and is added onto `amount_paid`. */
       amount: number;
       method: InstallmentPaymentMethod;
       channel?: string;
@@ -2890,6 +2992,8 @@ export class PaymentPlansService {
       paidAt?: Date;
       note?: string;
       markedByUserId?: string;
+      /** Display name for "Recorded by" on manual entries (audit trail). */
+      recordedByName?: string | null;
       // Set by the bulk plan-payoff path: settle the installment (claim, wallet
       // credit, FIFO settlement, ripple) but skip the per-installment activity
       // log + WhatsApp, so a payoff emits ONE consolidated event instead of N.
@@ -2924,24 +3028,31 @@ export class PaymentPlansService {
     });
     const landlordId = property?.owner_id;
 
-    // Race-loser flag: when the compare-and-swap below finds the installment
-    // already claimed by a concurrent webhook/verify, we must skip ALL side
-    // effects (wallet credit, settlement, ripple, notifications) — not just the
-    // status write — so the wallet is never credited twice for one installment.
+    // Race-loser flag: when the guarded accumulate below can't apply (already
+    // PAID, or a concurrent payment pushed the total past the face amount), we
+    // must skip ALL side effects (wallet credit, settlement, ripple,
+    // notifications) — not just the status write — so the wallet is never
+    // credited twice for one payment.
     let raceLost = false;
+    let settled = false;
+    let totalPaidAfter = 0;
     await this.dataSource.transaction(async (manager) => {
-      // 1. Claim the installment with a compare-and-swap on status: the UPDATE
-      //    only matches while status is still PENDING. The webhook (setImmediate)
-      //    and the frontend verify-payment both reach here for the same row; only
-      //    the txn that flips PENDING→PAID gets affected=1. The pre-read above is
-      //    a fast path; THIS is the real idempotency guard.
-      const claim = await manager.update(
-        PaymentPlanInstallment,
-        { id: installment.id, status: InstallmentStatus.PENDING },
-        {
-          status: InstallmentStatus.PAID,
-          paid_at: paidAt,
-          amount_paid: args.amount,
+      // 1. Guarded atomic accumulate: amount_paid grows by the delta INSIDE the
+      //    UPDATE (no read-modify-write window), and status derives from the new
+      //    total — PAID once within ₦1 of the face amount, else PARTIAL. The
+      //    row-level guards make this the real idempotency/race gate: a losing
+      //    webhook/verify twin finds status already 'paid', and a concurrent
+      //    payment that would overshoot the face amount fails the <= guard
+      //    instead of over-collecting. The pre-read above is just a fast path.
+      const claim = await manager
+        .createQueryBuilder()
+        .update(PaymentPlanInstallment)
+        .set({
+          amount_paid: () => 'COALESCE(amount_paid, 0) + :delta',
+          status: () =>
+            `CASE WHEN COALESCE(amount_paid, 0) + :delta >= amount - 1 THEN '${InstallmentStatus.PAID}' ELSE '${InstallmentStatus.PARTIAL}' END`,
+          // Single-slot "latest payment" columns; the per-payment audit trail
+          // lives in the property_history events written in step 5 below.
           // For online payments, persist the actual channel
           // (card / bank_transfer / ussd / ...) so receipts can show it.
           // For manual payments, fall through to the category enum.
@@ -2952,13 +3063,31 @@ export class PaymentPlansService {
           gateway: args.gatewayRef ? (args.gateway ?? 'paystack') : null,
           manual_payment_note: args.note ?? null,
           marked_paid_by_user_id: args.markedByUserId ?? null,
-          receipt_token: receiptToken,
-          receipt_number: receiptNumber,
-        },
-      );
+        })
+        .where('id = :id', { id: installment.id })
+        .andWhere('status IN (:...openStatuses)', {
+          openStatuses: [InstallmentStatus.PENDING, InstallmentStatus.PARTIAL],
+        })
+        .andWhere('COALESCE(amount_paid, 0) + :delta <= amount + 1')
+        .setParameters({ delta: args.amount })
+        .returning(['status', 'amount_paid'])
+        .execute();
       if (!claim.affected) {
         raceLost = true;
         return;
+      }
+      const row = (claim.raw as { status: string; amount_paid: string }[])[0];
+      settled = row?.status === InstallmentStatus.PAID;
+      totalPaidAfter = Number(row?.amount_paid ?? args.amount);
+
+      // Receipt + paid_at belong to the payment that SETTLES the installment —
+      // partials keep these null (receipts are full-settlement-only).
+      if (settled) {
+        await manager.update(PaymentPlanInstallment, installment.id, {
+          paid_at: paidAt,
+          receipt_token: receiptToken,
+          receipt_number: receiptNumber,
+        });
       }
 
       // 2. Apply a ledger entry so tenant balance reflects the payment. The
@@ -2993,9 +3122,13 @@ export class PaymentPlansService {
         }
       }
 
-      // 3. Check if all installments are now paid and complete the plan.
+      // 3. Check if all installments are now paid and complete the plan. A
+      //    PARTIAL row still owes money, so it keeps the plan ACTIVE.
       const remaining = await manager.count(PaymentPlanInstallment, {
-        where: { plan_id: plan.id, status: InstallmentStatus.PENDING },
+        where: {
+          plan_id: plan.id,
+          status: In([InstallmentStatus.PENDING, InstallmentStatus.PARTIAL]),
+        },
       });
       if (remaining === 0) {
         await manager.update(PaymentPlan, plan.id, {
@@ -3006,7 +3139,7 @@ export class PaymentPlansService {
 
     if (raceLost) {
       this.logger.log(
-        `Installment ${installment.id} already claimed by a concurrent payment; skipping (idempotent)`,
+        `Installment ${installment.id} payment of ₦${args.amount.toLocaleString()} not applied — already settled or a concurrent payment changed the balance (ref: ${args.gatewayRef ?? 'manual'}); skipping (idempotent)`,
       );
       return;
     }
@@ -3019,7 +3152,7 @@ export class PaymentPlansService {
     //     No-ops for tenancy plans and legacy OB plans (which have no sources).
     if (landlordId && !this.isInvoiceFeeChargePlan(plan)) {
       try {
-        await this.settleWalletBackedSources(plan, installment, args.amount);
+        await this.settleWalletBackedSources(plan, installment);
       } catch (err) {
         this.logger.error(
           `FIFO settlement failed for installment ${installment.id} on plan ${plan.id}: ${(err as Error)?.message}`,
@@ -3160,8 +3293,38 @@ export class PaymentPlansService {
       const seqLabel = totalInstallments
         ? `${installment.sequence}/${totalInstallments}`
         : `${installment.sequence}`;
+      const paymentDateKey = paidAt.toISOString().slice(0, 10);
 
       const refreshedPlan = await this.getPlan(plan.id);
+
+      if (!settled) {
+        // Partial: the installment stays open with a remaining balance. One
+        // structured event is both the audit trail (who recorded what, when)
+        // and the timeline "Payment Recorded" card's data — no receipt, no
+        // WhatsApp (the tenant gets messaged when things settle, and the
+        // reminder cron already quotes the remaining balance).
+        const remainingAfter = Math.max(
+          0,
+          Number(installment.amount) - totalPaidAfter,
+        );
+        await this.logPlanEvent(
+          'payment_plan_installment_payment_recorded',
+          `Installment ${seqLabel} — partial payment recorded — ₦${args.amount.toLocaleString()} (${methodLabel}); ₦${remainingAfter.toLocaleString()} remaining`,
+          refreshedPlan,
+          NotificationType.PAYMENT_PLAN_INSTALLMENT_PAID,
+          installment.id,
+          'payment_plan_installment',
+          {
+            amount: args.amount,
+            totalPaid: totalPaidAfter,
+            remainingAfter,
+            method: methodLabel,
+            paymentDate: paymentDateKey,
+            recordedBy: args.recordedByName ?? null,
+          },
+        );
+        return;
+      }
 
       await this.logPlanEvent(
         'payment_plan_installment_paid',
@@ -3170,8 +3333,18 @@ export class PaymentPlansService {
         NotificationType.PAYMENT_PLAN_INSTALLMENT_PAID,
         installment.id,
         'payment_plan_installment',
-        // Lets the timeline row deep-link to the installment receipt page.
-        { receiptToken },
+        {
+          // Lets the timeline row deep-link to the installment receipt page.
+          receiptToken,
+          amount: args.amount,
+          totalPaid: totalPaidAfter,
+          // True when this payment topped off earlier partials — the timeline
+          // renders the "remaining balance received" copy for these.
+          settledPartial: totalPaidAfter - args.amount > 1,
+          method: methodLabel,
+          paymentDate: paymentDateKey,
+          recordedBy: args.recordedByName ?? null,
+        },
       );
 
       if (refreshedPlan.status === PaymentPlanStatus.COMPLETED) {
@@ -3201,15 +3374,19 @@ export class PaymentPlansService {
    * invoice is marked PAID **credit-free** — the wallet was already credited by
    * the installment's OB_PAYMENT, so a second credit would double-reduce.
    *
-   * Runs in its own transaction with the sources locked FOR UPDATE; the
-   * `(installment_id, source_id)` unique index plus the "already allocated"
-   * guard make a webhook/verify retry a no-op. No-ops for plans with no
-   * sources (tenancy, legacy OB) — those keep their pre-feature behaviour.
+   * Runs in its own transaction with the sources locked FOR UPDATE.
+   * Idempotency is DELTA-TARGETING: each call waterfalls only the gap between
+   * what the installment has actually collected (`amount_paid`) and what its
+   * allocations already cover — a webhook/verify retry computes a zero gap and
+   * no-ops, while a second (partial) payment on the same installment applies
+   * exactly its own delta, topping up existing allocation rows in place so the
+   * `(installment_id, source_id)` unique index still holds. No-ops for plans
+   * with no sources (tenancy, legacy OB) — those keep their pre-feature
+   * behaviour.
    */
   private async settleWalletBackedSources(
     plan: PaymentPlan,
     installment: PaymentPlanInstallment,
-    amount: number,
   ): Promise<void> {
     await this.dataSource.transaction(async (manager) => {
       const sources = await manager.find(PaymentPlanSource, {
@@ -3219,13 +3396,22 @@ export class PaymentPlansService {
       });
       if (sources.length === 0) return;
 
-      // Idempotency: this installment already settled (webhook/verify retry).
-      const already = await manager.count(PaymentPlanAllocation, {
-        where: { installment_id: installment.id },
+      // Target = what the installment has collected to date, re-read inside
+      // the lock so a racing payment's accumulate is either fully included
+      // here or fully handled by its own settlement call.
+      const instRow = await manager.findOne(PaymentPlanInstallment, {
+        where: { id: installment.id },
+        select: ['id', 'amount', 'amount_paid'],
       });
-      if (already > 0) return;
+      const targetTotal = Number(instRow?.amount_paid ?? 0);
+      const allocatedForInstallment = await manager
+        .createQueryBuilder(PaymentPlanAllocation, 'a')
+        .select('COALESCE(SUM(a.amount), 0)', 'sum')
+        .where('a.installment_id = :iid', { iid: installment.id })
+        .getRawOne<{ sum: string }>();
+      let remaining = targetTotal - Number(allocatedForInstallment?.sum ?? 0);
+      if (remaining < 0.5) return; // retry, or nothing new to settle
 
-      let remaining = amount;
       for (const source of sources) {
         if (remaining < 0.5) break;
 
@@ -3241,14 +3427,29 @@ export class PaymentPlansService {
         const applied = Math.min(remaining, residual);
         remaining -= applied;
 
-        await manager.save(
-          manager.create(PaymentPlanAllocation, {
-            plan_id: plan.id,
-            installment_id: installment.id,
-            source_id: source.id,
-            amount: applied,
-          }),
+        // Top up this installment's existing allocation against the source if
+        // one exists (an earlier partial reached it); else create it. Safe as
+        // read-modify-write because every writer holds the sources lock.
+        const existingAllocation = await manager.findOne(
+          PaymentPlanAllocation,
+          {
+            where: { installment_id: installment.id, source_id: source.id },
+          },
         );
+        if (existingAllocation) {
+          await manager.update(PaymentPlanAllocation, existingAllocation.id, {
+            amount: Number(existingAllocation.amount) + applied,
+          });
+        } else {
+          await manager.save(
+            manager.create(PaymentPlanAllocation, {
+              plan_id: plan.id,
+              installment_id: installment.id,
+              source_id: source.id,
+              amount: applied,
+            }),
+          );
+        }
 
         await this.applySourceSettlement(
           manager,

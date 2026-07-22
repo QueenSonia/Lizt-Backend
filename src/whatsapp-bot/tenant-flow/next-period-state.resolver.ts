@@ -9,7 +9,10 @@ import {
   RenewalLetterStatus,
   RenewalPaymentStatus,
 } from 'src/tenancies/entities/renewal-invoice.entity';
-import { PaymentPlan, PaymentPlanStatus } from 'src/payment-plans/entities/payment-plan.entity';
+import {
+  PaymentPlan,
+  PaymentPlanStatus,
+} from 'src/payment-plans/entities/payment-plan.entity';
 import {
   PaymentPlanInstallment,
   InstallmentStatus,
@@ -49,7 +52,10 @@ export class NextPeriodStateResolver {
     private readonly paymentPlanRepo: Repository<PaymentPlan>,
   ) {}
 
-  async resolve(propertyTenant: PropertyTenant, rent: Rent): Promise<NextPeriodState> {
+  async resolve(
+    propertyTenant: PropertyTenant,
+    rent: Rent,
+  ): Promise<NextPeriodState> {
     // 1. Active payment plan supersedes everything else — both parties have
     //    already agreed on installments, no new renewal request makes sense.
     const activePlanState = await this.findActivePlanWithPendingInstallment(
@@ -95,8 +101,11 @@ export class NextPeriodStateResolver {
     });
 
     for (const plan of plans) {
+      // Not-fully-paid: a PARTIAL installment is still the tenant's next
+      // payable — skipping it would route them to the plan-locked invoice,
+      // whose initialize-payment 409s.
       const pending = (plan.installments ?? [])
-        .filter((i) => i.status === InstallmentStatus.PENDING)
+        .filter((i) => i.status !== InstallmentStatus.PAID)
         .sort((a, b) => a.sequence - b.sequence);
       if (pending.length > 0) {
         return { kind: 'ACTIVE_PLAN_LINK', plan, nextInstallment: pending[0] };
@@ -105,7 +114,9 @@ export class NextPeriodStateResolver {
     return null;
   }
 
-  private async findLatestRow(propertyTenantId: string): Promise<RenewalInvoice | null> {
+  private async findLatestRow(
+    propertyTenantId: string,
+  ): Promise<RenewalInvoice | null> {
     const now = new Date();
     return this.renewalInvoiceRepo
       .createQueryBuilder('ri')
@@ -138,7 +149,9 @@ export class NextPeriodStateResolver {
     return rowStart.getTime() - expectedNextStart.getTime() <= SEVEN_DAYS_MS;
   }
 
-  private branchOnLetterAndPayment(invoice: RenewalInvoice): NextPeriodState | null {
+  private branchOnLetterAndPayment(
+    invoice: RenewalInvoice,
+  ): NextPeriodState | null {
     if (invoice.payment_status === RenewalPaymentStatus.PAID) {
       return { kind: 'ALREADY_PAID', invoice };
     }

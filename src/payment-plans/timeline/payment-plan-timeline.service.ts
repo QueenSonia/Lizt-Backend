@@ -24,6 +24,7 @@ const TIMELINE_EVENT_TYPES = [
   'payment_plan_cancelled',
   'payment_plan_completed',
   'payment_plan_installment_paid',
+  'payment_plan_installment_payment_recorded',
   'payment_plan_installment_reminder_sent',
   'payment_plan_installment_overdue_sent',
 ];

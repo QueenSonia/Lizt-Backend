@@ -550,10 +550,11 @@ export class AdHocInvoicesService {
             id: string;
             sequence: number;
             amount: string;
+            amount_paid: string | null;
             due_date: Date | string | null;
             status: string;
           }[] = await this.invoiceRepository.manager.query(
-            `SELECT id, sequence, amount, due_date, status
+            `SELECT id, sequence, amount, amount_paid, due_date, status
                FROM payment_plan_installments
                WHERE plan_id = $1
                ORDER BY sequence ASC`,
@@ -571,7 +572,12 @@ export class AdHocInvoicesService {
                   id: next.id,
                   sequence: next.sequence,
                   amount: Number(next.amount),
-                  dueDate: this.formatDate(next.due_date as any),
+                  // Face minus recorded partial payments — the pay cost.
+                  remaining: Math.max(
+                    0,
+                    Number(next.amount) - Number(next.amount_paid ?? 0),
+                  ),
+                  dueDate: this.formatDate(next.due_date),
                 }
               : null,
           };

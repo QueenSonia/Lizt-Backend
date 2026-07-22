@@ -67,14 +67,22 @@ export class TenantBalancesService {
     landlordId: string,
   ): Promise<number> {
     try {
+      // Paid-to-date rule (SQL mirror of installmentPaidToDate in
+      // common/billing/installment-paid.util): PAID rows count their
+      // amount_paid (face fallback for legacy rows), PARTIAL rows count
+      // amount_paid — a landlord-recorded partial reduces the claim just like
+      // a full installment payment does.
       const rows: { claimed: string }[] = await this.dataSource.query(
         `SELECT COALESCE(SUM(GREATEST(0, pp.total_amount - COALESCE(paid.sum_paid, 0))), 0) AS claimed
            FROM payment_plans pp
            JOIN properties p ON p.id = pp.property_id
            LEFT JOIN (
-             SELECT plan_id, SUM(COALESCE(amount_paid, amount)) AS sum_paid
+             SELECT plan_id,
+                    SUM(CASE WHEN status = 'paid'
+                             THEN COALESCE(amount_paid, amount)
+                             ELSE COALESCE(amount_paid, 0) END) AS sum_paid
                FROM payment_plan_installments
-              WHERE status = 'paid'
+              WHERE status IN ('paid', 'partial')
               GROUP BY plan_id
            ) paid ON paid.plan_id = pp.id
           WHERE pp.tenant_id = $1

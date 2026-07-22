@@ -2561,10 +2561,11 @@ export class TenanciesService {
         id: string;
         sequence: number;
         amount: string;
+        amount_paid: string | null;
         due_date: Date | string | null;
         status: string;
       }[] = await this.dataSource.query(
-        `SELECT id, sequence, amount, due_date, status
+        `SELECT id, sequence, amount, amount_paid, due_date, status
            FROM payment_plan_installments
            WHERE plan_id = $1
            ORDER BY sequence ASC`,
@@ -2590,6 +2591,11 @@ export class TenanciesService {
               id: next.id,
               sequence: next.sequence,
               amount: Number(next.amount),
+              // Face minus recorded partial payments — what paying it costs.
+              remaining: Math.max(
+                0,
+                Number(next.amount) - Number(next.amount_paid ?? 0),
+              ),
               dueDate: formatDate(next.due_date),
             }
           : null,

@@ -240,6 +240,31 @@ export class WhatsAppNotificationLogService {
   }
 
   /**
+   * True if ANY log row of the given types exists for a reference, regardless
+   * of days_before_expiry. Answers "has this rent had a landlord review notice
+   * / a tenant reminder at all this period?" — a rents row is created per
+   * period, so reference_id doubles as the period key.
+   */
+  async existsAnyForReference(
+    referenceId: string,
+    types: string[],
+  ): Promise<boolean> {
+    if (types.length === 0) return false;
+    const count = await this.logRepository
+      .createQueryBuilder('log')
+      .where('log.reference_id = :referenceId', { referenceId })
+      .andWhere('log.type IN (:...types)', { types })
+      .andWhere('log.status IN (:...statuses)', {
+        statuses: [
+          WhatsAppNotificationStatus.PENDING,
+          WhatsAppNotificationStatus.SENT,
+        ],
+      })
+      .getCount();
+    return count > 0;
+  }
+
+  /**
    * Mark every PENDING log whose reference_id is in the given list as
    * CANCELLED. Used when the source entity (e.g. a payment-plan installment)
    * is invalidated and should no longer be reminded on.

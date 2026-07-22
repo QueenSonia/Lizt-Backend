@@ -1,5 +1,5 @@
 import { ConsoleLogger } from '@nestjs/common';
-import { TelegramAlertService } from './telegram-alert.service';
+import { telegramAlerts } from './telegram-alert.service';
 
 /**
  * Drop-in replacement for the default Nest logger.
@@ -12,7 +12,7 @@ import { TelegramAlertService } from './telegram-alert.service';
  * without touching any of them.
  */
 export class TelegramLogger extends ConsoleLogger {
-  private readonly alerts = new TelegramAlertService();
+  private readonly alerts = telegramAlerts;
 
   /** True when prod + both Telegram secrets are configured. */
   get alertsEnabled(): boolean {

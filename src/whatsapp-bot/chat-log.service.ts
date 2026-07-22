@@ -6,6 +6,10 @@ import { MessageDirection } from './entities/message-direction.enum';
 import { MessageStatus } from './entities/message-status.enum';
 import { Users } from '../users/entities/user.entity';
 import { normalizePhoneNumber } from '../utils/phone-number.transformer';
+import {
+  formatContactName,
+  mirrorWhatsappMessage,
+} from '../common/alerting/whatsapp-mirror';
 
 export interface ChatHistoryOptions {
   limit?: number;
@@ -95,7 +99,20 @@ export class ChatLogService {
       const savedLog = await this.chatLogRepository.save(chatLog);
 
       // Attempt to link to user if phone number matches
-      await this.tryLinkUserToMessage(savedLog.id, normalizedPhone);
+      const user = await this.tryLinkUserToMessage(
+        savedLog.id,
+        normalizedPhone,
+      );
+
+      // Mirror to Telegram (reuses the lookup above — no extra query).
+      mirrorWhatsappMessage({
+        direction: 'in',
+        phoneNumber: normalizedPhone,
+        name: formatContactName(user),
+        messageType,
+        content,
+        simulated: !!metadata?.is_simulated,
+      });
 
       this.logger.log(
         `✅ Logged inbound message: ID=${savedLog.id}, Phone=${normalizedPhone}, Type=${messageType}, Simulated=${metadata?.is_simulated || false}`,
@@ -152,7 +169,20 @@ export class ChatLogService {
       const savedLog = await this.chatLogRepository.save(chatLog);
 
       // Attempt to link to user if phone number matches
-      await this.tryLinkUserToMessage(savedLog.id, normalizedPhone);
+      const user = await this.tryLinkUserToMessage(
+        savedLog.id,
+        normalizedPhone,
+      );
+
+      // Mirror to Telegram (reuses the lookup above — no extra query).
+      mirrorWhatsappMessage({
+        direction: 'out',
+        phoneNumber: normalizedPhone,
+        name: formatContactName(user),
+        messageType,
+        content,
+        simulated: !!metadata?.is_simulated,
+      });
 
       this.logger.log(
         `✅ Logged outbound message: ID=${savedLog.id}, Phone=${normalizedPhone}, Type=${messageType}, Simulated=${metadata?.is_simulated || false}`,
@@ -501,10 +531,16 @@ export class ChatLogService {
   /**
    * Private helper method to automatically link messages to users based on phone number
    */
+  /**
+   * Links the message to a user when the phone number matches, and returns that
+   * user so callers can reuse the lookup (e.g. to resolve a display name for
+   * the Telegram mirror) without issuing a second query. Returns null when no
+   * user matches or the lookup fails — linking is best-effort.
+   */
   private async tryLinkUserToMessage(
     messageId: string,
     phoneNumber: string,
-  ): Promise<void> {
+  ): Promise<Users | null> {
     try {
       const user = await this.usersRepository.findOne({
         where: { phone_number: phoneNumber },
@@ -513,12 +549,14 @@ export class ChatLogService {
       if (user) {
         await this.linkUserToMessage(messageId, user.id);
       }
+      return user ?? null;
     } catch (error) {
       // Don't throw error for linking failures - it's optional
       this.logger.debug(
         `Could not link message ${messageId} to user with phone ${phoneNumber}:`,
         error,
       );
+      return null;
     }
   }
 }

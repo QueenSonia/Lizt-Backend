@@ -70,6 +70,20 @@ import { NotificationCategory } from 'src/common/notify/notification-category.en
  */
 const FORCED_END_REMINDER_DAYS = [30, 14, 7, 3, 1, 0];
 
+/**
+ * Every tenant-facing rent/renewal reminder queued against a rent id. The
+ * landlord review notice is a heads-up for the FIRST of these, so the presence
+ * of any one of them means the landlord has been overtaken by events and the
+ * notice is withheld (product decision 2026-07-22: warn before the very first
+ * reminder only — no mid-cycle catch-up).
+ */
+const TENANT_RENEWAL_REMINDER_TEMPLATES = [
+  'sendRenewalLetterLink',
+  'sendRentReminderWithRenewalTemplate',
+  'sendRentReminderTemplate',
+  'rent_overdue_with_renewal',
+];
+
 @Injectable()
 export class RentReminderService {
   private readonly logger = new Logger(RentReminderService.name);
@@ -957,10 +971,15 @@ export class RentReminderService {
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
 
-    // Distinct "first reminder + 1" leads across every frequency.
+    // Distinct "day before a reminder" leads across every frequency — EVERY
+    // schedule entry, not just the earliest. A tenancy entered after its
+    // max(schedule)+1 slot already passed would otherwise never match any
+    // target date; widening lets it be caught one day before whichever tier
+    // actually fires first for it. Firing more than once per period is
+    // prevented downstream, not here.
     const leads = new Set<number>();
     Object.values(RENT_REMINDER_SCHEDULE).forEach((days) => {
-      if (days.length) leads.add(Math.max(...days) + 1);
+      days.forEach((d) => leads.add(d + 1));
     });
     const targetDates = Array.from(leads).map((d) => {
       const date = new Date(today);
@@ -998,11 +1017,12 @@ export class RentReminderService {
         const schedule =
           RENT_REMINDER_SCHEDULE[effectiveFrequency(rent)] ||
           RENT_REMINDER_SCHEDULE.monthly;
-        const lead = Math.max(...schedule) + 1;
-        // Only the exact "one day before the first reminder" slot for this
-        // rent's own frequency (a different frequency may share the date).
-        if (daysUntilExpiry !== lead) continue;
-        await this.sendLandlordReviewNotice(rent, lead);
+        // One day before a reminder this rent's OWN frequency actually fires
+        // (a different frequency may share the date). Normally that lands on
+        // max(schedule)+1; for a tenancy created after that slot passed it is
+        // the day before whichever tier fires first.
+        if (!schedule.includes(daysUntilExpiry - 1)) continue;
+        await this.sendLandlordReviewNotice(rent, daysUntilExpiry);
       } catch (error) {
         this.logger.error(
           `Failed to send landlord review notice for rent ${rent.id}`,
@@ -1026,15 +1046,33 @@ export class RentReminderService {
       return;
     }
 
+    // Once per PERIOD, not once per lead day: a rents row is per-period, so
+    // reference_id alone is the period key. Without this, the widened lead set
+    // above would re-fire at every subsequent tier whenever the tenant
+    // reminder itself was withheld (e.g. the wallet-credit gate) and so left
+    // no suppressing log row.
     const alreadySent =
-      await this.whatsAppNotificationLogService.existsForDaysBeforeExpiry(
-        rent.id,
+      await this.whatsAppNotificationLogService.existsAnyForReference(rent.id, [
         templateName,
-        daysBefore,
-      );
+      ]);
     if (alreadySent) {
       this.logger.debug(
         `Landlord review notice already sent for rent ${rent.id} (${daysBefore}d).`,
+      );
+      return;
+    }
+
+    // Heads-up precedes the VERY FIRST tenant reminder only. Once the tenant
+    // has been reminded, prompting the landlord to "review or adjust" is late
+    // and misleading, so stay quiet for the rest of the period.
+    const tenantAlreadyReminded =
+      await this.whatsAppNotificationLogService.existsAnyForReference(
+        rent.id,
+        TENANT_RENEWAL_REMINDER_TEMPLATES,
+      );
+    if (tenantAlreadyReminded) {
+      this.logger.debug(
+        `Skipping landlord review notice for rent ${rent.id}: tenant already reminded this period.`,
       );
       return;
     }

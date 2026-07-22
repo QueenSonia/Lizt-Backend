@@ -208,6 +208,27 @@ export class RenewalPaymentService {
       }
     }
 
+    // A tenancy-scope plan owns this invoice's ENTIRE debt — direct payment
+    // would collect the same money the plan's installments are collecting.
+    // The tenant page already swaps the pay UI for a plan notice when
+    // `activeTenancyPlan` is set; this is the enforcement behind it (stale
+    // tabs, replayed links). Raw SQL to avoid a circular dep with
+    // PaymentPlansModule. Cancelling the plan re-opens this invoice.
+    const activeTenancyPlans: { id: string }[] =
+      await this.renewalInvoiceRepository.manager.query(
+        `SELECT id FROM payment_plans
+           WHERE renewal_invoice_id = $1
+             AND scope = 'tenancy'
+             AND status = 'active'
+           LIMIT 1`,
+        [invoice.id],
+      );
+    if (activeTenancyPlans.length > 0) {
+      throw new ConflictException(
+        'This invoice is being settled through a payment plan. Pay your plan installments instead.',
+      );
+    }
+
     // Custom (partial) payments are only valid on rent renewals, and only
     // when the renewal start_date is more than 14 days away. Inside the
     // 14-day window, the floor becomes the *remaining* outstanding so the

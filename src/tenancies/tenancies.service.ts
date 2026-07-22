@@ -2522,6 +2522,87 @@ export class TenanciesService {
   /**
    * Format renewal invoice entity into API response
    */
+  /**
+   * Active tenancy-scope plan summary for a renewal invoice, or null.
+   *
+   * When present, the tenant-facing invoice page must not offer direct
+   * payment — the plan owns the invoice's entire debt and collection happens
+   * through its installments (the hard gate lives in
+   * RenewalPaymentService.initializePayment). `nextInstallment` is the first
+   * unpaid installment by sequence, so the page can deep-link straight to
+   * where the tenant can actually pay.
+   *
+   * Raw SQL avoids a module-level circular dep with PaymentPlansModule (same
+   * pattern as autoCompletePaymentPlansForInvoice). Guarded: a failure here
+   * must never take down the invoice page, so it degrades to null (the page
+   * then renders the plain invoice; the pay gate still protects collection).
+   */
+  private async getActiveTenancyPlanSummary(
+    invoiceId: string,
+  ): Promise<any | null> {
+    try {
+      const plans: {
+        id: string;
+        charge_name: string;
+        total_amount: string;
+      }[] = await this.dataSource.query(
+        `SELECT id, charge_name, total_amount FROM payment_plans
+           WHERE renewal_invoice_id = $1
+             AND scope = 'tenancy'
+             AND status = 'active'
+           ORDER BY created_at DESC
+           LIMIT 1`,
+        [invoiceId],
+      );
+      if (!plans.length) return null;
+      const plan = plans[0];
+
+      const installments: {
+        id: string;
+        sequence: number;
+        amount: string;
+        due_date: Date | string | null;
+        status: string;
+      }[] = await this.dataSource.query(
+        `SELECT id, sequence, amount, due_date, status
+           FROM payment_plan_installments
+           WHERE plan_id = $1
+           ORDER BY sequence ASC`,
+        [plan.id],
+      );
+
+      const formatDate = (d: Date | string | null): string | null => {
+        if (!d) return null;
+        if (typeof d === 'string') return d.split('T')[0];
+        return d.toISOString().split('T')[0];
+      };
+      const next = installments.find((i) => i.status !== 'paid') ?? null;
+
+      return {
+        planId: plan.id,
+        chargeName: plan.charge_name,
+        totalAmount: Number(plan.total_amount),
+        totalInstallments: installments.length,
+        paidInstallments: installments.filter((i) => i.status === 'paid')
+          .length,
+        nextInstallment: next
+          ? {
+              id: next.id,
+              sequence: next.sequence,
+              amount: Number(next.amount),
+              dueDate: formatDate(next.due_date),
+            }
+          : null,
+      };
+    } catch (err) {
+      console.error(
+        `[getActiveTenancyPlanSummary] lookup failed for invoice=${invoiceId} — invoice page will render without plan lock`,
+        (err as Error)?.message,
+      );
+      return null;
+    }
+  }
+
   private async formatRenewalInvoiceResponse(
     invoice: RenewalInvoice,
   ): Promise<any> {
@@ -2585,6 +2666,10 @@ export class TenanciesService {
       );
     }
 
+    const activeTenancyPlan = await this.getActiveTenancyPlanSummary(
+      invoice.id,
+    );
+
     return {
       id: invoice.id,
       token: invoice.token,
@@ -2629,6 +2714,13 @@ export class TenanciesService {
        * 0 when no such plan is active.
        */
       planCoveredBalance,
+      /**
+       * Set when an ACTIVE tenancy-scope payment plan owns this invoice's
+       * entire debt. The tenant page replaces the pay UI with a plan notice +
+       * a link to `nextInstallment` (initialize-payment 409s regardless, so
+       * this is display data, not the enforcement).
+       */
+      activeTenancyPlan,
       tokenType: invoice.token_type || 'landlord',
       paymentStatus: invoice.payment_status,
       pendingApproval:

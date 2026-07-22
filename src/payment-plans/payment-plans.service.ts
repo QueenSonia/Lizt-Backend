@@ -1470,7 +1470,31 @@ export class PaymentPlansService {
       0,
     );
 
+    // Where the tenant can actually pay next. Only meaningful while the plan
+    // is ACTIVE — a completed/cancelled plan has nothing payable, so the page
+    // must not offer a dead link. PARTIAL counts as payable (it still has a
+    // remaining balance).
+    const nextPayable =
+      plan.status === PaymentPlanStatus.ACTIVE
+        ? (siblings.find((s) => s.status !== InstallmentStatus.PAID) ?? null)
+        : null;
+
     return {
+      /**
+       * First unpaid installment of the plan by sequence, or null when the
+       * plan is no longer active / fully paid. When the opened installment is
+       * already PAID, the page renders a "pay your next installment" link to
+       * this id.
+       */
+      nextPayableInstallment: nextPayable
+        ? {
+            id: nextPayable.id,
+            sequence: nextPayable.sequence,
+            amount: Number(nextPayable.amount),
+            dueDate: formatDate(nextPayable.due_date),
+            status: nextPayable.status,
+          }
+        : null,
       installment: {
         id: installment.id,
         sequence: installment.sequence,

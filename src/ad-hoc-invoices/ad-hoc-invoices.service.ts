@@ -529,6 +529,60 @@ export class AdHocInvoicesService {
 
     const computedStatus = this.computeStatus(invoice);
 
+    // When a payment plan owns this invoice (covered_by_plan_id), the pay
+    // button is locked (initializePublicPayment 409s) — so the page needs
+    // somewhere to send the tenant instead. Surface the covering plan's first
+    // unpaid installment as the deep-link target. Raw SQL avoids a circular
+    // dep with PaymentPlansModule; guarded so a failure degrades to the plain
+    // locked notice rather than breaking the page.
+    let coveringPlan: any = null;
+    if (invoice.covered_by_plan_id) {
+      try {
+        const plans: { id: string; status: string; charge_name: string }[] =
+          await this.invoiceRepository.manager.query(
+            `SELECT id, status, charge_name FROM payment_plans
+               WHERE id = $1
+               LIMIT 1`,
+            [invoice.covered_by_plan_id],
+          );
+        if (plans.length && plans[0].status === 'active') {
+          const installments: {
+            id: string;
+            sequence: number;
+            amount: string;
+            due_date: Date | string | null;
+            status: string;
+          }[] = await this.invoiceRepository.manager.query(
+            `SELECT id, sequence, amount, due_date, status
+               FROM payment_plan_installments
+               WHERE plan_id = $1
+               ORDER BY sequence ASC`,
+            [plans[0].id],
+          );
+          const next = installments.find((i) => i.status !== 'paid') ?? null;
+          coveringPlan = {
+            planId: plans[0].id,
+            chargeName: plans[0].charge_name,
+            totalInstallments: installments.length,
+            paidInstallments: installments.filter((i) => i.status === 'paid')
+              .length,
+            nextInstallment: next
+              ? {
+                  id: next.id,
+                  sequence: next.sequence,
+                  amount: Number(next.amount),
+                  dueDate: this.formatDate(next.due_date as any),
+                }
+              : null,
+          };
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Covering-plan lookup failed for invoice ${invoice.id}: ${(err as Error)?.message}`,
+        );
+      }
+    }
+
     return {
       invoice: {
         id: invoice.id,
@@ -538,6 +592,12 @@ export class AdHocInvoicesService {
         amountPaid: Number(invoice.amount_paid ?? 0),
         status: computedStatus,
         coveredByPlan: !!invoice.covered_by_plan_id,
+        /**
+         * Set when coveredByPlan and the plan is still ACTIVE: the page shows
+         * "settled through a payment plan" + a link to nextInstallment. Null
+         * for completed/cancelled plans (nothing payable to link to).
+         */
+        coveringPlan,
         dueDate: this.formatDate(invoice.due_date),
         notes: invoice.notes,
         paidAt: invoice.paid_at

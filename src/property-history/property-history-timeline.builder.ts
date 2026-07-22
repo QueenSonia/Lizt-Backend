@@ -11,6 +11,10 @@ import {
   resolveHistoryAmount,
   withAmountInTitle,
 } from './history-amount.util';
+import {
+  HistoryCategory,
+  categoryForEventType,
+} from './history-category.util';
 
 export interface TimelineEvent {
   id: string;
@@ -22,6 +26,12 @@ export interface TimelineEvent {
     | 'offer_letter'
     | 'invoice'
     | 'receipt';
+  /**
+   * Filter category (badge + activity filter on the person timeline).
+   * Derived from the source row's event_type; merged rows that have no
+   * property_histories record get a fixed category per source table.
+   */
+  category?: HistoryCategory;
   title: string;
   description: string;
   date: string;
@@ -108,6 +118,101 @@ const formatLongDate = (d: Date): string =>
     year: 'numeric',
   });
 
+export interface RentPeriodAmendedMetadata {
+  before?: {
+    rent_start_date?: string | Date | null;
+    expiry_date?: string | Date | null;
+    payment_frequency?: string | null;
+    rental_price?: number | null;
+  };
+  after?: {
+    rent_start_date?: string | Date | null;
+    expiry_date?: string | Date | null;
+    payment_frequency?: string | null;
+    rental_price?: number | null;
+  };
+  recurring_changes?: {
+    label: string;
+    before: boolean;
+    after: boolean;
+  }[];
+  fee_changes?: {
+    kind: string;
+    externalId?: string;
+    label: string;
+    change: 'added' | 'removed' | 'amount';
+    before: number;
+    after: number;
+  }[];
+}
+
+/**
+ * Human-readable change list for a rent_period_amended row's metadata
+ * (e.g. "expiry April 30, 2026 → April 30, 2027"). Shared by the tenant
+ * and property timelines so both describe an amendment identically.
+ * Returns [] for legacy rows written before the metadata shape existed.
+ */
+export function rentPeriodAmendedChangeParts(
+  meta: RentPeriodAmendedMetadata,
+): string[] {
+  const parts: string[] = [];
+  const b = meta.before;
+  const a = meta.after;
+  if (b && a) {
+    const fmt = (d: string | Date | null | undefined) =>
+      d ? formatLongDate(new Date(d)) : '—';
+    if (fmt(b.rent_start_date) !== fmt(a.rent_start_date)) {
+      parts.push(`start ${fmt(b.rent_start_date)} → ${fmt(a.rent_start_date)}`);
+    }
+    if (fmt(b.expiry_date) !== fmt(a.expiry_date)) {
+      parts.push(`expiry ${fmt(b.expiry_date)} → ${fmt(a.expiry_date)}`);
+    }
+    if ((b.payment_frequency ?? null) !== (a.payment_frequency ?? null)) {
+      parts.push(
+        `frequency ${b.payment_frequency ?? '—'} → ${a.payment_frequency ?? '—'}`,
+      );
+    }
+    if (Number(b.rental_price ?? 0) !== Number(a.rental_price ?? 0)) {
+      parts.push(
+        `rent ₦${Number(b.rental_price ?? 0).toLocaleString()} → ₦${Number(a.rental_price ?? 0).toLocaleString()}`,
+      );
+    }
+  }
+  if (Array.isArray(meta.fee_changes) && meta.fee_changes.length > 0) {
+    for (const fc of meta.fee_changes) {
+      if (fc.change === 'added') {
+        parts.push(
+          `${fc.label} added (₦${Number(fc.after ?? 0).toLocaleString()})`,
+        );
+      } else if (fc.change === 'removed') {
+        parts.push(`${fc.label} removed`);
+      } else {
+        parts.push(
+          `${fc.label} ₦${Number(fc.before ?? 0).toLocaleString()} → ₦${Number(fc.after ?? 0).toLocaleString()}`,
+        );
+      }
+    }
+  }
+  if (
+    Array.isArray(meta.recurring_changes) &&
+    meta.recurring_changes.length > 0
+  ) {
+    const madeRecurring = meta.recurring_changes
+      .filter((c) => c.after)
+      .map((c) => c.label);
+    const madeOneTime = meta.recurring_changes
+      .filter((c) => !c.after)
+      .map((c) => c.label);
+    if (madeRecurring.length > 0) {
+      parts.push(`${madeRecurring.join(', ')} made recurring`);
+    }
+    if (madeOneTime.length > 0) {
+      parts.push(`${madeOneTime.join(', ')} made one-time`);
+    }
+  }
+  return parts;
+}
+
 /**
  * Build a chronologically-sorted, de-duplicated TimelineEvent[] from the
  * property_histories table plus related offer letters, payments and service
@@ -137,6 +242,9 @@ export function buildTimelineEvents(
 
   if (propertyHistories && propertyHistories.length > 0) {
     propertyHistories.forEach((ph) => {
+      // Everything this row pushes gets the row's category stamped on it at
+      // the end of the iteration (single insertion point instead of ~30).
+      const eventCountBefore = tenancyEvents.length;
       // Amount to append to this row's title, when it moved money at all.
       const rowAmount = PAYMENT_HISTORY_EVENT_TYPES.has(ph.event_type)
         ? resolveHistoryAmount(ph, paymentAmountsById)
@@ -227,94 +335,13 @@ export function buildTimelineEvents(
       if (ph.event_type === 'rent_period_amended') {
         const prop = ph.property;
         const eventDate = new Date(ph.created_at || new Date());
-        const meta = (ph.metadata ?? {}) as {
-          before?: {
-            rent_start_date?: string | Date | null;
-            expiry_date?: string | Date | null;
-            payment_frequency?: string | null;
-            rental_price?: number | null;
-          };
-          after?: {
-            rent_start_date?: string | Date | null;
-            expiry_date?: string | Date | null;
-            payment_frequency?: string | null;
-            rental_price?: number | null;
-          };
-          recurring_changes?: {
-            label: string;
-            before: boolean;
-            after: boolean;
-          }[];
-          fee_changes?: {
-            kind: string;
-            externalId?: string;
-            label: string;
-            change: 'added' | 'removed' | 'amount';
-            before: number;
-            after: number;
-          }[];
-        };
         // Prefer a rich description built from before/after metadata (which
         // captures rental_price too). Fall back to the stored
         // event_description (which only covers dates + frequency) for rows
         // written before the metadata shape was finalized.
-        const parts: string[] = [];
-        const b = meta.before;
-        const a = meta.after;
-        if (b && a) {
-          const fmt = (d: string | Date | null | undefined) =>
-            d ? formatLongDate(new Date(d)) : '—';
-          if (fmt(b.rent_start_date) !== fmt(a.rent_start_date)) {
-            parts.push(
-              `start ${fmt(b.rent_start_date)} → ${fmt(a.rent_start_date)}`,
-            );
-          }
-          if (fmt(b.expiry_date) !== fmt(a.expiry_date)) {
-            parts.push(`expiry ${fmt(b.expiry_date)} → ${fmt(a.expiry_date)}`);
-          }
-          if ((b.payment_frequency ?? null) !== (a.payment_frequency ?? null)) {
-            parts.push(
-              `frequency ${b.payment_frequency ?? '—'} → ${a.payment_frequency ?? '—'}`,
-            );
-          }
-          if (Number(b.rental_price ?? 0) !== Number(a.rental_price ?? 0)) {
-            parts.push(
-              `rent ₦${Number(b.rental_price ?? 0).toLocaleString()} → ₦${Number(a.rental_price ?? 0).toLocaleString()}`,
-            );
-          }
-        }
-        if (Array.isArray(meta.fee_changes) && meta.fee_changes.length > 0) {
-          for (const fc of meta.fee_changes) {
-            if (fc.change === 'added') {
-              parts.push(
-                `${fc.label} added (₦${Number(fc.after ?? 0).toLocaleString()})`,
-              );
-            } else if (fc.change === 'removed') {
-              parts.push(`${fc.label} removed`);
-            } else {
-              parts.push(
-                `${fc.label} ₦${Number(fc.before ?? 0).toLocaleString()} → ₦${Number(fc.after ?? 0).toLocaleString()}`,
-              );
-            }
-          }
-        }
-        if (
-          Array.isArray(meta.recurring_changes) &&
-          meta.recurring_changes.length > 0
-        ) {
-          const madeRecurring = meta.recurring_changes
-            .filter((c) => c.after)
-            .map((c) => c.label);
-          const madeOneTime = meta.recurring_changes
-            .filter((c) => !c.after)
-            .map((c) => c.label);
-          if (madeRecurring.length > 0) {
-            parts.push(`${madeRecurring.join(', ')} made recurring`);
-          }
-          if (madeOneTime.length > 0) {
-            parts.push(`${madeOneTime.join(', ')} made one-time`);
-          }
-        }
+        const parts = rentPeriodAmendedChangeParts(
+          (ph.metadata ?? {}) as RentPeriodAmendedMetadata,
+        );
         const description = parts.length
           ? `Tenancy amended: ${parts.join('; ')}`
           : ph.event_description || 'Tenancy amended.';
@@ -1102,6 +1129,11 @@ export function buildTimelineEvents(
           amount: parsedData.feeAmount ? String(parsedData.feeAmount) : null,
         });
       }
+
+      const category = categoryForEventType(ph.event_type);
+      for (let i = eventCountBefore; i < tenancyEvents.length; i++) {
+        tenancyEvents[i].category = category;
+      }
     });
   }
 
@@ -1125,6 +1157,7 @@ export function buildTimelineEvents(
       return {
         id: `service-${sr.id}`,
         type: 'maintenance',
+        category: 'maintenance',
         title: 'Maintenance Request Created',
         description: `Issue: "${issueTitle}" — Status: ${sr.status || 'pending'}`,
         details: prop?.name || undefined,
@@ -1163,6 +1196,7 @@ export function buildTimelineEvents(
     return {
       id: `offer-${offer.id}`,
       type: 'offer_letter',
+      category: 'tenancy',
       title: `Offer Letter ${titleStatus}`,
       description: `Offer letter ${statusText} for ${propertyName}${amountText}`,
       details: propertyName,
@@ -1204,6 +1238,7 @@ export function buildTimelineEvents(
     return {
       id: `receipt-${payment.id}`,
       type: 'receipt',
+      category: 'payments',
       title: isPartPayment ? 'Part Payment Received' : 'Payment Received',
       description: isPartPayment
         ? `Part payment of ${amountFormatted} received for ${propertyName}`

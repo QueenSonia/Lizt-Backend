@@ -103,6 +103,14 @@ import {
   resolveHistoryAmount,
   withAmountInTitle,
 } from 'src/property-history/history-amount.util';
+import {
+  HistoryCategory,
+  categoryForEventType,
+} from 'src/property-history/history-category.util';
+import {
+  RentPeriodAmendedMetadata,
+  rentPeriodAmendedChangeParts,
+} from 'src/property-history/property-history-timeline.builder';
 import { randomUUID } from 'crypto';
 @Injectable()
 export class PropertiesService {
@@ -2793,6 +2801,116 @@ export class PropertiesService {
               details,
             };
           }
+          // The cases below mirror the tenant timeline builder so the
+          // property and person views tell the same story for these rows.
+          case 'renewal_letter_sent':
+          case 'renewal_letter_accepted':
+          case 'renewal_letter_declined': {
+            const titleMap: Record<string, string> = {
+              renewal_letter_sent: 'Renewal Letter Sent',
+              renewal_letter_accepted: 'Renewal Letter Accepted',
+              renewal_letter_declined: 'Renewal Letter Declined',
+            };
+            const verbMap: Record<string, string> = {
+              renewal_letter_sent: 'sent to',
+              renewal_letter_accepted: 'accepted by',
+              renewal_letter_declined: 'declined by',
+            };
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: hist.event_type,
+              title: titleMap[hist.event_type],
+              description:
+                hist.event_description ||
+                `Renewal letter ${verbMap[hist.event_type]} ${tenantName}`,
+              details: tenantName,
+              relatedEntityId: hist.related_entity_id,
+              relatedEntityType: 'renewal_invoice',
+            };
+          }
+          case 'renewal_period_started': {
+            const startLabel = hist.move_in_date
+              ? this.formatLongDate(hist.move_in_date)
+              : null;
+            const endLabel = hist.move_out_date
+              ? this.formatLongDate(hist.move_out_date)
+              : null;
+            const periodText =
+              startLabel && endLabel ? ` (${startLabel} – ${endLabel})` : '';
+            const rentText = hist.monthly_rent
+              ? ` — Rent: ₦${Number(hist.monthly_rent).toLocaleString()}`
+              : '';
+            return {
+              id: hist.id,
+              // Anchor on the period's start day, not the cron run timestamp.
+              date: hist.move_in_date || hist.created_at,
+              eventType: 'renewal_period_started',
+              title: 'Renewal Period Started',
+              description: `New tenancy period started for ${tenantName}${periodText}${rentText}.`,
+              details: tenantName,
+            };
+          }
+          case 'rent_period_amended': {
+            const parts = rentPeriodAmendedChangeParts(
+              (hist.metadata ?? {}) as RentPeriodAmendedMetadata,
+            );
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'rent_period_amended',
+              title: 'Tenancy amended',
+              description: parts.length
+                ? `Tenancy amended: ${parts.join('; ')}`
+                : hist.event_description || 'Tenancy amended.',
+              details: tenantName,
+            };
+          }
+          case 'payment_plan_request_submitted':
+          case 'payment_plan_request_approved':
+          case 'payment_plan_request_declined': {
+            const titleMap: Record<string, string> = {
+              payment_plan_request_submitted: 'Payment Plan Requested',
+              payment_plan_request_approved: 'Payment Plan Request Approved',
+              payment_plan_request_declined: 'Payment Plan Request Declined',
+            };
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: hist.event_type,
+              title: titleMap[hist.event_type],
+              description:
+                hist.event_description ||
+                `${titleMap[hist.event_type]} for ${tenantName}`,
+              details: tenantName,
+              relatedEntityId: hist.related_entity_id,
+              relatedEntityType: 'payment_plan_request',
+            };
+          }
+          case 'user_added_fee': {
+            let parsedFee: any = {};
+            try {
+              parsedFee = JSON.parse(hist.event_description || '{}');
+            } catch {
+              parsedFee = {};
+            }
+            const feeAmount = parsedFee.feeAmount || 0;
+            const feeDate = parsedFee.feeDate
+              ? new Date(parsedFee.feeDate).toLocaleDateString('en-GB')
+              : hist.move_in_date
+                ? new Date(hist.move_in_date).toLocaleDateString('en-GB')
+                : '';
+            return {
+              id: hist.id,
+              date: parsedFee.feeDate || hist.move_in_date || hist.created_at,
+              eventType: 'user_added_fee',
+              title: `Fee added${feeAmount ? ` — ₦${Number(feeAmount).toLocaleString()}` : ''}${parsedFee.feeDescription ? ` — ${parsedFee.feeDescription}` : ''}`,
+              description: `Fee of ₦${Number(feeAmount).toLocaleString()}${parsedFee.feeDescription ? ` — ${parsedFee.feeDescription}` : ''}${feeDate ? ` on ${feeDate}` : ''}`,
+              details: tenantName,
+              amount: feeAmount,
+              isUserAdded: true,
+            };
+          }
           default:
             return null;
         }
@@ -2838,6 +2956,18 @@ export class PropertiesService {
         details: null,
       });
     }
+
+    // Category chip for the activity filter — derived from eventType in one
+    // pass so every switch branch (and the fallback creation event) is
+    // covered, including the synthetic maintenance_request_* variants.
+    (
+      history as Array<{
+        eventType: string;
+        category?: HistoryCategory;
+      } | null>
+    ).forEach((event) => {
+      if (event) event.category = categoryForEventType(event.eventType);
+    });
 
     const computedDescription = `${property.name} is a ${
       property.no_of_bedrooms === -1

@@ -32,6 +32,16 @@ export class TelegramAlertService {
   private readonly RATE_LIMIT = 15;
   private readonly RATE_WINDOW_MS = 60_000;
 
+  /**
+   * 4xx responses are client mistakes, not server faults: expired JWTs (401)
+   * and vulnerability scanners probing for `/.env`, `/.git/config`, `/owa/`
+   * etc (404). AppExceptionsFilter logs every sub-500 status as `warn`, so
+   * without this gate they drown out real signal. Set
+   * TELEGRAM_ALERT_INCLUDE_4XX=true to page on them anyway.
+   */
+  private readonly includeClientErrors =
+    process.env.TELEGRAM_ALERT_INCLUDE_4XX === 'true';
+
   /** signature -> last-sent epoch ms */
   private readonly lastSent = new Map<string, number>();
   /** send timestamps inside the current rate window */
@@ -45,6 +55,7 @@ export class TelegramAlertService {
    */
   send(level: AlertLevel, message: string, context?: string): void {
     if (!this.enabled) return;
+    if (this.isClientError(message)) return;
 
     try {
       const signature = this.signatureFor(level, message, context);
@@ -88,6 +99,19 @@ export class TelegramAlertService {
   }
 
   // ── internals ─────────────────────────────────────────────────────
+
+  /**
+   * True when the log line carries a 4xx status (AppExceptionsFilter attaches a
+   * JSON payload containing `statusCode`). Non-HTTP logs — cron jobs, webhook
+   * handlers, payment workers — have no statusCode and are never suppressed.
+   */
+  private isClientError(message: string): boolean {
+    if (this.includeClientErrors) return false;
+    const match = /"statusCode":\s*(\d{3})/.exec(message);
+    if (!match) return false;
+    const status = Number(match[1]);
+    return status >= 400 && status < 500;
+  }
 
   private signatureFor(
     level: AlertLevel,

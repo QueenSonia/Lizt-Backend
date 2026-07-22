@@ -74,7 +74,12 @@ export class InstallmentPDFService {
       throw new NotFoundException('Receipt not available — payment required');
     }
 
-    const html = this.generateReceiptHTML(installment);
+    const siblings = await this.installmentRepository.find({
+      where: { plan_id: installment.plan_id },
+      order: { sequence: 'ASC' },
+    });
+
+    const html = this.generateReceiptHTML(installment, siblings);
     return this.htmlToPDF(html);
   }
 
@@ -437,7 +442,10 @@ export class InstallmentPDFService {
   }
 
 
-  private generateReceiptHTML(installment: PaymentPlanInstallment): string {
+  private generateReceiptHTML(
+    installment: PaymentPlanInstallment,
+    siblings: PaymentPlanInstallment[],
+  ): string {
     const plan = installment.plan;
     const property = plan.property;
     const propertyName = property?.name || 'Property';
@@ -446,14 +454,17 @@ export class InstallmentPDFService {
     const { logoUrl, branding } = this.landlordInfo(installment);
 
     const planLabel = this.planLabel(plan);
-    const installmentLabel = `Installment ${installment.sequence} of ${plan.installments?.length ?? '?'} — ${planLabel}`;
+    const installmentLabel = `Installment ${installment.sequence} of ${siblings.length} — ${planLabel}`;
     const amountPaid = Number(installment.amount_paid ?? installment.amount) || 0;
 
+    const paidCount = siblings.filter(
+      (s) => s.status === InstallmentStatus.PAID,
+    ).length;
     const extras: Array<{ label: string; value: string }> = [
       { label: 'Plan', value: planLabel },
       {
         label: 'Progress',
-        value: `${plan.installments?.filter((i) => i.status === InstallmentStatus.PAID).length ?? 0} of ${plan.installments?.length ?? '?'} paid`,
+        value: `${paidCount} of ${siblings.length} paid`,
       },
       {
         label: 'Installment Due Date',

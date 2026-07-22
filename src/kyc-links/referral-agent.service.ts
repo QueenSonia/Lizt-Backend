@@ -5,9 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import { ReferralAgent } from './entities/referral-agent.entity';
 import { KYCApplication } from './entities/kyc-application.entity';
+import { normalizePhoneNumber } from '../utils/phone-number.transformer';
 
 /** One agent row for the admin Agents page. */
 export interface AgentRollup {
@@ -36,8 +37,6 @@ export interface AgentLinkedPerson {
   status: 'Applicant' | 'Tenant';
 }
 
-/** Minimum digits before the public KYC autocomplete will return anything. */
-const MIN_SUGGEST_DIGITS = 6;
 const MAX_SUGGESTIONS = 5;
 
 @Injectable()
@@ -267,20 +266,39 @@ export class ReferralAgentService {
   }
 
   /**
-   * Public KYC-form autocomplete. Indexed lookup over `referral_agents` only — never
-   * touches applications, so no applicant or landlord data can be exposed. Requires a
-   * minimum number of digits so the roster can't be enumerated from a short prefix.
+   * Public KYC-form suggestions. PREFIX match from the very first digit (product's
+   * call: suggest immediately, no minimum). Matching is done against every spelling
+   * of the typed digits that could correspond to the stored canonical form —
+   * storage is E.164 digits (`2349016469693`), so a locally-typed `0901…` becomes
+   * the `234901…` variant and matches from the first keystroke. Indexed lookup over
+   * `referral_agents` only; returns at most MAX_SUGGESTIONS of { phone, name } and
+   * never exposes applicant/landlord data.
    */
   async suggestByPhone(
     partial: string,
   ): Promise<Array<{ phone: string; name: string }>> {
     const digits = (partial ?? '').replace(/\D/g, '');
-    if (digits.length < MIN_SUGGEST_DIGITS) return [];
+    if (!digits) return [];
 
-    const agents = await this.referralAgentRepository
+    // Candidate prefixes: as-typed, local-0 folded to the default country code, and
+    // (once the number is complete enough to parse) the fully normalised form.
+    const variants = new Set<string>([digits]);
+    if (digits.startsWith('0')) variants.add('234' + digits.slice(1));
+    const normalized = normalizePhoneNumber(partial);
+    if (normalized) variants.add(normalized);
+
+    const qb = this.referralAgentRepository
       .createQueryBuilder('agent')
-      .where('agent.deleted_at IS NULL')
-      .andWhere('agent.phone LIKE :pattern', { pattern: `%${digits}%` })
+      .where('agent.deleted_at IS NULL');
+    qb.andWhere(
+      new Brackets((w) => {
+        Array.from(variants).forEach((v, i) => {
+          w.orWhere(`agent.phone LIKE :prefix${i}`, { [`prefix${i}`]: `${v}%` });
+        });
+      }),
+    );
+
+    const agents = await qb
       .orderBy('agent.phone', 'ASC')
       .limit(MAX_SUGGESTIONS)
       .getMany();

@@ -6,7 +6,9 @@ import {
   Patch,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { ManagedScopeInterceptor } from 'src/common/scope/managed-scope.interceptor';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoleGuard } from '../auth/role.guard';
 import { Roles } from '../auth/role.decorator';
@@ -24,6 +26,9 @@ import { KYCLinksService } from './kyc-links.service';
 import { SetOfficialAgentNameDto } from './dto/set-official-agent-name.dto';
 
 @Controller('api')
+// Required for @ManagedLandlordIds() to resolve — without it the decorator always
+// yields [], which the service treats as "no landlords in scope" and returns nothing.
+@UseInterceptors(ManagedScopeInterceptor)
 export class ReferralAgentController {
   constructor(
     private readonly referralAgentService: ReferralAgentService,

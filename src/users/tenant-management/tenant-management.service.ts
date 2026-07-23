@@ -2012,7 +2012,12 @@ export class TenantManagementService {
       };
     }
 
-    // Only return tenants who have active rents (currently assigned to properties)
+    // Only return tenants who have an active rent on a property OWNED by one of
+    // the managed landlords. Scoping by property ownership (not accounts.
+    // creator_id) matches the Tenancies view and, crucially, includes tenants
+    // whose account was created without a creator_id (e.g. self-onboarded via
+    // KYC) — those would otherwise be invisible in this list despite holding an
+    // active tenancy under the landlord.
     const qb = this.accountRepository
       .createQueryBuilder('accounts')
       .leftJoin('accounts.user', 'user')
@@ -2041,14 +2046,16 @@ export class TenantManagementService {
         'rents.tenant_id',
         'rents.property_id',
       ])
-      .leftJoin('rents.property', 'property')
+      // INNER join so property.owner_id is always present for the scope filter;
+      // an active rent without a property is a data edge we don't surface here.
+      .innerJoin('rents.property', 'property')
       .addSelect([
         'property.id',
         'property.name',
         'property.location',
         'property.property_status',
       ])
-      .where('accounts.creator_id IN (:...landlordIds)', { landlordIds });
+      .where('property.owner_id IN (:...landlordIds)', { landlordIds });
 
     // Apply sorting
     if (queryParams.sort_by === 'rent' && queryParams?.sort_order) {

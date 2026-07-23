@@ -370,7 +370,7 @@ export class UsersController {
   @Roles(RolesEnum.ADMIN)
   @UseInterceptors(ManagedScopeInterceptor)
   getManagedTenant(
-    @Param('tenant_id') tenant_id: string,
+    @Param('tenant_id', ParseUUIDPipe) tenant_id: string,
     @ManagedLandlordIds() landlordIds: string[],
   ) {
     try {
@@ -387,7 +387,7 @@ export class UsersController {
   @Roles(RolesEnum.ADMIN)
   @UseInterceptors(ManagedScopeInterceptor)
   getTenantBalance(
-    @Param('tenant_id') tenant_id: string,
+    @Param('tenant_id', ParseUUIDPipe) tenant_id: string,
     @ManagedLandlordIds() landlordIds: string[],
   ) {
     try {

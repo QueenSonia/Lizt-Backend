@@ -266,13 +266,20 @@ export class ReferralAgentService {
   }
 
   /**
-   * Public KYC-form suggestions. PREFIX match from the very first digit (product's
-   * call: suggest immediately, no minimum). Matching is done against every spelling
-   * of the typed digits that could correspond to the stored canonical form —
-   * storage is E.164 digits (`2349016469693`), so a locally-typed `0901…` becomes
-   * the `234901…` variant and matches from the first keystroke. Indexed lookup over
-   * `referral_agents` only; returns at most MAX_SUGGESTIONS of { phone, name } and
-   * never exposes applicant/landlord data.
+   * Public KYC-form suggestions. SUBSTRING match from the very first digit
+   * (product's call: suggest immediately, no minimum), so a fragment from
+   * anywhere in the number finds the agent — not just a matching prefix.
+   *
+   * Storage is E.164 digits (`2349016469693`). The tenant may type the number
+   * in local (`0901…`), national (`901…`) or international (`234901…`) form, and
+   * because the phone field emits E.164, a partial local number can arrive with
+   * the trunk `0` glued onto the country code (`234090…`) — a shape that appears
+   * nowhere in the stored value. So we don't match the raw digits directly:
+   * we reconstruct the real national digits (strip a leading `234` country code,
+   * then the trunk `0`) and substring-match every candidate fragment. This is a
+   * leading-wildcard scan (no index), which is fine on the small `referral_agents`
+   * table. Returns at most MAX_SUGGESTIONS of { phone, name } and never exposes
+   * applicant/landlord data.
    */
   async suggestByPhone(
     partial: string,
@@ -280,20 +287,28 @@ export class ReferralAgentService {
     const digits = (partial ?? '').replace(/\D/g, '');
     if (!digits) return [];
 
-    // Candidate prefixes: as-typed, local-0 folded to the default country code, and
-    // (once the number is complete enough to parse) the fully normalised form.
-    const variants = new Set<string>([digits]);
-    if (digits.startsWith('0')) variants.add('234' + digits.slice(1));
-    const normalized = normalizePhoneNumber(partial);
-    if (normalized) variants.add(normalized);
+    // Candidate fragments to look for anywhere in the stored E.164 digits.
+    const fragments = new Set<string>();
+    const add = (s: string) => {
+      if (s) fragments.add(s);
+    };
+
+    add(digits);
+    // The stored form carries no trunk 0, so peel the country code and the trunk
+    // 0 off to recover the national digits the tenant actually typed.
+    const national = digits.startsWith('234') ? digits.slice(3) : digits;
+    add(national);
+    if (national.startsWith('0')) add(national.slice(1));
+    if (digits.startsWith('0')) add(digits.slice(1));
+    add(normalizePhoneNumber(partial));
 
     const qb = this.referralAgentRepository
       .createQueryBuilder('agent')
       .where('agent.deleted_at IS NULL');
     qb.andWhere(
       new Brackets((w) => {
-        Array.from(variants).forEach((v, i) => {
-          w.orWhere(`agent.phone LIKE :prefix${i}`, { [`prefix${i}`]: `${v}%` });
+        Array.from(fragments).forEach((v, i) => {
+          w.orWhere(`agent.phone LIKE :frag${i}`, { [`frag${i}`]: `%${v}%` });
         });
       }),
     );

@@ -34,7 +34,7 @@ export interface AgentLinkedPerson {
   fullName: string;
   property?: string;
   applicationDate?: string;
-  status: 'Applicant' | 'Tenant';
+  status: 'Applicant' | 'Tenant' | 'Rejected';
 }
 
 const MAX_SUGGESTIONS = 5;
@@ -193,20 +193,23 @@ export class ReferralAgentService {
       .orderBy('application.created_at', 'DESC')
       .getMany();
 
-    return applications
-      .filter((app) => app.status !== 'rejected')
-      .map((app) => ({
-        applicationId: app.id,
-        fullName: `${app.first_name ?? ''} ${app.last_name ?? ''}`.trim(),
-        property: app.property?.name,
-        applicationDate: app.created_at
-          ? new Date(app.created_at).toISOString()
-          : undefined,
-        status:
-          app.status === 'approved'
-            ? ('Tenant' as const)
+    // "Linked" means every application crediting this agent, regardless of outcome —
+    // the list count includes rejected applications, so this modal must too or the two
+    // diverge (an agent whose only applicant was rejected showed "0 people linked").
+    return applications.map((app) => ({
+      applicationId: app.id,
+      fullName: `${app.first_name ?? ''} ${app.last_name ?? ''}`.trim(),
+      property: app.property?.name,
+      applicationDate: app.created_at
+        ? new Date(app.created_at).toISOString()
+        : undefined,
+      status:
+        app.status === 'approved'
+          ? ('Tenant' as const)
+          : app.status === 'rejected'
+            ? ('Rejected' as const)
             : ('Applicant' as const),
-      }));
+    }));
   }
 
   /**

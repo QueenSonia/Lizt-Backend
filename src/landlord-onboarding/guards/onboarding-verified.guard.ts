@@ -67,21 +67,16 @@ export class OnboardingVerifiedGuard implements CanActivate {
   }
 
   /**
-   * The public onboarding page has no auth cookie, and the Next.js proxy only
-   * forwards `Authorization` from the `access_token` cookie (dropping any
-   * client-set Bearer header). So we also accept the verification JWT from the
-   * request body (`verificationToken`) or query string, which the proxy DOES
-   * forward.
+   * The onboarding verification JWT travels in the request BODY
+   * (`verificationToken`) or query string — never a client-set Bearer header
+   * (the Next.js proxy drops those). We must read those FIRST: the proxy injects
+   * an `Authorization: Bearer <access_token>` header from any login cookie the
+   * viewer happens to have (e.g. a PM testing while signed into the dashboard),
+   * and that login token is a valid JWT with the wrong `type` — letting it win
+   * would reject every draft/submit call with "Invalid token type". The
+   * Authorization header is only a last-resort fallback.
    */
   private extractToken(request: Request): string | undefined {
-    const authHeader = request.headers.authorization;
-    if (authHeader) {
-      const [scheme, token] = authHeader.split(' ');
-      if (scheme === 'Bearer' && token) {
-        return token;
-      }
-    }
-
     const bodyToken = (request.body as { verificationToken?: string })
       ?.verificationToken;
     if (bodyToken) {
@@ -91,6 +86,14 @@ export class OnboardingVerifiedGuard implements CanActivate {
     const queryToken = request.query?.verificationToken;
     if (typeof queryToken === 'string' && queryToken) {
       return queryToken;
+    }
+
+    const authHeader = request.headers.authorization;
+    if (authHeader) {
+      const [scheme, token] = authHeader.split(' ');
+      if (scheme === 'Bearer' && token) {
+        return token;
+      }
     }
 
     return undefined;

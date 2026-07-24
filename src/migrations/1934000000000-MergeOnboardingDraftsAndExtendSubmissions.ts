@@ -128,7 +128,15 @@ export class MergeOnboardingDraftsAndExtendSubmissions1934000000000
         tenancy_end_date: string | null;
         documents: unknown;
       }> = await queryRunner.query(
-        `SELECT * FROM "landlord_onboarding_properties" WHERE "submission_id" = $1 ORDER BY "created_at" ASC`,
+        // Cast the date columns to text so they serialize as 'YYYY-MM-DD' (the
+        // wizard's date shape) rather than node-postgres Date → full ISO string.
+        `SELECT "id", "description", "address", "occupancy_status", "rent",
+                "service_charge", "tenant_first_name", "tenant_last_name",
+                "tenant_phone", "tenant_email", "tenancy_type", "custom_duration",
+                "tenancy_start_date"::text AS "tenancy_start_date",
+                "tenancy_end_date"::text AS "tenancy_end_date", "documents"
+           FROM "landlord_onboarding_properties"
+          WHERE "submission_id" = $1 ORDER BY "created_at" ASC`,
         [s.id],
       );
 

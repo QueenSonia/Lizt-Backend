@@ -436,10 +436,20 @@ export class LandlordOnboardingService {
     });
     const adminPhone = admin?.user?.phone_number;
     if (adminPhone) {
+      const adminName = this.utilService.sanitizeTemplateParam(
+        [admin?.user?.first_name, admin?.user?.last_name]
+          .filter(Boolean)
+          .join(' ')
+          .trim() ||
+          admin?.profile_name ||
+          'there',
+        60,
+      );
       await this.whatsappNotificationLogService.queue(
         'sendLandlordOnboardingSubmittedToAdmin',
         {
           phone_number: adminPhone,
+          admin_name: adminName,
           landlord_name: landlordName,
           is_update: isUpdate,
           submission_id: submissionId,

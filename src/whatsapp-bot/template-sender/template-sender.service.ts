@@ -496,6 +496,7 @@ export interface LandlordOnboardingSubmittedParams {
  */
 export interface LandlordOnboardingSubmittedToAdminParams {
   phone_number: string;
+  admin_name: string;
   landlord_name: string;
   is_update: boolean;
   // Submission id — the dynamic last path segment of the review-button URL.
@@ -2867,6 +2868,7 @@ export class TemplateSenderService {
    */
   async sendLandlordOnboardingSubmittedToAdmin({
     phone_number,
+    admin_name,
     landlord_name,
     is_update,
     submission_id,
@@ -2885,6 +2887,7 @@ export class TemplateSenderService {
           {
             type: 'body',
             parameters: [
+              { type: 'text', text: admin_name },
               { type: 'text', text: landlord_name },
               { type: 'text', text: action },
             ],
@@ -6075,7 +6078,7 @@ export class TemplateSenderService {
     landlord_onboarding_submitted:
       'Hi {{1}},\n\nWe have received your submission and our team will begin reviewing the details shortly. If we need any additional information or clarification, we will reach out to you.\n\nThank you for choosing Property Kraft.\n\n— The Property Kraft Team',
     landlord_onboarding_submitted_admin:
-      'Hi,\n{{1}} has {{2}} onboarding application for Property Kraft.\n\nLog in to review the portfolio and continue their onboarding.',
+      'Hi {{1}},\n\n{{2}} has {{3}} onboarding application for Property Kraft.\n\nLog in to review the portfolio and continue their onboarding.',
     offer_letter_status_notification:
       'Hi {{1}}, {{2}} has {{4}} your offer letter for {{3}}.\n\nLog in to your dashboard to view details and take next steps.',
     payment_invoice_link:

@@ -6,12 +6,14 @@ import {
   IsEnum,
   IsNotEmpty,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { OnboardingOccupancyStatus } from '../entities/landlord-onboarding-property.entity';
+import { LandlordType } from '../../users/entities/account.entity';
 
 export class OnboardingDocumentDto {
   @IsString()
@@ -38,6 +40,13 @@ export class OnboardingPropertyDto {
 
   @IsEnum(OnboardingOccupancyStatus)
   occupancy_status: OnboardingOccupancyStatus;
+
+  // Proof of ownership — required for every property (occupied or vacant).
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => OnboardingDocumentDto)
+  ownership_documents: OnboardingDocumentDto[];
 
   // ---- Occupied-only fields ----
   @ValidateIf((o) => o.occupancy_status === OnboardingOccupancyStatus.OCCUPIED)
@@ -97,10 +106,17 @@ export class OnboardingPropertyDto {
 }
 
 export class SubmitOnboardingDto {
-  // Token in the body (kept out of URL logs), mirroring `kyc/submit`.
+  // Link token — optional; the authoritative one comes from the verified claim
+  // (OnboardingVerifiedGuard). Kept for tolerance with older clients.
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  token: string;
+  token?: string;
+
+  // OTP verification JWT, read by OnboardingVerifiedGuard from the body (the
+  // Next.js proxy drops client-set Authorization headers).
+  @IsOptional()
+  @IsString()
+  verificationToken?: string;
 
   @IsString()
   @IsNotEmpty()
@@ -110,13 +126,78 @@ export class SubmitOnboardingDto {
   @IsNotEmpty()
   last_name: string;
 
+  // Phone + country_code come from the verified claim; kept optional/ignored.
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  phone: string;
+  phone?: string;
 
   @IsOptional()
   @IsString()
   country_code?: string;
+
+  // ---- Landlord type + identification ----
+  @IsEnum(LandlordType)
+  landlord_type: LandlordType;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  address: string;
+
+  // Individual-only
+  @ValidateIf((o) => o.landlord_type === LandlordType.INDIVIDUAL)
+  @IsString()
+  @IsNotEmpty()
+  date_of_birth?: string;
+
+  @ValidateIf((o) => o.landlord_type === LandlordType.INDIVIDUAL)
+  @IsString()
+  @IsNotEmpty()
+  employment_status?: string;
+
+  @ValidateIf((o) => o.landlord_type === LandlordType.INDIVIDUAL)
+  @IsString()
+  @IsNotEmpty()
+  id_type?: string;
+
+  @ValidateIf((o) => o.landlord_type === LandlordType.INDIVIDUAL)
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => OnboardingDocumentDto)
+  id_documents?: OnboardingDocumentDto[];
+
+  // Corporate-only
+  @ValidateIf((o) => o.landlord_type === LandlordType.CORPORATE)
+  @IsString()
+  @IsNotEmpty()
+  company_name?: string;
+
+  @ValidateIf((o) => o.landlord_type === LandlordType.CORPORATE)
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => OnboardingDocumentDto)
+  corporate_documents?: OnboardingDocumentDto[];
+
+  // ---- Scope of services ----
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  scope_services: string[];
+
+  @ValidateIf((o) => (o.scope_services ?? []).includes('Other'))
+  @IsString()
+  @IsNotEmpty()
+  scope_other?: string;
+
+  // Full wizard state stored verbatim as the prefill blob (frontend-owned shape).
+  @IsOptional()
+  @IsObject()
+  data?: Record<string, any>;
 
   @IsArray()
   @ArrayMinSize(1)

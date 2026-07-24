@@ -8,7 +8,6 @@ import { OnboardingVerifiedGuard } from './guards/onboarding-verified.guard';
 import { LandlordOnboardingLink } from './entities/landlord-onboarding-link.entity';
 import { LandlordOnboardingSubmission } from './entities/landlord-onboarding-submission.entity';
 import { LandlordOnboardingProperty } from './entities/landlord-onboarding-property.entity';
-import { LandlordOnboardingDraft } from './entities/landlord-onboarding-draft.entity';
 import { LandlordOnboardingOtp } from './entities/landlord-onboarding-otp.entity';
 import { Account } from '../users/entities/account.entity';
 import { FileUploadService } from '../utils/cloudinary';
@@ -21,7 +20,6 @@ import { WhatsappBotModule } from '../whatsapp-bot/whatsapp-bot.module';
       LandlordOnboardingLink,
       LandlordOnboardingSubmission,
       LandlordOnboardingProperty,
-      LandlordOnboardingDraft,
       LandlordOnboardingOtp,
       Account,
     ]),

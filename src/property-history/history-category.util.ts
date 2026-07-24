@@ -13,14 +13,13 @@ export type HistoryCategory =
   | 'property'
   | 'tenancy'
   | 'payments'
-  | 'payment_plans'
   | 'maintenance'
   | 'kyc'
   | 'system';
 
 export function categoryForEventType(eventType: string): HistoryCategory {
   // Auto-generated nudges — checked before the payment_plan prefix so the
-  // installment reminder/overdue notices land under System, not Payment Plans.
+  // installment reminder/overdue notices land under System, not Payments.
   if (
     eventType === 'rent_reminder_sent' ||
     eventType === 'payment_plan_installment_reminder_sent' ||
@@ -28,7 +27,8 @@ export function categoryForEventType(eventType: string): HistoryCategory {
   ) {
     return 'system';
   }
-  if (eventType.startsWith('payment_plan')) return 'payment_plans';
+  // Payment-plan lifecycle (requests, installments paid) folds into Payments.
+  if (eventType.startsWith('payment_plan')) return 'payments';
   if (eventType.startsWith('maintenance_request')) return 'maintenance';
   if (eventType.startsWith('kyc_')) return 'kyc';
   if (

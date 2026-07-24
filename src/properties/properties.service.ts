@@ -2610,6 +2610,22 @@ export class PropertiesService {
                   ?.receiptToken ?? null,
             };
           }
+          case 'payment_plan_installment_payment_recorded': {
+            // Partial payment recorded against an installment — the
+            // description is display-ready ("Installment 2/2 — partial
+            // payment recorded — ₦X (…); ₦Y remaining"). No receipt token:
+            // receipts are full-settlement-only, so the row isn't clickable.
+            return {
+              id: hist.id,
+              date: hist.created_at,
+              eventType: 'payment_plan_installment_payment_recorded',
+              title: hist.event_description || 'Installment payment recorded',
+              description:
+                hist.event_description || 'Installment payment recorded',
+              details: tenantName,
+              amount: null,
+            };
+          }
           case 'rent_reminder_sent':
             return {
               id: hist.id,

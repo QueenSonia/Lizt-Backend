@@ -77,6 +77,11 @@ export class LandlordOnboardingProperty extends BaseEntity {
   @Column({ type: 'jsonb', default: () => "'[]'" })
   documents: OnboardingDocument[];
 
+  // Proof of ownership (title document, deed, C-of-O). Required for every
+  // property, occupied or vacant.
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  ownership_documents: OnboardingDocument[];
+
   @ManyToOne(() => LandlordOnboardingSubmission, (s) => s.properties, {
     onDelete: 'CASCADE',
   })

@@ -17,7 +17,6 @@ import { Roles } from '../auth/role.decorator';
 import { RolesEnum } from '../base.entity';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SkipAuth } from '../auth/auth.decorator';
-import { Public } from '../auth/public.decorator';
 import { Account } from '../users/entities/account.entity';
 import { LandlordOnboardingService } from './landlord-onboarding.service';
 import { SubmitOnboardingDto } from './dto/submit-onboarding.dto';
@@ -139,10 +138,16 @@ export class LandlordOnboardingController {
     return { success: true, message: 'Draft retrieved', data };
   }
 
-  @Public()
+  @SkipAuth()
+  @UseGuards(OnboardingVerifiedGuard)
   @Post('landlord-onboarding/submit')
-  async submit(@Body(ValidationPipe) dto: SubmitOnboardingDto) {
-    const data = await this.onboardingService.submit(dto);
+  async submit(
+    @Req() req: VerifiedRequest,
+    @Body(ValidationPipe) dto: SubmitOnboardingDto,
+  ) {
+    // Identity comes from the verified OTP claim, never the request body.
+    const { onboardingToken, phone } = req.onboardingClaims;
+    const data = await this.onboardingService.submit(onboardingToken, phone, dto);
     return {
       success: true,
       message: 'Onboarding submission received',

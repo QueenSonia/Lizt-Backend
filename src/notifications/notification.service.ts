@@ -163,6 +163,8 @@ export class NotificationService {
         return 'Applicant Needs Help';
       case NotificationType.LANDLORD_ADDED:
         return 'Landlord Added';
+      case NotificationType.ONBOARDING_SUBMITTED:
+        return 'Onboarding Application';
       case NotificationType.NOTICE_AGREEMENT:
         return 'Notice Agreement';
       case NotificationType.PAYMENT_RECEIVED:

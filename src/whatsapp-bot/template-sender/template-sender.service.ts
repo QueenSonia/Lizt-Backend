@@ -491,6 +491,18 @@ export interface LandlordOnboardingSubmittedParams {
 }
 
 /**
+ * Parameters for the managing admin's onboarding-submission notification.
+ * `is_update` picks the action phrase ({{2}}): a first submit vs. an edit.
+ */
+export interface LandlordOnboardingSubmittedToAdminParams {
+  phone_number: string;
+  landlord_name: string;
+  is_update: boolean;
+  // Submission id — the dynamic last path segment of the review-button URL.
+  submission_id: string;
+}
+
+/**
  * Parameters for offer letter status notification to landlord
  */
 export interface OfferLetterStatusNotificationParams {
@@ -2840,6 +2852,49 @@ export class TemplateSenderService {
           {
             type: 'body',
             parameters: [{ type: 'text', text: landlord_name }],
+          },
+        ],
+      },
+    };
+
+    await this.sendToWhatsappAPI(payload);
+  }
+
+  /**
+   * Notify the managing admin that a landlord submitted (or updated) an
+   * onboarding application through their link.
+   * Uses the `landlord_onboarding_submitted_admin` utility template.
+   */
+  async sendLandlordOnboardingSubmittedToAdmin({
+    phone_number,
+    landlord_name,
+    is_update,
+    submission_id,
+  }: LandlordOnboardingSubmittedToAdminParams): Promise<void> {
+    const action = is_update ? 'updated their' : 'submitted a new';
+    const payload: WhatsAppPayload = {
+      messaging_product: 'whatsapp',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: 'landlord_onboarding_submitted_admin',
+        language: {
+          code: 'en',
+        },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: landlord_name },
+              { type: 'text', text: action },
+            ],
+          },
+          {
+            // Dynamic URL button → https://lizt.co/admin/onboarding-detail/{{1}}
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: submission_id }],
           },
         ],
       },
@@ -6019,6 +6074,8 @@ export class TemplateSenderService {
       '{{1}} is your verification code. For your security, do not share this code.\nExpires in 10 minutes.',
     landlord_onboarding_submitted:
       'Hi {{1}},\n\nWe have received your submission and our team will begin reviewing the details shortly. If we need any additional information or clarification, we will reach out to you.\n\nThank you for choosing Property Kraft.\n\n— The Property Kraft Team',
+    landlord_onboarding_submitted_admin:
+      'Hi,\n{{1}} has {{2}} onboarding application for Property Kraft.\n\nLog in to review the portfolio and continue their onboarding.',
     offer_letter_status_notification:
       'Hi {{1}}, {{2}} has {{4}} your offer letter for {{3}}.\n\nLog in to your dashboard to view details and take next steps.',
     payment_invoice_link:

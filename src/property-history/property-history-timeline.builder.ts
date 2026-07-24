@@ -778,6 +778,34 @@ export function buildTimelineEvents(
         });
       }
 
+      if (ph.event_type === 'payment_plan_installment_payment_recorded') {
+        // Partial payment recorded against an installment (the installment
+        // stays open). event_description is display-ready, e.g. "Installment
+        // 2/2 — partial payment recorded — ₦5,000,000 (bank_transfer);
+        // ₦4,125,000 remaining". No receipt token — receipts are
+        // full-settlement-only.
+        const prop = ph.property;
+        const eventDate = new Date(ph.created_at || new Date());
+        const propertyLine = prop?.name
+          ? `${prop.name}${prop.location ? ` at ${prop.location}` : ''}`
+          : undefined;
+        tenancyEvents.push({
+          id: `plan-installment-payment-recorded-${ph.id}`,
+          type: 'payment',
+          title: ph.event_description || 'Installment payment recorded',
+          description: propertyLine || '',
+          secondaryText: propertyLine,
+          metadata: JSON.stringify({
+            receiptToken: null,
+            installmentId: ph.related_entity_id || null,
+          }),
+          date: eventDate.toISOString(),
+          time: formatTime(eventDate),
+          relatedEntityId: ph.related_entity_id || undefined,
+          relatedEntityType: ph.related_entity_type || undefined,
+        });
+      }
+
       if (ph.event_type === 'kyc_form_viewed') {
         const prop = ph.property;
         const eventDate = new Date(ph.created_at || new Date());

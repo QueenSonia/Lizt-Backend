@@ -54,4 +54,5 @@
   LANDLORD_ADDED = 'Landlord Added',
   MAINTENANCE_CONFIRMATION_REMINDER = 'Maintenance Confirmation Reminder',
   MAINTENANCE_AUTO_CLOSED = 'Maintenance Auto Closed',
+  ONBOARDING_SUBMITTED = 'Onboarding Submitted',
 }
